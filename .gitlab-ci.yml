@@ -12,6 +12,7 @@ variables:
   IMAGE_REPO_BASE: "${IMAGE_REGISTRY}/saluki"
   BUILD_CI_IMAGE: "${IMAGE_REPO_BASE}/build-ci:XXXXXXX"
   DOCKER_BUILD_IMAGE: "486234852809.dkr.ecr.us-east-1.amazonaws.com/docker:20.10-py3"
-
-default:
-  tags: ["runner:main"]
+  # Compiling Rust is intensive. ¯\_(ツ)_/¯
+  KUBERNETES_CPU_REQUEST: "8"
+  KUBERNETES_MEMORY_REQUEST: "8Gi"
+  KUBERNETES_MEMORY_LIMIT: "12Gi"
