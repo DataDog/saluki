@@ -4,39 +4,8 @@
 mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
 mkfile_dir := $(dir $(mkfile_path))
 
-# Detect the current CPU architecture. This is required to pull the right version of a container
-# image, or package, in some cases, as not all things have native "detect my architecture and choose
-# the right version" logic/support.
-#
-# Defaults to amd64/x86_64.
-CPUARCH := amd64
-CPUARCH_RAW := $(shell uname -m)
-ifneq ($(filter arm64%,$(CPUARCH_RAW)),)
-	CPUARCH = arm64
-endif
-
 # Override autoinstalling of tools. (Eg `cargo install`)
 export AUTOINSTALL ?= true
-# Override to true for a bit more log output in your environment building (more coming!)
-export VERBOSE ?= false
-# Override the container tool. Tries docker first and then tries podman.
-export CONTAINER_TOOL ?= auto
-ifeq ($(CONTAINER_TOOL),auto)
-	ifeq ($(shell docker version >/dev/null 2>&1 && echo docker), docker)
-		override CONTAINER_TOOL = docker
-	else ifeq ($(shell podman version >/dev/null 2>&1 && echo podman), podman)
-		override CONTAINER_TOOL = podman
-	else
-		override CONTAINER_TOOL = unknown
-	endif
-endif
-# If we're using podman create pods else if we're using docker create networks.
-export CURRENT_DIR = $(shell pwd)
-
-# Set if you are on the CI and actually want the things to happen. (Non-CI users should never set this.)
-export CI ?= false
-
-export RUST_VERSION ?= $(shell grep channel rust-toolchain.toml | cut -d '"' -f 2)
 export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
 
 FMT_YELLOW = \033[0;33m
@@ -50,14 +19,21 @@ SPACE:= ${EMPTY} ${EMPTY}
 COMMA:= ,
 
 help:
-	@printf -- "${FMT_SALUKI_LOGO}                                     _____         __        __    _                        ${FMT_END}\n"
-	@printf -- "${FMT_SALUKI_LOGO}                                    / ___/ ____ _ / /__  __ / /__ (_)                       ${FMT_END}\n"
-	@printf -- "${FMT_SALUKI_LOGO}                                    \__ \ / __ \`// // / / // //_// /                        ${FMT_END}\n"
-	@printf -- "${FMT_SALUKI_LOGO}                                   ___/ // /_/ // // /_/ // ,<  / /                         ${FMT_END}\n"
-	@printf -- "${FMT_SALUKI_LOGO}                                  /____/ \__,_//_/ \__,_//_/|_|/_/                          ${FMT_END}\n"
-	@printf -- "---------------------------------------------------------------------------------------------------\n"
-	@printf -- "Want to use ${FMT_YELLOW}\`docker\`${FMT_END} or ${FMT_YELLOW}\`podman\`${FMT_END}? Set ${FMT_YELLOW}\`CONTAINER_TOOL\`${FMT_END} environment variable. (Defaults to ${FMT_YELLOW}\`docker\`${FMT_END})\n"
+	@printf -- "${FMT_SALUKI_LOGO} .----------------. .----------------. .----------------. .----------------. .----------------. .----------------.${FMT_END}\n"
+	@printf -- "${FMT_SALUKI_LOGO}| .--------------. | .--------------. | .--------------. | .--------------. | .--------------. | .--------------. |${FMT_END}\n"
+	@printf -- "${FMT_SALUKI_LOGO}| |    _______   | | |      __      | | |   _____      | | | _____  _____ | | |  ___  ____   | | |     _____    | |${FMT_END}\n"
+	@printf -- "${FMT_SALUKI_LOGO}| |   /  ___  |  | | |     /  \     | | |  |_   _|     | | ||_   _||_   _|| | | |_  ||_  _|  | | |    |_   _|   | |${FMT_END}\n"
+	@printf -- "${FMT_SALUKI_LOGO}| |  |  (__ \_|  | | |    / /\ \    | | |    | |       | | |  | |    | |  | | |   | |_/ /    | | |      | |     | |${FMT_END}\n"
+	@printf -- "${FMT_SALUKI_LOGO}| |   '.___\`-.   | | |   / ____ \   | | |    | |   _   | | |  | '    ' |  | | |   |  __'.    | | |      | |     | |${FMT_END}\n"
+	@printf -- "${FMT_SALUKI_LOGO}| |  |\`\____) |  | | | _/ /    \ \_ | | |   _| |__/ |  | | |   \ \`--' /   | | |  _| |  \ \_  | | |     _| |_    | |${FMT_END}\n"
+	@printf -- "${FMT_SALUKI_LOGO}| |  |_______.'  | | ||____|  |____|| | |  |________|  | | |    \`.__.'    | | | |____||____| | | |    |_____|   | |${FMT_END}\n"
+	@printf -- "${FMT_SALUKI_LOGO}| |              | | |              | | |              | | |              | | |              | | |              | |${FMT_END}\n"
+	@printf -- "${FMT_SALUKI_LOGO}| '--------------' | '--------------' | '--------------' | '--------------' | '--------------' | '--------------' |${FMT_END}\n"
+	@printf -- "${FMT_SALUKI_LOGO} '----------------' '----------------' '----------------' '----------------' '----------------' '----------------'${FMT_END}\n"
 	@printf -- "\n"
+	@printf -- "                        An experimental toolkit for building telemetry data planes in Rust.\n"
+	@printf -- "\n"
+	@printf -- "===================================================================================================================\n\n"
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage: make ${FMT_BLUE}<target>${FMT_END}\n"} /^[a-zA-Z0-9_-]+:.*?##/ { printf "  ${FMT_BLUE}%-46s${FMT_END} %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
 
 ##@ Building
