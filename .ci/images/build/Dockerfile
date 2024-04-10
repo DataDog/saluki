@@ -1,0 +1,26 @@
+FROM registry.ddbuild.io/images/mirror/ubuntu:14.04
+
+ARG RUST_VERSION=1.77.1
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends build-essential software-properties-common curl ca-certificates git gnupg2 cmake unzip && \
+    add-apt-repository ppa:ubuntu-toolchain-r/test -y && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends gcc-9 g++-9 && \
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 60 --slave /usr/bin/g++ g++ /usr/bin/g++-9 && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY .ci/install-protoc.sh /
+RUN chmod +x /install-protoc.sh && /install-protoc.sh
+
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain ${RUST_VERSION}
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN rustup component add clippy && \
+    cargo install cargo-nextest --version 0.9.68 && \
+    cargo install cargo-hack --version 0.6.27 && \
+    cargo install cargo-deny --version 0.14.20 && \
+	cargo install dd-rust-license-tool --version 1.0.3
+
+COPY .ci/images/build/entrypoint.sh /
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT [ "/entrypoint.sh" ]
