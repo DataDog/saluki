@@ -10,7 +10,7 @@ variables:
   VERSION_BASE: "0.1.0"
   IMAGE_REGISTRY: "registry.ddbuild.io"
   IMAGE_REPO_BASE: "${IMAGE_REGISTRY}/saluki"
-  BUILD_CI_IMAGE: "${IMAGE_REPO_BASE}/build-ci:v31868408-a4069bd0"
+  BUILD_CI_IMAGE: "${IMAGE_REPO_BASE}/build-ci:v31868963-0f539e4e"
   DOCKER_BUILD_IMAGE: "486234852809.dkr.ecr.us-east-1.amazonaws.com/docker:20.10-py3"
   # Compiling Rust is intensive. ¯\_(ツ)_/¯
   KUBERNETES_CPU_REQUEST: "16"
