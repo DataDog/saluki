@@ -3,7 +3,7 @@ FROM registry.ddbuild.io/images/mirror/ubuntu:14.04
 ARG RUST_VERSION=1.77.2
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential software-properties-common curl ca-certificates git gnupg2 cmake unzip && \
+    apt-get install -y --no-install-recommends build-essential software-properties-common curl ca-certificates git gnupg2 cmake3 unzip && \
     add-apt-repository ppa:ubuntu-toolchain-r/test -y && \
     apt-get update && \
     apt-get install -y --no-install-recommends gcc-9 g++-9 && \
