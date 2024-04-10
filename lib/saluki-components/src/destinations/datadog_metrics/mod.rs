@@ -1,0 +1,255 @@
+use std::error::Error as _;
+
+use async_trait::async_trait;
+use http::{Request, Uri};
+use http_body_util::BodyExt as _;
+use tokio::sync::{mpsc, oneshot};
+use tracing::{debug, error, trace};
+
+use saluki_core::components::destinations::*;
+use saluki_event::DataType;
+use saluki_io::{
+    buf::{get_fixed_bytes_buffer_pool, ChunkedBytesBuffer, ChunkedBytesBufferPool},
+    net::client::http::{ChunkedHttpsClient, HttpClient},
+};
+
+mod request_builder;
+use self::request_builder::{MetricsEndpoint, RequestBuilder};
+
+/// Datadog Metrics destination.
+///
+/// Forwards metrics to the Datadog platform. It can handle both series and sketch metrics, and only utilizes the latest
+/// API endpoints for both, which both use Protocol Buffers-encoded payloads.
+///
+/// ## Missing
+///
+/// - ability to configure either the basic site _or_ a specific endpoint (requires a full URI at the moment, even if
+///   it's just something like `https`)
+/// - retries, timeouts, rate limiting (no Tower middleware stack yet)
+#[derive(Default)]
+pub struct DatadogMetricsConfiguration {
+    pub api_key: String,
+    pub api_endpoint: String,
+}
+
+#[async_trait]
+impl DestinationBuilder for DatadogMetricsConfiguration {
+    fn input_data_type(&self) -> DataType {
+        DataType::Metric
+    }
+
+    async fn build(&self) -> Result<Box<dyn Destination + Send>, Box<dyn std::error::Error + Send + Sync>> {
+        let http_client = HttpClient::https()?;
+
+        let api_base_uri = Uri::try_from(&self.api_endpoint)?;
+        let api_base_uri = Uri::builder()
+            .scheme(api_base_uri.scheme_str().unwrap_or("https"))
+            .authority(api_base_uri.authority().cloned().unwrap())
+            .path_and_query("/")
+            .build()?;
+
+        let rb_buffer_pool = create_request_builder_buffer_pool();
+        let series_request_builder = RequestBuilder::new(
+            self.api_key.clone(),
+            api_base_uri.clone(),
+            MetricsEndpoint::Series,
+            rb_buffer_pool.clone(),
+        )
+        .await?;
+        let sketches_request_builder = RequestBuilder::new(
+            self.api_key.clone(),
+            api_base_uri.clone(),
+            MetricsEndpoint::Sketches,
+            rb_buffer_pool,
+        )
+        .await?;
+
+        Ok(Box::new(DatadogMetrics {
+            http_client,
+            series_request_builder,
+            sketches_request_builder,
+        }))
+    }
+}
+
+pub struct DatadogMetrics {
+    http_client: ChunkedHttpsClient,
+    series_request_builder: RequestBuilder<ChunkedBytesBufferPool>,
+    sketches_request_builder: RequestBuilder<ChunkedBytesBufferPool>,
+}
+
+#[async_trait]
+impl Destination for DatadogMetrics {
+    async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), ()> {
+        let Self {
+            http_client,
+            mut series_request_builder,
+            mut sketches_request_builder,
+        } = *self;
+
+        // Spawn our IO task to handle sending requests.
+        let (io_shutdown_tx, io_shutdown_rx) = oneshot::channel();
+        let (requests_tx, requests_rx) = mpsc::channel(32);
+        tokio::spawn(run_io_loop(requests_rx, io_shutdown_tx, http_client));
+
+        debug!("Datadog Metrics destination started.");
+
+        // Loop and process all incoming events.
+        while let Some(event_buffers) = context.events().next_ready().await {
+            debug!(event_buffers_len = event_buffers.len(), "Received event buffers.");
+
+            for mut event_buffer in event_buffers {
+                debug!(events_len = event_buffer.len(), "Processing event buffer.");
+
+                for event in event_buffer.take_events() {
+                    if let Some(metric) = event.into_metric() {
+                        let request_builder = match MetricsEndpoint::from_metric(&metric) {
+                            MetricsEndpoint::Series => &mut series_request_builder,
+                            MetricsEndpoint::Sketches => &mut sketches_request_builder,
+                        };
+
+                        // Encode the metric. If we get it back, that means the current request is full, and we need to
+                        // flush it before we can try to encode the metric again... so we'll hold on to it in that case
+                        // before flushing and trying to encode it again.
+                        let metric_to_retry = match request_builder.encode(metric).await {
+                            Ok(None) => continue,
+                            Ok(Some(metric)) => metric,
+                            Err(e) => {
+                                error!(error = %e, "Failed to encode metric.");
+                                // TODO: Increment a counter here that the metric was dropped due to
+                                // an encoding failure.
+                                continue;
+                            }
+                        };
+
+                        // Get the flushed request and enqueue it to be sent.
+                        match request_builder.flush().await {
+                            Ok(Some(request)) => {
+                                if requests_tx.send(request).await.is_err() {
+                                    error!("Failed to send request to IO task: receiver dropped.");
+                                    return Err(());
+                                }
+                            }
+                            Ok(None) => unreachable!(
+                                "request builder indicated required flush, but no request was given during flush"
+                            ),
+                            Err(e) => {
+                                error!(error = %e, "Failed to flush request.");
+                                return Err(());
+                            }
+                        };
+
+                        // Now try to encode the metric again. If it fails again, we'll just log it because it shouldn't
+                        // be possible to fail at this point, otherwise we would have already caught that the first
+                        // time.
+                        if let Err(e) = request_builder.encode(metric_to_retry).await {
+                            error!(error = %e, "Failed to encode metric.");
+                            // TODO: Increment a counter here that the metric was dropped due to an
+                            // encoding failure.
+                        }
+                    }
+                }
+            }
+
+            debug!("All event buffers processed.");
+
+            // Once we've encoded and written all metrics, we flush the request builders to generate a request with
+            // anything left over. Again, we'll  enqueue those requests to be sent immediately.
+            match series_request_builder.flush().await {
+                Ok(Some(request)) => {
+                    debug!("Flushed request from series request builder. Sending to I/O task...");
+                    if requests_tx.send(request).await.is_err() {
+                        error!("Failed to send request to IO task: receiver dropped.");
+                        return Err(());
+                    }
+                }
+                Ok(None) => {
+                    trace!("No flushed request from series request builder.");
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to flush request.");
+                    return Err(());
+                }
+            };
+
+            match sketches_request_builder.flush().await {
+                Ok(Some(request)) => {
+                    debug!("Flushed request from sketches request builder. Sending to I/O task...");
+                    if requests_tx.send(request).await.is_err() {
+                        error!("Failed to send request to IO task: receiver dropped.");
+                        return Err(());
+                    }
+                }
+                Ok(None) => {
+                    trace!("No flushed request from sketches request builder.");
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to flush request.");
+                    return Err(());
+                }
+            };
+
+            debug!("All flushed requests sent to I/O task. Waiting for next event buffer...");
+        }
+
+        // Drop the requests channel, which allows the IO task to naturally shut down once it has received and sent all
+        // requests. We then wait for it to signal back to us that it has stopped before exiting ourselves.
+        drop(requests_tx);
+        let _ = io_shutdown_rx.await;
+
+        debug!("Datadog Metrics destination stopped.");
+
+        Ok(())
+    }
+}
+
+async fn run_io_loop(
+    mut requests_rx: mpsc::Receiver<Request<ChunkedBytesBuffer>>, io_shutdown_tx: oneshot::Sender<()>,
+    http_client: ChunkedHttpsClient,
+) {
+    // Loop and process all incoming requests.
+    while let Some(request) = requests_rx.recv().await {
+        match http_client.send(request).await {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success() {
+                    debug!(%status, "Request sent.");
+                } else {
+                    match response.into_body().collect().await {
+                        Ok(body) => {
+                            let body = body.to_bytes();
+                            let body_str = String::from_utf8_lossy(&body[..]);
+                            error!(%status, "Received non-success response. Body: {}", body_str);
+                        }
+                        Err(e) => {
+                            error!(%status, error = %e, "Failed to read response body of non-success response.");
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                error!(error = %e, error_source = ?e.source(), "Failed to send request.");
+            }
+        }
+    }
+
+    // Signal back to the main task that we've stopped.
+    let _ = io_shutdown_tx.send(());
+}
+
+fn create_request_builder_buffer_pool() -> ChunkedBytesBufferPool {
+    // Create the underlying fixed-size buffer pool for the individual chunks.
+    //
+    // This is 4MB total, in 32KB chunks, which ensures we have enough to simultaneously encode a request for the
+    // Series/Sketch V1 endpoint (max of 3.2MB) as well as the Series V2 endpoint (max 512KB).
+    //
+    // We chunk it up into 32KB segments mostly to allow for balancing fragmentation vs acquisition overhead.
+    let pool = get_fixed_bytes_buffer_pool(128, 32_768);
+
+    // Turn it into a chunked buffer pool.
+    //
+    // `ChunkedBytesBuffer` is an optimized buffer type for writing where the target is eventually an HTTP request. This
+    // is because it can be grown dynamically by acquiring more "chunks" from the wrapped buffer pool, which are then
+    // written into. As well, it can be used as a `Body` type for `hyper` requests.
+    ChunkedBytesBufferPool::new(pool)
+}

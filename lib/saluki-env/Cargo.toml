@@ -1,0 +1,27 @@
+[package]
+name = "saluki-env"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[features]
+default = ["agent-like"]
+agent-like = ["hostname-all"]
+hostname-all = ["hostname-file", "hostname-kubernetes", "hostname-os"]
+hostname-file = ["dep:tokio"]
+hostname-os = ["dep:hostname", "dep:tokio"]
+hostname-kubernetes = ["hostname-os", "dep:kube", "dep:k8s-openapi", "dep:tokio"]
+
+[dependencies]
+# Internal dependencies.
+saluki-config = { workspace = true }
+saluki-event = { workspace = true }
+
+# External dependencies.
+async-trait = { workspace = true }
+hostname = { workspace = true, optional = true }
+k8s-openapi = { workspace = true, features = ["v1_24"], optional = true }
+kube = { workspace = true, features = ["client", "rustls-tls"], optional = true }
+regex = { workspace = true, features = ["std", "perf"] }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["fs"], optional = true }

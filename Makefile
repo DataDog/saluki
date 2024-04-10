@@ -1,0 +1,144 @@
+# .PHONY: $(MAKECMDGOALS) all
+.DEFAULT_GOAL := help
+
+mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
+mkfile_dir := $(dir $(mkfile_path))
+
+# Detect the current CPU architecture. This is required to pull the right version of a container
+# image, or package, in some cases, as not all things have native "detect my architecture and choose
+# the right version" logic/support.
+#
+# Defaults to amd64/x86_64.
+CPUARCH := amd64
+CPUARCH_RAW := $(shell uname -m)
+ifneq ($(filter arm64%,$(CPUARCH_RAW)),)
+	CPUARCH = arm64
+endif
+
+# Override autoinstalling of tools. (Eg `cargo install`)
+export AUTOINSTALL ?= true
+# Override to true for a bit more log output in your environment building (more coming!)
+export VERBOSE ?= false
+# Override the container tool. Tries docker first and then tries podman.
+export CONTAINER_TOOL ?= auto
+ifeq ($(CONTAINER_TOOL),auto)
+	ifeq ($(shell docker version >/dev/null 2>&1 && echo docker), docker)
+		override CONTAINER_TOOL = docker
+	else ifeq ($(shell podman version >/dev/null 2>&1 && echo podman), podman)
+		override CONTAINER_TOOL = podman
+	else
+		override CONTAINER_TOOL = unknown
+	endif
+endif
+# If we're using podman create pods else if we're using docker create networks.
+export CURRENT_DIR = $(shell pwd)
+
+# Set if you are on the CI and actually want the things to happen. (Non-CI users should never set this.)
+export CI ?= false
+
+export RUST_VERSION ?= $(shell grep channel rust-toolchain.toml | cut -d '"' -f 2)
+export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
+
+FMT_YELLOW = \033[0;33m
+FMT_BLUE = \033[0;36m
+FMT_ADP_LOGO = \033[1m\033[38;5;55m
+FMT_END = \033[0m
+
+# "One weird trick!" https://www.gnu.org/software/make/manual/make.html#Syntax-of-Functions
+EMPTY:=
+SPACE:= ${EMPTY} ${EMPTY}
+COMMA:= ,
+
+help:
+	@printf -- "${FMT_SALUKI_LOGO}                                     _____         __        __    _                        ${FMT_END}\n"
+	@printf -- "${FMT_SALUKI_LOGO}                                    / ___/ ____ _ / /__  __ / /__ (_)                       ${FMT_END}\n"
+	@printf -- "${FMT_SALUKI_LOGO}                                    \__ \ / __ \`// // / / // //_// /                        ${FMT_END}\n"
+	@printf -- "${FMT_SALUKI_LOGO}                                   ___/ // /_/ // // /_/ // ,<  / /                         ${FMT_END}\n"
+	@printf -- "${FMT_SALUKI_LOGO}                                  /____/ \__,_//_/ \__,_//_/|_|/_/                          ${FMT_END}\n"
+	@printf -- "---------------------------------------------------------------------------------------------------\n"
+	@printf -- "Want to use ${FMT_YELLOW}\`docker\`${FMT_END} or ${FMT_YELLOW}\`podman\`${FMT_END}? Set ${FMT_YELLOW}\`CONTAINER_TOOL\`${FMT_END} environment variable. (Defaults to ${FMT_YELLOW}\`docker\`${FMT_END})\n"
+	@printf -- "\n"
+	@awk 'BEGIN {FS = ":.*##"; printf "Usage: make ${FMT_BLUE}<target>${FMT_END}\n"} /^[a-zA-Z0-9_-]+:.*?##/ { printf "  ${FMT_BLUE}%-46s${FMT_END} %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
+
+##@ Building
+
+.PHONY: build-adp
+build-adp: check-rust-build-tools
+build-adp: ## Builds the ADP binary in release mode
+	@echo "[*] Building ADP locally..."
+	@cargo build --release --package agent-data-plane
+
+.PHONY: check-rust-build-tools
+check-rust-build-tools:
+ifeq ($(shell command -v cargo >/dev/null || echo not-found), not-found)
+	$(error "Please install Rust: https://www.rust-lang.org/tools/install")
+endif
+
+##@ Checking
+
+.PHONY: check-all
+check-all: ## Check everything
+check-all: check-fmt check-clippy check-features check-deny check-licenses
+
+.PHONY: check-clippy
+check-clippy: check-rust-build-tools
+check-clippy: ## Check Rust source code with Clippy
+	@echo "[*] Checking Clippy lints..."
+	@cargo clippy --all-targets --workspace -- -D warnings
+
+.PHONY: check-deny
+check-deny: check-rust-build-tools cargo-install-cargo-deny
+check-deny: ## Check all crate dependencies for outstanding advisories or usage restrictions
+	@echo "[*] Checking for dependency advisories, license conflicts, and untrusted dependency sources..."
+	@cargo deny check --hide-inclusion-graph --show-stats
+
+.PHONY: check-fmt
+check-fmt: check-rust-build-tools
+check-fmt: ## Check that all Rust source files are formatted properly
+	@echo "[*] Checking Rust source code formatting..."
+	@cargo fmt -- --check
+
+.PHONY: check-licenses
+check-licenses: check-rust-build-tools cargo-install-dd-rust-license-tool
+check-licenses: ## Check that the third-party license file is up to date
+	@echo "[*] Checking if third-party license file is up-to-date..."
+	@$(HOME)/.cargo/bin/dd-rust-license-tool check
+
+.PHONY: check-features
+check-features: check-rust-build-tools cargo-install-cargo-hack
+check-features: ## Check that ADP builds with all possible combinations of feature flags
+	@echo "[*] Checking feature flag compatibility matrix..."
+	@cargo hack check --feature-powerset --tests --quiet
+
+##@ Testing
+
+.PHONY: test
+test: check-rust-build-tools cargo-install-cargo-nextest
+test: ## Runs all unit tests
+	@echo "[*] Running unit tests..."
+	cargo nextest run
+
+##@ Utility
+
+.PHONY: clean
+clean: check-rust-build-tools
+clean: ## Clean all build artifacts (debug/release)
+	@echo "[*] Cleaning Rust build artifacts..."
+	@cargo clean
+
+.PHONY: fmt
+fmt: check-rust-build-tools
+fmt: ## Format Rust source code
+	@echo "[*] Formatting Rust source code..."
+	@cargo fmt
+
+.PHONY: sync-licenses
+sync-licenses: check-rust-build-tools cargo-install-dd-rust-license-tool
+sync-licenses: ## Synchronizes the third-party license file with the current crate dependencies
+	@echo "[*] Synchronizing third-party license file to current dependencies...""
+	@$(HOME)/.cargo/bin/dd-rust-license-tool write
+
+.PHONY: cargo-install-%
+cargo-install-%: override TOOL = $(@:cargo-install-%=%)
+cargo-install-%: check-rust-build-tools
+	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || cargo install ${TOOL} --quiet,)
