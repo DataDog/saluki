@@ -1,0 +1,20 @@
+generate-build-ci-image:
+  stage: .pre
+  tags: ["arch:amd64"]
+  image: ${DOCKER_BUILD_IMAGE}
+  rules:
+    - when: manual
+      allow_failure: true
+  script:
+    - docker buildx build
+      --platform linux/amd64,linux/arm64
+      --tag ${IMAGE_REPO_BASE}/build-ci:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --squash
+      --push
+      --file .ci/images/build/Dockerfile
+      .

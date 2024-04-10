@@ -1,0 +1,35 @@
+unit-tests:
+  stage: build
+  image: "${BUILD_CI_IMAGE}"
+  script:
+    - make test
+
+check-clippy:
+  stage: build
+  image: "${BUILD_CI_IMAGE}"
+  script:
+    - make check-clippy
+
+check-deny:
+  stage: build
+  image: "${BUILD_CI_IMAGE}"
+  script:
+    - make check-deny
+
+check-fmt:
+  stage: build
+  image: "${BUILD_CI_IMAGE}"
+  script:
+    - make check-fmt
+
+check-licenses:
+  stage: build
+  image: "${BUILD_CI_IMAGE}"
+  script:
+    - make check-licenses
+
+check-features:
+  stage: build
+  image: "${BUILD_CI_IMAGE}"
+  script:
+    - make check-features

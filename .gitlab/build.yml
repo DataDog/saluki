@@ -1,0 +1,6 @@
+build-agent-data-plane:
+  stage: build
+  tags: ["arch:amd64"]
+  image: "${BUILD_CI_IMAGE}"
+  script:
+    - make build-adp
