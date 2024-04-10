@@ -1,0 +1,18 @@
+[package]
+name = "agent-data-plane"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+# Internal dependencies.
+saluki-app = { workspace = true }
+saluki-components = { workspace = true }
+saluki-config = { workspace = true }
+saluki-core = { workspace = true }
+saluki-env = { workspace = true }
+saluki-io = { workspace = true }
+
+# External dependencies.
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "signal"] }
+tracing = { workspace = true }

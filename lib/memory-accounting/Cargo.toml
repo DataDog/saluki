@@ -1,0 +1,11 @@
+[package]
+name = "memory-accounting"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+ordered-float = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true, features = ["std"] }

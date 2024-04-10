@@ -1,0 +1,16 @@
+[package]
+name = "saluki-event"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+# Internal dependencies.
+ddsketch-agent = { workspace = true }
+
+# External dependencies.
+bitmask-enum = { workspace = true }
+float_eq = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true, features = ["std"] }

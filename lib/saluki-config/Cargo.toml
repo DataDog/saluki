@@ -1,0 +1,14 @@
+[package]
+name = "saluki-config"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[features]
+default = ["yaml"]
+json = ["figment/json"]
+yaml = ["figment/yaml"]
+
+[dependencies]
+figment = { workspace = true, features = ["env"] }
+serde = { workspace = true }

@@ -1,0 +1,18 @@
+[package]
+name = "ddsketch-agent"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+datadog-protos = { path = "../datadog-protos" }
+float_eq = { workspace = true }
+ordered-float = { workspace = true }
+snafu = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }
+rand_distr = { workspace = true }
+ndarray = { workspace = true }
+ndarray-stats = { workspace = true }
+noisy_float = { workspace = true }

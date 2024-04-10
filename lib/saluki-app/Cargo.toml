@@ -1,0 +1,17 @@
+[package]
+name = "saluki-app"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+# Internal dependencies.
+saluki-core = { workspace = true }
+saluki-env = { workspace = true }
+
+# External dependencies.
+metrics = { workspace = true }
+metrics-util = { workspace = true, features = ["handles", "recency", "registry"] }
+tokio = { workspace = true, features = ["sync"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["std", "env-filter", "fmt", "ansi", "registry", "local-time", "tracing-log"] }
