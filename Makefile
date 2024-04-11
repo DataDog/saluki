@@ -6,11 +6,26 @@ mkfile_dir := $(dir $(mkfile_path))
 
 # Override autoinstalling of tools. (Eg `cargo install`)
 export AUTOINSTALL ?= true
+# Override the container tool. Tries docker first and then tries podman.
+export CONTAINER_TOOL ?= auto
+ifeq ($(CONTAINER_TOOL),auto)
+	ifeq ($(shell docker version >/dev/null 2>&1 && echo docker), docker)
+		override CONTAINER_TOOL = docker
+	else ifeq ($(shell podman version >/dev/null 2>&1 && echo podman), podman)
+		override CONTAINER_TOOL = podman
+	else
+		override CONTAINER_TOOL = unknown
+	endif
+endif
+# Basic settings for base build images. These are varied between local development and CI.
+export RUST_VERSION ?= $(shell grep channel rust-toolchain.toml | cut -d '"' -f 2)
+export BUILD_IMAGE ?= rust:$(RUST_VERSION)-buster
+export APP_IMAGE ?= debian:buster-slim
 export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
 
 FMT_YELLOW = \033[0;33m
 FMT_BLUE = \033[0;36m
-FMT_ADP_LOGO = \033[1m\033[38;5;55m
+FMT_SALUKI_LOGO = \033[1m\033[38;5;55m
 FMT_END = \033[0m
 
 # "One weird trick!" https://www.gnu.org/software/make/manual/make.html#Syntax-of-Functions
@@ -34,6 +49,8 @@ help:
 	@printf -- "                        An experimental toolkit for building telemetry data planes in Rust.\n"
 	@printf -- "\n"
 	@printf -- "===================================================================================================================\n\n"
+	@printf -- "Want to use ${FMT_YELLOW}\`docker\`${FMT_END} or ${FMT_YELLOW}\`podman\`${FMT_END}? Set ${FMT_YELLOW}\`CONTAINER_TOOL\`${FMT_END} environment variable. (Defaults to ${FMT_YELLOW}\`docker\`${FMT_END})\n"
+	@printf -- "\n"
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage: make ${FMT_BLUE}<target>${FMT_END}\n"} /^[a-zA-Z0-9_-]+:.*?##/ { printf "  ${FMT_BLUE}%-46s${FMT_END} %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
 
 ##@ Building
@@ -43,6 +60,16 @@ build-adp: check-rust-build-tools
 build-adp: ## Builds the ADP binary in release mode
 	@echo "[*] Building ADP locally..."
 	@cargo build --release --package agent-data-plane
+
+.PHONY: build-adp-image
+build-adp-image: ## Builds the ADP container image ('latest' tag)
+	@echo "[*] Building ADP image..."
+	@$(CONTAINER_TOOL) build \
+		--tag agent-data-plane:latest \
+		--build-arg BUILD_IMAGE=$(BUILD_IMAGE) \
+		--build-arg APP_IMAGE=$(APP_IMAGE) \
+		--file ./docker/Dockerfile.agent-data-plane \
+		.
 
 .PHONY: check-rust-build-tools
 check-rust-build-tools:

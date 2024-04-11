@@ -12,10 +12,19 @@ variables:
   IMAGE_REPO_BASE: "${IMAGE_REGISTRY}/saluki"
   BUILD_CI_IMAGE: "${IMAGE_REPO_BASE}/build-ci:v31913536-9c72c63f"
   DOCKER_BUILD_IMAGE: "486234852809.dkr.ecr.us-east-1.amazonaws.com/docker:20.10-py3"
+  ADP_APP_IMAGE: "${IMAGE_REGISTRY}/images/base/gbi-ubuntu_2204:release"
   # Compiling Rust is intensive. ¯\_(ツ)_/¯
   KUBERNETES_CPU_REQUEST: "16"
   KUBERNETES_MEMORY_REQUEST: "8Gi"
   KUBERNETES_MEMORY_LIMIT: "12Gi"
 
+.setup-env: &setup-env
+  - 'export VERSION="${VERSION_BASE}"'
+  - '[ -z "$CI_COMMIT_TAG" ] && export VERSION="${VERSION_BASE}-beta-${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"'
+  - '[ "$CI_PIPELINE_SOURCE" == "schedule" ] && export VERSION="${VERSION_BASE}-nightly-${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"'
+  - echo $VERSION
+
 default:
   tags: ["arch:amd64"]
+  before_script:
+    - *setup-env
