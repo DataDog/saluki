@@ -1,6 +1,6 @@
 build-agent-data-plane-docker:
   stage: build
-  image: "${BUILD_CI_IMAGE}"
+  image: "${DOCKER_BUILD_IMAGE}"
   script:
     - docker buildx build
       --platform linux/amd64,linux/arm64
