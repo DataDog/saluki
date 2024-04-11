@@ -1,11 +1,11 @@
 use std::{fmt, net::SocketAddr, path::PathBuf};
-use tokio::net::unix::SocketAddr as UnixSocketAddr;
 use url::Url;
 
 #[derive(Clone)]
 pub enum ListenAddress {
     Tcp(SocketAddr),
     Udp(SocketAddr),
+    #[cfg(unix)]
     Unix(PathBuf),
 }
 
@@ -40,6 +40,7 @@ impl<'a> TryFrom<&'a str> for ListenAddress {
                     Ok(Self::Udp(socket_addresses.swap_remove(0)))
                 }
             }
+            #[cfg(unix)]
             "unix" => {
                 let path = url.path();
                 if path.is_empty() {
@@ -61,6 +62,7 @@ impl<'a> TryFrom<&'a str> for ListenAddress {
 #[derive(Clone)]
 pub enum ConnectionAddress {
     SocketLike(SocketAddr),
+    #[cfg(unix)]
     PathLike(PathBuf),
 }
 
@@ -68,6 +70,7 @@ impl fmt::Display for ConnectionAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SocketLike(addr) => write!(f, "{}", addr),
+            #[cfg(unix)]
             Self::PathLike(path) => write!(f, "{}", path.display()),
         }
     }
@@ -79,8 +82,9 @@ impl From<SocketAddr> for ConnectionAddress {
     }
 }
 
-impl From<UnixSocketAddr> for ConnectionAddress {
-    fn from(value: UnixSocketAddr) -> Self {
+#[cfg(unix)]
+impl From<tokio::net::unix::SocketAddr> for ConnectionAddress {
+    fn from(value: tokio::net::unix::SocketAddr) -> Self {
         Self::PathLike(value.as_pathname().map(|p| p.to_path_buf()).unwrap_or_default())
     }
 }

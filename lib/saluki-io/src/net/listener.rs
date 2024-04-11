@@ -1,13 +1,14 @@
 use std::{future::pending, io};
 
-use tokio::net::{TcpListener, UdpSocket, UnixListener};
+use tokio::net::{TcpListener, UdpSocket};
 
 use super::{addr::ListenAddress, stream::Stream};
 
 enum ListenerInner {
     Tcp(TcpListener),
     Udp(Option<UdpSocket>),
-    Unix(UnixListener),
+    #[cfg(unix)]
+    Unix(tokio::net::UnixListener),
 }
 
 pub struct Listener {
@@ -19,7 +20,11 @@ impl Listener {
         let inner = match listen_address {
             ListenAddress::Tcp(addr) => TcpListener::bind(addr).await.map(ListenerInner::Tcp),
             ListenAddress::Udp(addr) => UdpSocket::bind(addr).await.map(Some).map(ListenerInner::Udp),
-            ListenAddress::Unix(addr) => UnixListener::bind(addr).map(ListenerInner::Unix),
+            #[cfg(unix)]
+            ListenAddress::Unix(addr) => {
+                let addr = ensure_unix_socket_free(addr).await?;
+                tokio::net::UnixListener::bind(addr).map(ListenerInner::Unix)
+            }
         };
 
         Ok(Self { inner: inner? })
@@ -39,7 +44,45 @@ impl Listener {
                     pending().await
                 }
             }
+            #[cfg(unix)]
             ListenerInner::Unix(unix) => unix.accept().await.map(Into::into),
         }
     }
+}
+
+#[cfg(unix)]
+async fn ensure_unix_socket_free(addr: std::path::PathBuf) -> io::Result<std::path::PathBuf> {
+    use std::os::unix::fs::FileTypeExt;
+
+    use tracing::trace;
+
+    // If the socket file already exists, we need to make sure it's already a UNIX socket, which means we're "clear" to
+    // remove it before trying to claim it again when we create our listener.
+    match tokio::fs::metadata(&addr).await {
+        Ok(metadata) => {
+            if !metadata.file_type().is_socket() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "path already exists and is not a UNIX socket",
+                ));
+            }
+
+            tokio::fs::remove_file(&addr).await?;
+
+            trace!(
+                socket_path = addr.to_string_lossy().as_ref(),
+                "Cleared existing UNIX socket."
+            );
+        }
+        Err(err) => {
+            // If we can't find the file, that's good: nothing to clean up.
+            //
+            // Otherwise, forward the error.
+            if err.kind() != io::ErrorKind::NotFound {
+                return Err(err);
+            }
+        }
+    }
+
+    Ok(addr)
 }

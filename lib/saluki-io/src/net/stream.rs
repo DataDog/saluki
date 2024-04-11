@@ -8,20 +8,22 @@ use std::{
 use bytes::BufMut;
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, ReadBuf},
-    net::{unix::SocketAddr as UnixSocketAddr, TcpStream, UdpSocket, UnixStream},
+    net::{TcpStream, UdpSocket},
 };
 
 use super::addr::ConnectionAddress;
 
 enum Connection {
     Tcp(TcpStream),
-    Unix(UnixStream),
+    #[cfg(unix)]
+    Unix(tokio::net::UnixStream),
 }
 
 impl AsyncRead for Connection {
     fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
         match self.get_mut() {
             Self::Tcp(stream) => Pin::new(stream).poll_read(cx, buf),
+            #[cfg(unix)]
             Self::Unix(stream) => Pin::new(stream).poll_read(cx, buf),
         }
     }
@@ -91,8 +93,9 @@ impl From<UdpSocket> for Stream {
     }
 }
 
-impl From<(UnixStream, UnixSocketAddr)> for Stream {
-    fn from((stream, remote_addr): (UnixStream, UnixSocketAddr)) -> Self {
+#[cfg(unix)]
+impl From<(tokio::net::UnixStream, tokio::net::unix::SocketAddr)> for Stream {
+    fn from((stream, remote_addr): (tokio::net::UnixStream, tokio::net::unix::SocketAddr)) -> Self {
         Self {
             inner: StreamInner::Connection {
                 conn: Connection::Unix(stream),
