@@ -5,9 +5,9 @@ build-agent-data-plane-docker:
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
-      --tag ${ADP_IMAGE_BASE}:${VERSION}
-      --build-arg BUILD_IMAGE=${BUILD_CI_IMAGE}
-      --build-arg APP_IMAGE=${ADP_APP_IMAGE}
+      --tag ${ADP_IMAGE_BASE}:${ADP_VERSION}
+      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
+      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
