@@ -7,22 +7,30 @@ stages:
   - internal
 
 variables:
-  VERSION_BASE: "0.1.0"
+  # High-level repository paths we build off of, and dedicated images needed for various jobs.
   IMAGE_REGISTRY: "registry.ddbuild.io"
-  IMAGE_REPO_BASE: "${IMAGE_REGISTRY}/saluki"
-  BUILD_CI_IMAGE: "${IMAGE_REPO_BASE}/build-ci:v31913536-9c72c63f"
   DOCKER_BUILD_IMAGE: "486234852809.dkr.ecr.us-east-1.amazonaws.com/docker:20.10-py3"
-  ADP_APP_IMAGE: "${IMAGE_REGISTRY}/images/base/gbi-ubuntu_2204:release"
+  GBI_BASE_IMAGE: "${IMAGE_REGISTRY}/images/base/gbi-ubuntu_2204:release" 
+
+  # Base repository paths for where our CI images go, whether they're helper images or actual
+  # output artifacts like ADP itself.
+  SALUKI_IMAGE_REPO_BASE: "${IMAGE_REGISTRY}/saluki"
+  SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:v31913536-9c72c63f"
+
+  # ADP-specific variables, controlling how we build ADP images, how we version them, and where we push them.
+  ADP_VERSION_BASE: "0.1.0"
+  ADP_IMAGE_BASE: "${SALUKI_IMAGE_REPO_BASE}/agent-data-plane"
+
   # Compiling Rust is intensive. ¯\_(ツ)_/¯
   KUBERNETES_CPU_REQUEST: "16"
   KUBERNETES_MEMORY_REQUEST: "8Gi"
   KUBERNETES_MEMORY_LIMIT: "12Gi"
 
 .setup-env: &setup-env
-  - 'export VERSION="${VERSION_BASE}"'
-  - '[ -z "$CI_COMMIT_TAG" ] && export VERSION="${VERSION_BASE}-beta-${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"'
-  - '[ "$CI_PIPELINE_SOURCE" == "schedule" ] && export VERSION="${VERSION_BASE}-nightly-${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"'
-  - echo $VERSION
+  - 'export ADP_VERSION="${ADP_VERSION_BASE}"'
+  - '[ -z "$CI_COMMIT_TAG" ] && export ADP_VERSION="${ADP_VERSION_BASE}-beta-${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"'
+  - '[ "$CI_PIPELINE_SOURCE" == "schedule" ] && export ADP_VERSION="${ADP_VERSION_BASE}-nightly-${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"'
+  - echo $ADP_VERSION
 
 default:
   tags: ["arch:amd64"]
