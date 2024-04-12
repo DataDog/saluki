@@ -160,7 +160,7 @@ fmt: ## Format Rust source code
 .PHONY: sync-licenses
 sync-licenses: check-rust-build-tools cargo-install-dd-rust-license-tool
 sync-licenses: ## Synchronizes the third-party license file with the current crate dependencies
-	@echo "[*] Synchronizing third-party license file to current dependencies...""
+	@echo "[*] Synchronizing third-party license file to current dependencies..."
 	@$(HOME)/.cargo/bin/dd-rust-license-tool write
 
 .PHONY: cargo-install-%
