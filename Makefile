@@ -71,11 +71,33 @@ build-adp-image: ## Builds the ADP container image ('latest' tag)
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
 
+.PHONY: build-dsd-client
+build-dsd-client: ## Builds the Dogstatsd client (used for sending DSD payloads)
+	@echo "[*] Building Dogstatsd client..."
+	@go build -C tooling/dogstatsd_client -o ../bin/dogstatsd_client .
+
 .PHONY: check-rust-build-tools
 check-rust-build-tools:
 ifeq ($(shell command -v cargo >/dev/null || echo not-found), not-found)
 	$(error "Please install Rust: https://www.rust-lang.org/tools/install")
 endif
+
+##@ Running
+
+.PHONY: run-dsd-basic-udp
+run-dsd-basic-udp: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDP)
+	@echo "[*] Sending basic metrics via Dogstatsd (UDP, 127.0.0.1:9191)..."
+	@./tooling/bin/dogstatsd_client 127.0.0.1:9191 count:1,gauge:2,histogram:3,distribution:4,set:five
+
+.PHONY: run-dsd-basic-uds
+run-dsd-basic-uds: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDS)
+	@echo "[*] Sending basic metrics via Dogstatsd (unixgram:///tmp/adp-dsd.sock)..."
+	@./tooling/bin/dogstatsd_client unixgram:///tmp/adp-dsd.sock count:1,gauge:2,histogram:3,distribution:4,set:five
+
+.PHONY: run-dsd-basic-uds-stream
+run-dsd-basic-uds-stream: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDS Stream)
+	@echo "[*] Sending basic metrics via Dogstatsd (unix:///tmp/adp-dsd.sock)..."
+	@./tooling/bin/dogstatsd_client unix:///tmp/adp-dsd.sock count:1,gauge:2,histogram:3,distribution:4,set:five
 
 ##@ Checking
 
