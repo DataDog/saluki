@@ -7,6 +7,7 @@ use nom::{
     character::complete::u64 as parse_u64,
     combinator::{all_consuming, map},
     error::{Error, ErrorKind},
+    multi::separated_list1,
     number::complete::double,
     sequence::{preceded, separated_pair, terminated},
     IResult, InputTakeAtPosition as _,
@@ -18,6 +19,11 @@ use saluki_env::time::get_unix_timestamp;
 use saluki_event::{metric::*, Event};
 
 use crate::deser::Decoder;
+
+enum OneOrMany<T> {
+    Single(T),
+    Multiple(Vec<T>),
+}
 
 #[derive(Debug, Default)]
 pub struct DogstatsdCodec;
@@ -39,30 +45,36 @@ impl Decoder for DogstatsdCodec {
         let data = buf.chunk();
 
         match parse_dogstatsd(data) {
-            Ok((remaining, event)) => {
+            Ok((remaining, parsed_events)) => {
                 buf.advance(data.len() - remaining.len());
 
-                events.push(event);
+                match parsed_events {
+                    OneOrMany::Single(parsed_event) => {
+                        events.push(parsed_event);
+                        Ok(1)
+                    }
+                    OneOrMany::Multiple(parsed_events) => {
+                        let events_len = parsed_events.len();
+                        events.extend(parsed_events);
+                        Ok(events_len)
+                    }
+                }
             }
             Err(e) => match e {
                 // If we need more data, it's not an error, so we just break out.
                 nom::Err::Incomplete(_) => unreachable!("incomplete error should not be emitted"),
-                nom::Err::Error(e) | nom::Err::Failure(e) => {
-                    return Err(ParseError::Structural {
-                        reason: format!("encountered error '{:?}': {:?}", e.code, e.input),
-                    })
-                }
+                nom::Err::Error(e) | nom::Err::Failure(e) => Err(ParseError::Structural {
+                    reason: format!("encountered error '{:?}': {:?}", e.code, e.input),
+                }),
             },
         }
-
-        Ok(1)
     }
 }
 
-fn parse_dogstatsd(input: &[u8]) -> IResult<&[u8], Event> {
+fn parse_dogstatsd(input: &[u8]) -> IResult<&[u8], OneOrMany<Event>> {
     // We always parse the metric name and value first, where value is both the kind (counter, gauge, etc) and the
     // actual value itself.
-    let (remaining, (metric_name, metric_value)) = separated_pair(metric_name, tag(":"), metric_value)(input)?;
+    let (remaining, (metric_name, metric_values)) = separated_pair(metric_name, tag(":"), metric_value)(input)?;
 
     // At this point, we may have some of this additional data, and if so, we also then would have a pipe separator at
     // the very front, which we'd want to consume before going further.
@@ -130,19 +142,40 @@ fn parse_dogstatsd(input: &[u8]) -> IResult<&[u8], Event> {
         tags.insert_tag(format!("{}:{}", CONTAINER_ID_TAG_KEY, container_id));
     }
 
-    Ok((
-        remaining,
-        Event::Metric(Metric {
-            context: MetricContext {
-                name: metric_name.to_string(),
-                tags,
-            },
-            value: metric_value,
-            metadata: MetricMetadata::from_timestamp(timestamp)
-                .with_sample_rate(maybe_sample_rate)
-                .with_origin(MetricOrigin::dogstatsd()),
-        }),
-    ))
+    let metric_context = MetricContext {
+        name: metric_name.to_string(),
+        tags,
+    };
+    let metric_metadata = MetricMetadata::from_timestamp(timestamp)
+        .with_sample_rate(maybe_sample_rate)
+        .with_origin(MetricOrigin::dogstatsd());
+
+    match metric_values {
+        OneOrMany::Single(metric_value) => Ok((
+            remaining,
+            OneOrMany::Single(Event::Metric(Metric {
+                context: metric_context,
+                value: metric_value,
+                metadata: metric_metadata,
+            })),
+        )),
+        OneOrMany::Multiple(metric_values) => {
+            // TODO: This could be more efficient if we used a helper to determine if we were iterating over the last
+            // element, such that we avoid the additional, unnecessary clone. `itertools` provides a helper for this.
+            let metrics = metric_values
+                .into_iter()
+                .map(|value| {
+                    Event::Metric(Metric {
+                        context: metric_context.clone(),
+                        value,
+                        metadata: metric_metadata.clone(),
+                    })
+                })
+                .collect();
+
+            Ok((remaining, OneOrMany::Multiple(metrics)))
+        }
+    }
 }
 
 fn metric_name(input: &[u8]) -> IResult<&[u8], &str> {
@@ -154,36 +187,50 @@ fn metric_name(input: &[u8]) -> IResult<&[u8], &str> {
     })(input)
 }
 
-fn metric_value(input: &[u8]) -> IResult<&[u8], MetricValue> {
+fn metric_value(input: &[u8]) -> IResult<&[u8], OneOrMany<MetricValue>> {
     let (remaining, raw_value) = terminated(take_while1(|b| b != b'|'), tag("|"))(input)?;
     let (remaining, raw_kind) = alt((tag(b"g"), tag(b"c"), tag(b"ms"), tag(b"h"), tag(b"s"), tag(b"d")))(remaining)?;
 
     let metric_value = match raw_kind {
         b"s" => {
             let value = String::from_utf8_lossy(raw_value).to_string();
-            MetricValue::Set {
+            OneOrMany::Single(MetricValue::Set {
                 values: HashSet::from([value]),
-            }
+            })
         }
         other => {
             // All other metric types interpret the raw value as an integer/float, so do that first so we can return
             // early due to any error from parsing.
-            let (_, value) = double(raw_value)?;
-            match other {
-                b"g" => MetricValue::Gauge { value },
-                b"c" => MetricValue::Counter { value },
-                // TODO: We're handling distributions 100% correctly, but we're taking a shortcut here by also handling
-                // timers/histograms directly as distributions.
-                //
-                // We need to figure out if this is OK or if we need to keep them separate and only convert up at the
-                // source level based on configuration or something.
-                b"ms" | b"h" | b"d" => MetricValue::distribution_from_value(value),
-                _ => return Err(nom::Err::Error(Error::new(other, ErrorKind::Char))),
+            //
+            // We try to split the value by colons, if possible, which would indicate we have a multi-value payload.
+            let (_, values) = all_consuming(separated_list1(tag(b":"), double))(raw_value)?;
+            if values.len() == 1 {
+                OneOrMany::Single(metric_type_to_metric_value(other, values[0])?)
+            } else {
+                let mut metric_values = Vec::with_capacity(values.len());
+                for value in values {
+                    metric_values.push(metric_type_to_metric_value(other, value)?);
+                }
+                OneOrMany::Multiple(metric_values)
             }
         }
     };
 
     Ok((remaining, metric_value))
+}
+
+fn metric_type_to_metric_value(metric_type: &[u8], value: f64) -> Result<MetricValue, nom::Err<Error<&[u8]>>> {
+    match metric_type {
+        b"g" => Ok(MetricValue::Gauge { value }),
+        b"c" => Ok(MetricValue::Counter { value }),
+        // TODO: We're handling distributions 100% correctly, but we're taking a shortcut here by also handling
+        // timers/histograms directly as distributions.
+        //
+        // We need to figure out if this is OK or if we need to keep them separate and only convert up at the source
+        // level based on configuration or something.
+        b"ms" | b"h" | b"d" => Ok(MetricValue::distribution_from_value(value)),
+        _ => Err(nom::Err::Error(Error::new(metric_type, ErrorKind::Char))),
+    }
 }
 
 fn metric_tags(input: &[u8]) -> IResult<&[u8], MetricTags> {
@@ -222,7 +269,7 @@ mod tests {
     use saluki_core::constants::datadog::CONTAINER_ID_TAG_KEY;
     use saluki_event::{metric::*, Event};
 
-    use super::parse_dogstatsd;
+    use super::{parse_dogstatsd, OneOrMany};
 
     fn create_metric(name: &str, value: MetricValue) -> Metric {
         Metric {
@@ -256,11 +303,40 @@ mod tests {
         )
     }
 
-    fn check_basic_metric_eq(expected: Metric, actual: Event) {
+    fn counter_multivalue(name: &str, values: &[f64]) -> Vec<Metric> {
+        values.iter().map(|value| counter(name, *value)).collect()
+    }
+
+    fn gauge_multivalue(name: &str, values: &[f64]) -> Vec<Metric> {
+        values.iter().map(|value| gauge(name, *value)).collect()
+    }
+
+    fn distribution_multivalue(name: &str, values: &[f64]) -> Vec<Metric> {
+        values.iter().map(|value| distribution(name, *value)).collect()
+    }
+
+    fn check_basic_metric_eq(expected: Metric, actual: OneOrMany<Event>) {
         match actual {
-            Event::Metric(actual) => {
+            OneOrMany::Single(Event::Metric(actual)) => {
                 assert_eq!(expected.context, actual.context);
                 assert_eq!(expected.value, actual.value);
+            }
+            OneOrMany::Multiple(_) => unreachable!("should never be called for multi-value metric assertions"),
+        }
+    }
+
+    fn check_basic_metric_multivalue_eq(expected: Vec<Metric>, actual: OneOrMany<Event>) {
+        match actual {
+            OneOrMany::Single(_) => unreachable!("should never be called for single value metric assertions"),
+            OneOrMany::Multiple(events) => {
+                for (expected_event, actual_event) in expected.iter().zip(events.iter()) {
+                    match actual_event {
+                        Event::Metric(actual) => {
+                            assert_eq!(expected_event.context, actual.context);
+                            assert_eq!(expected_event.value, actual.value);
+                        }
+                    }
+                }
             }
         }
     }
@@ -363,6 +439,45 @@ mod tests {
         let (remaining, counter_actual) = parse_dogstatsd(counter_raw.as_bytes()).unwrap();
         check_basic_metric_eq(counter_expected, counter_actual);
         assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn test_multivalue_metrics() {
+        let counter_name = "my.counter";
+        let counter_values = [1.0, 2.0, 3.0];
+        let counter_values_stringified = counter_values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+        let counter_raw = format!("{}:{}|c", counter_name, counter_values_stringified.join(":"));
+        let counters_expected = counter_multivalue(counter_name, &counter_values);
+        let (remaining, counters_actual) = parse_dogstatsd(counter_raw.as_bytes()).unwrap();
+        check_basic_metric_multivalue_eq(counters_expected, counters_actual);
+        assert!(remaining.is_empty());
+
+        let gauge_name = "my.gauge";
+        let gauge_values = [42.0, 5.0, -18.0];
+        let gauge_values_stringified = gauge_values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+        let gauge_raw = format!("{}:{}|g", gauge_name, gauge_values_stringified.join(":"));
+        let gauges_expected = gauge_multivalue(gauge_name, &gauge_values);
+        let (remaining, gauges_actual) = parse_dogstatsd(gauge_raw.as_bytes()).unwrap();
+        check_basic_metric_multivalue_eq(gauges_expected, gauges_actual);
+        assert!(remaining.is_empty());
+
+        // Special case where we check this for all three variants -- timers, histograms, and distributions -- since we
+        // treat them all the same when parsing.
+        let distribution_name = "my.distribution";
+        let distribution_values = [27.5, 4.20, 80.085];
+        let distribution_values_stringified = distribution_values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+        for kind in &["ms", "h", "d"] {
+            let distribution_raw = format!(
+                "{}:{}|{}",
+                distribution_name,
+                distribution_values_stringified.join(":"),
+                kind
+            );
+            let distributions_expected = distribution_multivalue(distribution_name, &distribution_values);
+            let (remaining, distributions_actual) = parse_dogstatsd(distribution_raw.as_bytes()).unwrap();
+            check_basic_metric_multivalue_eq(distributions_expected, distributions_actual);
+            assert!(remaining.is_empty());
+        }
     }
 
     proptest! {

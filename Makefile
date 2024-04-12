@@ -166,4 +166,4 @@ sync-licenses: ## Synchronizes the third-party license file with the current cra
 .PHONY: cargo-install-%
 cargo-install-%: override TOOL = $(@:cargo-install-%=%)
 cargo-install-%: check-rust-build-tools
-	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || cargo install ${TOOL} --quiet,)
+	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${TOOL}..." && cargo install ${TOOL} --quiet),)

@@ -26,7 +26,6 @@ use self::framer::{get_framer, DogStatsDMultiFraming};
 ///
 /// ## Missing
 ///
-/// - multi-value support
 /// - UDS origin detection support (no exposed way to also receive ancillary/out-of-band data in UDS receive calls)
 pub struct DogStatsDConfiguration {
     listen_address: ListenAddress,
@@ -148,7 +147,6 @@ async fn process_stream<B>(
                 }
                 Err(e) => {
                     error!(error = %e, "Failed to decode events.");
-                    break;
                 }
             }
         }

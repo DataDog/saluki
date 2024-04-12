@@ -1930,7 +1930,6 @@ dependencies = [
  "saluki-event",
  "slab",
  "snafu",
- "socket2",
  "tokio",
  "tokio-util",
  "tower",
