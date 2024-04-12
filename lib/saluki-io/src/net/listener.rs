@@ -8,6 +8,8 @@ enum ListenerInner {
     Tcp(TcpListener),
     Udp(Option<UdpSocket>),
     #[cfg(unix)]
+    Unixgram(Option<tokio::net::UnixDatagram>),
+    #[cfg(unix)]
     Unix(tokio::net::UnixListener),
 }
 
@@ -20,6 +22,13 @@ impl Listener {
         let inner = match listen_address {
             ListenAddress::Tcp(addr) => TcpListener::bind(addr).await.map(ListenerInner::Tcp),
             ListenAddress::Udp(addr) => UdpSocket::bind(addr).await.map(Some).map(ListenerInner::Udp),
+            #[cfg(unix)]
+            ListenAddress::Unixgram(addr) => {
+                let addr = ensure_unix_socket_free(addr).await?;
+                tokio::net::UnixDatagram::bind(addr)
+                    .map(Some)
+                    .map(ListenerInner::Unixgram)
+            }
             #[cfg(unix)]
             ListenAddress::Unix(addr) => {
                 let addr = ensure_unix_socket_free(addr).await?;
@@ -39,6 +48,14 @@ impl Listener {
                 // get load balancing between the sockets.... basically make it possible to parallelize UDP handling if
                 // that's a thing we want to do.
                 if let Some(socket) = udp.take() {
+                    Ok(socket.into())
+                } else {
+                    pending().await
+                }
+            }
+            #[cfg(unix)]
+            ListenerInner::Unixgram(unix) => {
+                if let Some(socket) = unix.take() {
                     Ok(socket.into())
                 } else {
                     pending().await

@@ -4,7 +4,7 @@ use tracing::trace;
 
 use saluki_core::topology::interconnect::EventBuffer;
 
-use crate::deser::Decoder;
+use crate::{buf::ReadIoBuffer, deser::Decoder};
 
 use super::{FailedToDecode, Framer, FramingError};
 
@@ -53,7 +53,7 @@ pub struct NewlineFraming<D> {
 }
 
 impl<D: Decoder> NewlineFraming<D> {
-    fn decode_inner<B: Buf>(
+    fn decode_inner<B: ReadIoBuffer>(
         &mut self, buf: &mut B, events: &mut EventBuffer, is_eof: bool,
     ) -> Result<usize, FramingError<D>> {
         trace!(buf_len = buf.remaining(), "framed buffer received");
@@ -139,11 +139,11 @@ where
 {
     type Error = FramingError<D>;
 
-    fn decode<B: Buf>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error> {
+    fn decode<B: ReadIoBuffer>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error> {
         self.decode_inner(buf, events, false)
     }
 
-    fn decode_eof<B: Buf>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error> {
+    fn decode_eof<B: ReadIoBuffer>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error> {
         self.decode_inner(buf, events, true)
     }
 }

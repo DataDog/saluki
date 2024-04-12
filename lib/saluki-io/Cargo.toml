@@ -36,6 +36,7 @@ quanta = { workspace = true }
 rustls = { workspace = true, features = ["aws_lc_rs", "logging", "tls12"] }
 slab = { workspace = true }
 snafu = { workspace = true }
+socket2 = { version = "0.5.6", default-features = false }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
 tokio-util = { workspace = true }
 tower = { workspace = true }

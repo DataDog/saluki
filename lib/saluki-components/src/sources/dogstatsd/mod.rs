@@ -12,10 +12,13 @@ use saluki_core::{
 };
 use saluki_event::DataType;
 use saluki_io::{
-    buf::{get_fixed_bytes_buffer_pool, IoBuffer},
-    deser::{codec::DogstatsdCodec, framing::NewlineFramer, DeserializerBuilder},
-    net::{addr::ListenAddress, listener::Listener, stream::Stream},
+    buf::{get_fixed_bytes_buffer_pool, ReadWriteIoBuffer},
+    deser::{codec::DogstatsdCodec, Deserializer, DeserializerBuilder},
+    net::{addr::ListenAddress, listener::Listener},
 };
+
+mod framer;
+use self::framer::{get_framer, DogStatsDMultiFraming};
 
 /// DogStatsD source.
 ///
@@ -31,19 +34,28 @@ pub struct DogStatsDConfiguration {
 
 impl DogStatsDConfiguration {
     /// Creates a new `DogStatsDConfiguration` with the given listen address.
-    pub fn from_listen_address<L: Into<ListenAddress>>(listen_address: L) -> Self {
-        Self {
-            listen_address: listen_address.into(),
+    pub fn from_listen_address<L: Into<ListenAddress>>(
+        listen_address: L,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let listen_address = listen_address.into();
+        if matches!(listen_address, ListenAddress::Tcp(_)) {
+            return Err("TCP mode not supported for DogStatsD source".into());
         }
+
+        Ok(Self { listen_address })
     }
 }
 
 #[async_trait]
 impl SourceBuilder for DogStatsDConfiguration {
     async fn build(&self) -> Result<Box<dyn Source + Send>, Box<dyn std::error::Error + Send + Sync>> {
+        let listen_address = self.listen_address.clone();
         let listener = Listener::from_listen_address(self.listen_address.clone()).await?;
 
-        Ok(Box::new(DogStatsD { listener }))
+        Ok(Box::new(DogStatsD {
+            listen_address,
+            listener,
+        }))
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
@@ -54,6 +66,7 @@ impl SourceBuilder for DogStatsDConfiguration {
 }
 
 pub struct DogStatsD {
+    listen_address: ListenAddress,
     listener: Listener,
 }
 
@@ -81,8 +94,11 @@ impl Source for DogStatsD {
                         debug!("Spawning new stream handler.");
 
                         let handler_shutdown_handle = handler_shutdown_coordinator.register();
-                        let handler = StreamHandler::new(context.clone(), handler_shutdown_handle, stream, io_buffer_pool.clone());
-                        tokio::spawn(handler.process());
+                        let deserializer = DeserializerBuilder::new()
+                            .with_framer_and_decoder(get_framer(&self.listen_address), DogstatsdCodec)
+                            .with_buffer_pool(io_buffer_pool.clone())
+                            .into_deserializer(stream);
+                        tokio::spawn(process_stream(context.clone(), handler_shutdown_handle, deserializer));
                     }
                     Err(e) => {
                         error!(error = %e, "Failed to accept new connection.");
@@ -100,67 +116,39 @@ impl Source for DogStatsD {
     }
 }
 
-struct StreamHandler<B> {
-    context: SourceContext,
-    shutdown_handle: DynamicShutdownHandle,
-    stream: Stream,
-    buffer_pool: B,
-}
-
-impl<B> StreamHandler<B>
-where
+async fn process_stream<B>(
+    context: SourceContext, shutdown_handle: DynamicShutdownHandle,
+    mut deserializer: Deserializer<DogStatsDMultiFraming, B>,
+) where
     B: BufferPool,
-    B::Buffer: IoBuffer,
+    B::Buffer: ReadWriteIoBuffer,
 {
-    fn new(context: SourceContext, shutdown_handle: DynamicShutdownHandle, stream: Stream, buffer_pool: B) -> Self {
-        Self {
-            context,
-            shutdown_handle,
-            stream,
-            buffer_pool,
-        }
-    }
+    tokio::pin!(shutdown_handle);
 
-    async fn process(self) {
-        let Self {
-            context,
-            shutdown_handle,
-            stream,
-            buffer_pool,
-        } = self;
-
-        let mut deserializer = DeserializerBuilder::new()
-            .with_framer_and_decoder(NewlineFramer::default().required_on_eof(false), DogstatsdCodec)
-            .with_buffer_pool(buffer_pool)
-            .into_deserializer(stream);
-
-        tokio::pin!(shutdown_handle);
-
-        loop {
-            let mut event_buffer = context.event_buffer_pool().acquire().await;
-            select! {
-                _ = &mut shutdown_handle => {
-                    debug!("Stream handler received shutdown signal.");
+    loop {
+        let mut event_buffer = context.event_buffer_pool().acquire().await;
+        select! {
+            _ = &mut shutdown_handle => {
+                debug!("Stream handler received shutdown signal.");
+                break;
+            },
+            result = deserializer.decode(&mut event_buffer) => match result {
+                // No events decoded. Connection is done.
+                Ok((0, addr)) => {
+                    debug!(peer_addr = %addr, "Stream received EOF. Shutting down handler.");
                     break;
-                },
-                result = deserializer.decode(&mut event_buffer) => match result {
-                    // No events decoded. Connection is done.
-                    Ok((0, addr)) => {
-                        debug!(peer_addr = %addr, "Stream received EOF. Shutting down handler.");
-                        break;
-                    }
-                    // Got events. Forward them.
-                    Ok((n, addr)) => {
-                        trace!(peer_addr = %addr, events_len = n, "Forwarding events.");
+                }
+                // Got events. Forward them.
+                Ok((n, addr)) => {
+                    trace!(peer_addr = %addr, events_len = n, "Forwarding events.");
 
-                        if let Err(e) = context.forwarder().forward(event_buffer).await {
-                            error!(error = %e, "Failed to forward events.");
-                        }
+                    if let Err(e) = context.forwarder().forward(event_buffer).await {
+                        error!(error = %e, "Failed to forward events.");
                     }
-                    Err(e) => {
-                        error!(error = %e, "Failed to decode events.");
-                        break;
-                    }
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to decode events.");
+                    break;
                 }
             }
         }

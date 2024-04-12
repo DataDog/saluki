@@ -2,7 +2,7 @@ use bytes::{buf::UninitSlice, Buf, BufMut};
 
 use saluki_core::buffers::{buffered_newtype, Clearable};
 
-use super::IoBuffer;
+use super::ReadIoBuffer;
 
 pub struct FixedSizeVec {
     start_idx: usize,
@@ -68,4 +68,8 @@ unsafe impl BufMut for BytesBuffer {
     }
 }
 
-impl IoBuffer for BytesBuffer {}
+impl ReadIoBuffer for BytesBuffer {
+    fn capacity(&self) -> usize {
+        self.data().data.capacity()
+    }
+}
