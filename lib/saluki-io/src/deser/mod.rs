@@ -6,22 +6,27 @@ use tracing::{debug, trace};
 
 use saluki_core::{buffers::BufferPool, topology::interconnect::EventBuffer};
 
+use crate::buf::ReadWriteIoBuffer;
+
 use self::framing::Framer;
 
 use super::{
-    buf::IoBuffer,
+    buf::ReadIoBuffer,
     net::{addr::ConnectionAddress, stream::Stream},
 };
 
 pub mod codec;
 pub mod framing;
 
+mod macros;
+pub use self::macros::multi_framing;
+
 pub trait Decoder: Debug {
     type Error: std::error::Error + 'static;
 
-    fn decode<B: Buf>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error>;
+    fn decode<B: ReadIoBuffer>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error>;
 
-    fn decode_eof<B: Buf>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error> {
+    fn decode_eof<B: ReadIoBuffer>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error> {
         self.decode(buf, events)
     }
 }
@@ -49,7 +54,7 @@ impl<D, B> Deserializer<D, B>
 where
     D: Decoder,
     B: BufferPool,
-    B::Buffer: IoBuffer,
+    B::Buffer: ReadWriteIoBuffer,
 {
     pub fn new(stream: Stream, decoder: D, buffer_pool: B) -> Self {
         Self {
@@ -220,7 +225,7 @@ impl<D, B> DeserializerBuilder<D, B> {
     pub fn with_buffer_pool<B2>(self, buffer_pool: B2) -> DeserializerBuilder<D, B2>
     where
         B2: BufferPool,
-        B2::Buffer: IoBuffer,
+        B2::Buffer: ReadWriteIoBuffer,
     {
         DeserializerBuilder {
             decoder: self.decoder,
@@ -233,7 +238,7 @@ impl<D, B> DeserializerBuilder<D, B>
 where
     D: Decoder,
     B: BufferPool,
-    B::Buffer: IoBuffer,
+    B::Buffer: ReadWriteIoBuffer,
 {
     pub fn into_deserializer(self, stream: Stream) -> Deserializer<D, B> {
         Deserializer::new(stream, self.decoder, self.buffer_pool)

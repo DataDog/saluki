@@ -2,6 +2,9 @@ use snafu::Snafu;
 
 use super::Decoder;
 
+mod length_delimited;
+pub use self::length_delimited::LengthDelimitedFramer;
+
 mod newline;
 pub use self::newline::NewlineFramer;
 

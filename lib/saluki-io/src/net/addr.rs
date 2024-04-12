@@ -6,6 +6,8 @@ pub enum ListenAddress {
     Tcp(SocketAddr),
     Udp(SocketAddr),
     #[cfg(unix)]
+    Unixgram(PathBuf),
+    #[cfg(unix)]
     Unix(PathBuf),
 }
 
@@ -39,6 +41,20 @@ impl<'a> TryFrom<&'a str> for ListenAddress {
                 } else {
                     Ok(Self::Udp(socket_addresses.swap_remove(0)))
                 }
+            }
+            #[cfg(unix)]
+            "unixgram" => {
+                let path = url.path();
+                if path.is_empty() {
+                    return Err("socket path cannot be empty".to_string());
+                }
+
+                let path_buf = PathBuf::from(path);
+                if !path_buf.is_absolute() {
+                    return Err("socket path must be absolute".to_string());
+                }
+
+                Ok(Self::Unixgram(path_buf))
             }
             #[cfg(unix)]
             "unix" => {

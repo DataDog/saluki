@@ -51,8 +51,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     //
     // TODO: Pull these configuration values from the actual configuration, most likely by making each component take a
     // reference to the configuration itself.
-    let dsd_listen_addr = ListenAddress::try_from("unix:///tmp/adp-dsd.sock")?;
-    let dsd_config = DogStatsDConfiguration::from_listen_address(dsd_listen_addr);
+    let dsd_listen_addr = ListenAddress::try_from("unixgram:///tmp/adp-dsd.sock")?;
+    let dsd_config = DogStatsDConfiguration::from_listen_address(dsd_listen_addr)?;
     let dsd_agg_config = AggregateConfiguration::from_window(Duration::from_secs(10)).with_context_limit(15500);
     let int_metrics_config = InternalMetricsConfiguration;
     let int_metrics_agg_config = AggregateConfiguration::from_window(Duration::from_secs(10));
