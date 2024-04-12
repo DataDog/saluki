@@ -270,10 +270,10 @@ impl AggregationState {
     }
 
     fn get_next_flush_instant(&self) -> tokio::time::Instant {
-        // Buckets are aligned on the modulo boundary of the current time and the window duration, so we just need to
-        // figure out where the start of the current bucket is, add our bucket width, and voila.
         let bucket_width = self.bucket_width.as_secs();
-        let flush_delta = align_to_bucket_start(get_unix_timestamp(), bucket_width) + bucket_width;
+        let current_time = get_unix_timestamp();
+        let bucket_end = align_to_bucket_start(current_time, bucket_width) + bucket_width;
+        let flush_delta = bucket_end - current_time;
 
         tokio::time::Instant::now() + Duration::from_secs(flush_delta)
     }
@@ -325,7 +325,7 @@ impl AggregationState {
 
         let mut i = 0;
         while i < self.buckets.len() {
-            if is_bucket_still_open(self.buckets[i].0, bucket_width, flush_open_buckets) {
+            if !is_bucket_still_open(self.buckets[i].0, bucket_width, flush_open_buckets) {
                 let (_, contexts) = self.buckets.remove(i);
 
                 for (context, (value, metadata)) in contexts {
