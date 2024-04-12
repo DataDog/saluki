@@ -56,7 +56,7 @@ impl<D: Decoder> NewlineFraming<D> {
     fn decode_inner<B: ReadIoBuffer>(
         &mut self, buf: &mut B, events: &mut EventBuffer, is_eof: bool,
     ) -> Result<usize, FramingError<D>> {
-        trace!(buf_len = buf.remaining(), "framed buffer received");
+        trace!(buf_len = buf.remaining(), "Received buffer.");
 
         let mut events_decoded = 0;
 
@@ -66,7 +66,7 @@ impl<D: Decoder> NewlineFraming<D> {
                 break;
             }
 
-            trace!(chunk_len = chunk.len(), "chunk acquired from input");
+            trace!(chunk_len = chunk.len(), "Received chunk.");
 
             // Do a sanity check that our internal index doesn't extend past the end of the buffer. This _shouldn't_
             // happen unless the inner decoder, or something above the framer, is messing with the buffer... but better

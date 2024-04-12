@@ -106,13 +106,20 @@ where
                 break;
             }
 
+            let buf_start_len = buffer.remaining();
+
             let events_decoded = if reached_eof {
                 self.decoder.decode_eof(buffer, events).context(FailedToDecode)?
             } else {
                 self.decoder.decode(buffer, events).context(FailedToDecode)?
             };
 
-            trace!("decoded {} events (remaining: {})", events_decoded, buffer.remaining());
+            trace!(
+                events_decoded,
+                buf_start_len,
+                buf_end_len = buffer.remaining(),
+                "Decoded events."
+            );
 
             if events_decoded == 0 {
                 if buffer.has_remaining() {

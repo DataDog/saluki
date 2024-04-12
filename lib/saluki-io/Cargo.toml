@@ -28,7 +28,7 @@ indexmap = { workspace = true, features = ["std"] }
 memchr = { workspace = true, features = ["std"] }
 metrics = { workspace = true }
 metrics-util = { workspace = true, features = ["handles", "recency", "registry"] }
-nom = { workspace = true }
+nom = { workspace = true, features = ["alloc"] }
 paste = { workspace = true }
 pin-project = { workspace = true }
 protobuf = { workspace = true }
@@ -36,7 +36,6 @@ quanta = { workspace = true }
 rustls = { workspace = true, features = ["aws_lc_rs", "logging", "tls12"] }
 slab = { workspace = true }
 snafu = { workspace = true }
-socket2 = { version = "0.5.6", default-features = false }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
 tokio-util = { workspace = true }
 tower = { workspace = true }
