@@ -1,16 +1,15 @@
 [advisories]
+version = 2
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-vulnerability = "deny"
-unmaintained = "warn"
 yanked = "warn"
-notice = "deny"
 ignore = []
 
 [bans]
 multiple-versions = "allow"
 
 [licenses]
+version = 2
 allow = [
   "0BSD",
   "Apache-2.0",
@@ -31,4 +30,12 @@ version = "*"
 expression = "MIT AND ISC AND OpenSSL"
 license-files = [
     { path = "LICENSE", hash = 0xbd0eed23 }
+]
+
+[sources]
+allow-git = [
+    # Fork of `socket2` being used for SO_PASSCRED/out-of-band support on Unix domain sockets.
+    #
+    # Will be removed once https://github.com/rust-lang/socket2/pull/506 is merged.
+    "https://github.com/tobz/socket2.git",
 ]
