@@ -96,6 +96,7 @@ where
             chunk_cap = buffer.chunk_mut().len(),
             buffer_len = buffer.remaining(),
             buffer_cap = buffer.remaining_mut(),
+            eof = reached_eof,
             "Received {} bytes from stream.",
             bytes_read
         );

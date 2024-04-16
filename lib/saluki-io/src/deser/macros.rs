@@ -19,6 +19,12 @@ macro_rules! multi_framing {
 						$(Self::$variant(inner) => inner.decode(buf, events)),+
 					}
 				}
+
+				fn decode_eof<B: $crate::buf::ReadIoBuffer>(&mut self, buf: &mut B, events: &mut saluki_core::topology::interconnect::EventBuffer) -> Result<usize, Self::Error> {
+					match self {
+						$(Self::$variant(inner) => inner.decode_eof(buf, events)),+
+					}
+				}
 			}
 
 			impl $crate::deser::framing::Framer<$codec> for [<$name MultiFramer>] {

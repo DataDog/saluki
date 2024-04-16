@@ -25,6 +25,7 @@ hyper = { workspace = true, features = ["client"] }
 hyper-rustls = { workspace = true, features = ["http2", "rustls-native-certs"] }
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "tokio"] }
 indexmap = { workspace = true, features = ["std"] }
+libc = { workspace = true }
 memchr = { workspace = true, features = ["std"] }
 metrics = { workspace = true }
 metrics-util = { workspace = true, features = ["handles", "recency", "registry"] }
@@ -36,6 +37,7 @@ quanta = { workspace = true }
 rustls = { workspace = true, features = ["aws_lc_rs", "logging", "tls12"] }
 slab = { workspace = true }
 snafu = { workspace = true }
+socket2 = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
 tokio-util = { workspace = true }
 tower = { workspace = true }
