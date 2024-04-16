@@ -11,6 +11,19 @@ pub enum ListenAddress {
     Unix(PathBuf),
 }
 
+impl fmt::Display for ListenAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tcp(addr) => write!(f, "tcp://{}", addr),
+            Self::Udp(addr) => write!(f, "udp://{}", addr),
+            #[cfg(unix)]
+            Self::Unixgram(path) => write!(f, "unixgram://{}", path.display()),
+            #[cfg(unix)]
+            Self::Unix(path) => write!(f, "unix://{}", path.display()),
+        }
+    }
+}
+
 impl TryFrom<String> for ListenAddress {
     type Error = String;
 
@@ -75,11 +88,19 @@ impl<'a> TryFrom<&'a str> for ListenAddress {
     }
 }
 
+#[cfg(unix)]
+#[derive(Clone)]
+pub struct ProcessCredentials {
+    pub pid: i32,
+    pub uid: u32,
+    pub gid: u32,
+}
+
 #[derive(Clone)]
 pub enum ConnectionAddress {
     SocketLike(SocketAddr),
     #[cfg(unix)]
-    PathLike(PathBuf),
+    ProcessLike(Option<ProcessCredentials>),
 }
 
 impl fmt::Display for ConnectionAddress {
@@ -87,7 +108,10 @@ impl fmt::Display for ConnectionAddress {
         match self {
             Self::SocketLike(addr) => write!(f, "{}", addr),
             #[cfg(unix)]
-            Self::PathLike(path) => write!(f, "{}", path.display()),
+            Self::ProcessLike(maybe_creds) => match maybe_creds {
+                None => write!(f, "<unbound>"),
+                Some(creds) => write!(f, "<pid={} uid={} gid={}>", creds.pid, creds.uid, creds.gid),
+            },
         }
     }
 }
@@ -99,8 +123,8 @@ impl From<SocketAddr> for ConnectionAddress {
 }
 
 #[cfg(unix)]
-impl From<tokio::net::unix::SocketAddr> for ConnectionAddress {
-    fn from(value: tokio::net::unix::SocketAddr) -> Self {
-        Self::PathLike(value.as_pathname().map(|p| p.to_path_buf()).unwrap_or_default())
+impl From<ProcessCredentials> for ConnectionAddress {
+    fn from(creds: ProcessCredentials) -> Self {
+        Self::ProcessLike(Some(creds))
     }
 }
