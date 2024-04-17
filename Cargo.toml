@@ -72,6 +72,14 @@ url = { version = "2", default-features = false }
 ndarray = { version = "0.15", default-features = false }
 ndarray-stats = { version = "0.5", default-features = false }
 noisy_float = { version = "0.2", default-features = false }
+libc = { version = "0.2.153", default-features = false }
+socket2 = { version = "0.5.6", default-features = false }
+
+[patch.crates-io]
+# Fork of `socket2` being used for SO_PASSCRED/out-of-band support on Unix domain sockets.
+#
+# Will be removed once https://github.com/rust-lang/socket2/pull/506 is merged.
+socket2 = { git = "https://github.com/tobz/socket2", branch = "master" }
 
 [profile.release]
 lto = "thin"

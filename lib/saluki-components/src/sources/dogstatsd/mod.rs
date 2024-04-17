@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use tokio::select;
 use tracing::{debug, error, trace};
@@ -13,7 +15,7 @@ use saluki_core::{
 use saluki_event::DataType;
 use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, ReadWriteIoBuffer},
-    deser::{codec::DogstatsdCodec, Deserializer, DeserializerBuilder},
+    deser::{codec::DogstatsdCodec, Deserializer, DeserializerBuilder, DeserializerError},
     net::{addr::ListenAddress, listener::Listener},
 };
 
@@ -79,6 +81,7 @@ impl Source for DogStatsD {
         tokio::pin!(global_shutdown);
 
         let mut handler_shutdown_coordinator = DynamicShutdownCoordinator::default();
+        let local_addr: Arc<str> = Arc::from(self.listen_address.to_string());
 
         debug!("DogStatsD source started.");
 
@@ -97,7 +100,8 @@ impl Source for DogStatsD {
                             .with_framer_and_decoder(get_framer(&self.listen_address), DogstatsdCodec)
                             .with_buffer_pool(io_buffer_pool.clone())
                             .into_deserializer(stream);
-                        tokio::spawn(process_stream(context.clone(), handler_shutdown_handle, deserializer));
+                        let local_addr = Arc::clone(&local_addr);
+                        tokio::spawn(process_stream(context.clone(), local_addr, handler_shutdown_handle, deserializer));
                     }
                     Err(e) => {
                         error!(error = %e, "Failed to accept new connection.");
@@ -116,7 +120,7 @@ impl Source for DogStatsD {
 }
 
 async fn process_stream<B>(
-    context: SourceContext, shutdown_handle: DynamicShutdownHandle,
+    context: SourceContext, local_addr: Arc<str>, shutdown_handle: DynamicShutdownHandle,
     mut deserializer: Deserializer<DogStatsDMultiFraming, B>,
 ) where
     B: BufferPool,
@@ -139,14 +143,18 @@ async fn process_stream<B>(
                 }
                 // Got events. Forward them.
                 Ok((n, addr)) => {
-                    trace!(peer_addr = %addr, events_len = n, "Forwarding events.");
+                    trace!(%local_addr, peer_addr = %addr, events_len = n, "Forwarding events.");
 
                     if let Err(e) = context.forwarder().forward(event_buffer).await {
                         error!(error = %e, "Failed to forward events.");
                     }
                 }
-                Err(e) => {
-                    error!(error = %e, "Failed to decode events.");
+                Err(e) => match e {
+                    DeserializerError::Io { source } => {
+                        error!(error = %source, "I/O error while decoding. Closing stream.");
+                        break;
+                    }
+                    other => error!(error = %other, "Failed to decode events."),
                 }
             }
         }

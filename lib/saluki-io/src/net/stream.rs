@@ -1,30 +1,28 @@
-use std::{
-    io,
-    net::SocketAddr,
-    pin::Pin,
-    task::{Context, Poll},
-};
+use std::{io, net::SocketAddr};
 
 use bytes::BufMut;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt as _, ReadBuf},
+    io::AsyncReadExt as _,
     net::{TcpStream, UdpSocket},
 };
 
-use super::addr::ConnectionAddress;
+use super::{
+    addr::ConnectionAddress,
+    unix::{unix_recvmsg, unixgram_recvmsg},
+};
 
 enum Connection {
-    Tcp(TcpStream),
+    Tcp(TcpStream, SocketAddr),
     #[cfg(unix)]
     Unix(tokio::net::UnixStream),
 }
 
-impl AsyncRead for Connection {
-    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
-        match self.get_mut() {
-            Self::Tcp(stream) => Pin::new(stream).poll_read(cx, buf),
+impl Connection {
+    async fn receive<B: BufMut>(&mut self, buf: &mut B) -> io::Result<(usize, ConnectionAddress)> {
+        match self {
+            Self::Tcp(inner, addr) => inner.read_buf(buf).await.map(|n| (n, (*addr).into())),
             #[cfg(unix)]
-            Self::Unix(stream) => Pin::new(stream).poll_read(cx, buf),
+            Self::Unix(inner) => unix_recvmsg(inner, buf).await,
         }
     }
 }
@@ -40,19 +38,14 @@ impl Connectionless {
         match self {
             Self::Udp(inner) => inner.recv_buf_from(buf).await.map(|(n, addr)| (n, addr.into())),
             #[cfg(unix)]
-            Self::Unixgram(inner) => inner.recv_buf_from(buf).await.map(|(n, addr)| (n, addr.into())),
+            Self::Unixgram(inner) => unixgram_recvmsg(inner, buf).await,
         }
     }
 }
 
 enum StreamInner {
-    Connection {
-        conn: Connection,
-        remote_addr: ConnectionAddress,
-    },
-    Connectionless {
-        socket: Connectionless,
-    },
+    Connection { socket: Connection },
+    Connectionless { socket: Connectionless },
 }
 
 pub struct Stream {
@@ -66,11 +59,7 @@ impl Stream {
 
     pub async fn receive<B: BufMut>(&mut self, buf: &mut B) -> io::Result<(usize, ConnectionAddress)> {
         match &mut self.inner {
-            StreamInner::Connection { conn, remote_addr } => {
-                let bytes_read = conn.read_buf(buf).await?;
-                let remote_addr = remote_addr.clone();
-                Ok((bytes_read, remote_addr))
-            }
+            StreamInner::Connection { socket } => socket.receive(buf).await,
             StreamInner::Connectionless { socket } => socket.receive(buf).await,
         }
     }
@@ -80,8 +69,7 @@ impl From<(TcpStream, SocketAddr)> for Stream {
     fn from((stream, remote_addr): (TcpStream, SocketAddr)) -> Self {
         Self {
             inner: StreamInner::Connection {
-                conn: Connection::Tcp(stream),
-                remote_addr: remote_addr.into(),
+                socket: Connection::Tcp(stream, remote_addr),
             },
         }
     }
@@ -109,12 +97,11 @@ impl From<tokio::net::UnixDatagram> for Stream {
 }
 
 #[cfg(unix)]
-impl From<(tokio::net::UnixStream, tokio::net::unix::SocketAddr)> for Stream {
-    fn from((stream, remote_addr): (tokio::net::UnixStream, tokio::net::unix::SocketAddr)) -> Self {
+impl From<tokio::net::UnixStream> for Stream {
+    fn from(stream: tokio::net::UnixStream) -> Self {
         Self {
             inner: StreamInner::Connection {
-                conn: Connection::Unix(stream),
-                remote_addr: remote_addr.into(),
+                socket: Connection::Unix(stream),
             },
         }
     }
