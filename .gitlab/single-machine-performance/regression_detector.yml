@@ -22,7 +22,7 @@ build-agent-data-plane-baseline-docker:
     # Build baseline from branch point but retain the container definition from
     # the tip of the PR.
     - git fetch --all
-    - BRANCH=${git rev-parse --abbrev-ref HEAD)
+    - BRANCH=$(git rev-parse --abbrev-ref HEAD)
     - MERGE_BASE=$(git merge-base "$BRANCH" "main")
     - git checkout "$MERGE_BASE"
     - git checkout "origin/$BRANCH" -- ./docker/Dockerfile.agent-data-plane
