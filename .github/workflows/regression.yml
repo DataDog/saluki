@@ -23,7 +23,7 @@ jobs:
       baseline: ${{ steps.baseline.outputs.BASELINE }}
       baseline-tag: ${{ steps.baseline.outputs.BASELINE_TAG }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           ref: ${{ github.base_ref }}
           path: baseline-saluki
@@ -71,9 +71,8 @@ jobs:
     steps:
       - uses: colpal/actions-clean@v1
 
-      - uses: actions/checkout@v3
-
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ needs.compute-metadata.outputs.baseline-sha }}
           path: baseline-saluki
@@ -108,9 +107,8 @@ jobs:
     steps:
       - uses: colpal/actions-clean@v1
 
-      - uses: actions/checkout@v3
-
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ needs.compute-metadata.outputs.comparison-sha }}
           path: comparison-saluki
