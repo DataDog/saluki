@@ -15,12 +15,8 @@ use tracing::warn;
 /// client-provided identifiers, such as container ID. Origin metadata deals with a higher-level categorization of the
 /// source of the metric, such as "dogstatsd" for all metrics received by DogStatsD, etc.
 ///
-/// More specifically, client origin is used to drive tags which are added to the metric, whereas metric origin is
+/// More specifically, client origin is used to drive tags which are added to the metric, whereas origin metadata is
 /// out-of-band data sent along in the payload to downstream systems if supported.
-///
-/// ## Missing
-///
-/// - UDS origin support (DogStatsD source can't read ancillary/out-of-band data in UDS mode)
 pub struct OriginEnrichmentConfiguration<E> {
     env_provider: E,
 }
@@ -99,9 +95,6 @@ where
         }
 
         // Determine the client origin.
-        //
-        // We don't handle anything else here (yet) due to not having any UDS origin data (see
-        // [Missing](OriginEnrichmentConfiguration#Missing) section for [`OriginEnrichmentConfiguration`]).
         let maybe_client_origin_entity_id = match maybe_entity_id {
             Some(entity_id) if entity_id != ENTITY_ID_IGNORE_VALUE => {
                 Some(format!("kubernetes_pod_uid://{}", entity_id))

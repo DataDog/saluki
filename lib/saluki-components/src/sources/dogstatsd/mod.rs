@@ -134,7 +134,7 @@ async fn process_stream<B>(
             result = deserializer.decode(&mut event_buffer) => match result {
                 // No events decoded. Connection is done.
                 Ok((0, addr)) => {
-                    debug!(peer_addr = %addr, "Stream received EOF. Shutting down handler.");
+                    debug!(%local_addr, peer_addr = %addr, "Stream received EOF. Shutting down handler.");
                     break;
                 }
                 // Got events. Forward them.
@@ -142,7 +142,7 @@ async fn process_stream<B>(
                     trace!(%local_addr, peer_addr = %addr, events_len = n, "Forwarding events.");
 
                     if let Err(e) = context.forwarder().forward(event_buffer).await {
-                        error!(error = %e, "Failed to forward events.");
+                        error!(%local_addr, error = %e, "Failed to forward events.");
                     }
                 }
                 Err(e) => match e {
