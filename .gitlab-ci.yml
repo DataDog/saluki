@@ -10,7 +10,7 @@ variables:
   # High-level repository paths we build off of, and dedicated images needed for various jobs.
   IMAGE_REGISTRY: "registry.ddbuild.io"
   DOCKER_BUILD_IMAGE: "486234852809.dkr.ecr.us-east-1.amazonaws.com/docker:20.10-py3"
-  GBI_BASE_IMAGE: "${IMAGE_REGISTRY}/images/base/gbi-ubuntu_2204:release" 
+  GBI_BASE_IMAGE: "${IMAGE_REGISTRY}/images/base/gbi-ubuntu_2204:release"
 
   # Base repository paths for where our CI images go, whether they're helper images or actual
   # output artifacts like ADP itself.
