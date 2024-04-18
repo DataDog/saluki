@@ -19,16 +19,13 @@ build-agent-data-plane-baseline-docker:
   # needs:
   #   - confirm-aws-setup
   script:
-    - echo $CI_MERGE_REQUEST_TARGET_BRANCH_NAME
-    - echo $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME
-    - echo $MERGE_BASE
-
     # Build baseline from branch point but retain the container definition from
     # the tip of the PR.
-    - git fetch origin $CI_MERGE_REQUEST_TARGET_BRANCH_NAME $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME
-    - MERGE_BASE=$(git merge-base origin/$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME)
-    - git checkout $MERGE_BASE
-    - git checkout origin/$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME -- ./docker/Dockerfile.agent-data-plane
+    - git fetch --all
+    - BRANCH=${git rev-parse --abbrev-ref HEAD)
+    - MERGE_BASE=$(git merge-base "${BRANCH}" "main")
+    - git checkout "${MERGE_BASE}"
+    - git checkout "origin/${BRANCH}" -- ./docker/Dockerfile.agent-data-plane
     # Actually build
     - docker buildx build
       --platform linux/amd64,linux/arm64
