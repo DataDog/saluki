@@ -76,10 +76,10 @@ libc = { version = "0.2.153", default-features = false }
 socket2 = { version = "0.5.6", default-features = false }
 
 [patch.crates-io]
-# Fork of `socket2` being used for SO_PASSCRED/out-of-band support on Unix domain sockets.
+# Git dependency for `socket2` to pull in SO_PASSCRED/out-of-band support on Unix domain sockets.
 #
-# Will be removed once https://github.com/rust-lang/socket2/pull/506 is merged.
-socket2 = { git = "https://github.com/tobz/socket2", branch = "master" }
+# Will be removed once a new release (current is 0.5.6) is published.
+socket2 = { git = "https://github.com/rust-lang/socket2", branch = "master" }
 
 [profile.release]
 lto = "thin"
