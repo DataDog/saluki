@@ -2,7 +2,7 @@
 build-agent-data-plane-baseline-docker:
   stage: test
   image: "${DOCKER_BUILD_IMAGE}"
-  retry: 3
+  retry: 2
   script:
     - docker buildx build
       --platform linux/amd64,linux/arm64
@@ -22,7 +22,7 @@ build-agent-data-plane-baseline-docker:
 build-agent-data-plane-comparison-docker:
   stage: test
   image: "${DOCKER_BUILD_IMAGE}"
-  retry: 3
+  retry: 2
   script:
     - docker buildx build
       --platform linux/amd64,linux/arm64
