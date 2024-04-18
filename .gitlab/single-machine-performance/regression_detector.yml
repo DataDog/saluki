@@ -1,6 +1,13 @@
+confirm-aws-setup:
+  stage: test
+  image: "${SALUKI_BUILD_CI_IMAGE}"
+  script:
+    - aws help
+
 regression_detector:
   stage: test
   needs:
+    - confirm-aws-setup
     - build-agent-data-plane-baseline-docker
     - build-agent-data-plane-comparison-docker
   image: "${SALUKI_BUILD_CI_IMAGE}"
