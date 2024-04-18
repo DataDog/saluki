@@ -23,9 +23,9 @@ build-agent-data-plane-baseline-docker:
     # the tip of the PR.
     - git fetch --all
     - BRANCH=${git rev-parse --abbrev-ref HEAD)
-    - MERGE_BASE=$(git merge-base "${BRANCH}" "main")
-    - git checkout "${MERGE_BASE}"
-    - git checkout "origin/${BRANCH}" -- ./docker/Dockerfile.agent-data-plane
+    - MERGE_BASE=$(git merge-base "$BRANCH" "main")
+    - git checkout "$MERGE_BASE"
+    - git checkout "origin/$BRANCH" -- ./docker/Dockerfile.agent-data-plane
     # Actually build
     - docker buildx build
       --platform linux/amd64,linux/arm64
