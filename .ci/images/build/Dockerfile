@@ -15,6 +15,12 @@ ENV PATH="/usr/lib/binutils-2.26/bin:${PATH}"
 # Install Protocol Buffers compiler by hand, since Ubuntu 14.04 does not have a recent enough version.
 COPY .ci/install-protoc.sh /
 RUN chmod +x /install-protoc.sh && /install-protoc.sh
+RUN install-protoc.sh
+
+# Install awscli by hand, for similar reasons to the Protocol Buffers compiler.
+COPY .ci/install-awscli.sh /
+RUN chmod +x /install-awscli.sh && /install-awscli.sh
+RUN install-awscli.sh
 
 # Install Rust and common Cargo tooling that we depend on.
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain ${RUST_VERSION}
