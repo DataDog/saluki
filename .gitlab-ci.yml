@@ -1,5 +1,6 @@
 include:
   - .gitlab/*.yml
+  - .gitlab/single-machine-performance/*.yml
 
 stages:
   - test

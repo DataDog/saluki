@@ -1,0 +1,18 @@
+# TODO container builds must go to ECR
+build-agent-data-plane-baseline-docker:
+  stage: test
+  image: "${DOCKER_BUILD_IMAGE}"
+  script:
+    - docker buildx build
+      --platform linux/amd64,linux/arm64
+      --file ./docker/Dockerfile.agent-data-plane
+      --tag ${ADP_IMAGE_BASE}:${ADP_VERSION}
+      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
+      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --push
+      .
