@@ -25,10 +25,6 @@ use self::framer::{get_framer, DogStatsDMultiFraming};
 /// DogStatsD source.
 ///
 /// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format.
-///
-/// ## Missing
-///
-/// - UDS origin detection support (no exposed way to also receive ancillary/out-of-band data in UDS receive calls)
 pub struct DogStatsDConfiguration {
     listen_address: ListenAddress,
 }
