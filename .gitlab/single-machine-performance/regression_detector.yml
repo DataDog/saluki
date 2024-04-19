@@ -95,7 +95,6 @@ regression_detector:
     # Do some pre-flight steps like creating directories, installing helper utilities, setting
     # credentials, and so on.
     - mkdir outputs && touch outputs/report.md outputs/report.html
-    # - ./test/smp/install-pr-commenter.sh
     - ./test/smp/configure-smp-aws-credentials.sh
 
     # Download the SMP binary.
