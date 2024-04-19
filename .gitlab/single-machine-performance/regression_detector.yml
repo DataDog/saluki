@@ -30,7 +30,7 @@ build-agent-data-plane-baseline:
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
-      --tag ${SMP_ECR_URL}/saluki:${BASELINE_SHA}
+      --tag ${SMP_ECR_HOST}/saluki:${CI_PIPELINE_IID}-${BASELINE_SHA}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --label git.repository=${CI_PROJECT_NAME}
@@ -59,7 +59,7 @@ build-agent-data-plane-comparison:
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
-      --tag ${SMP_ECR_URL}/saluki:${COMPARISON_SHA}
+      --tag ${SMP_ECR_HOST}/saluki:${CI_PIPELINE_IID}-${COMPARISON_SHA}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --label git.repository=${CI_PROJECT_NAME}
