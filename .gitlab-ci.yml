@@ -17,7 +17,7 @@ variables:
   # output artifacts like ADP itself.
   SALUKI_IMAGE_REPO_BASE: "${IMAGE_REGISTRY}/saluki"
   SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:v32448130-5acb1dce"
-  SALUKI_SMP_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:TODO"
+  SALUKI_SMP_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:v32544324-da3502b1"
 
   # ADP-specific variables, controlling how we build ADP images, how we version them, and where we push them.
   ADP_VERSION_BASE: "0.1.0"
