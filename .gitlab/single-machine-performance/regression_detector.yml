@@ -1,13 +1,14 @@
 .setup-smp-env: &setup-smp-env
-  - set -u
   - export SMP_ACCOUNT_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-account-id --with-decryption --query "Parameter.Value" --out text)
   - export SMP_TEAM_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-team-id --with-decryption --query "Parameter.Value" --out text)
   - export SINGLE_MACHINE_PERFORMANCE_API=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-api --with-decryption --query "Parameter.Value" --out text)
   - export SMP_ECR_HOST="${SMP_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com"
   - git fetch --verbose --all
+  - 'echo "CI_COMMIT_BRANCH: ${CI_COMMIT_BRANCH}"'
   - export BASELINE_SHA=$(git merge-base origin/main origin/${CI_COMMIT_BRANCH} | cut -c 1-8)
   - 'echo "Baseline SHA: ${BASELINE_SHA}"'
   - export COMPARISON_SHA="${CI_COMMIT_SHA}"
+  - 'echo "Comparison SHA: ${COMPARISON_SHA}"'
   - export BASELINE_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:${CI_PIPELINE_IID}-${BASELINE_SHA}"
   - export COMPARISON_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:${CI_PIPELINE_IID}-${COMPARISON_SHA}"
 
@@ -20,8 +21,6 @@ build-agent-data-plane-baseline:
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
   script:
-    - set -u
-
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
 
@@ -58,8 +57,6 @@ build-agent-data-plane-comparison:
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
   script:
-    - set -u
-
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
 
@@ -100,8 +97,6 @@ regression_detector:
     LADING_VERSION: 0.20.10
     RUST_LOG: info,aws_config::profile::credentials=error
   script:
-    - set -u
-
     # Do some pre-flight steps like creating directories, installing helper utilities, setting
     # credentials, and so on.
     - mkdir outputs && touch outputs/report.md outputs/report.html
