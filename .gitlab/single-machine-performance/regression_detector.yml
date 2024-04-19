@@ -3,9 +3,9 @@
   - export SMP_TEAM_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-team-id --with-decryption --query "Parameter.Value" --out text)
   - export SINGLE_MACHINE_PERFORMANCE_API=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-api --with-decryption --query "Parameter.Value" --out text)
   - export SMP_ECR_HOST="${SMP_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com"
-  - git fetch --verbose --all
   - 'echo "CI_COMMIT_BRANCH: ${CI_COMMIT_BRANCH}"'
-  - export BASELINE_SHA=$(git merge-base origin/main origin/${CI_COMMIT_BRANCH} | cut -c 1-8)
+  - git fetch --verbose --deepen=999 origin ${CI_COMMIT_BRANCH} main
+  - export BASELINE_SHA=$(git merge-base origin/main origin/${CI_COMMIT_BRANCH})
   - 'echo "Baseline SHA: ${BASELINE_SHA}"'
   - export COMPARISON_SHA="${CI_COMMIT_SHA}"
   - 'echo "Comparison SHA: ${COMPARISON_SHA}"'
@@ -27,9 +27,7 @@ build-agent-data-plane-baseline:
     # Build baseline from `main`. A more correct approach here would be to check
     # out all but the dockerfile for saluki from the branch point and build that
     # way but this should be Good Enough for a while.
-    #
-    # Note: for this to work we require the fetch --all in .setup-smp-env. Fun
-    # times.
+    - git fetch --all
     - git switch main
 
     # Actually build
