@@ -1,0 +1,14 @@
+optimization_goal: ingress_throughput
+erratic: false
+
+target:
+  name: saluki
+  command: /usr/local/bin/agent-data-plane
+
+  environment:
+    DD_API_KEY: 00000001
+    DD_DD_URL: http://127.0.0.1:9092
+
+  profiling_environment:
+    DD_API_KEY: 00000001
+    DD_DD_URL: http://127.0.0.1:9092
