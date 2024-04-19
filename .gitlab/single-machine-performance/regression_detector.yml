@@ -17,14 +17,12 @@ build-agent-data-plane-baseline:
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
-    # Build baseline from branch point but retain the container definition from
-    # the tip of the PR.
+
+    # Build baseline from `main`. A more correct approach here would be to check
+    # out all but the dockerfile for saluki from the branch point and build that
+    # way but this should be Good Enough for a while.
     - git fetch --all
-    - BRANCH=$(git rev-parse --abbrev-ref HEAD)
-    - MERGE_BASE=$(git merge-base "$BRANCH" "main")
-    - echo "Gitlab eats errors like candy."
-    - git checkout "$MERGE_BASE"
-    - git checkout "origin/$BRANCH" -- ./docker/Dockerfile.agent-data-plane
+    - git switch main
 
     # Actually build
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
