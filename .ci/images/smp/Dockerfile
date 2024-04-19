@@ -2,7 +2,7 @@ FROM registry.ddbuild.io/images/mirror/ubuntu:20.04
 
 # Install basic utilities and an updated compiler/binutils toolchain, which is necessary for compiling.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl ca-certificates awscli lsb-release && \
+    apt-get install -y --no-install-recommends curl ca-certificates awscli lsb-release git && \
     rm -rf /var/lib/apt/lists/*
 
 RUN curl -L https://s3.amazonaws.com/dd-package-public/dd-package-$(dpkg --print-architecture).deb -o dd-package.deb && \
