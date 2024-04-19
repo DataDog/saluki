@@ -76,7 +76,7 @@ regression_detector:
   needs:
     - build-agent-data-plane-baseline
     - build-agent-data-plane-comparison
-  image: "${SALUKI_BUILD_CI_IMAGE}"
+  image: "${SALUKI_SMP_CI_IMAGE}"
   before_script:
     - *setup-smp-env
   artifacts:
