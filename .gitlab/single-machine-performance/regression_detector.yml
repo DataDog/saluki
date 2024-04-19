@@ -1,24 +1,24 @@
-confirm-aws-setup:
-  stage: test
-  image: "${SALUKI_BUILD_CI_IMAGE}"
-  script:
-    - AWS_NAMED_PROFILE="single-machine-performance"
-    - SMP_ACCOUNT_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-account-id --with-decryption --query "Parameter.Value" --out text)
-    - SMP_ECR_URL=${SMP_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com
-    - SMP_TEAM_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-team-id --with-decryption --query "Parameter.Value" --out text)
-    - SMP_API=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-api --with-decryption --query "Parameter.Value" --out text)
-    - aws configure set aws_access_key_id $(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-bot-access-key-id --with-decryption --query "Parameter.Value" --out text) --profile ${AWS_NAMED_PROFILE}
-    - aws configure set aws_secret_access_key $(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-bot-access-key --with-decryption --query "Parameter.Value" --out text) --profile ${AWS_NAMED_PROFILE}
-    - aws configure set region us-west-2 --profile ${AWS_NAMED_PROFILE}
+.setup-smp-env: &setup-smp-env
+  - export SMP_ACCOUNT_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-account-id --with-decryption --query "Parameter.Value" --out text)
+  - export SMP_TEAM_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-team-id --with-decryption --query "Parameter.Value" --out text)
+  - export SINGLE_MACHINE_PERFORMANCE_API=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-api --with-decryption --query "Parameter.Value" --out text)
+  - export SMP_ECR_HOST="${SMP_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com"
+  - export BASELINE_SHA=$(git merge-base origin/main origin/${CI_COMMIT_BRANCH} | cut -c 1-8)
+  - export COMPARISON_SHA="${CI_COMMIT_SHA}"
 
-# TODO container builds must go to ECR
-build-agent-data-plane-baseline-docker:
+build-agent-data-plane-baseline:
   stage: test
   image: "${DOCKER_BUILD_IMAGE}"
   retry: 2
-  # needs:
-  #   - confirm-aws-setup
+  before_script:
+    - *setup-smp-env
+  variables:
+    AWS_NAMED_PROFILE: single-machine-performance
   script:
+    # Initialize our AWS credentials.
+    - ./test/smp/configure-smp-aws-credentials.sh
+    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
+
     # Build baseline from branch point but retain the container definition from
     # the tip of the PR.
     - git fetch --all
@@ -30,7 +30,7 @@ build-agent-data-plane-baseline-docker:
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
-      --tag ${ADP_IMAGE_BASE}:${ADP_VERSION}
+      --tag ${SMP_ECR_URL}/saluki:${BASELINE_SHA}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --label git.repository=${CI_PROJECT_NAME}
@@ -42,17 +42,21 @@ build-agent-data-plane-baseline-docker:
       .
 
 # TODO container builds must go to ECR
-build-agent-data-plane-comparison-docker:
+build-agent-data-plane-comparison:
   stage: test
   image: "${DOCKER_BUILD_IMAGE}"
   retry: 2
   # needs:
   #   - confirm-aws-setup
   script:
+    # Initialize our AWS credentials.
+    - ./test/smp/configure-smp-aws-credentials.sh
+    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
+
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
-      --tag ${ADP_IMAGE_BASE}:${ADP_VERSION}
+      --tag ${SMP_ECR_URL}/saluki:${COMPARISON_SHA}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --label git.repository=${CI_PROJECT_NAME}
@@ -63,30 +67,29 @@ build-agent-data-plane-comparison-docker:
       --push
       .
 
-regression_detector:
-  stage: test
-  needs:
-    - confirm-aws-setup
-    - build-agent-data-plane-baseline-docker
-    - build-agent-data-plane-comparison-docker
-  image: "${SALUKI_BUILD_CI_IMAGE}"
-  script:
-    # # Ensure output files exist for artifact downloads step
-    # - mkdir outputs              # Also needed for smp job sync step
-    # - touch outputs/report.md    # Will be emitted by smp job sync
-    # - touch outputs/report.html  # Will be emitted by smp job sync
-    # # Compute merge base of current commit and `main`
-    # - git fetch origin
-    # - SMP_BASE_BRANCH=$(inv release.get-release-json-value base_branch)
-    # - echo "Looking for merge base for branch ${SMP_BASE_BRANCH}"
-    # - SMP_MERGE_BASE=$(git merge-base ${CI_COMMIT_SHA} origin/${SMP_BASE_BRANCH})
-    # - echo "Merge base is ${SMP_MERGE_BASE}"
-    # Setup AWS credentials for single-machine-performance AWS account
-    - AWS_NAMED_PROFILE="single-machine-performance"
-    - SMP_ACCOUNT_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-account-id --with-decryption --query "Parameter.Value" --out text)
-    - SMP_ECR_URL=${SMP_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com
-    - SMP_TEAM_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-team-id --with-decryption --query "Parameter.Value" --out text)
-    - SMP_API=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-api --with-decryption --query "Parameter.Value" --out text)
-    - aws configure set aws_access_key_id $(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-bot-access-key-id --with-decryption --query "Parameter.Value" --out text) --profile ${AWS_NAMED_PROFILE}
-    - aws configure set aws_secret_access_key $(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-bot-access-key --with-decryption --query "Parameter.Value" --out text) --profile ${AWS_NAMED_PROFILE}
-    - aws configure set region us-west-2 --profile ${AWS_NAMED_PROFILE}
+# regression_detector:
+#   stage: test
+#   needs:
+#     - build-agent-data-plane-baseline
+#     - build-agent-data-plane-comparison
+#   image: "${SALUKI_BUILD_CI_IMAGE}"
+#   script:
+#     # # Ensure output files exist for artifact downloads step
+#     # - mkdir outputs              # Also needed for smp job sync step
+#     # - touch outputs/report.md    # Will be emitted by smp job sync
+#     # - touch outputs/report.html  # Will be emitted by smp job sync
+#     # # Compute merge base of current commit and `main`
+#     # - git fetch origin
+#     # - SMP_BASE_BRANCH=$(inv release.get-release-json-value base_branch)
+#     # - echo "Looking for merge base for branch ${SMP_BASE_BRANCH}"
+#     # - SMP_MERGE_BASE=$(git merge-base ${CI_COMMIT_SHA} origin/${SMP_BASE_BRANCH})
+#     # - echo "Merge base is ${SMP_MERGE_BASE}"
+#     # Setup AWS credentials for single-machine-performance AWS account
+#     - AWS_NAMED_PROFILE="single-machine-performance"
+#     - SMP_ACCOUNT_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-account-id --with-decryption --query "Parameter.Value" --out text)
+#     - SMP_ECR_URL=${SMP_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com
+#     - SMP_TEAM_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-team-id --with-decryption --query "Parameter.Value" --out text)
+#     - SMP_API=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-api --with-decryption --query "Parameter.Value" --out text)
+#     - aws configure set aws_access_key_id $(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-bot-access-key-id --with-decryption --query "Parameter.Value" --out text) --profile ${AWS_NAMED_PROFILE}
+#     - aws configure set aws_secret_access_key $(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-bot-access-key --with-decryption --query "Parameter.Value" --out text) --profile ${AWS_NAMED_PROFILE}
+#     - aws configure set region us-west-2 --profile ${AWS_NAMED_PROFILE}
