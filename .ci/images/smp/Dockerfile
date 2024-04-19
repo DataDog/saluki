@@ -1,5 +1,10 @@
 FROM registry.ddbuild.io/images/mirror/ubuntu:22.04
 
+# Install basic utilities and an updated compiler/binutils toolchain, which is necessary for compiling.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 # Install awscli by hand. The version in-image is too old.
 COPY .ci/install-awscli.sh /
 RUN chmod +x /install-awscli.sh && /install-awscli.sh
