@@ -1,11 +1,7 @@
-# syntax=docker/dockerfile:1.7-labs
 ARG BUILD_IMAGE
 ARG APP_IMAGE
 
 FROM ${BUILD_IMAGE} AS builder
-
-ARG TARGETARCH
-ARG TARGETVARIANT
 
 # Install basic utilities and an updated compiler/binutils toolchain, which is necessary for compiling.
 #
@@ -21,39 +17,14 @@ RUN apt-get update && \
 COPY .ci/install-protoc.sh /
 RUN chmod +x /install-protoc.sh && /install-protoc.sh
 
-# We do a hack here of copying over the structure of the repository, and the relevant Cargo.toml/Cargo.lock files, and
-# then we fix up the workspace members to have a src/lib.rs or src/main.rs, whatever they happen to need, all with the
-# goal that we can then run `cargo build` at the workspace level to pull in all workspace dependencies and compile them.
-#
-# This gives us a chance to download/cache a massive portion of the overall dependency graph before we actually copy
-# over the source code, which doing so will likely lead to invalidating the Docker layer cache.
-RUN cargo new /adp
-COPY --parents Cargo.toml Cargo.lock rust-toolchain.toml bin/**/Cargo.toml lib/**/Cargo.toml /adp/
-COPY docker/sync-workspace.sh /
+# Build ADP, and strip the binary to to optimize the size.
 WORKDIR /adp
-RUN /sync-workspace.sh
-RUN --mount=type=cache,target=/root/.cargo/git,sharing=locked,id=cargo-git \
-    --mount=type=cache,target=/root/.cargo/registry,sharing=locked,id=cargo-registry \
-    --mount=type=cache,target=/adp/target,sharing=locked,id=cargo-target-$TARGETARCH$TARGETVARIANT \
-    cargo build --release
-
-# We can now copy over our actual source code and build ADP.
-#
-# We touch main.rs to ensure that Cargo doesn't use cached metadata (i.e. file modification times) and end up thinking
-# nothing has changed and that no compilation is required.
 COPY . /adp
-RUN --mount=type=cache,target=/root/.cargo/git,sharing=locked,id=cargo-git \
-    --mount=type=cache,target=/root/.cargo/registry,sharing=locked,id=cargo-registry \
-    --mount=type=cache,target=/adp/target,sharing=locked,id=cargo-target-$TARGETARCH$TARGETVARIANT \
-	# Build the ADP binary and then strip it down to an optimized size.
-	cargo build --release && \
-	strip --strip-unneeded --strip-debug /adp/target/release/agent-data-plane && \
-	# Copy the binary to the root directory so we can copy it out of the build stage, since you can't copy from a bind
-	# mounted cache path in a multi-stage build.
-	cp /adp/target/release/agent-data-plane /agent-data-plane
+RUN cargo build --release && \
+	strip --strip-unneeded --strip-debug /adp/target/release/agent-data-plane
 
 # Now stick our resulting binary in a clean image.
 FROM ${APP_IMAGE}
-COPY --from=builder /agent-data-plane /usr/local/bin/agent-data-plane
+COPY --from=builder /adp/target/release/agent-data-plane /usr/local/bin/agent-data-plane
 
 ENTRYPOINT [ "/usr/local/bin/agent-data-plane" ]
