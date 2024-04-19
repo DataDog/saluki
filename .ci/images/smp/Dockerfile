@@ -1,4 +1,4 @@
-FROM registry.ddbuild.io/images/mirror/ubuntu:24.04
+FROM registry.ddbuild.io/images/mirror/ubuntu:22.04
 
 # Install awscli by hand. The version in-image is too old.
 COPY .ci/install-awscli.sh /
