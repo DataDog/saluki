@@ -22,6 +22,7 @@ build-agent-data-plane-baseline:
     - git fetch --all
     - BRANCH=$(git rev-parse --abbrev-ref HEAD)
     - MERGE_BASE=$(git merge-base "$BRANCH" "main")
+    - echo "Gitlab eats errors like candy."
     - git checkout "$MERGE_BASE"
     - git checkout "origin/$BRANCH" -- ./docker/Dockerfile.agent-data-plane
 
