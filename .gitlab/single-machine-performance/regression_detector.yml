@@ -1,4 +1,5 @@
 .setup-smp-env: &setup-smp-env
+  -
   - export SMP_ACCOUNT_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-account-id --with-decryption --query "Parameter.Value" --out text)
   - export SMP_TEAM_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-team-id --with-decryption --query "Parameter.Value" --out text)
   - export SINGLE_MACHINE_PERFORMANCE_API=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-api --with-decryption --query "Parameter.Value" --out text)
@@ -46,13 +47,16 @@ build-agent-data-plane-comparison:
   stage: test
   image: "${DOCKER_BUILD_IMAGE}"
   retry: 2
-  # needs:
-  #   - confirm-aws-setup
+  before_script:
+    - *setup-smp-env
+  variables:
+    AWS_NAMED_PROFILE: single-machine-performance
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
 
+    # Actually build
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
