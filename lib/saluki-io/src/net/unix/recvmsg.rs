@@ -61,7 +61,15 @@ where
         .with_buffers(&mut data_bufs)
         .with_control(ancillary_data.as_mut_uninit());
 
-    let n = sock_ref.recvmsg(&mut msg_hdr, libc::MSG_CMSG_CLOEXEC)?;
+    let n;
+    #[cfg(target_os = "linux")]
+    {
+        n = sock_ref.recvmsg(&mut msg_hdr, libc::MSG_CMSG_CLOEXEC)?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        n = sock_ref.recvmsg(&mut msg_hdr, 0)?;
+    }
 
     // If we got any socket credentials back, parse them.
     let control_len = msg_hdr.control_len();

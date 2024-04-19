@@ -92,23 +92,32 @@ pub enum ControlMessage<'a> {
     ///
     /// This captures the process ID, user ID, and group ID of the peer process on the other end of a Unix domain
     /// socket.
+    #[cfg(target_os = "linux")]
+    /// UNIX socket credentials for Linux.
     Credentials(&'a libc::ucred),
+
+    #[cfg(target_os = "macos")]
+    /// UNIX socket credentials for macOS.
+    CredentialsMac(&'a libc::xucred),
 }
 
 impl<'a> ControlMessage<'a> {
-    fn try_from_cmsghdr(cmsg: &'a libc::cmsghdr) -> Option<Self> {
+    pub fn try_from_cmsghdr(cmsg: &'a libc::cmsghdr) -> Option<Self> {
         unsafe {
             // Calculate the size of the control message header, so we can figure out the byte offset to actually get at
             // the raw message data, and then create a slice to that data.
             let cmsg_len_offset = libc::CMSG_LEN(0) as usize;
             let data_len = cmsg.cmsg_len - cmsg_len_offset;
-            let data_ptr = libc::CMSG_DATA(cmsg).cast();
+            let data_ptr = libc::CMSG_DATA(cmsg).cast::<u8>();
             let data = std::slice::from_raw_parts(data_ptr, data_len);
 
             // Currently, all we handle is socket credentials.
             match cmsg.cmsg_level {
                 libc::SOL_SOCKET => match cmsg.cmsg_type {
-                    libc::SCM_CREDENTIALS => ControlMessage::as_credentials(data),
+                    #[cfg(target_os = "linux")]
+                    libc::SCM_CREDENTIALS => Self::as_credentials(data),
+                    #[cfg(target_os = "macos")]
+                    libc::LOCAL_PEERCRED => Self::as_credentials(data),
                     _ => None,
                 },
                 _ => None,
@@ -116,14 +125,28 @@ impl<'a> ControlMessage<'a> {
         }
     }
 
-    fn as_credentials(buf: &'a [u8]) -> Option<Self> {
-        if buf.len() == mem::size_of::<libc::ucred>() {
+    fn as_credentials(buf: &'a [u8], cred_size: usize) -> Option<Self> {
+        #[cfg(target_os = "linux")]
+        let cred_size = mem::size_of::<libc::ucred>();
+
+        #[cfg(target_os = "macos")]
+        let cred_size = mem::size_of::<libc::xucred>();
+
+        if buf.len() == cred_size {
             // SAFETY: We've already checked that the buffer is long enough to be mapped to `ucred`, and we're only here
             // if `cmsg_type` was SCM_CREDENTIALS, and our reference is safe to take because it's tied to the lifetime
             // of the buffer we're taking a pointer to.
             unsafe {
-                let ucred_ptr: *const libc::ucred = buf.as_ptr().cast();
-                ucred_ptr.as_ref().map(Self::Credentials)
+                #[cfg(target_os = "linux")]
+                {
+                    let ucred_ptr: *const libc::ucred = buf.as_ptr().cast();
+                    ucred_ptr.as_ref().map(ControlMessage::Credentials)
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    let xucred_ptr: *const libc::xucred = buf.as_ptr().cast();
+                    xucred_ptr.as_ref().map(ControlMessage::CredentialsMac)
+                }
             }
         } else {
             None
@@ -132,16 +155,21 @@ impl<'a> ControlMessage<'a> {
 }
 
 const fn get_ucred_struct_size() -> usize {
-    let ucred_raw_size = mem::size_of::<libc::ucred>();
-    let ucred_raw_size = if ucred_raw_size.wrapping_shr(u32::BITS) != 0 {
+    #[cfg(target_os = "linux")]
+    let cred_size = mem::size_of::<libc::ucred>();
+
+    #[cfg(target_os = "macos")]
+    let cred_size = mem::size_of::<libc::xucred>();
+
+    let cred_size = if cred_size.wrapping_shr(u32::BITS) != 0 {
         // We do a const shift of the raw size to see if it has any additional bits past what we can fit in u32, and
         // this way we know that it's safe to directly cast the value to u32 without having truncated any bits.
         panic!("size of `ucred` struct greater than u32::MAX");
     } else {
-        ucred_raw_size as u32
+        cred_size as u32
     };
 
     // SAFETY: This is part of a blanket "unsafe" wrapper around libc functions, but it's safe to call since it boils
     // down to a bunch of `size_of` calls and arithmetic for ensuring the values take alignment into consideration, etc.
-    unsafe { libc::CMSG_SPACE(ucred_raw_size) as usize }
+    unsafe { libc::CMSG_SPACE(cred_size) as usize }
 }
