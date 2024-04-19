@@ -27,7 +27,7 @@ impl HostnameProvider for KubernetesHostnameProvider {
             }
         };
 
-        match get_self_pod_name().await {
+        match get_self_pod_name() {
             Some(pod_name) => {
                 let namespace = get_namespace().await;
                 let pods: Api<Pod> = Api::namespaced(client, &namespace);
@@ -46,7 +46,7 @@ impl HostnameProvider for KubernetesHostnameProvider {
 }
 
 #[cfg(target_os = "linux")]
-async fn get_self_pod_name() -> Option<String> {
+fn get_self_pod_name() -> Option<String> {
     use super::util::is_running_in_host_uts_namespace;
 
     if let Ok(pod_name) = std::env::var("DD_POD_NAME") {
