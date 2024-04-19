@@ -1,5 +1,6 @@
 /.github
 /.gitlab
+/.git
 /.vscode
 /target
 /tooling

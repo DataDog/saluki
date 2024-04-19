@@ -151,6 +151,11 @@ clean: ## Clean all build artifacts (debug/release)
 	@echo "[*] Cleaning Rust build artifacts..."
 	@cargo clean
 
+.PHONY: clean-docker
+clean-docker: ## Cleans up Docker build cache
+	@echo "[*] Cleaning Docker cache..."
+	@docker builder prune --filter type=exec.cachemount --force
+
 .PHONY: fmt
 fmt: check-rust-build-tools
 fmt: ## Format Rust source code
