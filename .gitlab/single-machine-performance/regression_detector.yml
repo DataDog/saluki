@@ -102,8 +102,8 @@ regression_detector:
     # Run SMP against our converged Agent image.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
             job submit
-            --baseline-image ${BASELINE_APP_IMAGE}
-            --comparison-image ${COMPARISON_APP_IMAGE}
+            --baseline-image ${BASELINE_IMG}
+            --comparison-image ${COMPARISON_IMG}
             --baseline-sha ${BASELINE_SHA}
             --comparison-sha ${CI_COMMIT_SHA}
             --target-config-dir ./test/smp/regression/ \
