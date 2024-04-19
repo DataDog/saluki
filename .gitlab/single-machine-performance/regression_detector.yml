@@ -17,8 +17,6 @@ build-agent-data-plane-baseline:
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
-    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
-
     # Build baseline from branch point but retain the container definition from
     # the tip of the PR.
     - git fetch --all
@@ -26,11 +24,13 @@ build-agent-data-plane-baseline:
     - MERGE_BASE=$(git merge-base "$BRANCH" "main")
     - git checkout "$MERGE_BASE"
     - git checkout "origin/$BRANCH" -- ./docker/Dockerfile.agent-data-plane
+
     # Actually build
+    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
-      --tag ${SMP_ECR_HOST}/saluki:${CI_PIPELINE_IID}-${BASELINE_SHA}
+      --tag ${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:${CI_PIPELINE_IID}-${BASELINE_SHA}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --label git.repository=${CI_PROJECT_NAME}
@@ -53,13 +53,13 @@ build-agent-data-plane-comparison:
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
-    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
 
     # Actually build
+    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
-      --tag ${SMP_ECR_HOST}/saluki:${CI_PIPELINE_IID}-${COMPARISON_SHA}
+      --tag ${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:${CI_PIPELINE_IID}-${COMPARISON_SHA}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --label git.repository=${CI_PROJECT_NAME}
