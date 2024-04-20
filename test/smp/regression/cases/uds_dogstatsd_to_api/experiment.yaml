@@ -8,9 +8,11 @@ target:
   # NOTE duplicating keys because it's not clear to me which one is read.
 
   environment:
-    DD_API_KEY: 00000001
+    DD_API_KEY: foo00000001
+    DD_HOSTNAME: smp-regression
     DD_DD_URL: http://127.0.0.1:9092
 
   profiling_environment:
-    DD_API_KEY: 00000001
+    DD_API_KEY: foo00000001
+    DD_HOSTNAME: smp-regression
     DD_DD_URL: http://127.0.0.1:9092
