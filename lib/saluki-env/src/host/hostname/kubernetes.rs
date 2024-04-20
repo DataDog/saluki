@@ -53,7 +53,7 @@ async fn get_self_pod_name() -> Option<String> {
         return Some(pod_name);
     }
 
-    if is_running_in_host_uts_namespace() {
+    if is_running_in_host_uts_namespace().await {
         debug!("DD_POD_NAME is not set and process is running in host UTS namespace. Self pod name cannot be determined reliably.");
         return None;
     }
