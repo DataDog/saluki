@@ -27,7 +27,7 @@ impl HostnameProvider for KubernetesHostnameProvider {
             }
         };
 
-        match get_self_pod_name() {
+        match get_self_pod_name().await {
             Some(pod_name) => {
                 let namespace = get_namespace().await;
                 let pods: Api<Pod> = Api::namespaced(client, &namespace);
@@ -46,7 +46,7 @@ impl HostnameProvider for KubernetesHostnameProvider {
 }
 
 #[cfg(target_os = "linux")]
-fn get_self_pod_name() -> Option<String> {
+async fn get_self_pod_name() -> Option<String> {
     use super::util::is_running_in_host_uts_namespace;
 
     if let Ok(pod_name) = std::env::var("DD_POD_NAME") {
@@ -62,7 +62,8 @@ fn get_self_pod_name() -> Option<String> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn get_self_pod_name() -> Option<String> {
+#[allow(clippy::unused_async)]
+async fn get_self_pod_name() -> Option<String> {
     if let Ok(pod_name) = std::env::var("DD_POD_NAME") {
         return Some(pod_name);
     }
