@@ -10,7 +10,9 @@
   - export COMPARISON_SHA="${CI_COMMIT_SHA}"
   - 'echo "Comparison SHA: ${COMPARISON_SHA}"'
   - export BASELINE_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:${CI_PIPELINE_IID}-${BASELINE_SHA}"
+  - 'echo "Baseline Image: ${BASELINE_IMG}"'
   - export COMPARISON_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:${CI_PIPELINE_IID}-${COMPARISON_SHA}"
+  - 'echo "Comparison Image: ${COMPARISON_IMG}"'
 
 build-agent-data-plane-baseline:
   stage: test
