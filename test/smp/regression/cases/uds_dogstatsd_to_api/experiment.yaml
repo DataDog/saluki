@@ -5,10 +5,16 @@ target:
   name: saluki
   command: /usr/local/bin/agent-data-plane
 
+  # NOTE duplicating keys because it's not clear to me which one is read.
+
   environment:
+    api_key: 00000001
+    dd_url: http://127.0.0.1:9092
     DD_API_KEY: 00000001
     DD_DD_URL: http://127.0.0.1:9092
 
   profiling_environment:
+    api_key: 00000001
+    dd_url: http://127.0.0.1:9092
     DD_API_KEY: 00000001
     DD_DD_URL: http://127.0.0.1:9092
