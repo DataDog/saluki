@@ -27,7 +27,7 @@ RUN rustup component add clippy && \
     cargo install cargo-nextest --version 0.9.68 && \
     cargo install cargo-hack --version 0.6.27 && \
     cargo install cargo-deny --version 0.14.20 && \
-	cargo install dd-rust-license-tool --version 1.0.3
+    cargo install dd-rust-license-tool --version 1.0.3
 
 COPY .ci/images/build/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
