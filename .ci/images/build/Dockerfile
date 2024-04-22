@@ -16,6 +16,10 @@ ENV PATH="/usr/lib/binutils-2.26/bin:${PATH}"
 COPY .ci/install-protoc.sh /
 RUN chmod +x /install-protoc.sh && /install-protoc.sh
 
+# Install awscli by hand, for similar reasons to the Protocol Buffers compiler.
+COPY .ci/install-awscli.sh /
+RUN chmod +x /install-awscli.sh && /install-awscli.sh
+
 # Install Rust and common Cargo tooling that we depend on.
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain ${RUST_VERSION}
 ENV PATH="/root/.cargo/bin:${PATH}"
