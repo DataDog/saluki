@@ -46,11 +46,3 @@ pub async fn is_running_in_host_uts_namespace() -> bool {
 
     self_uts_ns_inode == HOST_UTS_INODE
 }
-
-#[cfg(all(
-    any(feature = "hostname-kubernetes", feature = "hostname-os"),
-    not(target_os = "linux")
-))]
-pub async fn is_running_in_host_uts_namespace() -> bool {
-    true
-}
