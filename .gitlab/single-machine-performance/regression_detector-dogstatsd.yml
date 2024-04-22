@@ -5,48 +5,11 @@
   - export SMP_ECR_HOST="${SMP_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com"
   - export BASELINE_VERSION="7.52.0"
   - export COMPARISON_VERSION="7.52.1"
-  - export BASELINE_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-dogstatsd:${CI_PIPELINE_IID}-${BASELINE_VERSION}"
-  - export COMPARISON_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-dogstatsd:${CI_PIPELINE_IID}-${COMPARISON_VERSION}"
-
-mirror-dogstatsd-baseline:
-  stage: test
-  image: "${DOCKER_BUILD_IMAGE}"
-  retry: 2
-  before_script:
-    - *setup-smp-env
-  variables:
-    AWS_NAMED_PROFILE: single-machine-performance
-  script:
-    # Initialize our AWS credentials.
-    - ./test/smp/configure-smp-aws-credentials.sh
-
-    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
-    - docker pull datadog/dogstatsd:${BASELINE_VERSION}
-    - docker tag  datadog/dogstatsd:${BASELINE_VERSION} ${BASELINE_IMG}
-    - docker push ${BASELINE_IMG}
-
-mirror-dogstatsd-comparison:
-  stage: test
-  image: "${DOCKER_BUILD_IMAGE}"
-  retry: 2
-  before_script:
-    - *setup-smp-env
-  variables:
-    AWS_NAMED_PROFILE: single-machine-performance
-  script:
-    # Initialize our AWS credentials.
-    - ./test/smp/configure-smp-aws-credentials.sh
-
-    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
-    - docker pull datadog/dogstatsd:${COMPARISON_VERSION}
-    - docker tag  datadog/dogstatsd:${COMPARISON_VERSION} ${COMPARISON_IMG}
-    - docker push ${COMPARISON_IMG}
+  - export BASELINE_IMG="public.ecr.aws/datadog/dogstatsd:${BASELINE_VERSION}"
+  - export COMPARISON_IMG="public.ecr.aws/datadog/dogstatsd:${COMPARISON_VERSION}"
 
 regression_detector-dogstatsd:
   stage: test
-  needs:
-    - mirror-dogstatsd-comparison
-    - mirror-dogstatsd-baseline
   image: "${SALUKI_SMP_CI_IMAGE}"
   before_script:
     - *setup-smp-env
