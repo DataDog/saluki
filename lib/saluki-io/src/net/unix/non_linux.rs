@@ -1,6 +1,9 @@
-use std::io;
+use std::{io, mem};
 
-use socket2::SockRef;
+use bytes::BufMut;
+use socket2::{SockAddr, SockRef};
+
+use crate::net::addr::ConnectionAddress;
 
 pub(super) fn set_uds_passcred<'sock, S>(_socket: &'sock S) -> io::Result<()>
 where
@@ -26,8 +29,6 @@ where
     let sock_storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
     let sock_storage_len = mem::size_of_val(&sock_storage) as libc::socklen_t;
     let mut sock_addr = unsafe { SockAddr::new(sock_storage, sock_storage_len) };
-
-    let mut ancillary_data = SocketCredentialsAncillaryData::new();
 
     let data_buf = unsafe { socket2::MaybeUninitSlice::new(buf.chunk_mut().as_uninit_slice_mut()) };
     let mut data_bufs = [data_buf];

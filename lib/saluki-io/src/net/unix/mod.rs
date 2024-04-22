@@ -5,6 +5,7 @@ use socket2::SockRef;
 use tokio::net::{UnixDatagram, UnixStream};
 use tracing::trace;
 
+#[cfg(target_os = "linux")]
 mod ancillary;
 
 #[cfg(target_os = "linux")]
