@@ -1,5 +1,6 @@
 include:
   - .gitlab/*.yml
+  - .gitlab/single-machine-performance/*.yml
 
 stages:
   - test
@@ -10,12 +11,13 @@ variables:
   # High-level repository paths we build off of, and dedicated images needed for various jobs.
   IMAGE_REGISTRY: "registry.ddbuild.io"
   DOCKER_BUILD_IMAGE: "486234852809.dkr.ecr.us-east-1.amazonaws.com/docker:20.10-py3"
-  GBI_BASE_IMAGE: "${IMAGE_REGISTRY}/images/base/gbi-ubuntu_2204:release" 
+  GBI_BASE_IMAGE: "${IMAGE_REGISTRY}/images/base/gbi-ubuntu_2204:release"
 
   # Base repository paths for where our CI images go, whether they're helper images or actual
   # output artifacts like ADP itself.
   SALUKI_IMAGE_REPO_BASE: "${IMAGE_REGISTRY}/saluki"
-  SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:v31913536-9c72c63f"
+  SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:v32448130-5acb1dce"
+  SALUKI_SMP_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:v32545083-f793d629"
 
   # ADP-specific variables, controlling how we build ADP images, how we version them, and where we push them.
   ADP_VERSION_BASE: "0.1.0"

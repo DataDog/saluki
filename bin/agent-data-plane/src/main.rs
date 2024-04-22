@@ -42,6 +42,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .get_typed::<String>("api_key")
         .expect("API key must be a string")
         .expect("API key must be specified (`api_key` or `DD_API_KEY` environment variable)");
+    let api_endpoint = configuration
+        .get_typed::<String>("dd_url")
+        .expect("Datadog API URL key must be a string")
+        .expect("Datadog API URL key must be specified (`dd_url` or `DD_DD_URL` environment variable)");
 
     let env_provider =
         ADPEnvironmentProvider::with_configuration(&configuration).expect("failed to create environment provider");
@@ -61,10 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             env_provider.clone(),
         ))
         .with_transform_builder(OriginEnrichmentConfiguration::from_environment_provider(env_provider));
-    let dd_metrics_config = DatadogMetricsConfiguration {
-        api_key,
-        api_endpoint: "app.datadoghq.com".to_string(),
-    };
+    let dd_metrics_config = DatadogMetricsConfiguration { api_key, api_endpoint };
 
     let mut blueprint = TopologyBlueprint::default();
     blueprint
