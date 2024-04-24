@@ -111,7 +111,7 @@ regression_detector:
             --comparison-image ${COMPARISON_IMG}
             --baseline-sha ${BASELINE_SHA}
             --comparison-sha ${CI_COMMIT_SHA}
-            --target-config-dir ./test/smp/regression/
+            --target-config-dir ./test/smp/regression/saluki/
             --submission-metadata submission_metadata
     # Wait for job to complete.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}

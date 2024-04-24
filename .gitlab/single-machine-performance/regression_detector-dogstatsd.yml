@@ -1,0 +1,67 @@
+.setup-smp-env: &setup-smp-env
+  - export SMP_ACCOUNT_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-account-id --with-decryption --query "Parameter.Value" --out text)
+  - export SMP_TEAM_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-team-id --with-decryption --query "Parameter.Value" --out text)
+  - export SINGLE_MACHINE_PERFORMANCE_API=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-api --with-decryption --query "Parameter.Value" --out text)
+  - export SMP_ECR_HOST="${SMP_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com"
+  - export BASELINE_VERSION="7.52.0"
+  - export COMPARISON_VERSION="7.52.1"
+  - export BASELINE_IMG="public.ecr.aws/datadog/dogstatsd:${BASELINE_VERSION}"
+  - export COMPARISON_IMG="public.ecr.aws/datadog/dogstatsd:${COMPARISON_VERSION}"
+
+regression_detector-dogstatsd:
+  stage: test
+  image: "${SALUKI_SMP_CI_IMAGE}"
+  before_script:
+    - *setup-smp-env
+  artifacts:
+    expire_in: 1 weeks
+    paths:
+      - submission_metadata  # for provenance, debugging
+      - outputs/report.md    # for debugging, also on S3
+      - outputs/report.html  # for debugging, also on S3
+    when: always
+  variables:
+    AWS_NAMED_PROFILE: single-machine-performance
+    SMP_VERSION: 0.13.0
+    LADING_VERSION: 0.20.10
+    RUST_LOG: info,aws_config::profile::credentials=error
+  script:
+    # Do some pre-flight steps like creating directories, installing helper utilities, setting
+    # credentials, and so on.
+    - mkdir outputs && touch outputs/report.md outputs/report.html
+    - ./test/smp/configure-smp-aws-credentials.sh
+
+    # Download the SMP binary.
+    - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-gnu/smp smp && chmod +x smp
+    # Run SMP against our converged Agent image.
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+            job submit
+            --baseline-image ${BASELINE_IMG}
+            --comparison-image ${COMPARISON_IMG}
+            --baseline-sha ${BASELINE_VERSION}
+            --comparison-sha ${COMPARISON_VERSION}
+            --target-config-dir ./test/smp/regression/dogstatsd/
+            --submission-metadata submission_metadata
+    # Wait for job to complete.
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+            job status
+            --use-consignor welch
+            --wait
+            --wait-delay-seconds 60
+            --submission-metadata submission_metadata
+    # Pull the analysis report and output it to stdout.
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+            job sync
+            --use-consignor welch
+            --submission-metadata submission_metadata
+            --output-path outputs
+    # Replace empty lines in the output with lines containing various unicode space characters.
+    #
+    # This avoids  https://gitlab.com/gitlab-org/gitlab/-/issues/217231.
+    - cat outputs/report.md | sed "s/^\$/$(echo -ne '\uFEFF\u00A0\u200B')/g"
+    # Post the HTML report to the PR.
+    - cat outputs/report.html | /usr/local/bin/pr-commenter --for-pr="${CI_COMMIT_REF_NAME}"
+    # Finally, exit 1 if the job signals a regression else 0.
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+            job result
+            --submission-metadata submission_metadata
