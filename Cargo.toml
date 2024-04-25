@@ -74,12 +74,19 @@ ndarray-stats = { version = "0.5", default-features = false }
 noisy_float = { version = "0.2", default-features = false }
 libc = { version = "0.2.153", default-features = false }
 socket2 = { version = "0.5.6", default-features = false }
+containerd-client = { version = "0.5.0", default-features = false }
+tonic = { version = "0.11", default-features = false }
 
 [patch.crates-io]
 # Git dependency for `socket2` to pull in SO_PASSCRED/out-of-band support on Unix domain sockets.
 #
 # Will be removed once a new release (current is 0.5.6) is published.
 socket2 = { git = "https://github.com/rust-lang/socket2", branch = "master" }
+# Git dependency for `containerd-client` to add specific prost-build settings that allow type-erased payloads in
+# containerd events to be decoded.
+#
+# Will be removed once PR is merged/released upstream.
+containerd-client = { git = "https://github.com/tobz/rust-extensions", branch = "tobz/prost-type-names" }
 
 [profile.release]
 lto = "thin"

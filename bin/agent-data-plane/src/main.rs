@@ -47,8 +47,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .expect("Datadog API URL key must be a string")
         .expect("Datadog API URL key must be specified (`dd_url` or `DD_DD_URL` environment variable)");
 
-    let env_provider =
-        ADPEnvironmentProvider::with_configuration(&configuration).expect("failed to create environment provider");
+    let env_provider = ADPEnvironmentProvider::with_configuration(&configuration)
+        .await
+        .expect("failed to create environment provider");
 
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.

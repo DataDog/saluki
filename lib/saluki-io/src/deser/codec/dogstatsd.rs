@@ -14,7 +14,7 @@ use nom::{
 };
 use snafu::Snafu;
 
-use saluki_core::{constants::datadog::CONTAINER_ID_TAG_KEY, topology::interconnect::EventBuffer};
+use saluki_core::{constants::internal::CONTAINER_ID_TAG_KEY, topology::interconnect::EventBuffer};
 use saluki_env::time::get_unix_timestamp;
 use saluki_event::{metric::*, Event};
 
@@ -266,7 +266,7 @@ fn container_id(input: &[u8]) -> IResult<&[u8], &str> {
 #[cfg(test)]
 mod tests {
     use proptest::{collection::vec as arb_vec, prelude::*};
-    use saluki_core::constants::datadog::CONTAINER_ID_TAG_KEY;
+    use saluki_core::constants::internal::CONTAINER_ID_TAG_KEY;
     use saluki_event::{metric::*, Event};
 
     use super::{parse_dogstatsd, OneOrMany};

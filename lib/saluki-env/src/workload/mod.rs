@@ -1,20 +1,19 @@
+mod aggregator;
+mod collectors;
+pub mod entity;
+mod helpers;
+pub mod metadata;
+pub mod providers;
+pub mod store;
+
 use async_trait::async_trait;
 use saluki_event::metric::MetricTags;
+
+use self::{entity::EntityId, metadata::TagCardinality};
 
 #[async_trait]
 pub trait WorkloadProvider {
     type Error;
 
-    async fn get_workload_tags(&self) -> Result<MetricTags, Self::Error>;
-}
-
-pub struct NoopWorkloadProvider;
-
-#[async_trait]
-impl WorkloadProvider for NoopWorkloadProvider {
-    type Error = std::convert::Infallible;
-
-    async fn get_workload_tags(&self) -> Result<MetricTags, Self::Error> {
-        Ok(MetricTags::default())
-    }
+    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<MetricTags>;
 }

@@ -312,6 +312,15 @@ impl<'a> From<(&'a str, &'a str)> for MetricTag {
     }
 }
 
+impl<'a> From<(&'a str, String)> for MetricTag {
+    fn from((key, value): (&'a str, String)) -> Self {
+        Self::KeyValue {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+}
+
 /// A set of tags, or tagset.
 #[derive(Clone, Debug, Default, Eq, PartialEq, PartialOrd, Ord)]
 pub struct MetricTags(Vec<MetricTag>);
