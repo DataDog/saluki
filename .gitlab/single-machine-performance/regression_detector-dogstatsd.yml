@@ -3,10 +3,38 @@
   - export SMP_TEAM_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-team-id --with-decryption --query "Parameter.Value" --out text)
   - export SINGLE_MACHINE_PERFORMANCE_API=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-api --with-decryption --query "Parameter.Value" --out text)
   - export SMP_ECR_HOST="${SMP_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com"
-  - export BASELINE_VERSION="7.52.0"
-  - export COMPARISON_VERSION="7.52.1"
+  - export BASELINE_VERSION="7.52.1"
   - export BASELINE_IMG="public.ecr.aws/datadog/dogstatsd:${BASELINE_VERSION}"
-  - export COMPARISON_IMG="public.ecr.aws/datadog/dogstatsd:${COMPARISON_VERSION}"
+  - export COMPARISON_SHA="${CI_COMMIT_SHA}"
+  - export COMPARISON_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:${CI_PIPELINE_IID}-${COMPARISON_SHA}"
+
+build-agent-data-plane-comparison:
+  stage: test
+  image: "${DOCKER_BUILD_IMAGE}"
+  retry: 2
+  before_script:
+    - *setup-smp-env
+  variables:
+    AWS_NAMED_PROFILE: single-machine-performance
+  script:
+    # Initialize our AWS credentials.
+    - ./test/smp/configure-smp-aws-credentials.sh
+
+    # Actually build
+    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
+    - docker buildx build
+      --platform linux/amd64,linux/arm64
+      --file ./docker/Dockerfile.agent-data-plane
+      --tag ${COMPARISON_IMG}
+      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
+      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --push
+      .
 
 regression_detector-dogstatsd:
   stage: test
@@ -39,7 +67,7 @@ regression_detector-dogstatsd:
             --baseline-image ${BASELINE_IMG}
             --comparison-image ${COMPARISON_IMG}
             --baseline-sha ${BASELINE_VERSION}
-            --comparison-sha ${COMPARISON_VERSION}
+            --comparison-sha ${COMPARISON_SHA}
             --target-config-dir ./test/smp/regression/dogstatsd/
             --submission-metadata submission_metadata
     # Wait for job to complete.
