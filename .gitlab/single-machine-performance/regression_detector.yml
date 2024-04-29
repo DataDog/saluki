@@ -94,7 +94,6 @@ regression_detector:
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
     SMP_VERSION: 0.13.0
-    LADING_VERSION: 0.20.10
     RUST_LOG: info,aws_config::profile::credentials=error
   script:
     # Do some pre-flight steps like creating directories, installing helper utilities, setting
