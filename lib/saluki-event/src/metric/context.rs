@@ -326,6 +326,19 @@ impl<'a> From<(&'a str, String)> for MetricTag {
 pub struct MetricTags(Vec<MetricTag>);
 
 impl MetricTags {
+    /// Returns `true` if the tagset is empty.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Gets the number of unique tag keys.
+    ///
+    /// This does not account for the total number of tags that might be emitted, as multi-value tags could result in a
+    /// distinct tag being emitted for each value (i.e. key:[value1,value] might be sent as key:value1,key:value2).
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
     fn find_tag(&self, other: &MetricTag) -> Option<usize> {
         // We specifically don't use equality here, because we want to ignore the values in any key/value tags: all that
         // matters is type and key, which `is_same_tag` provides.

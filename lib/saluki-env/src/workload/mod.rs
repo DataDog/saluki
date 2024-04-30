@@ -5,6 +5,7 @@ mod helpers;
 pub mod metadata;
 pub mod providers;
 pub mod store;
+mod tags;
 
 use async_trait::async_trait;
 use saluki_event::metric::MetricTags;

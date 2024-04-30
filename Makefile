@@ -19,8 +19,10 @@ ifeq ($(CONTAINER_TOOL),auto)
 endif
 # Basic settings for base build images. These are varied between local development and CI.
 export RUST_VERSION ?= $(shell grep channel rust-toolchain.toml | cut -d '"' -f 2)
-export BUILD_IMAGE ?= rust:$(RUST_VERSION)-buster
-export APP_IMAGE ?= debian:buster-slim
+export ADP_BUILD_IMAGE ?= rust:$(RUST_VERSION)-buster
+export ADP_APP_IMAGE ?= debian:buster-slim
+export GEN_STATSD_BUILD_IMAGE ?= golang:1.22-bullseye
+export GEN_STATSD_APP_IMAGE ?= debian:bullseye-slim
 export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
 
 FMT_YELLOW = \033[0;33m
@@ -65,11 +67,25 @@ build-adp: ## Builds the ADP binary in release mode
 build-adp-image: ## Builds the ADP container image ('latest' tag)
 	@echo "[*] Building ADP image..."
 	@$(CONTAINER_TOOL) build \
-		--tag agent-data-plane:latest \
-		--build-arg BUILD_IMAGE=$(BUILD_IMAGE) \
-		--build-arg APP_IMAGE=$(APP_IMAGE) \
+		--tag saluki-images/agent-data-plane:latest \
+		--build-arg BUILD_IMAGE=$(ADP_BUILD_IMAGE) \
+		--build-arg APP_IMAGE=$(ADP_APP_IMAGE) \
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
+	@$(CONTAINER_TOOL) tag saluki-images/agent-data-plane:latest local.dev/saluki-images/agent-data-plane:latest
+	@$(CONTAINER_TOOL) tag saluki-images/agent-data-plane:latest local.dev/saluki-images/agent-data-plane:testing
+
+.PHONY: build-gen-statsd-image
+build-gen-statsd-image: ## Builds the gen-statsd container image ('latest' tag)
+	@echo "[*] Building gen-statsd image..."
+	@$(CONTAINER_TOOL) build \
+		--tag saluki-images/gen-statsd:latest \
+		--build-arg BUILD_IMAGE=$(GEN_STATSD_BUILD_IMAGE) \
+		--build-arg APP_IMAGE=$(GEN_STATSD_APP_IMAGE) \
+		--file ./docker/Dockerfile.gen-statsd \
+		.
+	@$(CONTAINER_TOOL) tag saluki-images/gen-statsd:latest local.dev/saluki-images/gen-statsd:latest
+	@$(CONTAINER_TOOL) tag saluki-images/gen-statsd:latest local.dev/saluki-images/gen-statsd:testing
 
 .PHONY: build-dsd-client
 build-dsd-client: ## Builds the Dogstatsd client (used for sending DSD payloads)
@@ -98,6 +114,42 @@ run-dsd-basic-uds: build-dsd-client ## Runs a basic set of metrics via the Dogst
 run-dsd-basic-uds-stream: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDS Stream)
 	@echo "[*] Sending basic metrics via Dogstatsd (unix:///tmp/adp-dsd.sock)..."
 	@./tooling/bin/dogstatsd_client unix:///tmp/adp-dsd.sock count:1,gauge:2,histogram:3,distribution:4,set:five
+
+.PHONY: push-adp-k8s-secrets
+push-adp-k8s-secrets: check-minikube ## Creates the necessary secrets/configmaps for ADP in Kubernetes
+ifeq ($(shell minikube kubectl -- get ns adp-testing >/dev/null 2>&1 || echo not-found), not-found)
+	@echo "[*] Creating Kubernetes namespace for ADP... (namespace=adp-testing)"
+	@minikube kubectl -- create ns adp-testing
+endif
+	@echo "[*] Creating Kubernetes secret(s) for ADP..."
+	@minikube kubectl -- -n adp-testing delete secret adp-secrets --ignore-not-found
+	@echo $DD_API_KEY | minikube kubectl -- -n adp-testing create secret generic adp-secrets --from-file=dd-api-key=/dev/stdin
+
+.PHONY: run-adp-k8s
+run-adp-k8s: check-minikube build-adp-image ## Runs the ADP container image in a Kubernetes pod using Minikube
+ifeq ($(shell minikube kubectl -- get ns adp-testing >/dev/null 2>&1 || echo not-found), not-found)
+	@echo "[*] Creating Kubernetes namespace for ADP... (namespace=adp-testing)"
+	@minikube kubectl -- create ns adp-testing
+endif
+ifeq ($(shell minikube kubectl -- -n adp-testing get pod 2>&1 | grep -q "No resources found" || echo dirty), dirty)
+	@echo "[*] Removing old ADP and statsd generator pods..."
+	@minikube kubectl -- -n adp-testing delete pod --all
+endif
+	@echo "[*] Pushing ADP and gen-statsd images to cluster..."
+	@minikube image load local.dev/saluki-images/agent-data-plane:testing --overwrite=true
+	@minikube image load local.dev/saluki-images/gen-statsd:testing --overwrite=true
+	@echo "[*] Deploying Agent Data Plane and statsd generator pods..."
+	@minikube kubectl -- -n adp-testing apply -f ./test/k8s/agent-data-plane.yaml
+
+.PHONY: tail-logs-adp-k8s
+tail-logs-adp-k8s: check-minikube ## Tails the pod logs for ADP
+	@minikube kubectl -- -n adp-testing logs -f adp
+
+.PHONY: check-minikube
+check-minikube:
+ifeq ($(shell command -v minikube >/dev/null || echo not-found), not-found)
+	$(error "Please install Minikube and create a cluster: https://minikube.sigs.k8s.io/docs/start/")
+endif
 
 ##@ Checking
 

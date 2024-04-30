@@ -2,5 +2,8 @@
 /.gitlab
 /.git
 /.vscode
+/docker
 /target
+/test
 /tooling
+Makefile

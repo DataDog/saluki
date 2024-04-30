@@ -5,7 +5,7 @@ use tokio::net::{TcpListener, UdpSocket};
 use super::{
     addr::ListenAddress,
     stream::Stream,
-    unix::{configure_unix_socket, ensure_unix_socket_free},
+    unix::{configure_unix_socket, ensure_unix_socket_free, set_unix_socket_write_only},
 };
 
 enum ListenerInner {
@@ -29,14 +29,23 @@ impl Listener {
             #[cfg(unix)]
             ListenAddress::Unixgram(addr) => {
                 ensure_unix_socket_free(&addr).await?;
-                tokio::net::UnixDatagram::bind(addr)
+
+                let listener = tokio::net::UnixDatagram::bind(&addr)
                     .map(Some)
-                    .map(ListenerInner::Unixgram)
+                    .map(ListenerInner::Unixgram)?;
+
+                set_unix_socket_write_only(&addr).await?;
+
+                Ok(listener)
             }
             #[cfg(unix)]
             ListenAddress::Unix(addr) => {
                 ensure_unix_socket_free(&addr).await?;
-                tokio::net::UnixListener::bind(addr).map(ListenerInner::Unix)
+
+                let listener = tokio::net::UnixListener::bind(&addr).map(ListenerInner::Unix)?;
+                set_unix_socket_write_only(&addr).await?;
+
+                Ok(listener)
             }
         };
 

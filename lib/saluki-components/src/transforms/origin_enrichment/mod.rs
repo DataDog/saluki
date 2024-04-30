@@ -13,7 +13,7 @@ use saluki_event::{
     metric::{Metric, MetricOrigin},
     Event,
 };
-use tracing::debug;
+use tracing::trace;
 
 /// Origin Enrichment synchronous transform.
 ///
@@ -27,7 +27,6 @@ use tracing::debug;
 ///
 /// ## Missing
 ///
-/// - support for specifying cardinality when tagging
 /// - full alignment with entity ID/client origin handling in terms of which one we use for getting enrichment tags
 pub struct OriginEnrichmentConfiguration<E> {
     env_provider: E,
@@ -134,13 +133,20 @@ where
 
         if let Some(entity_id) = maybe_client_origin_entity_id {
             // TODO: Just hardcoding this to high cardinality for now.
+            let cardinality = maybe_cardinality
+                .and_then(TagCardinality::parse)
+                .unwrap_or(TagCardinality::High);
+
             match self
                 .env_provider
                 .workload()
-                .get_tags_for_entity(&entity_id, TagCardinality::High)
+                .get_tags_for_entity(&entity_id, cardinality)
             {
-                Some(tags) => metric.context.tags.extend(tags),
-                None => debug!(entity_id = entity_id.to_string(), "No tags found for entity."),
+                Some(tags) => {
+                    trace!(?entity_id, tags_len = tags.len(), "Found tags for entity.");
+                    metric.context.tags.extend(tags);
+                }
+                None => trace!(entity_id = entity_id.to_string(), "No tags found for entity."),
             }
         }
     }

@@ -26,5 +26,10 @@ RUN cargo build --release && \
 # Now stick our resulting binary in a clean image.
 FROM ${APP_IMAGE}
 COPY --from=builder /adp/target/release/agent-data-plane /usr/local/bin/agent-data-plane
+RUN mkdir -p /var/datadog/adp/ && \
+	apt-get update && \
+	apt-get install -y --no-install-recommends ca-certificates && \
+	apt-get clean && \
+	rm -rf /var/lib/apt/lists/*
 
 ENTRYPOINT [ "/usr/local/bin/agent-data-plane" ]
