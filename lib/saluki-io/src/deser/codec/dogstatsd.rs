@@ -64,7 +64,11 @@ impl Decoder for DogstatsdCodec {
                 // If we need more data, it's not an error, so we just break out.
                 nom::Err::Incomplete(_) => unreachable!("incomplete error should not be emitted"),
                 nom::Err::Error(e) | nom::Err::Failure(e) => Err(ParseError::Structural {
-                    reason: format!("encountered error '{:?}': {:?}", e.code, e.input),
+                    reason: format!(
+                        "encountered error '{:?}' while processing message '{}'",
+                        e.code,
+                        String::from_utf8_lossy(e.input)
+                    ),
                 }),
             },
         }
