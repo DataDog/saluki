@@ -3,6 +3,7 @@ generator:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
       path: "/tmp/adp-dsd.sock"
+      block_cache_method: Fixed
       variant:
         dogstatsd:
           contexts:
@@ -27,9 +28,9 @@ generator:
               max: 32
           multivalue_pack_probability: 0.08
           kind_weights:
-            metric: 90
-            event: 5
-            service_check: 5
+            metric: 100
+            event: 0
+            service_check: 0
           metric_weights:
             count: 100
             gauge: 10
