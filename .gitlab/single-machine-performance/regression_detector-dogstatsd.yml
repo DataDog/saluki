@@ -59,7 +59,7 @@ regression_detector-dogstatsd:
     # This avoids  https://gitlab.com/gitlab-org/gitlab/-/issues/217231.
     - cat outputs/report.md | sed "s/^\$/$(echo -ne '\uFEFF\u00A0\u200B')/g"
     # Post the HTML report to the PR.
-    - cat outputs/report.html | /usr/local/bin/pr-commenter --for-pr="${CI_COMMIT_REF_NAME}"
+    - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (DogStatsD)"
     # Finally, exit 1 if the job signals a regression else 0.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
             job result
