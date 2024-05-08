@@ -1,4 +1,9 @@
-use std::{io, os::unix::fs::FileTypeExt as _, path::Path};
+use std::{
+    fs::Permissions,
+    io,
+    os::unix::fs::{FileTypeExt as _, PermissionsExt as _},
+    path::Path,
+};
 
 use bytes::BufMut;
 use socket2::SockRef;
@@ -66,6 +71,13 @@ pub(super) async fn ensure_unix_socket_free<P: AsRef<Path>>(path: P) -> io::Resu
     }
 
     Ok(())
+}
+
+/// Sets the UNIX socket at the given path to be write-only by non-owners.
+///
+/// This ensures that normal clients can write to the socket but not read from it.
+pub(super) async fn set_unix_socket_write_only<P: AsRef<Path>>(path: P) -> io::Result<()> {
+    tokio::fs::set_permissions(path, Permissions::from_mode(0o722)).await
 }
 
 pub async fn unix_recvmsg<B: BufMut>(socket: &mut UnixStream, buf: &mut B) -> io::Result<(usize, ConnectionAddress)> {

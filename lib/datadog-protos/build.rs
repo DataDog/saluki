@@ -6,6 +6,7 @@ fn main() {
     println!("cargo:rerun-if-changed=proto/ddsketch_full.proto");
     println!("cargo:rerun-if-changed=proto/dd_metric.proto");
 
+    // Handle code generation for pure Protocol Buffers message types.
     let codegen_customize = protobuf_codegen::Customize::default()
         .tokio_bytes(true)
         .tokio_bytes_for_string(true)
@@ -24,4 +25,11 @@ fn main() {
         .cargo_out_dir("protos")
         .customize(codegen_customize)
         .run_from_script();
+
+    // Handle code generation for gRPC service definitions.
+    tonic_build::configure()
+        .build_server(false)
+        .include_file("api.mod.rs")
+        .compile(&["proto/datadog/api/v1/api.proto"], &["proto"])
+        .expect("failed to build gRPC service definitions for DCA")
 }

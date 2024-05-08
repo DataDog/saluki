@@ -3,11 +3,12 @@ use std::{path::PathBuf, sync::Arc};
 use async_trait::async_trait;
 use saluki_config::GenericConfiguration;
 
-use super::HostProvider;
-
-use super::hostname::{
-    HostnameProvider, KubernetesHostnameProvider, MaybeFileHostnameProvider, MaybeStaticHostnameProvider,
-    OperatingSystemHostnameProvider,
+use crate::{
+    host::hostname::{
+        HostnameProvider, KubernetesHostnameProvider, MaybeFileHostnameProvider, MaybeStaticHostnameProvider,
+        OperatingSystemHostnameProvider,
+    },
+    HostProvider,
 };
 
 #[derive(Clone)]
@@ -62,21 +63,11 @@ impl AgentLikeHostProvider {
     pub fn new(
         config: &GenericConfiguration, hostname_config_key: &str, hostname_file_config_key: &str,
         trust_os_hostname_config_key: &str,
-    ) -> Result<Self, String> {
-        let maybe_hostname = config
-            .get_typed::<String>(hostname_config_key)
-            .map_err(|e| format!("error querying config for key '{}': {}", hostname_config_key, e))?;
-        let maybe_hostname_file_path = config
-            .get_typed::<PathBuf>(hostname_file_config_key)
-            .map_err(|e| format!("error querying config for key '{}': {}", hostname_file_config_key, e))?;
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let maybe_hostname = config.get_typed::<String>(hostname_config_key)?;
+        let maybe_hostname_file_path = config.get_typed::<PathBuf>(hostname_file_config_key)?;
         let trust_os_hostname = config
-            .get_typed::<bool>(trust_os_hostname_config_key)
-            .map_err(|e| {
-                format!(
-                    "error querying config for key '{}': {}",
-                    trust_os_hostname_config_key, e
-                )
-            })?
+            .get_typed::<bool>(trust_os_hostname_config_key)?
             .unwrap_or_default();
 
         Ok(Self {
@@ -113,6 +104,6 @@ impl HostProvider for AgentLikeHostProvider {
             }
         }
 
-        current_hostname.ok_or_else(|| "Unable to reliably determine the host name. You can define one in the agent config file or in your hosts file.".to_string())
+        current_hostname.ok_or_else(|| "Unable to reliably determine the host name.".to_string())
     }
 }

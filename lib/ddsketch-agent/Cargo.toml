@@ -8,7 +8,6 @@ license = "Apache-2.0"
 datadog-protos = { path = "../datadog-protos" }
 float_eq = { workspace = true }
 ordered-float = { workspace = true }
-snafu = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }

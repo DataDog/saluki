@@ -1,7 +1,7 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, fmt};
 
 /// A metric tag value.
-#[derive(Clone, Debug, Ord, PartialOrd)]
+#[derive(Clone, Ord, PartialOrd)]
 pub enum MetricTagValue {
     /// A single tag value.
     Single(String),
@@ -76,6 +76,15 @@ impl std::hash::Hash for MetricTagValue {
                     value.hash(state);
                 }
             }
+        }
+    }
+}
+
+impl fmt::Debug for MetricTagValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MetricTagValue::Single(v) => write!(f, "{}", v),
+            MetricTagValue::Multiple(vs) => write!(f, "[{}]", vs.join(", ")),
         }
     }
 }
@@ -167,7 +176,7 @@ impl Iterator for MetricTagValueIntoIter {
 ///   they will be combined into a single tag that can conceptually be thought of as `tag-a:value1,value2`.
 ///
 /// The difference between key/value tags and multi-key/value tags is handled in `MetricTagValue`.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Eq, Hash, PartialEq)]
 pub enum MetricTag {
     /// A bare tag, such as `production`.
     Bare(String),
@@ -268,6 +277,15 @@ impl Ord for MetricTag {
     }
 }
 
+impl fmt::Debug for MetricTag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bare(key) => write!(f, "{}", key),
+            Self::KeyValue { key, value } => write!(f, "{} => {:?}", key, value),
+        }
+    }
+}
+
 impl From<(String, String)> for MetricTag {
     fn from((key, value): (String, String)) -> Self {
         Self::KeyValue {
@@ -312,11 +330,33 @@ impl<'a> From<(&'a str, &'a str)> for MetricTag {
     }
 }
 
+impl<'a> From<(&'a str, String)> for MetricTag {
+    fn from((key, value): (&'a str, String)) -> Self {
+        Self::KeyValue {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+}
+
 /// A set of tags, or tagset.
 #[derive(Clone, Debug, Default, Eq, PartialEq, PartialOrd, Ord)]
 pub struct MetricTags(Vec<MetricTag>);
 
 impl MetricTags {
+    /// Returns `true` if the tagset is empty.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Gets the number of unique tag keys.
+    ///
+    /// This does not account for the total number of tags that might be emitted, as multi-value tags could result in a
+    /// distinct tag being emitted for each value (i.e. key:[value1,value] might be sent as key:value1,key:value2).
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
     fn find_tag(&self, other: &MetricTag) -> Option<usize> {
         // We specifically don't use equality here, because we want to ignore the values in any key/value tags: all that
         // matters is type and key, which `is_same_tag` provides.
@@ -378,13 +418,26 @@ impl MetricTags {
 
     /// Retains only the tags specified by the given predicate.
     ///
-    /// In other words, remove all tags `e` for which `f(&e)`` returns false. This method operates in place, visiting
+    /// In other words, remove all tags `e` for which `f(&e)` returns false. This method operates in place, visiting
     /// each element exactly once in the original order, and preserves the order of the retained elements.
     pub fn retain<F>(&mut self, retain_fn: F)
     where
         F: FnMut(&MetricTag) -> bool,
     {
         self.0.retain(retain_fn);
+    }
+
+    /// Merges the `other` tagset into this one, only if a given tag is not already present.
+    ///
+    /// The tags in `self` have priority, meaning that if a tag in `other` already exists in `self`,
+    /// it will not be merged. For merging that combines the tag values instead, consider the
+    /// `Extend` implementation on `MetricTags`.
+    pub fn merge_missing(&mut self, other: Self) {
+        for tag in other {
+            if self.find_tag(&tag).is_none() {
+                self.0.push(tag);
+            }
+        }
     }
 
     /// Consumes the tagset and returns it in sorted order.
@@ -395,6 +448,12 @@ impl MetricTags {
     pub fn sorted(mut self) -> Self {
         self.0.sort_unstable();
         self
+    }
+}
+
+impl From<MetricTag> for MetricTags {
+    fn from(tag: MetricTag) -> Self {
+        Self(vec![tag])
     }
 }
 

@@ -46,17 +46,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .get_typed::<String>("dd_url")
         .expect("Datadog API URL key must be a string")
         .expect("Datadog API URL key must be specified (`dd_url` or `DD_DD_URL` environment variable)");
+    let raw_dsd_listen_addr = configuration
+        .get_typed::<String>("dogstatsd_socket")
+        .expect("DogStatsD listen address must be a string")
+        .expect("DogStatsD listen address must be specified (`dogstatsd_socket` or `DD_DOGSTATSD_SOCKET` environment variable)");
 
-    let env_provider =
-        ADPEnvironmentProvider::with_configuration(&configuration).expect("failed to create environment provider");
+    let env_provider = ADPEnvironmentProvider::from_configuration(&configuration)
+        .await
+        .expect("failed to create environment provider");
 
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
     //
     // TODO: Pull these configuration values from the actual configuration, most likely by making each component take a
     // reference to the configuration itself.
-    let dsd_listen_addr = ListenAddress::try_from("unixgram:///tmp/adp-dsd.sock")?;
-    let dsd_config = DogStatsDConfiguration::from_listen_address(dsd_listen_addr)?;
+    let dsd_listen_addr = ListenAddress::try_from(raw_dsd_listen_addr)?;
+    let dsd_config = DogStatsDConfiguration::from_listen_address(dsd_listen_addr)?.with_origin_detection(true);
     let dsd_agg_config = AggregateConfiguration::from_window(Duration::from_secs(10)).with_context_limit(15500);
     let int_metrics_config = InternalMetricsConfiguration;
     let int_metrics_agg_config = AggregateConfiguration::from_window(Duration::from_secs(10));

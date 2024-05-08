@@ -36,7 +36,15 @@ impl<'a> TryFrom<&'a str> for ListenAddress {
     type Error = String;
 
     fn try_from(value: &'a str) -> Result<Self, Self::Error> {
-        let url = Url::parse(value).map_err(|e| e.to_string())?;
+        let url = match Url::parse(value) {
+            Ok(url) => url,
+            Err(e) => match e {
+                url::ParseError::RelativeUrlWithoutBase => {
+                    Url::parse(&format!("unixgram://{}", value)).map_err(|e| e.to_string())?
+                }
+                _ => return Err(e.to_string()),
+            },
+        };
 
         match url.scheme() {
             "tcp" => {

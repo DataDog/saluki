@@ -1,6 +1,6 @@
-use figment::{providers::Env, value::Value, Error, Figment};
+use figment::{providers::Env, value::Value, Figment};
 
-pub use figment::value;
+pub use figment::{value, Error};
 use serde::Deserialize;
 
 /// A configuration loader that can load configuration from various sources.
@@ -106,8 +106,18 @@ impl GenericConfiguration {
         T: Deserialize<'a>,
     {
         match self.inner.find_ref(key) {
-            Some(value) => Ok(Some(value.deserialize()?)),
+            Some(value) => Ok(Some(value.deserialize().map_err(|e| e.with_path(key))?)),
             None => Ok(None),
+        }
+    }
+
+    pub fn get_typed_or_default<'a, T>(&self, key: &str) -> T
+    where
+        T: Default + Deserialize<'a>,
+    {
+        match self.inner.find_ref(key) {
+            Some(value) => value.deserialize().unwrap_or_default(),
+            None => T::default(),
         }
     }
 }

@@ -14,5 +14,6 @@ saluki-env = { workspace = true }
 saluki-io = { workspace = true }
 
 # External dependencies.
+serde = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "signal"] }
 tracing = { workspace = true }
