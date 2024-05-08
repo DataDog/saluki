@@ -25,10 +25,6 @@ RUN cargo build --release && \
 
 # Now stick our resulting binary in a clean image.
 FROM ${APP_IMAGE}
-RUN apt-get update && \
-	apt-get install -y --no-install-recommends ca-certificates && \
-	apt-get clean && \
-	rm -rf /var/lib/apt/lists/*
 COPY --from=builder /adp/target/release/agent-data-plane /usr/local/bin/agent-data-plane
 COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
 
