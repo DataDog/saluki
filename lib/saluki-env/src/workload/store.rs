@@ -19,10 +19,10 @@ use super::{
 
 #[derive(Default)]
 pub struct TagStore {
-    entity_ancestor_mappings: HashMap<EntityId, EntityId>,
+    entity_hierarchy_mappings: HashMap<EntityId, EntityId>,
 
-    low_cardinality_entity_tags: HashMap<EntityId, HashMap<String, String>>,
-    high_cardinality_entity_tags: HashMap<EntityId, HashMap<String, String>>,
+    low_cardinality_entity_tags: HashMap<EntityId, MetricTags>,
+    high_cardinality_entity_tags: HashMap<EntityId, MetricTags>,
 
     resolved_low_cardinality_entity_tags: HashMap<EntityId, MetricTags>,
     resolved_high_cardinality_entity_tags: HashMap<EntityId, MetricTags>,
@@ -37,15 +37,19 @@ impl TagStore {
             match action {
                 MetadataAction::Delete => self.delete_entity(entity_id.clone()),
                 MetadataAction::LinkAncestor { ancestor_entity_id } => {
-                    self.add_ancestor_mapping(entity_id.clone(), ancestor_entity_id)
+                    self.add_hierarchy_mapping(entity_id.clone(), ancestor_entity_id)
                 }
-                MetadataAction::AddTag {
-                    cardinality,
-                    key,
-                    value,
-                } => self.add_entity_tags(entity_id.clone(), vec![(key, value)], cardinality),
+                MetadataAction::LinkDescendant { descendant_entity_id } => {
+                    self.add_hierarchy_mapping(descendant_entity_id, entity_id.clone())
+                }
+                MetadataAction::AddTag { cardinality, tag } => {
+                    self.add_entity_tags(entity_id.clone(), tag.into(), cardinality)
+                }
                 MetadataAction::AddTags { cardinality, tags } => {
                     self.add_entity_tags(entity_id.clone(), tags, cardinality)
+                }
+                MetadataAction::SetTags { cardinality, tags } => {
+                    self.set_entity_tags(entity_id.clone(), tags, cardinality)
                 }
             }
         }
@@ -59,37 +63,47 @@ impl TagStore {
         self.resolved_high_cardinality_entity_tags.remove(&entity_id);
 
         // Delete the ancestry mapping, if it exists, for the entity itself.
-        self.entity_ancestor_mappings.remove(&entity_id);
+        self.entity_hierarchy_mappings.remove(&entity_id);
 
         // Iterate over all ancestry mappings, and delete any which reference this entity as an ancestor. We'll keep a
         // list of the entity IDs which reference this entity as an ancestor, as we'll need to regenerate their tags
         // after breaking the ancestry link.
         let mut entity_ids_to_resolve = Vec::new();
-        for (descendant_entity_id, ancestor_entity_id) in self.entity_ancestor_mappings.iter() {
+        for (descendant_entity_id, ancestor_entity_id) in self.entity_hierarchy_mappings.iter() {
             if ancestor_entity_id == &entity_id {
                 entity_ids_to_resolve.push(descendant_entity_id.clone());
             }
         }
 
         for entity_id in entity_ids_to_resolve {
-            self.entity_ancestor_mappings.remove(&entity_id);
+            self.entity_hierarchy_mappings.remove(&entity_id);
             self.regenerate_entity_tags(entity_id);
         }
     }
 
-    fn add_ancestor_mapping(&mut self, entity_id: EntityId, ancestor_entity_id: EntityId) {
+    fn add_hierarchy_mapping(&mut self, child_entity_id: EntityId, parent_entity_id: EntityId) {
         let _ = self
-            .entity_ancestor_mappings
-            .insert(entity_id.clone(), ancestor_entity_id);
-        self.regenerate_entity_tags(entity_id);
+            .entity_hierarchy_mappings
+            .insert(child_entity_id.clone(), parent_entity_id);
+        self.regenerate_entity_tags(child_entity_id);
     }
 
-    fn add_entity_tags(&mut self, entity_id: EntityId, tags: Vec<(String, String)>, cardinality: TagCardinality) {
+    fn add_entity_tags(&mut self, entity_id: EntityId, tags: MetricTags, cardinality: TagCardinality) {
         let existing_tags = match cardinality {
             TagCardinality::Low => self.low_cardinality_entity_tags.entry(entity_id.clone()).or_default(),
             TagCardinality::High => self.high_cardinality_entity_tags.entry(entity_id.clone()).or_default(),
         };
         existing_tags.extend(tags.into_iter().map(Into::into));
+
+        self.regenerate_entity_tags(entity_id);
+    }
+
+    fn set_entity_tags(&mut self, entity_id: EntityId, tags: MetricTags, cardinality: TagCardinality) {
+        let existing_tags = match cardinality {
+            TagCardinality::Low => self.low_cardinality_entity_tags.entry(entity_id.clone()).or_default(),
+            TagCardinality::High => self.high_cardinality_entity_tags.entry(entity_id.clone()).or_default(),
+        };
+        *existing_tags = tags;
 
         self.regenerate_entity_tags(entity_id);
     }
@@ -126,7 +140,7 @@ impl TagStore {
         let mut entity_stack = VecDeque::new();
 
         // Seed the entity stack with our initial entity.
-        for (descendant_entity_id, ancestor_entity_id) in self.entity_ancestor_mappings.iter() {
+        for (descendant_entity_id, ancestor_entity_id) in self.entity_hierarchy_mappings.iter() {
             if ancestor_entity_id == &entity_id {
                 entity_stack.push_back(descendant_entity_id.clone());
             }
@@ -153,7 +167,7 @@ impl TagStore {
             }
 
             // Add any descendants of the current entity to the stack.
-            for (descendant_entity_id, ancestor_entity_id) in self.entity_ancestor_mappings.iter() {
+            for (descendant_entity_id, ancestor_entity_id) in self.entity_hierarchy_mappings.iter() {
                 if ancestor_entity_id == &sub_entity_id {
                     entity_stack.push_back(descendant_entity_id.clone());
                 }
@@ -161,9 +175,7 @@ impl TagStore {
         }
     }
 
-    fn get_raw_entity_tags(
-        &self, entity_id: &EntityId, cardinality: TagCardinality,
-    ) -> Option<HashMap<String, String>> {
+    fn get_raw_entity_tags(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<MetricTags> {
         match cardinality {
             TagCardinality::Low => self.low_cardinality_entity_tags.get(entity_id).cloned(),
             TagCardinality::High => {
@@ -184,18 +196,13 @@ impl TagStore {
     }
 
     fn resolve_entity_tags(&self, entity_id: &EntityId, cardinality: TagCardinality) -> MetricTags {
-        // Start with any global tags, which are always used if present.
-        let mut resolved_tags = self
-            .get_raw_entity_tags(&EntityId::Global, cardinality)
-            .unwrap_or_default();
-
         // Build the ancestry chain for the entity, starting with the entity itself.
         let mut entity_chain = VecDeque::new();
         entity_chain.push_back(entity_id);
 
         loop {
             let current = entity_chain.front().expect("entity chain can never be empty");
-            if let Some(ancestor) = self.entity_ancestor_mappings.get(*current) {
+            if let Some(ancestor) = self.entity_hierarchy_mappings.get(*current) {
                 entity_chain.push_front(ancestor);
             } else {
                 break;
@@ -203,29 +210,21 @@ impl TagStore {
         }
 
         // For each entity in the chain, grab their tags, and merge them into the resolved tags.
+        let mut resolved_tags = MetricTags::default();
+
         for ancestor_entity_id in entity_chain {
             if let Some(tags) = self.get_raw_entity_tags(ancestor_entity_id, cardinality) {
-                for (tag_key, tag_value) in tags {
-                    match resolved_tags.get_mut(&tag_key) {
-                        Some(existing_value) => {
-                            // If the tag already exists, we need to merge the values.
-                            *existing_value = tag_value;
-                        }
-                        None => {
-                            // Otherwise, we can just insert the tag.
-                            resolved_tags.insert(tag_key, tag_value);
-                        }
-                    }
-                }
+                resolved_tags.merge_missing(tags);
             }
         }
 
-        let mut metric_tags = MetricTags::default();
-        for (tag_key, tag_value) in resolved_tags {
-            metric_tags.insert_tag((tag_key, tag_value));
-        }
+        // Finally, merge in any global tags that are present.
+        let global_tags = self
+            .get_raw_entity_tags(&EntityId::Global, cardinality)
+            .unwrap_or_default();
+        resolved_tags.merge_missing(global_tags);
 
-        metric_tags
+        resolved_tags
     }
 
     pub fn snapshot(&self) -> TagSnapshot {
@@ -294,8 +293,7 @@ mod tests {
 					entity_id: $entity_id.clone(),
 					actions: OneOrMany::One(MetadataAction::AddTag {
 						cardinality: $cardinality,
-						key: $key.into(),
-						value: $value.into(),
+						tag: ($key, $value).into(),
 					}),
 				});
 			)+

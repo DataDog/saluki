@@ -1,0 +1,54 @@
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: statsd-generator
+  labels:
+    app: gen-statsd
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gen-statsd
+  template:
+    metadata:
+      labels:
+        app: gen-statsd
+    spec:
+      containers:
+      - name: stats-gen
+        image: local.dev/saluki-images/gen-statsd:testing
+        command: ["/gen-statsd"]
+        env:
+        - name: DD_ENV
+          value: staging
+        - name: DD_VERSION
+          value: 1.0.4
+        - name: DD_SERVICE
+          value: statsd-generator
+        - name: STATSD_HOSTS
+          value: /var/run/datadog/dsd.socket
+        - name: AGENTS
+          value: "1"
+        - name: PREFIX
+          value: adp_testing
+        - name: COUNTERS
+          value: "5"
+        - name: GAUGES
+          value: "1"
+        - name: TIMERS
+          value: "0"
+        - name: FLUSH_INTERVAL
+          value: 1s
+        - name: TAG_FORMAT
+          value: datadog
+        - name: TAGS
+          value: workload:adp-testing
+        volumeMounts:
+        - name: dsdsocket
+          mountPath: /var/run/datadog
+      volumes:
+      - name: dsdsocket
+        hostPath:
+          path: /var/run/datadog
+      terminationGracePeriodSeconds: 5

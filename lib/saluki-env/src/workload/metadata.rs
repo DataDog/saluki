@@ -1,3 +1,7 @@
+use std::fmt;
+
+use saluki_event::metric::{MetricTag, MetricTags};
+
 use super::{entity::EntityId, helpers::OneOrMany};
 
 #[derive(Clone, Copy, Debug)]
@@ -58,35 +62,35 @@ impl MetadataOperation {
     }
 
     /// Creates a new `MetadataOperation` that adds a tag to an entity.
-    pub fn tag(entity_id: EntityId, cardinality: TagCardinality, key: String, value: String) -> Self {
+    pub fn tag<T>(entity_id: EntityId, cardinality: TagCardinality, tag: T) -> Self
+    where
+        T: Into<MetricTag>,
+    {
         Self {
             entity_id,
             actions: OneOrMany::One(MetadataAction::AddTag {
                 cardinality,
-                key,
-                value,
+                tag: tag.into(),
             }),
         }
     }
 
     /// Creates a new `MetadataOperation` that adds multiple tags to an entity.
-    pub fn tags<T, K, V>(entity_id: EntityId, cardinality: TagCardinality, tags: T) -> Self
+    pub fn tags<I, T>(entity_id: EntityId, cardinality: TagCardinality, tags: I) -> Self
     where
-        T: IntoIterator<Item = (K, V)>,
-        K: Into<String>,
-        V: Into<String>,
+        I: IntoIterator<Item = T>,
+        T: Into<MetricTag>,
     {
         Self {
             entity_id,
             actions: OneOrMany::One(MetadataAction::AddTags {
                 cardinality,
-                tags: tags.into_iter().map(|(k, v)| (k.into(), v.into())).collect(),
+                tags: tags.into_iter().map(Into::into).collect(),
             }),
         }
     }
 }
 
-#[derive(Debug)]
 pub enum MetadataAction {
     /// Delete all metadata for the entity.
     Delete,
@@ -101,16 +105,40 @@ pub enum MetadataAction {
     /// canonicalized version.
     LinkAncestor { ancestor_entity_id: EntityId },
 
+    /// Establishes a link between the entity and its descendant.
+    ///
+    /// This creates an entity hierarchy, which allows for aggregation of entity metadata, such as including
+    /// higher-level metadata, from the cluster or pod level, when getting the metadata for a specific container.
+    LinkDescendant { descendant_entity_id: EntityId },
+
     /// Adds a key/value tag to the entity.
     AddTag {
         cardinality: TagCardinality,
-        key: String,
-        value: String,
+        tag: MetricTag,
     },
 
     /// Adds multiple key/value tags to the entity.
     AddTags {
         cardinality: TagCardinality,
-        tags: Vec<(String, String)>,
+        tags: MetricTags,
     },
+
+    /// Sets the tags for the entity.
+    SetTags {
+        cardinality: TagCardinality,
+        tags: MetricTags,
+    },
+}
+
+impl fmt::Debug for MetadataAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Delete => write!(f, "Delete()"),
+            Self::LinkAncestor { ancestor_entity_id } => write!(f, "LinkAncestor({:?})", ancestor_entity_id),
+            Self::LinkDescendant { descendant_entity_id } => write!(f, "LinkDescendant({:?})", descendant_entity_id),
+            Self::AddTag { cardinality, tag } => write!(f, "AddTag(cardinality={:?}, tag={:?})", cardinality, tag),
+            Self::AddTags { cardinality, tags } => write!(f, "AddTags(cardinality={:?}, tags={:?})", cardinality, tags),
+            Self::SetTags { cardinality, tags } => write!(f, "SetTags(cardinality={:?}, tags={:?})", cardinality, tags),
+        }
+    }
 }

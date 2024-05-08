@@ -75,6 +75,16 @@ build-adp-image: ## Builds the ADP container image ('latest' tag)
 	@$(CONTAINER_TOOL) tag saluki-images/agent-data-plane:latest local.dev/saluki-images/agent-data-plane:latest
 	@$(CONTAINER_TOOL) tag saluki-images/agent-data-plane:latest local.dev/saluki-images/agent-data-plane:testing
 
+.PHONY: build-datadog-agent-image
+build-datadog-agent-image: build-adp-image ## Builds a converged Datadog Agent container image containing ADP ('latest' tag)
+	@echo "[*] Building converged Datadog Agent image..."
+	@$(CONTAINER_TOOL) build \
+		--tag saluki-images/datadog-agent:latest \
+		--file ./docker/Dockerfile.datadog-agent \
+		.
+	@$(CONTAINER_TOOL) tag saluki-images/datadog-agent:latest local.dev/saluki-images/datadog-agent:latest
+	@$(CONTAINER_TOOL) tag saluki-images/datadog-agent:latest local.dev/saluki-images/datadog-agent:testing
+
 .PHONY: build-gen-statsd-image
 build-gen-statsd-image: ## Builds the gen-statsd container image ('latest' tag)
 	@echo "[*] Building gen-statsd image..."
@@ -115,40 +125,77 @@ run-dsd-basic-uds-stream: build-dsd-client ## Runs a basic set of metrics via th
 	@echo "[*] Sending basic metrics via Dogstatsd (unix:///tmp/adp-dsd.sock)..."
 	@./tooling/bin/dogstatsd_client unix:///tmp/adp-dsd.sock count:1,gauge:2,histogram:3,distribution:4,set:five
 
-.PHONY: push-adp-k8s-secrets
-push-adp-k8s-secrets: check-minikube ## Creates the necessary secrets/configmaps for ADP in Kubernetes
-ifeq ($(shell minikube kubectl -- get ns adp-testing >/dev/null 2>&1 || echo not-found), not-found)
-	@echo "[*] Creating Kubernetes namespace for ADP... (namespace=adp-testing)"
-	@minikube kubectl -- create ns adp-testing
-endif
-	@echo "[*] Creating Kubernetes secret(s) for ADP..."
-	@minikube kubectl -- -n adp-testing delete secret adp-secrets --ignore-not-found
-	@echo $DD_API_KEY | minikube kubectl -- -n adp-testing create secret generic adp-secrets --from-file=dd-api-key=/dev/stdin
+##@ Kubernetes
 
-.PHONY: run-adp-k8s
-run-adp-k8s: check-minikube build-adp-image ## Runs the ADP container image in a Kubernetes pod using Minikube
-ifeq ($(shell minikube kubectl -- get ns adp-testing >/dev/null 2>&1 || echo not-found), not-found)
-	@echo "[*] Creating Kubernetes namespace for ADP... (namespace=adp-testing)"
-	@minikube kubectl -- create ns adp-testing
+.PHONY: k8s-create-cluster
+k8s-create-cluster: check-k8s-tools ## Creates a dedicated Kubernetes cluster (minikube)
+	@echo "[*] Creating Kubernetes cluster via minikube..."
+	@minikube start --profile=adp-local --container-runtime=containerd --keep-context=true
+
+.PHONY: k8s-install-datadog-agent
+k8s-install-datadog-agent: check-k8s-tools k8s-ensure-ns-datadog ## Installs the Datadog Agent (minikube)
+ifeq ($(shell test -d test/k8s/charts || echo not-found), not-found)
+	@echo "[*] Downloading Datadog Agent Helm chart locally..."
+	@git -C test/k8s clone --single-branch --branch=saluki/adp-container \
+		https://github.com/DataDog/helm-charts.git charts
+	@helm repo add prometheus https://prometheus-community.github.io/helm-charts
 endif
+	@git -C test/k8s/charts pull origin
+	@helm dependency build ./test/k8s/charts/charts/datadog
+ifeq ($(shell helm --kube-context adp-local list 2>&1 | grep datadog || echo not-found), not-found)
+	@echo "[*] Installing Datadog Agent..."
+	@helm upgrade --install --kube-context adp-local datadog ./test/k8s/charts/charts/datadog \
+		--namespace datadog \
+		--values ./test/k8s/datadog-agent-values.yaml
+endif
+
+.PHONY: k8s-set-dd-api-key
+k8s-set-dd-api-key: check-k8s-tools k8s-ensure-ns-datadog ## Creates API key secret for ADP and Datadog Agent (minikube)
+	@echo "[*] Creating/updating Kubernetes secret(s) for Datadog Agent..."
+	@minikube --profile=adp-local kubectl -- --context adp-local -n datadog delete secret datadog-secret --ignore-not-found
+	@echo ${DD_API_KEY} | minikube --profile=adp-local kubectl -- --context adp-local -n datadog create secret generic datadog-secret --from-file=api-key=/dev/stdin --from-literal=app-key=fake-app-key
+
+.PHONY: k8s-push-adp-image
+k8s-push-adp-image: check-k8s-tools build-adp-image ## Loads the ADP container image (minikube)
+	@echo "[*] Pushing ADP image to cluster..."
+	@minikube --profile=adp-local image load local.dev/saluki-images/agent-data-plane:testing --overwrite=true
+
+.PHONY: k8s-push-datadog-agent-image
+k8s-push-datadog-agent-image: check-k8s-tools build-datadog-agent-image ## Loads the converged Datadog Agent container image (minikube)
+	@echo "[*] Pushing converged Datadog Agent image to cluster..."
+	@minikube --profile=adp-local image load local.dev/saluki-images/datadog-agent:testing --overwrite=true
+
+.PHONY: k8s-deploy-statsd-generator
+k8s-deploy-statsd-generator: check-k8s-tools k8s-ensure-ns-adp-testing build-gen-statsd-image ## Deploys the statsd generator pod (minikube)
 ifeq ($(shell minikube kubectl -- -n adp-testing get pod 2>&1 | grep -q "No resources found" || echo dirty), dirty)
-	@echo "[*] Removing old ADP and statsd generator pods..."
-	@minikube kubectl -- -n adp-testing delete pod --all
+	@echo "[*] Removing old statsd generator pods..."
+	@minikube --profile=adp-local kubectl -- --context adp-local -n adp-testing delete pod --all
 endif
-	@echo "[*] Pushing ADP and gen-statsd images to cluster..."
-	@minikube image load local.dev/saluki-images/agent-data-plane:testing --overwrite=true
-	@minikube image load local.dev/saluki-images/gen-statsd:testing --overwrite=true
-	@echo "[*] Deploying Agent Data Plane and statsd generator pods..."
-	@minikube kubectl -- -n adp-testing apply -f ./test/k8s/agent-data-plane.yaml
+	@echo "[*] Pushing gen-statsd image to cluster..."
+	@minikube --profile=adp-local image load local.dev/saluki-images/gen-statsd:testing --overwrite=true
+	@echo "[*] Deploying statsd generator pods..."
+	@minikube --profile=adp-local kubectl -- --context adp-local -n adp-testing apply -f ./test/k8s/statsd-generator.yaml
 
-.PHONY: tail-logs-adp-k8s
-tail-logs-adp-k8s: check-minikube ## Tails the pod logs for ADP
-	@minikube kubectl -- -n adp-testing logs -f adp
+.PHONY: k8s-tail-adp-logs
+k8s-tail-adp-logs: check-k8s-tools ## Tails the container logs for ADP
+	@minikube --profile=adp-local kubectl -- --context adp-local -n datadog logs -f daemonset/datadog -c agent-data-plane
 
-.PHONY: check-minikube
-check-minikube:
+.PHONY: k8s-ensure-ns-%
+k8s-ensure-ns-%: override NS = $(@:k8s-ensure-ns-%=%)
+k8s-ensure-ns-%: check-k8s-tools
+	@minikube --profile=adp-local kubectl -- --context adp-local get ns ${NS} >/dev/null 2>&1 >/dev/null \
+		|| (echo "[*] Creating Kubernetes namespace '${NS}'..." && minikube --profile=adp-local kubectl -- --context adp-local create ns ${NS})
+
+.PHONY: check-k8s-tools
+check-k8s-tools:
+ifeq ($(shell command -v git >/dev/null || echo not-found), not-found)
+	$(error "Please install git.")
+endif
+ifeq ($(shell command -v helm >/dev/null || echo not-found), not-found)
+	$(error "Please install Helm: https://helm.sh/docs/intro/install/")
+endif
 ifeq ($(shell command -v minikube >/dev/null || echo not-found), not-found)
-	$(error "Please install Minikube and create a cluster: https://minikube.sigs.k8s.io/docs/start/")
+	$(error "Please install minikube: https://minikube.sigs.k8s.io/docs/start/")
 endif
 
 ##@ Checking

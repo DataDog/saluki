@@ -1,8 +1,8 @@
-use std::{slice, vec};
+use std::{fmt, slice, vec};
 
 pub mod containerd;
+pub mod tonic;
 
-#[derive(Debug)]
 /// Container that can hold one or many values of a given type.
 pub enum OneOrMany<T> {
     /// Single value.
@@ -10,6 +10,27 @@ pub enum OneOrMany<T> {
 
     /// Multiple values.
     Many(Vec<T>),
+}
+
+impl<T> fmt::Debug for OneOrMany<T>
+where
+    T: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::One(x) => write!(f, "{:?}", x),
+            Self::Many(xs) => {
+                write!(f, "[")?;
+                for (i, x) in xs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{:?}", x)?;
+                }
+                write!(f, "]")
+            }
+        }
+    }
 }
 
 impl<T> From<T> for OneOrMany<T> {

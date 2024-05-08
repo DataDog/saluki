@@ -2,8 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use containerd_client::{
     services::v1::{
-        Container, GetContainerRequest, ListContainersRequest, ListNamespacesRequest, ListPidsRequest, Namespace,
-        SubscribeRequest,
+        Container, ListContainersRequest, ListNamespacesRequest, ListPidsRequest, Namespace, SubscribeRequest,
     },
     Client,
 };
@@ -14,21 +13,18 @@ use tokio::net::UnixStream;
 use tonic::{transport::Endpoint, IntoRequest, Request};
 use tower::service_fn;
 
+use crate::features::ContainerdDetector;
+
 pub mod events;
 use self::events::{decode_envelope_to_event, ContainerdEvent, ContainerdTopic};
 
-const CONTAINERD_SOCKET_PATH_KEY: &str = "cri_socket_path";
-const CONTAINERD_SOCKET_PATH_DEFAULT: &str = "/var/run/containerd/containerd.sock";
 const CONTAINERD_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 pub enum ClientError {
-    #[snafu(display("failed to read required containerd setting '{}'", key))]
-    Configuration {
-        key: &'static str,
-        source: saluki_config::Error,
-    },
+    #[snafu(display("failed to build client: {}", reason))]
+    Build { reason: &'static str },
     #[snafu(display("failed to create gRPC transport: {}", source))]
     Tonic { source: tonic::transport::Error },
     #[snafu(display("failed to make gRPC request: {}", source))]
@@ -55,12 +51,10 @@ pub struct ContainerdClient {
 
 impl ContainerdClient {
     pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, ClientError> {
-        let socket_path = config
-            .get_typed::<String>(CONTAINERD_SOCKET_PATH_KEY)
-            .context(Configuration {
-                key: CONTAINERD_SOCKET_PATH_KEY,
-            })?
-            .unwrap_or_else(|| CONTAINERD_SOCKET_PATH_DEFAULT.to_string());
+        let socket_path = ContainerdDetector::detect_grpc_socket_path(config)
+            .ok_or(ClientError::Build {
+                reason: "failed to detect containerd socket path; not available at default path and not specified in configuration (`cri_socket_path`)"
+            })?;
 
         let channel = Endpoint::try_from("https://[::]")
             .unwrap()
@@ -85,21 +79,6 @@ impl ContainerdClient {
             .into_inner();
 
         Ok(namespaces.namespaces)
-    }
-
-    pub async fn get_container(&self, namespace: &Namespace, id: String) -> Result<Container, ClientError> {
-        let request = GetContainerRequest { id: id.clone() };
-        let request = create_namespaced_request(request, namespace);
-
-        let response = self
-            .client
-            .containers()
-            .get(request)
-            .await
-            .context(Response)?
-            .into_inner();
-
-        response.container.ok_or(ClientError::ResourceMissing)
     }
 
     pub async fn list_containers(&self, namespace: &Namespace) -> Result<Vec<Container>, ClientError> {

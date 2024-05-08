@@ -106,7 +106,7 @@ impl GenericConfiguration {
         T: Deserialize<'a>,
     {
         match self.inner.find_ref(key) {
-            Some(value) => Ok(Some(value.deserialize()?)),
+            Some(value) => Ok(Some(value.deserialize().map_err(|e| e.with_path(key))?)),
             None => Ok(None),
         }
     }

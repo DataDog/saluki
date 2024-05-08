@@ -1,7 +1,6 @@
 use saluki_config::GenericConfiguration;
 use saluki_env::{
-    features::FeatureDetector, host::providers::AgentLikeHostProvider, workload::providers::AgentLikeWorkloadProvider,
-    EnvironmentProvider,
+    host::providers::AgentLikeHostProvider, workload::providers::RemoteAgentWorkloadProvider, EnvironmentProvider,
 };
 
 const HOSTNAME_CONFIG_KEY: &str = "hostname";
@@ -11,13 +10,11 @@ const TRUST_OS_HOSTNAME_CONFIG_KEY: &str = "hostname_trust_uts_namespace";
 #[derive(Clone)]
 pub struct ADPEnvironmentProvider {
     host_provider: AgentLikeHostProvider,
-    workload_provider: AgentLikeWorkloadProvider,
+    workload_provider: RemoteAgentWorkloadProvider,
 }
 
 impl ADPEnvironmentProvider {
-    pub async fn with_configuration(config: &GenericConfiguration) -> Result<Self, String> {
-        let feature_detector = FeatureDetector::automatic(config);
-
+    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             host_provider: AgentLikeHostProvider::new(
                 config,
@@ -25,14 +22,14 @@ impl ADPEnvironmentProvider {
                 HOSTNAME_FILE_CONFIG_KEY,
                 TRUST_OS_HOSTNAME_CONFIG_KEY,
             )?,
-            workload_provider: AgentLikeWorkloadProvider::new(config, feature_detector).await?,
+            workload_provider: RemoteAgentWorkloadProvider::from_configuration(config).await?,
         })
     }
 }
 
 impl EnvironmentProvider for ADPEnvironmentProvider {
     type Host = AgentLikeHostProvider;
-    type Workload = AgentLikeWorkloadProvider;
+    type Workload = RemoteAgentWorkloadProvider;
 
     fn host(&self) -> &Self::Host {
         &self.host_provider

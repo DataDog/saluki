@@ -47,11 +47,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .expect("Datadog API URL key must be a string")
         .expect("Datadog API URL key must be specified (`dd_url` or `DD_DD_URL` environment variable)");
     let raw_dsd_listen_addr = configuration
-        .get_typed::<String>("dsd_listen_addr")
+        .get_typed::<String>("dogstatsd_socket")
         .expect("DogStatsD listen address must be a string")
-        .expect("DogStatsD listen address must be specified (`dsd_listen_addr` or `DD_DSD_LISTEN_ADDR` environment variable)");
+        .expect("DogStatsD listen address must be specified (`dogstatsd_socket` or `DD_DOGSTATSD_SOCKET` environment variable)");
 
-    let env_provider = ADPEnvironmentProvider::with_configuration(&configuration)
+    let env_provider = ADPEnvironmentProvider::from_configuration(&configuration)
         .await
         .expect("failed to create environment provider");
 

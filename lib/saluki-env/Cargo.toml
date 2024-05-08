@@ -6,36 +6,43 @@ license = "Apache-2.0"
 
 [features]
 default = ["agent-like"]
-agent-like = ["hostname-all"]
+agent-like = ["collector-all", "hostname-all"]
+collector-all = ["collector-remote-agent"]
+collector-remote-agent = []
 hostname-all = ["hostname-file", "hostname-kubernetes", "hostname-os"]
-hostname-file = ["dep:tokio"]
-hostname-os = ["dep:hostname", "dep:tokio"]
-hostname-kubernetes = ["hostname-os", "dep:kube", "dep:k8s-openapi", "dep:tokio"]
+hostname-file = []
+hostname-os = ["dep:hostname"]
+hostname-kubernetes = ["hostname-os", "dep:kube", "dep:k8s-openapi"]
 
 [dependencies]
 # Internal dependencies.
+datadog-protos = { workspace = true }
 saluki-config = { workspace = true }
 saluki-event = { workspace = true }
 
 # External dependencies.
-arc-swap = { version = "1.7.1", default-features = false }
-async-stream = { version = "0.3.5", default-features = false }
+arc-swap = { workspace = true }
+async-stream = { workspace = true }
 async-trait = { workspace = true }
 bitmask-enum = { workspace = true }
 containerd-client = { workspace = true }
-futures = { version = "0.3.30", default-features = false }
+futures = { workspace = true }
 hostname = { workspace = true, optional = true }
+hyper = { version = "0.14", default-features = false, features = ["client", "http2"] }
+hyper-rustls = { version = "0.25.0", default-features = false, features = ["http2"] }
 k8s-openapi = { workspace = true, features = ["v1_24"], optional = true }
 kube = { workspace = true, features = ["client", "rustls-tls"], optional = true }
-oci-spec = { version = "0.6.5", default-features = false, features = ["runtime"] }
-prost = { version = "0.12", default-features = false }
-prost-types = { version = "0.12", default-features = false }
+prost = { workspace = true }
+prost-types = { workspace = true }
 regex = { workspace = true, features = ["std", "perf"] }
-serde_json = { version = "1.0.116", default-features = false, features = ["std"] }
+rustls-pemfile = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["std"] }
 snafu = { workspace = true }
 socket2 = { workspace = true }
 tracing = { workspace = true }
-tokio = { workspace = true, features = ["fs", "macros", "sync"], optional = true }
-tokio-util = { version = "0.7.10", default-features = false, features = ["time"] }
+tokio = { workspace = true, features = ["fs", "macros", "sync"] }
+tokio-rustls = { workspace = true, features = ["ring"] }
+tokio-util = { workspace = true, features = ["time"] }
 tonic = { workspace = true }
 tower = { workspace = true, features = ["util"] }

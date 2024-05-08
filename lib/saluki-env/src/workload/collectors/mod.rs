@@ -1,11 +1,16 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::sleep};
 use tracing::{debug, error};
 
 use super::metadata::MetadataOperation;
 
 mod containerd;
 pub use self::containerd::ContainerdMetadataCollector;
+
+mod remote_agent;
+pub use self::remote_agent::RemoteAgentMetadataCollector;
 
 /// A metadata collector.
 ///
@@ -56,6 +61,8 @@ impl MetadataCollectorWorker {
             if let Err(e) = self.collector.watch(&mut operations_tx).await {
                 error!(error = %e, collector_name = self.collector.name(), "Failed to collect metadata.");
             }
+
+            sleep(Duration::from_secs(1)).await;
         }
     }
 }

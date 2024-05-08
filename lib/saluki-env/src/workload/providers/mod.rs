@@ -1,4 +1,4 @@
 #[cfg(feature = "agent-like")]
-mod agent;
+mod remote_agent;
 #[cfg(feature = "agent-like")]
-pub use self::agent::AgentLikeWorkloadProvider;
+pub use self::remote_agent::RemoteAgentWorkloadProvider;
