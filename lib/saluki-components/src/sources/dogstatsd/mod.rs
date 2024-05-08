@@ -5,18 +5,23 @@ use tokio::select;
 use tracing::{debug, error, trace};
 
 use saluki_core::{
-    buffers::BufferPool,
+    buffers::FixedSizeBufferPool,
     components::sources::*,
+    constants::internal::ORIGIN_PID_TAG_KEY,
     topology::{
         shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
         OutputDefinition,
     },
 };
-use saluki_event::DataType;
+use saluki_event::{DataType, Event};
 use saluki_io::{
-    buf::{get_fixed_bytes_buffer_pool, ReadWriteIoBuffer},
+    buf::{get_fixed_bytes_buffer_pool, BytesBuffer},
     deser::{codec::DogstatsdCodec, Deserializer, DeserializerBuilder, DeserializerError},
-    net::{addr::ListenAddress, listener::Listener},
+    net::{
+        addr::{ConnectionAddress, ListenAddress},
+        listener::Listener,
+        stream::Stream,
+    },
 };
 
 mod framer;
@@ -27,6 +32,7 @@ use self::framer::{get_framer, DogStatsDMultiFraming};
 /// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format.
 pub struct DogStatsDConfiguration {
     listen_address: ListenAddress,
+    origin_detection: bool,
 }
 
 impl DogStatsDConfiguration {
@@ -39,7 +45,15 @@ impl DogStatsDConfiguration {
             return Err("TCP mode not supported for DogStatsD source".into());
         }
 
-        Ok(Self { listen_address })
+        Ok(Self {
+            listen_address,
+            origin_detection: false,
+        })
+    }
+
+    pub fn with_origin_detection(mut self, origin_detection: bool) -> Self {
+        self.origin_detection = origin_detection;
+        self
     }
 }
 
@@ -50,8 +64,12 @@ impl SourceBuilder for DogStatsDConfiguration {
         let listener = Listener::from_listen_address(self.listen_address.clone()).await?;
 
         Ok(Box::new(DogStatsD {
-            listen_address,
             listener,
+            listen_address_str: listen_address.to_string().into(),
+            listen_address,
+            shutdown_coordinator: DynamicShutdownCoordinator::default(),
+            io_buffer_pool: get_fixed_bytes_buffer_pool(128, 8192),
+            origin_detection: self.origin_detection,
         }))
     }
 
@@ -62,22 +80,43 @@ impl SourceBuilder for DogStatsDConfiguration {
     }
 }
 
+struct HandlerContext {
+    shutdown_handle: DynamicShutdownHandle,
+    listen_addr: Arc<str>,
+    origin_detection: bool,
+    deserializer: Deserializer<DogStatsDMultiFraming, FixedSizeBufferPool<BytesBuffer>>,
+}
+
 pub struct DogStatsD {
-    listen_address: ListenAddress,
     listener: Listener,
+    listen_address: ListenAddress,
+    listen_address_str: Arc<str>,
+    shutdown_coordinator: DynamicShutdownCoordinator,
+    io_buffer_pool: FixedSizeBufferPool<BytesBuffer>,
+    origin_detection: bool,
+}
+
+impl DogStatsD {
+    fn create_handler_context(&mut self, stream: Stream) -> HandlerContext {
+        HandlerContext {
+            shutdown_handle: self.shutdown_coordinator.register(),
+            listen_addr: Arc::clone(&self.listen_address_str),
+            origin_detection: self.origin_detection,
+            deserializer: DeserializerBuilder::new()
+                .with_framer_and_decoder(get_framer(&self.listen_address), DogstatsdCodec)
+                .with_buffer_pool(self.io_buffer_pool.clone())
+                .into_deserializer(stream),
+        }
+    }
 }
 
 #[async_trait]
 impl Source for DogStatsD {
     async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), ()> {
-        let io_buffer_pool = get_fixed_bytes_buffer_pool(128, 8192);
         let global_shutdown = context
             .take_shutdown_handle()
             .expect("should never fail to take shutdown handle");
         tokio::pin!(global_shutdown);
-
-        let mut handler_shutdown_coordinator = DynamicShutdownCoordinator::default();
-        let local_addr: Arc<str> = Arc::from(self.listen_address.to_string());
 
         debug!("DogStatsD source started.");
 
@@ -91,13 +130,8 @@ impl Source for DogStatsD {
                     Ok(stream) => {
                         debug!("Spawning new stream handler.");
 
-                        let handler_shutdown_handle = handler_shutdown_coordinator.register();
-                        let deserializer = DeserializerBuilder::new()
-                            .with_framer_and_decoder(get_framer(&self.listen_address), DogstatsdCodec)
-                            .with_buffer_pool(io_buffer_pool.clone())
-                            .into_deserializer(stream);
-                        let local_addr = Arc::clone(&local_addr);
-                        tokio::spawn(process_stream(context.clone(), local_addr, handler_shutdown_handle, deserializer));
+                        let handler_context = self.create_handler_context(stream);
+                        tokio::spawn(process_stream(context.clone(), handler_context));
                     }
                     Err(e) => {
                         error!(error = %e, "Failed to accept new connection.");
@@ -107,7 +141,7 @@ impl Source for DogStatsD {
             }
         }
 
-        handler_shutdown_coordinator.shutdown();
+        self.shutdown_coordinator.shutdown();
 
         debug!("DogStatsD source stopped.");
 
@@ -115,17 +149,17 @@ impl Source for DogStatsD {
     }
 }
 
-async fn process_stream<B>(
-    context: SourceContext, local_addr: Arc<str>, shutdown_handle: DynamicShutdownHandle,
-    mut deserializer: Deserializer<DogStatsDMultiFraming, B>,
-) where
-    B: BufferPool,
-    B::Buffer: ReadWriteIoBuffer,
-{
+async fn process_stream(source_context: SourceContext, handler_context: HandlerContext) {
+    let HandlerContext {
+        shutdown_handle,
+        listen_addr,
+        origin_detection,
+        mut deserializer,
+    } = handler_context;
     tokio::pin!(shutdown_handle);
 
     loop {
-        let mut event_buffer = context.event_buffer_pool().acquire().await;
+        let mut event_buffer = source_context.event_buffer_pool().acquire().await;
         select! {
             _ = &mut shutdown_handle => {
                 debug!("Stream handler received shutdown signal.");
@@ -134,15 +168,30 @@ async fn process_stream<B>(
             result = deserializer.decode(&mut event_buffer) => match result {
                 // No events decoded. Connection is done.
                 Ok((0, addr)) => {
-                    debug!(peer_addr = %addr, "Stream received EOF. Shutting down handler.");
+                    debug!(%listen_addr, peer_addr = %addr, "Stream received EOF. Shutting down handler.");
                     break;
                 }
                 // Got events. Forward them.
                 Ok((n, addr)) => {
-                    trace!(%local_addr, peer_addr = %addr, events_len = n, "Forwarding events.");
+                    // We do one optional enrichment step here, which is to add the client's socket credentials as a tag
+                    // on each metric, if they came over UDS. This would then be utilized downstream in the pipeline by
+                    // origin enrichment, if present.
+                    if origin_detection {
+                        if let ConnectionAddress::ProcessLike(Some(creds)) = &addr {
+                            for event in &mut event_buffer {
+                                match event {
+                                    Event::Metric(metric) => {
+                                        metric.context.tags.insert_tag((ORIGIN_PID_TAG_KEY, creds.pid.to_string()));
+                                    },
+                                }
+                            }
+                        }
+                    }
 
-                    if let Err(e) = context.forwarder().forward(event_buffer).await {
-                        error!(error = %e, "Failed to forward events.");
+                    trace!(%listen_addr, peer_addr = %addr, events_len = n, "Forwarding events.");
+
+                    if let Err(e) = source_context.forwarder().forward(event_buffer).await {
+                        error!(%listen_addr, error = %e, "Failed to forward events.");
                     }
                 }
                 Err(e) => match e {

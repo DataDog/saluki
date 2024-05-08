@@ -1,12 +1,19 @@
 use async_trait::async_trait;
 
-use saluki_core::{components::transforms::*, constants::datadog::*, topology::interconnect::EventBuffer};
-use saluki_env::{EnvironmentProvider, TaggerProvider};
+use saluki_core::{
+    components::transforms::*,
+    constants::{datadog::*, internal::*},
+    topology::interconnect::EventBuffer,
+};
+use saluki_env::{
+    workload::{entity::EntityId, metadata::TagCardinality},
+    EnvironmentProvider, WorkloadProvider,
+};
 use saluki_event::{
     metric::{Metric, MetricOrigin},
     Event,
 };
-use tracing::warn;
+use tracing::trace;
 
 /// Origin Enrichment synchronous transform.
 ///
@@ -15,12 +22,12 @@ use tracing::warn;
 /// client-provided identifiers, such as container ID. Origin metadata deals with a higher-level categorization of the
 /// source of the metric, such as "dogstatsd" for all metrics received by DogStatsD, etc.
 ///
-/// More specifically, client origin is used to drive tags which are added to the metric, whereas metric origin is
+/// More specifically, client origin is used to drive tags which are added to the metric, whereas origin metadata is
 /// out-of-band data sent along in the payload to downstream systems if supported.
 ///
 /// ## Missing
 ///
-/// - UDS origin support (DogStatsD source can't read ancillary/out-of-band data in UDS mode)
+/// - full alignment with entity ID/client origin handling in terms of which one we use for getting enrichment tags
 pub struct OriginEnrichmentConfiguration<E> {
     env_provider: E,
 }
@@ -36,7 +43,7 @@ impl<E> OriginEnrichmentConfiguration<E> {
 impl<E> SynchronousTransformBuilder for OriginEnrichmentConfiguration<E>
 where
     E: EnvironmentProvider + Clone + Send + Sync + 'static,
-    <E::Tagger as TaggerProvider>::Error: std::error::Error + Send + Sync,
+    <E::Workload as WorkloadProvider>::Error: std::error::Error + Send + Sync,
 {
     async fn build(&self) -> Result<Box<dyn SynchronousTransform + Send>, Box<dyn std::error::Error + Send + Sync>> {
         Ok(Box::new(OriginEnrichment {
@@ -52,7 +59,7 @@ pub struct OriginEnrichment<E> {
 impl<E> OriginEnrichment<E>
 where
     E: EnvironmentProvider,
-    <E::Tagger as TaggerProvider>::Error: std::error::Error,
+    <E::Workload as WorkloadProvider>::Error: std::error::Error + Send + Sync,
 {
     fn enrich_metric(&self, metric: &mut Metric) {
         // Try to collect various pieces of client origin information from the metric tags. For any tags that we collect
@@ -69,6 +76,7 @@ where
         let mut maybe_container_id = None;
         let mut maybe_cardinality = None;
         let mut maybe_jmx_check_name = None;
+        let mut maybe_origin_pid = None;
 
         metric.context.tags.retain(|tag| {
             if tag.key() == ENTITY_ID_TAG_KEY {
@@ -88,6 +96,9 @@ where
                 // used after enrichment.
                 maybe_container_id = tag.as_value_string();
                 false
+            } else if tag.key() == ORIGIN_PID_TAG_KEY {
+                maybe_origin_pid = tag.as_value_string().and_then(|s| s.parse::<u32>().ok());
+                false
             } else {
                 true
             }
@@ -98,28 +109,45 @@ where
             metric.metadata.origin = Some(MetricOrigin::jmx_check(&jmx_check_name));
         }
 
-        // Determine the client origin.
+        // Determine the correct entity ID using the following precedence mapping:
         //
-        // We don't handle anything else here (yet) due to not having any UDS origin data (see
-        // [Missing](OriginEnrichmentConfiguration#Missing) section for [`OriginEnrichmentConfiguration`]).
-        let maybe_client_origin_entity_id = match maybe_entity_id {
-            Some(entity_id) if entity_id != ENTITY_ID_IGNORE_VALUE => {
-                Some(format!("kubernetes_pod_uid://{}", entity_id))
-            }
-            _ => maybe_container_id.map(|id| format!("container_id://{}", id)),
-        };
-
-        if let Some(client_origin_entity_id) = maybe_client_origin_entity_id {
-            let entity_tags = match self.env_provider.tagger().get_tags_for_entity(&client_origin_entity_id) {
-                Ok(tags) => tags,
-                Err(e) => {
-                    // TODO: Should this actually be a warning? :thinkies:
-                    warn!("failed to get tags for entity {}: {}", client_origin_entity_id, e);
-                    return;
+        // - entity ID (extracted from `dd.internal.entity_id` tag; non-prefixed pod UID)
+        // - container ID (extracted from `saluki.internal.container_id` tag, which comes from special "container ID"
+        //   extension in DogStatsD protocol; non-prefixed container ID)
+        // - origin PID (extracted via UDS socket credentials)
+        //
+        // NOTE: In the Datadog Agent, there's the possibility that a metric is enriched twice: once using the origin
+        // PID if the entity ID was not specified, and again if container ID was specified. I haven't fully untangled
+        // this yet, but I'm applying priority to the container ID because that enrichment step comes after the UDS one,
+        // and so we only do one enrichment step here.
+        let maybe_client_origin_entity_id = maybe_entity_id
+            .and_then(|entity_id| {
+                if entity_id != ENTITY_ID_IGNORE_VALUE {
+                    Some(EntityId::PodUid(entity_id))
+                } else {
+                    None
                 }
-            };
+            })
+            .or_else(|| maybe_container_id.and_then(EntityId::from_raw_container_id))
+            .or_else(|| maybe_origin_pid.map(EntityId::ContainerPid));
 
-            metric.context.tags.extend(entity_tags);
+        if let Some(entity_id) = maybe_client_origin_entity_id {
+            // TODO: Just hardcoding this to high cardinality for now.
+            let cardinality = maybe_cardinality
+                .and_then(TagCardinality::parse)
+                .unwrap_or(TagCardinality::High);
+
+            match self
+                .env_provider
+                .workload()
+                .get_tags_for_entity(&entity_id, cardinality)
+            {
+                Some(tags) => {
+                    trace!(?entity_id, tags_len = tags.len(), "Found tags for entity.");
+                    metric.context.tags.extend(tags);
+                }
+                None => trace!(entity_id = entity_id.to_string(), "No tags found for entity."),
+            }
         }
     }
 }
@@ -127,7 +155,7 @@ where
 impl<E> SynchronousTransform for OriginEnrichment<E>
 where
     E: EnvironmentProvider,
-    <E::Tagger as TaggerProvider>::Error: std::error::Error,
+    <E::Workload as WorkloadProvider>::Error: std::error::Error + Send + Sync,
 {
     fn transform_buffer(&self, event_buffer: &mut EventBuffer) {
         for event in event_buffer {

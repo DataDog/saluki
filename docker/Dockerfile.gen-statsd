@@ -1,0 +1,20 @@
+ARG BUILD_IMAGE
+ARG APP_IMAGE
+
+FROM ${BUILD_IMAGE} AS builder
+
+# Install basic utilities since we need to check out the source.
+WORKDIR /src
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git
+
+# Now build it.
+RUN git clone https://github.com/circonus-labs/gen-statsd.git && \
+	cd gen-statsd && \
+	go build -v .
+
+# Re-package gen-statsd into a slightly _bigger_ image, one which has basic file utilities and what not for debugging.
+FROM ${APP_IMAGE}
+COPY --from=builder /src/gen-statsd/gen-statsd /gen-statsd
+
+ENTRYPOINT ["/gen-statsd"]

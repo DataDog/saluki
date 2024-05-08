@@ -26,5 +26,6 @@ RUN cargo build --release && \
 # Now stick our resulting binary in a clean image.
 FROM ${APP_IMAGE}
 COPY --from=builder /adp/target/release/agent-data-plane /usr/local/bin/agent-data-plane
+COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
 
 ENTRYPOINT [ "/usr/local/bin/agent-data-plane" ]

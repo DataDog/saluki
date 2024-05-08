@@ -6,7 +6,10 @@ license = "Apache-2.0"
 
 [dependencies]
 bytes = { workspace = true }
+prost = { workspace = true, features = ["derive", "std"] }
 protobuf = { workspace = true }
+tonic = { workspace = true, features = ["codegen", "prost"] }
 
 [build-dependencies]
 protobuf-codegen = { workspace = true }
+tonic-build = { workspace = true, features = ["prost"] }

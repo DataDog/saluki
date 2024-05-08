@@ -1,0 +1,18 @@
+ARG DD_AGENT_VERSION=7.53.0-jmx
+ARG DD_AGENT_IMAGE=datadog/agent:${DD_AGENT_VERSION}
+ARG ADP_IMAGE=saluki-images/agent-data-plane:latest
+
+# Reference the ADP image so we can copy the relevant bits out of it.
+FROM ${ADP_IMAGE} AS adp
+
+LABEL org.opencontainers.image.source "https://github.com/DataDog/saluki"
+LABEL target "staging"
+
+# Build off of the official Datadog Agent image.
+FROM ${DD_AGENT_IMAGE}
+
+# Copy the ADP binary and all of the required licensing bits.
+COPY --from=adp /usr/local/bin/agent-data-plane /opt/datadog-agent/embedded/bin/agent-data-plane
+COPY --from=adp /opt/datadog/agent-data-plane /opt/datadog/
+
+# Everything else we'll leave at the defaults of the Datadog Agent image.
