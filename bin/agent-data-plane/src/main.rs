@@ -33,7 +33,7 @@ async fn main() -> Result<(), ErasedError> {
     info!("agent-data-plane starting...");
 
     let configuration = ConfigurationLoader::default()
-        .from_yaml("/etc/datadog-agent/datadog.yaml")
+        .try_from_yaml("/etc/datadog-agent/datadog.yaml")
         .from_environment("DD")
         .into_generic()
         .expect("should not fail to load configuration");

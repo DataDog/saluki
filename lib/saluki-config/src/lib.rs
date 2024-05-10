@@ -3,6 +3,12 @@ use figment::{providers::Env, value::Value, Figment};
 pub use figment::{value, Error};
 use serde::Deserialize;
 
+#[cfg(any(feature = "json", feature = "yaml"))]
+mod provider;
+
+#[cfg(any(feature = "json", feature = "yaml"))]
+use self::provider::ResolvedProvider;
+
 /// A configuration loader that can load configuration from various sources.
 ///
 /// This loader provides a wrapper around a lower-level library, `figment`, to expose a simpler and focused API for both
@@ -25,24 +31,54 @@ pub struct ConfigurationLoader {
 
 impl ConfigurationLoader {
     #[cfg(feature = "yaml")]
-    pub fn from_yaml<P>(mut self, path: P) -> Self
+    pub fn from_yaml<P>(mut self, path: P) -> Result<Self, Error>
     where
         P: AsRef<std::path::Path>,
     {
-        self.inner = self
-            .inner
-            .admerge(figment::providers::Data::<figment::providers::Yaml>::file(path));
+        let resolved_provider = ResolvedProvider::from_yaml(&path)?;
+        self.inner = self.inner.admerge(resolved_provider);
+        Ok(self)
+    }
+
+    #[cfg(feature = "yaml")]
+    pub fn try_from_yaml<P>(mut self, path: P) -> Self
+    where
+        P: AsRef<std::path::Path>,
+    {
+        match ResolvedProvider::from_yaml(&path) {
+            Ok(resolved_provider) => {
+                self.inner = self.inner.admerge(resolved_provider);
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, file_path = %path.as_ref().to_string_lossy(), "Unable to read YAML configuration file. Ignoring.");
+            }
+        }
         self
     }
 
     #[cfg(feature = "json")]
-    pub fn from_json<P>(mut self, path: P) -> Self
+    pub fn from_json<P>(mut self, path: P) -> Result<Self, Error>
     where
         P: AsRef<std::path::Path>,
     {
-        self.inner = self
-            .inner
-            .admerge(figment::providers::Data::<figment::providers::Json>::file(path));
+        let resolved_provider = ResolvedProvider::from_json(&path)?;
+        self.inner = self.inner.admerge(resolved_provider);
+        Ok(self)
+    }
+
+    #[cfg(feature = "json")]
+    pub fn try_from_json<P>(mut self, path: P) -> Self
+    where
+        P: AsRef<std::path::Path>,
+    {
+        match ResolvedProvider::from_json(&path) {
+            Ok(resolved_provider) => {
+                self.inner = self.inner.admerge(resolved_provider);
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, file_path = %path.as_ref().to_string_lossy(), "Unable to read JSON configuration file. Ignoring.");
+            }
+        }
         self
     }
 
