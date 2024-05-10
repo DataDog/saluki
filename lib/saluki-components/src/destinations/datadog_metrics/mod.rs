@@ -3,10 +3,12 @@ use std::error::Error as _;
 use async_trait::async_trait;
 use http::{Request, Uri};
 use http_body_util::BodyExt as _;
+use saluki_config::GenericConfiguration;
+use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, trace};
 
-use saluki_core::components::destinations::*;
+use saluki_core::{components::destinations::*, prelude::*};
 use saluki_event::DataType;
 use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, ChunkedBytesBuffer, ChunkedBytesBufferPool},
@@ -15,6 +17,12 @@ use saluki_io::{
 
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
+
+const DEFAULT_SITE: &str = "datadoghq.com";
+
+fn default_site() -> String {
+    DEFAULT_SITE.to_owned()
+}
 
 /// Datadog Metrics destination.
 ///
@@ -26,10 +34,57 @@ use self::request_builder::{MetricsEndpoint, RequestBuilder};
 /// - ability to configure either the basic site _or_ a specific endpoint (requires a full URI at the moment, even if
 ///   it's just something like `https`)
 /// - retries, timeouts, rate limiting (no Tower middleware stack yet)
-#[derive(Default)]
+#[derive(Deserialize)]
 pub struct DatadogMetricsConfiguration {
-    pub api_key: String,
-    pub api_endpoint: String,
+    /// The API key to use.
+    api_key: String,
+
+    /// The site to send metrics to.
+    ///
+    /// This is the base domain for the Datadog site in which the API key originates from. This will generally be a
+    /// portion of the domain used to access the Datadog UI, such as `datadoghq.com` or `us5.datadoghq.com`.
+    ///
+    /// Defaults to `datadoghq.com`.
+    #[serde(default = "default_site")]
+    site: String,
+
+    /// The full URL base to send metrics to.
+    ///
+    /// This takes precedence over `site`, and is not altered in any way. This can be useful to specifying the exact
+    /// endpoint used, such as when looking to change the scheme (e.g. `http` vs `https`) or specifying a custom port,
+    /// which are both useful when proxying traffic to an intermediate destination before forwarding to Datadog.
+    ///
+    /// Defaults to unset.
+    #[serde(default)]
+    dd_url: Option<String>,
+}
+
+impl DatadogMetricsConfiguration {
+    /// Creates a new `DatadogMetricsConfiguration` from the given configuration.
+    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, ErasedError> {
+        Ok(config.as_typed()?)
+    }
+
+    fn api_base(&self) -> Result<Uri, ErasedError> {
+        match &self.dd_url {
+            Some(url) => Uri::try_from(url).map_err(Into::into),
+            None => {
+                let site = if self.site.is_empty() {
+                    DEFAULT_SITE
+                } else {
+                    self.site.as_str()
+                };
+                let authority = format!("api.{}", site);
+
+                Uri::builder()
+                    .scheme("https")
+                    .authority(authority.as_str())
+                    .path_and_query("/")
+                    .build()
+                    .map_err(Into::into)
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -38,27 +93,22 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         DataType::Metric
     }
 
-    async fn build(&self) -> Result<Box<dyn Destination + Send>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn build(&self) -> Result<Box<dyn Destination + Send>, ErasedError> {
         let http_client = HttpClient::https()?;
 
-        let api_base_uri = Uri::try_from(&self.api_endpoint)?;
-        let api_base_uri = Uri::builder()
-            .scheme(api_base_uri.scheme_str().unwrap_or("https"))
-            .authority(api_base_uri.authority().cloned().unwrap())
-            .path_and_query("/")
-            .build()?;
+        let api_base = self.api_base()?;
 
         let rb_buffer_pool = create_request_builder_buffer_pool();
         let series_request_builder = RequestBuilder::new(
             self.api_key.clone(),
-            api_base_uri.clone(),
+            api_base.clone(),
             MetricsEndpoint::Series,
             rb_buffer_pool.clone(),
         )
         .await?;
         let sketches_request_builder = RequestBuilder::new(
             self.api_key.clone(),
-            api_base_uri.clone(),
+            api_base,
             MetricsEndpoint::Sketches,
             rb_buffer_pool,
         )

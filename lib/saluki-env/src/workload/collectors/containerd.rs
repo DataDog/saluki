@@ -1,9 +1,11 @@
+use std::time::Duration;
+
 use async_stream::stream;
 use async_trait::async_trait;
 use containerd_client::services::v1::Namespace;
 use futures::{stream::select_all, Stream, StreamExt as _};
 use saluki_config::GenericConfiguration;
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::sleep};
 use tracing::error;
 
 use crate::workload::{
@@ -150,6 +152,8 @@ impl NamespaceWatcher {
                     Ok(stream) => stream,
                     Err(e) => {
                         error!(namespace = self.namespace.name, error = %e, "Error watching container events.");
+
+                        sleep(Duration::from_secs(1)).await;
                         continue;
                     },
                 };

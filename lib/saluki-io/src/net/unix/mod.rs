@@ -6,7 +6,6 @@ use std::{
 };
 
 use bytes::BufMut;
-use socket2::SockRef;
 use tokio::net::{UnixDatagram, UnixStream};
 use tracing::trace;
 
@@ -16,24 +15,18 @@ mod ancillary;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-use self::linux::{set_uds_passcred, uds_recvmsg};
+pub use self::linux::enable_uds_socket_credentials;
+#[cfg(target_os = "linux")]
+use self::linux::uds_recvmsg;
 
 #[cfg(not(target_os = "linux"))]
 mod non_linux;
 #[cfg(not(target_os = "linux"))]
-use self::non_linux::{set_uds_passcred, uds_recvmsg};
+pub use self::non_linux::enable_uds_socket_credentials;
+#[cfg(not(target_os = "linux"))]
+use self::non_linux::uds_recvmsg;
 
 use super::addr::ConnectionAddress;
-
-/// Configures a Unix domain socket for use.
-///
-/// This sets any OS-specific configuration/options on the socket to ensure it's ready for use.
-pub(super) fn configure_unix_socket<'sock, S>(socket: &'sock S) -> io::Result<()>
-where
-    SockRef<'sock>: From<&'sock S>,
-{
-    set_uds_passcred(socket)
-}
 
 /// Ensures that the given path is read for use as a UNIX socket.
 ///
@@ -49,7 +42,7 @@ pub(super) async fn ensure_unix_socket_free<P: AsRef<Path>>(path: P) -> io::Resu
             if !metadata.file_type().is_socket() {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
-                    "path already exists and is not a UNIX socket",
+                    "path already exists and is not a Unix domain socket",
                 ));
             }
 
@@ -57,7 +50,7 @@ pub(super) async fn ensure_unix_socket_free<P: AsRef<Path>>(path: P) -> io::Resu
 
             trace!(
                 socket_path = path.to_string_lossy().as_ref(),
-                "Cleared existing UNIX socket."
+                "Cleared existing Unix domain socket."
             );
         }
         Err(err) => {

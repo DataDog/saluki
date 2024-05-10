@@ -18,6 +18,7 @@ async-compression = { workspace = true, features = ["tokio", "zlib"] }
 async-trait = { workspace = true }
 bitmask-enum = { workspace = true }
 bytes = { workspace = true }
+futures = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }

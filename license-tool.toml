@@ -3,4 +3,4 @@
 "ring-0.17.8" = { license = "ISC AND Custom" }
 
 # `jsonpath-rust` is MIT licensed but its license file seems to not fit the precise template we match against.
-"jsonpath-rust-0.5.0" = { license = "MIT" }
+"jsonpath-rust-0.5.1" = { license = "MIT" }

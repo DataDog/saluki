@@ -20,9 +20,6 @@ agents:
       env:
         # Disable DogStatsD on the core Agent and only use Agent Data Plane.
         - name: DD_USE_DOGSTATSD
-          value: false
+          value: "false"
     agentDataPlane:
       logLevel: saluki_env=debug,info
-      env:
-        - name: DD_DD_URL
-          value: https://app.datadoghq.com
