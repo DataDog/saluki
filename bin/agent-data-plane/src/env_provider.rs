@@ -1,4 +1,5 @@
 use saluki_config::GenericConfiguration;
+use saluki_core::prelude::*;
 use saluki_env::{
     host::providers::AgentLikeHostProvider, workload::providers::RemoteAgentWorkloadProvider, EnvironmentProvider,
 };
@@ -10,11 +11,24 @@ const TRUST_OS_HOSTNAME_CONFIG_KEY: &str = "hostname_trust_uts_namespace";
 #[derive(Clone)]
 pub struct ADPEnvironmentProvider {
     host_provider: AgentLikeHostProvider,
-    workload_provider: RemoteAgentWorkloadProvider,
+    workload_provider: Option<RemoteAgentWorkloadProvider>,
 }
 
 impl ADPEnvironmentProvider {
-    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, ErasedError> {
+        // We allow disabling the normal workload provider via configuration, since in some cases we don't actually care
+        // about having a real workload provider since we know we won't be in a containerized environment, or running
+        // alongside the Datadog Agent.
+        let use_noop_workload_provider = config
+            .get_typed::<bool>("adp.use_noop_workload_provider")
+            .map_or(false, |v| v.unwrap_or_default());
+
+        let workload_provider = if use_noop_workload_provider {
+            None
+        } else {
+            Some(RemoteAgentWorkloadProvider::from_configuration(config).await?)
+        };
+
         Ok(Self {
             host_provider: AgentLikeHostProvider::new(
                 config,
@@ -22,14 +36,14 @@ impl ADPEnvironmentProvider {
                 HOSTNAME_FILE_CONFIG_KEY,
                 TRUST_OS_HOSTNAME_CONFIG_KEY,
             )?,
-            workload_provider: RemoteAgentWorkloadProvider::from_configuration(config).await?,
+            workload_provider,
         })
     }
 }
 
 impl EnvironmentProvider for ADPEnvironmentProvider {
     type Host = AgentLikeHostProvider;
-    type Workload = RemoteAgentWorkloadProvider;
+    type Workload = Option<RemoteAgentWorkloadProvider>;
 
     fn host(&self) -> &Self::Host {
         &self.host_provider

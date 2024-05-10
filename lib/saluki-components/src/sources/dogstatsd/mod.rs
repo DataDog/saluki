@@ -256,7 +256,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
     let listen_addr = listener.listen_address().clone();
     let mut stream_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
-    debug!(%listen_addr, "DogStatsD listener started.");
+    info!(%listen_addr, "DogStatsD listener started.");
 
     loop {
         select! {
@@ -289,7 +289,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
 
     stream_shutdown_coordinator.shutdown().await;
 
-    debug!(%listen_addr, "DogStatsD listener stopped.");
+    info!(%listen_addr, "DogStatsD listener stopped.");
 }
 
 async fn process_stream(source_context: SourceContext, handler_context: HandlerContext) {

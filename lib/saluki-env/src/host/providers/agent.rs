@@ -63,7 +63,7 @@ impl AgentLikeHostProvider {
     pub fn new(
         config: &GenericConfiguration, hostname_config_key: &str, hostname_file_config_key: &str,
         trust_os_hostname_config_key: &str,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let maybe_hostname = config.get_typed::<String>(hostname_config_key)?;
         let maybe_hostname_file_path = config.get_typed::<PathBuf>(hostname_file_config_key)?;
         let trust_os_hostname = config
