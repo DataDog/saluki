@@ -149,11 +149,7 @@ where
         }
 
         let mut buffer = self.buffer_pool.acquire().await;
-        debug!(
-            ptr = std::ptr::addr_of!(buffer) as usize,
-            capacity = buffer.remaining_mut(),
-            "Acquired buffer for decoding."
-        );
+        debug!(capacity = buffer.remaining_mut(), "Acquired buffer for decoding.");
 
         loop {
             // Do a oneshot decode, which does a single receive and tries to decode any events that exist in the buffer

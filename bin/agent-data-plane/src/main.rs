@@ -19,13 +19,12 @@ use saluki_config::ConfigurationLoader;
 use tracing::info;
 
 use saluki_app::{logging::initialize_logging, metrics::initialize_metrics};
-use saluki_core::topology::blueprint::TopologyBlueprint;
-use saluki_io::net::addr::ListenAddress;
+use saluki_core::{prelude::*, topology::blueprint::TopologyBlueprint};
 
 use crate::env_provider::ADPEnvironmentProvider;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn main() -> Result<(), ErasedError> {
     let start = Instant::now();
 
     initialize_logging()?;
@@ -34,22 +33,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("agent-data-plane starting...");
 
     let configuration = ConfigurationLoader::default()
+        .from_yaml("/etc/datadog-agent/datadog.yaml")
         .from_environment("DD")
         .into_generic()
         .expect("should not fail to load configuration");
-
-    let api_key = configuration
-        .get_typed::<String>("api_key")
-        .expect("API key must be a string")
-        .expect("API key must be specified (`api_key` or `DD_API_KEY` environment variable)");
-    let api_endpoint = configuration
-        .get_typed::<String>("dd_url")
-        .expect("Datadog API URL key must be a string")
-        .expect("Datadog API URL key must be specified (`dd_url` or `DD_DD_URL` environment variable)");
-    let raw_dsd_listen_addr = configuration
-        .get_typed::<String>("dogstatsd_socket")
-        .expect("DogStatsD listen address must be a string")
-        .expect("DogStatsD listen address must be specified (`dogstatsd_socket` or `DD_DOGSTATSD_SOCKET` environment variable)");
 
     let env_provider = ADPEnvironmentProvider::from_configuration(&configuration)
         .await
@@ -57,20 +44,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
-    //
-    // TODO: Pull these configuration values from the actual configuration, most likely by making each component take a
-    // reference to the configuration itself.
-    let dsd_listen_addr = ListenAddress::try_from(raw_dsd_listen_addr)?;
-    let dsd_config = DogStatsDConfiguration::from_listen_address(dsd_listen_addr)?.with_origin_detection(true);
+    let dsd_config = DogStatsDConfiguration::from_configuration(&configuration)?;
     let dsd_agg_config = AggregateConfiguration::from_window(Duration::from_secs(10)).with_context_limit(15500);
     let int_metrics_config = InternalMetricsConfiguration;
     let int_metrics_agg_config = AggregateConfiguration::from_window(Duration::from_secs(10));
+
+    let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
+    let origin_enrichment_config = OriginEnrichmentConfiguration::from_configuration(&configuration)?
+        .with_environment_provider(env_provider.clone());
     let enrich_config = ChainedConfiguration::default()
-        .with_transform_builder(HostEnrichmentConfiguration::from_environment_provider(
-            env_provider.clone(),
-        ))
-        .with_transform_builder(OriginEnrichmentConfiguration::from_environment_provider(env_provider));
-    let dd_metrics_config = DatadogMetricsConfiguration { api_key, api_endpoint };
+        .with_transform_builder(host_enrichment_config)
+        .with_transform_builder(origin_enrichment_config);
+    let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(&configuration)?;
 
     let mut blueprint = TopologyBlueprint::default();
     blueprint

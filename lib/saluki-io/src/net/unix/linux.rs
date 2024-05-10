@@ -7,7 +7,7 @@ use crate::net::addr::{ConnectionAddress, ProcessCredentials};
 
 use super::ancillary::{ControlMessage, SocketCredentialsAncillaryData};
 
-pub(super) fn set_uds_passcred<'sock, S>(socket: &'sock S) -> io::Result<()>
+pub fn enable_uds_socket_credentials<'sock, S>(socket: &'sock S) -> io::Result<()>
 where
     SockRef<'sock>: From<&'sock S>,
 {

@@ -1,7 +1,7 @@
 use std::{fmt, net::SocketAddr, path::PathBuf};
 use url::Url;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum ListenAddress {
     Tcp(SocketAddr),
     Udp(SocketAddr),

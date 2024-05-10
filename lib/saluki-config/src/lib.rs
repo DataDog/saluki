@@ -120,4 +120,11 @@ impl GenericConfiguration {
             None => T::default(),
         }
     }
+
+    pub fn as_typed<'a, T>(&self) -> Result<T, Error>
+    where
+        T: Deserialize<'a>,
+    {
+        self.inner.deserialize()
+    }
 }

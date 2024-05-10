@@ -1,12 +1,18 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
     task::{ready, Context, Poll},
 };
 
 use slab::Slab;
-use tokio::sync::oneshot::{channel, error::TryRecvError, Receiver, Sender};
+use tokio::sync::{
+    oneshot::{channel, error::TryRecvError, Receiver, Sender},
+    Notify,
+};
 
 #[derive(Default)]
 pub struct ComponentShutdownCoordinator {
@@ -45,13 +51,20 @@ impl Future for ComponentShutdownHandle {
 #[derive(Default)]
 struct State {
     waiters: Mutex<Slab<Sender<()>>>,
+    outstanding_handles: AtomicUsize,
+    shutdown_complete: Notify,
 }
 
+/// A shutdown coordinator that can dynamically register handles for shutdown.
 #[derive(Default)]
 pub struct DynamicShutdownCoordinator {
     state: Arc<State>,
 }
 
+/// A dynamic shutdown handle.
+///
+/// This handle is a `Future` which resolves when the shutdown coordinator has triggered shutdown. Additionally, it is
+/// used to signal to the coordinator, on drop, that the user of the handle has completed shutdown.
 pub struct DynamicShutdownHandle {
     state: Arc<State>,
     wait_tx_idx: usize,
@@ -60,10 +73,12 @@ pub struct DynamicShutdownHandle {
 }
 
 impl DynamicShutdownCoordinator {
+    /// Registers a shutdown handle.
     pub fn register(&mut self) -> DynamicShutdownHandle {
         let (wait_tx, wait_rx) = channel();
         let mut waiters = self.state.waiters.lock().unwrap();
         let wait_tx_idx = waiters.insert(wait_tx);
+        self.state.outstanding_handles.fetch_add(1, Ordering::Release);
 
         DynamicShutdownHandle {
             state: Arc::clone(&self.state),
@@ -73,11 +88,27 @@ impl DynamicShutdownCoordinator {
         }
     }
 
-    pub fn shutdown(self) {
-        let mut waiters = self.state.waiters.lock().unwrap();
-        for waiter in waiters.drain() {
-            let _ = waiter.send(());
+    /// Triggers shutdown and notifies all outstanding handles.
+    ///
+    /// If there are any outstanding handles, they are signaled to shutdown and this function will only return once all
+    /// outstanding handles have been dropped. If there are no outstanding handles, the function returns immediately.
+    pub async fn shutdown(self) {
+        // Register ourselves for the shutdown notification here, which ensures that if we do have outstanding handles
+        // which are only shutdown when we signal them below, we'll be properly notified when they're all dropped.
+        let shutdown_complete = self.state.shutdown_complete.notified();
+
+        {
+            let mut waiters = self.state.waiters.lock().unwrap();
+            if waiters.is_empty() {
+                return;
+            }
+
+            for waiter in waiters.drain() {
+                let _ = waiter.send(());
+            }
         }
+
+        shutdown_complete.await;
     }
 }
 
@@ -91,6 +122,15 @@ impl Drop for DynamicShutdownHandle {
             if let Err(TryRecvError::Empty) = self.wait_rx.try_recv() {
                 waiters.remove(self.wait_tx_idx);
             }
+        }
+
+        if self.state.outstanding_handles.fetch_sub(1, Ordering::AcqRel) == 1 {
+            // We're the last handle currently registered to this coordinator, so notify the coordinator.
+            //
+            // Crucially, we use `notify_waiters` because we don't want to store a wakeup: we may be the last handle,
+            // but shutdown may not have been triggered yet. This ensures that the coordinator can properly distinguish
+            // when all handles have dropped during actual shutdown.
+            self.state.shutdown_complete.notify_waiters();
         }
     }
 }

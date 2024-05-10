@@ -1,10 +1,12 @@
 use std::fmt;
 
 use saluki_event::metric::{MetricTag, MetricTags};
+use serde::Deserialize;
 
 use super::{entity::EntityId, helpers::OneOrMany};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(try_from = "String")]
 pub enum TagCardinality {
     /// Low cardinality.
     ///
@@ -27,11 +29,20 @@ impl TagCardinality {
     where
         S: AsRef<str>,
     {
-        match s.as_ref() {
+        let cardinality_lower = s.as_ref().to_lowercase();
+        match cardinality_lower.as_str() {
             "low" => Some(Self::Low),
             "high" => Some(Self::High),
             _ => None,
         }
+    }
+}
+
+impl TryFrom<String> for TagCardinality {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        TagCardinality::parse(&value).ok_or_else(|| format!("invalid/unknown tag cardinality: {}", value))
     }
 }
 
@@ -133,7 +144,7 @@ pub enum MetadataAction {
 impl fmt::Debug for MetadataAction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Delete => write!(f, "Delete()"),
+            Self::Delete => write!(f, "Delete"),
             Self::LinkAncestor { ancestor_entity_id } => write!(f, "LinkAncestor({:?})", ancestor_entity_id),
             Self::LinkDescendant { descendant_entity_id } => write!(f, "LinkDescendant({:?})", descendant_entity_id),
             Self::AddTag { cardinality, tag } => write!(f, "AddTag(cardinality={:?}, tag={:?})", cardinality, tag),
