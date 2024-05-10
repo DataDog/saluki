@@ -20,8 +20,7 @@ impl ADPEnvironmentProvider {
         // We allow disabling the normal workload provider via configuration, since in some cases we don't actually care
         // about having a real workload provider since we know we won't be in a containerized environment, or running
         // alongside the Datadog Agent.
-        let use_noop_workload_provider = config
-            .get_typed_or_default::<bool>("adp.use_noop_workload_provider");
+        let use_noop_workload_provider = config.get_typed_or_default::<bool>("adp.use_noop_workload_provider");
 
         let workload_provider = if use_noop_workload_provider {
             debug!("Using no-op workload provider as instructed by configuration.");
