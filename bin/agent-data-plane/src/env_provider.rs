@@ -3,6 +3,7 @@ use saluki_core::prelude::*;
 use saluki_env::{
     host::providers::AgentLikeHostProvider, workload::providers::RemoteAgentWorkloadProvider, EnvironmentProvider,
 };
+use tracing::debug;
 
 const HOSTNAME_CONFIG_KEY: &str = "hostname";
 const HOSTNAME_FILE_CONFIG_KEY: &str = "hostname_file";
@@ -20,10 +21,10 @@ impl ADPEnvironmentProvider {
         // about having a real workload provider since we know we won't be in a containerized environment, or running
         // alongside the Datadog Agent.
         let use_noop_workload_provider = config
-            .get_typed::<bool>("adp.use_noop_workload_provider")
-            .map_or(false, |v| v.unwrap_or_default());
+            .get_typed_or_default::<bool>("adp.use_noop_workload_provider");
 
         let workload_provider = if use_noop_workload_provider {
+            debug!("Using no-op workload provider as instructed by configuration.");
             None
         } else {
             Some(RemoteAgentWorkloadProvider::from_configuration(config).await?)

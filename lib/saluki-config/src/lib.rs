@@ -98,14 +98,24 @@ pub struct GenericConfiguration {
 
 impl GenericConfiguration {
     pub fn get(&self, key: &str) -> Option<&Value> {
-        self.inner.find_ref(key)
+        match self.inner.find_ref(key) {
+            Some(value) => Some(value),
+            None => {
+                // We might have been given a key that uses nested notation -- `foo.bar` -- but is only present in the
+                // environment variables. We specifically don't want to use a different separator in environment
+                // variables to map to nested key separators, so we simply try again here but with all nested key
+                // separators (`.`) replaced with `_`, to match environment variables.
+                let key = key.replace('.', "_");
+                self.inner.find_ref(&key)
+            }
+        }
     }
 
     pub fn get_typed<'a, T>(&self, key: &str) -> Result<Option<T>, Error>
     where
         T: Deserialize<'a>,
     {
-        match self.inner.find_ref(key) {
+        match self.get(key) {
             Some(value) => Ok(Some(value.deserialize().map_err(|e| e.with_path(key))?)),
             None => Ok(None),
         }
@@ -115,7 +125,7 @@ impl GenericConfiguration {
     where
         T: Default + Deserialize<'a>,
     {
-        match self.inner.find_ref(key) {
+        match self.get(key) {
             Some(value) => value.deserialize().unwrap_or_default(),
             None => T::default(),
         }
