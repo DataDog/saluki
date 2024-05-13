@@ -31,7 +31,9 @@ pub struct RemoteAgentWorkloadProvider {
 
 impl RemoteAgentWorkloadProvider {
     /// Create a new `RemoteAgentWorkloadProvider` based on the given detected features.
-    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn from_configuration(
+        config: &GenericConfiguration,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let feature_detector = FeatureDetector::automatic(config);
 
         // Construct our aggregator, and add any collectors based on the detected features we've been given.

@@ -66,7 +66,7 @@ impl<D: Decoder> NewlineFraming<D> {
                 break;
             }
 
-            trace!(chunk_len = chunk.len(), "Received chunk.");
+            trace!(events_decoded, chunk_len = chunk.len(), "Received chunk.");
 
             // Do a sanity check that our internal index doesn't extend past the end of the buffer. This _shouldn't_
             // happen unless the inner decoder, or something above the framer, is messing with the buffer... but better
@@ -117,6 +117,7 @@ impl<D: Decoder> NewlineFraming<D> {
 
             // Pass the frame to the inner decoder.
             let frame_len = frame.len();
+            trace!(frame_len, "Decoding frame.");
             let event_count = self.inner.decode(&mut frame, events).context(FailedToDecode)?;
             if event_count == 0 {
                 // It's not normal to encounter a full frame and be unable to decode even a single event from it.

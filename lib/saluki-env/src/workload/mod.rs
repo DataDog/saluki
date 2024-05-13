@@ -17,3 +17,17 @@ pub trait WorkloadProvider {
 
     fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<MetricTags>;
 }
+
+impl<T> WorkloadProvider for Option<T>
+where
+    T: WorkloadProvider,
+{
+    type Error = T::Error;
+
+    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<MetricTags> {
+        match self.as_ref() {
+            Some(provider) => provider.get_tags_for_entity(entity_id, cardinality),
+            None => None,
+        }
+    }
+}

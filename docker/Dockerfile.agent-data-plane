@@ -11,7 +11,7 @@ FROM ${BUILD_IMAGE} AS builder
 # Our CI build image already installs `cmake3`, though, so we just need to handle the local development case here.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates unzip && \
-	(which cmake >/dev/null || apt-get install -y --no-install-recommends cmake)
+    (which cmake >/dev/null || apt-get install -y --no-install-recommends cmake)
 
 # Install Protocol Buffers compiler by hand, since we want a specific minimum version that Debian Buster does not have.
 COPY .ci/install-protoc.sh /
@@ -25,6 +25,11 @@ RUN cargo build --release && \
 
 # Now stick our resulting binary in a clean image.
 FROM ${APP_IMAGE}
+USER root
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 COPY --from=builder /adp/target/release/agent-data-plane /usr/local/bin/agent-data-plane
 COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
 

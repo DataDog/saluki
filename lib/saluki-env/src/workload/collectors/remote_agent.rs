@@ -35,7 +35,9 @@ impl RemoteAgentMetadataCollector {
     /// ## Errors
     ///
     /// If the collector fails to connect to the tagger API, an error will be returined.
-    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn from_configuration(
+        config: &GenericConfiguration,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let api_endpoint = config
             .get_typed::<String>("agent_ipc_endpoint")?
             .unwrap_or_else(|| DEFAULT_AGENT_IPC_ENDPOINT.to_string());
