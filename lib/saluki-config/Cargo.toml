@@ -10,6 +10,11 @@ json = ["figment/json", "dep:tracing"]
 yaml = ["figment/yaml", "dep:tracing"]
 
 [dependencies]
+# Internal dependencies.
+saluki-error = { workspace = true }
+
+# External dependencies.
 figment = { workspace = true, features = ["env"] }
 serde = { workspace = true }
+snafu = { workspace = true }
 tracing = { workspace = true, optional = true }

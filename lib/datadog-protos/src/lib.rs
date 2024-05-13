@@ -8,7 +8,7 @@ mod include {
     include!(concat!(env!("OUT_DIR"), "/protos/mod.rs"));
 }
 
-mod agent_secure_include {
+mod agent_include {
     include!(concat!(env!("OUT_DIR"), "/api.mod.rs"));
 }
 
@@ -25,8 +25,9 @@ pub mod traces {
     pub use super::include::dd_trace::*;
 }
 
-/// Agent "secure" definitions.
-pub mod agent_secure {
-    pub use super::agent_secure_include::datadog::api::v1::agent_secure_client::AgentSecureClient;
-    pub use super::agent_secure_include::datadog::model::v1::*;
+/// Agent definitions.
+pub mod agent {
+    pub use super::agent_include::datadog::api::v1::agent_client::AgentClient;
+    pub use super::agent_include::datadog::api::v1::agent_secure_client::AgentSecureClient;
+    pub use super::agent_include::datadog::model::v1::*;
 }

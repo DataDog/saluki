@@ -1,9 +1,9 @@
 use async_trait::async_trait;
+use saluki_core::{components::sources::*, observability::metrics::MetricsReceiver, topology::OutputDefinition};
+use saluki_error::GenericError;
+use saluki_event::DataType;
 use tokio::select;
 use tracing::{debug, error};
-
-use saluki_core::{components::sources::*, observability::metrics::MetricsReceiver, topology::OutputDefinition};
-use saluki_event::DataType;
 
 /// Internal metrics source.
 ///
@@ -12,7 +12,7 @@ pub struct InternalMetricsConfiguration;
 
 #[async_trait]
 impl SourceBuilder for InternalMetricsConfiguration {
-    async fn build(&self) -> Result<Box<dyn Source + Send>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn build(&self) -> Result<Box<dyn Source + Send>, GenericError> {
         Ok(Box::new(InternalMetrics {}))
     }
 

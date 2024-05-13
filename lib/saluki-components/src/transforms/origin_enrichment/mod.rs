@@ -1,16 +1,15 @@
 use async_trait::async_trait;
-
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::transforms::*,
     constants::{datadog::*, internal::*},
-    prelude::*,
     topology::interconnect::EventBuffer,
 };
 use saluki_env::{
     workload::{entity::EntityId, metadata::TagCardinality},
     EnvironmentProvider, WorkloadProvider,
 };
+use saluki_error::GenericError;
 use saluki_event::{
     metric::{Metric, MetricOrigin},
     Event,
@@ -69,7 +68,7 @@ pub struct OriginEnrichmentConfiguration<E = ()> {
 
 impl OriginEnrichmentConfiguration<()> {
     /// Creates a new `OriginEnrichmentConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, ErasedError> {
+    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
     }
 }
@@ -92,7 +91,7 @@ where
     E: EnvironmentProvider + Clone + Send + Sync + 'static,
     <E::Workload as WorkloadProvider>::Error: std::error::Error + Send + Sync,
 {
-    async fn build(&self) -> Result<Box<dyn SynchronousTransform + Send>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn build(&self) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         Ok(Box::new(OriginEnrichment {
             env_provider: self.env_provider.clone(),
             entity_id_precedence: self.entity_id_precedence,

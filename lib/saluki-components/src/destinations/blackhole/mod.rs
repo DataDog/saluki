@@ -1,10 +1,10 @@
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use tracing::{debug, info};
-
 use saluki_core::components::destinations::*;
+use saluki_error::GenericError;
 use saluki_event::DataType;
+use tracing::{debug, info};
 
 /// Blackhole destination.
 ///
@@ -19,7 +19,7 @@ impl DestinationBuilder for BlackholeConfiguration {
         DataType::all()
     }
 
-    async fn build(&self) -> Result<Box<dyn Destination + Send>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn build(&self) -> Result<Box<dyn Destination + Send>, GenericError> {
         Ok(Box::new(Blackhole))
     }
 }

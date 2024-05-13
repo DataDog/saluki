@@ -1,7 +1,7 @@
 use async_trait::async_trait;
-use saluki_env::{EnvironmentProvider, HostProvider};
-
 use saluki_core::{components::transforms::*, topology::interconnect::EventBuffer};
+use saluki_env::{EnvironmentProvider, HostProvider};
+use saluki_error::GenericError;
 use saluki_event::{metric::Metric, Event};
 
 const HOST_TAG: &str = "host";
@@ -26,9 +26,9 @@ impl<E> HostEnrichmentConfiguration<E> {
 impl<E> SynchronousTransformBuilder for HostEnrichmentConfiguration<E>
 where
     E: EnvironmentProvider + Send + Sync + 'static,
-    <E::Host as HostProvider>::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    <E::Host as HostProvider>::Error: Into<GenericError>,
 {
-    async fn build(&self) -> Result<Box<dyn SynchronousTransform + Send>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn build(&self) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         Ok(Box::new(
             HostEnrichment::from_environment_provider(&self.env_provider).await?,
         ))
@@ -40,12 +40,10 @@ pub struct HostEnrichment {
 }
 
 impl HostEnrichment {
-    pub async fn from_environment_provider<E>(
-        env_provider: &E,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>>
+    pub async fn from_environment_provider<E>(env_provider: &E) -> Result<Self, GenericError>
     where
         E: EnvironmentProvider + Send + Sync + 'static,
-        <E::Host as HostProvider>::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+        <E::Host as HostProvider>::Error: Into<GenericError>,
     {
         Ok(Self {
             hostname: env_provider.host().get_hostname().await.map_err(Into::into)?,

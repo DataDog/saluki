@@ -1,6 +1,11 @@
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
+pub fn fatal_and_exit(message: String) {
+    eprintln!("FATAL: {}", message);
+    std::process::exit(1);
+}
+
 pub fn initialize_logging() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing_subscriber::fmt()
         .with_env_filter(

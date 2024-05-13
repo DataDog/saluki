@@ -1,8 +1,8 @@
 use saluki_config::GenericConfiguration;
-use saluki_core::prelude::*;
 use saluki_env::{
     host::providers::AgentLikeHostProvider, workload::providers::RemoteAgentWorkloadProvider, EnvironmentProvider,
 };
+use saluki_error::GenericError;
 use tracing::debug;
 
 const HOSTNAME_CONFIG_KEY: &str = "hostname";
@@ -16,7 +16,7 @@ pub struct ADPEnvironmentProvider {
 }
 
 impl ADPEnvironmentProvider {
-    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, ErasedError> {
+    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         // We allow disabling the normal workload provider via configuration, since in some cases we don't actually care
         // about having a real workload provider since we know we won't be in a containerized environment, or running
         // alongside the Datadog Agent.

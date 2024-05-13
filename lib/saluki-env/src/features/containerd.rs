@@ -15,7 +15,7 @@ impl ContainerdDetector {
     pub fn detect_grpc_socket_path(config: &GenericConfiguration) -> Option<PathBuf> {
         // Try and read the socket path from either the configuration, or if it's not present there, from the possible
         // default paths we would expect it to be listening at.
-        let detected_socket_path = match config.get_typed::<PathBuf>("cri_socket_path") {
+        let detected_socket_path = match config.try_get_typed::<PathBuf>("cri_socket_path") {
             Ok(Some(cri_socket_path)) => Some(cri_socket_path),
             Ok(None) => {
                 if is_docker_runtime_present() {

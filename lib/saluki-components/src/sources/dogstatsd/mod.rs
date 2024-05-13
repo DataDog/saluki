@@ -1,20 +1,15 @@
 use async_trait::async_trait;
-use serde::Deserialize;
-use snafu::{ResultExt as _, Snafu};
-use tokio::select;
-use tracing::{debug, error, info, trace};
-
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     buffers::FixedSizeBufferPool,
     components::sources::*,
     constants::internal::ORIGIN_PID_TAG_KEY,
-    prelude::*,
     topology::{
         shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
         OutputDefinition,
     },
 };
+use saluki_error::GenericError;
 use saluki_event::{DataType, Event};
 use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, BytesBuffer},
@@ -24,6 +19,10 @@ use saluki_io::{
         listener::{Listener, ListenerError},
     },
 };
+use serde::Deserialize;
+use snafu::{ResultExt as _, Snafu};
+use tokio::select;
+use tracing::{debug, error, info, trace};
 
 mod framer;
 use self::framer::{get_framer, DogStatsDMultiFraming};
@@ -123,7 +122,7 @@ pub struct DogStatsDConfiguration {
 
 impl DogStatsDConfiguration {
     /// Creates a new `DogStatsDConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, ErasedError> {
+    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
     }
 
@@ -169,7 +168,7 @@ impl DogStatsDConfiguration {
 
 #[async_trait]
 impl SourceBuilder for DogStatsDConfiguration {
-    async fn build(&self) -> Result<Box<dyn Source + Send>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn build(&self) -> Result<Box<dyn Source + Send>, GenericError> {
         let listeners = self.build_listeners().await?;
         if listeners.is_empty() {
             return Err(Error::NoListenersConfigured.into());
