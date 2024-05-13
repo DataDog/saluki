@@ -95,9 +95,6 @@ impl DirCheckListener {
         let current: HashSet<PathBuf> = HashSet::from_iter(self.known_check_paths.clone().into_iter());
         let new: HashSet<PathBuf> = HashSet::from_iter(new_check_paths.iter().cloned());
 
-        //let new_entities: Vec<PathBuf> = new.difference(&current).collect::<Vec<_>>().map(|e| e.clone());
-        //let deleted_entities: Vec<PathBuf> = current.difference(&new).cloned().collect::<Vec<_>>();
-
         for entity in new.difference(&current) {
             self.known_check_paths.push(entity.clone());
             // todo error handling
@@ -144,14 +141,7 @@ async fn is_check_entity(entry: &DirEntry) -> bool {
     let file_type = entry.file_type().await.expect("Couldn't get file type");
     if file_type.is_file() {
         // Matches `./mycheck.yaml`
-        if path.extension().unwrap_or_default() == "yaml" {
-            return path
-                .file_stem()
-                .unwrap_or_default()
-                .to_str()
-                .unwrap_or("")
-                .ends_with("check");
-        }
+        return path.extension().unwrap_or_default() == "yaml";
     } else if file_type.is_dir() {
         // Matches `./mycheck.d/conf.yaml`
         let conf_path = path.join("conf.yaml");
@@ -259,6 +249,7 @@ async fn process_listener(source_context: SourceContext, listener_context: DirCh
             }
             Some(new_entity) = new_entities.recv() => {
                 debug!("Received new check entity {}", new_entity.display());
+                // TODO - try to start running this check
             }
             Some(deleted_entity) = deleted_entities.recv() => {
                 debug!("Received deleted check entity {}", deleted_entity.display());
