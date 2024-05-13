@@ -9,6 +9,7 @@ members = [
   "lib/saluki-config",
   "lib/saluki-core",
   "lib/saluki-env",
+  "lib/saluki-error",
   "lib/saluki-event",
   "lib/saluki-io",
 ]
@@ -23,6 +24,7 @@ saluki-components = { path = "lib/saluki-components" }
 saluki-config = { path = "lib/saluki-config" }
 saluki-core = { path = "lib/saluki-core" }
 saluki-env = { path = "lib/saluki-env" }
+saluki-error = { path = "lib/saluki-error" }
 saluki-event = { path = "lib/saluki-event" }
 saluki-io = { path = "lib/saluki-io" }
 
@@ -87,6 +89,8 @@ serde_json = { version = "1.0.116", default-features = false }
 headers = { version = "0.3", default-features = false }
 rustls-pemfile = { version = "2", default-features = false }
 tokio-rustls = { version = "0.25.0", default-features = false }
+anyhow = { version = "1", default-features = false }
+chrono = "0.4"
 
 [patch.crates-io]
 # Git dependency for `containerd-client` to add specific `prost-build` settings that allow type-erased payloads in

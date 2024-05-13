@@ -1,13 +1,70 @@
-use figment::{providers::Env, value::Value, Figment};
+use std::{borrow::Cow, collections::HashSet};
 
-pub use figment::{value, Error};
+use figment::{error::Kind, providers::Env, value::Value, Figment};
+
+pub use figment::value;
+use saluki_error::GenericError;
 use serde::Deserialize;
+use snafu::Snafu;
 
 #[cfg(any(feature = "json", feature = "yaml"))]
 mod provider;
 
 #[cfg(any(feature = "json", feature = "yaml"))]
 use self::provider::ResolvedProvider;
+
+#[derive(Debug, Snafu)]
+pub enum ConfigurationError {
+    #[snafu(display("Missing field '{}' in configuration. {}", field, help_text))]
+    MissingField {
+        help_text: String,
+        field: Cow<'static, str>,
+    },
+
+    #[snafu(display(
+        "Expected value at path '{}' to be '{}', got '{}' instead.",
+        path,
+        expected_ty,
+        actual_ty
+    ))]
+    InvalidFieldType {
+        path: String,
+        expected_ty: String,
+        actual_ty: String,
+    },
+
+    #[snafu(display("{}", source))]
+    Generic { source: GenericError },
+}
+
+impl From<figment::Error> for ConfigurationError {
+    fn from(e: figment::Error) -> Self {
+        match e.kind {
+            Kind::InvalidType(actual_ty, expected_ty) => Self::InvalidFieldType {
+                path: e.path.join("."),
+                expected_ty,
+                actual_ty: actual_ty.to_string(),
+            },
+            _ => Self::Generic { source: e.into() },
+        }
+    }
+}
+
+#[derive(Eq, Hash, PartialEq)]
+enum LookupSource {
+    /// The configuration key is looked up in a form suitable for environment variables.
+    Environment { prefix: String },
+}
+
+impl LookupSource {
+    fn transform_key(&self, key: &str) -> String {
+        match self {
+            // The prefix should already be uppercased, with a trailing underscore, which is needed when we actually
+            // configure the provider used for reading from the environment... so we don't need to re-do that here.
+            LookupSource::Environment { prefix } => format!("{}{}", prefix, key.replace('.', "_").to_uppercase()),
+        }
+    }
+}
 
 /// A configuration loader that can load configuration from various sources.
 ///
@@ -27,11 +84,12 @@ use self::provider::ResolvedProvider;
 #[derive(Default)]
 pub struct ConfigurationLoader {
     inner: Figment,
+    lookup_sources: HashSet<LookupSource>,
 }
 
 impl ConfigurationLoader {
     #[cfg(feature = "yaml")]
-    pub fn from_yaml<P>(mut self, path: P) -> Result<Self, Error>
+    pub fn from_yaml<P>(mut self, path: P) -> Result<Self, ConfigurationError>
     where
         P: AsRef<std::path::Path>,
     {
@@ -57,7 +115,7 @@ impl ConfigurationLoader {
     }
 
     #[cfg(feature = "json")]
-    pub fn from_json<P>(mut self, path: P) -> Result<Self, Error>
+    pub fn from_json<P>(mut self, path: P) -> Result<Self, ConfigurationError>
     where
         P: AsRef<std::path::Path>,
     {
@@ -82,28 +140,31 @@ impl ConfigurationLoader {
         self
     }
 
-    pub fn from_environment(mut self, prefix: &str) -> Self {
-        let env = if prefix.ends_with('_') {
-            Env::prefixed(prefix)
+    pub fn from_environment(mut self, prefix: &'static str) -> Self {
+        let prefix = if prefix.ends_with('_') {
+            prefix.to_string()
         } else {
-            let with_underscore = format!("{}_", prefix);
-            Env::prefixed(&with_underscore)
+            format!("{}_", prefix)
         };
 
-        self.inner = self.inner.admerge(env);
+        self.inner = self.inner.admerge(Env::prefixed(&prefix));
+        self.lookup_sources.insert(LookupSource::Environment { prefix });
         self
     }
 
-    pub fn into_typed<'a, T>(self) -> Result<T, Error>
+    pub fn into_typed<'a, T>(self) -> Result<T, ConfigurationError>
     where
         T: Deserialize<'a>,
     {
-        self.inner.extract()
+        self.inner.extract().map_err(Into::into)
     }
 
-    pub fn into_generic(self) -> Result<GenericConfiguration, Error> {
+    pub fn into_generic(self) -> Result<GenericConfiguration, ConfigurationError> {
         let inner: Value = self.inner.extract()?;
-        Ok(GenericConfiguration { inner })
+        Ok(GenericConfiguration {
+            inner,
+            lookup_sources: self.lookup_sources,
+        })
     }
 }
 
@@ -130,10 +191,11 @@ impl ConfigurationLoader {
 /// "c": "value" }`.
 pub struct GenericConfiguration {
     inner: Value,
+    lookup_sources: HashSet<LookupSource>,
 }
 
 impl GenericConfiguration {
-    pub fn get(&self, key: &str) -> Option<&Value> {
+    fn get(&self, key: &str) -> Option<&Value> {
         match self.inner.find_ref(key) {
             Some(value) => Some(value),
             None => {
@@ -147,16 +209,36 @@ impl GenericConfiguration {
         }
     }
 
-    pub fn get_typed<'a, T>(&self, key: &str) -> Result<Option<T>, Error>
+    /// Gets a configuration value by key.
+    ///
+    /// The key must be in the form of `a.b.c`, where periods (`.`) are used to indicate a nested lookup.
+    ///
+    /// ## Errors
+    ///
+    /// If the key does not exist in the configuration, or if the value could not be deserialized into `T`, an error
+    /// variant will be returned.
+    pub fn get_typed<'a, T>(&self, key: &str) -> Result<T, ConfigurationError>
     where
         T: Deserialize<'a>,
     {
         match self.get(key) {
-            Some(value) => Ok(Some(value.deserialize().map_err(|e| e.with_path(key))?)),
-            None => Ok(None),
+            Some(value) => {
+                let deserialized = value.deserialize().map_err(|e| e.with_path(key))?;
+                Ok(deserialized)
+            }
+            None => Err(from_figment_error(
+                &self.lookup_sources,
+                Kind::MissingField(key.to_string().into()).into(),
+            )),
         }
     }
 
+    /// Gets a configuration value by key, or the default value if a key does not exist or could not be deserialized.
+    ///
+    /// The `Default` implementation of `T` will be used both if the key could not be found, as well as for any error
+    /// during deserialization. This effectively swallows any errors and should generally be used sparingly.
+    ///
+    /// The key must be in the form of `a.b.c`, where periods (`.`) are used to indicate a nested lookup.
     pub fn get_typed_or_default<'a, T>(&self, key: &str) -> T
     where
         T: Default + Deserialize<'a>,
@@ -167,10 +249,67 @@ impl GenericConfiguration {
         }
     }
 
-    pub fn as_typed<'a, T>(&self) -> Result<T, Error>
+    /// Gets a configuration value by key, if it exists.
+    ///
+    /// If the key exists in the configuration, and can be deserialized, `Ok(Some(value))` is returned. Otherwise,
+    /// `Ok(None)` will be returned.
+    ///
+    /// The key must be in the form of `a.b.c`, where periods (`.`) are used to indicate a nested lookup.
+    ///
+    /// ## Errors
+    ///
+    /// If the value could not be deserialized into `T`, an error variant will be returned.
+    pub fn try_get_typed<'a, T>(&self, key: &str) -> Result<Option<T>, ConfigurationError>
     where
         T: Deserialize<'a>,
     {
-        self.inner.deserialize()
+        match self.get(key) {
+            Some(value) => {
+                let deserialized = value
+                    .deserialize()
+                    .map_err(|e| e.with_path(key))
+                    .map_err(|e| from_figment_error(&self.lookup_sources, e))?;
+                Ok(Some(deserialized))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Attempts to deserialize the entire configuration as `T`.
+    ///
+    /// ## Errors
+    ///
+    /// If the value could not be deserialized into `T`, an error variant will be returned.
+    pub fn as_typed<'a, T>(&self) -> Result<T, ConfigurationError>
+    where
+        T: Deserialize<'a>,
+    {
+        self.inner
+            .deserialize()
+            .map_err(|e| from_figment_error(&self.lookup_sources, e))
+    }
+}
+
+fn from_figment_error(lookup_sources: &HashSet<LookupSource>, e: figment::Error) -> ConfigurationError {
+    match e.kind {
+        Kind::MissingField(field) => {
+            let mut valid_keys = lookup_sources
+                .iter()
+                .map(|source| source.transform_key(&field))
+                .collect::<Vec<_>>();
+
+            // Always specify the original key as a valid key to try.
+            valid_keys.insert(0, field.to_string());
+
+            let help_text = format!("Try setting `{}`.", valid_keys.join("` or `"));
+
+            ConfigurationError::MissingField { help_text, field }
+        }
+        Kind::InvalidType(actual_ty, expected_ty) => ConfigurationError::InvalidFieldType {
+            path: e.path.join("."),
+            expected_ty,
+            actual_ty: actual_ty.to_string(),
+        },
+        _ => ConfigurationError::Generic { source: e.into() },
     }
 }

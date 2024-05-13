@@ -1,14 +1,19 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use datadog_protos::agent_secure::{
-    AgentSecureClient, EntityId as RemoteEntityId, EventType, StreamTagsRequest, TagCardinality as RemoteTagCardinality,
+use datadog_protos::agent::{
+    AgentSecureClient, EntityId as RemoteEntityId, EventType, FetchEntityRequest, StreamTagsRequest,
+    TagCardinality as RemoteTagCardinality,
 };
+use hyper::Uri;
 use saluki_config::GenericConfiguration;
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use snafu::{ResultExt as _, Snafu};
 use tokio::sync::mpsc;
 use tonic::{
     service::interceptor::InterceptedService,
     transport::{Channel, Endpoint},
+    Code,
 };
 use tracing::{debug, warn};
 
@@ -23,6 +28,23 @@ use super::MetadataCollector;
 const DEFAULT_AGENT_IPC_ENDPOINT: &str = "https://127.0.0.1:5001";
 const DEFAULT_AGENT_AUTH_TOKEN_FILE_PATH: &str = "/etc/datadog-agent/auth/token";
 
+#[derive(Debug, Snafu)]
+#[snafu(context(suffix(false)))]
+pub enum CollectorError {
+    #[snafu(display(
+        "Failed to read Datadog Agent authentication token from '{}': {}",
+        token_path,
+        source
+    ))]
+    FailedToReadAuthToken { token_path: String, source: GenericError },
+
+    #[snafu(display("Failed to connect to the Datadog Agent IPC endpoint '{}': {}", ipc_endpoint, source))]
+    FailedToConnect {
+        ipc_endpoint: String,
+        source: tonic::transport::Error,
+    },
+}
+
 /// A workload provider that uses the remote tagger API from a Datadog Agent, or Datadog Cluster
 /// Agent, to provide workload information.
 pub struct RemoteAgentMetadataCollector {
@@ -35,25 +57,47 @@ impl RemoteAgentMetadataCollector {
     /// ## Errors
     ///
     /// If the collector fails to connect to the tagger API, an error will be returined.
-    pub async fn from_configuration(
-        config: &GenericConfiguration,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let api_endpoint = config
-            .get_typed::<String>("agent_ipc_endpoint")?
+    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        let raw_ipc_endpoint = config
+            .try_get_typed::<String>("agent_ipc_endpoint")?
             .unwrap_or_else(|| DEFAULT_AGENT_IPC_ENDPOINT.to_string());
 
-        let auth_token_file_path = config
-            .get_typed::<String>("auth_token_file_path")?
+        let ipc_endpoint = match Uri::from_maybe_shared(raw_ipc_endpoint.clone()) {
+            Ok(uri) => uri,
+            Err(_) => {
+                return Err(generic_error!(
+                    "Failed to parse configured IPC endpoint for Datadog Agent: {}",
+                    raw_ipc_endpoint
+                ))
+            }
+        };
+
+        let token_path = config
+            .try_get_typed::<String>("auth_token_file_path")?
             .unwrap_or_else(|| DEFAULT_AGENT_AUTH_TOKEN_FILE_PATH.to_string());
 
-        let bearer_token_interceptor = BearerAuthInterceptor::from_file(auth_token_file_path).await?;
+        let bearer_token_interceptor =
+            BearerAuthInterceptor::from_file(&token_path)
+                .await
+                .with_error_context(|| {
+                    format!(
+                        "Failed to read Datadog Agent authentication token from '{}'",
+                        token_path
+                    )
+                })?;
 
-        let channel = Endpoint::from_shared(api_endpoint)?
+        let channel = Endpoint::from(ipc_endpoint)
             .connect_timeout(Duration::from_secs(2))
             .connect_with_connector(build_self_signed_https_connector())
-            .await?;
+            .await
+            .context(FailedToConnect {
+                ipc_endpoint: raw_ipc_endpoint,
+            })?;
 
-        let agent_client = AgentSecureClient::with_interceptor(channel, bearer_token_interceptor);
+        let mut agent_client = AgentSecureClient::with_interceptor(channel, bearer_token_interceptor);
+
+        // Try and do a basic healthcheck to make sure we can connect and that our authentication token is valid.
+        try_query_agent_api(&mut agent_client).await?;
 
         Ok(Self { agent_client })
     }
@@ -151,5 +195,26 @@ fn remote_entity_id_to_entity_id(remote_entity_id: RemoteEntityId) -> Option<Ent
             warn!("Unhandled entity ID prefix: {}", other);
             None
         }
+    }
+}
+
+async fn try_query_agent_api(
+    client: &mut AgentSecureClient<InterceptedService<Channel, BearerAuthInterceptor>>,
+) -> Result<(), GenericError> {
+    let noop_fetch_request = FetchEntityRequest {
+        id: Some(RemoteEntityId {
+            prefix: "container_id".to_string(),
+            uid: "nonexistent".to_string(),
+        }),
+        cardinality: RemoteTagCardinality::High.into(),
+    };
+    match client.tagger_fetch_entity(noop_fetch_request).await {
+        Ok(_) => Ok(()),
+        Err(e) => match e.code() {
+            Code::Unauthenticated => Err(generic_error!(
+                "Failed to authenticate to Datadog Agent API. Check that the configured authentication token is correct."
+            )),
+            _ => Err(e.into()),
+        },
     }
 }

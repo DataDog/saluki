@@ -4,16 +4,16 @@ use async_trait::async_trait;
 use http::{Request, Uri};
 use http_body_util::BodyExt as _;
 use saluki_config::GenericConfiguration;
-use serde::Deserialize;
-use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error, trace};
-
-use saluki_core::{components::destinations::*, prelude::*};
+use saluki_core::components::destinations::*;
+use saluki_error::GenericError;
 use saluki_event::DataType;
 use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, ChunkedBytesBuffer, ChunkedBytesBufferPool},
     net::client::http::{ChunkedHttpsClient, HttpClient},
 };
+use serde::Deserialize;
+use tokio::sync::{mpsc, oneshot};
+use tracing::{debug, error, trace};
 
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
@@ -61,11 +61,11 @@ pub struct DatadogMetricsConfiguration {
 
 impl DatadogMetricsConfiguration {
     /// Creates a new `DatadogMetricsConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, ErasedError> {
+    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
     }
 
-    fn api_base(&self) -> Result<Uri, ErasedError> {
+    fn api_base(&self) -> Result<Uri, GenericError> {
         match &self.dd_url {
             Some(url) => Uri::try_from(url).map_err(Into::into),
             None => {
@@ -93,7 +93,7 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         DataType::Metric
     }
 
-    async fn build(&self) -> Result<Box<dyn Destination + Send>, ErasedError> {
+    async fn build(&self) -> Result<Box<dyn Destination + Send>, GenericError> {
         let http_client = HttpClient::https()?;
 
         let api_base = self.api_base()?;

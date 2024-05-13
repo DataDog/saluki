@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 
+use saluki_error::GenericError;
 use saluki_event::DataType;
 
 use crate::components::{
@@ -36,7 +37,7 @@ impl SourceBuilder for TestSourceBuilder {
         &self.outputs
     }
 
-    async fn build(&self) -> Result<Box<dyn Source + Send>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn build(&self) -> Result<Box<dyn Source + Send>, GenericError> {
         Ok(Box::new(TestSource))
     }
 }
@@ -88,7 +89,7 @@ impl TransformBuilder for TestTransformBuilder {
         &self.outputs
     }
 
-    async fn build(&self) -> Result<Box<dyn Transform + Send>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn build(&self) -> Result<Box<dyn Transform + Send>, GenericError> {
         Ok(Box::new(TestTransform))
     }
 }
@@ -118,7 +119,7 @@ impl DestinationBuilder for TestDestinationBuilder {
         self.input_data_ty
     }
 
-    async fn build(&self) -> Result<Box<dyn Destination + Send>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn build(&self) -> Result<Box<dyn Destination + Send>, GenericError> {
         Ok(Box::new(TestDestination))
     }
 }

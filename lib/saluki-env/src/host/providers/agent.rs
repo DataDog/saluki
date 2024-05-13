@@ -2,6 +2,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use saluki_config::GenericConfiguration;
+use saluki_error::{generic_error, GenericError};
 
 use crate::{
     host::hostname::{
@@ -63,11 +64,11 @@ impl AgentLikeHostProvider {
     pub fn new(
         config: &GenericConfiguration, hostname_config_key: &str, hostname_file_config_key: &str,
         trust_os_hostname_config_key: &str,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let maybe_hostname = config.get_typed::<String>(hostname_config_key)?;
-        let maybe_hostname_file_path = config.get_typed::<PathBuf>(hostname_file_config_key)?;
+    ) -> Result<Self, GenericError> {
+        let maybe_hostname = config.try_get_typed::<String>(hostname_config_key)?;
+        let maybe_hostname_file_path = config.try_get_typed::<PathBuf>(hostname_file_config_key)?;
         let trust_os_hostname = config
-            .get_typed::<bool>(trust_os_hostname_config_key)?
+            .try_get_typed::<bool>(trust_os_hostname_config_key)?
             .unwrap_or_default();
 
         Ok(Self {
@@ -88,7 +89,7 @@ impl AgentLikeHostProvider {
 
 #[async_trait]
 impl HostProvider for AgentLikeHostProvider {
-    type Error = String;
+    type Error = GenericError;
 
     async fn get_hostname(&self) -> Result<String, Self::Error> {
         let mut current_hostname = None;
@@ -104,6 +105,6 @@ impl HostProvider for AgentLikeHostProvider {
             }
         }
 
-        current_hostname.ok_or_else(|| "Unable to reliably determine the host name.".to_string())
+        current_hostname.ok_or_else(|| generic_error!("Unable to reliably determine the host name."))
     }
 }

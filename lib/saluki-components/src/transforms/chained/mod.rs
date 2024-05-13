@@ -1,8 +1,8 @@
 use async_trait::async_trait;
-use tracing::{debug, error};
-
 use saluki_core::{components::transforms::*, topology::OutputDefinition};
+use saluki_error::GenericError;
 use saluki_event::DataType;
+use tracing::{debug, error};
 
 /// Chained transform.
 ///
@@ -31,7 +31,7 @@ impl ChainedConfiguration {
 
 #[async_trait]
 impl TransformBuilder for ChainedConfiguration {
-    async fn build(&self) -> Result<Box<dyn Transform + Send>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn build(&self) -> Result<Box<dyn Transform + Send>, GenericError> {
         let mut transforms = Vec::new();
         for transform_builder in &self.transform_builders {
             transforms.push(transform_builder.build().await?);

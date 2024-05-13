@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use saluki_error::GenericError;
 
 use crate::topology::OutputDefinition;
 
@@ -8,5 +9,5 @@ use super::Source;
 pub trait SourceBuilder {
     fn outputs(&self) -> &[OutputDefinition];
 
-    async fn build(&self) -> Result<Box<dyn Source + Send>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn build(&self) -> Result<Box<dyn Source + Send>, GenericError>;
 }

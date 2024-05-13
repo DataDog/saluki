@@ -2,7 +2,7 @@ use std::{path::Path, str::FromStr as _, sync::Arc};
 
 use hyper::client::HttpConnector;
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
-use snafu::{ResultExt as _, Snafu};
+use saluki_error::{generic_error, GenericError};
 use tokio_rustls::rustls::{
     client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
     pki_types::{CertificateDer, ServerName, UnixTime},
@@ -15,35 +15,25 @@ use tonic::{
     Request, Status,
 };
 
-#[derive(Debug, Snafu)]
-#[snafu(context(suffix(false)))]
-pub enum InterceptorError {
-    #[snafu(display("Failed to read token from file '{}': {}", file_path, source))]
-    FailedToRead { file_path: String, source: std::io::Error },
-
-    #[snafu(display("Invalid bearer token: must only container visible ASCII characters (32-127)"))]
-    InvalidToken,
-}
-
 #[derive(Clone)]
 pub struct BearerAuthInterceptor {
     bearer_token: MetadataValue<Ascii>,
 }
 
 impl BearerAuthInterceptor {
-    pub async fn from_file<P>(file_path: P) -> Result<Self, InterceptorError>
+    pub async fn from_file<P>(file_path: P) -> Result<Self, GenericError>
     where
         P: AsRef<Path>,
     {
         let file_path = file_path.as_ref();
-        let raw_bearer_token = tokio::fs::read_to_string(file_path).await.context(FailedToRead {
-            file_path: file_path.to_string_lossy().to_string(),
-        })?;
+        let raw_bearer_token = tokio::fs::read_to_string(file_path).await?;
 
         let raw_bearer_token = format!("bearer {}", raw_bearer_token);
         match MetadataValue::<Ascii>::from_str(&raw_bearer_token) {
             Ok(bearer_token) => Ok(Self { bearer_token }),
-            Err(_) => Err(InterceptorError::InvalidToken),
+            Err(_) => Err(generic_error!(
+                "token must only container visible ASCII characters (32-127)"
+            )),
         }
     }
 }
