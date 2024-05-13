@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use saluki_components::{
     destinations::DatadogMetricsConfiguration,
-    sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
+    sources::{ChecksConfiguration, DogStatsDConfiguration, InternalMetricsConfiguration},
     transforms::{
         AggregateConfiguration, ChainedConfiguration, HostEnrichmentConfiguration, OriginEnrichmentConfiguration,
     },
@@ -57,10 +57,13 @@ async fn main() -> Result<(), ErasedError> {
         .with_transform_builder(origin_enrichment_config);
     let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(&configuration)?;
 
+    let check_config = ChecksConfiguration::from_configuration(&configuration)?;
+
     let mut blueprint = TopologyBlueprint::default();
     blueprint
         .add_source("dsd_in", dsd_config)?
         .add_source("internal_metrics_in", int_metrics_config)?
+        .add_source("checks", check_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
         .add_transform("internal_metrics_agg", int_metrics_agg_config)?
         .add_transform("enrich", enrich_config)?
