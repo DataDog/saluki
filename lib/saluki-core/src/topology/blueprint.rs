@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use saluki_error::GenericError;
 use snafu::{ResultExt as _, Snafu};
 
 use crate::components::{DestinationBuilder, SourceBuilder, TransformBuilder};
@@ -13,13 +14,11 @@ use super::{
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 pub enum BlueprintError {
-    #[snafu(display("graph error: {}", source))]
+    #[snafu(display("Failed to build/validate topology graph: {}", source))]
     InvalidGraph { source: GraphError },
 
-    #[snafu(display("builder error: {}", source))]
-    Builder {
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
+    #[snafu(display("Failed to build component '{}': {}", id, source))]
+    FailedToBuildComponent { id: ComponentId, source: GenericError },
 }
 
 /// A topology blueprint represents a directed graph of components.
@@ -106,20 +105,32 @@ impl TopologyBlueprint {
 
         let mut sources = HashMap::new();
         for (id, builder) in self.sources {
-            let source = builder.build().await.context(Builder)?;
-            sources.insert(id, source);
+            match builder.build().await {
+                Ok(source) => {
+                    sources.insert(id, source);
+                }
+                Err(e) => return Err(BlueprintError::FailedToBuildComponent { id, source: e }),
+            }
         }
 
         let mut transforms = HashMap::new();
         for (id, builder) in self.transforms {
-            let transform = builder.build().await.context(Builder)?;
-            transforms.insert(id, transform);
+            match builder.build().await {
+                Ok(transform) => {
+                    transforms.insert(id, transform);
+                }
+                Err(e) => return Err(BlueprintError::FailedToBuildComponent { id, source: e }),
+            }
         }
 
         let mut destinations = HashMap::new();
         for (id, builder) in self.destinations {
-            let destination = builder.build().await.context(Builder)?;
-            destinations.insert(id, destination);
+            match builder.build().await {
+                Ok(destination) => {
+                    destinations.insert(id, destination);
+                }
+                Err(e) => return Err(BlueprintError::FailedToBuildComponent { id, source: e }),
+            }
         }
 
         Ok(BuiltTopology::from_parts(self.graph, sources, transforms, destinations))

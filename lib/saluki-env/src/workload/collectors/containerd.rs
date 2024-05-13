@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use containerd_client::services::v1::Namespace;
 use futures::{stream::select_all, Stream, StreamExt as _};
 use saluki_config::GenericConfiguration;
+use saluki_error::GenericError;
 use tokio::{sync::mpsc, time::sleep};
 use tracing::error;
 
@@ -33,9 +34,7 @@ impl ContainerdMetadataCollector {
     /// ## Errors
     ///
     /// If the collector fails to connect to the containerd API, an error will be returned.
-    pub async fn from_configuration(
-        config: &GenericConfiguration,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let client = ContainerdClient::from_configuration(config).await?;
         let watched_namespaces = client.get_namespaces().await?;
 

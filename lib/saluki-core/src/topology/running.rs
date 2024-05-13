@@ -1,3 +1,4 @@
+use saluki_error::GenericError;
 use tokio::task::JoinHandle;
 
 use super::shutdown::ComponentShutdownCoordinator;
@@ -22,7 +23,7 @@ impl RunningTopology {
         }
     }
 
-    pub async fn shutdown(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn shutdown(self) -> Result<(), GenericError> {
         // Trigger shutdown of sources, which will then cascade to the downstream components connected to those sources,
         // eventually leading to all components shutting down.
         self.shutdown_coordinator.shutdown();

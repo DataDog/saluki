@@ -16,31 +16,54 @@ use saluki_components::{
     },
 };
 use saluki_config::ConfigurationLoader;
-use tracing::info;
+use saluki_error::GenericError;
+use tracing::{error, info};
 
-use saluki_app::{logging::initialize_logging, metrics::initialize_metrics};
-use saluki_core::{prelude::*, topology::blueprint::TopologyBlueprint};
+use saluki_app::{
+    logging::{fatal_and_exit, initialize_logging},
+    metrics::initialize_metrics,
+};
+use saluki_core::topology::blueprint::TopologyBlueprint;
 
 use crate::env_provider::ADPEnvironmentProvider;
 
+const ADP_VERSION: &str = env!("ADP_VERSION");
+const ADP_BUILD_DESC: &str = env!("ADP_BUILD_DESC");
+
 #[tokio::main]
-async fn main() -> Result<(), ErasedError> {
-    let start = Instant::now();
+async fn main() {
+    let started = Instant::now();
 
-    initialize_logging()?;
-    initialize_metrics("datadog.saluki").await?;
+    if let Err(e) = initialize_logging() {
+        fatal_and_exit(format!("failed to initialize logging: {}", e));
+    }
 
-    info!("agent-data-plane starting...");
+    if let Err(e) = initialize_metrics("datadog.saluki").await {
+        fatal_and_exit(format!("failed to initialize metrics: {}", e));
+    }
+
+    match run(started).await {
+        Ok(()) => info!("Agent Data Plane stopped."),
+        Err(e) => {
+            error!("{:?}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn run(started: Instant) -> Result<(), GenericError> {
+    info!(
+        version = ADP_VERSION,
+        build_desc = ADP_BUILD_DESC,
+        "Agent Data Plane starting..."
+    );
 
     let configuration = ConfigurationLoader::default()
         .try_from_yaml("/etc/datadog-agent/datadog.yaml")
         .from_environment("DD")
-        .into_generic()
-        .expect("should not fail to load configuration");
+        .into_generic()?;
 
-    let env_provider = ADPEnvironmentProvider::from_configuration(&configuration)
-        .await
-        .expect("failed to create environment provider");
+    let env_provider = ADPEnvironmentProvider::from_configuration(&configuration).await?;
 
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
@@ -72,20 +95,16 @@ async fn main() -> Result<(), ErasedError> {
     let built_topology = blueprint.build().await?;
     let running_topology = built_topology.spawn().await?;
 
-    let startup_time = start.elapsed();
+    let startup_time = started.elapsed();
 
     info!(
         init_time_ms = startup_time.as_millis(),
-        "topology running, waiting for interrupt..."
+        "Topology running, waiting for interrupt..."
     );
 
     tokio::signal::ctrl_c().await?;
 
-    info!("received ctrl-c, shutting down...");
+    info!("Received SIGINT, shutting down...");
 
-    running_topology.shutdown().await?;
-
-    info!("topology shut down, exiting.");
-
-    Ok(())
+    running_topology.shutdown().await
 }

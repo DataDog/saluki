@@ -6,17 +6,16 @@ use std::{
 
 use ahash::{AHashMap, AHashSet};
 use async_trait::async_trait;
-use tokio::{pin, select, time::sleep_until};
-use tracing::{debug, error, trace};
-
 use saluki_core::{
     buffers::FixedSizeBufferPool,
     components::{metrics::MetricsBuilder, transforms::*},
     topology::{interconnect::EventBuffer, OutputDefinition},
 };
-use saluki_event::{metric::*, DataType, Event};
-
 use saluki_env::time::get_unix_timestamp;
+use saluki_error::GenericError;
+use saluki_event::{metric::*, DataType, Event};
+use tokio::{pin, select, time::sleep_until};
+use tracing::{debug, error, trace};
 
 /// Aggregate transform.
 ///
@@ -74,7 +73,7 @@ impl AggregateConfiguration {
 
 #[async_trait]
 impl TransformBuilder for AggregateConfiguration {
-    async fn build(&self) -> Result<Box<dyn Transform + Send>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn build(&self) -> Result<Box<dyn Transform + Send>, GenericError> {
         Ok(Box::new(Aggregate {
             window_duration: self.window_duration,
             context_limit: self.context_limit,
