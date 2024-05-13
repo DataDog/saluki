@@ -16,7 +16,7 @@ use snafu::Snafu;
 use std::path::{Path, PathBuf};
 use std::{collections::HashSet, io};
 use tokio::{select, sync::mpsc};
-use tracing::{debug, info}; // Import the Display trait
+use tracing::{debug, info};
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -30,11 +30,7 @@ enum Error {
 /// Scans a directory for check configurations and emits them as things to run.
 #[derive(Deserialize)]
 pub struct ChecksConfiguration {
-    /// The size of the buffer used to receive messages into, in bytes.
-    ///
-    /// Payloads cannot exceed this size, or they will be truncated, leading to discarded messages.
-    ///
-    /// Defaults to 8192 bytes.
+    /// The directory containing the check configurations.
     #[serde(default = "default_check_config_dir")]
     check_config_dir: String,
 }
@@ -244,15 +240,22 @@ async fn process_listener(source_context: SourceContext, listener_context: DirCh
                 break;
             }
             _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {
-                debug!("Checking for new check entities...");
                 listener.update_check_entities().await;
             }
             Some(new_entity) = new_entities.recv() => {
                 debug!("Received new check entity {}", new_entity.display());
                 // TODO - try to start running this check
+                // So what component will be responsible for "running" the check?
+                // There needs to be a "check registry" component that finds the checks
+                // in 'checks.d' as well.
+                // This is almost identical to the 'DirCheckListener' in that it just looks
+                // at a directory and finds anything ending in '.py'
+                // This component doesn't exist yet
             }
             Some(deleted_entity) = deleted_entities.recv() => {
                 debug!("Received deleted check entity {}", deleted_entity.display());
+                // TODO - try to stop running this check
+                // (low priority)
             }
         }
     }
