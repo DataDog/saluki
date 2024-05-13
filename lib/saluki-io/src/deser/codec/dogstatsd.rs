@@ -67,7 +67,7 @@ impl Decoder for DogstatsdCodec {
                     reason: format!(
                         "encountered error '{:?}' while processing message '{}'",
                         e.code,
-                        String::from_utf8_lossy(e.input)
+                        String::from_utf8_lossy(data)
                     ),
                 }),
             },

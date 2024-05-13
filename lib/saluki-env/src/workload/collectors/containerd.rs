@@ -33,7 +33,9 @@ impl ContainerdMetadataCollector {
     /// ## Errors
     ///
     /// If the collector fails to connect to the containerd API, an error will be returned.
-    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn from_configuration(
+        config: &GenericConfiguration,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let client = ContainerdClient::from_configuration(config).await?;
         let watched_namespaces = client.get_namespaces().await?;
 

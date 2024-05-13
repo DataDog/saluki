@@ -6,9 +6,10 @@ license = "Apache-2.0"
 
 [features]
 default = ["yaml"]
-json = ["figment/json"]
-yaml = ["figment/yaml"]
+json = ["figment/json", "dep:tracing"]
+yaml = ["figment/yaml", "dep:tracing"]
 
 [dependencies]
 figment = { workspace = true, features = ["env"] }
 serde = { workspace = true }
+tracing = { workspace = true, optional = true }
