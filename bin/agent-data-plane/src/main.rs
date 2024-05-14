@@ -51,7 +51,7 @@ async fn main() -> Result<(), ErasedError> {
     // basically this _only_ does metric aggregation rules, no time rules.
     // flushing is similar to current behavior, just need to think about 'counter' resets
     // for now, just use time windows, if we make each window shorter than the check interval, it should be fine
-    let checks_agg_config = AggregateConfiguration::from_window(Duration::from_secs(5));
+    let checks_agg_config = AggregateConfiguration::from_window(Duration::from_secs(15));
     let int_metrics_config = InternalMetricsConfiguration;
     let int_metrics_agg_config = AggregateConfiguration::from_window(Duration::from_secs(10)).flush_open_windows(true);
 

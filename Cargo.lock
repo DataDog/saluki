@@ -2265,6 +2265,7 @@ dependencies = [
  "saluki-event",
  "saluki-io",
  "serde",
+ "serde_yaml",
  "slab",
  "snafu",
  "tokio",

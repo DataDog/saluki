@@ -16,13 +16,15 @@ use snafu::Snafu;
 use std::path::{Path, PathBuf};
 use std::{collections::HashSet, io};
 use tokio::{select, sync::mpsc};
-use tracing::{debug, info};
+use tracing::{debug, info, error};
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 enum Error {
     #[snafu(display("Directory incorrect"))]
     DirectoryIncorrect { source: io::Error },
+    CantReadConfiguration { source: serde_yaml::Error },
+    NoSourceAvailable { reason: String },
 }
 
 /// Checks source.
@@ -39,6 +41,10 @@ fn default_check_config_dir() -> String {
     "./conf.d".to_string()
 }
 
+fn default_check_implementation_dir() -> String {
+    "./checks.d".to_string()
+}
+
 struct DirCheckListener {
     base_path: PathBuf,
     known_check_paths: Vec<PathBuf>,
@@ -53,6 +59,30 @@ struct DirCheckListener {
 struct DirCheckListenerContext {
     shutdown_handle: DynamicShutdownHandle,
     listener: DirCheckListener,
+}
+
+// checks configuration
+
+#[derive(Debug, Deserialize)]
+struct CheckInstance {
+    configuration: CheckInstanceConfiguration,
+    source_code_relative_filepath: PathBuf,
+}
+#[derive(Debug, Deserialize)]
+struct CheckInstanceConfiguration {
+    min_collection_interval_ms: u32,
+}
+
+// YAML configuration
+
+#[derive(Debug, Deserialize)]
+struct YamlCheckConfiguration {
+    instance: Vec<YamlCheckInstance>
+}
+
+#[derive(Debug, Deserialize)]
+struct YamlCheckInstance {
+    min_collection_interval: u32,
 }
 
 impl DirCheckListener {
@@ -138,7 +168,9 @@ async fn is_check_entity(entry: &DirEntry) -> bool {
     if file_type.is_file() {
         // Matches `./mycheck.yaml`
         return path.extension().unwrap_or_default() == "yaml";
-    } else if file_type.is_dir() {
+    }
+
+    if file_type.is_dir() {
         // Matches `./mycheck.d/conf.yaml`
         let conf_path = path.join("conf.yaml");
         return conf_path.exists()
@@ -153,7 +185,7 @@ async fn is_check_entity(entry: &DirEntry) -> bool {
 }
 
 impl ChecksConfiguration {
-    /// Creates a new `DogStatsDConfiguration` from the given configuration.
+    /// Creates a new `ChecksConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, ErasedError> {
         Ok(config.as_typed()?)
     }
@@ -228,7 +260,7 @@ async fn process_listener(source_context: SourceContext, listener_context: DirCh
     } = listener_context;
     tokio::pin!(shutdown_handle);
 
-    let mut stream_shutdown_coordinator = DynamicShutdownCoordinator::default();
+    let stream_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
     info!("Check listener started.");
     // every 1 sec check for new check entities
@@ -243,7 +275,6 @@ async fn process_listener(source_context: SourceContext, listener_context: DirCh
                 listener.update_check_entities().await;
             }
             Some(new_entity) = new_entities.recv() => {
-                debug!("Received new check entity {}", new_entity.display());
                 // TODO - try to start running this check
                 // So what component will be responsible for "running" the check?
                 // There needs to be a "check registry" component that finds the checks
@@ -251,6 +282,31 @@ async fn process_listener(source_context: SourceContext, listener_context: DirCh
                 // This is almost identical to the 'DirCheckListener' in that it just looks
                 // at a directory and finds anything ending in '.py'
                 // This component doesn't exist yet
+                debug!("Received new check entity, {}", new_entity.display());
+
+                // read the YAML configuration
+
+                let config = match read_check_configuration(new_entity.clone()).await {
+                    Ok(config) => config,
+                    Err(e) => {
+                        error!("Can't read check configuration: {}", e);
+                        continue;
+                    }
+                };
+
+                // check that a python check is available and prepare a CheckInstance
+
+                let _checks = match prepare_checks(new_entity, config).await {
+                    Ok(checks) => checks,
+                    Err(e) => {
+                        error!("Can't read check source code: {}", e);
+                        continue;
+                    }
+                };
+
+                // send all checks instances for scheduling to the scheduler
+
+                // TODO(remy): send_to_scheduler(checks).await;
             }
             Some(deleted_entity) = deleted_entities.recv() => {
                 debug!("Received deleted check entity {}", deleted_entity.display());
@@ -264,3 +320,62 @@ async fn process_listener(source_context: SourceContext, listener_context: DirCh
 
     info!("Check listener stopped.");
 }
+
+/// read_check_configuration receives a configuration file to open, reads it
+/// and returns a CheckInstanceConfiguration if it's valid.
+async fn read_check_configuration(relative_filepath: PathBuf) -> Result<Vec<CheckInstanceConfiguration>, Error> {
+    let file = std::fs::File::open(relative_filepath).expect("Could not open file.");
+    let mut checks_config = Vec::new();
+    let read_yaml: YamlCheckConfiguration = match serde_yaml::from_reader(file) {
+        Ok(read) => read,
+        Err(e) => {
+            debug!("can't read configuration: {}", e);
+            return Err(Error::CantReadConfiguration{source: e});
+        },
+    };
+
+    for instance in read_yaml.instance.into_iter() {
+        checks_config.push(CheckInstanceConfiguration{
+            min_collection_interval_ms: instance.min_collection_interval,
+        });
+    }
+
+    return Ok(checks_config);
+}
+
+/// prepare_checks prepares the CheckInstances to be ready to be scheduled
+/// in the scheduler.
+async fn prepare_checks(relative_filepath: PathBuf, config: Vec<CheckInstanceConfiguration>) -> Result<Vec<CheckInstance>, Error> {
+    debug!("reading the check implementation: {}", relative_filepath.display());
+    let mut checks = Vec::new();
+
+    let mut check_rel_filepath = relative_filepath.clone();
+    check_rel_filepath.set_extension("py");
+
+//    let filename = check_rel_filepath.file_name().unwrap(); // TODO(remy): what about None here?
+
+//    if !check_rel_filepath.pop() {
+//        return Err(Error::NoSourceAvailable{ reason: format!("Can't go to parent directory") });
+//    }
+
+//    check_rel_filepath.push(filename);
+
+//    if !check_rel_filepath.exists() {
+        // check in a checks.d subdir
+//        check_rel_filepath.push("checks.d");
+//        return Err(Error::NoSourceAvailable{ reason: format!("c") }); // TODO(remy): ship the rel filepath in the error
+//    }
+
+    // TODO(remy): look for `check_name.d` directory instead.
+
+    for instance_config in config.into_iter() {
+        debug!("created a check from {}, min_collection_interval: {}", check_rel_filepath.display(), instance_config.min_collection_interval_ms);
+        checks.push(CheckInstance{
+            configuration: instance_config,
+            source_code_relative_filepath: relative_filepath.clone(),
+        });
+    }
+
+    return Ok(checks);
+}
+
