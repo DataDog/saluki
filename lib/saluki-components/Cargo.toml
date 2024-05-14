@@ -39,6 +39,7 @@ protobuf = { workspace = true }
 quanta = { workspace = true }
 rustls = { workspace = true, features = ["aws_lc_rs", "logging", "tls12"] }
 serde = { workspace = true }
+serde_yaml = { workspace = true }
 slab = { workspace = true }
 snafu = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
