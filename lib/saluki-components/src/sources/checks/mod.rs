@@ -19,6 +19,8 @@ use std::{collections::HashSet, io};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, error, info};
 
+use self::runner::CheckRunner;
+
 mod runner;
 
 #[derive(Debug, Snafu)]
@@ -119,6 +121,8 @@ struct YamlCheckInstance {
 struct DirCheckListenerContext {
     shutdown_handle: DynamicShutdownHandle,
     listener: DirCheckRequestListener,
+    check_run_tx: mpsc::Sender<RunnableCheckRequest>,
+    check_stop_tx: mpsc::Sender<CheckRequest>,
 }
 
 // checks configuration
@@ -268,9 +272,17 @@ impl ChecksConfiguration {
 #[async_trait]
 impl SourceBuilder for ChecksConfiguration {
     async fn build(&self) -> Result<Box<dyn Source + Send>, Box<dyn std::error::Error + Send + Sync>> {
+        let (check_run_tx, check_run_rx) = mpsc::channel(100);
+        let (check_stop_tx, check_stop_rx) = mpsc::channel(100);
+        let runner = CheckRunner::new(check_run_rx, check_stop_rx)?;
         let listeners = self.build_listeners().await?;
 
-        Ok(Box::new(Checks { listeners }))
+        Ok(Box::new(Checks {
+            listeners,
+            runner,
+            check_run_tx,
+            check_stop_tx,
+        }))
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
@@ -282,6 +294,9 @@ impl SourceBuilder for ChecksConfiguration {
 
 pub struct Checks {
     listeners: Vec<DirCheckRequestListener>,
+    runner: CheckRunner,
+    check_run_tx: mpsc::Sender<RunnableCheckRequest>,
+    check_stop_tx: mpsc::Sender<CheckRequest>,
 }
 
 #[async_trait]
@@ -293,15 +308,30 @@ impl Source for Checks {
 
         let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
+        let Checks {
+            listeners,
+            runner,
+            check_run_tx,
+            check_stop_tx,
+        } = *self;
+
         // For each listener, spawn a dedicated task to run it.
-        for listener in self.listeners {
+        for listener in listeners {
             let listener_context = DirCheckListenerContext {
                 shutdown_handle: listener_shutdown_coordinator.register(),
                 listener,
+                check_run_tx: check_run_tx.clone(),
+                check_stop_tx: check_stop_tx.clone(),
             };
 
             tokio::spawn(process_listener(context.clone(), listener_context));
         }
+
+        let runner_shutdown_handle = listener_shutdown_coordinator.register();
+        tokio::spawn(async move {
+            // will never return
+            runner.run(runner_shutdown_handle).await;
+        });
 
         info!("Check source started.");
 
@@ -321,6 +351,8 @@ async fn process_listener(source_context: SourceContext, listener_context: DirCh
     let DirCheckListenerContext {
         shutdown_handle,
         mut listener,
+        check_run_tx,
+        check_stop_tx,
     } = listener_context;
     tokio::pin!(shutdown_handle);
 
@@ -361,15 +393,17 @@ async fn process_listener(source_context: SourceContext, listener_context: DirCh
                         continue;
                     }
                 };
-                info!("Running a check request: {check_request}")
+                info!("Running a check request: {check_request}");
                 // send all checks instances for scheduling to the scheduler
 
                 // TODO(remy): send_to_scheduler(checks).await;
+                check_run_tx.send(check_request).await.expect("Could send");
             }
             Some(deleted_entity) = deleted_entities.recv() => {
                 debug!("Received deleted check entity {}", deleted_entity);
                 // TODO - try to stop running this check
                 // (low priority)
+                check_stop_tx.send(deleted_entity).await.expect("Could send");
             }
         }
     }
