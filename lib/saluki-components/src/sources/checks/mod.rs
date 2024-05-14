@@ -127,9 +127,8 @@ struct DirCheckListenerContext {
 
 // checks configuration
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
 struct CheckInstanceConfiguration {
-    #[serde(default = "default_min_collection_interval_ms")]
     min_collection_interval_ms: u32,
 }
 
