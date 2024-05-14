@@ -13,18 +13,27 @@ use saluki_core::{
 use saluki_event::DataType;
 use serde::Deserialize;
 use snafu::Snafu;
+use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::{collections::HashSet, io};
 use tokio::{select, sync::mpsc};
-use tracing::{debug, info, error};
+use tracing::{debug, error, info};
+
+mod runner;
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 enum Error {
     #[snafu(display("Directory incorrect"))]
-    DirectoryIncorrect { source: io::Error },
-    CantReadConfiguration { source: serde_yaml::Error },
-    NoSourceAvailable { reason: String },
+    DirectoryIncorrect {
+        source: io::Error,
+    },
+    CantReadConfiguration {
+        source: serde_yaml::Error,
+    },
+    NoSourceAvailable {
+        reason: String,
+    },
 }
 
 /// Checks source.
@@ -41,53 +50,92 @@ fn default_check_config_dir() -> String {
     "./conf.d".to_string()
 }
 
-fn default_check_implementation_dir() -> String {
-    "./checks.d".to_string()
+#[derive(Debug, Clone)]
+struct CheckRequest {
+    name: Option<String>,
+    instances: Vec<CheckInstanceConfiguration>,
+    init_config: Option<serde_yaml::Value>,
+    source: PathBuf,
 }
 
-struct DirCheckListener {
+impl Display for CheckRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Source: {} # Instances: {}",
+            self.source.display(),
+            self.instances.len(),
+        )?;
+        if let Some(name) = &self.name {
+            write!(f, " Name: {}", name)?
+        }
+
+        Ok(())
+    }
+}
+
+struct RunnableCheckRequest {
+    check_request: CheckRequest,
+    check_source_code: PathBuf,
+}
+
+impl Display for RunnableCheckRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Request: {} CheckSource: {}",
+            self.check_request,
+            self.check_source_code.display()
+        )
+    }
+}
+
+struct DirCheckRequestListener {
     base_path: PathBuf,
-    known_check_paths: Vec<PathBuf>,
+    known_check_requests: Vec<CheckRequest>,
+
     // These could all be oneshot channels I think
     // but maybe buffering is useful
-    new_path_tx: mpsc::Sender<PathBuf>,
-    deleted_path_tx: mpsc::Sender<PathBuf>,
-    new_path_rx: Option<mpsc::Receiver<PathBuf>>,
-    deleted_path_rx: Option<mpsc::Receiver<PathBuf>>,
+    new_path_tx: mpsc::Sender<CheckRequest>,
+    deleted_path_tx: mpsc::Sender<CheckRequest>,
+    new_path_rx: Option<mpsc::Receiver<CheckRequest>>,
+    deleted_path_rx: Option<mpsc::Receiver<CheckRequest>>,
 }
-
-struct DirCheckListenerContext {
-    shutdown_handle: DynamicShutdownHandle,
-    listener: DirCheckListener,
-}
-
-// checks configuration
-
-#[derive(Debug, Deserialize)]
-struct CheckInstance {
-    configuration: CheckInstanceConfiguration,
-    source_code_relative_filepath: PathBuf,
-}
-#[derive(Debug, Deserialize)]
-struct CheckInstanceConfiguration {
-    min_collection_interval_ms: u32,
-}
-
-// YAML configuration
 
 #[derive(Debug, Deserialize)]
 struct YamlCheckConfiguration {
-    instance: Vec<YamlCheckInstance>
+    name: Option<String>,
+    init_config: Option<serde_yaml::Value>,
+    instances: Vec<YamlCheckInstance>,
 }
 
 #[derive(Debug, Deserialize)]
 struct YamlCheckInstance {
+    #[serde(default = "default_min_collection_interval_ms")]
     min_collection_interval: u32,
+    // todo support arbitrary other fields
 }
 
-impl DirCheckListener {
+struct DirCheckListenerContext {
+    shutdown_handle: DynamicShutdownHandle,
+    listener: DirCheckRequestListener,
+}
+
+// checks configuration
+
+#[derive(Debug, Deserialize, Clone)]
+struct CheckInstanceConfiguration {
+    #[serde(default = "default_min_collection_interval_ms")]
+    min_collection_interval_ms: u32,
+}
+
+fn default_min_collection_interval_ms() -> u32 {
+    15_000
+}
+
+impl DirCheckRequestListener {
     /// Constructs a new `Listener` that will monitor the specified path.
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<DirCheckListener, Error> {
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<DirCheckRequestListener, Error> {
         let path_ref = path.as_ref();
         if !path_ref.exists() {
             return Err(Error::DirectoryIncorrect {
@@ -102,9 +150,9 @@ impl DirCheckListener {
 
         let (new_paths_tx, new_paths_rx) = mpsc::channel(100);
         let (deleted_paths_tx, deleted_paths_rx) = mpsc::channel(100);
-        Ok(DirCheckListener {
+        Ok(DirCheckRequestListener {
             base_path: path.as_ref().to_path_buf(),
-            known_check_paths: Vec::new(),
+            known_check_requests: Vec::new(),
             new_path_tx: new_paths_tx,
             deleted_path_tx: deleted_paths_tx,
             new_path_rx: Some(new_paths_rx),
@@ -112,25 +160,41 @@ impl DirCheckListener {
         })
     }
 
-    pub fn subscribe(&mut self) -> (mpsc::Receiver<PathBuf>, mpsc::Receiver<PathBuf>) {
+    pub fn subscribe(&mut self) -> (mpsc::Receiver<CheckRequest>, mpsc::Receiver<CheckRequest>) {
+        if self.new_path_rx.is_none() || self.deleted_path_rx.is_none() {
+            panic!("Invariant violated: subscribe called after consuming the receivers");
+        }
+
         (self.new_path_rx.take().unwrap(), self.deleted_path_rx.take().unwrap())
     }
 
-    async fn update_check_entities(&mut self) {
+    async fn update_check_entities(&mut self) -> Result<(), Error> {
         let new_check_paths = self.get_check_entities().await;
-        let current: HashSet<PathBuf> = HashSet::from_iter(self.known_check_paths.clone().into_iter());
+        let current_paths = self.known_check_requests.iter().map(|e| e.source.clone());
+        let current: HashSet<PathBuf> = HashSet::from_iter(current_paths);
         let new: HashSet<PathBuf> = HashSet::from_iter(new_check_paths.iter().cloned());
 
         for entity in new.difference(&current) {
-            self.known_check_paths.push(entity.clone());
             // todo error handling
-            self.new_path_tx.send(entity.clone()).await;
+            let check_request = read_check_configuration(entity.clone()).await?;
+            self.known_check_requests.push(check_request.clone());
+            // todo error handling
+            self.new_path_tx.send(check_request).await.expect("Could send");
         }
         for entity in current.difference(&new) {
-            self.known_check_paths.retain(|e| e != entity);
+            // find the check request by path
+            let check_request = self
+                .known_check_requests
+                .iter()
+                .find(|e| e.source == *entity)
+                .expect("couldn't find to-be-removed check")
+                .clone();
+            self.known_check_requests.retain(|e| e.source != *entity);
             // todo error handling
-            self.deleted_path_tx.send(entity.clone()).await;
+            self.deleted_path_tx.send(check_request).await.expect("Could send");
         }
+
+        Ok(())
     }
 
     /// Retrieves all check entities from the base path that match the required check formats.
@@ -190,10 +254,10 @@ impl ChecksConfiguration {
         Ok(config.as_typed()?)
     }
 
-    async fn build_listeners(&self) -> Result<Vec<DirCheckListener>, Error> {
+    async fn build_listeners(&self) -> Result<Vec<DirCheckRequestListener>, Error> {
         let mut listeners = Vec::new();
 
-        let listener = DirCheckListener::from_path(&self.check_config_dir)?;
+        let listener = DirCheckRequestListener::from_path(&self.check_config_dir)?;
 
         listeners.push(listener);
 
@@ -217,7 +281,7 @@ impl SourceBuilder for ChecksConfiguration {
 }
 
 pub struct Checks {
-    listeners: Vec<DirCheckListener>,
+    listeners: Vec<DirCheckRequestListener>,
 }
 
 #[async_trait]
@@ -272,7 +336,12 @@ async fn process_listener(source_context: SourceContext, listener_context: DirCh
                 break;
             }
             _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {
-                listener.update_check_entities().await;
+                match listener.update_check_entities().await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!("Error updating check entities: {}", e);
+                    }
+                }
             }
             Some(new_entity) = new_entities.recv() => {
                 // TODO - try to start running this check
@@ -281,35 +350,24 @@ async fn process_listener(source_context: SourceContext, listener_context: DirCh
                 // in 'checks.d' as well.
                 // This is almost identical to the 'DirCheckListener' in that it just looks
                 // at a directory and finds anything ending in '.py'
-                // This component doesn't exist yet
-                debug!("Received new check entity, {}", new_entity.display());
-
-                // read the YAML configuration
-
-                let config = match read_check_configuration(new_entity.clone()).await {
-                    Ok(config) => config,
-                    Err(e) => {
-                        error!("Can't read check configuration: {}", e);
-                        continue;
-                    }
-                };
+                debug!("Received new check entity, {}", new_entity); // Use the Display trait to format the new_entity variable
 
                 // check that a python check is available and prepare a CheckInstance
 
-                let _checks = match prepare_checks(new_entity, config).await {
+                let check_request = match prepare_checks(new_entity).await {
                     Ok(checks) => checks,
                     Err(e) => {
                         error!("Can't read check source code: {}", e);
                         continue;
                     }
                 };
-
+                info!("Running a check request: {check_request}")
                 // send all checks instances for scheduling to the scheduler
 
                 // TODO(remy): send_to_scheduler(checks).await;
             }
             Some(deleted_entity) = deleted_entities.recv() => {
-                debug!("Received deleted check entity {}", deleted_entity.display());
+                debug!("Received deleted check entity {}", deleted_entity);
                 // TODO - try to stop running this check
                 // (low priority)
             }
@@ -321,61 +379,57 @@ async fn process_listener(source_context: SourceContext, listener_context: DirCh
     info!("Check listener stopped.");
 }
 
-/// read_check_configuration receives a configuration file to open, reads it
-/// and returns a CheckInstanceConfiguration if it's valid.
-async fn read_check_configuration(relative_filepath: PathBuf) -> Result<Vec<CheckInstanceConfiguration>, Error> {
-    let file = std::fs::File::open(relative_filepath).expect("Could not open file.");
+async fn read_check_configuration(relative_filepath: PathBuf) -> Result<CheckRequest, Error> {
+    let file = std::fs::File::open(&relative_filepath).expect("Could not open file.");
     let mut checks_config = Vec::new();
     let read_yaml: YamlCheckConfiguration = match serde_yaml::from_reader(file) {
         Ok(read) => read,
         Err(e) => {
-            debug!("can't read configuration: {}", e);
-            return Err(Error::CantReadConfiguration{source: e});
-        },
+            debug!("can't read configuration at {}: {}", relative_filepath.display(), e);
+            return Err(Error::CantReadConfiguration { source: e });
+        }
     };
 
-    for instance in read_yaml.instance.into_iter() {
-        checks_config.push(CheckInstanceConfiguration{
+    for instance in read_yaml.instances.into_iter() {
+        checks_config.push(CheckInstanceConfiguration {
             min_collection_interval_ms: instance.min_collection_interval,
         });
     }
 
-    return Ok(checks_config);
+    Ok(CheckRequest {
+        name: read_yaml.name,
+        instances: checks_config,
+        init_config: None,
+        source: relative_filepath,
+    })
 }
 
-/// prepare_checks prepares the CheckInstances to be ready to be scheduled
-/// in the scheduler.
-async fn prepare_checks(relative_filepath: PathBuf, config: Vec<CheckInstanceConfiguration>) -> Result<Vec<CheckInstance>, Error> {
+/// Looks for a check implementation for the requested check
+/// Currently only supports a sibling *.py file with the same name
+async fn prepare_checks(check_request: CheckRequest) -> Result<RunnableCheckRequest, Error> {
+    let relative_filepath = &check_request.source;
     debug!("reading the check implementation: {}", relative_filepath.display());
-    let mut checks = Vec::new();
 
     let mut check_rel_filepath = relative_filepath.clone();
     check_rel_filepath.set_extension("py");
 
-//    let filename = check_rel_filepath.file_name().unwrap(); // TODO(remy): what about None here?
+    //    let filename = check_rel_filepath.file_name().unwrap(); // TODO(remy): what about None here?
 
-//    if !check_rel_filepath.pop() {
-//        return Err(Error::NoSourceAvailable{ reason: format!("Can't go to parent directory") });
-//    }
+    //    if !check_rel_filepath.pop() {
+    //        return Err(Error::NoSourceAvailable{ reason: format!("Can't go to parent directory") });
+    //    }
 
-//    check_rel_filepath.push(filename);
+    //    check_rel_filepath.push(filename);
 
-//    if !check_rel_filepath.exists() {
-        // check in a checks.d subdir
-//        check_rel_filepath.push("checks.d");
-//        return Err(Error::NoSourceAvailable{ reason: format!("c") }); // TODO(remy): ship the rel filepath in the error
-//    }
+    //    if !check_rel_filepath.exists() {
+    // check in a checks.d subdir
+    //        check_rel_filepath.push("checks.d");
+    //        return Err(Error::NoSourceAvailable{ reason: format!("c") }); // TODO(remy): ship the rel filepath in the error
+    //    }
 
     // TODO(remy): look for `check_name.d` directory instead.
-
-    for instance_config in config.into_iter() {
-        debug!("created a check from {}, min_collection_interval: {}", check_rel_filepath.display(), instance_config.min_collection_interval_ms);
-        checks.push(CheckInstance{
-            configuration: instance_config,
-            source_code_relative_filepath: relative_filepath.clone(),
-        });
-    }
-
-    return Ok(checks);
+    Ok(RunnableCheckRequest {
+        check_request,
+        check_source_code: check_rel_filepath,
+    })
 }
-
