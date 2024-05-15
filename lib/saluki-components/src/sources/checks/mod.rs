@@ -55,8 +55,6 @@ impl From<rustpython_vm::PyRef<rustpython_vm::builtins::PyBaseException>> for Er
     }
 }
 
-// implement Error#from<rustpython_vm::PyRef<rustpython_vm::builtins::PyBaseException>>
-
 /// Checks source.
 ///
 /// Scans a directory for check configurations and emits them as things to run.

@@ -1,5 +1,3 @@
-import sys
-
 from datadog_checks.checks import AgentCheck
 
 class ChurnCheck(AgentCheck):

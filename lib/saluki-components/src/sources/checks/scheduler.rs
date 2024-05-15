@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rustpython_vm::{compiler::Mode, PyObjectRef};
+use rustpython_vm::{compiler::Mode, vm, PyObjectRef};
 
 use super::*;
 
@@ -11,21 +11,34 @@ struct CheckHandle {
 pub struct CheckScheduler {
     schedule_check_rx: mpsc::Receiver<RunnableCheckRequest>,
     unschedule_check_rx: mpsc::Receiver<CheckRequest>,
-    interpreter: Arc<Interpreter>,
+    interpreter: Interpreter,
     running: HashMap<CheckSource, Vec<tokio::task::JoinHandle<()>>>,
 }
 impl CheckScheduler {
     pub fn new(
         schedule_check_rx: mpsc::Receiver<RunnableCheckRequest>, unschedule_check_rx: mpsc::Receiver<CheckRequest>,
     ) -> Self {
-        let interpreter = Interpreter::with_init(Default::default(), |vm| {
+        let settings =
+            vm::Settings::default().with_path(String::from("/home/ubuntu/dev/integrations-core/datadog_checks_base/"));
+        let interpreter = Interpreter::with_init(settings, |vm| {
             vm.add_native_modules(rustpython_stdlib::get_module_inits());
+        });
+        interpreter.enter(|vm| match vm.import("datadog_checks", 0) {
+            Ok(_) => {
+                info!("Successfully imported datadog_checks");
+                let class = vm.class("datadog_checks", "AgentCheck");
+                info!(?class, "Grabbed the 'AgentCheck' class!")
+            }
+            Err(e) => {
+                vm.print_exception(e.clone());
+                panic!("failed to import datadog_checks");
+            }
         });
 
         Self {
             schedule_check_rx,
             unschedule_check_rx,
-            interpreter: Arc::new(interpreter),
+            interpreter,
             running: HashMap::new(),
         }
     }
@@ -70,6 +83,7 @@ impl CheckScheduler {
                         Ok(CheckHandle { id: t })
                     }
                     Err(e) => {
+                        vm.print_exception(e.clone());
                         error!(?e, "failed to run compiled pycheck");
                         Err(e)
                     }
