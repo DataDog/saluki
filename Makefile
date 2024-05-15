@@ -21,8 +21,8 @@ endif
 export RUST_VERSION ?= $(shell grep channel rust-toolchain.toml | cut -d '"' -f 2)
 export ADP_BUILD_IMAGE ?= rust:$(RUST_VERSION)-buster
 export ADP_APP_IMAGE ?= debian:buster-slim
-export GEN_STATSD_BUILD_IMAGE ?= golang:1.22-bullseye
-export GEN_STATSD_APP_IMAGE ?= debian:bullseye-slim
+export GO_BUILD_IMAGE ?= golang:1.22-bullseye
+export GO_APP_IMAGE ?= debian:bullseye-slim
 export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
 
 FMT_YELLOW = \033[0;33m
@@ -68,34 +68,51 @@ build-adp-image: ## Builds the ADP container image ('latest' tag)
 	@echo "[*] Building ADP image..."
 	@$(CONTAINER_TOOL) build \
 		--tag saluki-images/agent-data-plane:latest \
+		--tag local.dev/saluki-images/agent-data-plane:testing \
 		--build-arg BUILD_IMAGE=$(ADP_BUILD_IMAGE) \
 		--build-arg APP_IMAGE=$(ADP_APP_IMAGE) \
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
-	@$(CONTAINER_TOOL) tag saluki-images/agent-data-plane:latest local.dev/saluki-images/agent-data-plane:latest
-	@$(CONTAINER_TOOL) tag saluki-images/agent-data-plane:latest local.dev/saluki-images/agent-data-plane:testing
 
 .PHONY: build-datadog-agent-image
 build-datadog-agent-image: build-adp-image ## Builds a converged Datadog Agent container image containing ADP ('latest' tag)
 	@echo "[*] Building converged Datadog Agent image..."
 	@$(CONTAINER_TOOL) build \
 		--tag saluki-images/datadog-agent:latest \
+		--tag local.dev/saluki-images/datadog-agent:testing \
 		--file ./docker/Dockerfile.datadog-agent \
 		.
-	@$(CONTAINER_TOOL) tag saluki-images/datadog-agent:latest local.dev/saluki-images/datadog-agent:latest
-	@$(CONTAINER_TOOL) tag saluki-images/datadog-agent:latest local.dev/saluki-images/datadog-agent:testing
 
 .PHONY: build-gen-statsd-image
 build-gen-statsd-image: ## Builds the gen-statsd container image ('latest' tag)
 	@echo "[*] Building gen-statsd image..."
 	@$(CONTAINER_TOOL) build \
 		--tag saluki-images/gen-statsd:latest \
-		--build-arg BUILD_IMAGE=$(GEN_STATSD_BUILD_IMAGE) \
-		--build-arg APP_IMAGE=$(GEN_STATSD_APP_IMAGE) \
+		--tag local.dev/saluki-images/gen-statsd:testing \
+		--build-arg BUILD_IMAGE=$(GO_BUILD_IMAGE) \
+		--build-arg APP_IMAGE=$(GO_APP_IMAGE) \
 		--file ./docker/Dockerfile.gen-statsd \
 		.
-	@$(CONTAINER_TOOL) tag saluki-images/gen-statsd:latest local.dev/saluki-images/gen-statsd:latest
-	@$(CONTAINER_TOOL) tag saluki-images/gen-statsd:latest local.dev/saluki-images/gen-statsd:testing
+
+.PHONY: build-proxy-dumper-image
+build-proxy-dumper-image: check-proxy-dumper-tools ## Builds the proxy-dumper container image ('latest' tag)
+ifeq ($(shell test -d test/build/dd-agent-benchmarks || echo not-found), not-found)
+	@echo "[*] Cloning Datadog Agent Benchmarks repository..."
+	@mkdir -p test/build
+	@git -C test/build clone -q --single-branch --branch=tobz/adp-proxy-dumper-improvements \
+		git@github.com:DataDog/datadog-agent-benchmarks.git dd-agent-benchmarks
+endif
+	@echo "[*] Pulling latest changes from Git and updating vendored dependencies..."
+	@git -C test/build/dd-agent-benchmarks pull origin
+	@cd test/build/dd-agent-benchmarks/docker/proxy-dumper && go mod vendor
+	@echo "[*] Building proxy-dumper image..."
+	@$(CONTAINER_TOOL) build \
+		--tag saluki-images/proxy-dumper:latest \
+		--tag local.dev/saluki-images/proxy-dumper:testing \
+		--build-arg BUILD_IMAGE=$(GO_BUILD_IMAGE) \
+		--build-arg APP_IMAGE=$(GO_APP_IMAGE) \
+		--file ./docker/Dockerfile.proxy-dumper \
+		test/build/dd-agent-benchmarks/docker/proxy-dumper
 
 .PHONY: build-dsd-client
 build-dsd-client: ## Builds the Dogstatsd client (used for sending DSD payloads)
@@ -166,19 +183,30 @@ k8s-push-datadog-agent-image: check-k8s-tools build-datadog-agent-image ## Loads
 	@minikube --profile=adp-local image load local.dev/saluki-images/datadog-agent:testing --overwrite=true
 
 .PHONY: k8s-deploy-statsd-generator
-k8s-deploy-statsd-generator: check-k8s-tools k8s-ensure-ns-adp-testing build-gen-statsd-image ## Deploys the statsd generator pod (minikube)
-ifeq ($(shell minikube kubectl -- -n adp-testing get pod 2>&1 | grep -q "No resources found" || echo dirty), dirty)
-	@echo "[*] Removing old statsd generator pods..."
-	@minikube --profile=adp-local kubectl -- --context adp-local -n adp-testing delete pod --all
-endif
+k8s-deploy-statsd-generator: check-k8s-tools k8s-ensure-ns-adp-testing build-gen-statsd-image ## Creates the statsd-generator deployment (minikube)
+	@echo "[*] Deleting existing statsd-generator deployment..."
+	@minikube --profile=adp-local kubectl -- --context adp-local -n adp-testing delete deployment statsd-generator --ignore-not-found=true
 	@echo "[*] Pushing gen-statsd image to cluster..."
 	@minikube --profile=adp-local image load local.dev/saluki-images/gen-statsd:testing --overwrite=true
-	@echo "[*] Deploying statsd generator pods..."
+	@echo "[*] Creating statsd-generator deployment..."
 	@minikube --profile=adp-local kubectl -- --context adp-local -n adp-testing apply -f ./test/k8s/statsd-generator.yaml
+
+.PHONY: k8s-deploy-proxy-dumper
+k8s-deploy-proxy-dumper: check-k8s-tools k8s-ensure-ns-adp-testing build-proxy-dumper-image ## Creates the proxy-dumper deployment (minikube)
+	@echo "[*] Deleting existing proxy-dumper deployment..."
+	@minikube --profile=adp-local kubectl -- --context adp-local -n adp-testing delete deployment proxy-dumper --ignore-not-found=true
+	@echo "[*] Pushing proxy-dumper image to cluster..."
+	@minikube --profile=adp-local image load local.dev/saluki-images/proxy-dumper:testing --overwrite=true
+	@echo "[*] Creating proxy-dumper deployment..."
+	@minikube --profile=adp-local kubectl -- --context adp-local -n adp-testing apply -f ./test/k8s/proxy-dumper.yaml
 
 .PHONY: k8s-tail-adp-logs
 k8s-tail-adp-logs: check-k8s-tools ## Tails the container logs for ADP
 	@minikube --profile=adp-local kubectl -- --context adp-local -n datadog logs -f daemonset/datadog -c agent-data-plane
+
+.PHONY: k8s-tail-proxy-dumper-logs
+k8s-tail-proxy-dumper-logs: check-k8s-tools ## Tails the container logs for proxy-dumper
+	@minikube --profile=adp-local kubectl -- --context adp-local -n adp-testing logs -f deployment/proxy-dumper
 
 .PHONY: k8s-ensure-ns-%
 k8s-ensure-ns-%: override NS = $(@:k8s-ensure-ns-%=%)
@@ -196,6 +224,15 @@ ifeq ($(shell command -v helm >/dev/null || echo not-found), not-found)
 endif
 ifeq ($(shell command -v minikube >/dev/null || echo not-found), not-found)
 	$(error "Please install minikube: https://minikube.sigs.k8s.io/docs/start/")
+endif
+
+.PHONY: check-proxy-dumper-tools
+check-proxy-dumper-tools:
+ifeq ($(shell command -v go >/dev/null || echo not-found), not-found)
+	$(error "Please install Go.")
+endif
+ifeq ($(shell timeout 5s git remote show https://github.com/DataDog/dd-source 2>&1 >/dev/null || echo not-available), not-available)
+	$(error "Please ensure Git is configured correctly to accessing private/internal Datadog repositories.")
 endif
 
 ##@ Checking

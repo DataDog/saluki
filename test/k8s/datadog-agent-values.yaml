@@ -22,4 +22,7 @@ agents:
         - name: DD_USE_DOGSTATSD
           value: "false"
     agentDataPlane:
-      logLevel: saluki_env=debug,info
+      logLevel: saluki_components::transforms=debug,info
+      env:
+        - name: DD_DD_URL
+          value: http://proxy-dumper.adp-testing.svc.cluster.local:8081
