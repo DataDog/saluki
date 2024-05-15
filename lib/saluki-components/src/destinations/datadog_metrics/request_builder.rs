@@ -199,6 +199,11 @@ where
             .header("Content-Type", "application/x-protobuf")
             .header("Content-Encoding", "deflate")
             .header("DD-API-KEY", self.api_key.clone())
+            // TODO: We can't access the version number of the package being built that _includes_ this library, so
+            // using CARGO_PKG_VERSION or something like that would always be the version of `saluki-components`, which
+            // isn't what we want... maybe we can figure out some way to shove it in a global somewhere or something?
+            .header("DD-Agent-Version", "0.1.0")
+            .header("User-Agent", "agent-data-plane/0.1.0")
             .body(buffer)
             .context(Http)
     }
