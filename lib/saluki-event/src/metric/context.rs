@@ -26,7 +26,6 @@ impl MetricTagValue {
         }
     }
 
-    #[cfg(test)]
     pub fn values(&self) -> &[String] {
         match self {
             Self::Single(value) => std::slice::from_ref(value),
@@ -509,6 +508,45 @@ impl MetricContext {
 
     pub fn remove_tag(&mut self, tag_key: &str) -> Option<MetricTag> {
         self.tags.remove_tag(tag_key)
+    }
+}
+
+impl fmt::Display for MetricContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name)?;
+        if !self.tags.is_empty() {
+            write!(f, "{{")?;
+
+            let mut needs_separator = false;
+            for tag in &self.tags {
+                match tag {
+                    MetricTag::Bare(tag) => {
+                        if needs_separator {
+                            write!(f, ", ")?;
+                        } else {
+                            needs_separator = true;
+                        }
+
+                        write!(f, "{}", tag)?;
+                    }
+                    MetricTag::KeyValue { key, value } => {
+                        for tag_value in value.values() {
+                            if needs_separator {
+                                write!(f, ", ")?;
+                            } else {
+                                needs_separator = true;
+                            }
+
+                            write!(f, "{}:{}", key, tag_value)?;
+                        }
+                    }
+                }
+            }
+
+            write!(f, "}}")?;
+        }
+
+        Ok(())
     }
 }
 

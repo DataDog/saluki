@@ -1,4 +1,4 @@
-use std::{collections::HashSet, time::Duration};
+use std::{collections::HashSet, fmt, time::Duration};
 
 use ddsketch_agent::DDSketch;
 
@@ -77,3 +77,15 @@ impl PartialEq for MetricValue {
 }
 
 impl Eq for MetricValue {}
+
+impl fmt::Display for MetricValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Counter { value } => write!(f, "counter<{}>", value),
+            Self::Rate { value, interval } => write!(f, "rate<{} over {:?}>", value, interval),
+            Self::Gauge { value } => write!(f, "gauge<{}>", value),
+            Self::Set { values } => write!(f, "set<{:?}>", values),
+            Self::Distribution { sketch } => write!(f, "distribution<{:?}>", sketch),
+        }
+    }
+}

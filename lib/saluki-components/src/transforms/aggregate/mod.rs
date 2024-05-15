@@ -23,8 +23,6 @@ use tracing::{debug, error, trace};
 ///
 /// ## Missing
 ///
-/// - ability to handle metrics with timestamps not within the current aggregation window (currently assumes every
-///   metric should be aggregated into the current window)
 /// - maintaining zero-value counters after flush until expiry
 pub struct AggregateConfiguration {
     window_duration: Duration,
@@ -124,8 +122,6 @@ impl Transform for Aggregate {
 
         loop {
             select! {
-                biased;
-
                 _ = &mut flush => {
                     // We've reached the end of the current window. Flush our aggregation state and forward the metrics
                     // onwards. Regardless of whether any metrics were aggregated, we always update the aggregation
@@ -269,10 +265,13 @@ impl AggregationState {
     }
 
     fn get_next_flush_instant(&self) -> tokio::time::Instant {
+        // We align our flushes to the middle of the next bucket, so that we don't flush the current bucket too early
+        // when there's outstanding metrics that haven't been aggregated yet.
         let bucket_width = self.bucket_width.as_secs();
         let current_time = get_unix_timestamp();
-        let bucket_end = align_to_bucket_start(current_time, bucket_width) + bucket_width;
-        let flush_delta = bucket_end - current_time;
+        let next_bucket_midpoint =
+            align_to_bucket_start(current_time, bucket_width) + bucket_width + (bucket_width / 2);
+        let flush_delta = next_bucket_midpoint - current_time;
 
         tokio::time::Instant::now() + Duration::from_secs(flush_delta)
     }
@@ -320,12 +319,19 @@ impl AggregationState {
     }
 
     fn flush(&mut self, flush_open_buckets: bool, event_buffer: &mut EventBuffer) {
+        debug!(
+            buckets_len = self.buckets.len(),
+            timestamp = get_unix_timestamp(),
+            "Flushing buckets."
+        );
+
         let bucket_width = self.bucket_width;
 
         let mut i = 0;
         while i < self.buckets.len() {
-            if !is_bucket_still_open(self.buckets[i].0, bucket_width, flush_open_buckets) {
-                let (_, contexts) = self.buckets.remove(i);
+            if is_bucket_closed(self.buckets[i].0, bucket_width, flush_open_buckets) {
+                let (bucket_start, contexts) = self.buckets.remove(i);
+                debug!(bucket_start, "Flushing bucket...");
 
                 for (context, (value, metadata)) in contexts {
                     // Convert any counters to rates, so that we can properly account for their aggregated status.
@@ -358,9 +364,9 @@ impl AggregationState {
     }
 }
 
-fn is_bucket_still_open(bucket_start: u64, bucket_width: Duration, flush_open_buckets: bool) -> bool {
-    // Either the bucket end (start + width) is greater than the current time, or we're allowed to flush open buckets.
-    ((bucket_start + bucket_width.as_secs()) > get_unix_timestamp()) && flush_open_buckets
+fn is_bucket_closed(bucket_start: u64, bucket_width: Duration, flush_open_buckets: bool) -> bool {
+    // Either the bucket end (start + width) is less than than the current time (closed), or we're allowed to flush open buckets.
+    ((bucket_start + bucket_width.as_secs()) <= get_unix_timestamp()) || flush_open_buckets
 }
 
 const fn align_to_bucket_start(timestamp: u64, bucket_width: u64) -> u64 {

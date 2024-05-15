@@ -6,7 +6,7 @@ metadata:
   labels:
     app: gen-statsd
 spec:
-  replicas: 2
+  replicas: 3
   selector:
     matchLabels:
       app: gen-statsd
@@ -33,13 +33,13 @@ spec:
         - name: PREFIX
           value: adp_testing
         - name: COUNTERS
-          value: "5"
-        - name: GAUGES
           value: "1"
+        - name: GAUGES
+          value: "0"
         - name: TIMERS
           value: "0"
         - name: FLUSH_INTERVAL
-          value: 1s
+          value: 100ms
         - name: TAG_FORMAT
           value: datadog
         - name: TAGS
