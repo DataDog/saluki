@@ -21,6 +21,7 @@ use tracing::{debug, error, info};
 
 use self::runner::CheckRunner;
 
+mod listener;
 mod runner;
 
 #[derive(Debug, Snafu)]
@@ -57,22 +58,29 @@ struct CheckRequest {
     name: Option<String>,
     instances: Vec<CheckInstanceConfiguration>,
     init_config: Option<serde_yaml::Value>,
-    source: PathBuf,
+    source: CheckSource,
 }
 
 impl Display for CheckRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Source: {} # Instances: {}",
-            self.source.display(),
-            self.instances.len(),
-        )?;
+        write!(f, "Source: {} # Instances: {}", self.source, self.instances.len(),)?;
         if let Some(name) = &self.name {
             write!(f, " Name: {}", name)?
         }
 
         Ok(())
+    }
+}
+
+impl CheckRequest {
+    fn to_runnable_request(&self) -> Result<RunnableCheckRequest, Error> {
+        let check_source_code = match &self.source {
+            CheckSource::Yaml(path) => find_sibling_py_file(path)?,
+        };
+        Ok(RunnableCheckRequest {
+            check_request: self.clone(),
+            check_source_code,
+        })
     }
 }
 
@@ -92,18 +100,6 @@ impl Display for RunnableCheckRequest {
     }
 }
 
-struct DirCheckRequestListener {
-    base_path: PathBuf,
-    known_check_requests: Vec<CheckRequest>,
-
-    // These could all be oneshot channels I think
-    // but maybe buffering is useful
-    new_path_tx: mpsc::Sender<CheckRequest>,
-    deleted_path_tx: mpsc::Sender<CheckRequest>,
-    new_path_rx: Option<mpsc::Receiver<CheckRequest>>,
-    deleted_path_rx: Option<mpsc::Receiver<CheckRequest>>,
-}
-
 #[derive(Debug, Deserialize)]
 struct YamlCheckConfiguration {
     name: Option<String>,
@@ -118,13 +114,6 @@ struct YamlCheckInstance {
     // todo support arbitrary other fields
 }
 
-struct DirCheckListenerContext {
-    shutdown_handle: DynamicShutdownHandle,
-    listener: DirCheckRequestListener,
-    check_run_tx: mpsc::Sender<RunnableCheckRequest>,
-    check_stop_tx: mpsc::Sender<CheckRequest>,
-}
-
 // checks configuration
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
@@ -136,119 +125,49 @@ fn default_min_collection_interval_ms() -> u32 {
     15_000
 }
 
-impl DirCheckRequestListener {
-    /// Constructs a new `Listener` that will monitor the specified path.
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<DirCheckRequestListener, Error> {
-        let path_ref = path.as_ref();
-        if !path_ref.exists() {
-            return Err(Error::DirectoryIncorrect {
-                source: io::Error::new(io::ErrorKind::NotFound, "Path does not exist"),
-            });
-        }
-        if !path_ref.is_dir() {
-            return Err(Error::DirectoryIncorrect {
-                source: io::Error::new(io::ErrorKind::NotFound, "Path is not a directory"),
-            });
-        }
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+enum CheckSource {
+    Yaml(PathBuf),
+}
 
-        let (new_paths_tx, new_paths_rx) = mpsc::channel(100);
-        let (deleted_paths_tx, deleted_paths_rx) = mpsc::channel(100);
-        Ok(DirCheckRequestListener {
-            base_path: path.as_ref().to_path_buf(),
-            known_check_requests: Vec::new(),
-            new_path_tx: new_paths_tx,
-            deleted_path_tx: deleted_paths_tx,
-            new_path_rx: Some(new_paths_rx),
-            deleted_path_rx: Some(deleted_paths_rx),
-        })
-    }
-
-    pub fn subscribe(&mut self) -> (mpsc::Receiver<CheckRequest>, mpsc::Receiver<CheckRequest>) {
-        if self.new_path_rx.is_none() || self.deleted_path_rx.is_none() {
-            panic!("Invariant violated: subscribe called after consuming the receivers");
-        }
-
-        (self.new_path_rx.take().unwrap(), self.deleted_path_rx.take().unwrap())
-    }
-
-    async fn update_check_entities(&mut self) -> Result<(), Error> {
-        let new_check_paths = self.get_check_entities().await;
-        let current_paths = self.known_check_requests.iter().map(|e| e.source.clone());
-        let current: HashSet<PathBuf> = HashSet::from_iter(current_paths);
-        let new: HashSet<PathBuf> = HashSet::from_iter(new_check_paths.iter().cloned());
-
-        for entity in new.difference(&current) {
-            // todo error handling
-            let check_request = read_check_configuration(entity.clone()).await?;
-            self.known_check_requests.push(check_request.clone());
-            // todo error handling
-            self.new_path_tx.send(check_request).await.expect("Could send");
-        }
-        for entity in current.difference(&new) {
-            // find the check request by path
-            let check_request = self
-                .known_check_requests
-                .iter()
-                .find(|e| e.source == *entity)
-                .expect("couldn't find to-be-removed check")
-                .clone();
-            self.known_check_requests.retain(|e| e.source != *entity);
-            // todo error handling
-            self.deleted_path_tx.send(check_request).await.expect("Could send");
-        }
-
-        Ok(())
-    }
-
-    /// Retrieves all check entities from the base path that match the required check formats.
-    pub async fn get_check_entities(&self) -> Vec<PathBuf> {
-        let entries = WalkDir::new(&self.base_path).filter(|entry| async move {
-            if let Some(true) = entry.path().file_name().map(|f| f.to_string_lossy().starts_with('.')) {
-                return Filtering::IgnoreDir;
-            }
-            if is_check_entity(&entry).await {
-                Filtering::Continue
-            } else {
-                Filtering::Ignore
-            }
-        });
-
-        entries
-            .filter_map(|e| async move {
-                match e {
-                    Ok(entry) => Some(entry.path().to_path_buf()),
+impl CheckSource {
+    // todo refactor to async fs
+    fn to_check_request(&self) -> Result<CheckRequest, Error> {
+        match self {
+            CheckSource::Yaml(path) => {
+                let file = std::fs::File::open(path).expect("No error");
+                let mut checks_config = Vec::new();
+                let read_yaml: YamlCheckConfiguration = match serde_yaml::from_reader(file) {
+                    Ok(read) => read,
                     Err(e) => {
-                        eprintln!("Error traversing files: {}", e);
-                        None
+                        debug!("can't read configuration at {}: {}", path.display(), e);
+                        return Err(Error::CantReadConfiguration { source: e });
                     }
+                };
+
+                for instance in read_yaml.instances.into_iter() {
+                    checks_config.push(CheckInstanceConfiguration {
+                        min_collection_interval_ms: instance.min_collection_interval,
+                    });
                 }
-            })
-            .collect()
-            .await
+
+                Ok(CheckRequest {
+                    name: read_yaml.name,
+                    instances: checks_config,
+                    init_config: read_yaml.init_config,
+                    source: self.clone(),
+                })
+            }
+        }
     }
 }
 
-/// Determines if a directory entry is a valid check entity based on defined patterns.
-async fn is_check_entity(entry: &DirEntry) -> bool {
-    let path = entry.path();
-    let file_type = entry.file_type().await.expect("Couldn't get file type");
-    if file_type.is_file() {
-        // Matches `./mycheck.yaml`
-        return path.extension().unwrap_or_default() == "yaml";
+impl Display for CheckSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CheckSource::Yaml(path) => write!(f, "{}", path.display()),
+        }
     }
-
-    if file_type.is_dir() {
-        // Matches `./mycheck.d/conf.yaml`
-        let conf_path = path.join("conf.yaml");
-        return conf_path.exists()
-            && path
-                .file_name()
-                .unwrap_or_default()
-                .to_str()
-                .unwrap_or("")
-                .ends_with("check.d");
-    }
-    false
 }
 
 impl ChecksConfiguration {
@@ -257,10 +176,10 @@ impl ChecksConfiguration {
         Ok(config.as_typed()?)
     }
 
-    async fn build_listeners(&self) -> Result<Vec<DirCheckRequestListener>, Error> {
+    async fn build_listeners(&self) -> Result<Vec<listener::DirCheckRequestListener>, Error> {
         let mut listeners = Vec::new();
 
-        let listener = DirCheckRequestListener::from_path(&self.check_config_dir)?;
+        let listener = listener::DirCheckRequestListener::from_path(&self.check_config_dir)?;
 
         listeners.push(listener);
 
@@ -292,7 +211,7 @@ impl SourceBuilder for ChecksConfiguration {
 }
 
 pub struct Checks {
-    listeners: Vec<DirCheckRequestListener>,
+    listeners: Vec<listener::DirCheckRequestListener>,
     runner: CheckRunner,
     check_run_tx: mpsc::Sender<RunnableCheckRequest>,
     check_stop_tx: mpsc::Sender<CheckRequest>,
@@ -316,7 +235,7 @@ impl Source for Checks {
 
         // For each listener, spawn a dedicated task to run it.
         for listener in listeners {
-            let listener_context = DirCheckListenerContext {
+            let listener_context = listener::DirCheckListenerContext {
                 shutdown_handle: listener_shutdown_coordinator.register(),
                 listener,
                 check_run_tx: check_run_tx.clone(),
@@ -346,8 +265,8 @@ impl Source for Checks {
     }
 }
 
-async fn process_listener(source_context: SourceContext, listener_context: DirCheckListenerContext) {
-    let DirCheckListenerContext {
+async fn process_listener(source_context: SourceContext, listener_context: listener::DirCheckListenerContext) {
+    let listener::DirCheckListenerContext {
         shutdown_handle,
         mut listener,
         check_run_tx,
@@ -358,7 +277,6 @@ async fn process_listener(source_context: SourceContext, listener_context: DirCh
     let stream_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
     info!("Check listener started.");
-    // every 1 sec check for new check entities
     let (mut new_entities, mut deleted_entities) = listener.subscribe();
     loop {
         select! {
@@ -375,23 +293,16 @@ async fn process_listener(source_context: SourceContext, listener_context: DirCh
                 }
             }
             Some(new_entity) = new_entities.recv() => {
-                // TODO - try to start running this check
-                // So what component will be responsible for "running" the check?
-                // There needs to be a "check registry" component that finds the checks
-                // in 'checks.d' as well.
-                // This is almost identical to the 'DirCheckListener' in that it just looks
-                // at a directory and finds anything ending in '.py'
-                debug!("Received new check entity, {}", new_entity); // Use the Display trait to format the new_entity variable
+                debug!("Received new check entity, {}", new_entity);
 
-                // check that a python check is available and prepare a CheckInstance
-
-                let check_request = match prepare_checks(new_entity).await {
-                    Ok(checks) => checks,
+                let check_request = match new_entity.to_runnable_request() {
+                    Ok(check_request) => check_request,
                     Err(e) => {
-                        error!("Can't read check source code: {}", e);
+                        error!("Can't convert check source to runnable request: {}", e);
                         continue;
                     }
                 };
+
                 info!("Running a check request: {check_request}");
                 // send all checks instances for scheduling to the scheduler
 
@@ -412,38 +323,10 @@ async fn process_listener(source_context: SourceContext, listener_context: DirCh
     info!("Check listener stopped.");
 }
 
-async fn read_check_configuration(relative_filepath: PathBuf) -> Result<CheckRequest, Error> {
-    let file = std::fs::File::open(&relative_filepath).expect("Could not open file.");
-    let mut checks_config = Vec::new();
-    let read_yaml: YamlCheckConfiguration = match serde_yaml::from_reader(file) {
-        Ok(read) => read,
-        Err(e) => {
-            debug!("can't read configuration at {}: {}", relative_filepath.display(), e);
-            return Err(Error::CantReadConfiguration { source: e });
-        }
-    };
-
-    for instance in read_yaml.instances.into_iter() {
-        checks_config.push(CheckInstanceConfiguration {
-            min_collection_interval_ms: instance.min_collection_interval,
-        });
-    }
-
-    Ok(CheckRequest {
-        name: read_yaml.name,
-        instances: checks_config,
-        init_config: None,
-        source: relative_filepath,
-    })
-}
-
-/// Looks for a check implementation for the requested check
-/// Currently only supports a sibling *.py file with the same name
-async fn prepare_checks(check_request: CheckRequest) -> Result<RunnableCheckRequest, Error> {
-    let relative_filepath = &check_request.source;
-    debug!("reading the check implementation: {}", relative_filepath.display());
-
-    let mut check_rel_filepath = relative_filepath.clone();
+/// Given a yaml config, find the corresponding python source code
+/// Currently only looks in the same directory, no support for `checks.d` or `mycheck.d` directories
+fn find_sibling_py_file(check_yaml_path: &Path) -> Result<PathBuf, Error> {
+    let mut check_rel_filepath = check_yaml_path.to_path_buf();
     check_rel_filepath.set_extension("py");
 
     //    let filename = check_rel_filepath.file_name().unwrap(); // TODO(remy): what about None here?
@@ -461,8 +344,5 @@ async fn prepare_checks(check_request: CheckRequest) -> Result<RunnableCheckRequ
     //    }
 
     // TODO(remy): look for `check_name.d` directory instead.
-    Ok(RunnableCheckRequest {
-        check_request,
-        check_source_code: check_rel_filepath,
-    })
+    Ok(check_rel_filepath)
 }
