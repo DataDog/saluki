@@ -1,6 +1,6 @@
 module saluki/tooling/dogstatsd_client
 
-go 1.22.1
+go 1.22.3
 
 require github.com/DataDog/datadog-go/v5 v5.5.0
 

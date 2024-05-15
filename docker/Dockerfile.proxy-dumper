@@ -1,0 +1,22 @@
+ARG BUILD_IMAGE
+ARG APP_IMAGE
+
+FROM ${BUILD_IMAGE} AS builder
+
+# Build the binary.
+WORKDIR /src/app
+
+COPY . ./
+ENV CGO_ENABLED=0
+RUN go build -o ./target/proxy-dumper ./cmd/
+
+# Re-package proxy-dumper into a slightly _bigger_ image, one which has basic file utilities and what not for debugging.
+FROM ${APP_IMAGE}
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=builder /src/app/target/proxy-dumper /proxy-dumper
+
+EXPOSE 8081
+ENTRYPOINT ["/proxy-dumper"]

@@ -2,3 +2,4 @@ target/
 .vscode/
 tooling/bin/
 test/k8s/charts/
+test/build/

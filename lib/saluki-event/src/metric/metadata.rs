@@ -1,3 +1,5 @@
+use std::fmt;
+
 const ORIGIN_PRODUCT_AGENT: u32 = 10;
 const ORIGIN_SUBPRODUCT_DOGSTATSD: u32 = 10;
 const ORIGIN_SUBPRODUCT_INTEGRATION: u32 = 11;
@@ -61,6 +63,22 @@ impl MetricMetadata {
     }
 }
 
+impl fmt::Display for MetricMetadata {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ts={}", self.timestamp)?;
+
+        if let Some(sample_rate) = self.sample_rate {
+            write!(f, " sample_rate={}", sample_rate)?;
+        }
+
+        if let Some(origin) = &self.origin {
+            write!(f, " origin={}", origin)?;
+        }
+
+        Ok(())
+    }
+}
+
 // TODO: This is not technically right.
 //
 // In practice, the Datadog Agent _does_ ship metrics with both source type name and origin metadata, although perhaps
@@ -109,6 +127,25 @@ impl MetricOrigin {
     }
 }
 
+impl fmt::Display for MetricOrigin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SourceType(source_type) => write!(f, "source_type={}", source_type),
+            Self::OriginMetadata {
+                product,
+                subproduct,
+                product_detail,
+            } => write!(
+                f,
+                "product={} subproduct={} product_detail={}",
+                product_id_to_str(*product),
+                subproduct_id_to_str(*subproduct),
+                product_detail_id_to_str(*product_detail),
+            ),
+        }
+    }
+}
+
 fn jmx_check_name_to_product_detail(check_name: &str) -> u32 {
     // Taken from Datadog Agent mappings:
     // https://github.com/DataDog/datadog-agent/blob/fd3a119bda125462d578e0004f1370ee019ce2d5/pkg/serializer/internal/metrics/origin_mapping.go#L41
@@ -130,5 +167,28 @@ fn jmx_check_name_to_product_detail(check_name: &str) -> u32 {
         "tomcat" => 163,
         "weblogic" => 172,
         _ => 0,
+    }
+}
+
+fn product_id_to_str(product_id: u32) -> &'static str {
+    match product_id {
+        ORIGIN_PRODUCT_AGENT => "agent",
+        _ => "unknown_product",
+    }
+}
+
+fn subproduct_id_to_str(subproduct_id: u32) -> &'static str {
+    match subproduct_id {
+        ORIGIN_SUBPRODUCT_DOGSTATSD => "dogstatsd",
+        ORIGIN_SUBPRODUCT_INTEGRATION => "integration",
+        _ => "unknown_subproduct",
+    }
+}
+
+fn product_detail_id_to_str(product_detail_id: u32) -> &'static str {
+    match product_detail_id {
+        // TODO: Map the JMX check integration product detail IDs to their respective names.
+        ORIGIN_PRODUCT_DETAIL_NONE => "none",
+        _ => "unknown_product_detail",
     }
 }

@@ -17,6 +17,7 @@ use snafu::Snafu;
 use saluki_core::{constants::internal::CONTAINER_ID_TAG_KEY, topology::interconnect::EventBuffer};
 use saluki_env::time::get_unix_timestamp;
 use saluki_event::{metric::*, Event};
+use tracing::trace;
 
 use crate::deser::Decoder;
 
@@ -155,25 +156,32 @@ fn parse_dogstatsd(input: &[u8]) -> IResult<&[u8], OneOrMany<Event>> {
         .with_origin(MetricOrigin::dogstatsd());
 
     match metric_values {
-        OneOrMany::Single(metric_value) => Ok((
-            remaining,
-            OneOrMany::Single(Event::Metric(Metric {
+        OneOrMany::Single(metric_value) => {
+            let metric = Metric {
                 context: metric_context,
                 value: metric_value,
                 metadata: metric_metadata,
-            })),
-        )),
+            };
+
+            trace!(%metric, "Parsed metric.");
+
+            Ok((remaining, OneOrMany::Single(Event::Metric(metric))))
+        }
         OneOrMany::Multiple(metric_values) => {
             // TODO: This could be more efficient if we used a helper to determine if we were iterating over the last
             // element, such that we avoid the additional, unnecessary clone. `itertools` provides a helper for this.
             let metrics = metric_values
                 .into_iter()
                 .map(|value| {
-                    Event::Metric(Metric {
+                    let metric = Metric {
                         context: metric_context.clone(),
                         value,
                         metadata: metric_metadata.clone(),
-                    })
+                    };
+
+                    trace!(%metric, "Parsed metric from multi-value payload.");
+
+                    Event::Metric(metric)
                 })
                 .collect();
 
