@@ -1,4 +1,6 @@
 mod context;
+use std::fmt;
+
 pub use self::context::*;
 
 mod metadata;
@@ -25,5 +27,11 @@ impl Metric {
             value,
             metadata,
         }
+    }
+}
+
+impl fmt::Display for Metric {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}[{} {}]", self.context, self.value, self.metadata)
     }
 }
