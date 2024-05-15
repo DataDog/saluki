@@ -1,28 +1,33 @@
 use async_trait::async_trait;
 use async_walkdir::{DirEntry, Filtering, WalkDir};
 use futures::StreamExt as _;
+use rustpython_vm::Interpreter;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{Source, SourceBuilder, SourceContext},
     prelude::ErasedError,
     topology::{
-        shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
+        shutdown::{
+            ComponentShutdownCoordinator, ComponentShutdownHandle, DynamicShutdownCoordinator, DynamicShutdownHandle,
+        },
         OutputDefinition,
     },
 };
 use saluki_event::DataType;
 use serde::Deserialize;
 use snafu::Snafu;
-use std::fmt::Display;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    thread,
+};
 use std::{collections::HashSet, io};
+use std::{fmt::Display, time::Duration};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, error, info};
 
-use self::runner::CheckRunner;
-
 mod listener;
-mod runner;
+mod scheduler;
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -37,7 +42,20 @@ enum Error {
     NoSourceAvailable {
         reason: String,
     },
+    Python {
+        reason: String,
+    },
 }
+
+impl From<rustpython_vm::PyRef<rustpython_vm::builtins::PyBaseException>> for Error {
+    fn from(err: rustpython_vm::PyRef<rustpython_vm::builtins::PyBaseException>) -> Self {
+        Error::Python {
+            reason: format!("Error: {:?}", err),
+        }
+    }
+}
+
+// implement Error#from<rustpython_vm::PyRef<rustpython_vm::builtins::PyBaseException>>
 
 /// Checks source.
 ///
@@ -190,16 +208,15 @@ impl ChecksConfiguration {
 #[async_trait]
 impl SourceBuilder for ChecksConfiguration {
     async fn build(&self) -> Result<Box<dyn Source + Send>, Box<dyn std::error::Error + Send + Sync>> {
-        let (check_run_tx, check_run_rx) = mpsc::channel(100);
-        let (check_stop_tx, check_stop_rx) = mpsc::channel(100);
-        let runner = CheckRunner::new(check_run_rx, check_stop_rx)?;
+        //let (check_run_tx, check_run_rx) = mpsc::channel(100);
+        //let (check_stop_tx, check_stop_rx) = mpsc::channel(100);
+        //let runner = CheckRunner::new(check_run_rx, check_stop_rx)?;
         let listeners = self.build_listeners().await?;
 
         Ok(Box::new(Checks {
             listeners,
-            runner,
-            check_run_tx,
-            check_stop_tx,
+            //check_run_tx,
+            //check_stop_tx,
         }))
     }
 
@@ -212,9 +229,54 @@ impl SourceBuilder for ChecksConfiguration {
 
 pub struct Checks {
     listeners: Vec<listener::DirCheckRequestListener>,
-    runner: CheckRunner,
-    check_run_tx: mpsc::Sender<RunnableCheckRequest>,
-    check_stop_tx: mpsc::Sender<CheckRequest>,
+}
+
+impl Checks {
+    // consumes self
+    async fn run_inner(self, context: SourceContext, global_shutdown: ComponentShutdownHandle) -> Result<(), ()> {
+        let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
+
+        let Checks { listeners } = self;
+
+        let mut joinset = tokio::task::JoinSet::new();
+        // Run the local task set.
+        // For each listener, spawn a dedicated task to run it.
+        for listener in listeners {
+            let listener_context = listener::DirCheckListenerContext {
+                shutdown_handle: listener_shutdown_coordinator.register(),
+                listener,
+            };
+
+            joinset.spawn_local(process_listener(context.clone(), listener_context));
+        }
+
+        info!("Check source started.");
+
+        select! {
+            j = joinset.join_next() => {
+                match j {
+                    Some(Ok(_)) => {
+                        debug!("Check source task set exited normally.");
+                    }
+                    Some(Err(e)) => {
+                        error!("Check source task set exited unexpectedly: {:?}", e);
+                    }
+                    None => {
+                        // set is empty, all good here
+                    }
+                }
+            },
+            _ = global_shutdown => {
+                info!("Stopping Check source...");
+
+                listener_shutdown_coordinator.shutdown().await;
+            }
+        }
+
+        info!("Check source stopped.");
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -223,43 +285,24 @@ impl Source for Checks {
         let global_shutdown = context
             .take_shutdown_handle()
             .expect("should never fail to take shutdown handle");
+        thread::spawn(|| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .thread_name("check-runner")
+                .enable_all()
+                .build()
+                .expect("Can't build runtime");
 
-        let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
-
-        let Checks {
-            listeners,
-            runner,
-            check_run_tx,
-            check_stop_tx,
-        } = *self;
-
-        // For each listener, spawn a dedicated task to run it.
-        for listener in listeners {
-            let listener_context = listener::DirCheckListenerContext {
-                shutdown_handle: listener_shutdown_coordinator.register(),
-                listener,
-                check_run_tx: check_run_tx.clone(),
-                check_stop_tx: check_stop_tx.clone(),
-            };
-
-            tokio::spawn(process_listener(context.clone(), listener_context));
-        }
-
-        let runner_shutdown_handle = listener_shutdown_coordinator.register();
-        tokio::spawn(async move {
-            // will never return
-            runner.run(runner_shutdown_handle).await;
-        });
-
-        info!("Check source started.");
-
-        // Wait for the global shutdown signal, then notify listeners to shutdown.
-        global_shutdown.await;
-        info!("Stopping Check source...");
-
-        listener_shutdown_coordinator.shutdown().await;
-
-        info!("Check source stopped.");
+            let local = tokio::task::LocalSet::new();
+            local.block_on(&rt, async {
+                select! {
+                    inner_res = self.run_inner(context, global_shutdown) => {
+                        info!("Got inner res: {inner_res:?}");
+                    }
+                }
+            })
+        })
+        .join()
+        .expect("Can't join");
 
         Ok(())
     }
@@ -269,13 +312,16 @@ async fn process_listener(source_context: SourceContext, listener_context: liste
     let listener::DirCheckListenerContext {
         shutdown_handle,
         mut listener,
-        check_run_tx,
-        check_stop_tx,
     } = listener_context;
     tokio::pin!(shutdown_handle);
 
     let stream_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
+    let (schedule_check_tx, schedule_check_rx) = mpsc::channel(100);
+    let (unschedule_check_tx, unschedule_check_rx) = mpsc::channel(100);
+    let scheduler = scheduler::CheckScheduler::new(schedule_check_rx, unschedule_check_rx); // todo add shutdown handle
+
+    tokio::task::spawn_local(scheduler.run());
     info!("Check listener started.");
     let (mut new_entities, mut deleted_entities) = listener.subscribe();
     loop {
@@ -293,8 +339,6 @@ async fn process_listener(source_context: SourceContext, listener_context: liste
                 }
             }
             Some(new_entity) = new_entities.recv() => {
-                debug!("Received new check entity, {}", new_entity);
-
                 let check_request = match new_entity.to_runnable_request() {
                     Ok(check_request) => check_request,
                     Err(e) => {
@@ -304,16 +348,11 @@ async fn process_listener(source_context: SourceContext, listener_context: liste
                 };
 
                 info!("Running a check request: {check_request}");
-                // send all checks instances for scheduling to the scheduler
 
-                // TODO(remy): send_to_scheduler(checks).await;
-                check_run_tx.send(check_request).await.expect("Could send");
+                schedule_check_tx.send(check_request).await.expect("Couldn't send");
             }
             Some(deleted_entity) = deleted_entities.recv() => {
-                debug!("Received deleted check entity {}", deleted_entity);
-                // TODO - try to stop running this check
-                // (low priority)
-                check_stop_tx.send(deleted_entity).await.expect("Could send");
+                unschedule_check_tx.send(deleted_entity).await.expect("Couldn't send");
             }
         }
     }

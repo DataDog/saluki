@@ -48,3 +48,5 @@ tower = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 async-walkdir = "1.0.0"
+rustpython-vm = "0.3.1"
+rustpython-stdlib = "0.3.1"
