@@ -93,6 +93,7 @@ tokio-rustls = { version = "0.25.0", default-features = false }
 anyhow = { version = "1", default-features = false }
 chrono = "0.4"
 ubyte = { version = "0.10", default-features = false }
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [patch.crates-io]
 # Git dependency for `containerd-client` to add specific `prost-build` settings that allow type-erased payloads in
