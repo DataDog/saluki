@@ -1,4 +1,6 @@
 use super::*;
+use aggregator::aggregator;
+use datadog_agent::datadog_agent;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -23,7 +25,8 @@ pub struct CheckScheduler {
 impl CheckScheduler {
     pub fn new() -> Self {
         // todo, add in apis that python checks expect
-        //pyo3::append_to_inittab!(pylib_module);
+        pyo3::append_to_inittab!(datadog_agent);
+        pyo3::append_to_inittab!(aggregator);
 
         pyo3::prepare_freethreaded_python();
 

@@ -22,6 +22,8 @@ use std::{fmt::Display, time::Duration};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, error, info};
 
+mod aggregator;
+mod datadog_agent;
 mod listener;
 mod scheduler;
 
@@ -194,16 +196,9 @@ impl ChecksConfiguration {
 #[async_trait]
 impl SourceBuilder for ChecksConfiguration {
     async fn build(&self) -> Result<Box<dyn Source + Send>, GenericError> {
-        //let (check_run_tx, check_run_rx) = mpsc::channel(100);
-        //let (check_stop_tx, check_stop_rx) = mpsc::channel(100);
-        //let runner = CheckRunner::new(check_run_rx, check_stop_rx)?;
         let listeners = self.build_listeners().await?;
 
-        Ok(Box::new(Checks {
-            listeners,
-            //check_run_tx,
-            //check_stop_tx,
-        }))
+        Ok(Box::new(Checks { listeners }))
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
