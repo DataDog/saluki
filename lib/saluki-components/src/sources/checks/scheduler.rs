@@ -4,17 +4,15 @@ use pyo3::types::PyAnyMethods;
 use pyo3::types::PyType;
 use saluki_error::{generic_error, GenericError};
 
-struct CheckHandle<'py> {
-    id: Bound<'py, PyAny>,
+struct CheckHandle {
+    id: Py<PyAny>,
 }
 
-pub struct CheckScheduler<'py> {
-    //schedule_check_rx: mpsc::Receiver<RunnableCheckRequest>,
-    //unschedule_check_rx: mpsc::Receiver<CheckRequest>,
-    running: HashMap<isize, (CheckHandle<'py>, Vec<tokio::task::JoinHandle<()>>)>,
-    source_to_handle: HashMap<CheckSource, CheckHandle<'py>>,
+pub struct CheckScheduler {
+    running: HashMap<CheckSource, (CheckHandle, Vec<tokio::task::JoinHandle<()>>)>,
 }
-impl<'py> CheckScheduler<'py> {
+
+impl CheckScheduler {
     pub fn new(//schedule_check_rx: mpsc::Receiver<RunnableCheckRequest>, unschedule_check_rx: mpsc::Receiver<CheckRequest>,
     ) -> Self {
         // todo, add in apis that python checks expect
@@ -48,34 +46,9 @@ impl<'py> CheckScheduler<'py> {
         });
 
         Self {
-            //schedule_check_rx,
-            //unschedule_check_rx,
             running: HashMap::new(),
-            source_to_handle: HashMap::new(),
         }
     }
-
-    /*
-    // consumes self
-    pub async fn run(mut self) {
-        let CheckScheduler {
-            mut schedule_check_rx,
-            mut unschedule_check_rx,
-            ..
-        } = self;
-
-        loop {
-            select! {
-                Some(check) = schedule_check_rx.recv() => {
-                    self.run_check(check).await;
-                }
-                Some(check) = unschedule_check_rx.recv() => {
-                    self.stop_check(check).await;
-                }
-            }
-        }
-    }
-    */
 
     // compiles the python source code and instantiates it (??) into the VM
     // returns an opaque handle to the check
@@ -95,23 +68,10 @@ impl<'py> CheckScheduler<'py> {
                     return Err(generic_error!("Could not compile check source"));
                 }
             };
-            // the locals should now contain the class that this check defines
-            // lets make the simplifying assumption that there is only one
             let base_class = locals
                 .get_item("AgentCheck")
                 .expect("Could not get 'AgentCheck' class")
                 .unwrap();
-            /*
-            for (key, value) in locals.iter() {
-                if let Ok(class_obj) = value.downcast::<PyType>() {
-                    match class_obj.is_subclass(&base_class) {
-                        Ok(true) => {
-                            info!(%key, "Found class that is a subclass of AgentCheck");
-                        }
-                        _ => {}
-                    }
-                }
-            } */
             let checks = locals
                 .iter()
                 .filter(|(key, value)| {
@@ -130,7 +90,7 @@ impl<'py> CheckScheduler<'py> {
                 })
                 .collect::<Vec<_>>();
 
-            if checks.len() == 0 {
+            if checks.is_empty() {
                 return Err(generic_error!("No checks found in source"));
             }
             if checks.len() >= 2 {
@@ -142,8 +102,8 @@ impl<'py> CheckScheduler<'py> {
                 check_source_path.display(),
                 check_key
             );
-            //let class_ref = check_value.unbind();
-            return Ok(CheckHandle { id: *check_value });
+            let unbound = check_value.as_unbound();
+            Ok(CheckHandle { id: unbound.clone() })
         })
     }
 
@@ -152,14 +112,14 @@ impl<'py> CheckScheduler<'py> {
     // 2. Starts a local task for each instance that
     //    queues a run of the check every min_collection_interval_ms
     // 3. Stores the handles in the running hashmap
-    pub fn run_check(&'py mut self, check: RunnableCheckRequest) -> Result<(), GenericError> {
+    pub fn run_check(&mut self, check: RunnableCheckRequest) -> Result<(), GenericError> {
         // registry should probably queue off of checkhandle
         //let current = self.running.entry(check.check_request.source.clone()).or_default();
 
         let check_handle = self.register_check(check.check_source_code.clone())?;
-        let check_handle_hash = check_handle.id.hash()?;
-        self.running
-            .entry(check_handle_hash)
+        let running_entry = self
+            .running
+            .entry(check.check_request.source)
             .or_insert((check_handle, Vec::new()));
 
         for (idx, instance) in check.check_request.instances.iter().enumerate() {
@@ -179,6 +139,7 @@ impl<'py> CheckScheduler<'py> {
                     */
                 }
             });
+            running_entry.1.push(handle);
         }
 
         Ok(())
@@ -186,12 +147,9 @@ impl<'py> CheckScheduler<'py> {
 
     pub fn stop_check(&self, check: CheckRequest) {
         info!("Deleting check request {check}");
-        if let Some(check_handle) = self.source_to_handle.get(&check.source) {
-            let check_handle_hash = check_handle.id.hash().expect("Could hash");
-            if let Some(running) = self.running.get(&check_handle_hash) {
-                for handle in running.1.iter() {
-                    handle.abort();
-                }
+        if let Some((check_handle, running)) = self.running.get(&check.source) {
+            for handle in running.iter() {
+                handle.abort();
             }
         }
         // todo delete stuff out of the containers

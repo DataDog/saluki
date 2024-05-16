@@ -308,7 +308,7 @@ async fn process_listener(source_context: SourceContext, listener_context: liste
 
     //let (schedule_check_tx, schedule_check_rx) = mpsc::channel::<RunnableCheckRequest>(100);
     //let (unschedule_check_tx, unschedule_check_rx) = mpsc::channel::<CheckRequest>(100);
-    let scheduler = scheduler::CheckScheduler::new(); // todo add shutdown handle
+    let mut scheduler = scheduler::CheckScheduler::new(); // todo add shutdown handle
 
     //tokio::task::spawn_local(scheduler.run());
     info!("Check listener started.");
