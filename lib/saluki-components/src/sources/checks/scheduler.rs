@@ -21,8 +21,7 @@ pub struct CheckScheduler {
 }
 
 impl CheckScheduler {
-    pub fn new(//schedule_check_rx: mpsc::Receiver<RunnableCheckRequest>, unschedule_check_rx: mpsc::Receiver<CheckRequest>,
-    ) -> Self {
+    pub fn new() -> Self {
         // todo, add in apis that python checks expect
         //pyo3::append_to_inittab!(pylib_module);
 
@@ -67,7 +66,7 @@ impl CheckScheduler {
             let locals = pyo3::types::PyDict::new_bound(py);
 
             match py.run_bound(&py_source, None, Some(&locals)) {
-                Ok(c) => {}
+                Ok(_) => {}
                 Err(e) => {
                     let traceback = e
                         .traceback_bound(py)
@@ -82,7 +81,7 @@ impl CheckScheduler {
                 .unwrap();
             let checks = locals
                 .iter()
-                .filter(|(key, value)| {
+                .filter(|(_, value)| {
                     if let Ok(class_obj) = value.downcast::<PyType>() {
                         if class_obj.is(&base_class) {
                             // skip the base class
@@ -135,7 +134,7 @@ impl CheckScheduler {
             let instance = instance.clone();
 
             let check_handle = check_handle.clone();
-            let handle = tokio::task::spawn_local(async move {
+            let handle = tokio::task::spawn(async move {
                 let mut interval =
                     tokio::time::interval(Duration::from_millis(instance.min_collection_interval_ms.into()));
                 loop {
@@ -144,13 +143,21 @@ impl CheckScheduler {
                     info!("Running check instance {idx}");
                     pyo3::Python::with_gil(|py| {
                         let instance_as_pydict = PyDict::new_bound(py);
-                        instance_as_pydict.set_item("min_collection_interval_ms", instance.min_collection_interval_ms);
+                        instance_as_pydict
+                            .set_item("min_collection_interval_ms", instance.min_collection_interval_ms)
+                            .expect("could not set min-collection-interval");
 
                         let instance_list = PyList::new_bound(py, &[instance_as_pydict]);
                         let kwargs = PyDict::new_bound(py);
-                        kwargs.set_item("name", "placeholder_check_name");
-                        kwargs.set_item("init_config", PyDict::new_bound(py)); // todo this is in the check request maybe
-                        kwargs.set_item("instances", instance_list);
+                        kwargs
+                            .set_item("name", "placeholder_check_name")
+                            .expect("Could not set name");
+                        kwargs
+                            .set_item("init_config", PyDict::new_bound(py))
+                            .expect("could not set init_config"); // todo this is in the check request maybe
+                        kwargs
+                            .set_item("instances", instance_list)
+                            .expect("could not set instance list");
 
                         let check_ref = &check_handle.id;
                         let pycheck = match check_ref.call_bound(py, (), Some(&kwargs)) {

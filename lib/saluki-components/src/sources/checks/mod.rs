@@ -5,9 +5,7 @@ use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{Source, SourceBuilder, SourceContext},
     topology::{
-        shutdown::{
-            ComponentShutdownCoordinator, ComponentShutdownHandle, DynamicShutdownCoordinator, DynamicShutdownHandle,
-        },
+        shutdown::{ComponentShutdownHandle, DynamicShutdownCoordinator, DynamicShutdownHandle},
         OutputDefinition,
     },
 };
@@ -18,7 +16,6 @@ use snafu::Snafu;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    thread,
 };
 use std::{collections::HashSet, io};
 use std::{fmt::Display, time::Duration};
@@ -236,7 +233,7 @@ impl Checks {
                 listener,
             };
 
-            joinset.spawn_local(process_listener(context.clone(), listener_context));
+            joinset.spawn(process_listener(context.clone(), listener_context));
         }
 
         info!("Check source started.");
@@ -274,26 +271,13 @@ impl Source for Checks {
         let global_shutdown = context
             .take_shutdown_handle()
             .expect("should never fail to take shutdown handle");
-        thread::spawn(|| {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .thread_name("check-runner")
-                .enable_all()
-                .build()
-                .expect("Can't build runtime");
-
-            let local = tokio::task::LocalSet::new();
-            local.block_on(&rt, async {
-                select! {
-                    inner_res = self.run_inner(context, global_shutdown) => {
-                        info!("Got inner res: {inner_res:?}");
-                    }
-                }
-            })
-        })
-        .join()
-        .expect("Can't join");
-
-        Ok(())
+        match self.run_inner(context, global_shutdown).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                error!("Check source failed: {:?}", e);
+                Err(())
+            }
+        }
     }
 }
 
@@ -306,11 +290,8 @@ async fn process_listener(source_context: SourceContext, listener_context: liste
 
     let stream_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
-    //let (schedule_check_tx, schedule_check_rx) = mpsc::channel::<RunnableCheckRequest>(100);
-    //let (unschedule_check_tx, unschedule_check_rx) = mpsc::channel::<CheckRequest>(100);
     let mut scheduler = scheduler::CheckScheduler::new(); // todo add shutdown handle
 
-    //tokio::task::spawn_local(scheduler.run());
     info!("Check listener started.");
     let (mut new_entities, mut deleted_entities) = listener.subscribe();
     loop {
@@ -338,11 +319,14 @@ async fn process_listener(source_context: SourceContext, listener_context: liste
 
                 info!("Running a check request: {check_request}");
 
-                //schedule_check_tx.send(check_request).await.expect("Couldn't send");
-                scheduler.run_check(check_request);
+                match scheduler.run_check(check_request) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!("Error running check: {}", e);
+                    }
+                }
             }
             Some(deleted_entity) = deleted_entities.recv() => {
-                //unschedule_check_tx.send(deleted_entity).await.expect("Couldn't send");
                 scheduler.stop_check(deleted_entity);
             }
         }
