@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     buffers::FixedSizeBufferPool,
@@ -185,6 +186,17 @@ impl SourceBuilder for DogStatsDConfiguration {
         static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(DataType::Metric)];
 
         OUTPUTS
+    }
+}
+
+impl MemoryBounds for DogStatsDConfiguration {
+    fn calculate_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // We allocate our I/O buffers up front so this is a requirement.
+        let io_buffer_pool_size = self.buffer_count * self.buffer_size;
+
+        builder.minimum().with_fixed_amount(io_buffer_pool_size);
+
+        builder.firm().with_fixed_amount(io_buffer_pool_size);
     }
 }
 

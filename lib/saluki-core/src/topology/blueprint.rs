@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_error::GenericError;
 use snafu::{ResultExt as _, Snafu};
 
@@ -134,5 +135,21 @@ impl TopologyBlueprint {
         }
 
         Ok(BuiltTopology::from_parts(self.graph, sources, transforms, destinations))
+    }
+}
+
+impl MemoryBounds for TopologyBlueprint {
+    fn calculate_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        for source in self.sources.values() {
+            source.calculate_bounds(builder);
+        }
+
+        for transform in self.transforms.values() {
+            transform.calculate_bounds(builder);
+        }
+
+        for destination in self.destinations.values() {
+            destination.calculate_bounds(builder);
+        }
     }
 }

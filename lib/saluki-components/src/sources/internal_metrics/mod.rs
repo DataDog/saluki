@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{components::sources::*, observability::metrics::MetricsReceiver, topology::OutputDefinition};
 use saluki_error::GenericError;
 use saluki_event::DataType;
@@ -21,6 +22,10 @@ impl SourceBuilder for InternalMetricsConfiguration {
 
         OUTPUTS
     }
+}
+
+impl MemoryBounds for InternalMetricsConfiguration {
+    fn calculate_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
 }
 
 pub struct InternalMetrics;

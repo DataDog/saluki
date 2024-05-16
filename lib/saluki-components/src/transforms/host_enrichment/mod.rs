@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{components::transforms::*, topology::interconnect::EventBuffer};
 use saluki_env::{EnvironmentProvider, HostProvider};
 use saluki_error::GenericError;
@@ -33,6 +34,10 @@ where
             HostEnrichment::from_environment_provider(&self.env_provider).await?,
         ))
     }
+}
+
+impl<E> MemoryBounds for HostEnrichmentConfiguration<E> {
+    fn calculate_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
 }
 
 pub struct HostEnrichment {

@@ -6,6 +6,7 @@ license = "Apache-2.0"
 
 [dependencies]
 # Internal dependencies.
+memory-accounting = { workspace = true }
 saluki-app = { workspace = true }
 saluki-components = { workspace = true }
 saluki-config = { workspace = true }
@@ -18,6 +19,7 @@ saluki-io = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "signal"] }
 tracing = { workspace = true }
+ubyte = { version = "0.10", default-features = false }
 
 [build-dependencies]
 chrono = { workspace = true }

@@ -19,6 +19,7 @@ resolver = "2"
 # Internal dependencies.
 datadog-protos = { path = "lib/datadog-protos" }
 ddsketch-agent = { path = "lib/ddsketch-agent" }
+memory-accounting = { path = "lib/memory-accounting" }
 saluki-app = { path = "lib/saluki-app" }
 saluki-components = { path = "lib/saluki-components" }
 saluki-config = { path = "lib/saluki-config" }

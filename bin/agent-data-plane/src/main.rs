@@ -8,6 +8,7 @@ mod env_provider;
 
 use std::time::{Duration, Instant};
 
+use memory_accounting::{BoundsVerifier, MemoryGrant};
 use saluki_components::{
     destinations::DatadogMetricsConfiguration,
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
@@ -16,7 +17,7 @@ use saluki_components::{
     },
 };
 use saluki_config::ConfigurationLoader;
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use tracing::{error, info};
 
 use saluki_app::{
@@ -24,6 +25,7 @@ use saluki_app::{
     metrics::initialize_metrics,
 };
 use saluki_core::topology::blueprint::TopologyBlueprint;
+use ubyte::ToByteUnit as _;
 
 use crate::env_provider::ADPEnvironmentProvider;
 
@@ -92,6 +94,9 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         .connect_component("internal_metrics_agg", ["internal_metrics_in"])?
         .connect_component("enrich", ["dsd_agg", "internal_metrics_agg"])?
         .connect_component("dd_metrics_out", ["enrich"])?;
+
+    verify_memory_bounds(&blueprint)?;
+
     let built_topology = blueprint.build().await?;
     let running_topology = built_topology.spawn().await?;
 
@@ -107,4 +112,28 @@ async fn run(started: Instant) -> Result<(), GenericError> {
     info!("Received SIGINT, shutting down...");
 
     running_topology.shutdown().await
+}
+
+fn verify_memory_bounds(blueprint: &TopologyBlueprint) -> Result<(), GenericError> {
+    // Verify our memory bounds with a fixed grant of 64MB and slop factor of 25%.
+    //
+    // TODO: Provide a way to pass this grant size in via configuration.
+    let initial_grant = MemoryGrant::with_slop_factor(64 * 1024 * 1024, 0.25)
+        .ok_or_else(|| generic_error!("failed to create initial memory grant"))?;
+
+    // TODO: We're passing in the blueprint directly but ideally this would push in each component individually that way
+    // the verifier can bubble up errors if one component in particular has invalid bounds, and so on.
+    let mut bounds_verifier = BoundsVerifier::from_grant(initial_grant);
+    bounds_verifier.add_component("topology".to_string(), blueprint);
+
+    let verified_bounds = bounds_verifier.verify()?;
+    info!(
+        "Verified memory bounds. Minimum memory requirement of {}, with a calculated firm memory bound of {} out of {} available, out of an initial {} grant.",
+        verified_bounds.minimum_required_bytes().bytes(),
+        verified_bounds.firm_limit_bytes().bytes(),
+        verified_bounds.available_bytes().bytes(),
+        initial_grant.initial_limit_bytes().bytes(),
+    );
+
+    Ok(())
 }
