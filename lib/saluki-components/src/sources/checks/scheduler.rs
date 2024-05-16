@@ -1,11 +1,19 @@
 use super::*;
+use pyo3::prelude::PyAnyMethods;
 use pyo3::prelude::*;
-use pyo3::types::PyAnyMethods;
+use pyo3::types::PyDict;
+use pyo3::types::PyList;
 use pyo3::types::PyType;
 use saluki_error::{generic_error, GenericError};
 
 struct CheckHandle {
     id: Py<PyAny>,
+}
+
+impl Clone for CheckHandle {
+    fn clone(&self) -> Self {
+        Self { id: self.id.clone() }
+    }
 }
 
 pub struct CheckScheduler {
@@ -102,8 +110,9 @@ impl CheckScheduler {
                 check_source_path.display(),
                 check_key
             );
-            let unbound = check_value.as_unbound();
-            Ok(CheckHandle { id: unbound.clone() })
+            Ok(CheckHandle {
+                id: check_value.as_unbound().clone(),
+            })
         })
     }
 
@@ -120,10 +129,12 @@ impl CheckScheduler {
         let running_entry = self
             .running
             .entry(check.check_request.source)
-            .or_insert((check_handle, Vec::new()));
+            .or_insert((check_handle.clone(), Vec::new()));
 
         for (idx, instance) in check.check_request.instances.iter().enumerate() {
             let instance = instance.clone();
+
+            let check_handle = check_handle.clone();
             let handle = tokio::task::spawn_local(async move {
                 let mut interval =
                     tokio::time::interval(Duration::from_millis(instance.min_collection_interval_ms.into()));
@@ -131,12 +142,32 @@ impl CheckScheduler {
                     interval.tick().await;
                     // run check
                     info!("Running check instance {idx}");
-                    /*
-                    self.queue_run_tx
-                        .send(check_handle, instance.clone())
-                        .await
-                        .expect("Could send");
-                    */
+                    pyo3::Python::with_gil(|py| {
+                        let instance_as_pydict = PyDict::new_bound(py);
+                        instance_as_pydict.set_item("min_collection_interval_ms", instance.min_collection_interval_ms);
+
+                        let instance_list = PyList::new_bound(py, &[instance_as_pydict]);
+                        let kwargs = PyDict::new_bound(py);
+                        kwargs.set_item("name", "placeholder_check_name");
+                        kwargs.set_item("init_config", PyDict::new_bound(py)); // todo this is in the check request maybe
+                        kwargs.set_item("instances", instance_list);
+
+                        let check_ref = &check_handle.id;
+                        let pycheck = match check_ref.call_bound(py, (), Some(&kwargs)) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                let traceback = e
+                                    .traceback_bound(py)
+                                    .expect("Traceback should be present on this error");
+                                error!(%e, "Could not instantiate check. traceback: {}", traceback.format().expect("Could format traceback"));
+                                return;
+                            }
+                        };
+                        // 'run' method invokes 'check' with the instance we initialized with
+                        // ref https://github.com/DataDog/integrations-core/blob/bc3b1c3496e79aa1b75ebcc9ef1c2a2b26487ebd/datadog_checks_base/datadog_checks/base/checks/base.py#L1197
+                        let result = pycheck.call_method0(py, "run").unwrap();
+                        info!("Result: {:?}", result);
+                    })
                 }
             });
             running_entry.1.push(handle);
