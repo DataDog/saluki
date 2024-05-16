@@ -1,95 +1,150 @@
-use std::sync::Arc;
-
-use rustpython_vm::{compiler::Mode, vm, PyObjectRef};
-
 use super::*;
+use pyo3::prelude::*;
+use pyo3::types::PyAnyMethods;
+use pyo3::types::PyType;
+use saluki_error::{generic_error, GenericError};
 
-struct CheckHandle {
-    id: PyObjectRef,
+struct CheckHandle<'py> {
+    id: Bound<'py, PyAny>,
 }
 
-pub struct CheckScheduler {
-    schedule_check_rx: mpsc::Receiver<RunnableCheckRequest>,
-    unschedule_check_rx: mpsc::Receiver<CheckRequest>,
-    interpreter: Interpreter,
-    running: HashMap<CheckSource, Vec<tokio::task::JoinHandle<()>>>,
+pub struct CheckScheduler<'py> {
+    //schedule_check_rx: mpsc::Receiver<RunnableCheckRequest>,
+    //unschedule_check_rx: mpsc::Receiver<CheckRequest>,
+    running: HashMap<isize, (CheckHandle<'py>, Vec<tokio::task::JoinHandle<()>>)>,
+    source_to_handle: HashMap<CheckSource, CheckHandle<'py>>,
 }
-impl CheckScheduler {
-    pub fn new(
-        schedule_check_rx: mpsc::Receiver<RunnableCheckRequest>, unschedule_check_rx: mpsc::Receiver<CheckRequest>,
+impl<'py> CheckScheduler<'py> {
+    pub fn new(//schedule_check_rx: mpsc::Receiver<RunnableCheckRequest>, unschedule_check_rx: mpsc::Receiver<CheckRequest>,
     ) -> Self {
-        let settings =
-            vm::Settings::default().with_path(String::from("/home/ubuntu/dev/integrations-core/datadog_checks_base/"));
-        let interpreter = Interpreter::with_init(settings, |vm| {
-            vm.add_native_modules(rustpython_stdlib::get_module_inits());
-        });
-        interpreter.enter(|vm| match vm.import("datadog_checks", 0) {
-            Ok(_) => {
-                info!("Successfully imported datadog_checks");
-                let class = vm.class("datadog_checks", "AgentCheck");
-                info!(?class, "Grabbed the 'AgentCheck' class!")
-            }
-            Err(e) => {
-                vm.print_exception(e.clone());
-                panic!("failed to import datadog_checks");
-            }
+        // todo, add in apis that python checks expect
+        //pyo3::append_to_inittab!(pylib_module);
+
+        pyo3::prepare_freethreaded_python();
+
+        // Sanity test for python environment before executing
+        pyo3::Python::with_gil(|py| {
+            let modd = match py.import_bound("datadog_checks.checks") {
+                Ok(m) => m,
+                Err(e) => {
+                    let traceback = e
+                        .traceback_bound(py)
+                        .expect("Traceback should be present on this error");
+                    error!(%e, "Could not import datadog_checks module. traceback: {}", traceback.format().expect("Could format traceback"));
+                    return;
+                }
+            };
+            let class = match modd.getattr("AgentCheck") {
+                Ok(c) => c,
+                Err(e) => {
+                    let traceback = e
+                        .traceback_bound(py)
+                        .expect("Traceback should be present on this error");
+                    error!(%e, "Could not get AgentCheck class. traceback: {}", traceback.format().expect("Could format traceback"));
+                    return;
+                }
+            };
+            info!(%class, %modd, "Was able to import AgentCheck!");
         });
 
         Self {
-            schedule_check_rx,
-            unschedule_check_rx,
-            interpreter,
+            //schedule_check_rx,
+            //unschedule_check_rx,
             running: HashMap::new(),
+            source_to_handle: HashMap::new(),
         }
     }
 
+    /*
     // consumes self
     pub async fn run(mut self) {
+        let CheckScheduler {
+            mut schedule_check_rx,
+            mut unschedule_check_rx,
+            ..
+        } = self;
+
         loop {
             select! {
-                Some(check) = self.schedule_check_rx.recv() => {
+                Some(check) = schedule_check_rx.recv() => {
                     self.run_check(check).await;
                 }
-                Some(check) = self.unschedule_check_rx.recv() => {
+                Some(check) = unschedule_check_rx.recv() => {
                     self.stop_check(check).await;
                 }
             }
         }
     }
+    */
 
     // compiles the python source code and instantiates it (??) into the VM
     // returns an opaque handle to the check
-    fn register_check(&mut self, check_source_path: PathBuf) -> Result<CheckHandle, Error> {
+    fn register_check(&mut self, check_source_path: PathBuf) -> Result<CheckHandle, GenericError> {
         let py_source = std::fs::read_to_string(&check_source_path).unwrap();
-        info!(?py_source, "Trying to run the following code");
-        //let py_source = r#"print("hello world")"#;
-        let path_to_source = check_source_path
-            .as_os_str()
-            .to_str()
-            .unwrap_or("<embedded>")
-            .to_string();
 
-        self.interpreter
-            .enter(|vm| {
-                let scope = vm.new_scope_with_builtins();
-                let code_obj = vm
-                    .compile(&py_source, Mode::Exec, path_to_source)
-                    .map_err(|err| vm.new_syntax_error(&err, Some(&py_source)))
-                    .unwrap();
-                let run_res = vm.run_code_obj(code_obj, scope);
-                match run_res {
-                    Ok(t) => {
-                        info!(?t, "ran compiled pycheck");
-                        Ok(CheckHandle { id: t })
-                    }
-                    Err(e) => {
-                        vm.print_exception(e.clone());
-                        error!(?e, "failed to run compiled pycheck");
-                        Err(e)
+        pyo3::Python::with_gil(|py| {
+            let locals = pyo3::types::PyDict::new_bound(py);
+
+            match py.run_bound(&py_source, None, Some(&locals)) {
+                Ok(c) => {}
+                Err(e) => {
+                    let traceback = e
+                        .traceback_bound(py)
+                        .expect("Traceback should be present on this error");
+                    error!(%e, "Could not compile check source. traceback: {}", traceback.format().expect("Could format traceback"));
+                    return Err(generic_error!("Could not compile check source"));
+                }
+            };
+            // the locals should now contain the class that this check defines
+            // lets make the simplifying assumption that there is only one
+            let base_class = locals
+                .get_item("AgentCheck")
+                .expect("Could not get 'AgentCheck' class")
+                .unwrap();
+            /*
+            for (key, value) in locals.iter() {
+                if let Ok(class_obj) = value.downcast::<PyType>() {
+                    match class_obj.is_subclass(&base_class) {
+                        Ok(true) => {
+                            info!(%key, "Found class that is a subclass of AgentCheck");
+                        }
+                        _ => {}
                     }
                 }
-            })
-            .map_err(Error::from)
+            } */
+            let checks = locals
+                .iter()
+                .filter(|(key, value)| {
+                    if let Ok(class_obj) = value.downcast::<PyType>() {
+                        if class_obj.is(&base_class) {
+                            // skip the base class
+                            return false;
+                        }
+                        if let Ok(true) = class_obj.is_subclass(&base_class) {
+                            return true;
+                        }
+                        false
+                    } else {
+                        false
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            if checks.len() == 0 {
+                return Err(generic_error!("No checks found in source"));
+            }
+            if checks.len() >= 2 {
+                return Err(generic_error!("Multiple checks found in source"));
+            }
+            let (check_key, check_value) = &checks[0];
+            info!(
+                "For check source {}, found check: {}",
+                check_source_path.display(),
+                check_key
+            );
+            //let class_ref = check_value.unbind();
+            return Ok(CheckHandle { id: *check_value });
+        })
     }
 
     // This function does 3 things
@@ -97,11 +152,15 @@ impl CheckScheduler {
     // 2. Starts a local task for each instance that
     //    queues a run of the check every min_collection_interval_ms
     // 3. Stores the handles in the running hashmap
-    async fn run_check(&mut self, check: RunnableCheckRequest) {
+    pub fn run_check(&'py mut self, check: RunnableCheckRequest) -> Result<(), GenericError> {
         // registry should probably queue off of checkhandle
         //let current = self.running.entry(check.check_request.source.clone()).or_default();
 
-        let check_handle = self.register_check(check.check_source_code.clone());
+        let check_handle = self.register_check(check.check_source_code.clone())?;
+        let check_handle_hash = check_handle.id.hash()?;
+        self.running
+            .entry(check_handle_hash)
+            .or_insert((check_handle, Vec::new()));
 
         for (idx, instance) in check.check_request.instances.iter().enumerate() {
             let instance = instance.clone();
@@ -121,14 +180,21 @@ impl CheckScheduler {
                 }
             });
         }
+
+        Ok(())
     }
 
-    async fn stop_check(&self, check: CheckRequest) {
+    pub fn stop_check(&self, check: CheckRequest) {
         info!("Deleting check request {check}");
-        if let Some(running) = self.running.get(&check.source) {
-            for handle in running {
-                handle.abort();
+        if let Some(check_handle) = self.source_to_handle.get(&check.source) {
+            let check_handle_hash = check_handle.id.hash().expect("Could hash");
+            if let Some(running) = self.running.get(&check_handle_hash) {
+                for handle in running.1.iter() {
+                    handle.abort();
+                }
             }
         }
+        // todo delete stuff out of the containers
+        // and stop/release the class if its not being used
     }
 }

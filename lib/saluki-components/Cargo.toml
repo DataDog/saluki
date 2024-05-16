@@ -48,11 +48,4 @@ tower = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 async-walkdir = "1.0.0"
-
-[dependencies.rustpython-vm]
-#path = "/home/ubuntu/dev/RustPython/vm",
-version= "0.3.1"
-features = ["importlib", "compiler"]
-[dependencies.rustpython-stdlib]
-#path = "/home/ubuntu/dev/RustPython/stdlib"
-version = "0.3.1"
+pyo3 = { version = "0.21.2", features = ["anyhow"] }

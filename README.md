@@ -42,6 +42,19 @@ All remaining crates are part of Saluki itself, and all have a name with the pre
 - `lib/saluki-io`: core I/O primitives for networking (TCP/UDP/UDS), serialization (codecs and framers), compression,
   I/O-specific buffers, as well as some common codec implementations (e.g. DogStatsD)
 
+### Saluki Components
+#### Checks
+Experimental support for python checks is present if there is a local `./conf.d`
+folder present with a valid python check and yaml config file with the same
+name.
+
+pyo3 is used to provide python support, which works off of your system's python
+install, `sudo apt install libpython3-devel` (todo double check this)
+
+a venv is present that must have the following installed:
+- `pip3 install datadog_checks_base`
+- `pip3 install datadog_checks_base[deps]`
+
 ## Contributing
 
 If you find an issue with this package and have a fix, or simply want to report it, please review our

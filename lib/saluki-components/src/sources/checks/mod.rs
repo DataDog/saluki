@@ -1,11 +1,9 @@
 use async_trait::async_trait;
 use async_walkdir::{DirEntry, Filtering, WalkDir};
 use futures::StreamExt as _;
-use rustpython_vm::Interpreter;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{Source, SourceBuilder, SourceContext},
-    prelude::ErasedError,
     topology::{
         shutdown::{
             ComponentShutdownCoordinator, ComponentShutdownHandle, DynamicShutdownCoordinator, DynamicShutdownHandle,
@@ -13,6 +11,7 @@ use saluki_core::{
         OutputDefinition,
     },
 };
+use saluki_error::GenericError;
 use saluki_event::DataType;
 use serde::Deserialize;
 use snafu::Snafu;
@@ -45,14 +44,6 @@ enum Error {
     Python {
         reason: String,
     },
-}
-
-impl From<rustpython_vm::PyRef<rustpython_vm::builtins::PyBaseException>> for Error {
-    fn from(err: rustpython_vm::PyRef<rustpython_vm::builtins::PyBaseException>) -> Self {
-        Error::Python {
-            reason: format!("Error: {:?}", err),
-        }
-    }
 }
 
 /// Checks source.
@@ -188,7 +179,7 @@ impl Display for CheckSource {
 
 impl ChecksConfiguration {
     /// Creates a new `ChecksConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, ErasedError> {
+    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
     }
 
@@ -205,7 +196,7 @@ impl ChecksConfiguration {
 
 #[async_trait]
 impl SourceBuilder for ChecksConfiguration {
-    async fn build(&self) -> Result<Box<dyn Source + Send>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn build(&self) -> Result<Box<dyn Source + Send>, GenericError> {
         //let (check_run_tx, check_run_rx) = mpsc::channel(100);
         //let (check_stop_tx, check_stop_rx) = mpsc::channel(100);
         //let runner = CheckRunner::new(check_run_rx, check_stop_rx)?;
@@ -315,11 +306,11 @@ async fn process_listener(source_context: SourceContext, listener_context: liste
 
     let stream_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
-    let (schedule_check_tx, schedule_check_rx) = mpsc::channel(100);
-    let (unschedule_check_tx, unschedule_check_rx) = mpsc::channel(100);
-    let scheduler = scheduler::CheckScheduler::new(schedule_check_rx, unschedule_check_rx); // todo add shutdown handle
+    //let (schedule_check_tx, schedule_check_rx) = mpsc::channel::<RunnableCheckRequest>(100);
+    //let (unschedule_check_tx, unschedule_check_rx) = mpsc::channel::<CheckRequest>(100);
+    let scheduler = scheduler::CheckScheduler::new(); // todo add shutdown handle
 
-    tokio::task::spawn_local(scheduler.run());
+    //tokio::task::spawn_local(scheduler.run());
     info!("Check listener started.");
     let (mut new_entities, mut deleted_entities) = listener.subscribe();
     loop {
@@ -347,10 +338,12 @@ async fn process_listener(source_context: SourceContext, listener_context: liste
 
                 info!("Running a check request: {check_request}");
 
-                schedule_check_tx.send(check_request).await.expect("Couldn't send");
+                //schedule_check_tx.send(check_request).await.expect("Couldn't send");
+                scheduler.run_check(check_request);
             }
             Some(deleted_entity) = deleted_entities.recv() => {
-                unschedule_check_tx.send(deleted_entity).await.expect("Couldn't send");
+                //unschedule_check_tx.send(deleted_entity).await.expect("Couldn't send");
+                scheduler.stop_check(deleted_entity);
             }
         }
     }
