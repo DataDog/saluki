@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use k8s_openapi::api::core::v1::Pod;
-use kube::{Api, Client};
+use kube::{Api, Client, Config};
 use tokio::fs;
 use tracing::debug;
 
@@ -19,10 +19,24 @@ pub struct KubernetesHostnameProvider;
 #[async_trait]
 impl HostnameProvider for KubernetesHostnameProvider {
     async fn get_hostname(&self) -> Option<String> {
-        let client = match Client::try_default().await {
+        let config = match Config::incluster() {
+            Ok(config) => config,
+            Err(e) => {
+                debug!(
+                    error = %e,
+                    "Failed to read Kubernetes API configuration from environment. Likely not running in Kubernetes."
+                );
+                return None;
+            }
+        };
+
+        let client = match Client::try_from(config) {
             Ok(client) => client,
-            Err(_) => {
-                debug!("Failed to create Kuberenetes API client. Likely not running in Kubernetes.");
+            Err(e) => {
+                debug!(
+                    error = %e,
+                    "Failed to create Kubernetes API client from environment configuration. Likely not running in Kubernetes."
+                );
                 return None;
             }
         };
