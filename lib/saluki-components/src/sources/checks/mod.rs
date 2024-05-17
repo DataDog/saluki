@@ -24,8 +24,8 @@ use tracing::{debug, error, info};
 
 use queues::*;
 
-use std::sync::Mutex;
 use once_cell::sync::Lazy;
+use std::sync::Mutex;
 
 mod aggregator;
 mod datadog_agent;
@@ -288,7 +288,8 @@ async fn process_listener(source_context: SourceContext, listener_context: liste
 
     let stream_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
-    let mut scheduler = scheduler::CheckScheduler::new(); // todo add shutdown handle
+    let (check_metrics_tx, mut check_metrics_rx) = mpsc::channel(10_000);
+    let mut scheduler = scheduler::CheckScheduler::new(check_metrics_tx); // todo add shutdown handle
 
     info!("Check listener started.");
     let (mut new_entities, mut deleted_entities) = listener.subscribe();
@@ -306,6 +307,12 @@ async fn process_listener(source_context: SourceContext, listener_context: liste
                     }
                 }
             }
+            Some(check_metric) = check_metrics_rx.recv() => {
+                let mut event_buffer = source_context.event_buffer_pool().acquire().await;
+                let event: Event = aggregator::check_metric_as_event(check_metric).expect("can't convert");
+                debug!("one metric sent to the event buffer from check execution");
+                event_buffer.push(event);
+            }
             Some(new_entity) = new_entities.recv() => {
                 let check_request = match new_entity.to_runnable_request() {
                     Ok(check_request) => check_request,
@@ -319,21 +326,7 @@ async fn process_listener(source_context: SourceContext, listener_context: liste
 
                 match scheduler.run_check(check_request) {
                     Ok(_) => {
-                        // drain the global queue and send everything to source_context
-                        let mut event_buffer = source_context.event_buffer_pool().acquire().await;
-
-                        let mut q = aggregator::SUBMISSION_QUEUE.lock().unwrap();
-                        debug!("will send {} metrics to the event buffer", q.size());
-                        while q.size() > 0 {
-                            let check_metric = q.remove().expect("can't read from the global submission queue");
-
-                            // TODO(remy): fit the the deserializer/codec architecture instead of doing it here
-                            let event: Event = aggregator::check_metric_as_event(check_metric).expect("can't convert");
-                            event_buffer.push(event);
-                            debug!("one metric sent to the event buffer from check execution");
-                        }
-                        debug!("queue drained");
-                        drop(q); // we're in an infinite loop, explicitely drop q to unlock the mutex
+                        debug!("Check request succeeded, instances have been queued");
                     }
                     Err(e) => {
                         error!("Error running check: {}", e);

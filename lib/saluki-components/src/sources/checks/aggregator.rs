@@ -1,10 +1,11 @@
 use super::*;
 use pyo3::prelude::*;
-use saluki_event::{metric::*, Event};
 use saluki_env::time::get_unix_timestamp;
+use saluki_event::{metric::*, Event};
+use tracing::warn;
 
 #[derive(Clone, Copy)]
-enum PyMetricType {
+pub enum PyMetricType {
     Gauge = 0,
     Rate,
     Count,
@@ -14,27 +15,28 @@ enum PyMetricType {
     Historate,
 }
 
+impl From<i32> for PyMetricType {
+    fn from(v: i32) -> Self {
+        match v {
+            0 => PyMetricType::Gauge,
+            1 => PyMetricType::Rate,
+            2 => PyMetricType::Count,
+            3 => PyMetricType::MonotonicCount,
+            4 => PyMetricType::Counter,
+            5 => PyMetricType::Histogram,
+            6 => PyMetricType::Historate,
+            _ => {
+                warn!("Unknown metric type: {}, considering it as a gauge", v);
+                PyMetricType::Gauge
+            }
+        }
+    }
+}
+
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 pub enum AggregatorError {
-    UnsupportedType{},
-}
-
-impl TryFrom<i32> for PyMetricType {
-    type Error = ();
-
-    fn try_from(v: i32) -> Result<Self, Self::Error> {
-        match v {
-            x if x == PyMetricType::Gauge as i32 => Ok(PyMetricType::Gauge),
-            x if x == PyMetricType::Rate as i32 => Ok(PyMetricType::Rate),
-            x if x == PyMetricType::Count as i32 => Ok(PyMetricType::Count),
-            x if x == PyMetricType::MonotonicCount as i32 => Ok(PyMetricType::MonotonicCount),
-            x if x == PyMetricType::Counter as i32 => Ok(PyMetricType::Counter),
-            x if x == PyMetricType::Histogram as i32 => Ok(PyMetricType::Histogram),
-            x if x == PyMetricType::Historate as i32 => Ok(PyMetricType::Historate),
-            _ => Err(()),
-        }
-    }
+    UnsupportedType {},
 }
 
 /// CheckMetric are used to transmit metrics from python check execution results
@@ -48,31 +50,27 @@ pub struct CheckMetric {
 
 // TODO(remy): use TryFrom instead
 pub fn check_metric_as_event(metric: CheckMetric) -> Result<Event, AggregatorError> {
-    let mut tags = MetricTags::default();
-    // TODO(remy): do this more idiomatically
-    for tag in metric.tags.iter() {
-        tags.insert_tag(tag.clone());
-    }
+    let tags: MetricTags = metric.tags.into();
 
-    let context = MetricContext{
-                    name: metric.name,
-                    tags,
+    let context = MetricContext {
+        name: metric.name,
+        tags,
     };
     let metadata = MetricMetadata::from_timestamp(get_unix_timestamp());
 
     match metric.metric_type {
-        PyMetricType::Gauge => {
-            Ok(saluki_event::Event::Metric(Metric::from_parts(
-                context, MetricValue::Gauge { value: metric.value, }, metadata,
-            )))
-        },
-        PyMetricType::Counter => {
-            Ok(saluki_event::Event::Metric(Metric::from_parts(
-                context, MetricValue::Counter { value: metric.value, }, metadata,
-            )))
-        },
+        PyMetricType::Gauge => Ok(saluki_event::Event::Metric(Metric::from_parts(
+            context,
+            MetricValue::Gauge { value: metric.value },
+            metadata,
+        ))),
+        PyMetricType::Counter => Ok(saluki_event::Event::Metric(Metric::from_parts(
+            context,
+            MetricValue::Counter { value: metric.value },
+            metadata,
+        ))),
         // TODO(remy): rest of the types
-        _ => Err(AggregatorError::UnsupportedType{}),
+        _ => Err(AggregatorError::UnsupportedType {}),
     }
 }
 
@@ -81,51 +79,53 @@ impl Clone for CheckMetric {
         Self {
             name: self.name.clone(),
             metric_type: self.metric_type,
-            value: self.value.clone(),
+            value: self.value,
             tags: self.tags.clone(),
         }
     }
 }
-
-
-/// Global for Python checks execution to report the data
-pub static SUBMISSION_QUEUE: Lazy<Mutex<Queue<CheckMetric>>> = Lazy::new(|| {
-    Mutex::new(queue![])
-});
 
 /// submit_metric is called from the AgentCheck implementation when a check submits a metric.
 /// Python signature:
 ///     aggregator.submit_metric(self, self.check_id, mtype, name, value, tags, hostname, flush_first_value)
 ///
 /// TODO(remy): should mtype be a PyMetricType?
+#[allow(clippy::too_many_arguments)]
 #[pyfunction]
-fn submit_metric(_class: PyObject, _check_id: String, mtype: i32, name: String, value: f64, tags: Vec<String>, hostname: String, _flush_first_value: bool) {
-    println!(
+#[pyo3(pass_module)]
+pub(crate) fn submit_metric(
+    module: &Bound<PyModule>, _class: PyObject, _check_id: String, mtype: i32, name: String, value: f64,
+    tags: Vec<String>, hostname: String, _flush_first_value: bool,
+) {
+    debug!(
         "submit_metric called with name: {}, value: {}, tags: {:?}, hostname: {}",
         name, value, tags, hostname
     );
 
-    let metric_type = match PyMetricType::try_from(mtype) {
-        Ok(mt) => mt,
-        Err(e) => {
-            error!("can't convert metric type: {}", mtype);
-            PyMetricType::Gauge
-        }
-    };
-
-    let mut q = SUBMISSION_QUEUE.lock().unwrap();
-    match q.add(CheckMetric{
+    let check_metric = CheckMetric {
         name,
-        metric_type,
+        metric_type: mtype.into(),
         value,
         tags,
-    }) {
-        Ok(_) => {},
+    };
+
+    match module.getattr("SUBMISSION_QUEUE") {
+        Ok(py_item) => match py_item.extract::<Py<scheduler::SenderHolder>>() {
+            Ok(q) => {
+                let res = pyo3::Python::with_gil(|py| q.bind_borrowed(py).borrow_mut().sender.clone());
+
+                match res.try_send(check_metric) {
+                    Ok(_) => debug!("Successfully sent metric"),
+                    Err(e) => error!("Failed to send metric: {}", e),
+                }
+            }
+            Err(e) => error!("Failed to extract SUBMISSION_QUEUE: {}", e),
+        },
         Err(e) => {
-            error!("can't push into the submission queue: {}", e);
+            // Theoretically possible early in the init, but not should be basically impossible
+            error!("SUBMISSION_QUEUE not found: {}", e);
         }
-    }
-    drop(q);
+    };
 }
 
 #[pyfunction]
@@ -149,10 +149,10 @@ fn reset() {
 
 #[pymodule]
 pub fn aggregator(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(submit_metric, m)?)?;
-    m.add_function(wrap_pyfunction!(submit_service_check, m)?)?;
-    m.add_function(wrap_pyfunction!(self::metrics, m)?)?;
-    m.add_function(wrap_pyfunction!(reset, m)?)?;
+    m.add_function(wrap_pyfunction_bound!(submit_metric, m)?)?;
+    m.add_function(wrap_pyfunction_bound!(submit_service_check, m)?)?;
+    m.add_function(wrap_pyfunction_bound!(self::metrics, m)?)?;
+    m.add_function(wrap_pyfunction_bound!(reset, m)?)?;
 
     m.add("GAUGE", PyMetricType::Gauge as i32)?;
     m.add("RATE", PyMetricType::Rate as i32)?;

@@ -1,5 +1,6 @@
+use super::aggregator::aggregator as pyagg;
+use super::aggregator::CheckMetric;
 use super::*;
-use aggregator::aggregator;
 use datadog_agent::datadog_agent;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::prelude::*;
@@ -16,20 +17,43 @@ impl Clone for CheckHandle {
     }
 }
 
+#[pyclass]
+pub struct SenderHolder {
+    pub sender: mpsc::Sender<CheckMetric>,
+}
+
 pub struct CheckScheduler {
     running: HashMap<CheckSource, (CheckHandle, Vec<tokio::task::JoinHandle<()>>)>,
 }
 
 impl CheckScheduler {
-    pub fn new() -> Self {
-        // todo, add in apis that python checks expect
+    pub fn new(send_check_metrics: mpsc::Sender<CheckMetric>) -> Self {
         pyo3::append_to_inittab!(datadog_agent);
-        pyo3::append_to_inittab!(aggregator);
+        pyo3::append_to_inittab!(pyagg);
 
         pyo3::prepare_freethreaded_python();
 
         // Sanity test for python environment before executing
         pyo3::Python::with_gil(|py| {
+            match py.import_bound("aggregator") {
+                Ok(m) => {
+                    let sender_holder = Bound::new(
+                        py,
+                        SenderHolder {
+                            sender: send_check_metrics.clone(),
+                        },
+                    )
+                    .expect("Could not create sender holder");
+                    m.setattr("SUBMISSION_QUEUE", sender_holder)
+                        .expect("Could not set sender_holder on module attribute")
+                }
+                Err(e) => {
+                    error!(%e, "Could not import aggregator module.");
+                    if let Some(traceback) = e.traceback_bound(py) {
+                        error!("Traceback: {}", traceback.format().expect("Could format traceback"));
+                    }
+                }
+            };
             let modd = match py.import_bound("datadog_checks.checks") {
                 Ok(m) => m,
                 Err(e) => {
@@ -172,7 +196,9 @@ impl CheckScheduler {
                         // ref https://github.com/DataDog/integrations-core/blob/bc3b1c3496e79aa1b75ebcc9ef1c2a2b26487ebd/datadog_checks_base/datadog_checks/base/checks/base.py#L1197
                         let result = pycheck.call_method0(py, "run").unwrap();
 
-                        let s: String = result.extract(py).expect("Can't read the string result from the check execution");
+                        let s: String = result
+                            .extract(py)
+                            .expect("Can't read the string result from the check execution");
                         // TODO(remy): turn this into debug log level later on
                         info!("Check execution error return: {:?}", s);
                     })
