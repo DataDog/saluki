@@ -17,8 +17,8 @@ fn test_one_thousand_single_points_buffered_ddsketch() {
     let after: MathableHeapStats = dhat::HeapStats::get().into();
 
     let diff = after - before;
-    dhat::assert_eq!(diff.total_blocks, 84);
-    dhat::assert_eq!(diff.total_bytes, 22312);
+    dhat::assert_eq!(diff.total_blocks, 83);
+    dhat::assert_eq!(diff.total_bytes, 21800);
     dhat::assert_eq!(diff.max_blocks, 4);
     dhat::assert_eq!(diff.max_bytes, 3328);
     dhat::assert_eq!(diff.curr_blocks, 0);

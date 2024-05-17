@@ -17,10 +17,10 @@ fn test_ten_single_points_buffered_ddsketch() {
     let after: MathableHeapStats = dhat::HeapStats::get().into();
 
     let diff = after - before;
-    dhat::assert_eq!(diff.total_blocks, 14);
-    dhat::assert_eq!(diff.total_bytes, 924);
+    dhat::assert_eq!(diff.total_blocks, 13);
+    dhat::assert_eq!(diff.total_bytes, 412);
     dhat::assert_eq!(diff.max_blocks, 4);
-    dhat::assert_eq!(diff.max_bytes, 628);
+    dhat::assert_eq!(diff.max_bytes, 224);
     dhat::assert_eq!(diff.curr_blocks, 0);
     dhat::assert_eq!(diff.curr_bytes, 0);
 }
