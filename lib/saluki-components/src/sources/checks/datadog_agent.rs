@@ -43,6 +43,12 @@ fn set_check_metadata(check_id: String, name: String, value: String) {
     // Again, we can only log this because there's no structure to store it.
 }
 
+#[pyfunction]
+fn tracemalloc_enabled() -> bool {
+    // tracemalloc unsupported for now
+    false
+}
+
 #[pymodule]
 pub fn datadog_agent(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_hostname, m)?)?;
@@ -52,6 +58,7 @@ pub fn datadog_agent(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_version, m)?)?;
     m.add_function(wrap_pyfunction!(log, m)?)?;
     m.add_function(wrap_pyfunction!(set_check_metadata, m)?)?;
+    m.add_function(wrap_pyfunction!(tracemalloc_enabled, m)?)?;
 
     Ok(())
 }

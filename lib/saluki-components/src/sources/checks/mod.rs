@@ -10,7 +10,7 @@ use saluki_core::{
     },
 };
 use saluki_error::GenericError;
-use saluki_event::DataType;
+use saluki_event::{DataType, Event};
 use serde::Deserialize;
 use snafu::Snafu;
 use std::{
@@ -21,6 +21,11 @@ use std::{collections::HashSet, io};
 use std::{fmt::Display, time::Duration};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, error, info};
+
+use queues::*;
+
+use once_cell::sync::Lazy;
+use std::sync::Mutex;
 
 mod aggregator;
 mod datadog_agent;
@@ -44,7 +49,6 @@ enum Error {
         reason: String,
     },
 }
-
 /// Checks source.
 ///
 /// Scans a directory for check configurations and emits them as things to run.
@@ -284,7 +288,8 @@ async fn process_listener(source_context: SourceContext, listener_context: liste
 
     let stream_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
-    let mut scheduler = scheduler::CheckScheduler::new(); // todo add shutdown handle
+    let (check_metrics_tx, mut check_metrics_rx) = mpsc::channel(10_000);
+    let mut scheduler = scheduler::CheckScheduler::new(check_metrics_tx); // todo add shutdown handle
 
     info!("Check listener started.");
     let (mut new_entities, mut deleted_entities) = listener.subscribe();
@@ -302,6 +307,12 @@ async fn process_listener(source_context: SourceContext, listener_context: liste
                     }
                 }
             }
+            Some(check_metric) = check_metrics_rx.recv() => {
+                let mut event_buffer = source_context.event_buffer_pool().acquire().await;
+                let event: Event = aggregator::check_metric_as_event(check_metric).expect("can't convert");
+                debug!("one metric sent to the event buffer from check execution");
+                event_buffer.push(event);
+            }
             Some(new_entity) = new_entities.recv() => {
                 let check_request = match new_entity.to_runnable_request() {
                     Ok(check_request) => check_request,
@@ -314,7 +325,9 @@ async fn process_listener(source_context: SourceContext, listener_context: liste
                 info!("Running a check request: {check_request}");
 
                 match scheduler.run_check(check_request) {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        debug!("Check request succeeded, instances have been queued");
+                    }
                     Err(e) => {
                         error!("Error running check: {}", e);
                     }
