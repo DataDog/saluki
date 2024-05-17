@@ -171,7 +171,10 @@ impl CheckScheduler {
                         // 'run' method invokes 'check' with the instance we initialized with
                         // ref https://github.com/DataDog/integrations-core/blob/bc3b1c3496e79aa1b75ebcc9ef1c2a2b26487ebd/datadog_checks_base/datadog_checks/base/checks/base.py#L1197
                         let result = pycheck.call_method0(py, "run").unwrap();
-                        info!("Result: {:?}", result);
+
+                        let s: String = result.extract(py).expect("Can't read the string result from the check execution");
+                        // TODO(remy): turn this into debug log level later on
+                        info!("Check execution error return: {:?}", s);
                     })
                 }
             });

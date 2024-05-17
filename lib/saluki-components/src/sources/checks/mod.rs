@@ -10,7 +10,7 @@ use saluki_core::{
     },
 };
 use saluki_error::GenericError;
-use saluki_event::DataType;
+use saluki_event::{DataType, Event};
 use serde::Deserialize;
 use snafu::Snafu;
 use std::{
@@ -21,6 +21,11 @@ use std::{collections::HashSet, io};
 use std::{fmt::Display, time::Duration};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, error, info};
+
+use queues::*;
+
+use std::sync::Mutex;
+use once_cell::sync::Lazy;
 
 mod aggregator;
 mod datadog_agent;
@@ -44,7 +49,6 @@ enum Error {
         reason: String,
     },
 }
-
 /// Checks source.
 ///
 /// Scans a directory for check configurations and emits them as things to run.
@@ -314,7 +318,23 @@ async fn process_listener(source_context: SourceContext, listener_context: liste
                 info!("Running a check request: {check_request}");
 
                 match scheduler.run_check(check_request) {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        // drain the global queue and send everything to source_context
+                        let mut event_buffer = source_context.event_buffer_pool().acquire().await;
+
+                        let mut q = aggregator::SUBMISSION_QUEUE.lock().unwrap();
+                        debug!("will send {} metrics to the event buffer", q.size());
+                        while q.size() > 0 {
+                            let check_metric = q.remove().expect("can't read from the global submission queue");
+
+                            // TODO(remy): fit the the deserializer/codec architecture instead of doing it here
+                            let event: Event = aggregator::check_metric_as_event(check_metric).expect("can't convert");
+                            event_buffer.push(event);
+                            debug!("one metric sent to the event buffer from check execution");
+                        }
+                        debug!("queue drained");
+                        drop(q); // we're in an infinite loop, explicitely drop q to unlock the mutex
+                    }
                     Err(e) => {
                         error!("Error running check: {}", e);
                     }

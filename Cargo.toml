@@ -90,6 +90,8 @@ rustls-pemfile = { version = "2", default-features = false }
 tokio-rustls = { version = "0.25.0", default-features = false }
 anyhow = { version = "1", default-features = false }
 chrono = "0.4"
+queues = "1.0.2"
+once_cell = "1.19.0"
 
 [patch.crates-io]
 # Git dependency for `containerd-client` to add specific `prost-build` settings that allow type-erased payloads in
@@ -102,3 +104,4 @@ containerd-client = { git = "https://github.com/containerd/rust-extensions", bra
 lto = "thin"
 codegen-units = 4
 debug = true
+
