@@ -190,7 +190,7 @@ impl SourceBuilder for DogStatsDConfiguration {
 }
 
 impl MemoryBounds for DogStatsDConfiguration {
-    fn calculate_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         // We allocate our I/O buffers up front so this is a requirement.
         let io_buffer_pool_size = self.buffer_count * self.buffer_size;
 

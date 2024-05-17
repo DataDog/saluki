@@ -26,7 +26,7 @@ impl DestinationBuilder for BlackholeConfiguration {
 }
 
 impl MemoryBounds for BlackholeConfiguration {
-    fn calculate_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
 }
 
 struct Blackhole;

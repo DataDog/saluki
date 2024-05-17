@@ -139,17 +139,23 @@ impl TopologyBlueprint {
 }
 
 impl MemoryBounds for TopologyBlueprint {
-    fn calculate_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        for source in self.sources.values() {
-            source.calculate_bounds(builder);
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        for (name, source) in &self.sources {
+            let component_name = format!("source.{}", name);
+            let mut source_builder = builder.component(component_name);
+            source.specify_bounds(&mut source_builder);
         }
 
-        for transform in self.transforms.values() {
-            transform.calculate_bounds(builder);
+        for (name, transform) in &self.transforms {
+            let component_name = format!("transform.{}", name);
+            let mut transform_builder = builder.component(component_name);
+            transform.specify_bounds(&mut transform_builder);
         }
 
-        for destination in self.destinations.values() {
-            destination.calculate_bounds(builder);
+        for (name, destination) in &self.destinations {
+            let component_name = format!("destination.{}", name);
+            let mut destination_builder = builder.component(component_name);
+            destination.specify_bounds(&mut destination_builder);
         }
     }
 }

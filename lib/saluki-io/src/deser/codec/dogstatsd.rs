@@ -546,7 +546,21 @@ mod tests {
 
     #[test]
     fn respects_maximum_tag_count() {
-        todo!()
+        let input = "foo:1|c|#tag1:value1,tag2:value2,tag3:value3";
+
+        let cases = [3, 2, 1];
+        for max_tag_count in cases {
+            let (remaining, result) = parse_dogstatsd(input.as_bytes(), max_tag_count, usize::MAX)
+                .expect("should not fail to parse");
+
+            assert!(remaining.is_empty());
+            match result {
+                OneOrMany::Single(Event::Metric(metric)) => {
+                    assert_eq!(metric.context.tags.len(), max_tag_count);
+                }
+                _ => unreachable!("should only have a single metric"),
+            }
+        }
     }
 
     #[test]

@@ -37,7 +37,7 @@ where
 }
 
 impl<E> MemoryBounds for HostEnrichmentConfiguration<E> {
-    fn calculate_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
 }
 
 pub struct HostEnrichment {

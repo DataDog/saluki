@@ -126,7 +126,7 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
 }
 
 impl MemoryBounds for DatadogMetricsConfiguration {
-    fn calculate_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         // The request builder buffer pool is shared between both the series and the sketches request builder, so we
         // only count it once.
         let rb_buffer_pool_size = RB_BUFFER_POOL_COUNT * RB_BUFFER_POOL_BUF_SIZE;

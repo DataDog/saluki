@@ -44,7 +44,7 @@ impl SourceBuilder for TestSourceBuilder {
 }
 
 impl MemoryBounds for TestSourceBuilder {
-    fn calculate_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
 }
 
 struct TestTransform;
@@ -100,7 +100,7 @@ impl TransformBuilder for TestTransformBuilder {
 }
 
 impl MemoryBounds for TestTransformBuilder {
-    fn calculate_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
 }
 
 struct TestDestination;
@@ -134,5 +134,5 @@ impl DestinationBuilder for TestDestinationBuilder {
 }
 
 impl MemoryBounds for TestDestinationBuilder {
-    fn calculate_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
 }

@@ -103,7 +103,7 @@ where
 }
 
 impl<E> MemoryBounds for OriginEnrichmentConfiguration<E> {
-    fn calculate_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
 }
 
 pub struct OriginEnrichment<E> {

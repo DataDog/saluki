@@ -8,7 +8,7 @@ mod env_provider;
 
 use std::time::{Duration, Instant};
 
-use memory_accounting::{BoundsVerifier, MemoryGrant};
+use memory_accounting::{BoundsVerifier, MemoryBounds, MemoryBoundsBuilder, MemoryGrant};
 use saluki_components::{
     destinations::DatadogMetricsConfiguration,
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
@@ -18,7 +18,7 @@ use saluki_components::{
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_error::{ErrorContext as _, GenericError};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use saluki_app::{
     logging::{fatal_and_exit, initialize_logging},
@@ -117,10 +117,17 @@ async fn run(started: Instant) -> Result<(), GenericError> {
 fn verify_memory_bounds(
     configuration: &GenericConfiguration, blueprint: &TopologyBlueprint,
 ) -> Result<(), GenericError> {
-    let memory_limit = configuration
+    let memory_limit = match configuration
         .try_get_typed::<ByteUnit>("memory_limit")
-        .error_context("Failed to get memory limimt setting.")?
-        .unwrap_or(64.mebibytes());
+        .error_context("Failed to get memory limit setting.")?
+    {
+        Some(limit) => limit,
+        None => {
+            let default_limit = 64.mebibytes();
+            info!("No memory limit set. Defaulting to {}.", default_limit);
+            default_limit
+        }
+    };
 
     let slop_factor = configuration
         .try_get_typed::<f64>("memory_slop_factor")
@@ -128,26 +135,26 @@ fn verify_memory_bounds(
         .unwrap_or(0.25);
 
     let initial_grant = MemoryGrant::with_slop_factor(memory_limit.as_u64() as usize, slop_factor)?;
+    let mut bounds_builder = MemoryBoundsBuilder::new();
+    let mut blueprint_builder = bounds_builder.component("topology");
+    blueprint.specify_bounds(&mut blueprint_builder);
+    let component_bounds = bounds_builder.finalize();
 
-    // TODO: We're passing in the blueprint directly but ideally this would push in each component individually
-    // that way the verifier can bubble up errors if one component in particular has invalid bounds, and so on.
-    //
-    // Alternatively, maybe we allow the bounds builder to create components so that it's more of a hierarchy?
-    //
-    // Something like the topology blueprint would create each component, then call `MemoryBounds::calculate_bounds`
-    // with the component-specific builder, and those components could just do what they're already doing, _or_, if
-    // necessary, they could also themselves register subcomponents.
-    let mut bounds_verifier = BoundsVerifier::from_grant(initial_grant);
-    bounds_verifier.add_component("topology".to_string(), blueprint);
-
-    let verified_bounds = bounds_verifier.verify()?;
-    info!(
-        "Verified memory bounds. Minimum memory requirement of {}, with a calculated firm memory bound of {} out of {} available, out of an initial {} grant.",
-        verified_bounds.minimum_required_bytes().bytes(),
-        verified_bounds.firm_limit_bytes().bytes(),
-        verified_bounds.available_bytes().bytes(),
-        initial_grant.initial_limit_bytes().bytes(),
-    );
+    let bounds_verifier = BoundsVerifier::new(initial_grant, component_bounds);
+    match bounds_verifier.verify() {
+        Ok(verified_bounds) => {
+            info!(
+                "Verified memory bounds. Minimum memory requirement of {}, with a calculated firm memory bound of {} out of {} available, out of an initial {} grant.",
+                verified_bounds.total_minimum_required_bytes().bytes(),
+                verified_bounds.total_firm_limit_bytes().bytes(),
+                verified_bounds.total_available_bytes().bytes(),
+                initial_grant.initial_limit_bytes().bytes(),
+            );
+        }
+        Err(e) => {
+            warn!("Failed to verify memory bounds: {}", e);
+        }
+    }
 
     Ok(())
 }

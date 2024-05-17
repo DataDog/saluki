@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use crate::CalculatedBounds;
+use crate::ComponentBounds;
 
 pub struct Minimum;
 pub struct Firm;
@@ -15,56 +15,100 @@ pub(crate) mod private {
 // Simple trait-based builder state approach so we can use a single builder view to modify either the minimum required
 // or firm limit amounts.
 pub trait BoundsMutator: private::Sealed {
-    fn add_usage(builder: &mut MemoryBoundsBuilder, amount: usize);
+    fn add_usage(bounds: &mut ComponentBounds, amount: usize);
 }
 
 impl BoundsMutator for Minimum {
-    fn add_usage(builder: &mut MemoryBoundsBuilder, amount: usize) {
-        builder.minimum_required = builder.minimum_required.saturating_add(amount);
+    fn add_usage(bounds: &mut ComponentBounds, amount: usize) {
+        bounds.self_minimum_required_bytes = bounds.self_minimum_required_bytes.saturating_add(amount);
     }
 }
 
 impl BoundsMutator for Firm {
-    fn add_usage(builder: &mut MemoryBoundsBuilder, amount: usize) {
-        builder.firm_limit = builder.firm_limit.saturating_add(amount);
+    fn add_usage(bounds: &mut ComponentBounds, amount: usize) {
+        bounds.self_firm_limit_bytes = bounds.self_firm_limit_bytes.saturating_add(amount);
     }
 }
 
-#[derive(Default)]
-pub struct MemoryBoundsBuilder {
-    minimum_required: usize,
-    firm_limit: usize,
+enum MutablePointer<'a, T> {
+    Borrowed(&'a mut T),
+    Owned(T),
 }
 
-impl MemoryBoundsBuilder {
-    /// Gets a builder object that can be used to define the miniumum required memory for this component to operate.
-    pub fn minimum(&mut self) -> BoundsBuilder<'_, Minimum> {
-        BoundsBuilder::<'_, Minimum>::new(self)
-    }
-
-    /// Gets a builder object that can be used to define the firm memory limit for this component.
-    pub fn firm(&mut self) -> BoundsBuilder<'_, Firm> {
-        BoundsBuilder::<'_, Firm>::new(self)
-    }
-
-    /// Returns the calculated bounds.
-    pub fn calculated_bounds(&self) -> CalculatedBounds {
-        CalculatedBounds {
-            minimum_required: self.minimum_required,
-            firm_limit: self.firm_limit,
+impl<'a, T> MutablePointer<'a, T> {
+    fn as_mut(&mut self) -> &mut T {
+        match self {
+            MutablePointer::Borrowed(inner) => inner,
+            MutablePointer::Owned(inner) => inner,
         }
     }
 }
 
+pub struct MemoryBoundsBuilder<'bounds> {
+    inner: MutablePointer<'bounds, ComponentBounds>,
+}
+
+impl MemoryBoundsBuilder<'static> {
+    pub fn new() -> Self {
+        Self {
+            inner: MutablePointer::Owned(ComponentBounds::default()),
+        }
+    }
+
+    /// Returns the calculated component bounds.
+    pub fn finalize(self) -> ComponentBounds {
+        match self.inner {
+            // TODO: This should be unreachable if we're 'static, since we only have an owned version for 'static... but
+            // I'm trying to think through if the compiler is going to infer 'static for the calls to `component`. :think:
+            MutablePointer::Borrowed(_) => unreachable!(),
+            MutablePointer::Owned(inner) => inner,
+        }
+    }
+}
+
+impl<'a> MemoryBoundsBuilder<'a> {
+    /// Gets a builder object that can be used to define the miniumum required memory for this component to operate.
+    pub fn minimum(&mut self) -> BoundsBuilder<'_, Minimum> {
+        BoundsBuilder::<'_, Minimum>::new(self.inner.as_mut())
+    }
+
+    /// Gets a builder object that can be used to define the firm memory limit for this component.
+    pub fn firm(&mut self) -> BoundsBuilder<'_, Firm> {
+        BoundsBuilder::<'_, Firm>::new(self.inner.as_mut())
+    }
+
+    /// Creates a nested subcomponent and gets a builder object for it.
+    ///
+    /// This allows for defining the bounds of various subcomponents within a larger component, which are then rolled up
+    /// into the calculated bounds for the parent component.
+    pub fn component<S>(&mut self, name: S) -> MemoryBoundsBuilder<'_>
+    where
+        S: Into<String>,
+    {
+        let subcomponents = &mut self.inner.as_mut().subcomponents;
+        let inner = subcomponents.entry(name.into()).or_default();
+
+        MemoryBoundsBuilder {
+            inner: MutablePointer::Borrowed(inner),
+        }
+    }
+}
+
+impl Default for MemoryBoundsBuilder<'static> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct BoundsBuilder<'a, S> {
-    builder: &'a mut MemoryBoundsBuilder,
+    bounds: &'a mut ComponentBounds,
     _state: PhantomData<S>,
 }
 
 impl<'a, S: BoundsMutator> BoundsBuilder<'a, S> {
-    fn new(builder: &'a mut MemoryBoundsBuilder) -> Self {
+    fn new(bounds: &'a mut ComponentBounds) -> Self {
         Self {
-            builder,
+            bounds,
             _state: PhantomData,
         }
     }
@@ -73,7 +117,7 @@ impl<'a, S: BoundsMutator> BoundsBuilder<'a, S> {
     ///
     /// This is a catch-all for directly accounting for a specific number of bytes.
     pub fn with_fixed_amount(&mut self, chunk_size: usize) -> &mut Self {
-        S::add_usage(self.builder, chunk_size);
+        S::add_usage(self.bounds, chunk_size);
         self
     }
 
@@ -82,7 +126,7 @@ impl<'a, S: BoundsMutator> BoundsBuilder<'a, S> {
     /// This can be used to track the expected memory usage of generalized containers like `Vec<T>`, where items are
     /// homogenous and allocated contiguously.
     pub fn with_array<T>(&mut self, len: usize) -> &mut Self {
-        S::add_usage(self.builder, len * std::mem::size_of::<T>());
+        S::add_usage(self.bounds, len * std::mem::size_of::<T>());
         self
     }
 
@@ -91,10 +135,7 @@ impl<'a, S: BoundsMutator> BoundsBuilder<'a, S> {
     /// This can be used to track the expected memory usage of generalized maps like `HashMap<K, V>`, where keys and
     /// values are
     pub fn with_map<K, V>(&mut self, len: usize) -> &mut Self {
-        S::add_usage(
-            self.builder,
-            len * (std::mem::size_of::<K>() + std::mem::size_of::<V>()),
-        );
+        S::add_usage(self.bounds, len * (std::mem::size_of::<K>() + std::mem::size_of::<V>()));
         self
     }
 }

@@ -25,7 +25,7 @@ impl SourceBuilder for InternalMetricsConfiguration {
 }
 
 impl MemoryBounds for InternalMetricsConfiguration {
-    fn calculate_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
 }
 
 pub struct InternalMetrics;

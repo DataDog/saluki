@@ -94,7 +94,7 @@ impl TransformBuilder for AggregateConfiguration {
 }
 
 impl MemoryBounds for AggregateConfiguration {
-    fn calculate_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         // Since we use our own event buffer pool, we account for that directly here, and we use our knowledge of the
         // context limit to determine how large we'd expect those event buffers to grow to in the worst case. With a
         // context limit of N, we would only aggregate N metrics at any given time, and thus we should flush a maximum
