@@ -827,32 +827,8 @@ impl Sketch for BufferedDDSketch {
     }
 
     fn insert_many(&mut self, vs: &[f64]) {
-        let capacity_limit: usize = BUFFER_CAPACITY_LIMIT.into();
-        let capacity = capacity_limit - self.buffer.len();
-
-        // Insert up to the buffer's remaining capacity
-        let first_chunk = &vs[0..capacity];
-        for v in first_chunk {
-            self.sketch.adjust_basic_stats(*v, 1);
-            let key = self.sketch.config.key(*v);
-            self.buffer.push(key);
-        }
-        if self.buffer.len() >= capacity_limit {
-            self.flush();
-        }
-
-        // Process any remaining points in buffer-sized chunks
-        let following_chunks = vs[capacity..].chunks(capacity_limit);
-        for chunk in following_chunks {
-            for v in chunk {
-                self.sketch.adjust_basic_stats(*v, 1);
-                let key = self.sketch.config.key(*v);
-                self.buffer.push(key);
-            }
-
-            // Note the last chunk is flushed even if the buffer isn't full. This is done for simplicity.
-            self.flush();
-        }
+        // Passthrough without buffering. This is already optimized.
+        self.sketch.insert_many(vs);
     }
 
     fn insert_n(&mut self, v: f64, n: u32) {

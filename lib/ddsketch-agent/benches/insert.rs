@@ -1,66 +1,73 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use ddsketch_agent::DDSketch;
+use datadog_protos::metrics::Dogsketch;
+use ddsketch_agent::{BufferedDDSketch, DDSketch, Sketch};
 use rand::SeedableRng;
-use rand_distr::{Beta, Distribution};
+use rand_distr::{Distribution, Pareto};
 
-fn insert_single(ns: &[f64]) {
-    let mut sketch = DDSketch::default();
+fn insert_single_and_serialize<T: Sketch + Default>(ns: &[f64]) {
+    let mut sketch = T::default();
     for i in ns {
         sketch.insert(*i);
     }
+
+    let mut dogsketch = Dogsketch::new();
+    let _ = sketch.merge_to_dogsketch(&mut dogsketch);
 }
 
-fn insert_multi(ns: &[f64]) {
-    let mut sketch = DDSketch::default();
+fn insert_many_and_serialize<T: Sketch + Default>(ns: &[f64]) {
+    let mut sketch = T::default();
     sketch.insert_many(&ns);
+
+    let mut dogsketch = Dogsketch::new();
+    let _ = sketch.merge_to_dogsketch(&mut dogsketch);
 }
 
-fn criterion_benchmark(c: &mut Criterion) {
-    let sizes = [1, 2, 5, 10, 50, 100, 1_000, 10_000, 100_000];
+fn bench_sketch<T: Sketch + Default>(c: &mut Criterion) {
+    let sizes = [1, 2, 5, 10, 100, 1_000, 10_000];
 
-    // https://www.wolframalpha.com/input?i=beta+distribution+with+a+%3D+1.6%2C+b+%3D+20
-    // This distribution is scaled up by 1000x to approximate the response time
-    // of a networked service in milliseconds.
-    // Percentiles
-    // 10th | 16.4519
-    // 25th | 32.7133
-    // 50th | 61.2044
-    // 75th | 102.017
-    // 90th | 149.339
-    let distribution = Beta::new(1.2, 15.0).unwrap();
+    // Generate a set of samples that roughly correspond to the latency of a
+    // typical web service, in microseconds, with a gamma distribution: big hump
+    // at the beginning with a long tail.  We limit this so the samples
+    // represent latencies that bottom out at 15 milliseconds and tail off all
+    // the way up to 10 seconds.
+    let distribution = Pareto::new(1.0, 1.0).expect("pareto distribution should be valid");
 
     let seed = 0xC0FFEE;
 
-    let mut group = c.benchmark_group("insert-single");
+    let mut group = c.benchmark_group(format!("{}/insert-single", std::any::type_name::<T>()));
     for size in sizes.iter() {
         group.throughput(Throughput::Elements(*size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
             let vals = distribution
                 .sample_iter(&mut rng)
+                // Scale by 10,000 to get microseconds.
+                .map(|n| n * 10_000.0)
+                .filter(|n| *n > 15_000.0 && *n < 10_000_000.0)
                 .take(size)
-                .map(|v| v * 1000.0)
                 .collect::<Vec<_>>();
-            b.iter(|| insert_single(&vals));
+            b.iter(|| insert_single_and_serialize::<T>(&vals));
         });
     }
     group.finish();
 
-    let mut group = c.benchmark_group("insert-many");
+    let mut group = c.benchmark_group(format!("{}/insert-many", std::any::type_name::<T>()));
     for size in sizes.iter() {
         group.throughput(Throughput::Elements(*size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
             let vals = distribution
                 .sample_iter(&mut rng)
+                // Scale by 10,000 to get microseconds.
+                .map(|n| n * 10_000.0)
+                .filter(|n| *n > 15_000.0 && *n < 10_000_000.0)
                 .take(size)
-                .map(|v| v * 1000.0)
                 .collect::<Vec<_>>();
-            b.iter(|| insert_multi(&vals));
+            b.iter(|| insert_many_and_serialize::<T>(&vals));
         });
     }
     group.finish();
 }
 
-criterion_group!(benches, criterion_benchmark);
+criterion_group!(benches, bench_sketch::<DDSketch>, bench_sketch::<BufferedDDSketch>);
 criterion_main!(benches);
