@@ -52,6 +52,7 @@ impl CheckScheduler {
                     if let Some(traceback) = e.traceback_bound(py) {
                         error!("Traceback: {}", traceback.format().expect("Could format traceback"));
                     }
+                    return; // fatal
                 }
             };
             let modd = match py.import_bound("datadog_checks.checks") {
@@ -61,7 +62,7 @@ impl CheckScheduler {
                         .traceback_bound(py)
                         .expect("Traceback should be present on this error");
                     error!(%e, "Could not import datadog_checks module. traceback: {}", traceback.format().expect("Could format traceback"));
-                    return;
+                    return; // fatal
                 }
             };
             let class = match modd.getattr("AgentCheck") {
@@ -71,7 +72,7 @@ impl CheckScheduler {
                         .traceback_bound(py)
                         .expect("Traceback should be present on this error");
                     error!(%e, "Could not get AgentCheck class. traceback: {}", traceback.format().expect("Could format traceback"));
-                    return;
+                    return; // fatal
                 }
             };
             info!(%class, %modd, "Was able to import AgentCheck!");
