@@ -699,7 +699,7 @@ impl PartialEq for DDSketch {
 impl Default for DDSketch {
     fn default() -> Self {
         let config = Config::default();
-        let initial_bins = cmp::max(INITIAL_BINS, config.bin_limit) as usize;
+        let initial_bins = cmp::min(INITIAL_BINS, config.bin_limit) as usize;
 
         Self {
             config,
