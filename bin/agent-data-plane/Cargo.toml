@@ -19,7 +19,7 @@ saluki-io = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "signal"] }
 tracing = { workspace = true }
-ubyte = { version = "0.10", default-features = false }
+ubyte = { version = "0.10", default-features = false, features = ["serde"] }
 
 [build-dependencies]
 chrono = { workspace = true }

@@ -194,8 +194,9 @@ impl MemoryBounds for DogStatsDConfiguration {
         // We allocate our I/O buffers up front so this is a requirement.
         let io_buffer_pool_size = self.buffer_count * self.buffer_size;
 
+        // TODO: Should we actually just make `firm` be a superset of `minimum`, where you only define things in `firm`
+        // that weren't captured by `minimum`? The duplication here certainly feels footgun-y.
         builder.minimum().with_fixed_amount(io_buffer_pool_size);
-
         builder.firm().with_fixed_amount(io_buffer_pool_size);
     }
 }
@@ -284,7 +285,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
                         listen_addr: listen_addr.to_string(),
                         origin_detection,
                         deserializer: DeserializerBuilder::new()
-                            .with_framer_and_decoder(get_framer(&listen_addr), DogstatsdCodec)
+                            .with_framer_and_decoder(get_framer(&listen_addr), DogstatsdCodec::default())
                             .with_buffer_pool(io_buffer_pool.clone())
                             .into_deserializer(stream),
                     };

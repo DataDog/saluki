@@ -101,16 +101,27 @@ impl MemoryBounds for AggregateConfiguration {
         // of N metrics per flush interval.
         let event_buffer_pool_size = EVENT_BUFFER_POOL_SIZE * self.context_limit * std::mem::size_of::<Event>();
 
+        // TODO: We take some liberties here but we roughly calculate the expected firm memory usage of a single context
+        // based on the limits we impose in the DogStatsD source. Those limits map to normal Datadog limits, both in
+        // terms of maximum tags per metric and the maximum length of a tag.
+        //
+        // Not all metrics will come from the DogStatsD source, but this will do for now.
+        const MAXIMUM_TAGS_COUNT: usize = 150;
+        const MAXIMUM_TAG_LENGTH: usize = 200;
+        let agg_context_tags_size = MAXIMUM_TAGS_COUNT * MAXIMUM_TAG_LENGTH;
+
         builder
             .firm()
             .with_fixed_amount(event_buffer_pool_size)
             // Account for our context limiter map, which is just a `HashSet`.
             .with_array::<AggregationContext>(self.context_limit)
+            .with_fixed_amount(self.context_limit * agg_context_tags_size)
             // Account for the actual aggregation state map, where we map contexts to the merged metric.
             //
             // TODO: We're not considering the fact there could be multiple buckets here since that's rare, but it's
             // something we may need to consider in the near term.
-            .with_map::<AggregationContext, (MetricValue, MetricMetadata)>(self.context_limit);
+            .with_map::<AggregationContext, (MetricValue, MetricMetadata)>(self.context_limit)
+            .with_fixed_amount(self.context_limit * agg_context_tags_size);
     }
 }
 

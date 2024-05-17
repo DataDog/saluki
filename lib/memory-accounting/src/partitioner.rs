@@ -1,6 +1,8 @@
 use std::{cmp, collections::HashMap};
 
-use crate::{MemoryGrant, VerifiedBounds};
+use snafu::{ResultExt as _, Snafu};
+
+use crate::{grant::GrantError, MemoryGrant, VerifiedBounds};
 
 /// Partitioning mode.
 pub enum PartitionMode {
@@ -26,12 +28,15 @@ pub enum PartitionMode {
 }
 
 /// Partitioner error.
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
+#[snafu(context(suffix(false)))]
 pub enum PartitionerError {
     /// A invalid grant was requested.
-    InvalidGrant { grant_amount: usize },
+    #[snafu(display("Failed to create grant of {} bytes: {}", grant_amount, source))]
+    InvalidGrant { grant_amount: usize, source: GrantError },
 
     /// Insufficient capacity was available when partitioning a grant for a specific component.
+    #[snafu(display("Insufficient capacity available for partitioning: {}", reason))]
     InsufficientCapacity { reason: String },
 }
 
@@ -76,7 +81,7 @@ impl MemoryPartitioner {
 
             available_bytes -= granted_bytes;
 
-            let grant = MemoryGrant::effective(granted_bytes).ok_or(PartitionerError::InvalidGrant {
+            let grant = MemoryGrant::effective(granted_bytes).context(InvalidGrant {
                 grant_amount: granted_bytes,
             })?;
 
@@ -130,7 +135,7 @@ impl MemoryPartitioner {
             // components before continuing.
             available_bytes -= granted_bytes;
 
-            let grant = MemoryGrant::effective(granted_bytes).ok_or(PartitionerError::InvalidGrant {
+            let grant = MemoryGrant::effective(granted_bytes).context(InvalidGrant {
                 grant_amount: granted_bytes,
             })?;
             partitioned.insert(component_name.to_string(), grant);

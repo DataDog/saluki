@@ -16,8 +16,8 @@ use saluki_components::{
         AggregateConfiguration, ChainedConfiguration, HostEnrichmentConfiguration, OriginEnrichmentConfiguration,
     },
 };
-use saluki_config::ConfigurationLoader;
-use saluki_error::{generic_error, GenericError};
+use saluki_config::{ConfigurationLoader, GenericConfiguration};
+use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{error, info};
 
 use saluki_app::{
@@ -25,7 +25,7 @@ use saluki_app::{
     metrics::initialize_metrics,
 };
 use saluki_core::topology::blueprint::TopologyBlueprint;
-use ubyte::ToByteUnit as _;
+use ubyte::{ByteUnit, ToByteUnit as _};
 
 use crate::env_provider::ADPEnvironmentProvider;
 
@@ -95,7 +95,7 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         .connect_component("enrich", ["dsd_agg", "internal_metrics_agg"])?
         .connect_component("dd_metrics_out", ["enrich"])?;
 
-    verify_memory_bounds(&blueprint)?;
+    verify_memory_bounds(&configuration, &blueprint)?;
 
     let built_topology = blueprint.build().await?;
     let running_topology = built_topology.spawn().await?;
@@ -114,15 +114,29 @@ async fn run(started: Instant) -> Result<(), GenericError> {
     running_topology.shutdown().await
 }
 
-fn verify_memory_bounds(blueprint: &TopologyBlueprint) -> Result<(), GenericError> {
-    // Verify our memory bounds with a fixed grant of 64MB and slop factor of 25%.
-    //
-    // TODO: Provide a way to pass this grant size in via configuration.
-    let initial_grant = MemoryGrant::with_slop_factor(64 * 1024 * 1024, 0.25)
-        .ok_or_else(|| generic_error!("failed to create initial memory grant"))?;
+fn verify_memory_bounds(
+    configuration: &GenericConfiguration, blueprint: &TopologyBlueprint,
+) -> Result<(), GenericError> {
+    let memory_limit = configuration
+        .try_get_typed::<ByteUnit>("memory_limit")
+        .error_context("Failed to get memory limimt setting.")?
+        .unwrap_or(64.mebibytes());
 
-    // TODO: We're passing in the blueprint directly but ideally this would push in each component individually that way
-    // the verifier can bubble up errors if one component in particular has invalid bounds, and so on.
+    let slop_factor = configuration
+        .try_get_typed::<f64>("memory_slop_factor")
+        .error_context("Failed to get memory slop factor setting.")?
+        .unwrap_or(0.25);
+
+    let initial_grant = MemoryGrant::with_slop_factor(memory_limit.as_u64() as usize, slop_factor)?;
+
+    // TODO: We're passing in the blueprint directly but ideally this would push in each component individually
+    // that way the verifier can bubble up errors if one component in particular has invalid bounds, and so on.
+    //
+    // Alternatively, maybe we allow the bounds builder to create components so that it's more of a hierarchy?
+    //
+    // Something like the topology blueprint would create each component, then call `MemoryBounds::calculate_bounds`
+    // with the component-specific builder, and those components could just do what they're already doing, _or_, if
+    // necessary, they could also themselves register subcomponents.
     let mut bounds_verifier = BoundsVerifier::from_grant(initial_grant);
     bounds_verifier.add_component("topology".to_string(), blueprint);
 
