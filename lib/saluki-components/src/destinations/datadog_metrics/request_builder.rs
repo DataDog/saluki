@@ -1,6 +1,7 @@
 use std::{io, time::Duration};
 
 use datadog_protos::metrics::{self as proto, Resource};
+use ddsketch_agent::Sketch;
 use http::{Method, Request, Uri};
 use protobuf::CodedOutputStream;
 use snafu::{ResultExt, Snafu};
@@ -119,7 +120,7 @@ where
         })
     }
 
-    pub async fn encode(&mut self, metric: Metric) -> Result<Option<Metric>, RequestBuilderError> {
+    pub async fn encode(&mut self, mut metric: Metric) -> Result<Option<Metric>, RequestBuilderError> {
         // Make sure this metric is valid for the endpoint this request builder is configured for.
         let endpoint = MetricsEndpoint::from_metric(&metric);
         if endpoint != self.endpoint {
@@ -133,7 +134,7 @@ where
         //
         // If not, we return the original metric, signaling to the caller that they need to flush the current request
         // payload before encoding additional metrics.
-        let encoded_metric = encode_single_metric(&metric);
+        let encoded_metric = encode_single_metric(&mut metric);
         encoded_metric.write(&mut self.scratch_buf)?;
 
         // TODO: Figure out if `ZlibEncoder::total_out` (and friends) actually track the number of bytes being produced
@@ -269,7 +270,7 @@ impl EncodedMetric {
     }
 }
 
-fn encode_single_metric(metric: &Metric) -> EncodedMetric {
+fn encode_single_metric(metric: &mut Metric) -> EncodedMetric {
     match &metric.value {
         MetricValue::Counter { .. }
         | MetricValue::Rate { .. }
@@ -357,7 +358,7 @@ fn encode_series_metric(metric: &Metric) -> proto::MetricSeries {
     series
 }
 
-fn encode_sketch_metric(metric: &Metric) -> proto::Sketch {
+fn encode_sketch_metric(metric: &mut Metric) -> proto::Sketch {
     // TODO: I wonder if it would be more efficient to keep a `proto::Sketch` around and just clear it before encoding a
     // sketch metric. We'd avoid a few allocations for things that involve `Vec<T>`, although we wouldn't save anything
     // on string fields, since we're still allocating owned copies to convert into `Chars`, and clearing the existing
@@ -394,7 +395,7 @@ fn encode_sketch_metric(metric: &Metric) -> proto::Sketch {
         ));
     }
 
-    let ddsketch = match &metric.value {
+    let ddsketch = match &mut metric.value {
         MetricValue::Distribution { sketch: ddsketch } => ddsketch,
         _ => unreachable!(),
     };

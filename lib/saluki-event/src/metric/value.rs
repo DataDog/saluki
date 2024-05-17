@@ -1,6 +1,6 @@
 use std::{collections::HashSet, fmt, time::Duration};
 
-use ddsketch_agent::DDSketch;
+use ddsketch_agent::{DDSketch, Sketch};
 
 #[derive(Clone, Debug)]
 pub enum MetricValue {
@@ -42,8 +42,8 @@ impl MetricValue {
             (Self::Set { values: a }, Self::Set { values: b }) => {
                 a.extend(b);
             }
-            (Self::Distribution { sketch: sketch_a }, Self::Distribution { sketch: sketch_b }) => {
-                sketch_a.merge(&sketch_b)
+            (Self::Distribution { sketch: sketch_a }, Self::Distribution { sketch: mut sketch_b }) => {
+                sketch_a.merge(&mut sketch_b)
             }
 
             // Just override with whatever the incoming value is.

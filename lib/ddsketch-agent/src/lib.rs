@@ -18,6 +18,10 @@ const MAX_KEY: i16 = UV_INF;
 
 const INITIAL_BINS: u16 = 128;
 const MAX_BIN_WIDTH: u16 = u16::MAX;
+const BUFFER_APPROX_MAX_BYTES: u16 = 256;
+/// Note this is not a hard limit. The underlying buffer is a Vec and will grow
+/// according to the stdlib implementation.
+const BUFFER_CAPACITY_LIMIT: u16 = BUFFER_APPROX_MAX_BYTES / 2;
 
 #[inline]
 fn log_gamma(gamma_ln: f64, v: f64) -> f64 {
@@ -171,6 +175,64 @@ pub struct Bucket {
     pub count: u64,
 }
 
+/// Operations that may be performed on a sketch.
+pub trait Sketch {
+    /// Whether or not this sketch is empty.
+    fn is_empty(&self) -> bool;
+
+    /// Number of samples currently represented by this sketch.
+    fn count(&self) -> u32;
+
+    /// Minimum value seen by this sketch.
+    ///
+    /// Returns `None` if the sketch is empty.
+    fn min(&self) -> Option<f64>;
+
+    /// Maximum value seen by this sketch.
+    ///
+    /// Returns `None` if the sketch is empty.
+    fn max(&self) -> Option<f64>;
+
+    /// Sum of all values seen by this sketch.
+    ///
+    /// Returns `None` if the sketch is empty.
+    fn sum(&self) -> Option<f64>;
+
+    /// Average value seen by this sketch.
+    ///
+    /// Returns `None` if the sketch is empty.
+    fn avg(&self) -> Option<f64>;
+
+    /// Clears the sketch, removing all bins and resetting all statistics.
+    fn clear(&mut self);
+
+    /// Inserts a single value into the sketch.
+    fn insert(&mut self, v: f64);
+
+    /// Inserts many values into the sketch.
+    fn insert_many(&mut self, vs: &[f64]);
+
+    /// Inserts a single value into the sketch `n` times.
+    fn insert_n(&mut self, v: f64, n: u32);
+
+    /// ## Errors
+    ///
+    /// Returns an error if a bucket size is greater that `u32::MAX`.
+    fn insert_interpolate_buckets(&mut self, buckets: Vec<Bucket>) -> Result<(), &'static str>;
+
+    /// Gets the value at a given quantile.
+    fn quantile(&mut self, q: f64) -> Option<f64>;
+
+    /// Merges another sketch into this sketch, without a loss of accuracy.
+    ///
+    /// All samples present in the other sketch will be correctly represented in this sketch, and summary statistics
+    /// such as the sum, average, count, min, and max, will represent the sum of samples from both sketches.
+    fn merge(&mut self, other: &mut Self);
+
+    /// Merges this sketch into the `Dogsketch` Protocol Buffers representation.
+    fn merge_to_dogsketch(&mut self, dogsketch: &mut Dogsketch);
+}
+
 /// [DDSketch][ddsketch] implementation based on the [Datadog Agent][ddagent].
 ///
 /// This implementation is subtly different from the open-source implementations of `DDSketch`, as Datadog made some
@@ -224,71 +286,6 @@ impl DDSketch {
     fn bins(&self) -> &[Bin] {
         &self.bins
     }
-
-    /// Whether or not this sketch is empty.
-    pub fn is_empty(&self) -> bool {
-        self.count == 0
-    }
-
-    /// Number of samples currently represented by this sketch.
-    pub fn count(&self) -> u32 {
-        self.count
-    }
-
-    /// Minimum value seen by this sketch.
-    ///
-    /// Returns `None` if the sketch is empty.
-    pub fn min(&self) -> Option<f64> {
-        if self.is_empty() {
-            None
-        } else {
-            Some(self.min)
-        }
-    }
-
-    /// Maximum value seen by this sketch.
-    ///
-    /// Returns `None` if the sketch is empty.
-    pub fn max(&self) -> Option<f64> {
-        if self.is_empty() {
-            None
-        } else {
-            Some(self.max)
-        }
-    }
-
-    /// Sum of all values seen by this sketch.
-    ///
-    /// Returns `None` if the sketch is empty.
-    pub fn sum(&self) -> Option<f64> {
-        if self.is_empty() {
-            None
-        } else {
-            Some(self.sum)
-        }
-    }
-
-    /// Average value seen by this sketch.
-    ///
-    /// Returns `None` if the sketch is empty.
-    pub fn avg(&self) -> Option<f64> {
-        if self.is_empty() {
-            None
-        } else {
-            Some(self.avg)
-        }
-    }
-
-    /// Clears the sketch, removing all bins and resetting all statistics.
-    pub fn clear(&mut self) {
-        self.count = 0;
-        self.min = f64::MAX;
-        self.max = f64::MIN;
-        self.avg = 0.0;
-        self.sum = 0.0;
-        self.bins.clear();
-    }
-
     fn adjust_basic_stats(&mut self, v: f64, n: u32) {
         if v < self.min {
             self.min = v;
@@ -426,36 +423,15 @@ impl DDSketch {
         self.bins = temp;
     }
 
-    /// Inserts a single value into the sketch.
-    pub fn insert(&mut self, v: f64) {
-        // TODO: This should return a result that makes sure we have enough room to actually add 1 more sample without
-        // hitting `self.config.max_count()`
-        self.adjust_basic_stats(v, 1);
-
-        let key = self.config.key(v);
-        self.insert_keys(vec![key]);
-    }
-
-    /// Inserts many values into the sketch.
-    pub fn insert_many(&mut self, vs: &[f64]) {
-        // TODO: This should return a result that makes sure we have enough room to actually add N more samples without
-        // hitting `self.config.max_count()`.
-        let mut keys = Vec::with_capacity(vs.len());
-        for v in vs {
-            self.adjust_basic_stats(*v, 1);
-            keys.push(self.config.key(*v));
-        }
-        self.insert_keys(keys);
-    }
-
-    /// Inserts a single value into the sketch `n` times.
-    pub fn insert_n(&mut self, v: f64, n: u32) {
-        // TODO: this should return a result that makes sure we have enough room to actually add N more samples without
-        // hitting `self.config.max_count()`
-        self.adjust_basic_stats(v, n);
-
-        let key = self.config.key(v);
-        self.insert_key_counts(vec![(key, n)]);
+    /// Adds a bin directly into the sketch.
+    ///
+    /// Used only for unit testing so that we can create a sketch with an exact layout, which allows testing around the
+    /// resulting bins when feeding in specific values, as well as generating explicitly bad layouts for testing.
+    #[allow(dead_code)]
+    pub(crate) fn insert_raw_bin(&mut self, k: i16, n: u16) {
+        let v = self.config.bin_lower_bound(k);
+        self.adjust_basic_stats(v, u32::from(n));
+        self.bins.push(Bin { k, n });
     }
 
     fn insert_interpolate_bucket(&mut self, lower: f64, upper: f64, count: u32) {
@@ -517,11 +493,88 @@ impl DDSketch {
 
         self.insert_key_counts(key_counts);
     }
+}
 
-    /// ## Errors
-    ///
-    /// Returns an error if a bucket size is greater that `u32::MAX`.
-    pub fn insert_interpolate_buckets(&mut self, mut buckets: Vec<Bucket>) -> Result<(), &'static str> {
+impl Sketch for DDSketch {
+    fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    fn count(&self) -> u32 {
+        self.count
+    }
+
+    fn min(&self) -> Option<f64> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(self.min)
+        }
+    }
+
+    fn max(&self) -> Option<f64> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(self.max)
+        }
+    }
+
+    fn sum(&self) -> Option<f64> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(self.sum)
+        }
+    }
+
+    fn avg(&self) -> Option<f64> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(self.avg)
+        }
+    }
+
+    fn clear(&mut self) {
+        self.count = 0;
+        self.min = f64::MAX;
+        self.max = f64::MIN;
+        self.avg = 0.0;
+        self.sum = 0.0;
+        self.bins.clear();
+    }
+
+    fn insert(&mut self, v: f64) {
+        // TODO: This should return a result that makes sure we have enough room to actually add 1 more sample without
+        // hitting `self.config.max_count()`
+        self.adjust_basic_stats(v, 1);
+
+        let key = self.config.key(v);
+        self.insert_keys(vec![key]);
+    }
+
+    fn insert_many(&mut self, vs: &[f64]) {
+        // TODO: This should return a result that makes sure we have enough room to actually add N more samples without
+        // hitting `self.config.max_count()`.
+        let mut keys = Vec::with_capacity(vs.len());
+        for v in vs {
+            self.adjust_basic_stats(*v, 1);
+            keys.push(self.config.key(*v));
+        }
+        self.insert_keys(keys);
+    }
+
+    fn insert_n(&mut self, v: f64, n: u32) {
+        // TODO: this should return a result that makes sure we have enough room to actually add N more samples without
+        // hitting `self.config.max_count()`
+        self.adjust_basic_stats(v, n);
+
+        let key = self.config.key(v);
+        self.insert_key_counts(vec![(key, n)]);
+    }
+
+    fn insert_interpolate_buckets(&mut self, mut buckets: Vec<Bucket>) -> Result<(), &'static str> {
         // Buckets need to be sorted from lowest to highest so that we can properly calculate the rolling lower/upper
         // bounds.
         buckets.sort_by(|a, b| {
@@ -559,20 +612,8 @@ impl DDSketch {
         Ok(())
     }
 
-    /// Adds a bin directly into the sketch.
-    ///
-    /// Used only for unit testing so that we can create a sketch with an exact layout, which allows testing around the
-    /// resulting bins when feeding in specific values, as well as generating explicitly bad layouts for testing.
-    #[allow(dead_code)]
-    pub(crate) fn insert_raw_bin(&mut self, k: i16, n: u16) {
-        let v = self.config.bin_lower_bound(k);
-        self.adjust_basic_stats(v, u32::from(n));
-        self.bins.push(Bin { k, n });
-    }
-
-    /// Gets the value at a given quantile.
-    pub fn quantile(&self, q: f64) -> Option<f64> {
-        if self.count == 0 {
+    fn quantile(&mut self, q: f64) -> Option<f64> {
+        if self.is_empty() {
             return None;
         }
 
@@ -611,11 +652,7 @@ impl DDSketch {
         estimated.map(|v| v.clamp(self.min, self.max)).or(Some(f64::NAN))
     }
 
-    /// Merges another sketch into this sketch, without a loss of accuracy.
-    ///
-    /// All samples present in the other sketch will be correctly represented in this sketch, and summary statistics
-    /// such as the sum, average, count, min, and max, will represent the sum of samples from both sketches.
-    pub fn merge(&mut self, other: &DDSketch) {
+    fn merge(&mut self, other: &mut Self) {
         // Merge the basic statistics together.
         self.count += other.count;
         if other.max > self.max {
@@ -657,8 +694,7 @@ impl DDSketch {
         self.bins = temp;
     }
 
-    /// Merges this sketch into the `Dogsketch` Protocol Buffers representation.
-    pub fn merge_to_dogsketch(&self, dogsketch: &mut Dogsketch) {
+    fn merge_to_dogsketch(&mut self, dogsketch: &mut Dogsketch) {
         dogsketch.set_cnt(i64::from(self.count));
         dogsketch.set_min(self.min);
         dogsketch.set_max(self.max);
@@ -714,6 +750,150 @@ impl Default for DDSketch {
 }
 
 impl Eq for DDSketch {}
+
+/// A [`Sketch`] implementation that buffers keys before inserting them into the
+/// sketch. Drop-in compatible with [`DDSketch`]. Flushing is handled
+/// transparently.
+#[derive(Clone, Debug)]
+pub struct BufferedDDSketch {
+    sketch: DDSketch,
+    buffer: Vec<i16>,
+}
+
+impl BufferedDDSketch {
+    fn flush(&mut self) {
+        if !self.buffer.is_empty() {
+            self.sketch.insert_keys(self.buffer.drain(..).collect());
+            self.buffer.truncate(BUFFER_CAPACITY_LIMIT.into());
+        }
+    }
+}
+
+impl Sketch for BufferedDDSketch {
+    fn is_empty(&self) -> bool {
+        self.buffer.is_empty() && self.sketch.is_empty()
+    }
+
+    fn count(&self) -> u32 {
+        self.sketch.count()
+    }
+
+    fn min(&self) -> Option<f64> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(self.sketch.min)
+        }
+    }
+
+    fn max(&self) -> Option<f64> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(self.sketch.max)
+        }
+    }
+
+    fn sum(&self) -> Option<f64> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(self.sketch.sum)
+        }
+    }
+
+    fn avg(&self) -> Option<f64> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(self.sketch.avg)
+        }
+    }
+
+    fn clear(&mut self) {
+        self.buffer.clear();
+        self.sketch.clear();
+    }
+
+    fn insert(&mut self, v: f64) {
+        self.sketch.adjust_basic_stats(v, 1);
+
+        let key = self.sketch.config.key(v);
+        self.buffer.push(key);
+
+        if self.buffer.len() >= BUFFER_CAPACITY_LIMIT.into() {
+            self.flush();
+        }
+    }
+
+    fn insert_many(&mut self, vs: &[f64]) {
+        let capacity_limit: usize = BUFFER_CAPACITY_LIMIT.into();
+        let capacity = capacity_limit - self.buffer.len();
+
+        // Insert up to the buffer's remaining capacity
+        let first_chunk = &vs[0..capacity];
+        for v in first_chunk {
+            self.sketch.adjust_basic_stats(*v, 1);
+            let key = self.sketch.config.key(*v);
+            self.buffer.push(key);
+        }
+        if self.buffer.len() >= capacity_limit {
+            self.flush();
+        }
+
+        // Process any remaining points in buffer-sized chunks
+        let following_chunks = vs[capacity..].chunks(capacity_limit);
+        for chunk in following_chunks {
+            for v in chunk {
+                self.sketch.adjust_basic_stats(*v, 1);
+                let key = self.sketch.config.key(*v);
+                self.buffer.push(key);
+            }
+
+            // Note the last chunk is flushed even if the buffer isn't full. This is done for simplicity.
+            self.flush();
+        }
+    }
+
+    fn insert_n(&mut self, v: f64, n: u32) {
+        // Pass through without buffering. Bulk inserts have a fast-path in the
+        // underlying implementation.
+        self.sketch.insert_n(v, n);
+    }
+
+    fn insert_interpolate_buckets(&mut self, buckets: Vec<Bucket>) -> Result<(), &'static str> {
+        self.sketch.insert_interpolate_buckets(buckets)
+    }
+
+    fn quantile(&mut self, q: f64) -> Option<f64> {
+        if self.is_empty() {
+            return None;
+        }
+
+        self.flush();
+        self.sketch.quantile(q)
+    }
+
+    fn merge(&mut self, other: &mut Self) {
+        self.flush();
+        other.flush();
+        self.sketch.merge(&mut other.sketch);
+    }
+
+    fn merge_to_dogsketch(&mut self, dogsketch: &mut Dogsketch) {
+        self.flush();
+        self.sketch.merge_to_dogsketch(dogsketch);
+    }
+}
+
+impl Default for BufferedDDSketch {
+    fn default() -> Self {
+        Self {
+            sketch: DDSketch::default(),
+            buffer: Vec::default(),
+        }
+    }
+}
 
 fn float_eq(l_value: f64, r_value: f64) -> bool {
     use float_eq::FloatEq as _;
@@ -810,6 +990,8 @@ mod tests {
     use ordered_float::OrderedFloat;
     use rand::thread_rng;
     use rand_distr::{Distribution, Pareto};
+
+    use crate::Sketch;
 
     use super::{Bucket, Config, DDSketch, AGENT_DEFAULT_EPS, MAX_KEY};
 
@@ -965,7 +1147,7 @@ mod tests {
 
         all_values_many.insert_many(&values);
 
-        odd_values.merge(&even_values);
+        odd_values.merge(&mut even_values);
         let merged_values = odd_values;
 
         // Number of bins should be equal to the number of values we inserted.
@@ -977,7 +1159,7 @@ mod tests {
         assert_eq!(high_end, -low_end);
 
         let target_bin_count = all_values.bin_count();
-        for sketch in &[all_values, all_values_many, merged_values] {
+        for sketch in &mut [all_values, all_values_many, merged_values] {
             assert_eq!(sketch.quantile(0.5), Some(0.0));
             assert_eq!(sketch.quantile(0.0), Some(-50.0));
             assert_eq!(sketch.quantile(1.0), Some(50.0));
