@@ -754,7 +754,7 @@ impl Eq for DDSketch {}
 /// A [`Sketch`] implementation that buffers keys before inserting them into the
 /// sketch. Drop-in compatible with [`DDSketch`]. Flushing is handled
 /// transparently.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct BufferedDDSketch {
     sketch: DDSketch,
     buffer: Vec<i16>,
@@ -859,15 +859,6 @@ impl Sketch for BufferedDDSketch {
     fn merge_to_dogsketch(&mut self, dogsketch: &mut Dogsketch) {
         self.flush();
         self.sketch.merge_to_dogsketch(dogsketch);
-    }
-}
-
-impl Default for BufferedDDSketch {
-    fn default() -> Self {
-        Self {
-            sketch: DDSketch::default(),
-            buffer: Vec::default(),
-        }
     }
 }
 
