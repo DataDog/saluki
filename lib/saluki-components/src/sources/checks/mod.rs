@@ -22,11 +22,6 @@ use std::{fmt::Display, time::Duration};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, error, info};
 
-use queues::*;
-
-use once_cell::sync::Lazy;
-use std::sync::Mutex;
-
 mod aggregator;
 mod datadog_agent;
 mod listener;
