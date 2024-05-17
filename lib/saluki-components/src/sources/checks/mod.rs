@@ -121,7 +121,6 @@ struct YamlCheckInstance {
 }
 
 // checks configuration
-
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 struct CheckInstanceConfiguration {
     min_collection_interval_ms: u32,

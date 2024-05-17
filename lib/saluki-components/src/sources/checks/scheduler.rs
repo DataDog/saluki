@@ -8,13 +8,11 @@ use pyo3::types::PyList;
 use pyo3::types::PyType;
 use saluki_error::{generic_error, GenericError};
 
-struct CheckHandle {
-    id: Py<PyAny>,
-}
+struct CheckHandle(Py<PyAny>);
 
 impl Clone for CheckHandle {
     fn clone(&self) -> Self {
-        Self { id: self.id.clone() }
+        Self(self.0.clone())
     }
 }
 
@@ -112,9 +110,7 @@ impl CheckScheduler {
                 check_source_path.display(),
                 check_key
             );
-            Ok(CheckHandle {
-                id: check_value.as_unbound().clone(),
-            })
+            Ok(CheckHandle(check_value.as_unbound().clone()))
         })
     }
 
@@ -162,8 +158,7 @@ impl CheckScheduler {
                             .set_item("instances", instance_list)
                             .expect("could not set instance list");
 
-                        let check_ref = &check_handle.id;
-                        let pycheck = match check_ref.call_bound(py, (), Some(&kwargs)) {
+                        let pycheck = match check_handle.0.call_bound(py, (), Some(&kwargs)) {
                             Ok(c) => c,
                             Err(e) => {
                                 let traceback = e
@@ -186,14 +181,13 @@ impl CheckScheduler {
         Ok(())
     }
 
-    pub fn stop_check(&self, check: CheckRequest) {
+    pub fn stop_check(&mut self, check: CheckRequest) {
         info!("Deleting check request {check}");
-        if let Some((check_handle, running)) = self.running.get(&check.source) {
+        if let Some((check_handle, running)) = self.running.remove(&check.source) {
             for handle in running.iter() {
                 handle.abort();
             }
+            drop(check_handle); // release the reference to this check
         }
-        // todo delete stuff out of the containers
-        // and stop/release the class if its not being used
     }
 }
