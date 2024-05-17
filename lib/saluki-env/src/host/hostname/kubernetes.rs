@@ -11,9 +11,9 @@ use super::HostnameProvider;
 /// This provider will only work when running in a Kubernetes environment. The hostname returned will be the name of the
 /// node where this provider is running.
 ///
-/// Will attempt to read API credentials and connection information from the local kubeconfig first (specified either by
-/// `$KUBECONFIG` or the default location `~/.kube/config`), and then from the in-cluster service environment variables
-/// (e.g. `KUBERNETES_SERVICE_HOST`).
+/// Will attempt to read API credentials and connection information from the in-cluster service environment variables
+/// (e.g. `KUBERNETES_SERVICE_HOST`). If these cannot be found, we assume that we're not running within Kubernetes, and
+/// the provider will not return a hostname.
 pub struct KubernetesHostnameProvider;
 
 #[async_trait]
