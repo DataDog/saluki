@@ -550,8 +550,8 @@ mod tests {
 
         let cases = [3, 2, 1];
         for max_tag_count in cases {
-            let (remaining, result) = parse_dogstatsd(input.as_bytes(), max_tag_count, usize::MAX)
-                .expect("should not fail to parse");
+            let (remaining, result) =
+                parse_dogstatsd(input.as_bytes(), max_tag_count, usize::MAX).expect("should not fail to parse");
 
             assert!(remaining.is_empty());
             match result {
@@ -565,7 +565,24 @@ mod tests {
 
     #[test]
     fn respects_maximum_tag_length() {
-        todo!()
+        let input = "foo:1|c|#tag1:short,tag2:medium,tag3:longlong";
+
+        let cases = [6, 5, 4];
+        for max_tag_length in cases {
+            let (remaining, result) =
+                parse_dogstatsd(input.as_bytes(), usize::MAX, max_tag_length).expect("should not fail to parse");
+
+            assert!(remaining.is_empty());
+            match result {
+                OneOrMany::Single(Event::Metric(metric)) => {
+                    for tag in metric.context.tags.into_iter() {
+                        let tag_string = tag.into_string();
+                        assert!(tag_string.len() <= max_tag_length);
+                    }
+                }
+                _ => unreachable!("should only have a single metric"),
+            }
+        }
     }
 
     proptest! {
