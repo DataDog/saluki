@@ -23,7 +23,7 @@ fn insert_many_and_serialize<T: Sketch + Default>(ns: &[f64]) {
 }
 
 fn bench_sketch<T: Sketch + Default>(c: &mut Criterion) {
-    let sizes = [1, 2, 5, 10, 100, 1_000, 10_000];
+    let sizes = [1, 10, 100, 1_000, 10_000];
 
     // Generate a set of samples that roughly correspond to the latency of a
     // typical web service, in microseconds, with a gamma distribution: big hump
