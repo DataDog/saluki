@@ -119,13 +119,12 @@ fn verify_memory_bounds(
 ) -> Result<(), GenericError> {
     let memory_limit = match configuration
         .try_get_typed::<ByteUnit>("memory_limit")
-        .error_context("Failed to get memory limit setting.")?
+        .error_context("Failed to parse memory limit setting.")?
     {
         Some(limit) => limit,
         None => {
-            let default_limit = 64.mebibytes();
-            info!("No memory limit set. Defaulting to {}.", default_limit);
-            default_limit
+            info!("No memory limit set for the process. Skipping memory bounds verification.");
+            return Ok(());
         }
     };
 
