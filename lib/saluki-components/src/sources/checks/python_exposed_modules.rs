@@ -1,89 +1,5 @@
 use super::*;
 use pyo3::prelude::*;
-use saluki_env::time::get_unix_timestamp;
-use saluki_event::{metric::*, Event};
-use tracing::warn;
-
-#[derive(Clone, Copy)]
-pub enum PyMetricType {
-    Gauge = 0,
-    Rate,
-    Count,
-    MonotonicCount,
-    Counter,
-    Histogram,
-    Historate,
-}
-
-impl From<i32> for PyMetricType {
-    fn from(v: i32) -> Self {
-        match v {
-            0 => PyMetricType::Gauge,
-            1 => PyMetricType::Rate,
-            2 => PyMetricType::Count,
-            3 => PyMetricType::MonotonicCount,
-            4 => PyMetricType::Counter,
-            5 => PyMetricType::Histogram,
-            6 => PyMetricType::Historate,
-            _ => {
-                warn!("Unknown metric type: {}, considering it as a gauge", v);
-                PyMetricType::Gauge
-            }
-        }
-    }
-}
-
-#[derive(Debug, Snafu)]
-#[snafu(context(suffix(false)))]
-pub enum AggregatorError {
-    UnsupportedType {},
-}
-
-/// CheckMetric are used to transmit metrics from python check execution results
-/// to forward in the saluki's pipeline.
-pub struct CheckMetric {
-    name: String,
-    metric_type: PyMetricType,
-    value: f64,
-    tags: Vec<String>,
-}
-
-impl TryInto<Event> for CheckMetric {
-    type Error = AggregatorError;
-
-    fn try_into(self) -> Result<Event, Self::Error> {
-        let tags: MetricTags = self.tags.into();
-
-        let context = MetricContext { name: self.name, tags };
-        let metadata = MetricMetadata::from_timestamp(get_unix_timestamp());
-
-        match self.metric_type {
-            PyMetricType::Gauge => Ok(saluki_event::Event::Metric(Metric::from_parts(
-                context,
-                MetricValue::Gauge { value: self.value },
-                metadata,
-            ))),
-            PyMetricType::Counter => Ok(saluki_event::Event::Metric(Metric::from_parts(
-                context,
-                MetricValue::Counter { value: self.value },
-                metadata,
-            ))),
-            // TODO(remy): rest of the types
-            _ => Err(AggregatorError::UnsupportedType {}),
-        }
-    }
-}
-
-impl Clone for CheckMetric {
-    fn clone(&self) -> Self {
-        Self {
-            name: self.name.clone(),
-            metric_type: self.metric_type,
-            value: self.value,
-            tags: self.tags.clone(),
-        }
-    }
-}
 
 /// submit_metric is called from the AgentCheck implementation when a check submits a metric.
 /// Python signature:
@@ -122,8 +38,8 @@ pub(crate) fn submit_metric(
             Err(e) => error!("Failed to extract SUBMISSION_QUEUE: {}", e),
         },
         Err(e) => {
-            // Theoretically possible early in the init, but not should be basically impossible
-            error!("SUBMISSION_QUEUE not found: {}", e);
+            // This is a fatal error and should be impossible to hit this
+            unreachable!("SUBMISSION_QUEUE not found: {}", e);
         }
     };
 }

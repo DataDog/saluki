@@ -9,8 +9,9 @@ use saluki_core::{
         OutputDefinition,
     },
 };
+use saluki_env::time::get_unix_timestamp;
 use saluki_error::GenericError;
-use saluki_event::{DataType, Event};
+use saluki_event::{metric::*, DataType, Event};
 use serde::Deserialize;
 use snafu::Snafu;
 use std::{
@@ -20,7 +21,7 @@ use std::{
 use std::{collections::HashSet, io};
 use std::{fmt::Display, time::Duration};
 use tokio::{select, sync::mpsc};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 mod listener;
 mod python_exposed_modules;
@@ -289,8 +290,10 @@ async fn process_listener(source_context: SourceContext, listener_context: liste
 
     let stream_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
-    let (check_metrics_tx, mut check_metrics_rx) = mpsc::channel(10_000);
-    let mut scheduler = scheduler::CheckScheduler::new(check_metrics_tx); // todo add shutdown handle
+    // Note: This model has a single CheckScheduler per listener
+    // which is likely not the design we want long term
+    let (check_metrics_tx, mut check_metrics_rx) = mpsc::channel(10_000_000);
+    let mut scheduler = scheduler::CheckScheduler::new(check_metrics_tx);
 
     info!("Check listener started.");
     let (mut new_entities, mut deleted_entities) = listener.subscribe();
@@ -369,4 +372,85 @@ fn find_sibling_py_file(check_yaml_path: &Path) -> Result<PathBuf, Error> {
 
     // TODO(remy): look for `check_name.d` directory instead.
     Ok(check_rel_filepath)
+}
+
+#[derive(Clone, Copy)]
+pub enum PyMetricType {
+    Gauge = 0,
+    Rate,
+    Count,
+    MonotonicCount,
+    Counter,
+    Histogram,
+    Historate,
+}
+
+impl From<i32> for PyMetricType {
+    fn from(v: i32) -> Self {
+        match v {
+            0 => PyMetricType::Gauge,
+            1 => PyMetricType::Rate,
+            2 => PyMetricType::Count,
+            3 => PyMetricType::MonotonicCount,
+            4 => PyMetricType::Counter,
+            5 => PyMetricType::Histogram,
+            6 => PyMetricType::Historate,
+            _ => {
+                warn!("Unknown metric type: {}, considering it as a gauge", v);
+                PyMetricType::Gauge
+            }
+        }
+    }
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(context(suffix(false)))]
+pub enum AggregatorError {
+    UnsupportedType {},
+}
+
+/// CheckMetric are used to transmit metrics from python check execution results
+/// to forward in the saluki's pipeline.
+pub struct CheckMetric {
+    name: String,
+    metric_type: PyMetricType,
+    value: f64,
+    tags: Vec<String>,
+}
+
+impl TryInto<Event> for CheckMetric {
+    type Error = AggregatorError;
+
+    fn try_into(self) -> Result<Event, Self::Error> {
+        let tags: MetricTags = self.tags.into();
+
+        let context = MetricContext { name: self.name, tags };
+        let metadata = MetricMetadata::from_timestamp(get_unix_timestamp());
+
+        match self.metric_type {
+            PyMetricType::Gauge => Ok(saluki_event::Event::Metric(Metric::from_parts(
+                context,
+                MetricValue::Gauge { value: self.value },
+                metadata,
+            ))),
+            PyMetricType::Counter => Ok(saluki_event::Event::Metric(Metric::from_parts(
+                context,
+                MetricValue::Counter { value: self.value },
+                metadata,
+            ))),
+            // TODO(remy): rest of the types
+            _ => Err(AggregatorError::UnsupportedType {}),
+        }
+    }
+}
+
+impl Clone for CheckMetric {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            metric_type: self.metric_type,
+            value: self.value,
+            tags: self.tags.clone(),
+        }
+    }
 }

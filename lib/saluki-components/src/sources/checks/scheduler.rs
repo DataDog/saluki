@@ -1,6 +1,5 @@
 use super::python_exposed_modules::aggregator as pyagg;
 use super::python_exposed_modules::datadog_agent;
-use super::python_exposed_modules::CheckMetric;
 use super::*;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::prelude::*;
@@ -33,8 +32,8 @@ impl CheckScheduler {
 
         pyo3::prepare_freethreaded_python();
 
-        // Sanity test for python environment before executing
         pyo3::Python::with_gil(|py| {
+            // Initialize the aggregator module with the submission queue
             match py.import_bound("aggregator") {
                 Ok(m) => {
                     let sender_holder = Bound::new(
@@ -55,6 +54,9 @@ impl CheckScheduler {
                     return; // fatal
                 }
             };
+
+            // Test to ensure expected module is available
+            // fail early, it is fatal if these are not present
             let modd = match py.import_bound("datadog_checks.checks") {
                 Ok(m) => m,
                 Err(e) => {
@@ -83,8 +85,8 @@ impl CheckScheduler {
         }
     }
 
-    // compiles the python source code and instantiates it (??) into the VM
-    // returns an opaque handle to the check
+    // See `CheckRequest::to_runnable_request` for more TODO items here
+    // Returns an opaque handle to the python class implementing the class
     fn register_check(&mut self, check_source_path: PathBuf) -> Result<CheckHandle, GenericError> {
         let py_source = std::fs::read_to_string(&check_source_path).unwrap();
 
@@ -201,7 +203,7 @@ impl CheckScheduler {
                             .extract(py)
                             .expect("Can't read the string result from the check execution");
                         // TODO(remy): turn this into debug log level later on
-                        info!("Check execution error return: {:?}", s);
+                        debug!("Check execution returned {:?}", s);
                     })
                 }
             });
