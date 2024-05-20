@@ -1,3 +1,5 @@
+use std::fs;
+
 use super::python_exposed_modules::aggregator as pyagg;
 use super::python_exposed_modules::datadog_agent;
 use super::*;
@@ -23,16 +25,27 @@ pub struct SenderHolder {
 
 pub struct CheckScheduler {
     running: HashMap<CheckSource, (CheckHandle, Vec<tokio::task::JoinHandle<()>>)>,
+    agent_check_base_class: Py<PyAny>,
 }
 
 impl CheckScheduler {
-    pub fn new(send_check_metrics: mpsc::Sender<CheckMetric>) -> Self {
+    pub fn new(send_check_metrics: mpsc::Sender<CheckMetric>) -> Result<Self, GenericError> {
         pyo3::append_to_inittab!(datadog_agent);
         pyo3::append_to_inittab!(pyagg);
 
         pyo3::prepare_freethreaded_python();
 
-        pyo3::Python::with_gil(|py| {
+        let mut agent_check_base_class = None;
+
+        pyo3::Python::with_gil(|py| -> Result<(), GenericError> {
+            let syspath: &PyList = py.import_bound("sys")?.getattr("path")?.extract()?;
+            // Mimicing the python path setup from the Agent
+            // https://github.com/DataDog/datadog-agent/blob/b039ea43d3168f521e8ea3e8356a0e84eec170d1/cmd/agent/common/common.go#L24-L33
+            syspath.insert(0, Path::new("./dist/"))?; // path.GetDistPath()
+            syspath.insert(0, Path::new("./dist/checks.d/"))?; // custom checks in checks.d subdir
+                                                               // syspath.insert(0, config.get('additional_checksd'))?; // config option not supported yet
+            println!("Import path is: {:?}", syspath);
+
             // Initialize the aggregator module with the submission queue
             match py.import_bound("aggregator") {
                 Ok(m) => {
@@ -51,7 +64,7 @@ impl CheckScheduler {
                     if let Some(traceback) = e.traceback_bound(py) {
                         error!("Traceback: {}", traceback.format().expect("Could format traceback"));
                     }
-                    return; // fatal
+                    return Err(generic_error!("Could not import 'aggregator' module"));
                 }
             };
 
@@ -64,32 +77,101 @@ impl CheckScheduler {
                         .traceback_bound(py)
                         .expect("Traceback should be present on this error");
                     error!(%e, "Could not import datadog_checks module. traceback: {}", traceback.format().expect("Could format traceback"));
-                    return; // fatal
+                    return Err(generic_error!("Could not import 'datadog_checks' module"));
                 }
             };
-            let class = match modd.getattr("AgentCheck") {
-                Ok(c) => c,
+            match modd.getattr("AgentCheck") {
+                Ok(c) => {
+                    agent_check_base_class = Some(c.unbind());
+                }
                 Err(e) => {
                     let traceback = e
                         .traceback_bound(py)
                         .expect("Traceback should be present on this error");
                     error!(%e, "Could not get AgentCheck class. traceback: {}", traceback.format().expect("Could format traceback"));
-                    return; // fatal
+                    return Err(generic_error!("Could not find 'AgentCheck' class"));
                 }
             };
-            info!(%class, %modd, "Was able to import AgentCheck!");
-        });
+            info!("Found all pre-requisites for Agent python check execution");
 
-        Self {
+            Ok(())
+        })?;
+
+        Ok(Self {
             running: HashMap::new(),
-        }
+            agent_check_base_class: agent_check_base_class.expect("AgentCheck class should be present"),
+        })
     }
 
     // See `CheckRequest::to_runnable_request` for more TODO items here
-    // Returns an opaque handle to the python class implementing the class
-    fn register_check(&mut self, check_source_path: PathBuf) -> Result<CheckHandle, GenericError> {
-        let py_source = std::fs::read_to_string(&check_source_path).unwrap();
+    // Returns an opaque handle to the python class implementing the check
+    fn register_check(&mut self, check: &RunnableCheckRequest) -> Result<CheckHandle, GenericError> {
+        let check_name = &check.check_name;
+        // if there is a specific source, then this will populate into locals and can be found
+        if let Some(py_source_path) = &check.check_source_code {
+            let py_source = fs::read_to_string(py_source_path)
+                .map_err(|e| generic_error!("Could not read check source file: {}", e))?;
+            return self.register_check_with_source(py_source);
+        }
+        // if there is no specific source, then we need to
+        // import module
+        // findSubclassOf(AgentCheck, module)
+        //  - use Dir to find all items in module
+        //  - Get item
+        //  - Check if it is a subclass of AgentCheck
+        for import_str in &[&check.check_name, &format!("datadog_checks.{}", check.check_name)] {
+            match self.register_check_from_imports(import_str) {
+                Ok(handle) => return Ok(handle),
+                Err(e) => {
+                    error!(%e, "Could not find check {check_name} from imports");
+                }
+            }
+        }
+        Err(generic_error!("Could not find class for check {check_name}"))
+    }
 
+    fn register_check_from_imports(&mut self, import_path: &str) -> Result<CheckHandle, GenericError> {
+        pyo3::Python::with_gil(|py| {
+            debug!("Imported '{import_path}'");
+            let module = py.import_bound(import_path)?;
+            let base_class = self.agent_check_base_class.bind(py);
+
+            let checks = module
+                .dict()
+                .iter()
+                .filter(|(name, value)| {
+                    debug!(
+                        "Found a thing: {value}, with type {t}",
+                        t = value.get_type().name().unwrap_or(std::borrow::Cow::Borrowed("unknown"))
+                    );
+                    let class_bound: &Bound<PyType> = match value.downcast() {
+                        Ok(c) => c,
+                        Err(_) => return false,
+                    };
+                    debug!("Found a class: {class_bound}");
+                    if class_bound.is(base_class) {
+                        // skip the base class
+                        return false;
+                    }
+                    if let Ok(true) = class_bound.is_subclass(base_class) {
+                        return true;
+                    }
+                    false
+                })
+                .collect::<Vec<_>>();
+            if checks.is_empty() {
+                return Err(generic_error!("No checks found in source"));
+            }
+            if checks.len() >= 2 {
+                return Err(generic_error!("Multiple checks found in source"));
+            }
+            let (check_key, check_value) = &checks[0];
+            info!("Found base class {check_key} for check {import_path} {check_value:?}");
+            Ok(CheckHandle(check_value.as_unbound().clone()))
+        })
+    }
+
+    fn register_check_with_source(&mut self, py_source: String) -> Result<CheckHandle, GenericError> {
         pyo3::Python::with_gil(|py| {
             let locals = pyo3::types::PyDict::new_bound(py);
 
@@ -103,19 +185,16 @@ impl CheckScheduler {
                     return Err(generic_error!("Could not compile check source"));
                 }
             };
-            let base_class = locals
-                .get_item("AgentCheck")
-                .expect("Could not get 'AgentCheck' class")
-                .unwrap();
+            let base_class = self.agent_check_base_class.bind(py);
             let checks = locals
                 .iter()
                 .filter(|(_, value)| {
                     if let Ok(class_obj) = value.downcast::<PyType>() {
-                        if class_obj.is(&base_class) {
+                        if class_obj.is(base_class) {
                             // skip the base class
                             return false;
                         }
-                        if let Ok(true) = class_obj.is_subclass(&base_class) {
+                        if let Ok(true) = class_obj.is_subclass(base_class) {
                             return true;
                         }
                         false
@@ -132,11 +211,7 @@ impl CheckScheduler {
                 return Err(generic_error!("Multiple checks found in source"));
             }
             let (check_key, check_value) = &checks[0];
-            info!(
-                "For check source {}, found check: {}",
-                check_source_path.display(),
-                check_key
-            );
+            info!("Found check {check_key} from source: {py_source}");
             Ok(CheckHandle(check_value.as_unbound().clone()))
         })
     }
@@ -150,7 +225,12 @@ impl CheckScheduler {
         // registry should probably queue off of checkhandle
         //let current = self.running.entry(check.check_request.source.clone()).or_default();
 
-        let check_handle = self.register_check(check.check_source_code.clone())?;
+        let check_handle = self.register_check(&check)?;
+        // TODO there may be an 'init' step needed after loading the check
+        // See `rtloader/three/three.cpp::getCheck` for calls:
+        // - `AgentCheck.load_config(init_config)`
+        // - `AgentCheck.load_config(instance)`
+        // and set attr 'check_id' equal to the check id
         let running_entry = self
             .running
             .entry(check.check_request.source)

@@ -44,7 +44,7 @@ All remaining crates are part of Saluki itself, and all have a name with the pre
 
 ### Saluki Components
 #### Checks
-Experimental support for python checks is present if there is a local `./conf.d`
+Experimental support for python checks is present if there is a local `./dist/conf.d`
 folder present with a valid python check and yaml config file with the same
 name.
 

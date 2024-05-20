@@ -55,7 +55,7 @@ pub struct ChecksConfiguration {
 }
 
 fn default_check_config_dir() -> String {
-    "./conf.d".to_string()
+    "./dist/conf.d".to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -87,11 +87,17 @@ impl CheckRequest {
         // or something like that
         // That does imply that the `run` of a `runnablecheckrequest` can fail, but that is already the case
         // https://github.com/DataDog/datadog-agent/blob/e8de27352093e0d5f828cf86988d186a3501b525/pkg/collector/python/loader.go#L110-L112
-        let check_source_code = match &self.source {
-            CheckSource::Yaml(path) => find_sibling_py_file(path)?,
+        let name = if let Some(name) = &self.name {
+            name.clone()
+        } else {
+            self.source.to_check_name()?
+        };
+        let check_source_code: Option<PathBuf> = match &self.source {
+            CheckSource::Yaml(path) => find_sibling_py_file(path),
         };
         Ok(RunnableCheckRequest {
             check_request: self.clone(),
+            check_name: name,
             check_source_code,
         })
     }
@@ -99,17 +105,13 @@ impl CheckRequest {
 
 struct RunnableCheckRequest {
     check_request: CheckRequest,
-    check_source_code: PathBuf,
+    check_name: String,
+    check_source_code: Option<PathBuf>,
 }
 
 impl Display for RunnableCheckRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Request: {} CheckSource: {}",
-            self.check_request,
-            self.check_source_code.display()
-        )
+        write!(f, "Request: {} CheckSource: {}", self.check_request, self.check_name)
     }
 }
 
@@ -143,6 +145,17 @@ enum CheckSource {
 }
 
 impl CheckSource {
+    fn to_check_name(&self) -> Result<String, Error> {
+        match self {
+            CheckSource::Yaml(path) => {
+                let mut path = path.clone();
+                path.set_extension(""); // trim off the file extension
+                let filename = path.file_name().expect("No error");
+                let name = filename.to_string_lossy().to_string();
+                Ok(name)
+            }
+        }
+    }
     fn to_check_request(&self) -> Result<CheckRequest, Error> {
         match self {
             CheckSource::Yaml(path) => {
@@ -281,7 +294,9 @@ impl Source for Checks {
     }
 }
 
-async fn process_listener(source_context: SourceContext, listener_context: listener::DirCheckListenerContext) {
+async fn process_listener(
+    source_context: SourceContext, listener_context: listener::DirCheckListenerContext,
+) -> Result<(), GenericError> {
     let listener::DirCheckListenerContext {
         shutdown_handle,
         mut listener,
@@ -290,10 +305,10 @@ async fn process_listener(source_context: SourceContext, listener_context: liste
 
     let stream_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
-    // Note: This model has a single CheckScheduler per listener
+    // Note: This architecture has a single CheckScheduler per listener
     // which is likely not the design we want long term
     let (check_metrics_tx, mut check_metrics_rx) = mpsc::channel(10_000_000);
-    let mut scheduler = scheduler::CheckScheduler::new(check_metrics_tx);
+    let mut scheduler = scheduler::CheckScheduler::new(check_metrics_tx)?;
 
     info!("Check listener started.");
     let (mut new_entities, mut deleted_entities) = listener.subscribe();
@@ -348,30 +363,20 @@ async fn process_listener(source_context: SourceContext, listener_context: liste
     stream_shutdown_coordinator.shutdown().await;
 
     info!("Check listener stopped.");
+
+    Ok(())
 }
 
 /// Given a yaml config, find the corresponding python source code
 /// Currently only looks in the same directory, no support for `checks.d` or `mycheck.d` directories
-fn find_sibling_py_file(check_yaml_path: &Path) -> Result<PathBuf, Error> {
+fn find_sibling_py_file(check_yaml_path: &Path) -> Option<PathBuf> {
     let mut check_rel_filepath = check_yaml_path.to_path_buf();
     check_rel_filepath.set_extension("py");
+    if check_rel_filepath.exists() {
+        return Some(check_rel_filepath);
+    }
 
-    //    let filename = check_rel_filepath.file_name().unwrap(); // TODO(remy): what about None here?
-
-    //    if !check_rel_filepath.pop() {
-    //        return Err(Error::NoSourceAvailable{ reason: format!("Can't go to parent directory") });
-    //    }
-
-    //    check_rel_filepath.push(filename);
-
-    //    if !check_rel_filepath.exists() {
-    // check in a checks.d subdir
-    //        check_rel_filepath.push("checks.d");
-    //        return Err(Error::NoSourceAvailable{ reason: format!("c") }); // TODO(remy): ship the rel filepath in the error
-    //    }
-
-    // TODO(remy): look for `check_name.d` directory instead.
-    Ok(check_rel_filepath)
+    None
 }
 
 #[derive(Clone, Copy)]
