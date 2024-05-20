@@ -3,3 +3,4 @@ target/
 tooling/bin/
 test/k8s/charts/
 test/build/
+lib/ddsketch-agent/dhat-heap.json
