@@ -433,6 +433,16 @@ impl DDSketch {
         self.adjust_basic_stats(v, 1);
 
         let key = self.config.key(v);
+
+        // Fast path for adding to an existing bin.
+        for b in &mut self.bins {
+            if b.k == key && b.n < MAX_BIN_WIDTH {
+                b.n += 1;
+                return;
+            }
+        }
+
+        // Slow path could be also optimized.
         self.insert_keys(vec![key]);
     }
 
