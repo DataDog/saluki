@@ -442,8 +442,47 @@ impl DDSketch {
             }
         }
 
-        // Slow path could be also optimized.
-        self.insert_keys(vec![key]);
+        // Slow path is essentially `insert_keys` with a single key.
+
+        // Preallocate output bins.
+        let new_size = cmp::min(self.bins.len() + 1, self.config.bin_limit as usize);
+        let mut temp = Vec::with_capacity(new_size);
+
+        let mut bins_idx = 0;
+        let mut added = false;
+        let bins_len = self.bins.len();
+
+        while bins_idx < bins_len && !added {
+            let bin = self.bins[bins_idx];
+
+            match bin.k.cmp(&key) {
+                Ordering::Less => {
+                    temp.push(bin);
+                    bins_idx += 1;
+                }
+                Ordering::Equal => {
+                    generate_bins(&mut temp, bin.k, u32::from(bin.n) + 1);
+                    bins_idx += 1;
+                    added = true;
+                }
+                Ordering::Greater => {
+                    generate_bins(&mut temp, key, 1);
+                    added = true;
+                }
+            }
+        }
+
+        temp.extend_from_slice(&self.bins[bins_idx..]);
+
+        if !added {
+            generate_bins(&mut temp, key, 1);
+        }
+
+        trim_left(&mut temp, self.config.bin_limit);
+
+        // PERF TODO: This is where we might do a mem::swap instead so that we could shove the bin vector into an object
+        // pool but I'm not sure this actually matters at the moment.
+        self.bins = temp;
     }
 
     /// Inserts many values into the sketch.
