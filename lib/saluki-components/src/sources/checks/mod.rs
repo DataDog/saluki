@@ -22,9 +22,8 @@ use std::{fmt::Display, time::Duration};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, error, info};
 
-mod aggregator;
-mod datadog_agent;
 mod listener;
+mod python_exposed_modules;
 mod scheduler;
 
 #[derive(Debug, Snafu)]
@@ -79,6 +78,14 @@ impl Display for CheckRequest {
 
 impl CheckRequest {
     fn to_runnable_request(&self) -> Result<RunnableCheckRequest, Error> {
+        // The concept of a RunnableRequest needs to be expanded
+        // to look for modules available in the py runtime
+        // This implies that this step needs to happen later in the process
+        // Logic to emulate:
+        // Idea, the RunnableCheckRequest can have an "expected_module_name" field
+        // or something like that
+        // That does imply that the `run` of a `runnablecheckrequest` can fail, but that is already the case
+        // https://github.com/DataDog/datadog-agent/blob/e8de27352093e0d5f828cf86988d186a3501b525/pkg/collector/python/loader.go#L110-L112
         let check_source_code = match &self.source {
             CheckSource::Yaml(path) => find_sibling_py_file(path)?,
         };
@@ -135,7 +142,6 @@ enum CheckSource {
 }
 
 impl CheckSource {
-    // todo refactor to async fs
     fn to_check_request(&self) -> Result<CheckRequest, Error> {
         match self {
             CheckSource::Yaml(path) => {
@@ -304,7 +310,7 @@ async fn process_listener(source_context: SourceContext, listener_context: liste
             }
             Some(check_metric) = check_metrics_rx.recv() => {
                 let mut event_buffer = source_context.event_buffer_pool().acquire().await;
-                let event: Event = aggregator::check_metric_as_event(check_metric).expect("can't convert");
+                let event: Event = python_exposed_modules::check_metric_as_event(check_metric).expect("can't convert");
                 event_buffer.push(event);
                 if let Err(e) = source_context.forwarder().forward(event_buffer).await {
                     error!(error = %e, "Failed to forward check metrics.");

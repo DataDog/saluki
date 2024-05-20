@@ -1,7 +1,7 @@
-use super::aggregator::aggregator as pyagg;
-use super::aggregator::CheckMetric;
+use super::python_exposed_modules::aggregator as pyagg;
+use super::python_exposed_modules::datadog_agent;
+use super::python_exposed_modules::CheckMetric;
 use super::*;
-use datadog_agent::datadog_agent;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
