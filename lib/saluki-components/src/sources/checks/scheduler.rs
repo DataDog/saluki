@@ -68,8 +68,7 @@ impl CheckScheduler {
                 }
             };
 
-            // Test to ensure expected module is available
-            // fail early, it is fatal if these are not present
+            // Validate that python env is correctly configured
             let modd = match py.import_bound("datadog_checks.checks") {
                 Ok(m) => m,
                 Err(e) => {
@@ -106,6 +105,23 @@ impl CheckScheduler {
     // See `CheckRequest::to_runnable_request` for more TODO items here
     // Returns an opaque handle to the python class implementing the check
     fn register_check(&mut self, check: &RunnableCheckRequest) -> Result<CheckHandle, GenericError> {
+        let check_handle = match self.register_check_impl(check) {
+            Ok(h) => h,
+            Err(e) => {
+                error!(%e, "Could not register check {}", check.check_name);
+                return Err(e);
+            }
+        };
+        // TODO there may be an 'init' step needed after loading the check
+        // See `rtloader/three/three.cpp::getCheck` for calls:
+        // - `AgentCheck.load_config(init_config)`
+        // - `AgentCheck.load_config(instance)`
+        // and set attr 'check_id' equal to the check id
+
+        Ok(check_handle)
+    }
+
+    fn register_check_impl(&mut self, check: &RunnableCheckRequest) -> Result<CheckHandle, GenericError> {
         let check_name = &check.check_name;
         // if there is a specific source, then this will populate into locals and can be found
         if let Some(py_source_path) = &check.check_source_code {
@@ -113,12 +129,6 @@ impl CheckScheduler {
                 .map_err(|e| generic_error!("Could not read check source file: {}", e))?;
             return self.register_check_with_source(py_source);
         }
-        // if there is no specific source, then we need to
-        // import module
-        // findSubclassOf(AgentCheck, module)
-        //  - use Dir to find all items in module
-        //  - Get item
-        //  - Check if it is a subclass of AgentCheck
         for import_str in &[&check.check_name, &format!("datadog_checks.{}", check.check_name)] {
             match self.register_check_from_imports(import_str) {
                 Ok(handle) => return Ok(handle),
@@ -132,7 +142,7 @@ impl CheckScheduler {
 
     fn register_check_from_imports(&mut self, import_path: &str) -> Result<CheckHandle, GenericError> {
         pyo3::Python::with_gil(|py| {
-            debug!("Imported '{import_path}'");
+            debug!("Imported '{import_path}', checking its exports for subclasses of 'AgentCheck'");
             let module = py.import_bound(import_path)?;
             let base_class = self.agent_check_base_class.bind(py);
 
@@ -141,7 +151,7 @@ impl CheckScheduler {
                 .iter()
                 .filter(|(name, value)| {
                     debug!(
-                        "Found a thing: {value}, with type {t}",
+                        "Found {name}: {value}, with type {t}",
                         t = value.get_type().name().unwrap_or(std::borrow::Cow::Borrowed("unknown"))
                     );
                     let class_bound: &Bound<PyType> = match value.downcast() {
@@ -173,6 +183,7 @@ impl CheckScheduler {
 
     fn register_check_with_source(&mut self, py_source: String) -> Result<CheckHandle, GenericError> {
         pyo3::Python::with_gil(|py| {
+            debug!("Running provided check source and checking locals for subclasses of 'AgentCheck'");
             let locals = pyo3::types::PyDict::new_bound(py);
 
             match py.run_bound(&py_source, None, Some(&locals)) {
@@ -226,11 +237,6 @@ impl CheckScheduler {
         //let current = self.running.entry(check.check_request.source.clone()).or_default();
 
         let check_handle = self.register_check(&check)?;
-        // TODO there may be an 'init' step needed after loading the check
-        // See `rtloader/three/three.cpp::getCheck` for calls:
-        // - `AgentCheck.load_config(init_config)`
-        // - `AgentCheck.load_config(instance)`
-        // and set attr 'check_id' equal to the check id
         let running_entry = self
             .running
             .entry(check.check_request.source)
