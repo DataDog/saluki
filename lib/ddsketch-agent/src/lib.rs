@@ -16,7 +16,7 @@ const AGENT_DEFAULT_MIN_VALUE: f64 = 1.0e-9;
 const UV_INF: i16 = i16::MAX;
 const MAX_KEY: i16 = UV_INF;
 
-const INITIAL_BINS: u16 = 128;
+const INITIAL_BINS: u16 = 0;
 const MAX_BIN_WIDTH: u16 = u16::MAX;
 
 #[inline]
