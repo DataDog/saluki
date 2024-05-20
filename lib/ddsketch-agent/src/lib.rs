@@ -862,6 +862,24 @@ impl Sketch for BufferedDDSketch {
     }
 }
 
+impl PartialEq for BufferedDDSketch {
+    fn eq(&self, other: &Self) -> bool {
+        // We skip checking the configuration because we don't allow creating configurations by hand, and it's always
+        // locked to the constants used by the Datadog Agent.  We only check the configuration equality manually in
+        // `DDSketch::merge`, to protect ourselves in the future if different configurations become allowed.
+        //
+        // Additionally, we also use floating-point-specific relative comparisons for sum/avg because they can be
+        // minimally different between sketches purely due to floating-point behavior, despite being fed the same exact
+        // data in terms of recorded samples.
+        self.sketch.count == other.sketch.count
+            && float_eq(self.sketch.min, other.sketch.min)
+            && float_eq(self.sketch.max, other.sketch.max)
+            && float_eq(self.sketch.sum, other.sketch.sum)
+            && float_eq(self.sketch.avg, other.sketch.avg)
+
+        // todo: need to be able to compare buffer & bins to do this correctly
+    }
+}
 fn float_eq(l_value: f64, r_value: f64) -> bool {
     use float_eq::FloatEq as _;
 

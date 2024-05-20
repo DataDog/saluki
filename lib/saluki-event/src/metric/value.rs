@@ -1,6 +1,6 @@
 use std::{collections::HashSet, fmt, time::Duration};
 
-use ddsketch_agent::{DDSketch, Sketch};
+use ddsketch_agent::{BufferedDDSketch, Sketch};
 
 #[derive(Clone, Debug)]
 pub enum MetricValue {
@@ -8,7 +8,7 @@ pub enum MetricValue {
     Rate { value: f64, interval: Duration },
     Gauge { value: f64 },
     Set { values: HashSet<String> },
-    Distribution { sketch: DDSketch },
+    Distribution { sketch: BufferedDDSketch },
 }
 
 impl MetricValue {
@@ -23,13 +23,13 @@ impl MetricValue {
     }
 
     pub fn distribution_from_value(value: f64) -> Self {
-        let mut sketch = DDSketch::default();
+        let mut sketch = BufferedDDSketch::default();
         sketch.insert(value);
         Self::Distribution { sketch }
     }
 
     pub fn distribution_from_values(values: &[f64]) -> Self {
-        let mut sketch = DDSketch::default();
+        let mut sketch = BufferedDDSketch::default();
         sketch.insert_many(values);
         Self::Distribution { sketch }
     }
