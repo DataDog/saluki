@@ -2183,7 +2183,7 @@ dependencies = [
  "datadog-protos",
  "futures",
  "hostname",
- "hyper 0.14.28",
+ "hyper 1.3.1",
  "hyper-rustls 0.25.0",
  "k8s-openapi",
  "kube",
