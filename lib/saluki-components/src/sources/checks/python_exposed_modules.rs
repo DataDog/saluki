@@ -48,29 +48,29 @@ pub struct CheckMetric {
     tags: Vec<String>,
 }
 
-// TODO(remy): use TryFrom instead
-pub fn check_metric_as_event(metric: CheckMetric) -> Result<Event, AggregatorError> {
-    let tags: MetricTags = metric.tags.into();
+impl TryInto<Event> for CheckMetric {
+    type Error = AggregatorError;
 
-    let context = MetricContext {
-        name: metric.name,
-        tags,
-    };
-    let metadata = MetricMetadata::from_timestamp(get_unix_timestamp());
+    fn try_into(self) -> Result<Event, Self::Error> {
+        let tags: MetricTags = self.tags.into();
 
-    match metric.metric_type {
-        PyMetricType::Gauge => Ok(saluki_event::Event::Metric(Metric::from_parts(
-            context,
-            MetricValue::Gauge { value: metric.value },
-            metadata,
-        ))),
-        PyMetricType::Counter => Ok(saluki_event::Event::Metric(Metric::from_parts(
-            context,
-            MetricValue::Counter { value: metric.value },
-            metadata,
-        ))),
-        // TODO(remy): rest of the types
-        _ => Err(AggregatorError::UnsupportedType {}),
+        let context = MetricContext { name: self.name, tags };
+        let metadata = MetricMetadata::from_timestamp(get_unix_timestamp());
+
+        match self.metric_type {
+            PyMetricType::Gauge => Ok(saluki_event::Event::Metric(Metric::from_parts(
+                context,
+                MetricValue::Gauge { value: self.value },
+                metadata,
+            ))),
+            PyMetricType::Counter => Ok(saluki_event::Event::Metric(Metric::from_parts(
+                context,
+                MetricValue::Counter { value: self.value },
+                metadata,
+            ))),
+            // TODO(remy): rest of the types
+            _ => Err(AggregatorError::UnsupportedType {}),
+        }
     }
 }
 

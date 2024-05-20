@@ -310,7 +310,7 @@ async fn process_listener(source_context: SourceContext, listener_context: liste
             }
             Some(check_metric) = check_metrics_rx.recv() => {
                 let mut event_buffer = source_context.event_buffer_pool().acquire().await;
-                let event: Event = python_exposed_modules::check_metric_as_event(check_metric).expect("can't convert");
+                let event: Event = check_metric.try_into().expect("can't convert");
                 event_buffer.push(event);
                 if let Err(e) = source_context.forwarder().forward(event_buffer).await {
                     error!(error = %e, "Failed to forward check metrics.");
