@@ -3,6 +3,7 @@ use std::error::Error as _;
 use async_trait::async_trait;
 use http::{Request, Uri};
 use http_body_util::BodyExt as _;
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_core::components::destinations::*;
 use saluki_error::GenericError;
@@ -19,6 +20,8 @@ mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
 
 const DEFAULT_SITE: &str = "datadoghq.com";
+const RB_BUFFER_POOL_COUNT: usize = 128;
+const RB_BUFFER_POOL_BUF_SIZE: usize = 32_768;
 
 fn default_site() -> String {
     DEFAULT_SITE.to_owned()
@@ -119,6 +122,32 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
             series_request_builder,
             sketches_request_builder,
         }))
+    }
+}
+
+impl MemoryBounds for DatadogMetricsConfiguration {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // The request builder buffer pool is shared between both the series and the sketches request builder, so we
+        // only count it once.
+        let rb_buffer_pool_size = RB_BUFFER_POOL_COUNT * RB_BUFFER_POOL_BUF_SIZE;
+
+        // Each request builder has a scratch buffer for encoding.
+        //
+        // TODO: Since it's just a `Vec<u8>`, it could trivially be expanded/grown for encoding larger payloads... which
+        // we don't really have a good answer to here. Best thing would be to change the encoding logic to write
+        // directly to the compressor but we have the current intermediate step to cope with avoiding writing more than
+        // the (un)compressed payload limits and it will take a little work to eliminate that, I believe.
+        let scratch_buffer_size = request_builder::SCRATCH_BUF_CAPACITY * 2;
+
+        builder
+            .minimum()
+            .with_fixed_amount(rb_buffer_pool_size)
+            .with_fixed_amount(scratch_buffer_size);
+
+        builder
+            .firm()
+            .with_fixed_amount(rb_buffer_pool_size)
+            .with_fixed_amount(scratch_buffer_size);
     }
 }
 
@@ -294,7 +323,7 @@ fn create_request_builder_buffer_pool() -> ChunkedBytesBufferPool {
     // Series/Sketch V1 endpoint (max of 3.2MB) as well as the Series V2 endpoint (max 512KB).
     //
     // We chunk it up into 32KB segments mostly to allow for balancing fragmentation vs acquisition overhead.
-    let pool = get_fixed_bytes_buffer_pool(128, 32_768);
+    let pool = get_fixed_bytes_buffer_pool(RB_BUFFER_POOL_COUNT, RB_BUFFER_POOL_BUF_SIZE);
 
     // Turn it into a chunked buffer pool.
     //

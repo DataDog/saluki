@@ -19,6 +19,7 @@ resolver = "2"
 # Internal dependencies.
 datadog-protos = { path = "lib/datadog-protos" }
 ddsketch-agent = { path = "lib/ddsketch-agent" }
+memory-accounting = { path = "lib/memory-accounting" }
 saluki-app = { path = "lib/saluki-app" }
 saluki-components = { path = "lib/saluki-components" }
 saluki-config = { path = "lib/saluki-config" }
@@ -37,7 +38,7 @@ serde = { version = "1", default-features = false, features = ["derive"] }
 snafu = { version = "0.8", default-features = false, features = ["std"] }
 tokio = { version = "1", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
-ahash = { version = "0.8.11", default-features = false }
+ahash = { version = "0.8", default-features = false }
 async-compression = { version = "0.4", default-features = false }
 bitmask-enum = { version = "2.2", default-features = false }
 figment = { version = "0.10", default-features = false }
@@ -91,6 +92,7 @@ rustls-pemfile = { version = "2", default-features = false }
 tokio-rustls = { version = "0.25.0", default-features = false }
 anyhow = { version = "1", default-features = false }
 chrono = "0.4"
+ubyte = { version = "0.10", default-features = false }
 
 [patch.crates-io]
 # Git dependency for `containerd-client` to add specific `prost-build` settings that allow type-erased payloads in

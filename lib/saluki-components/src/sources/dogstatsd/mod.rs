@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     buffers::FixedSizeBufferPool,
@@ -188,6 +189,15 @@ impl SourceBuilder for DogStatsDConfiguration {
     }
 }
 
+impl MemoryBounds for DogStatsDConfiguration {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // We allocate our I/O buffers up front so this is a requirement.
+        builder
+            .minimum()
+            .with_fixed_amount(self.buffer_count * self.buffer_size);
+    }
+}
+
 struct HandlerContext {
     shutdown_handle: DynamicShutdownHandle,
     listen_addr: String,
@@ -272,7 +282,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
                         listen_addr: listen_addr.to_string(),
                         origin_detection,
                         deserializer: DeserializerBuilder::new()
-                            .with_framer_and_decoder(get_framer(&listen_addr), DogstatsdCodec)
+                            .with_framer_and_decoder(get_framer(&listen_addr), DogstatsdCodec::default())
                             .with_buffer_pool(io_buffer_pool.clone())
                             .into_deserializer(stream),
                     };

@@ -8,6 +8,7 @@ license = "Apache-2.0"
 # Internal dependencies.
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
+memory-accounting = { workspace = true }
 saluki-config = { workspace = true }
 saluki-core = { workspace = true }
 saluki-env = { workspace = true }

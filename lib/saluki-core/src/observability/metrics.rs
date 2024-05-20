@@ -53,17 +53,9 @@ impl MetricsRecorder {
 }
 
 impl Recorder for MetricsRecorder {
-    fn describe_counter(&self, _: KeyName, _: Option<Unit>, _: SharedString) {
-        todo!()
-    }
-
-    fn describe_gauge(&self, _: KeyName, _: Option<Unit>, _: SharedString) {
-        todo!()
-    }
-
-    fn describe_histogram(&self, _: KeyName, _: Option<Unit>, _: SharedString) {
-        todo!()
-    }
+    fn describe_counter(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+    fn describe_gauge(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+    fn describe_histogram(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
 
     fn register_counter(&self, key: &Key, _: &Metadata<'_>) -> Counter {
         let prefixed_key = self.prefix_key(key);

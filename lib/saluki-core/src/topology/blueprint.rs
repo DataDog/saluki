@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_error::GenericError;
 use snafu::{ResultExt as _, Snafu};
 
@@ -8,6 +9,7 @@ use crate::components::{DestinationBuilder, SourceBuilder, TransformBuilder};
 use super::{
     built::BuiltTopology,
     graph::{Graph, GraphError},
+    interconnect::EventBuffer,
     ComponentId, ComponentOutputId,
 };
 
@@ -134,5 +136,45 @@ impl TopologyBlueprint {
         }
 
         Ok(BuiltTopology::from_parts(self.graph, sources, transforms, destinations))
+    }
+}
+
+impl MemoryBounds for TopologyBlueprint {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // Account for sources, transforms, and destinations.
+        for (name, source) in &self.sources {
+            let component_name = format!("source.{}", name);
+            let mut source_builder = builder.component(component_name);
+            source.specify_bounds(&mut source_builder);
+        }
+
+        for (name, transform) in &self.transforms {
+            let component_name = format!("transform.{}", name);
+            let mut transform_builder = builder.component(component_name);
+            transform.specify_bounds(&mut transform_builder);
+        }
+
+        for (name, destination) in &self.destinations {
+            let component_name = format!("destination.{}", name);
+            let mut destination_builder = builder.component(component_name);
+            destination.specify_bounds(&mut destination_builder);
+        }
+
+        // Now account for all of the things that we provide components by default, like the global event buffer pool,
+        // interconnect channels, and so on.
+
+        // Every component that receives events gets an interconnect channel, which means all transforms and
+        // destinations. These are fixed-sized channels, so we can account for them here.
+        builder
+            .component("interconnects")
+            .minimum()
+            .with_array::<EventBuffer>(self.transforms.len() + self.destinations.len());
+
+        // We also have our global event buffer pool that all components have shared access to.
+        builder
+            .component("buffer_pools")
+            .component("event_buffer")
+            .minimum()
+            .with_array::<EventBuffer>(1024);
     }
 }

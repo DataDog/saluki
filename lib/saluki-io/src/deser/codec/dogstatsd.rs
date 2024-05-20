@@ -26,8 +26,20 @@ enum OneOrMany<T> {
     Multiple(Vec<T>),
 }
 
-#[derive(Debug, Default)]
-pub struct DogstatsdCodec;
+#[derive(Debug)]
+pub struct DogstatsdCodec {
+    maximum_tag_length: usize,
+    maximum_tag_count: usize,
+}
+
+impl Default for DogstatsdCodec {
+    fn default() -> Self {
+        Self {
+            maximum_tag_length: 200,
+            maximum_tag_count: 150,
+        }
+    }
+}
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -45,7 +57,7 @@ impl Decoder for DogstatsdCodec {
     fn decode<B: Buf>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error> {
         let data = buf.chunk();
 
-        match parse_dogstatsd(data) {
+        match parse_dogstatsd(data, self.maximum_tag_count, self.maximum_tag_length) {
             Ok((remaining, parsed_events)) => {
                 buf.advance(data.len() - remaining.len());
 
@@ -76,7 +88,9 @@ impl Decoder for DogstatsdCodec {
     }
 }
 
-fn parse_dogstatsd(input: &[u8]) -> IResult<&[u8], OneOrMany<Event>> {
+fn parse_dogstatsd(
+    input: &[u8], maximum_tag_count: usize, maximum_tag_length: usize,
+) -> IResult<&[u8], OneOrMany<Event>> {
     // We always parse the metric name and value first, where value is both the kind (counter, gauge, etc) and the
     // actual value itself.
     let (remaining, (metric_name, metric_values)) = separated_pair(metric_name, tag(":"), metric_value)(input)?;
@@ -108,7 +122,8 @@ fn parse_dogstatsd(input: &[u8]) -> IResult<&[u8], OneOrMany<Event>> {
                 }
                 // Tags: additional tags to be added to the metric.
                 b'#' => {
-                    let (_, tags) = all_consuming(preceded(tag("#"), metric_tags))(chunk)?;
+                    let (_, tags) =
+                        all_consuming(preceded(tag("#"), metric_tags(maximum_tag_count, maximum_tag_length)))(chunk)?;
                     maybe_tags = Some(tags);
                 }
                 // Container ID: client-provided container ID for the contaier that this metric originated from.
@@ -245,18 +260,27 @@ fn metric_type_to_metric_value(metric_type: &[u8], value: f64) -> Result<MetricV
     }
 }
 
-fn metric_tags(input: &[u8]) -> IResult<&[u8], MetricTags> {
-    // Take every that's not a control character or pipe character.
-    let (remaining, raw_tag_bytes) = take_while1(|c: u8| !c.is_ascii_control() && c != b'|')(input)?;
+fn metric_tags(maximum_tag_count: usize, maximum_tag_length: usize) -> impl Fn(&[u8]) -> IResult<&[u8], MetricTags> {
+    move |input: &[u8]| {
+        // Take every that's not a control character or pipe character.
+        let (remaining, raw_tag_bytes) = take_while1(|c: u8| !c.is_ascii_control() && c != b'|')(input)?;
 
-    let mut tags = MetricTags::default();
-    for raw_tag in raw_tag_bytes.split(|c| *c == b',') {
-        let tag = std::str::from_utf8(raw_tag).map_err(|_| nom::Err::Error(Error::new(input, ErrorKind::Char)))?;
+        let mut tags = MetricTags::default();
+        for raw_tag in raw_tag_bytes.split(|c| *c == b',') {
+            if tags.len() >= maximum_tag_count {
+                // We've reached the maximum number of tags, so we just skip the rest.
+                break;
+            }
 
-        tags.insert_tag(tag);
+            let tag = std::str::from_utf8(raw_tag)
+                .map(|s| limit_str_to_len(s, maximum_tag_length))
+                .map_err(|_| nom::Err::Error(Error::new(input, ErrorKind::Char)))?;
+
+            tags.insert_tag(tag);
+        }
+
+        Ok((remaining, tags))
     }
-
-    Ok((remaining, tags))
 }
 
 fn unix_timestamp(input: &[u8]) -> IResult<&[u8], u64> {
@@ -273,6 +297,32 @@ fn container_id(input: &[u8]) -> IResult<&[u8], &str> {
         // interpret the bytes directly as UTF-8.
         unsafe { std::str::from_utf8_unchecked(b) }
     })(input)
+}
+
+fn limit_str_to_len(s: &str, limit: usize) -> &str {
+    if limit >= s.len() {
+        s
+    } else {
+        let sb = s.as_bytes();
+
+        // Search through the last four bytes of the string, ending at the index `limit`, and look for the byte that
+        // defines the boundary of a full UTF-8 character.
+        let start = limit.saturating_sub(3);
+        let new_index = sb[start..=limit]
+            .iter()
+            // Bit twiddling magic for checking if `b` is < 128 or >= 192.
+            .rposition(|b| (*b as i8) >= -0x40);
+
+        // SAFETY: UTF-8 characters are a maximum of four bytes, so we know we will have found a valid character
+        // boundary by searching over four bytes, regardless of where the slice started.
+        //
+        // Similarly we know that taking everything from index 0 to the detected character boundary index will be a
+        // valid UTF-8 string.
+        unsafe {
+            let safe_end = start + new_index.unwrap_unchecked();
+            std::str::from_utf8_unchecked(&sb[..safe_end])
+        }
+    }
 }
 
 #[cfg(test)]
@@ -354,12 +404,12 @@ mod tests {
     }
 
     #[test]
-    fn test_basic_metrics() {
+    fn basic_metrics() {
         let counter_name = "my.counter";
         let counter_value = 1.0;
         let counter_raw = format!("{}:{}|c", counter_name, counter_value);
         let counter_expected = counter(counter_name, counter_value);
-        let (remaining, counter_actual) = parse_dogstatsd(counter_raw.as_bytes()).unwrap();
+        let (remaining, counter_actual) = parse_dogstatsd(counter_raw.as_bytes(), usize::MAX, usize::MAX).unwrap();
         check_basic_metric_eq(counter_expected, counter_actual);
         assert!(remaining.is_empty());
 
@@ -367,7 +417,7 @@ mod tests {
         let gauge_value = 2.0;
         let gauge_raw = format!("{}:{}|g", gauge_name, gauge_value);
         let gauge_expected = gauge(gauge_name, gauge_value);
-        let (remaining, gauge_actual) = parse_dogstatsd(gauge_raw.as_bytes()).unwrap();
+        let (remaining, gauge_actual) = parse_dogstatsd(gauge_raw.as_bytes(), usize::MAX, usize::MAX).unwrap();
         check_basic_metric_eq(gauge_expected, gauge_actual);
         assert!(remaining.is_empty());
 
@@ -378,7 +428,8 @@ mod tests {
         for kind in &["ms", "h", "d"] {
             let distribution_raw = format!("{}:{}|{}", distribution_name, distribution_value, kind);
             let distribution_expected = distribution(distribution_name, distribution_value);
-            let (remaining, distribution_actual) = parse_dogstatsd(distribution_raw.as_bytes()).unwrap();
+            let (remaining, distribution_actual) =
+                parse_dogstatsd(distribution_raw.as_bytes(), usize::MAX, usize::MAX).unwrap();
             check_basic_metric_eq(distribution_expected, distribution_actual);
             assert!(remaining.is_empty());
         }
@@ -387,13 +438,13 @@ mod tests {
         let set_value = "value";
         let set_raw = format!("{}:{}|s", set_name, set_value);
         let set_expected = set(set_name, set_value);
-        let (remaining, set_actual) = parse_dogstatsd(set_raw.as_bytes()).unwrap();
+        let (remaining, set_actual) = parse_dogstatsd(set_raw.as_bytes(), usize::MAX, usize::MAX).unwrap();
         check_basic_metric_eq(set_expected, set_actual);
         assert!(remaining.is_empty());
     }
 
     #[test]
-    fn test_tags() {
+    fn tags() {
         let counter_name = "my.counter";
         let counter_value = 1.0;
         let counter_tags = &["tag1", "tag2"];
@@ -403,13 +454,13 @@ mod tests {
             counter_expected.context.tags.insert_tag(tag.to_string());
         }
 
-        let (remaining, counter_actual) = parse_dogstatsd(counter_raw.as_bytes()).unwrap();
+        let (remaining, counter_actual) = parse_dogstatsd(counter_raw.as_bytes(), usize::MAX, usize::MAX).unwrap();
         check_basic_metric_eq(counter_expected, counter_actual);
         assert!(remaining.is_empty());
     }
 
     #[test]
-    fn test_sample_rate() {
+    fn sample_rate() {
         let counter_name = "my.counter";
         let counter_value = 1.0;
         let counter_sample_rate = 0.5;
@@ -417,13 +468,13 @@ mod tests {
         let mut counter_expected = counter(counter_name, counter_value);
         counter_expected.metadata.sample_rate = Some(counter_sample_rate);
 
-        let (remaining, counter_actual) = parse_dogstatsd(counter_raw.as_bytes()).unwrap();
+        let (remaining, counter_actual) = parse_dogstatsd(counter_raw.as_bytes(), usize::MAX, usize::MAX).unwrap();
         check_basic_metric_eq(counter_expected, counter_actual);
         assert!(remaining.is_empty());
     }
 
     #[test]
-    fn test_container_id() {
+    fn container_id() {
         let counter_name = "my.counter";
         let counter_value = 1.0;
         let container_id = "abcdef123456";
@@ -434,13 +485,13 @@ mod tests {
             .tags
             .insert_tag(format!("{}:{}", CONTAINER_ID_TAG_KEY, container_id));
 
-        let (remaining, counter_actual) = parse_dogstatsd(counter_raw.as_bytes()).unwrap();
+        let (remaining, counter_actual) = parse_dogstatsd(counter_raw.as_bytes(), usize::MAX, usize::MAX).unwrap();
         check_basic_metric_eq(counter_expected, counter_actual);
         assert!(remaining.is_empty());
     }
 
     #[test]
-    fn test_unix_timestamp() {
+    fn unix_timestamp() {
         let counter_name = "my.counter";
         let counter_value = 1.0;
         let timestamp = 1234567890;
@@ -448,19 +499,19 @@ mod tests {
         let mut counter_expected = counter(counter_name, counter_value);
         counter_expected.metadata.timestamp = timestamp;
 
-        let (remaining, counter_actual) = parse_dogstatsd(counter_raw.as_bytes()).unwrap();
+        let (remaining, counter_actual) = parse_dogstatsd(counter_raw.as_bytes(), usize::MAX, usize::MAX).unwrap();
         check_basic_metric_eq(counter_expected, counter_actual);
         assert!(remaining.is_empty());
     }
 
     #[test]
-    fn test_multivalue_metrics() {
+    fn multivalue_metrics() {
         let counter_name = "my.counter";
         let counter_values = [1.0, 2.0, 3.0];
         let counter_values_stringified = counter_values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
         let counter_raw = format!("{}:{}|c", counter_name, counter_values_stringified.join(":"));
         let counters_expected = counter_multivalue(counter_name, &counter_values);
-        let (remaining, counters_actual) = parse_dogstatsd(counter_raw.as_bytes()).unwrap();
+        let (remaining, counters_actual) = parse_dogstatsd(counter_raw.as_bytes(), usize::MAX, usize::MAX).unwrap();
         check_basic_metric_multivalue_eq(counters_expected, counters_actual);
         assert!(remaining.is_empty());
 
@@ -469,7 +520,7 @@ mod tests {
         let gauge_values_stringified = gauge_values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
         let gauge_raw = format!("{}:{}|g", gauge_name, gauge_values_stringified.join(":"));
         let gauges_expected = gauge_multivalue(gauge_name, &gauge_values);
-        let (remaining, gauges_actual) = parse_dogstatsd(gauge_raw.as_bytes()).unwrap();
+        let (remaining, gauges_actual) = parse_dogstatsd(gauge_raw.as_bytes(), usize::MAX, usize::MAX).unwrap();
         check_basic_metric_multivalue_eq(gauges_expected, gauges_actual);
         assert!(remaining.is_empty());
 
@@ -486,9 +537,51 @@ mod tests {
                 kind
             );
             let distributions_expected = distribution_multivalue(distribution_name, &distribution_values);
-            let (remaining, distributions_actual) = parse_dogstatsd(distribution_raw.as_bytes()).unwrap();
+            let (remaining, distributions_actual) =
+                parse_dogstatsd(distribution_raw.as_bytes(), usize::MAX, usize::MAX).unwrap();
             check_basic_metric_multivalue_eq(distributions_expected, distributions_actual);
             assert!(remaining.is_empty());
+        }
+    }
+
+    #[test]
+    fn respects_maximum_tag_count() {
+        let input = "foo:1|c|#tag1:value1,tag2:value2,tag3:value3";
+
+        let cases = [3, 2, 1];
+        for max_tag_count in cases {
+            let (remaining, result) =
+                parse_dogstatsd(input.as_bytes(), max_tag_count, usize::MAX).expect("should not fail to parse");
+
+            assert!(remaining.is_empty());
+            match result {
+                OneOrMany::Single(Event::Metric(metric)) => {
+                    assert_eq!(metric.context.tags.len(), max_tag_count);
+                }
+                _ => unreachable!("should only have a single metric"),
+            }
+        }
+    }
+
+    #[test]
+    fn respects_maximum_tag_length() {
+        let input = "foo:1|c|#tag1:short,tag2:medium,tag3:longlong";
+
+        let cases = [6, 5, 4];
+        for max_tag_length in cases {
+            let (remaining, result) =
+                parse_dogstatsd(input.as_bytes(), usize::MAX, max_tag_length).expect("should not fail to parse");
+
+            assert!(remaining.is_empty());
+            match result {
+                OneOrMany::Single(Event::Metric(metric)) => {
+                    for tag in metric.context.tags.into_iter() {
+                        let tag_string = tag.into_string();
+                        assert!(tag_string.len() <= max_tag_length);
+                    }
+                }
+                _ => unreachable!("should only have a single metric"),
+            }
         }
     }
 
@@ -504,7 +597,7 @@ mod tests {
             // all tests are run, in the hopes of potentially catching an issue that might have been missed.
             //
             // TODO: True exhaustive-style testing a la afl/honggfuzz.
-            let _ = parse_dogstatsd(&input);
+            let _ = parse_dogstatsd(&input, usize::MAX, usize::MAX);
         }
     }
 }
