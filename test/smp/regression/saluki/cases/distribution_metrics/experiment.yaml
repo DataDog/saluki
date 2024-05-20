@@ -1,0 +1,20 @@
+optimization_goal: memory
+erratic: false
+
+target:
+  name: saluki
+  command: /usr/local/bin/agent-data-plane
+
+  environment:
+    DD_API_KEY: foo00000001
+    DD_HOSTNAME: smp-regression
+    DD_DD_URL: http://127.0.0.1:9092
+
+    # Disables UDP and enables listening on UDS in SOCK_DGRAM mode.
+    DD_DOGSTATSD_PORT: "0"
+    DD_DOGSTATSD_SOCKET: /tmp/adp-dsd.sock
+
+    # Runs the workload provider in no-op mode, otherwise it would need to connect to a real
+    # Datadog Agent, which obviously we don't have available to us, and perhaps further, don't
+    # need for the purpose of this benchmark.
+    DD_ADP_USE_NOOP_WORKLOAD_PROVIDER: "true"
