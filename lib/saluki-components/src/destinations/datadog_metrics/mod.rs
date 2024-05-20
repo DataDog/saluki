@@ -143,11 +143,6 @@ impl MemoryBounds for DatadogMetricsConfiguration {
             .minimum()
             .with_fixed_amount(rb_buffer_pool_size)
             .with_fixed_amount(scratch_buffer_size);
-
-        builder
-            .firm()
-            .with_fixed_amount(rb_buffer_pool_size)
-            .with_fixed_amount(scratch_buffer_size);
     }
 }
 
