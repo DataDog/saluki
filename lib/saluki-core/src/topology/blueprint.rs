@@ -9,6 +9,7 @@ use crate::components::{DestinationBuilder, SourceBuilder, TransformBuilder};
 use super::{
     built::BuiltTopology,
     graph::{Graph, GraphError},
+    interconnect::EventBuffer,
     ComponentId, ComponentOutputId,
 };
 
@@ -140,6 +141,7 @@ impl TopologyBlueprint {
 
 impl MemoryBounds for TopologyBlueprint {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // Account for sources, transforms, and destinations.
         for (name, source) in &self.sources {
             let component_name = format!("source.{}", name);
             let mut source_builder = builder.component(component_name);
@@ -157,5 +159,22 @@ impl MemoryBounds for TopologyBlueprint {
             let mut destination_builder = builder.component(component_name);
             destination.specify_bounds(&mut destination_builder);
         }
+
+        // Now account for all of the things that we provide components by default, like the global event buffer pool,
+        // interconnect channels, and so on.
+
+        // Every component that receives events gets an interconnect channel, which means all transforms and
+        // destinations. These are fixed-sized channels, so we can account for them here.
+        builder
+            .component("interconnects")
+            .minimum()
+            .with_array::<EventBuffer>(self.transforms.len() + self.destinations.len());
+
+        // We also have our global event buffer pool that all components have shared access to.
+        builder
+            .component("buffer_pools")
+            .component("event_buffer")
+            .minimum()
+            .with_array::<EventBuffer>(1024);
     }
 }

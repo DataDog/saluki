@@ -84,21 +84,6 @@ impl BoundsVerifier {
     /// - when a component has invalid bounds (e.g. minimum required bytes higher than firm limit)
     /// - when the combined total of the firm limit for all components exceeds the effective limit
     pub fn verify(self) -> Result<VerifiedBounds, VerifierError> {
-        // Iterate over each component in the calculated bounds and do some basic validation to ensure the calculations
-        // are correct and logically consistent.
-        //
-        // We only do this for leaf components because the minimum required/firm limits bytes on components with
-        // subcomponents is already calculated on demand, so we know that a parent component is also valid if all of its
-        // subcomponents are valid.
-        for (name, bounds) in self.component_bounds.leaf_components() {
-            if bounds.self_minimum_required_bytes > bounds.self_firm_limit_bytes {
-                return Err(VerifierError::InvalidComponentBounds {
-                    component_name: name.clone(),
-                    reason: "minimum required bytes exceeds firm limit".to_string(),
-                });
-            }
-        }
-
         // Evaluate the total minimum required and firm limit bytes to make sure our memory grant is sufficient.
         let available_bytes = self.grant.effective_limit_bytes();
         let total_minimum_required_bytes = self.component_bounds.total_minimum_required_bytes();
@@ -150,31 +135,15 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_component_bounds() {
-        let bounded = BoundedComponent::new(Some(20), 10);
-        let bounds = get_component_bounds(&bounded);
-        let initial_grant = MemoryGrant::effective(1).expect("should never be invalid");
-
-        let verifier = BoundsVerifier::new(initial_grant, bounds);
-
-        assert_eq!(
-            verifier.verify().err(),
-            Some(VerifierError::InvalidComponentBounds {
-                component_name: "root.component".to_string(),
-                reason: "minimum required bytes exceeds firm limit".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn test_verify() {
+    fn verify() {
         let minimum_required_bytes = 10;
         let firm_limit_bytes = 20;
 
+        // This component will have a total firm limit of 30 bytes, by adding the 20 bytes above to the 10 bytes minimum.
         let bounded = BoundedComponent::new(Some(minimum_required_bytes), firm_limit_bytes);
 
         // First two verifications don't have enough capacity to meet the minimum requirements, based on the slop
-        // factor.
+        // factor: we need at least 13 bytes to meet the minimum requirements. (14 bytes * (1 - 0.25 slop factor) -> 10 bytes)
         let (grant, result) = verify_component(1, &bounded);
         assert_eq!(
             result.err(),
@@ -193,28 +162,28 @@ mod tests {
             })
         );
 
-        // Now we have enough capacity for the minimum requirements, but the firm limit exceeds that.
-        let (grant, result) = verify_component(15, &bounded);
+        // Now we have enough capacity for the minimum requirements, but the firm limit exceeds that. We need at least
+        // 40 bytes to meet the firm limit requirements: (40 bytes * (1 - 0.25 slop factor) -> 30 bytes)
+        let (grant, result) = verify_component(14, &bounded);
         assert_eq!(
             result.err(),
             Some(VerifierError::FirmLimitExceedsAvailable {
                 available_bytes: grant.effective_limit_bytes(),
-                firm_limit_bytes,
+                firm_limit_bytes: minimum_required_bytes + firm_limit_bytes,
             })
         );
 
-        let (grant, result) = verify_component(20, &bounded);
+        let (grant, result) = verify_component(30, &bounded);
         assert_eq!(
             result.err(),
             Some(VerifierError::FirmLimitExceedsAvailable {
                 available_bytes: grant.effective_limit_bytes(),
-                firm_limit_bytes,
+                firm_limit_bytes: minimum_required_bytes + firm_limit_bytes,
             })
         );
 
-        // We've finally provided enough capacity (30 bytes * 0.25 slop factor -> 22 bytes capacity) to meet the firm
-        // limit, so this should pass.
-        let (_, result) = verify_component(30, &bounded);
+        // We've finally provided enough capacity to meet the firm limit, so this should pass.
+        let (_, result) = verify_component(40, &bounded);
         assert!(result.is_ok());
     }
 }

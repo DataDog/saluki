@@ -1,14 +1,13 @@
 #![allow(dead_code)]
 
+use std::collections::HashMap;
+
 //mod partitioner;
 
 #[cfg(test)]
 pub mod test_util;
 
 mod builder;
-
-use std::collections::HashMap;
-
 pub use self::builder::MemoryBoundsBuilder;
 
 mod grant;
@@ -48,8 +47,11 @@ impl ComponentBounds {
     }
 
     /// Gets the total firm limit bytes for this component and all subcomponents.
+    ///
+    /// The firm limit includes the minimum required bytes.
     pub fn total_firm_limit_bytes(&self) -> usize {
-        self.self_firm_limit_bytes
+        self.self_minimum_required_bytes
+            + self.self_firm_limit_bytes
             + self
                 .subcomponents
                 .values()

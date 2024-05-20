@@ -192,12 +192,9 @@ impl SourceBuilder for DogStatsDConfiguration {
 impl MemoryBounds for DogStatsDConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         // We allocate our I/O buffers up front so this is a requirement.
-        let io_buffer_pool_size = self.buffer_count * self.buffer_size;
-
-        // TODO: Should we actually just make `firm` be a superset of `minimum`, where you only define things in `firm`
-        // that weren't captured by `minimum`? The duplication here certainly feels footgun-y.
-        builder.minimum().with_fixed_amount(io_buffer_pool_size);
-        builder.firm().with_fixed_amount(io_buffer_pool_size);
+        builder
+            .minimum()
+            .with_fixed_amount(self.buffer_count * self.buffer_size);
     }
 }
 

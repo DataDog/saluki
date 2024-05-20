@@ -73,6 +73,9 @@ impl<'a> MemoryBoundsBuilder<'a> {
     }
 
     /// Gets a builder object that can be used to define the firm memory limit for this component.
+    ///
+    /// The firm limit is additive with the minimum required memory, so entries that are added via `minimum` do not need
+    /// to be added again here.
     pub fn firm(&mut self) -> BoundsBuilder<'_, Firm> {
         BoundsBuilder::<'_, Firm>::new(self.inner.as_mut())
     }
