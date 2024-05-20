@@ -6,6 +6,7 @@ use std::{
 
 use ahash::{AHashMap, AHashSet};
 use async_trait::async_trait;
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     buffers::FixedSizeBufferPool,
     components::{metrics::MetricsBuilder, transforms::*},
@@ -17,6 +18,9 @@ use saluki_event::{metric::*, DataType, Event};
 use tokio::{pin, select, time::sleep_until};
 use tracing::{debug, error, trace};
 
+const EVENT_BUFFER_POOL_SIZE: usize = 8;
+const DEFAULT_CONTEXT_LIMIT: usize = 1000;
+
 /// Aggregate transform.
 ///
 /// Aggregates metrics into fixed-size windows, flushing them at a regular interval.
@@ -26,7 +30,7 @@ use tracing::{debug, error, trace};
 /// - maintaining zero-value counters after flush until expiry
 pub struct AggregateConfiguration {
     window_duration: Duration,
-    context_limit: Option<usize>,
+    context_limit: usize,
     flush_open_windows: bool,
 }
 
@@ -35,7 +39,7 @@ impl AggregateConfiguration {
     pub fn from_window(window_duration: Duration) -> Self {
         Self {
             window_duration,
-            context_limit: None,
+            context_limit: DEFAULT_CONTEXT_LIMIT,
             flush_open_windows: false,
         }
     }
@@ -48,11 +52,10 @@ impl AggregateConfiguration {
     ///
     /// When the maximum number of contexts is reached in the current aggregation window, additional metrics are dropped
     /// until the next window starts.
+    ///
+    /// Defaults to 1000.
     pub fn with_context_limit(self, context_limit: usize) -> Self {
-        Self {
-            context_limit: Some(context_limit),
-            ..self
-        }
+        Self { context_limit, ..self }
     }
 
     /// Sets whether to flush open buckets when stopping the transform.
@@ -90,9 +93,41 @@ impl TransformBuilder for AggregateConfiguration {
     }
 }
 
+impl MemoryBounds for AggregateConfiguration {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // Since we use our own event buffer pool, we account for that directly here, and we use our knowledge of the
+        // context limit to determine how large we'd expect those event buffers to grow to in the worst case. With a
+        // context limit of N, we would only aggregate N metrics at any given time, and thus we should flush a maximum
+        // of N metrics per flush interval.
+        let event_buffer_pool_size = EVENT_BUFFER_POOL_SIZE * self.context_limit * std::mem::size_of::<Event>();
+
+        // TODO: We take some liberties here but we roughly calculate the expected firm memory usage of a single context
+        // based on the limits we impose in the DogStatsD source. Those limits map to normal Datadog limits, both in
+        // terms of maximum tags per metric and the maximum length of a tag.
+        //
+        // Not all metrics will come from the DogStatsD source, but this will do for now.
+        const MAXIMUM_TAGS_COUNT: usize = 150;
+        const MAXIMUM_TAG_LENGTH: usize = 200;
+        let agg_context_tags_size = MAXIMUM_TAGS_COUNT * MAXIMUM_TAG_LENGTH;
+
+        builder
+            .firm()
+            .with_fixed_amount(event_buffer_pool_size)
+            // Account for our context limiter map, which is just a `HashSet`.
+            .with_array::<AggregationContext>(self.context_limit)
+            .with_fixed_amount(self.context_limit * agg_context_tags_size)
+            // Account for the actual aggregation state map, where we map contexts to the merged metric.
+            //
+            // TODO: We're not considering the fact there could be multiple buckets here since that's rare, but it's
+            // something we may need to consider in the near term.
+            .with_map::<AggregationContext, (MetricValue, MetricMetadata)>(self.context_limit)
+            .with_fixed_amount(self.context_limit * agg_context_tags_size);
+    }
+}
+
 pub struct Aggregate {
     window_duration: Duration,
-    context_limit: Option<usize>,
+    context_limit: usize,
     flush_open_windows: bool,
 }
 
@@ -114,7 +149,7 @@ impl Transform for Aggregate {
         // events per event buffer. If we use the global event buffer pool, we risk churning through many event buffers,
         // having them reserve a lot of underlying capacity, and then having a ton of event buffers in the pool with
         // high capacity when we only need one every few seconds, etc.
-        let event_buffer_pool = FixedSizeBufferPool::<EventBuffer>::with_capacity(8);
+        let event_buffer_pool = FixedSizeBufferPool::<EventBuffer>::with_capacity(EVENT_BUFFER_POOL_SIZE);
 
         debug!("Aggregation transform started.");
 
@@ -248,14 +283,14 @@ impl Eq for AggregationContext {}
 
 struct AggregationState {
     contexts: AHashSet<AggregationContext>,
-    context_limit: Option<usize>,
+    context_limit: usize,
     #[allow(clippy::type_complexity)]
     buckets: Vec<(u64, AHashMap<AggregationContext, (MetricValue, MetricMetadata)>)>,
     bucket_width: Duration,
 }
 
 impl AggregationState {
-    fn new(bucket_width: Duration, context_limit: Option<usize>) -> Self {
+    fn new(bucket_width: Duration, context_limit: usize) -> Self {
         Self {
             contexts: AHashSet::default(),
             context_limit,
@@ -281,18 +316,13 @@ impl AggregationState {
     }
 
     fn insert(&mut self, metric: Metric) -> bool {
-        let context_limit_reached = self
-            .context_limit
-            .map(|limit| self.contexts.len() >= limit)
-            .unwrap_or(false);
-
         // Split the metric into its constituent parts, so that we can create the aggregation context object.
         let (metric_context, metric_value, mut metric_metadata) = metric.into_parts();
         let context = AggregationContext::from_metric_context(metric_context, self.contexts.hasher());
 
         // If we haven't seen this context yet, track it.
         if !self.contexts.contains(&context) {
-            if context_limit_reached {
+            if self.contexts.len() >= self.context_limit {
                 return false;
             }
 

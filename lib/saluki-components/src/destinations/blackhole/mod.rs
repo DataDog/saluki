@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::components::destinations::*;
 use saluki_error::GenericError;
 use saluki_event::DataType;
@@ -22,6 +23,10 @@ impl DestinationBuilder for BlackholeConfiguration {
     async fn build(&self) -> Result<Box<dyn Destination + Send>, GenericError> {
         Ok(Box::new(Blackhole))
     }
+}
+
+impl MemoryBounds for BlackholeConfiguration {
+    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
 }
 
 struct Blackhole;

@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_error::GenericError;
 use saluki_event::DataType;
 
@@ -40,6 +41,10 @@ impl SourceBuilder for TestSourceBuilder {
     async fn build(&self) -> Result<Box<dyn Source + Send>, GenericError> {
         Ok(Box::new(TestSource))
     }
+}
+
+impl MemoryBounds for TestSourceBuilder {
+    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
 }
 
 struct TestTransform;
@@ -94,6 +99,10 @@ impl TransformBuilder for TestTransformBuilder {
     }
 }
 
+impl MemoryBounds for TestTransformBuilder {
+    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+}
+
 struct TestDestination;
 
 #[async_trait]
@@ -122,4 +131,8 @@ impl DestinationBuilder for TestDestinationBuilder {
     async fn build(&self) -> Result<Box<dyn Destination + Send>, GenericError> {
         Ok(Box::new(TestDestination))
     }
+}
+
+impl MemoryBounds for TestDestinationBuilder {
+    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
 }

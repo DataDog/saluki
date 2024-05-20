@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{components::transforms::*, topology::OutputDefinition};
 use saluki_error::GenericError;
 use saluki_event::DataType;
@@ -26,6 +27,15 @@ impl ChainedConfiguration {
     {
         self.transform_builders.push(Box::new(transform_builder));
         self
+    }
+}
+
+impl MemoryBounds for ChainedConfiguration {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        for (i, transform_builder) in self.transform_builders.iter().enumerate() {
+            let mut subtransform_builder = builder.component(i.to_string());
+            transform_builder.specify_bounds(&mut subtransform_builder);
+        }
     }
 }
 

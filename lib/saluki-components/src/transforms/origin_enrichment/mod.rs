@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::transforms::*,
@@ -99,6 +100,10 @@ where
             tag_cardinality: self.tag_cardinality,
         }))
     }
+}
+
+impl<E> MemoryBounds for OriginEnrichmentConfiguration<E> {
+    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
 }
 
 pub struct OriginEnrichment<E> {
