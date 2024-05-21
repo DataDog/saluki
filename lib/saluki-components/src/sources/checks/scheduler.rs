@@ -8,6 +8,7 @@ use pyo3::types::PyDict;
 use pyo3::types::PyList;
 use pyo3::types::PyType;
 use saluki_error::{generic_error, GenericError};
+use tracing::trace;
 
 struct CheckHandle(Py<PyAny>);
 
@@ -153,7 +154,7 @@ impl CheckScheduler {
                 .dict()
                 .iter()
                 .filter(|(name, value)| {
-                    debug!(
+                    trace!(
                         "Found {name}: {value}, with type {t}",
                         t = value.get_type().name().unwrap_or(std::borrow::Cow::Borrowed("unknown"))
                     );
@@ -161,7 +162,7 @@ impl CheckScheduler {
                         Ok(c) => c,
                         Err(_) => return false,
                     };
-                    debug!("Found a class: {class_bound}");
+                    trace!("Found a class: {class_bound}");
                     if class_bound.is(base_class) {
                         // skip the base class
                         return false;
@@ -247,6 +248,7 @@ impl CheckScheduler {
 
         for (idx, instance) in check.check_request.instances.iter().enumerate() {
             let instance = instance.clone();
+            let init_config = check.check_request.init_config.clone();
 
             let check_handle = check_handle.clone();
             let handle = tokio::task::spawn(async move {
@@ -257,7 +259,7 @@ impl CheckScheduler {
                     // run check
                     info!("Running check instance {idx}");
                     pyo3::Python::with_gil(|py| {
-                        let instance_as_pydict = instance.into_pydict(&py);
+                        let instance_as_pydict = instance.to_pydict(&py);
 
                         let instance_list = PyList::new_bound(py, &[instance_as_pydict]);
                         let kwargs = PyDict::new_bound(py);
@@ -265,7 +267,7 @@ impl CheckScheduler {
                             .set_item("name", "placeholder_check_name")
                             .expect("Could not set name");
                         kwargs
-                            .set_item("init_config", PyDict::new_bound(py))
+                            .set_item("init_config", init_config.to_pydict(&py))
                             .expect("could not set init_config"); // todo this is in the check request maybe
                         kwargs
                             .set_item("instances", instance_list)

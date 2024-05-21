@@ -63,7 +63,7 @@ fn default_check_config_dir() -> String {
 struct CheckRequest {
     name: Option<String>,
     instances: Vec<CheckInstanceConfiguration>,
-    init_config: Option<serde_yaml::Value>,
+    init_config: CheckInitConfiguration,
     source: CheckSource,
 }
 
@@ -119,8 +119,28 @@ impl Display for RunnableCheckRequest {
 #[derive(Debug, Deserialize)]
 struct YamlCheckConfiguration {
     name: Option<String>,
-    init_config: Option<serde_yaml::Value>,
-    instances: Vec<serde_yaml::Value>,
+    init_config: Option<serde_yaml::Mapping>,
+    instances: Vec<serde_yaml::Mapping>,
+}
+
+fn map_to_pydict<'py>(
+    map: &HashMap<String, serde_yaml::Value>, p: &'py pyo3::Python,
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    let dict = pyo3::types::PyDict::new_bound(*p);
+    for (key, value) in map {
+        let value = serde_value_to_pytype(value, p)?;
+        dict.set_item(key, value)?;
+    }
+    Ok(dict)
+}
+
+#[derive(Debug, Clone)]
+struct CheckInitConfiguration(HashMap<String, serde_yaml::Value>);
+
+impl CheckInitConfiguration {
+    fn to_pydict<'py>(&self, p: &'py pyo3::Python) -> Bound<'py, pyo3::types::PyDict> {
+        map_to_pydict(&self.0, p).expect("Could convert")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -134,14 +154,8 @@ impl CheckInstanceConfiguration {
             .unwrap_or_else(default_min_collection_interval_ms)
     }
 
-    fn into_pydict<'a, 'py>(&'a self, p: &'py pyo3::Python) -> Bound<'py, pyo3::types::PyDict> {
-        let dict = pyo3::types::PyDict::new_bound(*p);
-
-        for (key, value) in &self.0 {
-            let value = serde_value_to_pytype(value, p).expect("Could convert");
-            dict.set_item(key, value).expect("can't add");
-        }
-        dict
+    fn to_pydict<'py>(&self, p: &'py pyo3::Python) -> Bound<'py, pyo3::types::PyDict> {
+        map_to_pydict(&self.0, p).expect("Could convert")
     }
 }
 
@@ -215,10 +229,21 @@ impl CheckSource {
                         return Err(Error::CantReadConfiguration { source: e });
                     }
                 };
+                let init_config = if let Some(init_config) = read_yaml.init_config {
+                    let mapping: serde_yaml::Mapping = init_config;
+
+                    let map: HashMap<String, serde_yaml::Value> = mapping
+                        .into_iter()
+                        .map(|(k, v)| (k.as_str().expect("Only string instance config keys").to_string(), v))
+                        .collect();
+
+                    CheckInitConfiguration(map)
+                } else {
+                    CheckInitConfiguration(HashMap::new())
+                };
 
                 for instance in read_yaml.instances.into_iter() {
-                    let mapping: serde_yaml::Mapping =
-                        instance.as_mapping().expect("Only mapping instance configs").to_owned();
+                    let mapping: serde_yaml::Mapping = instance.to_owned();
 
                     let map: HashMap<String, serde_yaml::Value> = mapping
                         .into_iter()
@@ -231,7 +256,7 @@ impl CheckSource {
                 Ok(CheckRequest {
                     name: read_yaml.name,
                     instances: checks_config,
-                    init_config: read_yaml.init_config,
+                    init_config,
                     source: self.clone(),
                 })
             }
