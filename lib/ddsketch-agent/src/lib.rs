@@ -135,12 +135,12 @@ impl Default for Config {
 
 /// A sketch bin.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct Bin {
+pub struct Bin {
     /// The bin index.
-    k: i16,
+    pub k: i16,
 
     /// The number of observations within the bin.
-    n: u16,
+    pub n: u16,
 }
 
 impl Bin {
@@ -215,13 +215,13 @@ pub struct DDSketch {
 }
 
 impl DDSketch {
-    #[cfg(test)]
-    fn bin_count(&self) -> usize {
+    /// Number of bins in the sketch.
+    pub fn bin_count(&self) -> usize {
         self.bins.len()
     }
 
-    #[cfg(test)]
-    fn bins(&self) -> &[Bin] {
+    /// List of bins in the sketch.
+    pub fn bins(&self) -> &[Bin] {
         &self.bins
     }
 
