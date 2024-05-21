@@ -44,16 +44,23 @@ All remaining crates are part of Saluki itself, and all have a name with the pre
 
 ### Saluki Components
 #### Checks
-Experimental support for python checks is present if there is a local `./dist/conf.d`
-folder present with a valid python check and yaml config file with the same
-name.
+Python checks can be loaded and executed from the active venv via yaml config files in `./dist/conf.d`.
+
+Local python checks can be placed in `./dist/foo.py` and configured via `./dist/conf.d/foo.yaml`.
 
 pyo3 is used to provide python support, which works off of your system's python
-install, `sudo apt install libpython3-devel` (todo double check this)
+install, `sudo apt install libpython3-devel` (todo double check the package name)
 
-a venv is present that must have the following installed:
-- `pip3 install datadog_checks_base`
-- `pip3 install datadog_checks_base[deps]`
+todo update instructions with full integrations-core package installation
+```
+#pip install datadog_checks_base # maybe not needed bc its a dependency
+#pip install datadog_checks_base[deps] # maybe not needed bc its a dependency
+cp $HOME/dev/integrations-core/requirements-agent-release.txt .
+pip install -r $(awk -v local_path_base="$HOME/dev/integrations-core" '{sub(/^datadog-/, "", $1); gsub(/-/, "_", $1); split($1, parts, "=="); package_name = parts[1]; if (index(package_name, "checks_") != 1) {local_path = local_path_base "/" package_name "/"; print local_path}}' requirements-agent-release.txt)
+# One error
+# ERROR: Package 'datadog-tokumx' requires a different Python: 3.10.12 not in '==2.7.*'
+# Not bad.
+```
 
 ## Contributing
 
