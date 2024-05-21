@@ -26,6 +26,13 @@ impl MetricTagValue {
         }
     }
 
+    fn len(&self) -> usize {
+        match self {
+            Self::Single(_) => 1,
+            Self::Multiple(values) => values.len(),
+        }
+    }
+
     pub fn values(&self) -> &[String] {
         match self {
             Self::Single(value) => std::slice::from_ref(value),
@@ -186,7 +193,18 @@ pub enum MetricTag {
     KeyValue { key: String, value: MetricTagValue },
 }
 
+#[allow(clippy::len_without_is_empty)]
 impl MetricTag {
+    /// Returns the number of tag values.
+    ///
+    /// For bare tags, this is always one. For key/value tags, this is the number of values that the tag holds.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Bare(_) => 1,
+            Self::KeyValue { value, .. } => value.len(),
+        }
+    }
+
     /// Returns the key of this tag.
     ///
     /// Bare tags are returned as-is, while key/value tags return the key.
@@ -348,12 +366,12 @@ impl MetricTags {
         self.0.is_empty()
     }
 
-    /// Gets the number of unique tag keys.
+    /// Gets the number of tags.
     ///
-    /// This does not account for the total number of tags that might be emitted, as multi-value tags could result in a
-    /// distinct tag being emitted for each value (i.e. key:[value1,value] might be sent as key:value1,key:value2).
+    /// This accounts for multi-value tags, such that for each key/value tag, the number of values held is used. Bare
+    /// tags always count as one.
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.0.iter().map(|t| t.len()).sum()
     }
 
     fn find_tag(&self, other: &MetricTag) -> Option<usize> {

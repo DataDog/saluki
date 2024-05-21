@@ -16,7 +16,7 @@ const AGENT_DEFAULT_MIN_VALUE: f64 = 1.0e-9;
 const UV_INF: i16 = i16::MAX;
 const MAX_KEY: i16 = UV_INF;
 
-const INITIAL_BINS: u16 = 128;
+const INITIAL_BINS: u16 = 0;
 const MAX_BIN_WIDTH: u16 = u16::MAX;
 
 #[inline]
@@ -433,6 +433,16 @@ impl DDSketch {
         self.adjust_basic_stats(v, 1);
 
         let key = self.config.key(v);
+
+        // Fast path for adding to an existing bin.
+        for b in &mut self.bins {
+            if b.k == key && b.n < MAX_BIN_WIDTH {
+                b.n += 1;
+                return;
+            }
+        }
+
+        // Slow path could be also optimized.
         self.insert_keys(vec![key]);
     }
 
@@ -699,7 +709,7 @@ impl PartialEq for DDSketch {
 impl Default for DDSketch {
     fn default() -> Self {
         let config = Config::default();
-        let initial_bins = cmp::max(INITIAL_BINS, config.bin_limit) as usize;
+        let initial_bins = cmp::min(INITIAL_BINS, config.bin_limit) as usize;
 
         Self {
             config,

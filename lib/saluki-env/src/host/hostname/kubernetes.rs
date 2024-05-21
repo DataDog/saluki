@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use k8s_openapi::api::core::v1::Pod;
-use kube::{Api, Client};
+use kube::{Api, Client, Config};
 use tokio::fs;
 use tracing::debug;
 
@@ -11,18 +11,32 @@ use super::HostnameProvider;
 /// This provider will only work when running in a Kubernetes environment. The hostname returned will be the name of the
 /// node where this provider is running.
 ///
-/// Will attempt to read API credentials and connection information from the local kubeconfig first (specified either by
-/// `$KUBECONFIG` or the default location `~/.kube/config`), and then from the in-cluster service environment variables
-/// (e.g. `KUBERNETES_SERVICE_HOST`).
+/// Will attempt to read API credentials and connection information from the in-cluster service environment variables
+/// (e.g. `KUBERNETES_SERVICE_HOST`). If these cannot be found, we assume that we're not running within Kubernetes, and
+/// the provider will not return a hostname.
 pub struct KubernetesHostnameProvider;
 
 #[async_trait]
 impl HostnameProvider for KubernetesHostnameProvider {
     async fn get_hostname(&self) -> Option<String> {
-        let client = match Client::try_default().await {
+        let config = match Config::incluster() {
+            Ok(config) => config,
+            Err(e) => {
+                debug!(
+                    error = %e,
+                    "Failed to read Kubernetes API configuration from environment. Likely not running in Kubernetes."
+                );
+                return None;
+            }
+        };
+
+        let client = match Client::try_from(config) {
             Ok(client) => client,
-            Err(_) => {
-                debug!("Failed to create Kuberenetes API client. Likely not running in Kubernetes.");
+            Err(e) => {
+                debug!(
+                    error = %e,
+                    "Failed to create Kubernetes API client from environment configuration. Likely not running in Kubernetes."
+                );
                 return None;
             }
         };

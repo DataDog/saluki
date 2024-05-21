@@ -6,6 +6,8 @@ license = "Apache-2.0"
 
 [dependencies]
 ordered-float = { workspace = true }
+snafu = { workspace = true }
+ubyte = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true, features = ["std"] }

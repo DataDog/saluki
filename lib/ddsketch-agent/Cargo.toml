@@ -10,8 +10,14 @@ float_eq = { workspace = true }
 ordered-float = { workspace = true }
 
 [dev-dependencies]
-rand = { workspace = true }
-rand_distr = { workspace = true }
+criterion = { workspace = true }
+dhat = { workspace = true }
 ndarray = { workspace = true }
 ndarray-stats = { workspace = true }
 noisy_float = { workspace = true }
+rand = { workspace = true, features = ["small_rng"] }
+rand_distr = { workspace = true }
+
+[[bench]]
+name = "insert"
+harness = false

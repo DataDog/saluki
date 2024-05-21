@@ -1,15 +1,17 @@
 use std::{cmp, collections::HashMap};
 
-use crate::{MemoryGrant, VerifiedBounds};
+use snafu::{ResultExt as _, Snafu};
+
+use crate::{grant::GrantError, MemoryGrant, VerifiedBounds};
 
 /// Partitioning mode.
 pub enum PartitionMode {
-    /// Partitions memory based on the weight (soft limit) of each component.
+    /// Partitions memory based on the weight (firm limit) of each component.
     ///
-    /// From the overall grant, a scale factor is determined based on the sum of all component soft limits. That scale
+    /// From the overall grant, a scale factor is determined based on the sum of all component firm limits. That scale
     /// factor is then applied to determine each component's individual grant.
     ///
-    /// For example, if there two components with a soft limit of 100 and 500 bytes, respectively, their total is 600
+    /// For example, if there two components with a firm limit of 100 and 500 bytes, respectively, their total is 600
     /// bytes. If the overall grant is 2400 bytes, then the scale factor is 2400 / 600, or 4. The first component would
     /// then be granted 400 (100 * 4) bytes, and the second component would be granted 2000 (500 * 4) bytes.
     Scaled,
@@ -20,29 +22,32 @@ pub enum PartitionMode {
     /// be granted less than its minimum required bytes, then that component will be granted only its minimum required
     /// bytes, and all remaining memory will be partitioned uniformly.
     ///
-    /// This logic is applied iteratively, based on a sorted iteration of components, where higher soft limits are
+    /// This logic is applied iteratively, based on a sorted iteration of components, where higher firm limits are
     /// ordered first.
     AllEqual,
 }
 
 /// Partitioner error.
-#[derive(Debug)]
+#[derive(Debug, Snafu)]
+#[snafu(context(suffix(false)))]
 pub enum PartitionerError {
     /// A invalid grant was requested.
-    InvalidGrant { grant_amount: usize },
+    #[snafu(display("Failed to create grant of {} bytes: {}", grant_amount, source))]
+    InvalidGrant { grant_amount: usize, source: GrantError },
 
     /// Insufficient capacity was available when partitioning a grant for a specific component.
+    #[snafu(display("Insufficient capacity available for partitioning: {}", reason))]
     InsufficientCapacity { reason: String },
 }
 
 /// Memory partitioner.
-pub struct MemoryPartitioner<'a> {
-    verified_bounds: VerifiedBounds<'a>,
+pub struct MemoryPartitioner {
+    verified_bounds: VerifiedBounds,
 }
 
-impl<'a> MemoryPartitioner<'a> {
+impl MemoryPartitioner {
     /// Create a new memory partitioner based on verified memory bounds.
-    pub fn from_verified_bounds(verified_bounds: VerifiedBounds<'a>) -> Self {
+    pub fn from_verified_bounds(verified_bounds: VerifiedBounds) -> Self {
         Self { verified_bounds }
     }
 
@@ -55,28 +60,28 @@ impl<'a> MemoryPartitioner<'a> {
     }
 
     fn calculate_scaled_partitions(&self) -> Result<HashMap<String, MemoryGrant>, PartitionerError> {
-        let total_soft_limit = self
+        let total_firm_limit = self
             .verified_bounds
             .components()
-            .map(|(_, c)| c.soft_limit())
+            .map(|(_, cb)| cb.firm_limit)
             .sum::<usize>();
         let mut available_bytes = self.verified_bounds.available_bytes();
         let total_components = self.verified_bounds.components_len();
 
-        let scale_factor = available_bytes as f64 / total_soft_limit as f64;
+        let scale_factor = available_bytes as f64 / total_firm_limit as f64;
 
         let mut partitioned = HashMap::new();
-        for (i, (component_name, component)) in self.verified_bounds.components().enumerate() {
-            let soft_limit = component.soft_limit();
+        for (i, (component_name, component_bounds)) in self.verified_bounds.components().enumerate() {
+            let firm_limit = component_bounds.firm_limit;
             let granted_bytes = if i == total_components - 1 {
                 available_bytes
             } else {
-                (soft_limit as f64 * scale_factor) as usize
+                (firm_limit as f64 * scale_factor) as usize
             };
 
             available_bytes -= granted_bytes;
 
-            let grant = MemoryGrant::effective(granted_bytes).ok_or(PartitionerError::InvalidGrant {
+            let grant = MemoryGrant::effective(granted_bytes).context(InvalidGrant {
                 grant_amount: granted_bytes,
             })?;
 
@@ -89,21 +94,21 @@ impl<'a> MemoryPartitioner<'a> {
     fn calculate_all_equal_partitions(&self) -> Result<HashMap<String, MemoryGrant>, PartitionerError> {
         let total_components = self.verified_bounds.components_len();
 
-        // Get a list of components sorted by soft limit, with the highest first.
+        // Get a list of components sorted by firm limit, with the highest first.
         let mut sorted_components = self.verified_bounds.components().collect::<Vec<_>>();
-        sorted_components.sort_by(|(_, a), (_, b)| b.soft_limit().cmp(&a.soft_limit()));
+        sorted_components.sort_by(|(_, a), (_, b)| b.firm_limit.cmp(&a.firm_limit));
 
         let mut available_bytes = self.verified_bounds.available_bytes();
         let mut equal_split = available_bytes / total_components;
 
         let mut partitioned = HashMap::new();
 
-        for (i, (component_name, component)) in sorted_components.iter().enumerate() {
-            // Figure out if the equal split amount is enough to satisfy the soft limit or not. If not, we have to
+        for (i, (component_name, component_bounds)) in sorted_components.iter().enumerate() {
+            // Figure out if the equal split amount is enough to satisfy the firm limit or not. If not, we have to
             // adjust our grant upwards, while removing those number of bytes from `available_bytes`.
-            let soft_limit_bytes = component.soft_limit();
-            let (granted_bytes, exceeded_equal_split) = if soft_limit_bytes > equal_split {
-                (soft_limit_bytes, true)
+            let firm_limit_bytes = component_bounds.firm_limit;
+            let (granted_bytes, exceeded_equal_split) = if firm_limit_bytes > equal_split {
+                (firm_limit_bytes, true)
             } else {
                 (equal_split, false)
             };
@@ -130,7 +135,7 @@ impl<'a> MemoryPartitioner<'a> {
             // components before continuing.
             available_bytes -= granted_bytes;
 
-            let grant = MemoryGrant::effective(granted_bytes).ok_or(PartitionerError::InvalidGrant {
+            let grant = MemoryGrant::effective(granted_bytes).context(InvalidGrant {
                 grant_amount: granted_bytes,
             })?;
             partitioned.insert(component_name.to_string(), grant);
@@ -157,7 +162,7 @@ mod tests {
     fn components(components: &[(&str, usize)]) -> HashMap<String, BoundedComponent> {
         components
             .iter()
-            .map(|(name, soft_limit)| (name.to_string(), BoundedComponent::new(None, *soft_limit)))
+            .map(|(name, firm_limit)| (name.to_string(), BoundedComponent::new(None, *firm_limit)))
             .collect()
     }
 
@@ -165,9 +170,7 @@ mod tests {
         MemoryGrant::effective(n).expect("should never create invalid grants in tests")
     }
 
-    fn create_verified_bounds(
-        grant: MemoryGrant, components: &HashMap<String, BoundedComponent>,
-    ) -> VerifiedBounds<'_> {
+    fn create_verified_bounds(grant: MemoryGrant, components: &HashMap<String, BoundedComponent>) -> VerifiedBounds {
         let mut verifier = BoundsVerifier::from_grant(grant);
         for (component_name, component) in components {
             verifier.add_component(component_name.clone(), component);
@@ -193,8 +196,8 @@ mod tests {
         const SCALE_FACTOR: usize = 4;
 
         // We generate an overall grant, and then from that grant, slice it into an arbitrary number (at least one) of
-        // components. Each component's soft limit is based on the sliced up portion of the overall grant, such that the
-        // combination of all component's soft limits should be equal to the overall grant.
+        // components. Each component's firm limit is based on the sliced up portion of the overall grant, such that the
+        // combination of all component's firm limits should be equal to the overall grant.
         //
         // We then generate a "scaled grant", which is anywhere from the overall grant to 4X the overall grant. This is
         // to exercise the scaling logic in the partitioner.
@@ -295,7 +298,7 @@ mod tests {
     proptest! {
         #[test]
         fn property_test_partition_all_equal((overall_grant, components) in arb_bounded_components()) {
-            // What we're exercising here is that regardless of the ordering of components, their soft limits, and so
+            // What we're exercising here is that regardless of the ordering of components, their firm limits, and so
             // on, we always grant all bytes from the overall grant to the configured components, such that there are
             // never any leftover bytes from the overall grant.
             let total_grant_bytes = overall_grant.effective_limit_bytes();

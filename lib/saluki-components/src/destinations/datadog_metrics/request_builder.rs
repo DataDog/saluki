@@ -11,7 +11,7 @@ use saluki_core::buffers::BufferPool;
 use saluki_event::metric::*;
 use saluki_io::{buf::ChunkedBytesBuffer, compression::*};
 
-const SCRATCH_BUF_CAPACITY: usize = 8192;
+pub(super) const SCRATCH_BUF_CAPACITY: usize = 8192;
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]

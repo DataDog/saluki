@@ -4,3 +4,5 @@ tooling/bin/
 test/k8s/charts/
 test/build
 dist/checks.d/__pycache__
+test/build/
+lib/ddsketch-agent/dhat-heap.json

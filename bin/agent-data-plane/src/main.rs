@@ -8,6 +8,7 @@ mod env_provider;
 
 use std::time::{Duration, Instant};
 
+use memory_accounting::{BoundsVerifier, MemoryBounds, MemoryBoundsBuilder, MemoryGrant};
 use saluki_components::{
     destinations::DatadogMetricsConfiguration,
     sources::{ChecksConfiguration, DogStatsDConfiguration, InternalMetricsConfiguration},
@@ -15,15 +16,16 @@ use saluki_components::{
         AggregateConfiguration, ChainedConfiguration, HostEnrichmentConfiguration, OriginEnrichmentConfiguration,
     },
 };
-use saluki_config::ConfigurationLoader;
-use saluki_error::GenericError;
-use tracing::{error, info};
+use saluki_config::{ConfigurationLoader, GenericConfiguration};
+use saluki_error::{ErrorContext as _, GenericError};
+use tracing::{error, info, warn};
 
 use saluki_app::{
     logging::{fatal_and_exit, initialize_logging},
     metrics::initialize_metrics,
 };
 use saluki_core::topology::blueprint::TopologyBlueprint;
+use ubyte::{ByteUnit, ToByteUnit as _};
 
 use crate::env_provider::ADPEnvironmentProvider;
 
@@ -103,6 +105,9 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         .connect_component("internal_metrics_agg", ["internal_metrics_in"])?
         .connect_component("enrich", ["dsd_agg", "internal_metrics_agg", "checks_agg"])?
         .connect_component("dd_metrics_out", ["enrich"])?;
+
+    verify_memory_bounds(&configuration, &blueprint)?;
+
     let built_topology = blueprint.build().await?;
     let running_topology = built_topology.spawn().await?;
 
@@ -118,4 +123,48 @@ async fn run(started: Instant) -> Result<(), GenericError> {
     info!("Received SIGINT, shutting down...");
 
     running_topology.shutdown().await
+}
+
+fn verify_memory_bounds(
+    configuration: &GenericConfiguration, blueprint: &TopologyBlueprint,
+) -> Result<(), GenericError> {
+    let memory_limit = match configuration
+        .try_get_typed::<ByteUnit>("memory_limit")
+        .error_context("Failed to parse memory limit setting.")?
+    {
+        Some(limit) => limit,
+        None => {
+            info!("No memory limit set for the process. Skipping memory bounds verification.");
+            return Ok(());
+        }
+    };
+
+    let slop_factor = configuration
+        .try_get_typed::<f64>("memory_slop_factor")
+        .error_context("Failed to get memory slop factor setting.")?
+        .unwrap_or(0.25);
+
+    let initial_grant = MemoryGrant::with_slop_factor(memory_limit.as_u64() as usize, slop_factor)?;
+    let mut bounds_builder = MemoryBoundsBuilder::new();
+    let mut blueprint_builder = bounds_builder.component("topology");
+    blueprint.specify_bounds(&mut blueprint_builder);
+    let component_bounds = bounds_builder.finalize();
+
+    let bounds_verifier = BoundsVerifier::new(initial_grant, component_bounds);
+    match bounds_verifier.verify() {
+        Ok(verified_bounds) => {
+            info!(
+                "Verified memory bounds. Minimum memory requirement of {}, with a calculated firm memory bound of {} out of {} available, out of an initial {} grant.",
+                verified_bounds.total_minimum_required_bytes().bytes(),
+                verified_bounds.total_firm_limit_bytes().bytes(),
+                verified_bounds.total_available_bytes().bytes(),
+                initial_grant.initial_limit_bytes().bytes(),
+            );
+        }
+        Err(e) => {
+            warn!("Failed to verify memory bounds: {}", e);
+        }
+    }
+
+    Ok(())
 }
