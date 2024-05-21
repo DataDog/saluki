@@ -46,8 +46,27 @@ fn lower_bound(gamma_v: f64, bias: i32, k: i16) -> f64 {
     pow_gamma(gamma_v, f64::from(i32::from(k) - bias))
 }
 
+/// This is wrong ✨
+#[inline]
+fn upper_bound(gamma_v: f64, bias: i32, k: i16) -> f64 {
+    if k < 0 {
+        return -upper_bound(gamma_v, bias, -k);
+    }
+
+    if k == MAX_KEY {
+        return f64::INFINITY;
+    }
+
+    if k == 0 {
+        return 0.0;
+    }
+
+    pow_gamma(gamma_v, f64::from(i32::from(k + 1) - bias))
+}
+
+/// Word.
 #[derive(Copy, Clone, Debug, PartialEq)]
-struct Config {
+pub struct Config {
     bin_limit: u16,
     // gamma_ln is the natural log of gamma_v, used to speed up calculating log base gamma.
     gamma_v: f64,
@@ -98,6 +117,11 @@ impl Config {
         lower_bound(self.gamma_v, self.norm_bias, k)
     }
 
+    /// Gets the value upper bound of the bin at the given key.
+    pub fn bin_upper_bound(&self, k: i16) -> f64 {
+        upper_bound(self.gamma_v, self.norm_bias, k)
+    }
+
     /// Gets the key for the given value.
     ///
     /// The key corresponds to the bin where this value would be represented. The value returned here is such that: γ^k
@@ -122,6 +146,7 @@ impl Config {
         key.clamp(1, i32::from(MAX_KEY)) as i16
     }
 
+    /// Word.
     pub fn log_gamma(&self, v: f64) -> f64 {
         log_gamma(self.gamma_ln, v)
     }
@@ -215,6 +240,11 @@ pub struct DDSketch {
 }
 
 impl DDSketch {
+    /// Get sketch config
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
     /// Number of bins in the sketch.
     pub fn bin_count(&self) -> usize {
         self.bins.len()
