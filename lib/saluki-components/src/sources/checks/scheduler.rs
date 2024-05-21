@@ -1,5 +1,3 @@
-use std::fs;
-
 use super::python_exposed_modules::aggregator as pyagg;
 use super::python_exposed_modules::datadog_agent;
 use super::*;
@@ -44,7 +42,7 @@ impl CheckScheduler {
             syspath.insert(0, Path::new("./dist/"))?; // path.GetDistPath()
             syspath.insert(0, Path::new("./dist/checks.d/"))?; // custom checks in checks.d subdir
                                                                // syspath.insert(0, config.get('additional_checksd'))?; // config option not supported yet
-            println!("Import path is: {:?}", syspath);
+            debug!("Python sys.path is: {:?}", syspath);
 
             // Initialize the aggregator module with the submission queue
             match py.import_bound("aggregator") {
@@ -72,10 +70,10 @@ impl CheckScheduler {
             let modd = match py.import_bound("datadog_checks.checks") {
                 Ok(m) => m,
                 Err(e) => {
-                    let traceback = e
-                        .traceback_bound(py)
-                        .expect("Traceback should be present on this error");
-                    error!(%e, "Could not import datadog_checks module. traceback: {}", traceback.format().expect("Could format traceback"));
+                    error!(%e, "Could not import datadog_checks module");
+                    if let Some(traceback) = e.traceback_bound(py) {
+                        error!("Traceback: {}", traceback.format().expect("Could format traceback"));
+                    }
                     return Err(generic_error!("Could not import 'datadog_checks' module"));
                 }
             };
@@ -84,10 +82,10 @@ impl CheckScheduler {
                     agent_check_base_class = Some(c.unbind());
                 }
                 Err(e) => {
-                    let traceback = e
-                        .traceback_bound(py)
-                        .expect("Traceback should be present on this error");
-                    error!(%e, "Could not get AgentCheck class. traceback: {}", traceback.format().expect("Could format traceback"));
+                    error!(%e, "Could not get AgentCheck class.");
+                    if let Some(traceback) = e.traceback_bound(py) {
+                        error!("Traceback: {}", traceback.format().expect("Could format traceback"));
+                    }
                     return Err(generic_error!("Could not find 'AgentCheck' class"));
                 }
             };
@@ -108,7 +106,7 @@ impl CheckScheduler {
         let check_handle = match self.register_check_impl(check) {
             Ok(h) => h,
             Err(e) => {
-                error!(%e, "Could not register check {}", check.module_name);
+                error!(%e, "Could not register check {}", check.check_request.module_name);
                 return Err(e);
             }
         };
@@ -126,22 +124,20 @@ impl CheckScheduler {
     }
 
     fn register_check_impl(&mut self, check: &RunnableCheckRequest) -> Result<CheckHandle, GenericError> {
-        let check_name = &check.module_name;
+        let check_module_name = &check.check_request.module_name;
         // if there is a specific source, then this will populate into locals and can be found
-        if let Some(py_source_path) = &check.check_source_code {
-            let py_source = fs::read_to_string(py_source_path)
-                .map_err(|e| generic_error!("Could not read check source file: {}", e))?;
-            return self.register_check_with_source(py_source);
+        if let Some(py_source) = &check.check_source_code {
+            return self.register_check_with_source(py_source.clone());
         }
-        for import_str in &[&check.module_name, &format!("datadog_checks.{}", check.module_name)] {
+        for import_str in &[&check_module_name, &&format!("datadog_checks.{}", check_module_name)] {
             match self.register_check_from_imports(import_str) {
                 Ok(handle) => return Ok(handle),
                 Err(e) => {
-                    error!(%e, "Could not find check {check_name} from imports");
+                    error!(%e, "Could not find check {check_module_name} from imports");
                 }
             }
         }
-        Err(generic_error!("Could not find class for check {check_name}"))
+        Err(generic_error!("Could not find class for check {check_module_name}"))
     }
 
     fn register_check_from_imports(&mut self, import_path: &str) -> Result<CheckHandle, GenericError> {
@@ -193,10 +189,10 @@ impl CheckScheduler {
             match py.run_bound(&py_source, None, Some(&locals)) {
                 Ok(_) => {}
                 Err(e) => {
-                    let traceback = e
-                        .traceback_bound(py)
-                        .expect("Traceback should be present on this error");
-                    error!(%e, "Could not compile check source. traceback: {}", traceback.format().expect("Could format traceback"));
+                    error!(%e, "Could not compile check source");
+                    if let Some(traceback) = e.traceback_bound(py) {
+                        error!("Traceback: {}", traceback.format().expect("Could format traceback"));
+                    }
                     return Err(generic_error!("Could not compile check source"));
                 }
             };
@@ -237,20 +233,23 @@ impl CheckScheduler {
     //    queues a run of the check every min_collection_interval_ms
     // 3. Stores the handles in the running hashmap
     pub fn run_check(&mut self, check: RunnableCheckRequest) -> Result<(), GenericError> {
-        // registry should probably queue off of checkhandle
-        //let current = self.running.entry(check.check_request.source.clone()).or_default();
-
         let check_handle = self.register_check(&check)?;
         let running_entry = self
             .running
             .entry(check.check_request.source)
             .or_insert((check_handle.clone(), Vec::new()));
 
+        info!(
+            "Running check {mname} with {num_instances} instances",
+            mname = check.check_request.module_name,
+            num_instances = check.check_request.instances.len()
+        );
         for (idx, instance) in check.check_request.instances.iter().enumerate() {
             let instance = instance.clone();
             let init_config = check.check_request.init_config.clone();
 
             let check_handle = check_handle.clone();
+            debug!("Spawning task for check instance {idx}");
             let handle = tokio::task::spawn(async move {
                 let mut interval =
                     tokio::time::interval(Duration::from_millis(instance.min_collection_interval_ms().into()));
@@ -268,7 +267,7 @@ impl CheckScheduler {
                             .expect("Could not set name");
                         kwargs
                             .set_item("init_config", init_config.to_pydict(&py))
-                            .expect("could not set init_config"); // todo this is in the check request maybe
+                            .expect("could not set init_config");
                         kwargs
                             .set_item("instances", instance_list)
                             .expect("could not set instance list");
@@ -276,10 +275,10 @@ impl CheckScheduler {
                         let pycheck = match check_handle.0.call_bound(py, (), Some(&kwargs)) {
                             Ok(c) => c,
                             Err(e) => {
-                                let traceback = e
-                                    .traceback_bound(py)
-                                    .expect("Traceback should be present on this error");
-                                error!(%e, "Could not instantiate check. traceback: {}", traceback.format().expect("Could format traceback"));
+                                error!(%e, "Could not instantiate check.");
+                                if let Some(traceback) = e.traceback_bound(py) {
+                                    error!("Traceback: {}", traceback.format().expect("Could format traceback"));
+                                }
                                 return;
                             }
                         };
@@ -317,6 +316,7 @@ mod tests {
     use super::super::*;
     use super::*;
     use tokio::sync::mpsc;
+    use tracing_test::traced_test;
 
     #[tokio::test]
     async fn test_new_check_scheduler() {
@@ -330,46 +330,42 @@ mod tests {
         let (sender, _) = mpsc::channel(10);
         let mut scheduler = CheckScheduler::new(sender).unwrap();
         let py_source = r#"
-            class MyCheck(AgentCheck):
-                def check(self, instance):
-                    pass
+from datadog_checks.checks import AgentCheck
+
+class MyCheck(AgentCheck):
+    def check(self, instance):
+        pass
         "#;
         let check_handle = scheduler.register_check_with_source(py_source.to_string()).unwrap();
-        assert_eq!(scheduler.running.len(), 1);
         pyo3::Python::with_gil(|py| {
             let check_class_ref = check_handle.0.bind(py);
             assert!(check_class_ref.is_callable());
         });
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_run_check() {
         let (sender, mut receiver) = mpsc::channel(10);
         let mut scheduler = CheckScheduler::new(sender).unwrap();
         let py_source = r#"
-            class MyCheck(AgentCheck):
-                def check(self, instance):
-                    self.gauge('test-metric-name', 41, tags=['hello:world'])
-                    pass
-        "#;
-        let source = CheckSource::Yaml((PathBuf::from("/tmp/my_check.yaml"), "instances: []".to_string()));
-        let check_request = CheckRequest {
-            name: None,
-            module_name: "my_check".to_string(),
-            source: source.clone(),
-            instances: vec![],
-            init_config: CheckInitConfiguration::default(),
-        };
+from datadog_checks.checks import AgentCheck
+
+class MyCheck(AgentCheck):
+    def check(self, instance):
+        self.gauge('test-metric-name', 41, tags=['hello:world'])"#;
+
+        let source = CheckSource::Yaml((PathBuf::from("/tmp/my_check.yaml"), "instances: [{}]".to_string()));
+        let check_request = source.to_check_request().unwrap();
+
         let runnable_check_request = RunnableCheckRequest {
-            module_name: "my_check".to_string(),
-            check_source_code: None, // put literal py code in here
+            check_source_code: Some(py_source.to_string()),
             check_request,
         };
+
         scheduler.run_check(runnable_check_request).unwrap();
         assert_eq!(scheduler.running.len(), 1);
         assert_eq!(scheduler.running.keys().next(), Some(&source));
 
-        // Simulate receiving a check metric
         let check_metric = CheckMetric {
             name: "test-metric-name".to_string(),
             metric_type: PyMetricType::Gauge,
@@ -380,29 +376,34 @@ mod tests {
         assert_eq!(check_from_channel, check_metric);
     }
 
-    /*
     #[tokio::test]
     async fn test_stop_check() {
-        let (sender, _) = mpsc::channel(10);
+        let (sender, mut receiver) = mpsc::channel(10);
         let mut scheduler = CheckScheduler::new(sender).unwrap();
-        let check_request = CheckRequest {
-            module_name: "my_check".to_string(),
-            name: Some("MyCheck".to_string()),
-            source: CheckSource::Yaml("my_check.py".to_string()),
-            instances: vec![],
-            init_config: CheckInitConfiguration::default(),
-        };
+        let py_source = r#"
+from datadog_checks.checks import AgentCheck
+
+class MyCheck(AgentCheck):
+    def check(self, instance):
+        self.gauge('test-metric-name', 41, tags=['hello:world'])"#;
+
+        let source = CheckSource::Yaml((PathBuf::from("/tmp/my_check.yaml"), "instances: [{}]".to_string()));
+        let check_request = source.to_check_request().unwrap();
+
         let runnable_check_request = RunnableCheckRequest {
-            module_name: "my_check".to_string(),
-            check_source_code: None,
-            check_request,
+            check_source_code: Some(py_source.to_string()),
+            check_request: check_request.clone(),
         };
 
         scheduler.run_check(runnable_check_request).unwrap();
         assert_eq!(scheduler.running.len(), 1);
+        assert_eq!(scheduler.running.keys().next(), Some(&source));
 
-        scheduler.stop_check(check_request).unwrap();
+        scheduler.stop_check(check_request);
         assert!(scheduler.running.is_empty());
+
+        receiver
+            .try_recv()
+            .expect_err("No check metrics should be received after stopping the check");
     }
-    */
 }

@@ -83,7 +83,6 @@ impl CheckRequest {
     fn to_runnable_request(&self) -> Result<RunnableCheckRequest, Error> {
         Ok(RunnableCheckRequest {
             check_request: self.clone(),
-            module_name: self.module_name.clone(),
             check_source_code: None,
         })
     }
@@ -91,13 +90,12 @@ impl CheckRequest {
 
 struct RunnableCheckRequest {
     check_request: CheckRequest,
-    module_name: String,
-    check_source_code: Option<PathBuf>,
+    check_source_code: Option<String>,
 }
 
 impl Display for RunnableCheckRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Request: {} CheckSource: {}", self.check_request, self.module_name)
+        write!(f, "Request: {}", self.check_request)
     }
 }
 

@@ -49,4 +49,5 @@ tracing = { workspace = true }
 url = { workspace = true }
 async-walkdir = "1.0.0"
 pyo3 = { version = "0.21.2", features = ["anyhow"] }
+tracing-test = "0.2.4"
 
