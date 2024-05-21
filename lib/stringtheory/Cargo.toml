@@ -1,0 +1,9 @@
+[package]
+name = "stringtheory"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ahash = { workspace = true }
+bytes = { workspace = true }
+protobuf = { workspace = true }
