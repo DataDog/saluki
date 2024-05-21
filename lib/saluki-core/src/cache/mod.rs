@@ -137,6 +137,10 @@ impl ReclaimedEntry {
     const fn capacity(&self) -> usize {
         self.end + 1 - self.start
     }
+
+    const fn followed_by(&self, other: &Self) -> bool {
+        self.end + 1 == other.start
+    }
 }
 
 impl PartialEq for ReclaimedEntry {
@@ -287,8 +291,8 @@ impl InternerState {
     }
 
     fn add_reclaimed(&mut self, start: usize, end: usize, aligned: bool) {
-        let reclaimed_entry = ReclaimedEntry::new(start, end, aligned);
-        self.reclaimed.insert(reclaimed_entry);
+        let curr_entry = ReclaimedEntry::new(start, end, aligned);
+        self.reclaimed.insert(curr_entry);
 
         // While we're here, we'll do an incremental merging of reclaimed entries. This lets us avoid fragmentation
         // that, over time, would shrink the effective capacity of the interner in a non-recoverable way.
@@ -299,81 +303,57 @@ impl InternerState {
         //
         // We do this because there's no need to check any entries after that, because they couldn't be adjacent
         // otherwise they would have already been merged when they were reclaimed.
-        let mut last_seen = [None; 3];
         let mut found_current = false;
-        let mut seen_idx = 0;
-        let mut current_entry_idx = 0;
+        let mut maybe_prev_entry = None;
+        let mut maybe_next_entry = None;
 
         for entry in self.reclaimed.iter() {
-            last_seen[seen_idx % 3] = Some(*entry);
-
-            if entry == &reclaimed_entry {
-                // We found the entry we just reclaimed, so mark that down.
-                found_current = true;
-                current_entry_idx = seen_idx;
-            } else if found_current {
-                // We've already seen the entry we just inserted, and now we've seen the entry _after_ it, so we can
-                // break out of the loop.
-                //
-                // First, though, we increment `seen_idx` so that we can properly determine how many entries we've seen.
-                seen_idx += 1;
-                break;
-            }
-
-            seen_idx += 1;
-        }
-
-        // Now check to see if we can merge the reclaimed entry we just added with either the one before it, the one
-        // after it or both, if either of them exist.
-        if seen_idx == 2 {
-            // We only have two entries, which can only mean that our just-added entry is the second one, so see if we
-            // can merge with the previous entry.
-            let previous_entry = &last_seen[(current_entry_idx - 1) % 3];
-            let current_entry = &last_seen[current_entry_idx % 3];
-
-            if previous_entry.end + 1 == current_entry.start {
-                // We can merge the previous entry with the current one.
-                let merged_entry =
-                    ReclaimedEntry::new(previous_entry.start, current_entry.end, previous_entry.is_aligned());
-                self.reclaimed.remove(previous_entry);
-                self.reclaimed.remove(current_entry);
-                self.reclaimed.insert(merged_entry);
-            }
-        } else if seen_idx >= 3 {
-            // We visited three or more entries, so check to see if either the previous or next entry can be merged.
-            let previous_entry = &last_seen[(current_entry_idx - 1) % 3];
-            let current_entry = &last_seen[current_entry_idx % 3];
-            let next_entry = &last_seen[(current_entry_idx + 1) % 3];
-
-            let mut merged_entry_start = None;
-            let mut merged_entry_end = None;
-            let mut merged_entry_aligned = None;
-
-            if previous_entry.end + 1 == current_entry.start {
-                // We can merge the previous entry with the current one.
-                merged_entry_start = Some(previous_entry.start);
-                merged_entry_aligned = Some(previous_entry.is_aligned());
-                self.reclaimed.remove(previous_entry);
-            }
-
-            if current_entry.end + 1 == next_entry.start {
-                // We can merge the current entry with the next one.
-                merged_entry_end = Some(next_entry.end);
-                self.reclaimed.remove(next_entry);
-            }
-
-            if merged_entry_start.is_some() || merged_entry_end.is_some() {
-                // We can merge at least one entry, so remove the entries we're merging and add the new merged entry.
-                self.reclaimed.remove(current_entry);
-
-                let merged_entry = ReclaimedEntry::new(
-                    merged_entry_start.unwrap_or(current_entry.start),
-                    merged_entry_end.unwrap_or(current_entry.end),
-                    merged_entry_aligned.unwrap_or(current_entry.is_aligned()),
-                );
-                self.reclaimed.insert(merged_entry);
+            match (found_current, entry == &curr_entry) {
+                // We haven't found our current entry yet, and this one directly precedes it.
+                (false, false) => {
+                    if entry.followed_by(&curr_entry) {
+                        maybe_prev_entry = Some(*entry);
+                    }
+                }
+                // We found our current entry, so we know to stop iterating after one more entry.
+                (false, true) => found_current = true,
+                // We found our current entry, and this one directly follows it.
+                (true, false) => {
+                    if curr_entry.followed_by(entry) {
+                        maybe_next_entry = Some(*entry);
+                        break;
+                    }
+                }
+                // Can't have found our current entry and then find it again.
+                (true, true) => unreachable!(),
             }
         }
+
+        // If we had no adjacent previous or next entries, then we're done.
+        if maybe_prev_entry.is_none() && maybe_next_entry.is_none() {
+            return;
+        }
+
+        self.reclaimed.remove(&curr_entry);
+
+        let (new_start, new_aligned) = match maybe_prev_entry {
+            None => (curr_entry.start, curr_entry.aligned),
+            Some(prev_entry) => {
+                self.reclaimed.remove(&prev_entry);
+                (prev_entry.start, prev_entry.aligned)
+            }
+        };
+
+        let new_end = match maybe_next_entry {
+            None => curr_entry.end,
+            Some(next_entry) => {
+                self.reclaimed.remove(&next_entry);
+                next_entry.end
+            }
+        };
+
+        self.reclaimed
+            .insert(ReclaimedEntry::new(new_start, new_end, new_aligned));
     }
 
     fn mark_for_reclamation(&mut self, header_ptr: NonNull<EntryHeader>) {
@@ -469,8 +449,7 @@ impl PartialEq for InternerState {
     fn eq(&self, other: &Self) -> bool {
         // Comparing by pointer alone should be enough, but we're just doubling up by also checking that the capacity is
         // the same as well.
-        std::ptr::eq(self.ptr.as_ptr(), other.ptr.as_ptr())
-            && self.capacity == other.capacity
+        std::ptr::eq(self.ptr.as_ptr(), other.ptr.as_ptr()) && self.capacity == other.capacity
     }
 }
 
@@ -491,15 +470,15 @@ impl Eq for InternerState {}
 /// The backing buffer stores strings contiguously, with an entry "header" prepended to each string. The header contains
 /// relevant data -- hash of the string, reference count, and length of the string -- needed to work with the entry
 /// either when searching for existing entries or when using the entry itself.
-/// 
+///
 /// The layout of an entry is as follows:
-/// 
-/// ┌─────────────────────────────── entry #1 ───────────────────────────────┐ ┌──  entry #2 ──┐ ┌──  entry .. ──┐
-/// ▼                                                                        ▼ ▼               ▼ ▼               ▼
-/// ┏━━━━━━━━━━━━━┯━━━━━━━━━━━┯━━━━━━━━━━━━┯━━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━━━━┓ ┏━━━━━━━━━━━━━━━┓ ┏━━━━━━━━━━━━━━━┓
-/// ┃ string hash │  ref cnt  │ string len │ string data │ alignment padding ┃ ┃     header    ┃ ┃     header    ┃
-/// ┃  (8 bytes)  │ (8 bytes) │ (8 bytes)  │  (N bytes)  │    (variable)     ┃ ┃    & string   ┃ ┃    & string   ┃
-/// ┗━━━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━━┷━━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━━┛ ┗━━━━━━━━━━━━━━━┛ ┗━━━━━━━━━━━━━━━┛
+///
+/// ┌─────────────────────────────── entry #1 ───────────────────────────────┐ ┌── entry #2 ──┐ ┌── entry .. ──┐
+/// ▼                                                                        ▼ ▼              ▼ ▼              ▼
+/// ┏━━━━━━━━━━━━━┯━━━━━━━━━━━┯━━━━━━━━━━━━┯━━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━━━━┓ ┏━━━━━━━━━━━━━━┓ ┏━━━━━━━━━━━━━━┓
+/// ┃ string hash │  ref cnt  │ string len │ string data │ alignment padding ┃ ┃    header    ┃ ┃    header    ┃
+/// ┃  (8 bytes)  │ (8 bytes) │ (8 bytes)  │  (N bytes)  │    (variable)     ┃ ┃   & string   ┃ ┃   & string   ┃
+/// ┗━━━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━━┷━━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━━┛ ┗━━━━━━━━━━━━━━┛ ┗━━━━━━━━━━━━━━┛
 /// ▲                                      ▲                                 ▲
 /// └──────────── `EntryHeader` ───────────┘       alignment matched to ─────┘
 ///            (8 byte alignment)                  `EntryHeader` via padding    
@@ -741,7 +720,9 @@ mod tests {
         let interner = Interner::new(NonZeroUsize::new(64).unwrap());
 
         // Intern the first string, which should fit without issue.
-        let s1 = interner.try_intern("hello there, world!").expect("should not fail to intern");
+        let s1 = interner
+            .try_intern("hello there, world!")
+            .expect("should not fail to intern");
         let (s1_entry_start, s1_entry_end) = get_interned_string_entry_start_end(&interner, &s1);
 
         {
@@ -794,10 +775,14 @@ mod tests {
         let interner = Interner::new(NonZeroUsize::new(1024).unwrap());
 
         // Intern two strings, back-to-back, which should fit without issue.
-        let s1 = interner.try_intern("hello there, world!").expect("should not fail to intern");
+        let s1 = interner
+            .try_intern("hello there, world!")
+            .expect("should not fail to intern");
         let (s1_entry_start, _) = get_interned_string_entry_start_end(&interner, &s1);
 
-        let s2 = interner.try_intern("tally ho, chaps!").expect("should not fail to intern");
+        let s2 = interner
+            .try_intern("tally ho, chaps!")
+            .expect("should not fail to intern");
         let (_, s2_entry_end) = get_interned_string_entry_start_end(&interner, &s2);
 
         {
@@ -830,10 +815,14 @@ mod tests {
         let interner = Interner::new(NonZeroUsize::new(1024).unwrap());
 
         // Intern two strings, back-to-back, which should fit without issue.
-        let s1 = interner.try_intern("hello there, world!").expect("should not fail to intern");
+        let s1 = interner
+            .try_intern("hello there, world!")
+            .expect("should not fail to intern");
         let (s1_entry_start, _) = get_interned_string_entry_start_end(&interner, &s1);
 
-        let s2 = interner.try_intern("tally ho, chaps!").expect("should not fail to intern");
+        let s2 = interner
+            .try_intern("tally ho, chaps!")
+            .expect("should not fail to intern");
         let (_, s2_entry_end) = get_interned_string_entry_start_end(&interner, &s2);
 
         {
@@ -866,12 +855,18 @@ mod tests {
         let interner = Interner::new(NonZeroUsize::new(1024).unwrap());
 
         // Intern three strings, back-to-back-to-back, which should fit without issue.
-        let s1 = interner.try_intern("hello there, world!").expect("should not fail to intern");
+        let s1 = interner
+            .try_intern("hello there, world!")
+            .expect("should not fail to intern");
         let (s1_entry_start, _) = get_interned_string_entry_start_end(&interner, &s1);
 
-        let s2 = interner.try_intern("tally ho, chaps!").expect("should not fail to intern");
+        let s2 = interner
+            .try_intern("tally ho, chaps!")
+            .expect("should not fail to intern");
 
-        let s3 = interner.try_intern("onward and upward!").expect("should not fail to intern");
+        let s3 = interner
+            .try_intern("onward and upward!")
+            .expect("should not fail to intern");
         let (_, s3_entry_end) = get_interned_string_entry_start_end(&interner, &s3);
 
         {
