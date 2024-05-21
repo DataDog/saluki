@@ -9,7 +9,11 @@ RUN apt-get update && \
     apt-get update && \
     apt-get install -y --no-install-recommends gcc-8 g++-8 binutils-2.26 && \
     update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-8 60 --slave /usr/bin/g++ g++ /usr/bin/g++-8 && \
+    add-apt-repository ppa:deadsnakes/ppa -y && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends libpython3-dev && \
     rm -rf /var/lib/apt/lists/*
+
 ENV PATH="/usr/lib/binutils-2.26/bin:${PATH}"
 
 # Install Protocol Buffers compiler by hand, since Ubuntu 14.04 does not have a recent enough version.
