@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use async_walkdir::{DirEntry, Filtering, WalkDir};
 use futures::StreamExt as _;
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use pyo3::prelude::*;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
@@ -142,8 +143,6 @@ impl CheckInstanceConfiguration {
     }
 }
 
-// TODO finish this
-// the return type may need to be a generic idk
 fn serde_value_to_pytype<'py>(value: &serde_yaml::Value, p: &'py pyo3::Python) -> PyResult<Bound<'py, pyo3::PyAny>> {
     match value {
         serde_yaml::Value::String(s) => Ok(s.into_py(*p).into_bound(*p)),
@@ -278,6 +277,13 @@ impl SourceBuilder for ChecksConfiguration {
         static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(DataType::Metric)];
 
         OUTPUTS
+    }
+}
+
+impl MemoryBounds for ChecksConfiguration {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // We allocate nothing up front
+        builder.minimum().with_fixed_amount(0);
     }
 }
 

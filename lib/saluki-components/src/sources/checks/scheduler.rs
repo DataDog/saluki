@@ -316,7 +316,6 @@ mod tests {
     use super::super::*;
     use super::*;
     use tokio::sync::mpsc;
-    use tracing_test::traced_test;
 
     #[tokio::test]
     async fn test_new_check_scheduler() {
