@@ -434,55 +434,31 @@ impl DDSketch {
 
         let key = self.config.key(v);
 
-        // Fast path for adding to an existing bin.
-        for b in &mut self.bins {
-            if b.k == key && b.n < MAX_BIN_WIDTH {
-                b.n += 1;
-                return;
+        let mut insert_at = None;
+
+        for (bin_idx, b) in self.bins.iter_mut().enumerate() {
+            if b.k == key {
+                if b.n < MAX_BIN_WIDTH {
+                    // Fast path for adding to an existing bin.
+                    b.n += 1;
+                    return;
+                } else {
+                    insert_at = Some(bin_idx);
+                    break;
+                }
+            }
+            if b.k > key {
+                insert_at = Some(bin_idx);
+                break;
             }
         }
 
-        // Slow path is essentially `insert_keys` with a single key.
-
-        // Preallocate output bins.
-        let new_size = cmp::min(self.bins.len() + 1, self.config.bin_limit as usize);
-        let mut temp = Vec::with_capacity(new_size);
-
-        let mut bins_idx = 0;
-        let mut added = false;
-        let bins_len = self.bins.len();
-
-        while bins_idx < bins_len && !added {
-            let bin = self.bins[bins_idx];
-
-            match bin.k.cmp(&key) {
-                Ordering::Less => {
-                    temp.push(bin);
-                    bins_idx += 1;
-                }
-                Ordering::Equal => {
-                    generate_bins(&mut temp, bin.k, u32::from(bin.n) + 1);
-                    bins_idx += 1;
-                    added = true;
-                }
-                Ordering::Greater => {
-                    generate_bins(&mut temp, key, 1);
-                    added = true;
-                }
-            }
+        if let Some(bin_idx) = insert_at {
+            self.bins.insert(bin_idx, Bin { k: key, n: 1 });
+        } else {
+            self.bins.push(Bin { k: key, n: 1 });
         }
-
-        temp.extend_from_slice(&self.bins[bins_idx..]);
-
-        if !added {
-            generate_bins(&mut temp, key, 1);
-        }
-
-        trim_left(&mut temp, self.config.bin_limit);
-
-        // PERF TODO: This is where we might do a mem::swap instead so that we could shove the bin vector into an object
-        // pool but I'm not sure this actually matters at the moment.
-        self.bins = temp;
+        trim_left(&mut self.bins, self.config.bin_limit);
     }
 
     /// Inserts many values into the sketch.
