@@ -439,7 +439,7 @@ impl DDSketch {
         for (bin_idx, b) in self.bins.iter_mut().enumerate() {
             if b.k == key {
                 if b.n < MAX_BIN_WIDTH {
-                    // Fast path for adding to an existing bin.
+                    // Fast path for adding to an existing bin without overflow.
                     b.n += 1;
                     return;
                 } else {
@@ -1195,7 +1195,13 @@ mod tests {
                 expected: "0:1 1338:1",
             },
             Case {
-                description: "inserting a value into a sketch and causing an overflow",
+                description: "inserting a value into an existing bin and filling it",
+                start: "0:65534",
+                insert: Value::Float(0.0),
+                expected: "0:65535",
+            },
+            Case {
+                description: "inserting a value into an existing bin and causing an overflow",
                 start: "0:65535",
                 insert: Value::Float(0.0),
                 expected: "0:1 0:65535",
