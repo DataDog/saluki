@@ -91,7 +91,13 @@ impl DirCheckRequestListener {
         entries
             .filter_map(|e| async move {
                 match e {
-                    Ok(entry) => Some(CheckSource::Yaml(entry.path().to_path_buf())),
+                    Ok(entry) => match tokio::fs::read_to_string(entry.path()).await {
+                        Ok(content) => Some(CheckSource::Yaml((entry.path(), content))),
+                        Err(e) => {
+                            eprintln!("Error reading file: {}", e);
+                            None
+                        }
+                    },
                     Err(e) => {
                         eprintln!("Error traversing files: {}", e);
                         None

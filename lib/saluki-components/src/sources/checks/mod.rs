@@ -62,6 +62,7 @@ fn default_check_config_dir() -> String {
 #[derive(Debug, Clone)]
 struct CheckRequest {
     name: Option<String>,
+    module_name: String,
     instances: Vec<CheckInstanceConfiguration>,
     init_config: CheckInitConfiguration,
     source: CheckSource,
@@ -80,39 +81,23 @@ impl Display for CheckRequest {
 
 impl CheckRequest {
     fn to_runnable_request(&self) -> Result<RunnableCheckRequest, Error> {
-        // The concept of a RunnableRequest needs to be expanded
-        // to look for modules available in the py runtime
-        // This implies that this step needs to happen later in the process
-        // Logic to emulate:
-        // Idea, the RunnableCheckRequest can have an "expected_module_name" field
-        // or something like that
-        // That does imply that the `run` of a `runnablecheckrequest` can fail, but that is already the case
-        // https://github.com/DataDog/datadog-agent/blob/e8de27352093e0d5f828cf86988d186a3501b525/pkg/collector/python/loader.go#L110-L112
-        let name = if let Some(name) = &self.name {
-            name.clone()
-        } else {
-            self.source.to_check_name()?
-        };
-        let check_source_code: Option<PathBuf> = match &self.source {
-            CheckSource::Yaml(path) => find_sibling_py_file(path),
-        };
         Ok(RunnableCheckRequest {
             check_request: self.clone(),
-            check_name: name,
-            check_source_code,
+            module_name: self.module_name.clone(),
+            check_source_code: None,
         })
     }
 }
 
 struct RunnableCheckRequest {
     check_request: CheckRequest,
-    check_name: String,
+    module_name: String,
     check_source_code: Option<PathBuf>,
 }
 
 impl Display for RunnableCheckRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Request: {} CheckSource: {}", self.check_request, self.check_name)
+        write!(f, "Request: {} CheckSource: {}", self.check_request, self.module_name)
     }
 }
 
@@ -134,7 +119,7 @@ fn map_to_pydict<'py>(
     Ok(dict)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct CheckInitConfiguration(HashMap<String, serde_yaml::Value>);
 
 impl CheckInitConfiguration {
@@ -202,30 +187,18 @@ fn default_min_collection_interval_ms() -> u32 {
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 enum CheckSource {
-    Yaml(PathBuf),
+    Yaml((PathBuf, String)),
 }
 
 impl CheckSource {
-    fn to_check_name(&self) -> Result<String, Error> {
-        match self {
-            CheckSource::Yaml(path) => {
-                let mut path = path.clone();
-                path.set_extension(""); // trim off the file extension
-                let filename = path.file_name().expect("No error");
-                let name = filename.to_string_lossy().to_string();
-                Ok(name)
-            }
-        }
-    }
     fn to_check_request(&self) -> Result<CheckRequest, Error> {
         match self {
-            CheckSource::Yaml(path) => {
-                let file = std::fs::File::open(path).expect("No error");
+            CheckSource::Yaml((path, contents)) => {
                 let mut checks_config = Vec::new();
-                let read_yaml: YamlCheckConfiguration = match serde_yaml::from_reader(file) {
+                let read_yaml: YamlCheckConfiguration = match serde_yaml::from_str(contents) {
                     Ok(read) => read,
                     Err(e) => {
-                        debug!("can't read configuration at {}: {}", path.display(), e);
+                        error!(%e, "Can't decode yaml as check configuration: {contents}");
                         return Err(Error::CantReadConfiguration { source: e });
                     }
                 };
@@ -253,8 +226,14 @@ impl CheckSource {
                     checks_config.push(CheckInstanceConfiguration(map));
                 }
 
+                let module_name = path
+                    .file_stem()
+                    .expect("File name must have a stem")
+                    .to_string_lossy()
+                    .to_string();
                 Ok(CheckRequest {
                     name: read_yaml.name,
+                    module_name,
                     instances: checks_config,
                     init_config,
                     source: self.clone(),
@@ -267,7 +246,7 @@ impl CheckSource {
 impl Display for CheckSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CheckSource::Yaml(path) => write!(f, "{}", path.display()),
+            CheckSource::Yaml((path, contents)) => write!(f, "{contents} from file: {}", path.display()),
         }
     }
 }
@@ -445,19 +424,7 @@ async fn process_listener(
     Ok(())
 }
 
-/// Given a yaml config, find the corresponding python source code
-/// Currently only looks in the same directory, no support for `checks.d` or `mycheck.d` directories
-fn find_sibling_py_file(check_yaml_path: &Path) -> Option<PathBuf> {
-    let mut check_rel_filepath = check_yaml_path.to_path_buf();
-    check_rel_filepath.set_extension("py");
-    if check_rel_filepath.exists() {
-        return Some(check_rel_filepath);
-    }
-
-    None
-}
-
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PyMetricType {
     Gauge = 0,
     Rate,
@@ -494,6 +461,7 @@ pub enum AggregatorError {
 
 /// CheckMetric are used to transmit metrics from python check execution results
 /// to forward in the saluki's pipeline.
+#[derive(Debug, PartialEq)]
 pub struct CheckMetric {
     name: String,
     metric_type: PyMetricType,

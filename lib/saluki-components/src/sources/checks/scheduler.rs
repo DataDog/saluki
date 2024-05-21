@@ -108,7 +108,7 @@ impl CheckScheduler {
         let check_handle = match self.register_check_impl(check) {
             Ok(h) => h,
             Err(e) => {
-                error!(%e, "Could not register check {}", check.check_name);
+                error!(%e, "Could not register check {}", check.module_name);
                 return Err(e);
             }
         };
@@ -126,14 +126,14 @@ impl CheckScheduler {
     }
 
     fn register_check_impl(&mut self, check: &RunnableCheckRequest) -> Result<CheckHandle, GenericError> {
-        let check_name = &check.check_name;
+        let check_name = &check.module_name;
         // if there is a specific source, then this will populate into locals and can be found
         if let Some(py_source_path) = &check.check_source_code {
             let py_source = fs::read_to_string(py_source_path)
                 .map_err(|e| generic_error!("Could not read check source file: {}", e))?;
             return self.register_check_with_source(py_source);
         }
-        for import_str in &[&check.check_name, &format!("datadog_checks.{}", check.check_name)] {
+        for import_str in &[&check.module_name, &format!("datadog_checks.{}", check.module_name)] {
             match self.register_check_from_imports(import_str) {
                 Ok(handle) => return Ok(handle),
                 Err(e) => {
@@ -310,4 +310,99 @@ impl CheckScheduler {
             drop(check_handle); // release the reference to this check
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::*;
+    use super::*;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn test_new_check_scheduler() {
+        let (sender, _) = mpsc::channel(10);
+        let scheduler = CheckScheduler::new(sender).unwrap();
+        assert!(scheduler.running.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_register_check_with_source() {
+        let (sender, _) = mpsc::channel(10);
+        let mut scheduler = CheckScheduler::new(sender).unwrap();
+        let py_source = r#"
+            class MyCheck(AgentCheck):
+                def check(self, instance):
+                    pass
+        "#;
+        let check_handle = scheduler.register_check_with_source(py_source.to_string()).unwrap();
+        assert_eq!(scheduler.running.len(), 1);
+        pyo3::Python::with_gil(|py| {
+            let check_class_ref = check_handle.0.bind(py);
+            assert!(check_class_ref.is_callable());
+        });
+    }
+
+    #[tokio::test]
+    async fn test_run_check() {
+        let (sender, mut receiver) = mpsc::channel(10);
+        let mut scheduler = CheckScheduler::new(sender).unwrap();
+        let py_source = r#"
+            class MyCheck(AgentCheck):
+                def check(self, instance):
+                    self.gauge('test-metric-name', 41, tags=['hello:world'])
+                    pass
+        "#;
+        let source = CheckSource::Yaml((PathBuf::from("/tmp/my_check.yaml"), "instances: []".to_string()));
+        let check_request = CheckRequest {
+            name: None,
+            module_name: "my_check".to_string(),
+            source: source.clone(),
+            instances: vec![],
+            init_config: CheckInitConfiguration::default(),
+        };
+        let runnable_check_request = RunnableCheckRequest {
+            module_name: "my_check".to_string(),
+            check_source_code: None, // put literal py code in here
+            check_request,
+        };
+        scheduler.run_check(runnable_check_request).unwrap();
+        assert_eq!(scheduler.running.len(), 1);
+        assert_eq!(scheduler.running.keys().next(), Some(&source));
+
+        // Simulate receiving a check metric
+        let check_metric = CheckMetric {
+            name: "test-metric-name".to_string(),
+            metric_type: PyMetricType::Gauge,
+            value: 41.0,
+            tags: vec!["hello:world".to_string()],
+        };
+        let check_from_channel = receiver.recv().await.unwrap();
+        assert_eq!(check_from_channel, check_metric);
+    }
+
+    /*
+    #[tokio::test]
+    async fn test_stop_check() {
+        let (sender, _) = mpsc::channel(10);
+        let mut scheduler = CheckScheduler::new(sender).unwrap();
+        let check_request = CheckRequest {
+            module_name: "my_check".to_string(),
+            name: Some("MyCheck".to_string()),
+            source: CheckSource::Yaml("my_check.py".to_string()),
+            instances: vec![],
+            init_config: CheckInitConfiguration::default(),
+        };
+        let runnable_check_request = RunnableCheckRequest {
+            module_name: "my_check".to_string(),
+            check_source_code: None,
+            check_request,
+        };
+
+        scheduler.run_check(runnable_check_request).unwrap();
+        assert_eq!(scheduler.running.len(), 1);
+
+        scheduler.stop_check(check_request).unwrap();
+        assert!(scheduler.running.is_empty());
+    }
+    */
 }
