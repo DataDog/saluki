@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use async_walkdir::{DirEntry, Filtering, WalkDir};
 use futures::StreamExt as _;
+use pyo3::prelude::*;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{Source, SourceBuilder, SourceContext},
@@ -10,7 +11,7 @@ use saluki_core::{
     },
 };
 use saluki_env::time::get_unix_timestamp;
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use saluki_event::{metric::*, DataType, Event};
 use serde::Deserialize;
 use snafu::Snafu;
@@ -119,20 +120,66 @@ impl Display for RunnableCheckRequest {
 struct YamlCheckConfiguration {
     name: Option<String>,
     init_config: Option<serde_yaml::Value>,
-    instances: Vec<YamlCheckInstance>,
+    instances: Vec<serde_yaml::Value>,
 }
 
-#[derive(Debug, Deserialize)]
-struct YamlCheckInstance {
-    #[serde(default = "default_min_collection_interval_ms")]
-    min_collection_interval: u32,
-    // todo support arbitrary other fields
+#[derive(Debug, Clone)]
+struct CheckInstanceConfiguration(HashMap<String, serde_yaml::Value>);
+
+impl CheckInstanceConfiguration {
+    fn min_collection_interval_ms(&self) -> u32 {
+        self.0
+            .get("min_collection_interval")
+            .map(|v| v.as_i64().expect("min_collection_interval must be an integer") as u32)
+            .unwrap_or_else(default_min_collection_interval_ms)
+    }
+
+    fn into_pydict<'a, 'py>(&'a self, p: &'py pyo3::Python) -> Bound<'py, pyo3::types::PyDict> {
+        let dict = pyo3::types::PyDict::new_bound(*p);
+
+        for (key, value) in &self.0 {
+            let value = serde_value_to_pytype(value, p).expect("Could convert");
+            dict.set_item(key, value).expect("can't add");
+        }
+        dict
+    }
 }
 
-// checks configuration
-#[derive(Debug, Clone, Eq, Hash, PartialEq)]
-struct CheckInstanceConfiguration {
-    min_collection_interval_ms: u32,
+// TODO finish this
+// the return type may need to be a generic idk
+fn serde_value_to_pytype<'py>(value: &serde_yaml::Value, p: &'py pyo3::Python) -> PyResult<Bound<'py, pyo3::PyAny>> {
+    match value {
+        serde_yaml::Value::String(s) => Ok(s.into_py(*p).into_bound(*p)),
+        serde_yaml::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(i.into_py(*p).into_bound(*p))
+            } else if let Some(f) = n.as_f64() {
+                Ok(f.into_py(*p).into_bound(*p))
+            } else {
+                unreachable!("Number is neither i64 nor f64")
+            }
+        }
+        serde_yaml::Value::Bool(b) => Ok(b.into_py(*p).into_bound(*p)),
+        serde_yaml::Value::Sequence(s) => {
+            let list = pyo3::types::PyList::empty_bound(*p);
+            for item in s {
+                let item = serde_value_to_pytype(item, p)?;
+                list.append(item)?;
+            }
+            Ok(list.into_any())
+        }
+        serde_yaml::Value::Mapping(m) => {
+            let dict = pyo3::types::PyDict::new_bound(*p);
+            for (key, value) in m {
+                let value = serde_value_to_pytype(value, p)?;
+                let key = serde_value_to_pytype(key, p)?;
+                dict.set_item(key, value)?;
+            }
+            Ok(dict.into_any())
+        }
+        serde_yaml::Value::Null => Ok(pyo3::types::PyNone::get_bound(*p).to_owned().into_any()),
+        serde_yaml::Value::Tagged(_) => Err(generic_error!("Tagged values are not supported").into()),
+    }
 }
 
 fn default_min_collection_interval_ms() -> u32 {
@@ -170,9 +217,15 @@ impl CheckSource {
                 };
 
                 for instance in read_yaml.instances.into_iter() {
-                    checks_config.push(CheckInstanceConfiguration {
-                        min_collection_interval_ms: instance.min_collection_interval,
-                    });
+                    let mapping: serde_yaml::Mapping =
+                        instance.as_mapping().expect("Only mapping instance configs").to_owned();
+
+                    let map: HashMap<String, serde_yaml::Value> = mapping
+                        .into_iter()
+                        .map(|(k, v)| (k.as_str().expect("Only string instance config keys").to_string(), v))
+                        .collect();
+
+                    checks_config.push(CheckInstanceConfiguration(map));
                 }
 
                 Ok(CheckRequest {

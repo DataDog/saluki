@@ -1,0 +1,6 @@
+init_config:
+  ca_certs: "/etc/ssl/certs/ca-certificates.crt"
+
+instances:
+  - name: datadog
+    url: https://datadoghq.com/

@@ -1,5 +1,4 @@
 use super::*;
-use pyo3::prelude::*;
 
 /// submit_metric is called from the AgentCheck implementation when a check submits a metric.
 /// Python signature:

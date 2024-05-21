@@ -4,7 +4,6 @@ use super::python_exposed_modules::aggregator as pyagg;
 use super::python_exposed_modules::datadog_agent;
 use super::*;
 use pyo3::prelude::PyAnyMethods;
-use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use pyo3::types::PyList;
 use pyo3::types::PyType;
@@ -112,11 +111,15 @@ impl CheckScheduler {
                 return Err(e);
             }
         };
-        // TODO there may be an 'init' step needed after loading the check
+        // TODO What 'init' is needed after grabbing a handle to the check class?
         // See `rtloader/three/three.cpp::getCheck` for calls:
         // - `AgentCheck.load_config(init_config)`
         // - `AgentCheck.load_config(instance)`
-        // and set attr 'check_id' equal to the check id
+
+        // JK load_config is just yaml parsing -- str -> pyAny
+        // which I don't need because I implemented serde_mapping -> pydict
+
+        // - set attr 'check_id' equal to the check id
 
         Ok(check_handle)
     }
@@ -248,16 +251,13 @@ impl CheckScheduler {
             let check_handle = check_handle.clone();
             let handle = tokio::task::spawn(async move {
                 let mut interval =
-                    tokio::time::interval(Duration::from_millis(instance.min_collection_interval_ms.into()));
+                    tokio::time::interval(Duration::from_millis(instance.min_collection_interval_ms().into()));
                 loop {
                     interval.tick().await;
                     // run check
                     info!("Running check instance {idx}");
                     pyo3::Python::with_gil(|py| {
-                        let instance_as_pydict = PyDict::new_bound(py);
-                        instance_as_pydict
-                            .set_item("min_collection_interval_ms", instance.min_collection_interval_ms)
-                            .expect("could not set min-collection-interval");
+                        let instance_as_pydict = instance.into_pydict(&py);
 
                         let instance_list = PyList::new_bound(py, &[instance_as_pydict]);
                         let kwargs = PyDict::new_bound(py);
@@ -288,7 +288,7 @@ impl CheckScheduler {
                         let s: String = result
                             .extract(py)
                             .expect("Can't read the string result from the check execution");
-                        // TODO(remy): turn this into debug log level later on
+
                         debug!("Check execution returned {:?}", s);
                     })
                 }
