@@ -1099,6 +1099,7 @@ mod tests {
     fn parse_sketch_from_string_bins(layout: &str) -> DDSketch {
         layout
             .split(' ')
+            .filter(|v| !v.is_empty())
             .map(|pair| pair.split(':').map(ToOwned::to_owned).collect::<Vec<_>>())
             .fold(DDSketch::default(), |mut sketch, mut kn| {
                 let k = kn.remove(0).parse::<i16>().unwrap();
@@ -1122,6 +1123,126 @@ mod tests {
         assert_eq!(actual.max(), expected.max());
         assert_eq!(actual.count(), expected.count());
         assert_eq!(actual.bins(), expected.bins());
+    }
+
+    #[test]
+    fn test_sketch_insert_and_overflow() {
+        /// values to insert into a sketch
+        #[allow(dead_code)]
+        enum Value {
+            Float(f64),
+            Vec(Vec<f64>),
+            NFloats(u32, f64),
+        }
+        /// ways to insert values into a sketch
+        #[derive(Debug)]
+        enum InsertFn {
+            Insert,
+            InsertMany,
+            InsertN,
+        }
+        struct Case {
+            description: &'static str,
+            start: &'static str,
+            insert: Value,
+            expected: &'static str,
+        }
+
+        let cases = &[
+            Case {
+                description: "baseline: inserting into an empty sketch",
+                start: "",
+                insert: Value::Float(0.0),
+                expected: "0:1",
+            },
+            Case {
+                description: "inserting a value into an existing bin",
+                start: "0:1",
+                insert: Value::Float(0.0),
+                expected: "0:2",
+            },
+            Case {
+                description: "inserting a value into a new bin at the start",
+                start: "1338:1",
+                insert: Value::Float(0.0),
+                expected: "0:1 1338:1",
+            },
+            Case {
+                description: "inserting a value into a new bin in the middle",
+                start: "0:1 1338:1",
+                insert: Value::Float(0.5),
+                expected: "0:1 1293:1 1338:1",
+            },
+            Case {
+                description: "inserting a value into a new bin at the end",
+                start: "0:1",
+                insert: Value::Float(1.0),
+                expected: "0:1 1338:1",
+            },
+            Case {
+                description: "inserting a value into a sketch and causing an overflow",
+                start: "0:65535",
+                insert: Value::Float(0.0),
+                expected: "0:1 0:65535",
+            },
+            Case {
+                description: "inserting many values into a sketch and causing an overflow",
+                start: "0:100",
+                insert: Value::NFloats(65535, 0.0),
+                expected: "0:100 0:65535",
+            },
+            Case {
+                description: "inserting a value into a new bin in the middle and causing an overflow",
+                start: "0:1 1338:1",
+                insert: Value::NFloats(65536, 0.5),
+                expected: "0:1 1293:1 1293:65535 1338:1",
+            },
+        ];
+
+        for case in cases {
+            for insert_fn in &[InsertFn::Insert, InsertFn::InsertMany, InsertFn::InsertN] {
+                // Insert each value every way possible.
+
+                let mut sketch = parse_sketch_from_string_bins(case.start);
+
+                match insert_fn {
+                    InsertFn::Insert => match &case.insert {
+                        Value::Float(v) => sketch.insert(*v),
+                        Value::Vec(vs) => {
+                            for v in vs {
+                                sketch.insert(*v);
+                            }
+                        }
+                        Value::NFloats(n, v) => {
+                            for _ in 0..*n {
+                                sketch.insert(*v);
+                            }
+                        }
+                    },
+                    InsertFn::InsertMany => match &case.insert {
+                        Value::Float(v) => sketch.insert_many(&vec![*v]),
+                        Value::Vec(vs) => sketch.insert_many(vs),
+                        Value::NFloats(n, v) => {
+                            for _ in 0..*n {
+                                sketch.insert_many(&vec![*v]);
+                            }
+                        }
+                    },
+                    InsertFn::InsertN => match &case.insert {
+                        Value::Float(v) => sketch.insert_n(*v, 1),
+                        Value::Vec(vs) => {
+                            for v in vs {
+                                sketch.insert_n(*v, 1);
+                            }
+                        }
+                        Value::NFloats(n, v) => sketch.insert_n(*v, *n),
+                    },
+                }
+
+                let expected = parse_sketch_from_string_bins(case.expected);
+                assert_eq!(expected.bins(), sketch.bins(), "{}", case.description);
+            }
+        }
     }
 
     #[test]
