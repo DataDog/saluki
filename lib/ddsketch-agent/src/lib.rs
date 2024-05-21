@@ -1241,11 +1241,11 @@ mod tests {
                         }
                     },
                     InsertFn::InsertMany => match &case.insert {
-                        Value::Float(v) => sketch.insert_many(&vec![*v]),
+                        Value::Float(v) => sketch.insert_many(&[*v]),
                         Value::Vec(vs) => sketch.insert_many(vs),
                         Value::NFloats(n, v) => {
                             for _ in 0..*n {
-                                sketch.insert_many(&vec![*v]);
+                                sketch.insert_many(&[*v]);
                             }
                         }
                     },
