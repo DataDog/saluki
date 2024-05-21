@@ -1210,6 +1210,25 @@ mod tests {
                 insert: Value::NFloats(65535 * 5, 0.0),
                 // longstanding trimLeft bug
                 expected: "0:65535 0:65535 0:65535 0:65535 0:65535",
+                // actual expected: "0:65535 0:65535 0:65535"
+                max_bins: 3,
+            },
+            Case {
+                description: "inserting early bin over the bin limit",
+                start: "0:65535 0:65535 1338:65535",
+                insert: Value::Float(0.0),
+                // longstanding trimLeft bug
+                expected: "0:1 0:65535 0:65535 1338:65535",
+                // actual expected: "0:65535 0:65535 1338:65535"
+                max_bins: 3,
+            },
+            Case {
+                description: "inserting last bin over the bin limit",
+                start: "0:65535 0:65535 1338:65535",
+                insert: Value::Float(1.0),
+                // This is a bug. I'm not sure what ought to happen here. Need to review the DDSketch paper.
+                expected: "0:65535 0:65535 1338:1 1338:65535",
+                // actual expected: something like "1338:65535 1338:65535 1338:65535" ?
                 max_bins: 3,
             },
         ];
