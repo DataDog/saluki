@@ -106,7 +106,7 @@ impl CheckScheduler {
         let check_handle = match self.register_check_impl(check) {
             Ok(h) => h,
             Err(e) => {
-                error!(%e, "Could not register check {}", check.check_request.module_name);
+                error!(%e, "Could not register check {}", check.check_request.name);
                 return Err(e);
             }
         };
@@ -124,7 +124,7 @@ impl CheckScheduler {
     }
 
     fn register_check_impl(&mut self, check: &RunnableCheckRequest) -> Result<CheckHandle, GenericError> {
-        let check_module_name = &check.check_request.module_name;
+        let check_module_name = &check.check_request.name;
         // if there is a specific source, then this will populate into locals and can be found
         if let Some(py_source) = &check.check_source_code {
             return self.register_check_with_source(py_source.clone());
@@ -241,7 +241,7 @@ impl CheckScheduler {
 
         info!(
             "Running check {mname} with {num_instances} instances",
-            mname = check.check_request.module_name,
+            mname = check.check_request.name,
             num_instances = check.check_request.instances.len()
         );
         for (idx, instance) in check.check_request.instances.iter().enumerate() {

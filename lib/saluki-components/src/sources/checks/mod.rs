@@ -62,8 +62,11 @@ fn default_check_config_dir() -> String {
 
 #[derive(Debug, Clone)]
 struct CheckRequest {
-    name: Option<String>,
-    module_name: String,
+    // Name is _not_ just for display, the 'name' field identifies which check should be instantiated
+    // and run to satisfy this check request.
+    // In python checks, this is the module name for the check.
+    // In core checks, TBD.
+    name: String,
     instances: Vec<CheckInstanceConfiguration>,
     init_config: CheckInitConfiguration,
     source: CheckSource,
@@ -71,10 +74,13 @@ struct CheckRequest {
 
 impl Display for CheckRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Source: {} # Instances: {}", self.source, self.instances.len(),)?;
-        if let Some(name) = &self.name {
-            write!(f, " Name: {}", name)?
-        }
+        write!(
+            f,
+            "Name: {} Source: {} # Instances: {}",
+            self.name,
+            self.source,
+            self.instances.len(),
+        )?;
 
         Ok(())
     }
@@ -87,8 +93,23 @@ impl CheckRequest {
             check_source_code: None,
         })
     }
+
+    // Ideally this matches
+    // https://github.com/DataDog/datadog-agent/blob/b039ea43d3168f521e8ea3e8356a0e84eec170d1/comp/core/autodiscovery/integration/config.go#L362
+    // but for now, lets just do this
+    // I don't really need this, just adding where I think it should go
+    fn _digest(&self) -> String {
+        let mut digest = self.name.clone();
+        let init_config_str = self.init_config.0.len().to_string();
+        digest.push_str(&init_config_str);
+        let instance_str = self.instances.len().to_string();
+        digest.push_str(&instance_str);
+        digest
+    }
 }
 
+/// This exists mostly for unit tests at this point
+/// its useful to be able to specify literal code to run
 struct RunnableCheckRequest {
     check_request: CheckRequest,
     check_source_code: Option<String>,
@@ -223,14 +244,28 @@ impl CheckSource {
                     checks_config.push(CheckInstanceConfiguration(map));
                 }
 
-                let module_name = path
+                // TODO this does not support the './http_check.d/foo.yaml' pattern
+                // DirCheckListener needs to be updated to support that format as well.
+                let file_stem_name = path
                     .file_stem()
                     .expect("File name must have a stem")
                     .to_string_lossy()
                     .to_string();
+                let check_name = match &read_yaml.name {
+                    Some(yaml_name) => {
+                        if *yaml_name != file_stem_name {
+                            warn!(
+                                "Name in yaml file does not match file name: {} != {}",
+                                yaml_name, file_stem_name
+                            );
+                            warn!("Using 'name' field value as the loadable_name.");
+                        }
+                        yaml_name.clone()
+                    }
+                    None => file_stem_name.clone(),
+                };
                 Ok(CheckRequest {
-                    name: read_yaml.name,
-                    module_name,
+                    name: check_name,
                     instances: checks_config,
                     init_config,
                     source: self.clone(),
