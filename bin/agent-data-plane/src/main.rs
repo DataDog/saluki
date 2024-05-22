@@ -30,6 +30,10 @@ use saluki_core::topology::TopologyBlueprint;
 
 use crate::env_provider::ADPEnvironmentProvider;
 
+#[cfg(unix)]
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const ADP_VERSION: &str = env!("ADP_VERSION");
 const ADP_BUILD_DESC: &str = env!("ADP_BUILD_DESC");
 

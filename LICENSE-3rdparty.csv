@@ -109,6 +109,7 @@ lazycell,https://github.com/indiv0/lazycell,MIT OR Apache-2.0,"Alex Crichton <al
 libc,https://github.com/rust-lang/libc,MIT OR Apache-2.0,The Rust Project Developers
 libloading,https://github.com/nagisa/rust_libloading,ISC,Simonas Kazlauskas <libloading@kazlauskas.me>
 libm,https://github.com/rust-lang/libm,MIT OR Apache-2.0,Jorge Aparicio <jorge@japaric.io>
+libmimalloc-sys,https://github.com/purpleprotocol/mimalloc_rust/tree/master/libmimalloc-sys,MIT,Octavian Oncescu <octavonce@gmail.com>
 linux-raw-sys,https://github.com/sunfishcode/linux-raw-sys,Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT,Dan Gohman <dev@sunfishcode.online>
 log,https://github.com/rust-lang/log,MIT OR Apache-2.0,The Rust Project Developers
 match_cfg,https://github.com/gnzlbg/match_cfg,MIT OR Apache-2.0,gnzlbg <gonzalobg88@gmail.com>
@@ -118,6 +119,7 @@ matrixmultiply,https://github.com/bluss/matrixmultiply,MIT OR Apache-2.0,"bluss,
 memchr,https://github.com/BurntSushi/memchr,Unlicense OR MIT,"Andrew Gallant <jamslam@gmail.com>, bluss"
 memory-stats,https://github.com/Arc-blroth/memory-stats,MIT OR Apache-2.0,Arc-blroth <45273859+Arc-blroth@users.noreply.github.com>
 metrics,https://github.com/metrics-rs/metrics,MIT,Toby Lawrence <toby@nuclearfurnace.com>
+mimalloc,https://github.com/purpleprotocol/mimalloc_rust,MIT,"Octavian Oncescu <octavonce@gmail.com>, Vincent Rouillé <vincent@speedy37.fr>, Thom Chiovoloni <chiovolonit@gmail.com>"
 mime,https://github.com/hyperium/mime,MIT OR Apache-2.0,Sean McArthur <sean@seanmonstar.com>
 minimal-lexical,https://github.com/Alexhuszagh/minimal-lexical,MIT OR Apache-2.0,Alex Huszagh <ahuszagh@gmail.com>
 miniz_oxide,https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide,MIT OR Zlib OR Apache-2.0,"Frommi <daniil.liferenko@gmail.com>, oyvindln <oyvindln@users.noreply.github.com>"
