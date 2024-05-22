@@ -107,7 +107,7 @@ impl MemoryBounds for AggregateConfiguration {
         // calculating the theoretical maximum -- maximum number of tags * maximum tag length -- we can just derive it
         // empirically knowing that they can't add up to more than the buffer size.
         //
-        // Currently, we do not set/override the buffer size in testing/benchmarking, so we're hardcoding the defult of
+        // Currently, we do not set/override the buffer size in testing/benchmarking, so we're hardcoding the default of
         // 8KB buffers here for our calculations. We _will_ need to eventually calculate this for real, though.
         let context_size = 8192;
 
