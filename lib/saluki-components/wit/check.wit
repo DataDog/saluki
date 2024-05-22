@@ -1,0 +1,8 @@
+// wit/host.wit
+package datadoghq:check;
+
+world check {
+  import reportmetric: func(metricname: string, value: f64, tags: list<string>);
+
+  export run: func();
+}
