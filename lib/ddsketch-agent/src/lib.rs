@@ -85,8 +85,9 @@ pub struct Config {
 }
 
 impl Config {
+    /// Create a `Config` with the provided parameters.
     #[allow(clippy::cast_possible_truncation)]
-    pub(self) fn new(mut eps: f64, min_value: f64, bin_limit: u16) -> Self {
+    pub fn new(mut eps: f64, min_value: f64, bin_limit: u16) -> Self {
         assert!(eps > 0.0 && eps < 1.0, "eps must be between 0.0 and 1.0");
         assert!(min_value > 0.0, "min value must be greater than 0.0");
         assert!(bin_limit > 0, "bin limit must be greater than 0");
