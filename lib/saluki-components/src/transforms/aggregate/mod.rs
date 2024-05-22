@@ -101,27 +101,28 @@ impl MemoryBounds for AggregateConfiguration {
         // of N metrics per flush interval.
         let event_buffer_pool_size = EVENT_BUFFER_POOL_SIZE * self.context_limit * std::mem::size_of::<Event>();
 
-        // TODO: We take some liberties here but we roughly calculate the expected firm memory usage of a single context
-        // based on the limits we impose in the DogStatsD source. Those limits map to normal Datadog limits, both in
-        // terms of maximum tags per metric and the maximum length of a tag.
+        // TODO: This is a very specific shortcut we take to estimate the size of a context. Since metrics coming into
+        // via DogStatsD are limited in size based on the buffer size ("packet" in Datadog Agent parlance), this means
+        // the sum of the metric name and tags can't exceed the buffer size, which is generally fixed. Instead of
+        // calculating the theoretical maximum -- maximum number of tags * maximum tag length -- we can just derive it
+        // empirically knowing that they can't add up to more than the buffer size.
         //
-        // Not all metrics will come from the DogStatsD source, but this will do for now.
-        const MAXIMUM_TAGS_COUNT: usize = 150;
-        const MAXIMUM_TAG_LENGTH: usize = 200;
-        let agg_context_tags_size = MAXIMUM_TAGS_COUNT * MAXIMUM_TAG_LENGTH;
+        // Currently, we do not set/override the buffer size in testing/benchmarking, so we're hardcoding the default of
+        // 8KB buffers here for our calculations. We _will_ need to eventually calculate this for real, though.
+        let context_size = 8192;
 
         builder
             .firm()
             .with_fixed_amount(event_buffer_pool_size)
             // Account for our context limiter map, which is just a `HashSet`.
             .with_array::<AggregationContext>(self.context_limit)
-            .with_fixed_amount(self.context_limit * agg_context_tags_size)
+            .with_fixed_amount(self.context_limit * context_size)
             // Account for the actual aggregation state map, where we map contexts to the merged metric.
             //
             // TODO: We're not considering the fact there could be multiple buckets here since that's rare, but it's
             // something we may need to consider in the near term.
             .with_map::<AggregationContext, (MetricValue, MetricMetadata)>(self.context_limit)
-            .with_fixed_amount(self.context_limit * agg_context_tags_size);
+            .with_fixed_amount(self.context_limit * context_size);
     }
 }
 
