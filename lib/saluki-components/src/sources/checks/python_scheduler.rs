@@ -254,7 +254,7 @@ impl CheckScheduler for PythonCheckScheduler {
             let init_config = check.check_request.init_config.clone();
 
             let check_handle = check_handle.clone();
-            debug!("Spawning task for check instance {idx}");
+            trace!("Spawning task for check instance {idx}");
             let handle = tokio::task::spawn(async move {
                 let mut interval =
                     tokio::time::interval(Duration::from_millis(instance.min_collection_interval_ms().into()));
@@ -277,6 +277,8 @@ impl CheckScheduler for PythonCheckScheduler {
                             .set_item("instances", instance_list)
                             .expect("could not set instance list");
 
+                        // TODO should this be moved up outside of the loop?
+                        // I kind of think so, this makes a new check instance every tick
                         let pycheck = match check_handle.0.call_bound(py, (), Some(&kwargs)) {
                             Ok(c) => c,
                             Err(e) => {
@@ -295,7 +297,7 @@ impl CheckScheduler for PythonCheckScheduler {
                             .extract(py)
                             .expect("Can't read the string result from the check execution");
 
-                        debug!("Check execution returned {:?}", s);
+                        trace!("Check execution returned {:?}", s);
                     })
                 }
             });

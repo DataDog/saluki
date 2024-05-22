@@ -1,3 +1,5 @@
+use tracing::{event, trace};
+
 use super::*;
 
 /// submit_metric is called from the AgentCheck implementation when a check submits a metric.
@@ -12,9 +14,12 @@ pub(crate) fn submit_metric(
     module: &Bound<PyModule>, _class: PyObject, _check_id: String, mtype: i32, name: String, value: f64,
     tags: Vec<String>, hostname: String, _flush_first_value: bool,
 ) {
-    debug!(
+    trace!(
         "submit_metric called with name: {}, value: {}, tags: {:?}, hostname: {}",
-        name, value, tags, hostname
+        name,
+        value,
+        tags,
+        hostname
     );
 
     let check_metric = CheckMetric {
@@ -30,11 +35,11 @@ pub(crate) fn submit_metric(
                 let res = pyo3::Python::with_gil(|py| q.bind_borrowed(py).borrow_mut().sender.clone());
 
                 match res.try_send(check_metric) {
-                    Ok(_) => debug!("Successfully sent metric"),
+                    Ok(_) => { /* nothing to do, success! */ }
                     Err(e) => error!("Failed to send metric: {}", e),
                 }
             }
-            Err(e) => error!("Failed to extract SUBMISSION_QUEUE: {}", e),
+            Err(e) => unreachable!("Failed to extract SUBMISSION_QUEUE: {}", e),
         },
         Err(e) => {
             // This is a fatal error and should be impossible to hit this
@@ -82,38 +87,49 @@ pub fn aggregator(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[pyfunction]
 fn get_hostname() -> &'static str {
-    debug!("Called get_hostname()");
+    trace!("Called get_hostname()");
     "stubbed.hostname"
 }
 
 #[pyfunction]
 fn set_hostname(hostname: String) {
-    debug!("Called set_hostname({})", hostname);
+    trace!("Called set_hostname({})", hostname);
     // In a function context without a struct, we cannot actually "set" the hostname persistently.
 }
 
 #[pyfunction]
 fn reset_hostname() {
-    debug!("Called reset_hostname()");
+    trace!("Called reset_hostname()");
     // Similar to `set_hostname`, we cannot reset without a persistent structure.
 }
 
 #[pyfunction]
 fn get_config(config_option: String) -> bool {
-    debug!("Called get_config({})", config_option);
+    trace!("Called get_config({})", config_option);
 
     false
 }
 
 #[pyfunction]
 fn get_version() -> &'static str {
-    debug!("Called get_version()");
+    trace!("Called get_version()");
     "0.0.0"
 }
 
 #[pyfunction]
 fn log(message: String, level: u32) {
-    debug!("{level} Log: {}", message);
+    match level {
+        // All except trace are from python3 logging levels
+        // https://docs.python.org/3/library/logging.html#levels
+        // Trace is manually specified in datadog_checks_base
+        // https://github.com/DataDog/integrations-core/blob/458274dfd867b40e368c795574b6d97a9b7e471d/datadog_checks_base/datadog_checks/base/log.py#L20-L21
+        40 => tracing::event!(tracing::Level::ERROR, "Python Log: {}", message),
+        30 => tracing::event!(tracing::Level::WARN, "Python Log: {}", message),
+        20 => tracing::event!(tracing::Level::INFO, "Python Log: {}", message),
+        10 => tracing::event!(tracing::Level::DEBUG, "Python Log: {}", message),
+        7 => tracing::event!(tracing::Level::TRACE, "Python Log: {}", message),
+        _ => tracing::event!(tracing::Level::TRACE, "Python Log: {}", message),
+    };
 }
 
 #[pyfunction]

@@ -87,6 +87,15 @@ impl Display for CheckRequest {
     }
 }
 
+impl Into<RunnableCheckRequest> for CheckRequest {
+    fn into(self) -> RunnableCheckRequest {
+        RunnableCheckRequest {
+            check_request: self,
+            check_source_code: None,
+        }
+    }
+}
+
 impl CheckRequest {
     fn to_runnable_request(&self) -> Result<RunnableCheckRequest, Error> {
         Ok(RunnableCheckRequest {
@@ -442,6 +451,7 @@ impl Checks {
         loop {
             select! {
                 Some(check_metric) = check_metrics_rx.recv() => {
+                    info!("Received check metric: {:?}", check_metric);
                     let mut event_buffer = context.event_buffer_pool().acquire().await;
                     let event: Event = check_metric.try_into().expect("can't convert");
                     event_buffer.push(event);
