@@ -27,7 +27,7 @@ use tracing::{debug, error, info, warn};
 
 mod listener;
 mod python_exposed_modules;
-mod scheduler;
+mod python_scheduler;
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -322,6 +322,69 @@ impl MemoryBounds for ChecksConfiguration {
     }
 }
 
+struct CheckDispatcher {
+    python_scheduler: python_scheduler::PythonCheckScheduler,
+    check_metrics_rx: mpsc::Receiver<CheckMetric>,
+    check_run_requests: mpsc::Receiver<RunnableCheckRequest>,
+    check_stop_requests: mpsc::Receiver<CheckRequest>,
+}
+
+impl CheckDispatcher {
+    fn new(
+        check_run_requests: mpsc::Receiver<RunnableCheckRequest>, check_stop_requests: mpsc::Receiver<CheckRequest>,
+    ) -> Result<Self, GenericError> {
+        let (check_metrics_tx, check_metrics_rx) = mpsc::channel(10_000_000);
+        Ok(Self {
+            check_metrics_rx,
+            check_run_requests,
+            check_stop_requests,
+            python_scheduler: python_scheduler::PythonCheckScheduler::new(check_metrics_tx.clone())?,
+        })
+    }
+
+    /// Listens for check requests and dispatches each one to a check scheduler
+    /// that can handle the requested 'check'.
+    /// If multiple schedulers can handle a check, it is dispatched to the first one.
+    fn run(self) -> mpsc::Receiver<CheckMetric> {
+        info!("Check dispatcher started.");
+
+        let CheckDispatcher {
+            mut check_run_requests,
+            mut check_stop_requests,
+            mut python_scheduler,
+            check_metrics_rx,
+        } = self;
+        tokio::spawn(async move {
+            loop {
+                select! {
+                    Some(check_request) = check_run_requests.recv() => {
+                        info!("Dispatching check request: {}", check_request);
+                        if python_scheduler.can_run_check(&check_request) {
+                            match python_scheduler.run_check(&check_request) {
+                                Ok(_) => {
+                                    debug!("Check request dispatched: {}", check_request);
+                                }
+                                Err(e) => {
+                                    error!("Error dispatching check request: {}", e);
+                                }
+                            }
+                        } else {
+                            warn!("Check request not dispatched: {}", check_request);
+                        }
+                    },
+                    Some(check_request) = check_stop_requests.recv() => {
+                        info!("Stopping check request: {}", check_request);
+                        // TODO check wihch one is running it and then stop it on that one
+                        python_scheduler.stop_check(check_request);
+                    }
+                }
+            }
+        });
+
+        check_metrics_rx
+    }
+}
+
 pub struct Checks {
     listeners: Vec<listener::DirCheckRequestListener>,
 }
@@ -333,12 +396,18 @@ impl Checks {
 
         let Checks { listeners } = self;
 
+        let (check_run_requests_tx, check_run_requests_rx) = mpsc::channel(100);
+        let (check_stop_requests_tx, check_stop_requests_rx) = mpsc::channel(100);
+        let dispatcher = CheckDispatcher::new(check_run_requests_rx, check_stop_requests_rx).expect("Could create");
+
         let mut joinset = tokio::task::JoinSet::new();
         // Run the local task set.
         // For each listener, spawn a dedicated task to run it.
         for listener in listeners {
             let listener_context = listener::DirCheckListenerContext {
                 shutdown_handle: listener_shutdown_coordinator.register(),
+                submit_runnable_check_req: check_run_requests_tx.clone(),
+                submit_stop_check_req: check_stop_requests_tx.clone(),
                 listener,
             };
 
@@ -347,24 +416,43 @@ impl Checks {
 
         info!("Check source started.");
 
-        select! {
-            j = joinset.join_next() => {
-                match j {
-                    Some(Ok(_)) => {
-                        debug!("Check source task set exited normally.");
-                    }
-                    Some(Err(e)) => {
-                        error!("Check source task set exited unexpectedly: {:?}", e);
-                    }
-                    None => {
-                        // set is empty, all good here
+        let mut check_metrics_rx = dispatcher.run();
+
+        let check_shutdown = listener_shutdown_coordinator.register();
+        tokio::spawn(async {
+            global_shutdown.await;
+            listener_shutdown_coordinator.shutdown().await;
+        });
+
+        tokio::pin!(check_shutdown);
+
+        loop {
+            select! {
+                Some(check_metric) = check_metrics_rx.recv() => {
+                    let mut event_buffer = context.event_buffer_pool().acquire().await;
+                    let event: Event = check_metric.try_into().expect("can't convert");
+                    event_buffer.push(event);
+                    if let Err(e) = context.forwarder().forward(event_buffer).await {
+                        error!(error = %e, "Failed to forward check metrics.");
                     }
                 }
-            },
-            _ = global_shutdown => {
-                info!("Stopping Check source...");
-
-                listener_shutdown_coordinator.shutdown().await;
+                j = joinset.join_next() => {
+                    match j {
+                        Some(Ok(_)) => {
+                            debug!("Check source task set exited normally.");
+                        }
+                        Some(Err(e)) => {
+                            error!("Check source task set exited unexpectedly: {:?}", e);
+                        }
+                        None => {
+                            // set is empty, all good here
+                        }
+                    }
+                },
+                _ = &mut check_shutdown => {
+                    info!("Stopping Check source...");
+                    break;
+                }
             }
         }
 
@@ -395,16 +483,13 @@ async fn process_listener(
 ) -> Result<(), GenericError> {
     let listener::DirCheckListenerContext {
         shutdown_handle,
+        submit_runnable_check_req,
+        submit_stop_check_req,
         mut listener,
     } = listener_context;
     tokio::pin!(shutdown_handle);
 
     let stream_shutdown_coordinator = DynamicShutdownCoordinator::default();
-
-    // Note: This architecture has a single CheckScheduler per listener
-    // which is likely not the design we want long term
-    let (check_metrics_tx, mut check_metrics_rx) = mpsc::channel(10_000_000);
-    let mut scheduler = scheduler::CheckScheduler::new(check_metrics_tx)?;
 
     info!("Check listener started.");
     let (mut new_entities, mut deleted_entities) = listener.subscribe();
@@ -422,14 +507,6 @@ async fn process_listener(
                     }
                 }
             }
-            Some(check_metric) = check_metrics_rx.recv() => {
-                let mut event_buffer = source_context.event_buffer_pool().acquire().await;
-                let event: Event = check_metric.try_into().expect("can't convert");
-                event_buffer.push(event);
-                if let Err(e) = source_context.forwarder().forward(event_buffer).await {
-                    error!(error = %e, "Failed to forward check metrics.");
-                }
-            }
             Some(new_entity) = new_entities.recv() => {
                 let check_request = match new_entity.to_runnable_request() {
                     Ok(check_request) => check_request,
@@ -439,11 +516,9 @@ async fn process_listener(
                     }
                 };
 
-                info!("Running a check request: {check_request}");
-
-                match scheduler.run_check(check_request) {
+                match submit_runnable_check_req.send(check_request).await {
                     Ok(_) => {
-                        debug!("Check request succeeded, instances have been queued");
+                        debug!("Check request submitted to dispatcher");
                     }
                     Err(e) => {
                         error!("Error running check: {}", e);
@@ -451,7 +526,7 @@ async fn process_listener(
                 }
             }
             Some(deleted_entity) = deleted_entities.recv() => {
-                scheduler.stop_check(deleted_entity);
+                submit_stop_check_req.send(deleted_entity).await.expect("Could send");
             }
         }
     }
@@ -461,6 +536,12 @@ async fn process_listener(
     info!("Check listener stopped.");
 
     Ok(())
+}
+
+trait CheckScheduler {
+    fn can_run_check(&self, check_request: &RunnableCheckRequest) -> bool;
+    fn run_check(&mut self, check_request: &RunnableCheckRequest) -> Result<(), GenericError>;
+    fn stop_check(&mut self, check_name: CheckRequest);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -17,16 +17,16 @@ impl Clone for CheckHandle {
 }
 
 #[pyclass]
-pub struct SenderHolder {
+pub struct PythonSenderHolder {
     pub sender: mpsc::Sender<CheckMetric>,
 }
 
-pub struct CheckScheduler {
+pub struct PythonCheckScheduler {
     running: HashMap<CheckSource, (CheckHandle, Vec<tokio::task::JoinHandle<()>>)>,
     agent_check_base_class: Py<PyAny>,
 }
 
-impl CheckScheduler {
+impl PythonCheckScheduler {
     pub fn new(send_check_metrics: mpsc::Sender<CheckMetric>) -> Result<Self, GenericError> {
         pyo3::append_to_inittab!(datadog_agent);
         pyo3::append_to_inittab!(pyagg);
@@ -49,7 +49,7 @@ impl CheckScheduler {
                 Ok(m) => {
                     let sender_holder = Bound::new(
                         py,
-                        SenderHolder {
+                        PythonSenderHolder {
                             sender: send_check_metrics.clone(),
                         },
                     )
@@ -226,22 +226,27 @@ impl CheckScheduler {
             Ok(CheckHandle(check_value.as_unbound().clone()))
         })
     }
+}
+impl CheckScheduler for PythonCheckScheduler {
+    fn can_run_check(&self, _check: &RunnableCheckRequest) -> bool {
+        true
+    }
 
     // This function does 3 things
     // 1. Registers the check source code and gets a handle
     // 2. Starts a local task for each instance that
     //    queues a run of the check every min_collection_interval_ms
     // 3. Stores the handles in the running hashmap
-    pub fn run_check(&mut self, check: RunnableCheckRequest) -> Result<(), GenericError> {
-        let check_handle = self.register_check(&check)?;
+    fn run_check(&mut self, check: &RunnableCheckRequest) -> Result<(), GenericError> {
+        let check_handle = self.register_check(check)?;
         let running_entry = self
             .running
-            .entry(check.check_request.source)
+            .entry(check.check_request.source.clone())
             .or_insert((check_handle.clone(), Vec::new()));
 
         info!(
-            "Running check {mname} with {num_instances} instances",
-            mname = check.check_request.name,
+            "Running check {name} with {num_instances} instances",
+            name = check.check_request.name,
             num_instances = check.check_request.instances.len()
         );
         for (idx, instance) in check.check_request.instances.iter().enumerate() {
@@ -300,7 +305,7 @@ impl CheckScheduler {
         Ok(())
     }
 
-    pub fn stop_check(&mut self, check: CheckRequest) {
+    fn stop_check(&mut self, check: CheckRequest) {
         info!("Deleting check request {check}");
         if let Some((check_handle, running)) = self.running.remove(&check.source) {
             for handle in running.iter() {
@@ -320,14 +325,14 @@ mod tests {
     #[tokio::test]
     async fn test_new_check_scheduler() {
         let (sender, _) = mpsc::channel(10);
-        let scheduler = CheckScheduler::new(sender).unwrap();
+        let scheduler = PythonCheckScheduler::new(sender).unwrap();
         assert!(scheduler.running.is_empty());
     }
 
     #[tokio::test]
     async fn test_register_check_with_source() {
         let (sender, _) = mpsc::channel(10);
-        let mut scheduler = CheckScheduler::new(sender).unwrap();
+        let mut scheduler = PythonCheckScheduler::new(sender).unwrap();
         let py_source = r#"
 from datadog_checks.checks import AgentCheck
 
@@ -345,7 +350,7 @@ class MyCheck(AgentCheck):
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_run_check() {
         let (sender, mut receiver) = mpsc::channel(10);
-        let mut scheduler = CheckScheduler::new(sender).unwrap();
+        let mut scheduler = PythonCheckScheduler::new(sender).unwrap();
         let py_source = r#"
 from datadog_checks.checks import AgentCheck
 
@@ -361,7 +366,7 @@ class MyCheck(AgentCheck):
             check_request,
         };
 
-        scheduler.run_check(runnable_check_request).unwrap();
+        scheduler.run_check(&runnable_check_request).unwrap();
         assert_eq!(scheduler.running.len(), 1);
         assert_eq!(scheduler.running.keys().next(), Some(&source));
 
@@ -378,7 +383,7 @@ class MyCheck(AgentCheck):
     #[tokio::test]
     async fn test_stop_check() {
         let (sender, mut receiver) = mpsc::channel(10);
-        let mut scheduler = CheckScheduler::new(sender).unwrap();
+        let mut scheduler = PythonCheckScheduler::new(sender).unwrap();
         let py_source = r#"
 from datadog_checks.checks import AgentCheck
 
@@ -394,7 +399,7 @@ class MyCheck(AgentCheck):
             check_request: check_request.clone(),
         };
 
-        scheduler.run_check(runnable_check_request).unwrap();
+        scheduler.run_check(&runnable_check_request).unwrap();
         assert_eq!(scheduler.running.len(), 1);
         assert_eq!(scheduler.running.keys().next(), Some(&source));
 

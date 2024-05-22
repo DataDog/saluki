@@ -135,4 +135,6 @@ async fn is_check_entity(entry: &DirEntry) -> bool {
 pub struct DirCheckListenerContext {
     pub shutdown_handle: DynamicShutdownHandle,
     pub listener: DirCheckRequestListener,
+    pub submit_runnable_check_req: mpsc::Sender<RunnableCheckRequest>,
+    pub submit_stop_check_req: mpsc::Sender<CheckRequest>,
 }
