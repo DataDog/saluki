@@ -4,3 +4,6 @@
 
 # `jsonpath-rust` is MIT licensed but its license file seems to not fit the precise template we match against.
 "jsonpath-rust-0.5.1" = { license = "MIT" }
+
+# `crunchy` does not list its repository in the published release, which we need to properly attribute the crate.
+"crunchy-0.2.2" = { origin = "https://github.com/eira-fransham/crunchy" }
