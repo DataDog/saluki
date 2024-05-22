@@ -7,6 +7,7 @@ use std::{
 use ahash::{AHashMap, AHashSet};
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_context::Context;
 use saluki_core::{
     buffers::FixedSizeBufferPool,
     components::{metrics::MetricsBuilder, transforms::*},
@@ -223,55 +224,46 @@ impl Transform for Aggregate {
 
 #[derive(Clone, Debug)]
 struct AggregationContext {
-    context: MetricContext,
+    context: Context,
     tags_hash: u64,
 }
 
 impl AggregationContext {
-    fn from_metric_context<B: BuildHasher>(context: MetricContext, hasher_builder: &B) -> Self {
-        // Hash our tags first.
-        let mut hasher = hasher_builder.build_hasher();
-        let tags_hash = hash_context_tags(&context, &mut hasher);
+    fn from_metric_context<B: BuildHasher>(context: Context, hasher_builder: &B) -> Self {
+        // We hash each tag individually, and then XOR the hashes together, which is commutative.  This means that we'll
+        // calculate the same hash for the same set of tags even if the tags aren't in the same order.
+        //
+        // This is a simple fast path for hashing `AggregationContext` to avoid sorting tags right off the bat. If there's a
+        // hash collision between two contexts, we'll still fall back to sorting the tags when doing the follow-up equality
+        // check.
+
+        // Start out with the FNV-1a seed so that we're not just XORing a bunch of zeros.
+        let mut tags_hash = 0xcbf29ce484222325;
+
+        for tag in context.tags() {
+            tags_hash ^= hasher_builder.hash_one(tag);
+        }
 
         Self { context, tags_hash }
     }
 
-    fn into_inner(self) -> MetricContext {
+    fn into_inner(self) -> Context {
         self.context
     }
 }
 
-fn hash_context_tags<H: Hasher>(context: &MetricContext, hasher: &mut H) -> u64 {
-    // We hash each tag individually, and then XOR the hashes together, which is commutative.  This means that we'll
-    // calculate the same hash for the same set of tags even if the tags aren't in the same order.
-    //
-    // This is a simple fast path for hashing `AggregationContext` to avoid sorting tags right off the bat. If there's a
-    // hash collision between two contexts, we'll still fall back to sorting the tags when doing the follow-up equality
-    // check.
-
-    // Start out with the FNV-1a seed so that we're not just XORing a bunch of zeros.
-    let mut combined = 0xcbf29ce484222325;
-
-    for tag in &context.tags {
-        tag.hash(hasher);
-        combined ^= hasher.finish();
-    }
-
-    combined
-}
-
 impl std::hash::Hash for AggregationContext {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.context.name.hash(state);
+        self.context.name().hash(state);
         state.write_u64(self.tags_hash);
     }
 }
 
 impl PartialEq for AggregationContext {
     fn eq(&self, other: &Self) -> bool {
-        if self.context.name == other.context.name {
-            let self_tags = self.context.tags.clone().sorted();
-            let other_tags = other.context.tags.clone().sorted();
+        if self.context.name() == other.context.name() {
+            let self_tags = self.context.tags().as_sorted();
+            let other_tags = other.context.tags().as_sorted();
 
             self_tags == other_tags
         } else {

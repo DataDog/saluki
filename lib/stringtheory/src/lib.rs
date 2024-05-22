@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, fmt, ops::Deref};
+use std::{borrow::Borrow, fmt, hash, ops::Deref};
 
 use bytes::Bytes;
 
@@ -9,6 +9,9 @@ use self::interning::fixed_size::InternedString;
 enum Inner {
     /// An owned string.
     Owned(String),
+
+    /// A static string reference.
+    Static(&'static str),
 
     /// A shared string.
     ///
@@ -31,9 +34,16 @@ pub struct MetaString {
 }
 
 impl MetaString {
+    pub const fn empty() -> Self {
+        MetaString {
+            inner: Inner::Static(""),
+        }
+    }
+
     pub fn into_owned(self) -> String {
         match self.inner {
             Inner::Owned(s) => s,
+            Inner::Static(s) => s.to_owned(),
             Inner::Shared(b) => {
                 // SAFETY: We always ensure that the bytes are valid UTF-8 when converting `Bytes` to `MetaString`.
                 unsafe { String::from_utf8_unchecked(b.to_vec()) }
@@ -49,6 +59,12 @@ impl Default for MetaString {
         MetaString {
             inner: Inner::Owned(String::default()),
         }
+    }
+}
+
+impl hash::Hash for MetaString {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        self.deref().hash(state)
     }
 }
 
@@ -68,7 +84,7 @@ impl Eq for MetaString {}
 
 impl PartialOrd for MetaString {
     fn partial_cmp(&self, other: &MetaString) -> Option<std::cmp::Ordering> {
-        self.deref().partial_cmp(other.deref())
+        Some(self.cmp(other))
     }
 }
 
@@ -93,7 +109,7 @@ impl From<String> for MetaString {
 impl From<&str> for MetaString {
     fn from(s: &str) -> Self {
         MetaString {
-            inner: Inner::Owned(s.to_owned()),
+            inner: Inner::Shared(Bytes::copy_from_slice(s.as_bytes())),
         }
     }
 }
@@ -129,8 +145,21 @@ impl From<MetaString> for protobuf::Chars {
     fn from(value: MetaString) -> Self {
         match value.inner {
             Inner::Owned(s) => s.into(),
+            Inner::Static(s) => s.into(),
             Inner::Shared(b) => protobuf::Chars::from_bytes(b).expect("already validated as UTF-8"),
             Inner::ProtoShared(b) => b,
+            Inner::Interned(i) => i.deref().into(),
+        }
+    }
+}
+
+impl<'a> From<&'a MetaString> for protobuf::Chars {
+    fn from(value: &'a MetaString) -> Self {
+        match &value.inner {
+            Inner::Owned(s) => s.as_str().into(),
+            Inner::Static(s) => (*s).into(),
+            Inner::Shared(b) => protobuf::Chars::from_bytes(b.clone()).expect("already validated as UTF-8"),
+            Inner::ProtoShared(b) => b.clone(),
             Inner::Interned(i) => i.deref().into(),
         }
     }
@@ -142,10 +171,11 @@ impl Deref for MetaString {
     fn deref(&self) -> &str {
         match &self.inner {
             Inner::Owned(s) => s,
+            Inner::Static(s) => s,
             // SAFETY: We always ensure that the bytes are valid UTF-8 when converting `Bytes` to `MetaString`.
             Inner::Shared(b) => unsafe { std::str::from_utf8_unchecked(b) },
-            Inner::ProtoShared(b) => &b,
-            Inner::Interned(i) => &i,
+            Inner::ProtoShared(b) => b,
+            Inner::Interned(i) => i,
         }
     }
 }

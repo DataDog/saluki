@@ -18,6 +18,7 @@ hostname-kubernetes = ["hostname-os", "dep:kube", "dep:k8s-openapi"]
 # Internal dependencies.
 datadog-protos = { workspace = true }
 saluki-config = { workspace = true }
+saluki-context = { workspace = true }
 saluki-error = { workspace = true }
 saluki-event = { workspace = true }
 

@@ -1,6 +1,9 @@
+use std::num::NonZeroUsize;
+
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
+use saluki_context::ContextResolver;
 use saluki_core::{
     buffers::FixedSizeBufferPool,
     components::sources::*,
@@ -22,11 +25,15 @@ use saluki_io::{
 };
 use serde::Deserialize;
 use snafu::{ResultExt as _, Snafu};
+use stringtheory::interning::fixed_size::FixedSizeInterner;
 use tokio::select;
 use tracing::{debug, error, info, trace};
 
 mod framer;
 use self::framer::{get_framer, DogStatsDMultiFraming};
+
+// Intern up to 1MB of metric names/tags.
+const DEFAULT_CONTEXT_INTERNER_SIZE_BYTES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(1024 * 1024) };
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -178,6 +185,9 @@ impl SourceBuilder for DogStatsDConfiguration {
         Ok(Box::new(DogStatsD {
             listeners,
             io_buffer_pool: get_fixed_bytes_buffer_pool(self.buffer_count, self.buffer_size),
+            context_resolver: ContextResolver::from_interner(FixedSizeInterner::new(
+                DEFAULT_CONTEXT_INTERNER_SIZE_BYTES,
+            )),
             origin_detection: self.origin_detection,
         }))
     }
@@ -209,12 +219,14 @@ struct ListenerContext {
     shutdown_handle: DynamicShutdownHandle,
     listener: Listener,
     io_buffer_pool: FixedSizeBufferPool<BytesBuffer>,
+    context_resolver: ContextResolver,
     origin_detection: bool,
 }
 
 pub struct DogStatsD {
     listeners: Vec<Listener>,
     io_buffer_pool: FixedSizeBufferPool<BytesBuffer>,
+    context_resolver: ContextResolver,
     origin_detection: bool,
 }
 
@@ -233,6 +245,7 @@ impl Source for DogStatsD {
                 shutdown_handle: listener_shutdown_coordinator.register(),
                 listener,
                 io_buffer_pool: self.io_buffer_pool.clone(),
+                context_resolver: self.context_resolver.clone(),
                 origin_detection: self.origin_detection,
             };
 
@@ -258,6 +271,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
         shutdown_handle,
         mut listener,
         io_buffer_pool,
+        context_resolver,
         origin_detection,
     } = listener_context;
     tokio::pin!(shutdown_handle);
@@ -282,7 +296,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
                         listen_addr: listen_addr.to_string(),
                         origin_detection,
                         deserializer: DeserializerBuilder::new()
-                            .with_framer_and_decoder(get_framer(&listen_addr), DogstatsdCodec::default())
+                            .with_framer_and_decoder(get_framer(&listen_addr), DogstatsdCodec::from_context_resolver(context_resolver.clone()))
                             .with_buffer_pool(io_buffer_pool.clone())
                             .into_deserializer(stream),
                     };
@@ -329,11 +343,24 @@ async fn process_stream(source_context: SourceContext, handler_context: HandlerC
                     // on each metric, if they came over UDS. This would then be utilized downstream in the pipeline by
                     // origin enrichment, if present.
                     if origin_detection {
-                        if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
+                        if let ConnectionAddress::ProcessLike(Some(_creds)) = &peer_addr {
                             for event in &mut event_buffer {
                                 match event {
-                                    Event::Metric(metric) => {
-                                        metric.context.tags.insert_tag((ORIGIN_PID_TAG_KEY, creds.pid.to_string()));
+                                    Event::Metric(_metric) => {
+                                        // TODO: This code below worked before when we could just mutate our context
+                                        // willy-nilly, but not so much when we're using a resolved handle.
+                                        //
+                                        // As mentioned in some other comments, we likely want to move things like
+                                        // origin PID, hostname, container ID, etc... into something like
+                                        // `MetricMetadata` as they're specific to internal processing, rather than the
+                                        // context itself, which is used in a certain way internally but generally
+                                        // represents the name/tags a user is going to see... so if we're always just
+                                        // passing around this internal stuff using tags, it sort of speaks to situating
+                                        // these bits of information in a more permanent and structured way.
+                                        //
+                                        // metric.context.tags.insert_tag((ORIGIN_PID_TAG_KEY, creds.pid.to_string()));
+
+                                        todo!()
                                     },
                                 }
                             }

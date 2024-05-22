@@ -518,11 +518,12 @@ impl Eq for InternerState {}
 /// Additionally, when entries are reclaimed, adjacent entries are merged together where possible. This helps to avoid
 /// unnecessary fragmentation over time, although not as effectively as reconstructing the data buffer to re-pack
 /// entries.
-struct Interner {
+#[derive(Clone, Debug)]
+pub struct FixedSizeInterner {
     state: Arc<Mutex<InternerState>>,
 }
 
-impl Interner {
+impl FixedSizeInterner {
     pub fn new(capacity: NonZeroUsize) -> Self {
         Self {
             state: Arc::new(Mutex::new(InternerState::with_capacity(capacity))),
@@ -604,7 +605,7 @@ fn get_entry_string<'a>(header_ptr: *mut EntryHeader) -> &'a str {
 mod tests {
     use super::*;
 
-    fn get_interned_string_entry_start_end(interner: &Interner, s: &InternedString) -> (usize, usize) {
+    fn get_interned_string_entry_start_end(interner: &FixedSizeInterner, s: &InternedString) -> (usize, usize) {
         let state = interner.state.lock().unwrap();
         let header = unsafe { s.state.header.as_ref() };
         let entry_start = unsafe { s.state.header.as_ptr().cast::<u8>().offset_from(state.ptr.as_ptr()) as usize };
@@ -614,7 +615,7 @@ mod tests {
 
     #[test]
     fn basic() {
-        let interner = Interner::new(NonZeroUsize::new(1024).unwrap());
+        let interner = FixedSizeInterner::new(NonZeroUsize::new(1024).unwrap());
 
         let s1 = interner.try_intern("hello").unwrap();
         let s2 = interner.try_intern("world").unwrap();
@@ -635,7 +636,7 @@ mod tests {
     #[test]
     fn try_intern_without_capacity() {
         // Big enough to fit a single "hello world!" string, but not big enough to fit two.
-        let interner = Interner::new(NonZeroUsize::new(64).unwrap());
+        let interner = FixedSizeInterner::new(NonZeroUsize::new(64).unwrap());
 
         let s1 = interner.try_intern("hello world!");
         assert!(s1.is_some());
@@ -646,7 +647,7 @@ mod tests {
 
     #[test]
     fn reclaim_after_dropped() {
-        let interner = Interner::new(NonZeroUsize::new(1024).unwrap());
+        let interner = FixedSizeInterner::new(NonZeroUsize::new(1024).unwrap());
 
         let s1 = interner.try_intern("hello").expect("should not fail to intern");
         let (s1_entry_start, s1_entry_end) = get_interned_string_entry_start_end(&interner, &s1);
@@ -674,7 +675,7 @@ mod tests {
     #[test]
     fn has_reclaimed_entries_string_fits_exactly() {
         // The interner is large enough for one "hello world!"/"hello, world", but not two of them.
-        let interner = Interner::new(NonZeroUsize::new(64).unwrap());
+        let interner = FixedSizeInterner::new(NonZeroUsize::new(64).unwrap());
 
         // Intern the first string, which should fit without issue.
         let s1 = interner.try_intern("hello world!").expect("should not fail to intern");
@@ -717,7 +718,7 @@ mod tests {
     #[test]
     fn has_reclaimed_entries_string_smaller() {
         // The interner is large enough for either "hello there, world!" or "hello, world", but not both of them.
-        let interner = Interner::new(NonZeroUsize::new(64).unwrap());
+        let interner = FixedSizeInterner::new(NonZeroUsize::new(64).unwrap());
 
         // Intern the first string, which should fit without issue.
         let s1 = interner
@@ -772,7 +773,7 @@ mod tests {
         // merge adjacent entries regardless of whether we're merging with an existing reclaimed entry that comes before
         // us _or_ after us (or both!).
 
-        let interner = Interner::new(NonZeroUsize::new(1024).unwrap());
+        let interner = FixedSizeInterner::new(NonZeroUsize::new(1024).unwrap());
 
         // Intern two strings, back-to-back, which should fit without issue.
         let s1 = interner
@@ -812,7 +813,7 @@ mod tests {
         // merge adjacent entries regardless of whether we're merging with an existing reclaimed entry that comes before
         // us _or_ after us (or both!).
 
-        let interner = Interner::new(NonZeroUsize::new(1024).unwrap());
+        let interner = FixedSizeInterner::new(NonZeroUsize::new(1024).unwrap());
 
         // Intern two strings, back-to-back, which should fit without issue.
         let s1 = interner
@@ -852,7 +853,7 @@ mod tests {
         // merge adjacent entries regardless of whether we're merging with an existing reclaimed entry that comes before
         // us _or_ after us (or both!).
 
-        let interner = Interner::new(NonZeroUsize::new(1024).unwrap());
+        let interner = FixedSizeInterner::new(NonZeroUsize::new(1024).unwrap());
 
         // Intern three strings, back-to-back-to-back, which should fit without issue.
         let s1 = interner

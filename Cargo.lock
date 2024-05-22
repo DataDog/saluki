@@ -1721,6 +1721,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b15813163c1d831bf4a13c3610c05c0d03b39feb07f7e09fa234dac9b15aaf39"
 
 [[package]]
+name = "owning_ref"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ff55baddef9e4ad00f88b6c743a2a8062d4c6ade126c2a528644b8e444d52ce"
+dependencies = [
+ "stable_deref_trait",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2386,6 +2395,7 @@ dependencies = [
  "quanta",
  "rustls",
  "saluki-config",
+ "saluki-context",
  "saluki-core",
  "saluki-env",
  "saluki-error",
@@ -2394,6 +2404,7 @@ dependencies = [
  "serde",
  "slab",
  "snafu",
+ "stringtheory",
  "tokio",
  "tokio-util",
  "tower",
@@ -2410,6 +2421,15 @@ dependencies = [
  "serde",
  "snafu",
  "tracing",
+]
+
+[[package]]
+name = "saluki-context"
+version = "0.1.0"
+dependencies = [
+ "indexmap 2.2.6",
+ "owning_ref",
+ "stringtheory",
 ]
 
 [[package]]
@@ -2438,12 +2458,14 @@ dependencies = [
  "protobuf",
  "quanta",
  "rustls",
+ "saluki-context",
  "saluki-env",
  "saluki-error",
  "saluki-event",
  "similar-asserts",
  "slab",
  "snafu",
+ "stringtheory",
  "tokio",
  "tokio-util",
  "tower",
@@ -2472,6 +2494,7 @@ dependencies = [
  "regex",
  "rustls-pemfile",
  "saluki-config",
+ "saluki-context",
  "saluki-error",
  "saluki-event",
  "serde",
@@ -2501,6 +2524,7 @@ dependencies = [
  "ddsketch-agent",
  "float_eq",
  "proptest",
+ "saluki-context",
  "stringtheory",
 ]
 
@@ -2535,6 +2559,7 @@ dependencies = [
  "protobuf",
  "quanta",
  "rustls",
+ "saluki-context",
  "saluki-core",
  "saluki-env",
  "saluki-event",
@@ -2765,6 +2790,12 @@ name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+
+[[package]]
+name = "stable_deref_trait"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
 
 [[package]]
 name = "stringtheory"

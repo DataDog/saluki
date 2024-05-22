@@ -9,9 +9,11 @@ license = "Apache-2.0"
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
 memory-accounting = { workspace = true }
+saluki-context = { workspace = true }
 saluki-env = { workspace = true }
 saluki-error = { workspace = true }
 saluki-event = { workspace = true }
+stringtheory = { workspace = true }
 
 # External dependencies.
 ahash = { workspace = true, features = ["std", "runtime-rng"] }

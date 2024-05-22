@@ -55,10 +55,20 @@ impl HostEnrichment {
         })
     }
 
-    fn enrich_metric(&self, metric: &mut Metric) {
-        if !metric.context.contains_tag(HOST_TAG) {
-            metric.context.insert_tag((HOST_TAG.to_string(), self.hostname.clone()));
-        }
+    fn enrich_metric(&self, _metric: &mut Metric) {
+        // TODO: This code below worked before when we could just mutate our context willy-nilly, but not so much when
+        // we're using a resolved handle.
+        //
+        // As mentioned in some other comments, we likely want to move things like origin PID, hostname, container ID,
+        // etc... into something like `MetricMetadata` as they're specific to internal processing, rather than the
+        // context itself, which is used in a certain way internally but generally represents the name/tags a user is
+        // going to see... so if we're always just passing around this internal stuff using tags, it sort of speaks to
+        // situating these bits of information in a more permanent and structured way.
+        //
+        // if !metric.context.contains_tag(HOST_TAG) {
+        //     metric.context.insert_tag((HOST_TAG.to_string(), self.hostname.clone()));
+        // }
+        todo!()
     }
 }
 
