@@ -112,6 +112,11 @@ impl Config {
         }
     }
 
+    /// Create a `Config` with the specified bin limit
+    pub fn with_bin_limit(bin_limit: u16) -> Self {
+        Self::new(AGENT_DEFAULT_EPS, AGENT_DEFAULT_MIN_VALUE, bin_limit)
+    }
+
     /// Gets the value lower bound of the bin at the given key.
     pub fn bin_lower_bound(&self, k: i16) -> f64 {
         lower_bound(self.gamma_v, self.norm_bias, k)
@@ -240,6 +245,21 @@ pub struct DDSketch {
 }
 
 impl DDSketch {
+    /// Creates a new `DDSketch` with the given [`Config`]
+    pub fn with_config(config: Config) -> Self {
+        let initial_bins = cmp::min(INITIAL_BINS, config.bin_limit) as usize;
+
+        Self {
+            config,
+            bins: Vec::with_capacity(initial_bins),
+            count: 0,
+            min: f64::MAX,
+            max: f64::MIN,
+            sum: 0.0,
+            avg: 0.0,
+        }
+    }
+
     /// Get sketch config
     pub fn config(&self) -> &Config {
         &self.config
