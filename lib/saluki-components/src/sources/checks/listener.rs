@@ -1,3 +1,5 @@
+use std::fs::FileType;
+
 use super::*;
 
 pub struct DirCheckRequestListener {
@@ -78,10 +80,23 @@ impl DirCheckRequestListener {
     /// Retrieves all check entities from the base path that match the required check formats.
     pub async fn get_check_entities(&self) -> Vec<CheckSource> {
         let entries = WalkDir::new(&self.base_path).filter(|entry| async move {
-            if let Some(true) = entry.path().file_name().map(|f| f.to_string_lossy().starts_with('.')) {
-                return Filtering::IgnoreDir;
+            let file_type = entry.file_type().await.expect("Error getting file type");
+            let mut path = entry.path();
+            let mut extension = path.extension().unwrap_or_default();
+            // JMX checks offer a `metrics.yaml`/`metrics.yml`
+            // we don't care about these, ignore them.
+            if path.to_string_lossy().ends_with("metrics.yaml") || path.to_string_lossy().ends_with("metrics.yml") {
+                return Filtering::Ignore;
             }
-            if is_check_entity(&entry).await {
+
+            if file_type.is_file() && extension == "default" {
+                // is default entry
+                path.set_extension(""); // trim off '.default'
+                extension = path.extension().unwrap_or_default(); // update extension
+            }
+            let is_d_dir = file_type.is_dir() && path.to_string_lossy().ends_with('d');
+            let is_yaml_file = file_type.is_file() && (extension == "yaml" || extension == "yml");
+            if is_d_dir || is_yaml_file {
                 Filtering::Continue
             } else {
                 Filtering::Ignore
@@ -91,13 +106,18 @@ impl DirCheckRequestListener {
         entries
             .filter_map(|e| async move {
                 match e {
-                    Ok(entry) => match tokio::fs::read_to_string(entry.path()).await {
-                        Ok(content) => Some(CheckSource::Yaml((entry.path(), content))),
-                        Err(e) => {
-                            eprintln!("Error reading file: {}", e);
-                            None
+                    Ok(entry) => {
+                        if entry.path().is_dir() {
+                            return None;
                         }
-                    },
+                        match tokio::fs::read_to_string(entry.path()).await {
+                            Ok(content) => Some(CheckSource::Yaml((entry.path(), content))),
+                            Err(e) => {
+                                eprintln!("Error reading file {}: {}", entry.path().display(), e);
+                                None
+                            }
+                        }
+                    }
                     Err(e) => {
                         eprintln!("Error traversing files: {}", e);
                         None
@@ -109,32 +129,106 @@ impl DirCheckRequestListener {
     }
 }
 
-/// Determines if a directory entry is a valid check entity based on defined patterns.
-async fn is_check_entity(entry: &DirEntry) -> bool {
-    let path = entry.path();
-    let file_type = entry.file_type().await.expect("Couldn't get file type");
-    if file_type.is_file() {
-        // Matches `./mycheck.yaml`
-        return path.extension().unwrap_or_default() == "yaml";
-    }
-
-    if file_type.is_dir() {
-        // Matches `./mycheck.d/conf.yaml`
-        let conf_path = path.join("conf.yaml");
-        return conf_path.exists()
-            && path
-                .file_name()
-                .unwrap_or_default()
-                .to_str()
-                .unwrap_or("")
-                .ends_with("check.d");
-    }
-    false
-}
-
 pub struct DirCheckListenerContext {
     pub shutdown_handle: DynamicShutdownHandle,
     pub listener: DirCheckRequestListener,
     pub submit_runnable_check_req: mpsc::Sender<RunnableCheckRequest>,
     pub submit_stop_check_req: mpsc::Sender<CheckRequest>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    macro_rules! setup_test_dir {
+        ($($file_path:expr => $content:expr),* $(,)?) => {{
+            let temp_dir = tempfile::tempdir().expect("get tempdir");
+            let temp_path = temp_dir.path();
+
+            $(
+                let path = temp_path.join($file_path);
+                // This will create the parent path if needed
+                let mut cloned = path.clone();
+                if cloned.pop() {
+                    tokio::fs::create_dir_all(&cloned).await.expect("dir create all");
+                }
+                let mut file = tokio::fs::File::create(&path).await.expect("file creation");
+                file.write_all($content.as_bytes()).await.expect("file write");
+            )*
+
+            let listener = DirCheckRequestListener::from_path(&temp_path).unwrap();
+            (listener, temp_path.to_path_buf(), temp_dir)
+        }};
+    }
+
+    #[tokio::test]
+    async fn test_get_check_entities_with_yaml_files() {
+        // _temp_dir must stay alive till end of test
+        let (listener, temp_path, _temp_dir) = setup_test_dir!(
+            "file1.yaml" => "sample content",
+            "file2.yml" => "sample content",
+            "ignored.txt" => "",
+            "dir.d/file3.yaml" => "sample content",
+        );
+
+        let check_sources = listener.get_check_entities().await;
+
+        let expected_paths: Vec<CheckSource> = vec![
+            CheckSource::Yaml((temp_path.join("file1.yaml"), "sample content".to_string())),
+            CheckSource::Yaml((temp_path.join("file2.yml"), "sample content".to_string())),
+            CheckSource::Yaml((temp_path.join("dir.d/file3.yaml"), "sample content".to_string())),
+        ];
+
+        assert_eq!(check_sources.len(), expected_paths.len());
+        for source in check_sources {
+            assert!(expected_paths.contains(&source));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_check_entities_2() {
+        // _temp_dir must stay alive till end of test
+        let (listener, temp_path, _temp_dir) = setup_test_dir!(
+            "myched.ck.yaml" => "sample content",
+            "metrics.yaml" => "sample content",
+            "metrics.yml" => "sample content",
+            "file2yml" => "sample content",
+            "mycheck.d/test.txt" => "sample content",
+            "dir.d/file3.yml" => "sample content",
+        );
+
+        let check_sources = listener.get_check_entities().await;
+
+        let expected_paths: Vec<CheckSource> = vec![
+            CheckSource::Yaml((temp_path.join("myched.ck.yaml"), "sample content".to_string())),
+            CheckSource::Yaml((temp_path.join("dir.d/file3.yml"), "sample content".to_string())),
+        ];
+
+        assert_eq!(check_sources.len(), expected_paths.len());
+        for source in check_sources {
+            assert!(expected_paths.contains(&source));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_check_entities_default() {
+        // _temp_dir must stay alive till end of test
+        let (listener, temp_path, _temp_dir) = setup_test_dir!(
+            "mycheck.yaml" => "sample content",
+            "othercheck.yaml.default" => "sample content",
+        );
+
+        let check_sources = listener.get_check_entities().await;
+
+        let expected_paths: Vec<CheckSource> = vec![
+            CheckSource::Yaml((temp_path.join("mycheck.yaml"), "sample content".to_string())),
+            CheckSource::Yaml((temp_path.join("othercheck.yaml.default"), "sample content".to_string())),
+        ];
+
+        assert_eq!(check_sources.len(), expected_paths.len());
+        for source in check_sources {
+            assert!(expected_paths.contains(&source));
+        }
+    }
 }

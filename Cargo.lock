@@ -3123,6 +3123,7 @@ dependencies = [
  "serde_yaml",
  "slab",
  "snafu",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tower",
