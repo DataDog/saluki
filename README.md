@@ -42,6 +42,26 @@ All remaining crates are part of Saluki itself, and all have a name with the pre
 - `lib/saluki-io`: core I/O primitives for networking (TCP/UDP/UDS), serialization (codecs and framers), compression,
   I/O-specific buffers, as well as some common codec implementations (e.g. DogStatsD)
 
+### Saluki Components
+#### Checks
+Python checks can be loaded and executed from the active venv via yaml config files in `./dist/conf.d`.
+
+Local python checks can be placed in `./dist/foo.py` and configured via `./dist/conf.d/foo.yaml`.
+
+pyo3 is used to provide python support, which works off of your system's python
+install, `sudo apt install libpython3-devel` (todo double check the package name)
+
+todo update instructions with full integrations-core package installation
+```
+#pip install datadog_checks_base # maybe not needed bc its a dependency
+#pip install datadog_checks_base[deps] # maybe not needed bc its a dependency
+cp $HOME/dev/integrations-core/requirements-agent-release.txt .
+pip install -r $(awk -v local_path_base="$HOME/dev/integrations-core" '{sub(/^datadog-/, "", $1); gsub(/-/, "_", $1); split($1, parts, "=="); package_name = parts[1]; if (index(package_name, "checks_") != 1) {local_path = local_path_base "/" package_name "/"; print local_path}}' requirements-agent-release.txt)
+# One error
+# ERROR: Package 'datadog-tokumx' requires a different Python: 3.10.12 not in '==2.7.*'
+# Not bad.
+```
+
 ## Contributing
 
 If you find an issue with this package and have a fix, or simply want to report it, please review our

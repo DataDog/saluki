@@ -468,6 +468,12 @@ impl MetricTags {
     }
 }
 
+impl From<Vec<String>> for MetricTags {
+    fn from(vec: Vec<String>) -> Self {
+        Self(vec.into_iter().map(MetricTag::from).collect())
+    }
+}
+
 impl From<MetricTag> for MetricTags {
     fn from(tag: MetricTag) -> Self {
         Self(vec![tag])

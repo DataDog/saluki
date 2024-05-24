@@ -40,6 +40,7 @@ protobuf = { workspace = true }
 quanta = { workspace = true }
 rustls = { workspace = true, features = ["aws_lc_rs", "logging", "tls12"] }
 serde = { workspace = true }
+serde_yaml = { workspace = true }
 slab = { workspace = true }
 snafu = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
@@ -47,3 +48,10 @@ tokio-util = { workspace = true }
 tower = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
+async-walkdir = "1.0.0"
+pyo3 = { version = "0.21.2", features = ["anyhow"] }
+tracing-test = "0.2.4"
+wasmtime = "21.0.1"
+wasmtime-wasi = "21.0.1"
+tempfile = "3.10.1"
+
