@@ -25,11 +25,9 @@ use std::{fmt::Display, time::Duration};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, error, info, warn};
 
-mod corecheck_scheduler;
 mod listener;
 mod python_exposed_modules;
 mod python_scheduler;
-mod wasmcheck_scheduler;
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -355,8 +353,6 @@ impl MemoryBounds for ChecksConfiguration {
 
 struct CheckDispatcher {
     python_scheduler: python_scheduler::PythonCheckScheduler,
-    corecheck_scheduler: corecheck_scheduler::CoreCheckScheduler,
-    wasmcheck_scheduler: wasmcheck_scheduler::WasmCheckScheduler,
     check_metrics_rx: mpsc::Receiver<CheckMetric>,
     check_run_requests: mpsc::Receiver<RunnableCheckRequest>,
     check_stop_requests: mpsc::Receiver<CheckRequest>,
@@ -372,8 +368,6 @@ impl CheckDispatcher {
             check_run_requests,
             check_stop_requests,
             python_scheduler: python_scheduler::PythonCheckScheduler::new(check_metrics_tx.clone())?,
-            corecheck_scheduler: corecheck_scheduler::CoreCheckScheduler::new(check_metrics_tx.clone())?,
-            wasmcheck_scheduler: wasmcheck_scheduler::WasmCheckScheduler::new(check_metrics_tx.clone())?,
         })
     }
 
@@ -387,8 +381,6 @@ impl CheckDispatcher {
             mut check_run_requests,
             mut check_stop_requests,
             mut python_scheduler,
-            mut corecheck_scheduler,
-            mut wasmcheck_scheduler,
             check_metrics_rx,
         } = self;
         tokio::spawn(async move {
@@ -396,25 +388,7 @@ impl CheckDispatcher {
                 select! {
                     Some(check_request) = check_run_requests.recv() => {
                         info!("Dispatching check request: {}", check_request);
-                        if corecheck_scheduler.can_run_check(&check_request) {
-                            match corecheck_scheduler.run_check(&check_request) {
-                                Ok(_) => {
-                                    debug!("Check request dispatched: {}", check_request);
-                                }
-                                Err(e) => {
-                                    error!("Error dispatching check request: {}", e);
-                                }
-                            }
-                        } else if wasmcheck_scheduler.can_run_check(&check_request) {
-                            match wasmcheck_scheduler.run_check(&check_request) {
-                                Ok(_) => {
-                                    debug!("Check request dispatched: {}", check_request);
-                                }
-                                Err(e) => {
-                                    error!("Error dispatching check request: {}", e);
-                                }
-                            }
-                        } else if python_scheduler.can_run_check(&check_request) {
+                        if python_scheduler.can_run_check(&check_request) {
                             match python_scheduler.run_check(&check_request) {
                                 Ok(_) => {
                                     debug!("Check request dispatched: {}", check_request);
