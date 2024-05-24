@@ -1,6 +1,4 @@
 use async_trait::async_trait;
-use async_walkdir::{Filtering, WalkDir};
-use futures::StreamExt as _;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use pyo3::prelude::*;
 use saluki_config::GenericConfiguration;
@@ -23,7 +21,7 @@ use std::{
 use std::{collections::HashSet, io};
 use std::{fmt::Display, time::Duration};
 use tokio::{select, sync::mpsc};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 mod listener;
 mod python_exposed_modules;
@@ -87,13 +85,6 @@ impl Display for CheckRequest {
 }
 
 impl CheckRequest {
-    fn to_runnable_request(&self) -> Result<RunnableCheckRequest, Error> {
-        Ok(RunnableCheckRequest {
-            check_request: self.clone(),
-            check_source_code: None,
-        })
-    }
-
     // Ideally this matches
     // https://github.com/DataDog/datadog-agent/blob/b039ea43d3168f521e8ea3e8356a0e84eec170d1/comp/core/autodiscovery/integration/config.go#L362
     // but for now, lets just do this
@@ -387,8 +378,8 @@ impl CheckDispatcher {
             loop {
                 select! {
                     Some(check_request) = check_run_requests.recv() => {
-                        info!("Dispatching check request: {}", check_request);
                         if python_scheduler.can_run_check(&check_request) {
+                            info!("Dispatching to Python {}", check_request);
                             match python_scheduler.run_check(&check_request) {
                                 Ok(_) => {
                                     debug!("Check request dispatched: {}", check_request);
@@ -509,7 +500,7 @@ impl Source for Checks {
 }
 
 async fn process_listener(
-    source_context: SourceContext, listener_context: listener::DirCheckListenerContext,
+    _source_context: SourceContext, listener_context: listener::DirCheckListenerContext,
 ) -> Result<(), GenericError> {
     let listener::DirCheckListenerContext {
         shutdown_handle,
@@ -526,7 +517,7 @@ async fn process_listener(
     loop {
         select! {
             _ = &mut shutdown_handle => {
-                debug!("Received shutdown signal. Waiting for existing stream handlers to finish...");
+                info!("Received shutdown signal. Shutting down check listeners.");
                 break;
             }
             _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {
@@ -538,17 +529,12 @@ async fn process_listener(
                 }
             }
             Some(new_entity) = new_entities.recv() => {
-                let check_request = match new_entity.to_runnable_request() {
-                    Ok(check_request) => check_request,
-                    Err(e) => {
-                        error!("Can't convert check source to runnable request: {}", e);
-                        continue;
-                    }
-                };
+                let runnable_check_request: RunnableCheckRequest = new_entity.into();
+                info!("New Check request for {} received.", runnable_check_request.check_request.name);
 
-                match submit_runnable_check_req.send(check_request).await {
+                match submit_runnable_check_req.send(runnable_check_request).await {
                     Ok(_) => {
-                        debug!("Check request submitted to dispatcher");
+                        trace!("Check request submitted to dispatcher");
                     }
                     Err(e) => {
                         error!("Error running check: {}", e);

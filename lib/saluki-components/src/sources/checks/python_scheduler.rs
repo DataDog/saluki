@@ -129,20 +129,25 @@ impl PythonCheckScheduler {
         if let Some(py_source) = &check.check_source_code {
             return self.register_check_with_source(py_source.clone());
         }
+        let mut load_errors = vec![];
         for import_str in &[&check_module_name, &&format!("datadog_checks.{}", check_module_name)] {
             match self.register_check_from_imports(import_str) {
                 Ok(handle) => return Ok(handle),
                 Err(e) => {
-                    error!(%e, "Could not find check {check_module_name} from imports");
+                    // Not an error yet, wait until all imports have been tried
+                    // Grab the underlying error, not the anyhow wrapper
+                    load_errors.push(e.root_cause().to_string());
                 }
             }
         }
-        Err(generic_error!("Could not find class for check {check_module_name}"))
+
+        Err(generic_error!(
+            "Could not find class for check {check_module_name}. Errors: {load_errors:?}"
+        ))
     }
 
-    fn register_check_from_imports(&mut self, import_path: &str) -> Result<CheckHandle, GenericError> {
+    fn register_check_from_imports(&self, import_path: &str) -> Result<CheckHandle, GenericError> {
         pyo3::Python::with_gil(|py| {
-            debug!("Imported '{import_path}', checking its exports for subclasses of 'AgentCheck'");
             let module = py.import_bound(import_path)?;
             let base_class = self.agent_check_base_class.bind(py);
 
@@ -229,7 +234,8 @@ impl PythonCheckScheduler {
 }
 impl CheckScheduler for PythonCheckScheduler {
     fn can_run_check(&self, _check: &RunnableCheckRequest) -> bool {
-        true
+        self.register_check_from_imports(_check.check_request.name.as_str())
+            .is_ok()
     }
 
     // This function does 3 things

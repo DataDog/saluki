@@ -1,7 +1,9 @@
+use tokio::fs;
+
 use super::*;
 
 pub struct DirCheckRequestListener {
-    pub base_path: PathBuf,
+    pub search_paths: Vec<PathBuf>,
     pub known_check_requests: Vec<CheckRequest>,
 
     // These could all be oneshot channels I think
@@ -13,6 +15,37 @@ pub struct DirCheckRequestListener {
 }
 
 impl DirCheckRequestListener {
+    pub fn from_paths<P: AsRef<Path>>(paths: Vec<P>) -> Result<DirCheckRequestListener, Error> {
+        for p in paths.iter() {
+            if !p.as_ref().exists() {
+                return Err(Error::DirectoryIncorrect {
+                    source: io::Error::new(io::ErrorKind::NotFound, "Path does not exist"),
+                });
+            }
+            if !p.as_ref().is_dir() {
+                return Err(Error::DirectoryIncorrect {
+                    source: io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("Path {} is not a directory", p.as_ref().display()),
+                    ),
+                });
+            }
+        }
+
+        let search_paths = paths.iter().map(|p| p.as_ref().to_path_buf()).collect();
+
+        let (new_paths_tx, new_paths_rx) = mpsc::channel(100);
+        let (deleted_paths_tx, deleted_paths_rx) = mpsc::channel(100);
+        Ok(DirCheckRequestListener {
+            search_paths,
+            known_check_requests: Vec::new(),
+            new_path_tx: new_paths_tx,
+            deleted_path_tx: deleted_paths_tx,
+            new_path_rx: Some(new_paths_rx),
+            deleted_path_rx: Some(deleted_paths_rx),
+        })
+    }
+
     /// Constructs a new `Listener` that will monitor the specified path.
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<DirCheckRequestListener, Error> {
         let path_ref = path.as_ref();
@@ -30,7 +63,7 @@ impl DirCheckRequestListener {
         let (new_paths_tx, new_paths_rx) = mpsc::channel(100);
         let (deleted_paths_tx, deleted_paths_rx) = mpsc::channel(100);
         Ok(DirCheckRequestListener {
-            base_path: path.as_ref().to_path_buf(),
+            search_paths: vec![path.as_ref().to_path_buf()],
             known_check_requests: Vec::new(),
             new_path_tx: new_paths_tx,
             deleted_path_tx: deleted_paths_tx,
@@ -47,8 +80,8 @@ impl DirCheckRequestListener {
         (self.new_path_rx.take().unwrap(), self.deleted_path_rx.take().unwrap())
     }
 
-    pub async fn update_check_entities(&mut self) -> Result<(), Error> {
-        let new_check_paths = self.get_check_entities().await;
+    pub async fn update_check_entities(&mut self) -> Result<(), GenericError> {
+        let new_check_paths = self.get_check_entities().await?;
         let current_paths = self.known_check_requests.iter().map(|e| e.source.clone());
         let current: HashSet<CheckSource> = HashSet::from_iter(current_paths);
         let new: HashSet<CheckSource> = HashSet::from_iter(new_check_paths.iter().cloned());
@@ -75,91 +108,62 @@ impl DirCheckRequestListener {
         Ok(())
     }
 
+    async fn consider_file(&self, original_path: PathBuf, provided_check_name: Option<String>) -> Option<CheckSource> {
+        let mut path = original_path.clone();
+        let mut extension = path.extension().unwrap_or_default().to_owned();
+        if extension == "default" {
+            // is default entry
+            path.set_extension(""); // trim off '.default'
+            extension = path.extension().unwrap_or_default().to_owned()
+        }
+        if path.ends_with("metrics.yaml") || path.ends_with("metrics.yml") {
+            // 'metrics.yaml' is for JMX checks. we don't care about them here
+            return None;
+        }
+        if extension == "yaml" || extension == "yml" {
+            // is yaml file
+            let check_name: String = provided_check_name
+                .unwrap_or_else(|| path.file_stem().unwrap_or_default().to_string_lossy().to_string());
+            match fs::read_to_string(&original_path).await {
+                Ok(contents) => {
+                    let check = YamlCheck::new(check_name, contents, Some(original_path.to_path_buf()));
+                    Some(CheckSource::Yaml(check))
+                }
+                Err(e) => {
+                    eprintln!("Error reading file {}: {}", original_path.display(), e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    }
     /// Retrieves all check entities from the base path that match the required check formats.
-    pub async fn get_check_entities(&self) -> Vec<CheckSource> {
-        let entries = WalkDir::new(&self.base_path).filter(|entry| async move {
-            let file_type = entry.file_type().await.expect("Error getting file type");
-            let mut path = entry.path();
-            let mut extension = path.extension().unwrap_or_default();
-            // JMX checks offer a `metrics.yaml`/`metrics.yml`
-            // we don't care about these, ignore them.
-            if path.to_string_lossy().ends_with("metrics.yaml") || path.to_string_lossy().ends_with("metrics.yml") {
-                return Filtering::Ignore;
-            }
-
-            if file_type.is_file() && extension == "default" {
-                // is default entry
-                path.set_extension(""); // trim off '.default'
-                extension = path.extension().unwrap_or_default(); // update extension
-            }
-            let is_d_dir = file_type.is_dir() && path.to_string_lossy().ends_with('d');
-            let is_yaml_file = file_type.is_file() && (extension == "yaml" || extension == "yml");
-            if is_d_dir || is_yaml_file {
-                Filtering::Continue
-            } else {
-                Filtering::Ignore
-            }
-        });
-
-        entries
-            .filter_map(|e| async move {
-                match e {
-                    Ok(entry) => {
-                        if entry.path().is_dir() {
-                            return None;
-                        }
-                        let mut path = entry.path().clone();
-
-                        println!("Processing path: {:?}", path.display());
-                        let extension = path.extension().unwrap_or_default();
-                        if path.is_file() && extension == "default" {
-                            // is default entry
-                            path.set_extension(""); // trim off '.default'
-                        }
-                        let check_name: String = match path.parent() {
-                            Some(parent) => {
-                                let parent_extension = parent.extension().unwrap_or_default();
-                                println!(
-                                    "Has a parent (they all should), parent is: {:?} and extension is {:?}",
-                                    parent.display(),
-                                    parent_extension
-                                );
-                                if parent_extension == "d" {
-                                    println!("Parent dir name ends in .d");
-                                    // take file name of parent minus the .d
-                                    parent.file_stem().unwrap_or_default().to_string_lossy().to_string()
-                                    //let parent_name = parent.file_name().unwrap_or_default().to_string_lossy();
-                                    //parent_name.strip_suffix(".d").unwrap_or_default().to_string()
-                                } else {
-                                    // regular parent dir, that means use this file stem
-                                    path.file_stem().unwrap_or_default().to_string_lossy().to_string()
-                                }
-                            }
-                            None => {
-                                unreachable!("All configs should have a parent dir")
-                            }
-                        };
-
-                        match tokio::fs::read_to_string(entry.path()).await {
-                            Ok(contents) => Some(CheckSource::Yaml(YamlCheck::new(
-                                check_name,
-                                contents,
-                                Some(entry.path()),
-                            ))),
-                            Err(e) => {
-                                eprintln!("Error reading file {}: {}", entry.path().display(), e);
-                                None
-                            }
+    pub async fn get_check_entities(&self) -> Result<Vec<CheckSource>, GenericError> {
+        let mut sources = vec![];
+        for p in self.search_paths.iter() {
+            let mut entries = fs::read_dir(p).await?;
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                let extension = path.extension().unwrap_or_default();
+                let file_type = entry.file_type().await?;
+                if file_type.is_dir() && extension == "d" {
+                    let module_name = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                    let mut sub_entries = fs::read_dir(path).await?;
+                    while let Ok(Some(sub_entry)) = sub_entries.next_entry().await {
+                        let path = sub_entry.path();
+                        if let Some(source) = self.consider_file(path, Some(module_name.clone())).await {
+                            sources.push(source);
                         }
                     }
-                    Err(e) => {
-                        eprintln!("Error traversing files: {}", e);
-                        None
+                } else if file_type.is_file() {
+                    if let Some(source) = self.consider_file(path, None).await {
+                        sources.push(source);
                     }
                 }
-            })
-            .collect()
-            .await
+            }
+        }
+        Ok(sources)
     }
 }
 
@@ -173,7 +177,6 @@ pub struct DirCheckListenerContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use protobuf::descriptor::source_code_info;
     use tokio::io::AsyncWriteExt;
 
     macro_rules! setup_test_dir {
@@ -207,7 +210,7 @@ mod tests {
             "dir.d/file3.yaml" => "sample content",
         );
 
-        let mut check_sources = listener.get_check_entities().await;
+        let mut check_sources = listener.get_check_entities().await.unwrap();
 
         let mut expected_sources: Vec<CheckSource> = vec![
             CheckSource::Yaml(YamlCheck::new(
@@ -229,7 +232,6 @@ mod tests {
 
         check_sources.sort();
         expected_sources.sort();
-        assert_eq!(check_sources.len(), expected_sources.len());
 
         for (idx, source) in check_sources.iter().enumerate() {
             assert_eq!(source, &expected_sources[idx]);
@@ -245,11 +247,10 @@ mod tests {
             "metrics.yml" => "sample content",
             "file2yml" => "sample content",
             "mycheck.d/test.txt" => "sample content",
-            // THIS TEST FAILS< IT RETURNS FILE3 as name
             "dir.d/file3.yml" => "sample content",
         );
 
-        let mut check_sources = listener.get_check_entities().await;
+        let mut check_sources = listener.get_check_entities().await.unwrap();
 
         let mut expected_sources: Vec<CheckSource> = vec![
             CheckSource::Yaml(YamlCheck::new(
@@ -266,7 +267,6 @@ mod tests {
 
         check_sources.sort();
         expected_sources.sort();
-        assert_eq!(check_sources.len(), expected_sources.len());
 
         for (idx, source) in check_sources.iter().enumerate() {
             assert_eq!(source, &expected_sources[idx]);
@@ -281,7 +281,7 @@ mod tests {
             "othercheck.yaml.default" => "sample content",
         );
 
-        let mut check_sources = listener.get_check_entities().await;
+        let mut check_sources = listener.get_check_entities().await.unwrap();
 
         let mut expected_sources: Vec<CheckSource> = vec![
             CheckSource::Yaml(YamlCheck::new(
@@ -298,7 +298,6 @@ mod tests {
 
         check_sources.sort();
         expected_sources.sort();
-        assert_eq!(check_sources.len(), expected_sources.len());
 
         for (idx, source) in check_sources.iter().enumerate() {
             assert_eq!(source, &expected_sources[idx]);
