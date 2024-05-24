@@ -102,6 +102,11 @@ dhat = "0.3"
 #
 # Will be removed once a new release (current is 0.5.0) is published.
 containerd-client = { git = "https://github.com/containerd/rust-extensions", branch = "main" }
+# Git dependency for `async-compression` to add support to access `total_in`/`total_out` for determining
+# the amount of compressed data when building requests.
+#
+# Still need to submit a pull request.
+async-compression = { git = "https://github.com/tobz/async-compression.git", branch = "tobz/expose-encoder-stats-methods" }
 
 [profile.release]
 lto = "thin"

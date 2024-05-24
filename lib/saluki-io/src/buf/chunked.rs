@@ -43,7 +43,13 @@ impl PollBufferPool {
                     Self::WaitingForBuffer(fut)
                 }
                 Self::WaitingForBuffer(mut fut) => {
-                    let (buffer_pool, buffer) = ready!(fut.poll(cx));
+                    let (buffer_pool, buffer) = match fut.poll(cx) {
+                        Poll::Ready(result) => result,
+                        Poll::Pending => {
+                            *self = Self::WaitingForBuffer(fut);
+                            return Poll::Pending;
+                        }
+                    };
                     *self = Self::CapacityAvailable(buffer_pool, fut);
                     return Poll::Ready(buffer);
                 }

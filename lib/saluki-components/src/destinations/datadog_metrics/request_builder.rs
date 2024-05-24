@@ -5,7 +5,7 @@ use http::{Method, Request, Uri};
 use protobuf::CodedOutputStream;
 use snafu::{ResultExt, Snafu};
 use tokio::io::AsyncWriteExt as _;
-use tracing::debug;
+use tracing::{debug, trace};
 
 use saluki_core::buffers::BufferPool;
 use saluki_event::metric::*;
@@ -36,6 +36,21 @@ pub enum RequestBuilderError {
     Io { source: io::Error },
     #[snafu(display("error when building API endpoint/request: {}", source))]
     Http { source: http::Error },
+}
+
+impl RequestBuilderError {
+    pub fn is_recoverable(&self) -> bool {
+        match self {
+            // If the wrong metric type is being sent to the wrong endpoint's request builder, that's just a flat out
+            // bug, so we can't possibly recover.
+            Self::InvalidMetricForEndpoint { .. } => false,
+            // I/O errors should only be getting created for compressor-related operations, and the scenarios in which
+            // there are I/O errors should generally be very narrowly scoped to "the system is in a very bad state", so
+            // we can't really recover from those... or perhaps shouldn't _try_ to recover from those.
+            Self::Io { .. } => false,
+            _ => true,
+        }
+    }
 }
 
 /// Metrics intake endpoint.
@@ -95,7 +110,8 @@ where
     buffer_pool: B,
     scratch_buf: Vec<u8>,
     compressor: Compressor<ChunkedBytesBuffer>,
-    written_uncompressed: usize,
+    compression_estimator: CompressionEstimator,
+    uncompressed_len: usize,
 }
 
 impl<B> RequestBuilder<B>
@@ -115,7 +131,8 @@ where
             buffer_pool,
             scratch_buf: Vec::with_capacity(SCRATCH_BUF_CAPACITY),
             compressor,
-            written_uncompressed: 0,
+            compression_estimator: CompressionEstimator::default(),
+            uncompressed_len: 0,
         })
     }
 
@@ -136,60 +153,75 @@ where
         let encoded_metric = encode_single_metric(&metric);
         encoded_metric.write(&mut self.scratch_buf)?;
 
-        // TODO: Figure out if `ZlibEncoder::total_out` (and friends) actually track the number of bytes being produced
-        // by the compressor prior to flushing, insofar as understanding what the final output size of the compressor
-        // would be if we immediately called `flush`.
+        // If the metric can't fit into the current request payload based on the uncompressed size limit, or isn't
+        // likely to fit into the current request payload based on the estimated compressed size limit, then return it
+        // to the call: this indicates that a flush must happen before trying again to encode the same metric.
         //
-        // This would give us a fairly accurate way to answer the question of: if we assume the current metric is
-        // written and cannot be compressed at all, what would the resulting compressed output size be? And would that
-        // exceed the compressed size limit?
-        //
-        // Future work might be able to improve on that with heuristics based on the current compression ratio to be
-        // more risky with writing more into the current request payload, but even just the above would be a useful
-        // invariant to have, and would allow us to be more confident that we're generating request payloads that fit
-        // within the limits.
-
-        // If the metric can't fit into the current request payload, in terms of the uncompressed size limit, then
-        // return it to the caller to signal that they need to flush the current request payload first.
-        if self.written_uncompressed + self.scratch_buf.len() > self.endpoint.uncompressed_size_limit() {
+        // TODO: Use of the estimated compressed size limit is a bit of a stopgap to avoid having to do full incremental
+        // request building. We can still improve it, but the only sure-fire way to not exceed the (un)compressed
+        // payload size limits is to be able to re-do the encoding/compression process in smaller chunks.
+        let encoded_len = self.scratch_buf.len();
+        let new_uncompressed_len = self.uncompressed_len + encoded_len;
+        if new_uncompressed_len > self.endpoint.uncompressed_size_limit()
+            || self
+                .compression_estimator
+                .would_write_exceed_threshold(encoded_len, self.endpoint.compressed_size_limit())
+        {
+            trace!(
+                encoded_len,
+                uncompressed_len = self.uncompressed_len,
+                estimated_compressed_len = self.compression_estimator.estimated_len(),
+                endpoint = ?self.endpoint,
+                "Metric would exceed endpoint size limits."
+            );
             return Ok(Some(metric));
         }
 
         // Write the scratch buffer to the compressor.
-        //
-        // We do a small bit of looping to extend our chunked buffer as necessary while writing our scratch buffer to
-        // the compressor.
         self.compressor.write_all(&self.scratch_buf).await.context(Io)?;
-        self.written_uncompressed += self.scratch_buf.len();
+        self.compression_estimator
+            .track_write(&self.compressor, self.scratch_buf.len());
+        self.uncompressed_len += self.scratch_buf.len();
+
+        trace!(
+            encoded_len,
+            uncompressed_len = self.uncompressed_len,
+            estimated_compressed_len = self.compression_estimator.estimated_len(),
+            "Wrote metric to compressor."
+        );
 
         Ok(None)
     }
 
     pub async fn flush(&mut self) -> Result<Option<Request<ChunkedBytesBuffer>>, RequestBuilderError> {
-        if self.written_uncompressed == 0 {
+        if self.uncompressed_len == 0 {
             return Ok(None);
         }
 
-        // Finalize the compressor and then reset our state to take ownership of it.
-        let new_compressor = create_compressor(&self.buffer_pool).await;
-        let mut old_compressor = std::mem::replace(&mut self.compressor, new_compressor);
-        old_compressor.shutdown().await.context(Io)?;
-        let old_buffer = old_compressor.into_inner();
+        // Clear our internal state and finalize the compressor. We do it in this order so that if finalization fails,
+        // somehow, the request builder is in a default state and encoding can be attempted again.
+        let uncompressed_len = self.uncompressed_len;
+        self.uncompressed_len = 0;
 
+        self.compression_estimator.reset();
+
+        let new_compressor = create_compressor(&self.buffer_pool).await;
+        let mut compressor = std::mem::replace(&mut self.compressor, new_compressor);
+        compressor.shutdown().await.context(Io)?;
+        let buffer = compressor.into_inner();
+
+        let compressed_len = buffer.len();
         let compressed_limit = self.endpoint.compressed_size_limit();
-        if old_buffer.len() > compressed_limit {
+        if compressed_len > compressed_limit {
             return Err(RequestBuilderError::PayloadTooLarge {
-                compressed_size_bytes: old_buffer.len(),
+                compressed_size_bytes: compressed_len,
                 compressed_limit_bytes: compressed_limit,
             });
         }
 
-        let written_uncompressed = self.written_uncompressed;
-        self.written_uncompressed = 0;
+        debug!(endpoint = ?self.endpoint, uncompressed_len, compressed_len, "Flushing request.");
 
-        debug!(endpoint = ?self.endpoint, uncompressed_len = written_uncompressed, compressed_len = old_buffer.len(), "Flushing request.");
-
-        self.create_request(old_buffer).map(Some)
+        self.create_request(buffer).map(Some)
     }
 
     fn create_request(&self, buffer: ChunkedBytesBuffer) -> Result<Request<ChunkedBytesBuffer>, RequestBuilderError> {
