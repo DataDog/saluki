@@ -15,55 +15,27 @@ pub struct DirCheckRequestListener {
 }
 
 impl DirCheckRequestListener {
+    /// Constructs a new `Listener` that will monitor the specified paths.
     pub fn from_paths<P: AsRef<Path>>(paths: Vec<P>) -> Result<DirCheckRequestListener, Error> {
-        for p in paths.iter() {
-            if !p.as_ref().exists() {
-                return Err(Error::DirectoryIncorrect {
-                    source: io::Error::new(io::ErrorKind::NotFound, "Path does not exist"),
-                });
-            }
-            if !p.as_ref().is_dir() {
-                return Err(Error::DirectoryIncorrect {
-                    source: io::Error::new(
-                        io::ErrorKind::NotFound,
-                        format!("Path {} is not a directory", p.as_ref().display()),
-                    ),
-                });
-            }
-        }
-
-        let search_paths = paths.iter().map(|p| p.as_ref().to_path_buf()).collect();
+        let search_paths: Vec<PathBuf> = paths
+            .iter()
+            .filter_map(|p| {
+                if !p.as_ref().exists() {
+                    warn!("Skipping path '{}' as it does not exist", p.as_ref().display());
+                    return None;
+                }
+                if !p.as_ref().is_dir() {
+                    warn!("Skipping path '{}', it is not a directory.", p.as_ref().display());
+                    return None;
+                }
+                Some(p.as_ref().to_path_buf())
+            })
+            .collect();
 
         let (new_paths_tx, new_paths_rx) = mpsc::channel(100);
         let (deleted_paths_tx, deleted_paths_rx) = mpsc::channel(100);
         Ok(DirCheckRequestListener {
             search_paths,
-            known_check_requests: Vec::new(),
-            new_path_tx: new_paths_tx,
-            deleted_path_tx: deleted_paths_tx,
-            new_path_rx: Some(new_paths_rx),
-            deleted_path_rx: Some(deleted_paths_rx),
-        })
-    }
-
-    /// Constructs a new `Listener` that will monitor the specified path.
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<DirCheckRequestListener, Error> {
-        let path_ref = path.as_ref();
-        if !path_ref.exists() {
-            return Err(Error::DirectoryIncorrect {
-                source: io::Error::new(io::ErrorKind::NotFound, "Path does not exist"),
-            });
-        }
-        if !path_ref.is_dir() {
-            return Err(Error::DirectoryIncorrect {
-                source: io::Error::new(io::ErrorKind::NotFound, "Path is not a directory"),
-            });
-        }
-
-        let (new_paths_tx, new_paths_rx) = mpsc::channel(100);
-        let (deleted_paths_tx, deleted_paths_rx) = mpsc::channel(100);
-        Ok(DirCheckRequestListener {
-            search_paths: vec![path.as_ref().to_path_buf()],
             known_check_requests: Vec::new(),
             new_path_tx: new_paths_tx,
             deleted_path_tx: deleted_paths_tx,
@@ -195,7 +167,7 @@ mod tests {
                 file.write_all($content.as_bytes()).await.expect("file write");
             )*
 
-            let listener = DirCheckRequestListener::from_path(&temp_path).unwrap();
+            let listener = DirCheckRequestListener::from_paths(vec![&temp_path]).unwrap();
             (listener, temp_path.to_path_buf(), temp_dir)
         }};
     }
