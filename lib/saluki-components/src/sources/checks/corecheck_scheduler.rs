@@ -130,7 +130,7 @@ mod tests {
     async fn test_can_run_with_no_checks() {
         let (sender, _) = mpsc::channel(10);
         let scheduler = CoreCheckScheduler::new(sender).unwrap();
-        let source = CheckSource::Yaml((PathBuf::from("/tmp/my_check.yaml"), "instances: [{}]".to_string()));
+        let source = CheckSource::Yaml(YamlCheck::new("my_check", "instances: [{}]", None));
         let check_request = source.to_check_request().unwrap();
 
         let runnable_check_request: RunnableCheckRequest = check_request.into();
@@ -141,7 +141,7 @@ mod tests {
     async fn test_can_run_with_valid_check() {
         let (sender, _) = mpsc::channel(10);
         let scheduler = CoreCheckScheduler::new(sender).unwrap();
-        let source = CheckSource::Yaml((PathBuf::from("/tmp/smoke.yaml"), "instances: [{}]".to_string()));
+        let source = CheckSource::Yaml(YamlCheck::new("smoke", "instances: [{}]", None));
         let check_request = source.to_check_request().unwrap();
 
         let runnable_check_request: RunnableCheckRequest = check_request.into();
@@ -152,7 +152,7 @@ mod tests {
     async fn test_execution_with_single_instance() {
         let (sender, mut receiver) = mpsc::channel(10);
         let mut scheduler = CoreCheckScheduler::new(sender).unwrap();
-        let source = CheckSource::Yaml((PathBuf::from("/tmp/smoke.yaml"), "instances: [{}]".to_string()));
+        let source = CheckSource::Yaml(YamlCheck::new("smoke", "instances: [{}]", None));
         let check_request = source.to_check_request().unwrap();
 
         let runnable_check_request: RunnableCheckRequest = check_request.into();

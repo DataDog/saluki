@@ -360,7 +360,11 @@ class MyCheck(AgentCheck):
     def check(self, instance):
         self.gauge('test-metric-name', 41, tags=['hello:world'])"#;
 
-        let source = CheckSource::Yaml((PathBuf::from("/tmp/my_check.yaml"), "instances: [{}]".to_string()));
+        let source = CheckSource::Yaml(YamlCheck::new(
+            "my_check",
+            "instances: [{}]",
+            Some(PathBuf::from("/tmp/my_check.yaml")),
+        ));
         let check_request = source.to_check_request().unwrap();
 
         let runnable_check_request = RunnableCheckRequest {
@@ -393,7 +397,11 @@ class MyCheck(AgentCheck):
     def check(self, instance):
         self.gauge('test-metric-name', 41, tags=['hello:world'])"#;
 
-        let source = CheckSource::Yaml((PathBuf::from("/tmp/my_check.yaml"), "instances: [{}]".to_string()));
+        let source = CheckSource::Yaml(YamlCheck::new(
+            "my_check",
+            "instances: [{}]",
+            Some(PathBuf::from("/tmp/my_check.yaml")),
+        ));
         let check_request = source.to_check_request().unwrap();
 
         let runnable_check_request = RunnableCheckRequest {

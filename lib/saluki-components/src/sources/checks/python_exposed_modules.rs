@@ -1,4 +1,4 @@
-use tracing::{event, trace};
+use tracing::trace;
 
 use super::*;
 

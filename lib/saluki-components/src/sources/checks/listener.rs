@@ -1,5 +1,3 @@
-use std::fs::FileType;
-
 use super::*;
 
 pub struct DirCheckRequestListener {
@@ -110,8 +108,44 @@ impl DirCheckRequestListener {
                         if entry.path().is_dir() {
                             return None;
                         }
+                        let mut path = entry.path().clone();
+
+                        println!("Processing path: {:?}", path.display());
+                        let extension = path.extension().unwrap_or_default();
+                        if path.is_file() && extension == "default" {
+                            // is default entry
+                            path.set_extension(""); // trim off '.default'
+                        }
+                        let check_name: String = match path.parent() {
+                            Some(parent) => {
+                                let parent_extension = parent.extension().unwrap_or_default();
+                                println!(
+                                    "Has a parent (they all should), parent is: {:?} and extension is {:?}",
+                                    parent.display(),
+                                    parent_extension
+                                );
+                                if parent_extension == "d" {
+                                    println!("Parent dir name ends in .d");
+                                    // take file name of parent minus the .d
+                                    parent.file_stem().unwrap_or_default().to_string_lossy().to_string()
+                                    //let parent_name = parent.file_name().unwrap_or_default().to_string_lossy();
+                                    //parent_name.strip_suffix(".d").unwrap_or_default().to_string()
+                                } else {
+                                    // regular parent dir, that means use this file stem
+                                    path.file_stem().unwrap_or_default().to_string_lossy().to_string()
+                                }
+                            }
+                            None => {
+                                unreachable!("All configs should have a parent dir")
+                            }
+                        };
+
                         match tokio::fs::read_to_string(entry.path()).await {
-                            Ok(content) => Some(CheckSource::Yaml((entry.path(), content))),
+                            Ok(contents) => Some(CheckSource::Yaml(YamlCheck::new(
+                                check_name,
+                                contents,
+                                Some(entry.path()),
+                            ))),
                             Err(e) => {
                                 eprintln!("Error reading file {}: {}", entry.path().display(), e);
                                 None
@@ -139,6 +173,7 @@ pub struct DirCheckListenerContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use protobuf::descriptor::source_code_info;
     use tokio::io::AsyncWriteExt;
 
     macro_rules! setup_test_dir {
@@ -172,17 +207,32 @@ mod tests {
             "dir.d/file3.yaml" => "sample content",
         );
 
-        let check_sources = listener.get_check_entities().await;
+        let mut check_sources = listener.get_check_entities().await;
 
-        let expected_paths: Vec<CheckSource> = vec![
-            CheckSource::Yaml((temp_path.join("file1.yaml"), "sample content".to_string())),
-            CheckSource::Yaml((temp_path.join("file2.yml"), "sample content".to_string())),
-            CheckSource::Yaml((temp_path.join("dir.d/file3.yaml"), "sample content".to_string())),
+        let mut expected_sources: Vec<CheckSource> = vec![
+            CheckSource::Yaml(YamlCheck::new(
+                "file1",
+                "sample content",
+                Some(temp_path.join("file1.yaml")),
+            )),
+            CheckSource::Yaml(YamlCheck::new(
+                "file2",
+                "sample content",
+                Some(temp_path.join("file2.yml")),
+            )),
+            CheckSource::Yaml(YamlCheck::new(
+                "dir",
+                "sample content",
+                Some(temp_path.join("dir.d/file3.yaml")),
+            )),
         ];
 
-        assert_eq!(check_sources.len(), expected_paths.len());
-        for source in check_sources {
-            assert!(expected_paths.contains(&source));
+        check_sources.sort();
+        expected_sources.sort();
+        assert_eq!(check_sources.len(), expected_sources.len());
+
+        for (idx, source) in check_sources.iter().enumerate() {
+            assert_eq!(source, &expected_sources[idx]);
         }
     }
 
@@ -195,19 +245,31 @@ mod tests {
             "metrics.yml" => "sample content",
             "file2yml" => "sample content",
             "mycheck.d/test.txt" => "sample content",
+            // THIS TEST FAILS< IT RETURNS FILE3 as name
             "dir.d/file3.yml" => "sample content",
         );
 
-        let check_sources = listener.get_check_entities().await;
+        let mut check_sources = listener.get_check_entities().await;
 
-        let expected_paths: Vec<CheckSource> = vec![
-            CheckSource::Yaml((temp_path.join("myched.ck.yaml"), "sample content".to_string())),
-            CheckSource::Yaml((temp_path.join("dir.d/file3.yml"), "sample content".to_string())),
+        let mut expected_sources: Vec<CheckSource> = vec![
+            CheckSource::Yaml(YamlCheck::new(
+                "myched.ck",
+                "sample content",
+                Some(temp_path.join("myched.ck.yaml")),
+            )),
+            CheckSource::Yaml(YamlCheck::new(
+                "dir",
+                "sample content",
+                Some(temp_path.join("dir.d/file3.yml")),
+            )),
         ];
 
-        assert_eq!(check_sources.len(), expected_paths.len());
-        for source in check_sources {
-            assert!(expected_paths.contains(&source));
+        check_sources.sort();
+        expected_sources.sort();
+        assert_eq!(check_sources.len(), expected_sources.len());
+
+        for (idx, source) in check_sources.iter().enumerate() {
+            assert_eq!(source, &expected_sources[idx]);
         }
     }
 
@@ -219,16 +281,27 @@ mod tests {
             "othercheck.yaml.default" => "sample content",
         );
 
-        let check_sources = listener.get_check_entities().await;
+        let mut check_sources = listener.get_check_entities().await;
 
-        let expected_paths: Vec<CheckSource> = vec![
-            CheckSource::Yaml((temp_path.join("mycheck.yaml"), "sample content".to_string())),
-            CheckSource::Yaml((temp_path.join("othercheck.yaml.default"), "sample content".to_string())),
+        let mut expected_sources: Vec<CheckSource> = vec![
+            CheckSource::Yaml(YamlCheck::new(
+                "mycheck",
+                "sample content",
+                Some(temp_path.join("mycheck.yaml")),
+            )),
+            CheckSource::Yaml(YamlCheck::new(
+                "othercheck",
+                "sample content",
+                Some(temp_path.join("othercheck.yaml.default")),
+            )),
         ];
 
-        assert_eq!(check_sources.len(), expected_paths.len());
-        for source in check_sources {
-            assert!(expected_paths.contains(&source));
+        check_sources.sort();
+        expected_sources.sort();
+        assert_eq!(check_sources.len(), expected_sources.len());
+
+        for (idx, source) in check_sources.iter().enumerate() {
+            assert_eq!(source, &expected_sources[idx]);
         }
     }
 }

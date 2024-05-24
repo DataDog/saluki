@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use async_walkdir::{DirEntry, Filtering, WalkDir};
+use async_walkdir::{Filtering, WalkDir};
 use futures::StreamExt as _;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use pyo3::prelude::*;
@@ -88,15 +88,6 @@ impl Display for CheckRequest {
     }
 }
 
-impl Into<RunnableCheckRequest> for CheckRequest {
-    fn into(self) -> RunnableCheckRequest {
-        RunnableCheckRequest {
-            check_request: self,
-            check_source_code: None,
-        }
-    }
-}
-
 impl CheckRequest {
     fn to_runnable_request(&self) -> Result<RunnableCheckRequest, Error> {
         Ok(RunnableCheckRequest {
@@ -129,6 +120,15 @@ struct RunnableCheckRequest {
 impl Display for RunnableCheckRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Request: {}", self.check_request)
+    }
+}
+
+impl From<CheckRequest> for RunnableCheckRequest {
+    fn from(check_request: CheckRequest) -> Self {
+        Self {
+            check_request,
+            check_source_code: None,
+        }
     }
 }
 
@@ -214,15 +214,41 @@ fn default_min_collection_interval_ms() -> u32 {
     15_000
 }
 
-#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq, PartialOrd, Ord)]
+struct YamlCheck {
+    found_path: Option<PathBuf>,
+    name: String,
+    contents: String,
+}
+
+impl YamlCheck {
+    pub fn new<N, C>(name: N, contents: C, found_path: Option<PathBuf>) -> YamlCheck
+    where
+        N: Into<String>,
+        C: Into<String>,
+    {
+        Self {
+            name: name.into(),
+            contents: contents.into(),
+            found_path,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, Hash, PartialEq, PartialOrd, Ord)]
 enum CheckSource {
-    Yaml((PathBuf, String)),
+    Yaml(YamlCheck),
 }
 
 impl CheckSource {
     fn to_check_request(&self) -> Result<CheckRequest, Error> {
         match self {
-            CheckSource::Yaml((path, contents)) => {
+            CheckSource::Yaml(y) => {
+                let YamlCheck {
+                    name,
+                    contents,
+                    found_path: _,
+                } = y;
                 let mut checks_config = Vec::new();
                 let read_yaml: YamlCheckConfiguration = match serde_yaml::from_str(contents) {
                     Ok(read) => read,
@@ -255,25 +281,15 @@ impl CheckSource {
                     checks_config.push(CheckInstanceConfiguration(map));
                 }
 
-                // TODO this does not support the './http_check.d/foo.yaml' pattern
-                // DirCheckListener needs to be updated to support that format as well.
-                let file_stem_name = path
-                    .file_stem()
-                    .expect("File name must have a stem")
-                    .to_string_lossy()
-                    .to_string();
                 let check_name = match &read_yaml.name {
                     Some(yaml_name) => {
-                        if *yaml_name != file_stem_name {
-                            warn!(
-                                "Name in yaml file does not match file name: {} != {}",
-                                yaml_name, file_stem_name
-                            );
+                        if yaml_name != name {
+                            warn!("Name in yaml file does not match file name: {} != {}", yaml_name, name);
                             warn!("Using 'name' field value as the loadable_name.");
                         }
                         yaml_name.clone()
                     }
-                    None => file_stem_name.clone(),
+                    None => name.clone(),
                 };
                 Ok(CheckRequest {
                     name: check_name,
@@ -289,7 +305,11 @@ impl CheckSource {
 impl Display for CheckSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CheckSource::Yaml((path, contents)) => write!(f, "{contents} from file: {}", path.display()),
+            CheckSource::Yaml(YamlCheck {
+                name,
+                contents: _,
+                found_path: _,
+            }) => write!(f, "YamlCheckName: {name}"),
         }
     }
 }
