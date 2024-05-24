@@ -22,12 +22,13 @@ pub struct PythonSenderHolder {
 }
 
 pub struct PythonCheckScheduler {
+    tlm: ChecksTelemetry,
     running: HashMap<CheckSource, (CheckHandle, Vec<tokio::task::JoinHandle<()>>)>,
     agent_check_base_class: Py<PyAny>,
 }
 
 impl PythonCheckScheduler {
-    pub fn new(send_check_metrics: mpsc::Sender<CheckMetric>) -> Result<Self, GenericError> {
+    pub fn new(send_check_metrics: mpsc::Sender<CheckMetric>, tlm: ChecksTelemetry) -> Result<Self, GenericError> {
         pyo3::append_to_inittab!(datadog_agent);
         pyo3::append_to_inittab!(pyagg);
 
@@ -95,6 +96,7 @@ impl PythonCheckScheduler {
         })?;
 
         Ok(Self {
+            tlm,
             running: HashMap::new(),
             agent_check_base_class: agent_check_base_class.expect("AgentCheck class should be present"),
         })
@@ -116,11 +118,18 @@ impl PythonCheckScheduler {
         // - `AgentCheck.load_config(instance)`
 
         // JK load_config is just yaml parsing -- str -> pyAny
-        // which I don't need because I implemented serde_mapping -> pydict
+        // I assume my impl of CheckRequest::to_pydict makes this un-neccessary
+        // but TBD, could be some subtle differences between it and 'load_config'
 
         // - set attr 'check_id' equal to the check id
+        // also parse out the attr `__version__` and record it somewhere
+        // ref PythonCheckLoader::Load in Agent
 
         Ok(check_handle)
+    }
+
+    fn possible_import_paths_for_module(&self, module_name: &str) -> Vec<String> {
+        vec![module_name.to_string(), format!("datadog_checks.{}", module_name)]
     }
 
     fn register_check_impl(&mut self, check: &RunnableCheckRequest) -> Result<CheckHandle, GenericError> {
@@ -130,7 +139,7 @@ impl PythonCheckScheduler {
             return self.register_check_with_source(py_source.clone());
         }
         let mut load_errors = vec![];
-        for import_str in &[&check_module_name, &&format!("datadog_checks.{}", check_module_name)] {
+        for import_str in self.possible_import_paths_for_module(check_module_name).iter() {
             match self.register_check_from_imports(import_str) {
                 Ok(handle) => return Ok(handle),
                 Err(e) => {
@@ -233,9 +242,20 @@ impl PythonCheckScheduler {
     }
 }
 impl CheckScheduler for PythonCheckScheduler {
-    fn can_run_check(&self, _check: &RunnableCheckRequest) -> bool {
-        self.register_check_from_imports(_check.check_request.name.as_str())
-            .is_ok()
+    fn can_run_check(&self, check: &RunnableCheckRequest) -> bool {
+        self.possible_import_paths_for_module(check.check_request.name.as_str())
+            .iter()
+            .map(|module_name| {
+                let handle = self.register_check_from_imports(module_name);
+                info!(
+                    "Checking if py module '{name}' can be run. Handle exists? {}",
+                    handle.is_ok(),
+                    name = module_name,
+                );
+
+                handle.is_ok()
+            })
+            .any(|x| x)
     }
 
     // This function does 3 things
@@ -261,6 +281,7 @@ impl CheckScheduler for PythonCheckScheduler {
 
             let check_handle = check_handle.clone();
             trace!("Spawning task for check instance {idx}");
+            self.tlm.check_instances_started.increment(1);
             let handle = tokio::task::spawn(async move {
                 let mut interval =
                     tokio::time::interval(Duration::from_millis(instance.min_collection_interval_ms().into()));
@@ -333,14 +354,14 @@ mod tests {
     #[tokio::test]
     async fn test_new_check_scheduler() {
         let (sender, _) = mpsc::channel(10);
-        let scheduler = PythonCheckScheduler::new(sender).unwrap();
+        let scheduler = PythonCheckScheduler::new(sender, ChecksTelemetry::noop()).unwrap();
         assert!(scheduler.running.is_empty());
     }
 
     #[tokio::test]
     async fn test_register_check_with_source() {
         let (sender, _) = mpsc::channel(10);
-        let mut scheduler = PythonCheckScheduler::new(sender).unwrap();
+        let mut scheduler = PythonCheckScheduler::new(sender, ChecksTelemetry::noop()).unwrap();
         let py_source = r#"
 from datadog_checks.checks import AgentCheck
 
@@ -358,7 +379,7 @@ class MyCheck(AgentCheck):
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_run_check() {
         let (sender, mut receiver) = mpsc::channel(10);
-        let mut scheduler = PythonCheckScheduler::new(sender).unwrap();
+        let mut scheduler = PythonCheckScheduler::new(sender, ChecksTelemetry::noop()).unwrap();
         let py_source = r#"
 from datadog_checks.checks import AgentCheck
 
@@ -395,7 +416,7 @@ class MyCheck(AgentCheck):
     #[tokio::test]
     async fn test_stop_check() {
         let (sender, mut receiver) = mpsc::channel(10);
-        let mut scheduler = PythonCheckScheduler::new(sender).unwrap();
+        let mut scheduler = PythonCheckScheduler::new(sender, ChecksTelemetry::noop()).unwrap();
         let py_source = r#"
 from datadog_checks.checks import AgentCheck
 

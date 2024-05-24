@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use metrics::Counter;
 use pyo3::prelude::*;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
-    components::{Source, SourceBuilder, SourceContext},
+    components::{metrics::MetricsBuilder, Source, SourceBuilder, SourceContext},
     topology::{
         shutdown::{ComponentShutdownHandle, DynamicShutdownCoordinator, DynamicShutdownHandle},
         OutputDefinition,
@@ -50,12 +51,16 @@ enum Error {
 #[derive(Deserialize)]
 pub struct ChecksConfiguration {
     /// The directory containing the check configurations.
-    #[serde(default = "default_check_config_dir")]
-    check_config_dir: String,
+    #[serde(default = "default_check_config_dirs")]
+    check_config_dirs: Vec<String>,
 }
 
-fn default_check_config_dir() -> String {
-    "./dist/conf.d".to_string()
+fn default_check_config_dirs() -> Vec<String> {
+    vec![
+        "./dist/conf.d".to_string(),
+        "/etc/datadog-agent/conf.d".to_string(),
+        "etc-datadog-agent/conf.d".to_string(),
+    ]
 }
 
 #[derive(Debug, Clone)]
@@ -312,7 +317,7 @@ impl ChecksConfiguration {
     async fn build_listeners(&self) -> Result<Vec<listener::DirCheckRequestListener>, Error> {
         let mut listeners = Vec::new();
 
-        let listener = listener::DirCheckRequestListener::from_path(&self.check_config_dir)?;
+        let listener = listener::DirCheckRequestListener::from_paths(self.check_config_dirs.clone())?;
 
         listeners.push(listener);
 
@@ -343,6 +348,7 @@ impl MemoryBounds for ChecksConfiguration {
 }
 
 struct CheckDispatcher {
+    tlm: ChecksTelemetry,
     python_scheduler: python_scheduler::PythonCheckScheduler,
     check_metrics_rx: mpsc::Receiver<CheckMetric>,
     check_run_requests: mpsc::Receiver<RunnableCheckRequest>,
@@ -352,13 +358,16 @@ struct CheckDispatcher {
 impl CheckDispatcher {
     fn new(
         check_run_requests: mpsc::Receiver<RunnableCheckRequest>, check_stop_requests: mpsc::Receiver<CheckRequest>,
+        tlm: ChecksTelemetry,
     ) -> Result<Self, GenericError> {
         let (check_metrics_tx, check_metrics_rx) = mpsc::channel(10_000_000);
+        let python_scheduler = python_scheduler::PythonCheckScheduler::new(check_metrics_tx.clone(), tlm.clone())?;
         Ok(Self {
+            tlm,
             check_metrics_rx,
             check_run_requests,
             check_stop_requests,
-            python_scheduler: python_scheduler::PythonCheckScheduler::new(check_metrics_tx.clone())?,
+            python_scheduler,
         })
     }
 
@@ -369,6 +378,7 @@ impl CheckDispatcher {
         info!("Check dispatcher started.");
 
         let CheckDispatcher {
+            tlm,
             mut check_run_requests,
             mut check_stop_requests,
             mut python_scheduler,
@@ -382,6 +392,7 @@ impl CheckDispatcher {
                             info!("Dispatching to Python {}", check_request);
                             match python_scheduler.run_check(&check_request) {
                                 Ok(_) => {
+                                    tlm.check_requests_dispatched.increment(1);
                                     debug!("Check request dispatched: {}", check_request);
                                 }
                                 Err(e) => {
@@ -405,6 +416,21 @@ impl CheckDispatcher {
     }
 }
 
+#[derive(Clone)]
+pub struct ChecksTelemetry {
+    check_requests_dispatched: Counter,
+    check_instances_started: Counter,
+}
+
+impl ChecksTelemetry {
+    fn noop() -> Self {
+        Self {
+            check_requests_dispatched: Counter::noop(),
+            check_instances_started: Counter::noop(),
+        }
+    }
+}
+
 pub struct Checks {
     listeners: Vec<listener::DirCheckRequestListener>,
 }
@@ -413,12 +439,18 @@ impl Checks {
     // consumes self
     async fn run_inner(self, context: SourceContext, global_shutdown: ComponentShutdownHandle) -> Result<(), ()> {
         let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
+        let metrics = MetricsBuilder::from_component_context(context.component_context());
+        let tlm = ChecksTelemetry {
+            check_requests_dispatched: metrics.register_counter("checkrequests.dispatched"),
+            check_instances_started: metrics.register_counter("checkinstances.started"),
+        };
 
         let Checks { listeners } = self;
 
         let (check_run_requests_tx, check_run_requests_rx) = mpsc::channel(100);
         let (check_stop_requests_tx, check_stop_requests_rx) = mpsc::channel(100);
-        let dispatcher = CheckDispatcher::new(check_run_requests_rx, check_stop_requests_rx).expect("Could create");
+        let dispatcher =
+            CheckDispatcher::new(check_run_requests_rx, check_stop_requests_rx, tlm).expect("Could create");
 
         let mut joinset = tokio::task::JoinSet::new();
         // Run the local task set.
