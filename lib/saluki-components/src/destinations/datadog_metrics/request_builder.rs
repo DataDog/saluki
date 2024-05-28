@@ -118,6 +118,7 @@ impl<B> RequestBuilder<B>
 where
     B: BufferPool<Buffer = ChunkedBytesBuffer>,
 {
+    /// Creates a new `RequestBuilder` for the given endpoint, using the specified API key and base URI.
     pub async fn new(
         api_key: String, api_base_uri: Uri, endpoint: MetricsEndpoint, buffer_pool: B,
     ) -> Result<Self, RequestBuilderError> {
@@ -136,6 +137,15 @@ where
         })
     }
 
+    /// Attempts to encode a metric and write it to the current request payload.
+    ///
+    /// If the metric can't be encoded due to size constraints, `Ok(Some(metric))` will be returned, and the caller must
+    /// call `flush` before attempting to encode the same metric again. Otherwise, `Ok(None)` is returned.
+    ///
+    /// ## Errors
+    ///
+    /// If the given metric is not valid for the endpoint this request builder is configured for, or if there is an
+    /// error during compression of the encoded metric, an error variant will be returned.
     pub async fn encode(&mut self, metric: Metric) -> Result<Option<Metric>, RequestBuilderError> {
         // Make sure this metric is valid for the endpoint this request builder is configured for.
         let endpoint = MetricsEndpoint::from_metric(&metric);
@@ -155,7 +165,7 @@ where
 
         // If the metric can't fit into the current request payload based on the uncompressed size limit, or isn't
         // likely to fit into the current request payload based on the estimated compressed size limit, then return it
-        // to the call: this indicates that a flush must happen before trying again to encode the same metric.
+        // to the caller: this indicates that a flush must happen before trying to encode the same metric again.
         //
         // TODO: Use of the estimated compressed size limit is a bit of a stopgap to avoid having to do full incremental
         // request building. We can still improve it, but the only sure-fire way to not exceed the (un)compressed
@@ -193,6 +203,14 @@ where
         Ok(None)
     }
 
+    /// Flushes the current request payload.
+    ///
+    /// This resets the internal state and prepares the request builder for further encoding. If there is no data to
+    /// flush, this method will return `Ok(None)`.
+    ///
+    /// ## Errors
+    ///
+    /// If an error occurs while finalizing the compressor or creating the request, an error variant will be returned.
     pub async fn flush(&mut self) -> Result<Option<Request<ChunkedBytesBuffer>>, RequestBuilderError> {
         if self.uncompressed_len == 0 {
             return Ok(None);
@@ -273,7 +291,7 @@ impl EncodedMetric {
         // TODO: We _should_ derive this from the Protocol Buffers definitions themselves.
         //
         // This is more about establishing provenance than worrying about field numbers changing, though, since field
-        // numbers changing is not backwards-compatible  and should basically never, ever happen.
+        // numbers changing is not backwards-compatible and should basically never, ever happen.
         match self {
             Self::Series(_) => 1,
             Self::Sketch(_) => 1,
@@ -442,7 +460,7 @@ fn encode_sketch_metric(metric: &Metric) -> proto::Sketch {
 fn origin_metadata_to_proto_metadata(product: u32, subproduct: u32, product_detail: u32) -> proto::Metadata {
     // NOTE: The naming discrepancies here -- category vs subproduct and service vs product detail -- are a consequence
     // of how these fields are named in the Datadog Platform, and the Protocol Buffers definitions used by the Datadog
-    // Agent -- which we build off of -- has not yet caught up with renaming them to match.
+    // Agent -- which we build off of -- have not yet caught up with renaming them to match.
     let mut metadata = proto::Metadata::new();
     let proto_origin = metadata.mut_origin();
     proto_origin.set_origin_product(product);
