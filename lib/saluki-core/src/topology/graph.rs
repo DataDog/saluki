@@ -469,7 +469,7 @@ mod test {
 
         let mut graph = Graph::default();
         let result = graph
-            .with_source("in_all_but_logs", DataType::all())
+            .with_source("in_all_but_logs", DataType::all_bits())
             .with_destination("out_log", DataType::Log)
             .with_edge_fallible("in_all_but_logs.logs", "out_log")
             .map(|_| ()); // ditch mutable self ref to allow for equality check
@@ -597,7 +597,7 @@ mod test {
         graph
             .with_source("in_log", DataType::Log)
             .with_source("in_metric", DataType::Metric)
-            .with_destination("out", DataType::all())
+            .with_destination("out", DataType::all_bits())
             .with_multi_edge(&["in_log", "in_metric"], "out");
 
         assert_eq!(Ok(()), graph.check_data_types());
@@ -607,9 +607,9 @@ mod test {
     fn datatype_superset_into_subset() {
         let mut graph = Graph::default();
         graph
-            .with_source("in", DataType::all())
-            .with_transform("log_to_any", DataType::Log, DataType::all())
-            .with_transform("any_to_log", DataType::all(), DataType::Log)
+            .with_source("in", DataType::all_bits())
+            .with_transform("log_to_any", DataType::Log, DataType::all_bits())
+            .with_transform("any_to_log", DataType::all_bits(), DataType::Log)
             .with_destination("out_log", DataType::Log)
             .with_destination("out_metric", DataType::Metric)
             .with_edge("in", "log_to_any")
@@ -628,9 +628,9 @@ mod test {
             .with_source("in_metric", DataType::Metric)
             .with_transform("log_to_log", DataType::Log, DataType::Log)
             .with_transform("metric_to_metric", DataType::Metric, DataType::Metric)
-            .with_transform("any_to_any", DataType::all(), DataType::all())
-            .with_transform("any_to_log", DataType::all(), DataType::Log)
-            .with_transform("any_to_metric", DataType::all(), DataType::Metric)
+            .with_transform("any_to_any", DataType::all_bits(), DataType::all_bits())
+            .with_transform("any_to_log", DataType::all_bits(), DataType::Log)
+            .with_transform("any_to_metric", DataType::all_bits(), DataType::Metric)
             .with_destination("out_log", DataType::Log)
             .with_destination("out_metric", DataType::Metric)
             .with_edge("in_log", "log_to_log")
