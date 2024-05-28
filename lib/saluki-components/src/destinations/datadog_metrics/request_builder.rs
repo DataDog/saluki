@@ -46,7 +46,7 @@ impl RequestBuilderError {
             Self::InvalidMetricForEndpoint { .. } => false,
             // I/O errors should only be getting created for compressor-related operations, and the scenarios in which
             // there are I/O errors should generally be very narrowly scoped to "the system is in a very bad state", so
-            // we can't really recover from those... or perhaps shouldn't _try_ to recover from those.
+            // we can't really recover from those... or perhaps _shouldn't_ try to recover from those.
             Self::Io { .. } => false,
             _ => true,
         }

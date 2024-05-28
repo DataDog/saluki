@@ -1,4 +1,8 @@
-use std::{collections::hash_map::Entry, hash::BuildHasher, time::Duration};
+use std::{
+    collections::hash_map::Entry,
+    hash::{BuildHasher, Hash as _, Hasher},
+    time::Duration,
+};
 
 use ahash::{AHashMap, AHashSet};
 use async_trait::async_trait;
@@ -226,7 +230,8 @@ struct AggregationContext {
 impl AggregationContext {
     fn from_metric_context<B: BuildHasher>(context: MetricContext, hasher_builder: &B) -> Self {
         // Hash our tags first.
-        let tags_hash = hash_context_tags(&context, hasher_builder);
+        let mut hasher = hasher_builder.build_hasher();
+        let tags_hash = hash_context_tags(&context, &mut hasher);
 
         Self { context, tags_hash }
     }
@@ -236,7 +241,7 @@ impl AggregationContext {
     }
 }
 
-fn hash_context_tags<B: BuildHasher>(context: &MetricContext, hasher_builder: &B) -> u64 {
+fn hash_context_tags<H: Hasher>(context: &MetricContext, hasher: &mut H) -> u64 {
     // We hash each tag individually, and then XOR the hashes together, which is commutative.  This means that we'll
     // calculate the same hash for the same set of tags even if the tags aren't in the same order.
     //
@@ -244,11 +249,12 @@ fn hash_context_tags<B: BuildHasher>(context: &MetricContext, hasher_builder: &B
     // hash collision between two contexts, we'll still fall back to sorting the tags when doing the follow-up equality
     // check.
 
-    // Start out with the hash of the context name so that we're not just XORing a bunch of zeros.
-    let mut combined = hasher_builder.hash_one(context.name.as_str());
+    // Start out with the FNV-1a seed so that we're not just XORing a bunch of zeros.
+    let mut combined = 0xcbf29ce484222325;
 
     for tag in &context.tags {
-        combined ^= hasher_builder.hash_one(tag);
+        tag.hash(hasher);
+        combined ^= hasher.finish();
     }
 
     combined

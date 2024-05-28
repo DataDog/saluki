@@ -103,7 +103,6 @@ impl<W: AsyncWrite> AsyncWrite for Compressor<W> {
 pub struct CompressionEstimator {
     known_compressed_len: u64,
     in_flight_uncompressed_len: usize,
-    last_write_uncompressed_len: usize,
     block_compression_ratio_variance: Variance,
 }
 
@@ -114,32 +113,26 @@ impl CompressionEstimator {
         W: AsyncWrite,
     {
         self.in_flight_uncompressed_len += uncompressed_len;
-        self.last_write_uncompressed_len = uncompressed_len;
 
         let compressed_len = compressor.total_out();
         let compressed_len_delta = (compressed_len - self.known_compressed_len) as usize;
         if compressed_len_delta > 0 {
-            let in_flight_uncompressed_len = self.in_flight_uncompressed_len;
-
             // Calculate the compression ratio for the block we just observed being flushed based on how many in-flight
-            // uncompressed bytes we were tracking. We also subtract the last write's uncompressed length as a way to
-            // try and compensate for the fact that only a few bytes of the last write may have actually been
-            // compressed, which could erroneously drive up the estimated compression ratio for that block.
+            // uncompressed bytes we were tracking. We don't try and compensate for the fact that only a few bytes of
+            // the last write may have actually been compressed, which could erroneously drive up the estimated
+            // compression ratio for that block.
             //
             // This does mean that some blocks may be under or over their actual compression ratio, but it should
             // generally even out over the course of a full payload.
-            let adjusted_in_flight_uncompressed_len = in_flight_uncompressed_len; // - self.last_write_uncompressed_len;
-            let block_compression_ratio = compressed_len_delta as f64 / adjusted_in_flight_uncompressed_len as f64;
+            let block_compression_ratio = compressed_len_delta as f64 / self.in_flight_uncompressed_len as f64;
             self.block_compression_ratio_variance.add(block_compression_ratio);
 
             self.known_compressed_len = compressed_len;
             self.in_flight_uncompressed_len = 0;
-            self.last_write_uncompressed_len = 0;
 
             trace!(
                 block_size = compressed_len_delta,
                 block_compression_ratio,
-                in_flight_uncompressed_len,
                 compressed_len = self.known_compressed_len,
                 "Compressor wrote block to output stream."
             );
@@ -150,7 +143,6 @@ impl CompressionEstimator {
     pub fn reset(&mut self) {
         self.known_compressed_len = 0;
         self.in_flight_uncompressed_len = 0;
-        self.last_write_uncompressed_len = 0;
         self.block_compression_ratio_variance = Variance::default();
     }
 
