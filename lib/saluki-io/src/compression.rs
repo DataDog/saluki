@@ -41,6 +41,9 @@ impl<W: AsyncWrite> Compressor<W> {
         }
     }
 
+    /// Returns the total number of bytes written by the compressor.
+    ///
+    /// This does not account for any buffered data that has not yet been written to the output stream.
     pub fn total_out(&self) -> u64 {
         match self {
             Self::Zlib(encoder) => encoder.total_out(),
@@ -75,7 +78,7 @@ impl<W: AsyncWrite> AsyncWrite for Compressor<W> {
     }
 }
 
-/// An streaming estimator for the size of compressed data.
+/// A streaming estimator for the size of compressed data.
 ///
 /// For many compression algorithms, there is a large amount of buffering and state during compression. This allows
 /// compression algorithms to better compress data by finding patterns across the current and previous inputs, as well
@@ -153,10 +156,10 @@ impl CompressionEstimator {
     /// Effectively, we emit the upper bound -- input was incompressible -- in size for the input, while integrating
     /// what we know the compressor _has_ compressed.
     pub fn estimated_len(&self) -> usize {
-        // Get our estimated block compression ratio, which is taken across all observed compressed blocks. We adjust
-        // that compression ratio upwards by the measured standard error of the block compression ratio population as a
-        // safety net for trying hard to overestimate how well the compressor is going to handle the in-flight
-        // uncompressed bytes.
+        // Get our estimated block compression ratio, which is taken across all observed compressed blocks.
+        //
+        // We adjust that compression ratio upwards by the standard error of the block compression ratios we've
+        // observed, simply as a safety net against the having blocks with wildly differing compression ratios.
         let mut estimated_compression_ratio = self.block_compression_ratio_variance.mean();
         if estimated_compression_ratio.is_nan() {
             // Not enough data yet to estimate compression ratio, so we just assume no compression.
@@ -171,12 +174,18 @@ impl CompressionEstimator {
         self.known_compressed_len as usize + estimated_in_flight_compressed_len
     }
 
-    /// Estimates if writing the given amount of bytes to the compressor would exceed the given threshold for the final
-    /// compressed length.
+    /// Estimates if writing `len` bytes to the compressor would cause the final compressed size to exceed `threshold`
+    /// bytes.
     pub fn would_write_exceed_threshold(&self, len: usize, threshold: usize) -> bool {
-        // If our estimated after-write length is over the "red zone" threshold, it is likely that the final compressed
-        // block will have suboptimal compression which leads to the final compressed size exceeding the threshold, even if
-        // the estimated length (including the given write of `len` bytes) indicates it would probably fit.
+        // We adjust the given threshold down by a small amount to account for the fact that the final block written by
+        // the compressor has more variability in size than the rest, due to being more likely to be flushed before
+        // internal buffers are full and having the chance to most efficiently compress the data. Essentially, if we
+        // estimate that writing `len` more bytes would put our compressed length into the "red zone", then it's too
+        // risky to write those bytes.
+        //
+        // This is a bit of a fudge factor, but we arrived at 0.5% through empirical testing with the regression
+        // detector benchmarks. Small enough to not have a major impact on payload size efficiency, but large enough to
+        // entirely get rid of compressed payload size limit violations.
         const THRESHOLD_RED_ZONE: f64 = 0.995;
 
         let adjusted_threshold = (threshold as f64 * THRESHOLD_RED_ZONE) as usize;
