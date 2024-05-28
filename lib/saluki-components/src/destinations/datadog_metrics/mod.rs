@@ -209,7 +209,13 @@ impl Destination for DatadogMetrics {
                             ),
                             Err(e) => {
                                 error!(error = %e, "Failed to flush request.");
-                                return Err(());
+                                // TODO: Increment a counter here that metrics were dropped due to a flush failure.
+                                if e.is_recoverable() {
+                                    // If the error is recoverable, we'll hold on to the metric to retry it later.
+                                    continue;
+                                } else {
+                                    return Err(());
+                                }
                             }
                         };
 
