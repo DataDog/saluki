@@ -16,7 +16,7 @@ saluki-event = { workspace = true }
 ahash = { workspace = true, features = ["std", "runtime-rng"] }
 async-compression = { workspace = true, features = ["tokio", "zlib"] }
 async-trait = { workspace = true }
-average = { version = "0.15.1", default-features = false, features = ["std"] }
+average = { workspace = true, features = ["std"] }
 bitmask-enum = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }

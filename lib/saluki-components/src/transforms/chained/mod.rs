@@ -51,11 +51,11 @@ impl TransformBuilder for ChainedConfiguration {
     }
 
     fn input_data_type(&self) -> DataType {
-        DataType::all()
+        DataType::all_bits()
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(DataType::all())];
+        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(DataType::all_bits())];
 
         OUTPUTS
     }

@@ -15,7 +15,7 @@ pub enum DataType {
 
 impl Default for DataType {
     fn default() -> Self {
-        Self::all()
+        Self::all_bits()
     }
 }
 

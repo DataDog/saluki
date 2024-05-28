@@ -17,7 +17,7 @@ pub struct BlackholeConfiguration;
 #[async_trait]
 impl DestinationBuilder for BlackholeConfiguration {
     fn input_data_type(&self) -> DataType {
-        DataType::all()
+        DataType::all_bits()
     }
 
     async fn build(&self) -> Result<Box<dyn Destination + Send>, GenericError> {

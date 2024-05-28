@@ -20,7 +20,7 @@ pub struct FeatureDetector {
 impl FeatureDetector {
     /// Creates a new `FeatureDetector` that checks for all possible features.
     pub fn automatic(config: &GenericConfiguration) -> Self {
-        Self::for_feature(config, Feature::all())
+        Self::for_feature(config, Feature::all_bits())
     }
 
     /// Creates a new `FeatureDetector` that checks for the given feature(s).
