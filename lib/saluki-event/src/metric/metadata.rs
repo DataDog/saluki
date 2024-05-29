@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 const ORIGIN_PRODUCT_AGENT: u32 = 10;
 const ORIGIN_SUBPRODUCT_DOGSTATSD: u32 = 10;
@@ -21,6 +21,12 @@ pub struct MetricMetadata {
     /// Generally based on the time the metric was received, but not always.
     pub timestamp: u64,
 
+    /// Hostname where the metric originated from.
+    ///
+    /// This could be specified as part of a metric payload that was received from a client, or set internally to the
+    /// hostname where this process is running.
+    pub hostname: Option<Arc<str>>,
+
     /// Origin of the metric.
     ///
     /// Indicates the source of the metric, such as the product or service that emitted it, or the source component
@@ -34,6 +40,7 @@ impl MetricMetadata {
         Self {
             sample_rate: None,
             timestamp,
+            hostname: None,
             origin: None,
         }
     }
@@ -47,6 +54,15 @@ impl MetricMetadata {
     /// Set the timestamp.
     pub fn with_timestamp(mut self, timestamp: u64) -> Self {
         self.timestamp = timestamp;
+        self
+    }
+
+    /// Set the hostname,
+    pub fn with_hostname<H>(mut self, hostname: H) -> Self
+    where
+        H: Into<Arc<str>>,
+    {
+        self.hostname = Some(hostname.into());
         self
     }
 

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{components::transforms::*, topology::interconnect::EventBuffer};
@@ -5,11 +7,9 @@ use saluki_env::{EnvironmentProvider, HostProvider};
 use saluki_error::GenericError;
 use saluki_event::{metric::Metric, Event};
 
-const HOST_TAG: &str = "host";
-
 /// Host Enrichment synchronous transform.
 ///
-/// Enriches metrics with a `host` tag if one is not already present. Calculates the hostname to use based on the
+/// Enriches metrics with a hostname if one is not already present. Calculates the hostname to use based on the
 /// configured environment provider, allowing for a high degree of accuracy around what qualifies as a hostname, and how
 /// to query it.
 pub struct HostEnrichmentConfiguration<E> {
@@ -41,7 +41,7 @@ impl<E> MemoryBounds for HostEnrichmentConfiguration<E> {
 }
 
 pub struct HostEnrichment {
-    hostname: String,
+    hostname: Arc<str>,
 }
 
 impl HostEnrichment {
@@ -51,24 +51,20 @@ impl HostEnrichment {
         <E::Host as HostProvider>::Error: Into<GenericError>,
     {
         Ok(Self {
-            hostname: env_provider.host().get_hostname().await.map_err(Into::into)?,
+            hostname: env_provider
+                .host()
+                .get_hostname()
+                .await
+                .map(Arc::from)
+                .map_err(Into::into)?,
         })
     }
 
-    fn enrich_metric(&self, _metric: &mut Metric) {
-        // TODO: This code below worked before when we could just mutate our context willy-nilly, but not so much when
-        // we're using a resolved handle.
-        //
-        // As mentioned in some other comments, we likely want to move things like origin PID, hostname, container ID,
-        // etc... into something like `MetricMetadata` as they're specific to internal processing, rather than the
-        // context itself, which is used in a certain way internally but generally represents the name/tags a user is
-        // going to see... so if we're always just passing around this internal stuff using tags, it sort of speaks to
-        // situating these bits of information in a more permanent and structured way.
-        //
-        // if !metric.context.contains_tag(HOST_TAG) {
-        //     metric.context.insert_tag((HOST_TAG.to_string(), self.hostname.clone()));
-        // }
-        todo!()
+    fn enrich_metric(&self, metric: &mut Metric) {
+        // Only add the hostname if it's not already present.
+        if !metric.metadata.hostname.is_none() {
+            metric.metadata.hostname = Some(self.hostname.clone());
+        }
     }
 }
 

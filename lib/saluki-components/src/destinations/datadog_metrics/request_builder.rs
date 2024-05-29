@@ -339,17 +339,16 @@ fn encode_series_metric(metric: &Metric) -> proto::MetricSeries {
     // and then setting the rest as generic tags.
     let mut tags = metric.context.tags().clone();
 
-    let host = tags
-        .remove_tags("host")
-        // TODO: This is gross because `remove_tags` tries to remove any tag that looks like `host` or `host:...`, so we
-        // _have_ to deal with the API shape here, even though we should really ever get one tag back here. This os a
-        // consequence of having the hostname as a tag instead of an inherent field... which maybe we ought to change in
-        // the future, such as by promoting hostname to a first-class field on the metadata, along with container ID, etc.
-        .map(|mut tags| tags.remove(0).into_inner().into())
-        .unwrap_or_default();
     let mut host_resource = Resource::new();
     host_resource.set_type("host".to_string().into());
-    host_resource.set_name(host);
+    host_resource.set_name(
+        metric
+            .metadata
+            .hostname
+            .as_deref()
+            .map(|h| h.into())
+            .unwrap_or_default(),
+    );
     series.mut_resources().push(host_resource);
 
     if let Some(ir_tags) = tags.remove_tags("dd.internal.resource") {
@@ -418,20 +417,23 @@ fn encode_sketch_metric(metric: &Metric) -> proto::Sketch {
     // Something to benchmark in the future.
     let mut sketch = proto::Sketch::new();
     sketch.set_metric(metric.context.name().into());
-
-    let mut tags = metric.context.tags().clone();
-
-    let host = tags
-        .remove_tags("host")
-        // TODO: This is gross because `remove_tags` tries to remove any tag that looks like `host` or `host:...`, so we
-        // _have_ to deal with the API shape here, even though we should really ever get one tag back here. This os a
-        // consequence of having the hostname as a tag instead of an inherent field... which maybe we ought to change in
-        // the future, such as by promoting hostname to a first-class field on the metadata, along with container ID, etc.
-        .map(|mut tags| tags.remove(0).into_inner().into())
-        .unwrap_or_default();
-    sketch.set_host(host);
-
-    sketch.set_tags(tags.into_iter().map(|tag| tag.into_inner().into()).collect());
+    sketch.set_host(
+        metric
+            .metadata
+            .hostname
+            .as_deref()
+            .map(|h| h.into())
+            .unwrap_or_default(),
+    );
+    sketch.set_tags(
+        metric
+            .context
+            .tags()
+            .into_iter()
+            .cloned()
+            .map(|tag| tag.into_inner().into())
+            .collect(),
+    );
 
     // Set the origin metadata, if it exists.
     if let Some(MetricOrigin::OriginMetadata {
