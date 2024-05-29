@@ -127,6 +127,16 @@ endif
 
 ##@ Running
 
+.PHONY: run-adp-standalone
+run-adp-standalone: export DD_API_KEY=fakeapikey123
+run-adp-standalone: export DD_DD_URL=http://127.0.0.1:9092
+run-adp-standalone: export DD_DOGSTATSD_PORT=0
+run-adp-standalone: export DD_DOGSTATSD_SOCKET=/tmp/adp-dsd.sock
+run-adp-standalone: export DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true
+run-adp-standalone: build-adp check-perf-requirements ## Runs the ADP binary in standalone mode pointed at a local Lading instance
+	@echo "[*] Running standalone ADP locally for 120 seconds..."
+	@perf record -F 997 -g --call-graph dwarf ./target/release/agent-data-plane
+
 .PHONY: run-dsd-basic-udp
 run-dsd-basic-udp: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDP)
 	@echo "[*] Sending basic metrics via Dogstatsd (UDP, 127.0.0.1:9191)..."
@@ -141,6 +151,18 @@ run-dsd-basic-uds: build-dsd-client ## Runs a basic set of metrics via the Dogst
 run-dsd-basic-uds-stream: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDS Stream)
 	@echo "[*] Sending basic metrics via Dogstatsd (unix:///tmp/adp-dsd.sock)..."
 	@./tooling/bin/dogstatsd_client unix:///tmp/adp-dsd.sock count:1,gauge:2,histogram:3,distribution:4,set:five
+
+.PHONY: check-perf-requirements
+check-perf-requirements:
+ifeq ($(shell command -v perf >/dev/null || echo not-found), not-found)
+	$(error "Please install perf (i.e. `linux-tools` package on Ubuntu).")
+endif
+ifeq ($(shell cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null | grep -q -- -1 || echo is-paranoid), is-paranoid)
+	$(error "Paranoid mode detected for kernel profiling. Run command to allow: echo -1 | sudo tee /proc/sys/kernel/perf_event_paranoid")
+endif
+ifeq ($(shell cat /proc/sys/kernel/kptr_restrict 2>/dev/null | grep -q 0 || echo is-paranoid), is-paranoid)
+	$(error "Paranoid mode detected for kernel symbol addresses. Run command to allow: echo 0 | sudo tee /proc/sys/kernel/kptr_restrict")
+endif
 
 ##@ Kubernetes
 
