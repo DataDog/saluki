@@ -966,6 +966,7 @@ mod tests {
 
     proptest! {
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn property_test_entry_count_accurate(
             strs in arb_alphanum_strings(1..=128, 16..=512),
             indices in arb_vec(any::<Index>(), 1..=1000),
