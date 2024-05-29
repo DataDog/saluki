@@ -4,6 +4,12 @@ unit-tests:
   script:
     - make test
 
+unit-tests-miri:
+  stage: test
+  image: "${SALUKI_BUILD_CI_IMAGE}"
+  script:
+    - make test-miri
+
 check-clippy:
   stage: test
   image: "${SALUKI_BUILD_CI_IMAGE}"
