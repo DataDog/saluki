@@ -27,7 +27,7 @@ const HEADER_LEN: usize = std::mem::size_of::<EntryHeader>();
 const HEADER_ALIGN: usize = std::mem::align_of::<EntryHeader>();
 
 /// An interned string.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct InternedString {
     state: Arc<StringState>,
 }
@@ -39,6 +39,15 @@ impl Deref for InternedString {
         self.state.get_entry()
     }
 }
+
+impl PartialEq for InternedString {
+    fn eq(&self, other: &Self) -> bool {
+        (Arc::ptr_eq(&self.state.interner, &other.state.interner) && self.state.header == other.state.header)
+            || self.state.get_entry() == other.state.get_entry()
+    }
+}
+
+impl Eq for InternedString {}
 
 #[derive(Debug)]
 struct StringState {
@@ -57,10 +66,6 @@ impl StringState {
 
 impl Drop for StringState {
     fn drop(&mut self) {
-        // TODO: We need to decrement the reference count on the entry, and if it's at zero, we try to add a tombstone
-        // to the interner state for it. That might fail if another caller is trying to intern the same string before we
-        // can get the lock to the interner state, but that's OK: we only care about at least _trying_ to tombstone it.
-
         // SAFETY: We know that `self.header` is well-aligned for `EntryHeader` and is initialized.
         let header = unsafe { self.header.as_ref() };
         if header.refs.fetch_sub(1, AcqRel) == 1 {
@@ -75,14 +80,6 @@ impl Drop for StringState {
 // modify the entry header at all, so we're safe to send it around and share it between threads.
 unsafe impl Send for StringState {}
 unsafe impl Sync for StringState {}
-
-impl PartialEq for StringState {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.interner, &other.interner) && self.header == other.header
-    }
-}
-
-impl Eq for StringState {}
 
 struct EntryHeader {
     hash: u64,
@@ -206,7 +203,7 @@ impl InternerState {
     }
 
     fn find_entry(&self, hash: u64, s: &str) -> Option<NonNull<EntryHeader>> {
-        // We'll iterate over all entries in the buffer, tombstoned or not, to see if we can find a match for the given string.
+        // We'll iterate over all entries in the buffer, reclaimed or not, to see if we can find a match for the given string.
         let ptr = self.ptr.as_ptr();
         let mut offset = 0;
         let mut i = 0;
@@ -218,16 +215,21 @@ impl InternerState {
             // know that if we don't iterate more times than we have entries, that the offset will always be within the
             // the bounds of our data buffer _and_ that the entry heaer will have been previously initiatlized.
             let header_ptr = unsafe { ptr.add(offset).cast::<EntryHeader>() };
+            debug_assert_eq!(
+                header_ptr.cast::<u8>().align_offset(HEADER_ALIGN),
+                0,
+                "entry header pointer must be well-aligned"
+            );
             let header = unsafe { header_ptr.as_ref().unwrap() };
 
-            // See if this entry is a tombstone or not. If it's not -- it's active and not slated to be reclaimed --
-            // then we'll quickly check the hash/length of the string to see if this is likely to be a match for `s`.
+            // See if this entry is active or not. If it's active, then we'll quickly check the hash/length of the
+            // string to see if this is likely to be a match for `s`.
             if header.is_active() && header.hash == hash && header.len == s.len() {
                 // As a final check, we make sure that the entry string and `s` are equal. If they are, then we
                 // have an exact match and will return the entry.
                 let s_entry = get_entry_string(header_ptr);
                 if s_entry == s {
-                    // Increment the reference count for this entry so it's not prematurely tombstoned/reclaimed.
+                    // Increment the reference count for this entry so it's not prematurely reclaimed.
                     header.refs.fetch_add(1, AcqRel);
 
                     // SAFETY: `header_ptr` cannot be null otherwise we would have already panicked when creating a
@@ -236,7 +238,7 @@ impl InternerState {
                 }
             }
 
-            // Either this was a tombstone or we didn't have a match, so we move on to the next entry.
+            // Either this was a reclaimed entry or we didn't have a match, so we move on to the next entry.
             offset += header.size();
             i += 1;
         }
@@ -247,12 +249,18 @@ impl InternerState {
     fn write_entry(&mut self, offset: usize, hash: u64, s: &str) -> NonNull<EntryHeader> {
         let s_buf = s.as_bytes();
 
-        // Write out the entry header and then the string.
+        // Write the entry header.
         //
-        // SAFETY: We know that `offset` is within the bounds of the data buffer because the caller is responsible for
-        // ensuring that.
+        // SAFETY: The caller is responsible for ensuring that `offset` is within the bounds of the data buffer, that
+        // the there is enough capacity within the underlying allocation to write `HEADER_LEN` bytes, and that the
+        // resulting entry pointer will be well-aligned for `EntryHeader`.
         let header_ptr = unsafe {
             let ptr = self.ptr.as_ptr().add(offset).cast::<EntryHeader>();
+            debug_assert_eq!(
+                ptr.cast::<u8>().align_offset(HEADER_ALIGN),
+                0,
+                "entry header pointer must be well-aligned"
+            );
             ptr.write(EntryHeader {
                 hash,
                 refs: AtomicUsize::new(1),
@@ -262,8 +270,10 @@ impl InternerState {
             NonNull::new_unchecked(ptr)
         };
 
-        // SAFETY: We know that `s_start` is within the bounds of the data buffer, because it's derived from `offset`,
-        // which is checked to ensure that the start and end are both within the bounds of our data buffer.
+        // Write the string.
+        //
+        // SAFETY: The caller is responsible for ensuring that `offset` is within the bounds of the data buffer, and
+        // that the there is enough capacity within the underlying allocation to write `HEADER_LEN + s.len()` bytes.
         let s_start = offset + HEADER_LEN;
         let entry_s_buf = unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr().add(s_start), s_buf.len()) };
         entry_s_buf.copy_from_slice(s_buf);
@@ -280,14 +290,21 @@ impl InternerState {
         //
         // Additionally, our cast to `usize` is logically sound because a header pointer could never be less than
         // the base pointer of the data buffer.
+
+        // Get the offset of the header within the data buffer.
+        //
+        // SAFETY: The caller is responsible for ensuring the entry header reference belongs to this interner. If that
+        // is upheld, then we know that entry header belongs to our data buffer, and that the pointer to the entry
+        // header is not less than the base pointer of the data buffer, ensuring the offset is non-negative.
         let entry_offset = unsafe {
             NonNull::from(header)
                 .cast::<u8>()
                 .as_ptr()
-                .offset_from(self.ptr.as_ptr().cast_const()) as usize
+                .offset_from(self.ptr.as_ptr().cast_const())
         };
+        debug_assert!(entry_offset >= 0, "entry offset must be non-negative");
 
-        self.add_reclaimed(entry_offset, entry_offset + header.size() - 1, true);
+        self.add_reclaimed(entry_offset as usize, entry_offset as usize + header.size() - 1, true);
     }
 
     fn add_reclaimed(&mut self, start: usize, end: usize, aligned: bool) {
@@ -297,12 +314,11 @@ impl InternerState {
         // While we're here, we'll do an incremental merging of reclaimed entries. This lets us avoid fragmentation
         // that, over time, would shrink the effective capacity of the interner in a non-recoverable way.
 
-        // We iterate over the reclaimed entries, storing the last three seen entries in a small ring buffer, and stop
-        // iterating once we've gotten to the entry right _after_ the one we just inserted, or the one we just inserted
-        // itself.
+        // Iterate over all of the reclaimed entries until we find the entry we just added, and then go one more entry
+        // past that, if possible.
         //
-        // We do this because there's no need to check any entries after that, because they couldn't be adjacent
-        // otherwise they would have already been merged when they were reclaimed.
+        // We're looking to find the entries that occur immediate before and after, if they exist, to figure out if
+        // they're adjacent or not and can potentially be merged.
         let mut found_current = false;
         let mut maybe_prev_entry = None;
         let mut maybe_next_entry = None;
@@ -315,9 +331,9 @@ impl InternerState {
                         maybe_prev_entry = Some(*entry);
                     }
                 }
-                // We found our current entry, so we know to stop iterating after one more entry.
+                // We've already found our current entry, so we know to stop iterating after one more entry.
                 (false, true) => found_current = true,
-                // We found our current entry, and this one directly follows it.
+                // We've already found our current entry, and this one directly follows it.
                 (true, false) => {
                     if curr_entry.followed_by(entry) {
                         maybe_next_entry = Some(*entry);
@@ -360,12 +376,18 @@ impl InternerState {
         // See if the reference count is zero.
         //
         // Only interned string values (the frontend handle that wraps the pointer to a specific entry) can decrement
-        // the reference count for their specific entry when dropped, and only `InternerState` -- with its access mediated through a
-        // mutex -- can increment the reference count for entries. This means that if the reference count is zero, then
-        // we know that nobody else is holding a reference to this entry, and no concurrent call to `try_intern` could
-        // be updating the reference count, either... so it's safe to be marked as reclaimed.
+        // the reference count for their specific entry when dropped, and only `InternerState` -- with its access
+        // mediated through a mutex -- can increment the reference count for entries. This means that if the reference
+        // count is zero, then we know that nobody else is holding a reference to this entry, and no concurrent call to
+        // `try_intern` could be updating the reference count, either... so it's safe to be marked as reclaimed.
         //
-        // SAFETY: We know the pointer is well-aligned for `EntryHeader` and is initialized.
+        // SAFETY: The caller is responsible for ensuring that `header_ptr` is a valid pointer to an `EntryHeader`
+        // value: well-aligned and initialized.
+        debug_assert_eq!(
+            header_ptr.as_ptr().cast::<u8>().align_offset(HEADER_ALIGN),
+            0,
+            "entry header pointer must be well-aligned"
+        );
         let header = unsafe { header_ptr.as_ref() };
         if !header.is_active() {
             self.entries -= 1;
@@ -415,7 +437,7 @@ impl InternerState {
             }
         }
 
-        // We couldn't find a large enough tombstone, or we had none, so see if we can fit this string within the
+        // We couldn't find a large enough reclaimed entry, or we had none, so see if we can fit this string within the
         // available capacity of our data buffer.
         if entry_layout.size() <= self.available() {
             let header_ptr = self.write_entry(self.len, s_hash, s);
@@ -445,17 +467,7 @@ impl Drop for InternerState {
 unsafe impl Send for InternerState {}
 unsafe impl Sync for InternerState {}
 
-impl PartialEq for InternerState {
-    fn eq(&self, other: &Self) -> bool {
-        // Comparing by pointer alone should be enough, but we're just doubling up by also checking that the capacity is
-        // the same as well.
-        std::ptr::eq(self.ptr.as_ptr(), other.ptr.as_ptr()) && self.capacity == other.capacity
-    }
-}
-
-impl Eq for InternerState {}
-
-/// A string interner basd on a single, fixed-size backing buffer with support for reclamation.
+/// A string interner based on a single, fixed-size backing buffer with support for reclamation.
 ///
 /// ## Overview
 ///
@@ -507,7 +519,7 @@ impl Eq for InternerState {}
 /// eventually end up going entirely unused, we need a way to remove those unused strings so their underlying storage
 /// can be used for new strings. This is where reclamation comes in.
 ///
-/// When a string is interned, the entry header tracks how mny active references there are to it. When that reference
+/// When a string is interned, the entry header tracks how many active references there are to it. When that reference
 /// count drops to zero, the last reference to the string attempts to mark the entry for reclamation. Assuming no other
 /// reference has been taken out on the entry in the meantime, the entry gets added to a list of "reclaimed" entries.
 ///
@@ -524,12 +536,32 @@ pub struct FixedSizeInterner {
 }
 
 impl FixedSizeInterner {
+    /// Creates a new `FixedSizeInterner` with the given capacity.
+    ///
+    /// The given capacity will potentially be rounded up by a small number of bytes (up to 7) in order to ensure the
+    /// backing buffer is properly aligned.
     pub fn new(capacity: NonZeroUsize) -> Self {
         Self {
             state: Arc::new(Mutex::new(InternerState::with_capacity(capacity))),
         }
     }
 
+    /// Returns `true` if the interner contains no strings.
+    pub fn is_empty(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        state.entries == 0
+    }
+
+    /// Returns the number of strings in the interner.
+    pub fn len(&self) -> usize {
+        let state = self.state.lock().unwrap();
+        state.entries
+    }
+
+    /// Tries to intern the given string.
+    ///
+    /// If the intern is at capacity and the given string cannot fit, `None` is returned. Otherwise, `Some` is
+    /// returned with a reference to the interned string.
     pub fn try_intern(&self, s: &str) -> Option<InternedString> {
         let mut state = self.state.lock().unwrap();
         state.try_intern(s).map(|header| InternedString {
@@ -581,7 +613,14 @@ fn layout_for_entry(s_len: usize) -> EntryLayout {
 }
 
 fn get_entry_string<'a>(header_ptr: *mut EntryHeader) -> &'a str {
-    // SAFETY: We know that `header_ptr` is non-null, well-aligned for `EntryHeader`, and initialized.
+    // SAFETY: The caller is responsible for ensuring that `header_ptr` is a valid pointer to an `EntryHeader` value:
+    // non-null, well-aligned, and initialized.
+    debug_assert!(!header_ptr.is_null(), "entry header pointer must not be null");
+    debug_assert_eq!(
+        header_ptr.cast::<u8>().align_offset(HEADER_ALIGN),
+        0,
+        "entry header pointer must be well-aligned"
+    );
     let header = unsafe { &*header_ptr };
 
     // Advance past the header and get a reference to the string.
@@ -603,7 +642,14 @@ fn get_entry_string<'a>(header_ptr: *mut EntryHeader) -> &'a str {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::HashSet, ops::RangeInclusive};
+
     use super::*;
+    use prop::sample::Index;
+    use proptest::{
+        collection::{hash_set, vec as arb_vec},
+        prelude::*,
+    };
 
     fn get_interned_string_entry_start_end(interner: &FixedSizeInterner, s: &InternedString) -> (usize, usize) {
         let state = interner.state.lock().unwrap();
@@ -611,6 +657,23 @@ mod tests {
         let entry_start = unsafe { s.state.header.as_ptr().cast::<u8>().offset_from(state.ptr.as_ptr()) as usize };
         let entry_end = entry_start + header.size() - 1;
         (entry_start, entry_end)
+    }
+
+    fn arb_alphanum_strings(
+        str_len: RangeInclusive<usize>, unique_strs: RangeInclusive<usize>,
+    ) -> impl Strategy<Value = Vec<String>> {
+        // Create characters between 0x20 (32) and 0x7E (126), which are all printable ASCII characters.
+        let char_gen = any::<u8>().prop_map(|c| std::cmp::max(c % 127, 32));
+
+        let str_gen = any::<usize>()
+            .prop_map(move |n| std::cmp::max(n % *str_len.end(), *str_len.start()))
+            .prop_flat_map(move |len| arb_vec(char_gen.clone(), len))
+            // SAFETY: We know our characters are all valid UTF-8 because they're in the ASCII range.
+            .prop_map(|xs| unsafe { String::from_utf8_unchecked(xs) });
+
+        // Create a hash set, which handles the deduplication aspect for us, ensuring we have N unique strings where N
+        // is within the `unique_strs` range... and then convert it to `Vec<String>` for easier consumption.
+        hash_set(str_gen, unique_strs).prop_map(|unique_strs| unique_strs.into_iter().collect::<Vec<_>>())
     }
 
     #[test]
@@ -898,6 +961,41 @@ mod tests {
             let merged_reclaimed = state.reclaimed.first().unwrap();
             assert_eq!(merged_reclaimed.start, s1_entry_start);
             assert_eq!(merged_reclaimed.end, s3_entry_end);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn property_test_entry_count_accurate(
+            strs in arb_alphanum_strings(1..=128, 16..=512),
+            indices in arb_vec(any::<Index>(), 1..=1000),
+        ) {
+            // We ask `proptest` to generate a bunch of unique strings of varying lengths (1-128 bytes, 16-512 unique
+            // strings) which we then randomly select out of those strings which strings we want to intern. The goal
+            // here is to potentially select the same string multiple times, to exercise the actual interning logic...
+            // but practically, to ensure that when we intern a string that has already been interned, we're not
+            // incrementing the entries count again.
+
+            // Create an interner with enough capacity to hold all of the strings we've generated. This is the maximum
+            // string size multiplied by the number of strings we've generated... plus a little constant factor per
+            // string to account for the entry header.
+            const ENTRY_SIZE: usize = 128 + HEADER_LEN;
+            let interner = FixedSizeInterner::new(NonZeroUsize::new(ENTRY_SIZE * indices.len()).unwrap());
+
+            // For each index, pull out the string and both track it in `unique_strs` and intern it. We hold on to the
+            // interned string handle to make sure the interned string is actually kept alive, keeping the entry count
+            // stable.
+            let mut interned = Vec::new();
+            let mut unique_strs = HashSet::new();
+            for index in &indices {
+                let s = index.get(&strs);
+                unique_strs.insert(s);
+
+                let s_interned = interner.try_intern(s).expect("should never fail to intern");
+                interned.push(s_interned);
+            }
+
+            assert_eq!(unique_strs.len(), interner.len());
         }
     }
 }

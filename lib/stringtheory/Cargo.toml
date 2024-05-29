@@ -7,3 +7,6 @@ edition = "2021"
 ahash = { workspace = true }
 bytes = { workspace = true }
 protobuf = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true, features = ["std"] }
