@@ -12,6 +12,7 @@ members = [
   "lib/saluki-error",
   "lib/saluki-event",
   "lib/saluki-io",
+  "lib/saluki-metrics",
 ]
 resolver = "2"
 
@@ -28,6 +29,7 @@ saluki-env = { path = "lib/saluki-env" }
 saluki-error = { path = "lib/saluki-error" }
 saluki-event = { path = "lib/saluki-event" }
 saluki-io = { path = "lib/saluki-io" }
+saluki-metrics = { path = "lib/saluki-metrics" }
 
 # External dependencies.
 async-trait = { version = "0.1", default-features = false }
