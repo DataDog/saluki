@@ -20,7 +20,6 @@ datadog-protos = { workspace = true }
 saluki-config = { workspace = true }
 saluki-context = { workspace = true }
 saluki-error = { workspace = true }
-saluki-event = { workspace = true }
 
 # External dependencies.
 arc-swap = { workspace = true }
