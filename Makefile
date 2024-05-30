@@ -285,9 +285,15 @@ test-miri: ## Runs all Miri-specific unit tests
 	@echo "[*] Running Miri-specific unit tests..."
 	cargo +nightly miri test -p stringtheory
 
+.PHONY: test-loom
+test-loom: check-rust-build-tools
+test-loom: ## Runs all Loom-specific unit tests
+	@echo "[*] Running Loom-specific unit tests..."
+	cargo nextest run --release --features loom -p stringtheory loom_tests
+
 .PHONY: test-all
 test-all: ## Test everything
-test-all: test test-miri
+test-all: test test-miri test-loom
 
 .PHONY: ensure-rust-miri
 ensure-rust-miri:

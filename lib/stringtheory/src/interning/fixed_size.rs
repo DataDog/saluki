@@ -14,14 +14,14 @@ use std::{
     num::NonZeroUsize,
     ops::Deref,
     ptr::NonNull,
-    sync::{
-        atomic::{
-            AtomicUsize,
-            Ordering::{AcqRel, Acquire},
-        },
-        Arc, Mutex,
-    },
+    sync::atomic::Ordering::{AcqRel, Acquire},
 };
+
+#[cfg(feature = "loom")]
+use loom::sync::{atomic::AtomicUsize, Arc, Mutex};
+
+#[cfg(not(feature = "loom"))]
+use std::sync::{atomic::AtomicUsize, Arc, Mutex};
 
 const HEADER_LEN: usize = std::mem::size_of::<EntryHeader>();
 const HEADER_ALIGN: usize = std::mem::align_of::<EntryHeader>();
@@ -56,6 +56,11 @@ struct StringState {
 }
 
 impl StringState {
+    #[cfg(test)]
+    fn get_entry_header(&self) -> &EntryHeader {
+        unsafe { self.header.as_ref() }
+    }
+
     fn get_entry<'a>(&'a self) -> &'a str {
         // NOTE: We're specifically upholding a safety variant here by tying the lifetime of the string reference to our
         // own lifetime, as the lifetime of the string reference *cannot* exceed the lifetime of the interner state,
@@ -284,12 +289,16 @@ impl InternerState {
         header_ptr
     }
 
-    fn add_reclaimed_from_header(&mut self, header: &EntryHeader) {
-        // SAFETY: We know both pointers are within bounds of our data buffer, and are pointers derived from the
-        // same pointer, and the delta is a multiple of `T` (which is `u8`, so size of 1) and all of that.
-        //
-        // Additionally, our cast to `usize` is logically sound because a header pointer could never be less than
-        // the base pointer of the data buffer.
+    fn get_offsets_for_header(&self, header: &EntryHeader) -> (usize, usize) {
+        // Zero out the string bytes in the data buffer.
+        unsafe {
+            // Skip over the header itself so that we just zero out the string bytes.
+            let data_ptr = self.ptr.as_ptr();
+            let header_end_ptr = NonNull::from(header).as_ptr().add(1).cast::<u8>();
+            let str_ptr = data_ptr.offset(header_end_ptr.offset_from(data_ptr.cast_const()));
+            let str_buf = std::slice::from_raw_parts_mut(str_ptr, header.len);
+            str_buf.fill(0);
+        }
 
         // Get the offset of the header within the data buffer.
         //
@@ -304,10 +313,16 @@ impl InternerState {
         };
         debug_assert!(entry_offset >= 0, "entry offset must be non-negative");
 
-        self.add_reclaimed(entry_offset as usize, entry_offset as usize + header.size() - 1, true);
+        (entry_offset as usize, entry_offset as usize + header.size() - 1)
+    }
+
+    fn add_reclaimed_from_header(&mut self, header: &EntryHeader) {
+        let (start, end) = self.get_offsets_for_header(header);
+        self.add_reclaimed(start, end, true);
     }
 
     fn add_reclaimed(&mut self, start: usize, end: usize, aligned: bool) {
+        // Track this reclaimed entry.
         let curr_entry = ReclaimedEntry::new(start, end, aligned);
         self.reclaimed.insert(curr_entry);
 
@@ -546,6 +561,15 @@ impl FixedSizeInterner {
         }
     }
 
+    #[cfg(test)]
+    fn with_state<F, O>(&self, f: F) -> O
+    where
+        F: FnOnce(&InternerState) -> O,
+    {
+        let state = self.state.lock().unwrap();
+        f(&state)
+    }
+
     /// Returns `true` if the interner contains no strings.
     pub fn is_empty(&self) -> bool {
         let state = self.state.lock().unwrap();
@@ -674,6 +698,15 @@ mod tests {
         // Create a hash set, which handles the deduplication aspect for us, ensuring we have N unique strings where N
         // is within the `unique_strs` range... and then convert it to `Vec<String>` for easier consumption.
         hash_set(str_gen, unique_strs).prop_map(|unique_strs| unique_strs.into_iter().collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn size_of_interned_string() {
+        // We're asserting that `InternedString` itself is 8 bytes: the size of `Arc<T>`.
+        //
+        // While we still end up doing pointer indirection to actually _load_ the underlying string, making
+        // `InternedString` super lightweight is important to performance.
+        assert_eq!(std::mem::size_of::<InternedString>(), 8);
     }
 
     #[test]
@@ -998,5 +1031,64 @@ mod tests {
 
             assert_eq!(unique_strs.len(), interner.len());
         }
+    }
+}
+
+#[cfg(all(test, feature = "loom"))]
+mod loom_tests {
+    use std::{num::NonZeroUsize, ops::Deref};
+
+    use super::FixedSizeInterner;
+
+    #[test]
+    fn concurrent_drop_and_intern() {
+        const STRING_TO_INTERN: &str = "hello, world!";
+
+        // This test is meant to explore the thread orderings when one thread is trying to drop (and thus reclaim) the
+        // last active reference to an interned string, and another thread is trying to intern that very same string.
+        //
+        // We accept, as a caveat, that a possible outcome is that we intern the "new" string again, even though an
+        // existing entry to that string may have existed in an alternative ordering.
+        loom::model(|| {
+            let interner = FixedSizeInterner::new(NonZeroUsize::new(1024).unwrap());
+            let t2_interner = interner.clone();
+            let t1_interned_s = interner
+                .try_intern(STRING_TO_INTERN)
+                .expect("should not fail to intern");
+            assert_eq!(t1_interned_s.deref(), STRING_TO_INTERN);
+
+            // Spawn thread T2, which tries to intern the same string and returns the handle to it.
+            let t2_result = loom::thread::spawn(move || {
+                t2_interner
+                    .try_intern(STRING_TO_INTERN)
+                    .expect("should not fail to intern")
+            });
+
+            drop(t1_interned_s);
+
+            let t2_interned_s = t2_result.join().expect("should not fail to join T2");
+            assert_eq!(t2_interned_s.deref(), STRING_TO_INTERN);
+
+            // What we're checking for here is that either:
+            // - there's no reclaimed entries (T2 found the existing entry for the string before T1 dropped it)
+            // - there's a reclaimed entry (T2 didn't find the existing entry for the string before T1 marked it as
+            //   inactive) but the reclaimed entry does _not_ overlap with the interned string from T2, meaning we
+            //   didn't get confused and allow T2 to use an existing entry that T1 then later marked as reclaimed
+            let reclaimed_entries = interner.with_state(|state| state.reclaimed.clone());
+            let (t2_interned_start, t2_interned_end) =
+                interner.with_state(|state| state.get_offsets_for_header(t2_interned_s.state.get_entry_header()));
+
+            if !reclaimed_entries.is_empty() {
+                let has_overlap = reclaimed_entries.iter().any(|re| {
+                    (re.start <= t2_interned_start && t2_interned_start <= re.end)
+                        || (re.start <= t2_interned_end && t2_interned_end <= re.end)
+                });
+
+                assert!(
+                    !has_overlap,
+                    "reclaimed entry must not overlap with live interned string"
+                );
+            }
+        });
     }
 }
