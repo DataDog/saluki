@@ -6,7 +6,7 @@ use std::{
 };
 
 use indexmap::{Equivalent, IndexSet};
-use stringtheory::{interning::fixed_size::FixedSizeInterner, MetaString};
+use stringtheory::{interning::FixedSizeInterner, MetaString};
 
 #[derive(Debug)]
 struct State {

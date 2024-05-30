@@ -1,9 +1,7 @@
 use std::{borrow::Borrow, fmt, hash, ops::Deref};
 
-use bytes::Bytes;
-
 pub mod interning;
-use self::interning::fixed_size::InternedString;
+use self::interning::InternedString;
 
 #[derive(Clone)]
 enum Inner {
@@ -16,7 +14,7 @@ enum Inner {
     /// A shared string.
     ///
     /// Validation that the bytes are UTF-8 happens during conversion to `MetaString`.
-    Shared(Bytes),
+    Shared(bytes::Bytes),
 
     /// A shared string from `protobuf::Chars`.
     ///
@@ -28,18 +26,24 @@ enum Inner {
     Interned(InternedString),
 }
 
+/// A string type that abstracts over various forms of string storage.
 #[derive(Clone)]
 pub struct MetaString {
     inner: Inner,
 }
 
 impl MetaString {
+    /// Creates an empty `MetaString`.
     pub const fn empty() -> Self {
         MetaString {
             inner: Inner::Static(""),
         }
     }
 
+    /// Consumes `self` and returns an owned `String`.
+    ///
+    /// If the `MetaString` is already owned, this will simply return the inner `String` directly. Otherwise, this will
+    /// allocate an owned version (`String`) of the string data.
     pub fn into_owned(self) -> String {
         match self.inner {
             Inner::Owned(s) => s,
@@ -109,15 +113,15 @@ impl From<String> for MetaString {
 impl From<&str> for MetaString {
     fn from(s: &str) -> Self {
         MetaString {
-            inner: Inner::Shared(Bytes::copy_from_slice(s.as_bytes())),
+            inner: Inner::Shared(bytes::Bytes::copy_from_slice(s.as_bytes())),
         }
     }
 }
 
-impl TryFrom<Bytes> for MetaString {
+impl TryFrom<bytes::Bytes> for MetaString {
     type Error = std::str::Utf8Error;
 
-    fn try_from(value: Bytes) -> Result<Self, Self::Error> {
+    fn try_from(value: bytes::Bytes) -> Result<Self, Self::Error> {
         let _ = std::str::from_utf8(&value)?;
         Ok(MetaString {
             inner: Inner::Shared(value),

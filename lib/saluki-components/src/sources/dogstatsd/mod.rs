@@ -24,7 +24,7 @@ use saluki_io::{
 };
 use serde::Deserialize;
 use snafu::{ResultExt as _, Snafu};
-use stringtheory::interning::fixed_size::FixedSizeInterner;
+use stringtheory::interning::FixedSizeInterner;
 use tokio::select;
 use tracing::{debug, error, info, trace};
 
@@ -200,10 +200,13 @@ impl SourceBuilder for DogStatsDConfiguration {
 
 impl MemoryBounds for DogStatsDConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        // We allocate our I/O buffers up front so this is a requirement.
         builder
             .minimum()
-            .with_fixed_amount(self.buffer_count * self.buffer_size);
+            // We allocate our I/O buffers entirely up front.
+            .with_fixed_amount(self.buffer_count * self.buffer_size)
+            // We also allocate the backing storage for the string interner up front, which is used by our context
+            // resolver.
+            .with_fixed_amount(DEFAULT_CONTEXT_INTERNER_SIZE_BYTES.get());
     }
 }
 

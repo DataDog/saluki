@@ -7,7 +7,7 @@ use std::{
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SetRecorderError, SharedString, Unit};
 use metrics_util::registry::{AtomicStorage, Registry};
 use saluki_context::{Context, ContextRef, ContextResolver};
-use stringtheory::interning::fixed_size::FixedSizeInterner;
+use stringtheory::interning::FixedSizeInterner;
 use tokio::sync::broadcast;
 
 use saluki_env::time::get_unix_timestamp;
