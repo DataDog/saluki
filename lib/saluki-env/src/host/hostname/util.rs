@@ -1,4 +1,3 @@
-#[cfg(feature = "hostname-os")]
 pub fn get_os_hostname() -> Option<String> {
     match hostname::get() {
         Ok(hostname) => Some(hostname.to_string_lossy().to_string()),
@@ -9,17 +8,17 @@ pub fn get_os_hostname() -> Option<String> {
     }
 }
 
-#[cfg(all(feature = "hostname-os", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 pub async fn is_os_hostname_trustworthy() -> bool {
     is_running_in_host_uts_namespace().await
 }
 
-#[cfg(all(feature = "hostname-os", not(target_os = "linux")))]
+#[cfg(not(target_os = "linux"))]
 pub async fn is_os_hostname_trustworthy() -> bool {
     true
 }
 
-#[cfg(all(any(feature = "hostname-kubernetes", feature = "hostname-os"), target_os = "linux"))]
+#[cfg(target_os = "linux")]
 pub async fn is_running_in_host_uts_namespace() -> bool {
     use std::os::unix::fs::MetadataExt as _;
 
