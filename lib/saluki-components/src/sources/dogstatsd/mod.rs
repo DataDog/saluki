@@ -7,14 +7,13 @@ use saluki_context::ContextResolver;
 use saluki_core::{
     buffers::FixedSizeBufferPool,
     components::sources::*,
-    constants::internal::ORIGIN_PID_TAG_KEY,
     topology::{
         shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
         OutputDefinition,
     },
 };
 use saluki_error::GenericError;
-use saluki_event::{DataType, Event};
+use saluki_event::{metric::OriginEntity, DataType, Event};
 use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, BytesBuffer},
     deser::{codec::DogstatsdCodec, Deserializer, DeserializerBuilder, DeserializerError},
@@ -343,24 +342,13 @@ async fn process_stream(source_context: SourceContext, handler_context: HandlerC
                     // on each metric, if they came over UDS. This would then be utilized downstream in the pipeline by
                     // origin enrichment, if present.
                     if origin_detection {
-                        if let ConnectionAddress::ProcessLike(Some(_creds)) = &peer_addr {
+                        if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
                             for event in &mut event_buffer {
                                 match event {
-                                    Event::Metric(_metric) => {
-                                        // TODO: This code below worked before when we could just mutate our context
-                                        // willy-nilly, but not so much when we're using a resolved handle.
-                                        //
-                                        // As mentioned in some other comments, we likely want to move things like
-                                        // origin PID, hostname, container ID, etc... into something like
-                                        // `MetricMetadata` as they're specific to internal processing, rather than the
-                                        // context itself, which is used in a certain way internally but generally
-                                        // represents the name/tags a user is going to see... so if we're always just
-                                        // passing around this internal stuff using tags, it sort of speaks to situating
-                                        // these bits of information in a more permanent and structured way.
-                                        //
-                                        // metric.context.tags.insert_tag((ORIGIN_PID_TAG_KEY, creds.pid.to_string()));
-
-                                        todo!()
+                                    Event::Metric(metric) => {
+                                        if metric.metadata.origin_entity.is_none() {
+                                            metric.metadata.origin_entity = Some(OriginEntity::ProcessId(creds.pid as u32));
+                                        }
                                     },
                                 }
                             }

@@ -1,11 +1,7 @@
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
-use saluki_core::{
-    components::transforms::*,
-    constants::{datadog::*, internal::*},
-    topology::interconnect::EventBuffer,
-};
+use saluki_core::{components::transforms::*, constants::datadog::*, topology::interconnect::EventBuffer};
 use saluki_env::{
     workload::{entity::EntityId, metadata::TagCardinality},
     EnvironmentProvider, WorkloadProvider,

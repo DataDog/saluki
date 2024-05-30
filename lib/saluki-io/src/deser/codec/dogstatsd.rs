@@ -15,7 +15,7 @@ use nom::{
 use saluki_context::{ContextRef, ContextResolver};
 use snafu::Snafu;
 
-use saluki_core::{constants::internal::CONTAINER_ID_TAG_KEY, topology::interconnect::EventBuffer};
+use saluki_core::topology::interconnect::EventBuffer;
 use saluki_env::time::get_unix_timestamp;
 use saluki_event::{metric::*, Event};
 use tracing::trace;
@@ -185,17 +185,7 @@ fn parse_dogstatsd<'a>(
     };
 
     let timestamp = maybe_timestamp.unwrap_or_else(get_unix_timestamp);
-    let mut tags = maybe_tags.unwrap_or_default();
-
-    // We add the container ID as a special tag if it was provided.
-    let mut container_id_tag = String::new();
-    if let Some(container_id) = maybe_container_id {
-        container_id_tag.push_str(CONTAINER_ID_TAG_KEY);
-        container_id_tag.push(':');
-        container_id_tag.push_str(container_id);
-
-        tags.push(&container_id_tag);
-    }
+    let tags = maybe_tags.unwrap_or_default();
 
     // Resolve the context now that we have the name and any tags.
     let context_ref = ContextRef::from_name_and_tags(metric_name, &tags);
@@ -203,6 +193,7 @@ fn parse_dogstatsd<'a>(
 
     let metric_metadata = MetricMetadata::from_timestamp(timestamp)
         .with_sample_rate(maybe_sample_rate)
+        .with_origin_entity(maybe_container_id.map(OriginEntity::container_id))
         .with_origin(MetricOrigin::dogstatsd());
 
     match metric_values {
@@ -364,7 +355,6 @@ fn limit_str_to_len(s: &str, limit: usize) -> &str {
 mod tests {
     use proptest::{collection::vec as arb_vec, prelude::*};
     use saluki_context::{ContextRef, ContextResolver};
-    use saluki_core::constants::internal::CONTAINER_ID_TAG_KEY;
     use saluki_event::{metric::*, Event};
 
     use super::{parse_dogstatsd, OneOrMany};
@@ -546,10 +536,9 @@ mod tests {
         let counter_name = "my.counter";
         let counter_value = 1.0;
         let container_id = "abcdef123456";
-        let container_id_tag = format!("{}:{}", CONTAINER_ID_TAG_KEY, container_id);
-        let counter_tags = &[container_id_tag.as_str()];
         let counter_raw = format!("{}:{}|c|c:{}", counter_name, counter_value, container_id);
-        let counter_expected = counter_with_tags(&context_resolver, counter_name, counter_tags, counter_value);
+        let mut counter_expected = counter(&context_resolver, counter_name, counter_value);
+        counter_expected.metadata.origin_entity = Some(OriginEntity::container_id(container_id));
 
         let (remaining, counter_actual) =
             parse_dogstatsd(counter_raw.as_bytes(), usize::MAX, usize::MAX, &context_resolver).unwrap();

@@ -1,8 +1,4 @@
-use std::{
-    collections::hash_map::Entry,
-    hash::{BuildHasher, Hash as _, Hasher},
-    time::Duration,
-};
+use std::{collections::hash_map::Entry, hash::BuildHasher, time::Duration};
 
 use ahash::{AHashMap, AHashSet};
 use async_trait::async_trait;
