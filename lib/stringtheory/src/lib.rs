@@ -8,9 +8,6 @@ enum Inner {
     /// An owned string.
     Owned(String),
 
-    /// A static string reference.
-    Static(&'static str),
-
     /// A shared string.
     ///
     /// Validation that the bytes are UTF-8 happens during conversion to `MetaString`.
@@ -27,6 +24,56 @@ enum Inner {
 }
 
 /// A string type that abstracts over various forms of string storage.
+///
+/// Normally, developers will work with either `String` (owned) or `&str` (borrowed) when dealing with strings. In some
+/// cases, though, it can be useful to work with strings that use alternative storage, such as those that are atomically
+/// shared (e.g. `Arc<str>`). While using those string types themselves isn't complex, using them and _also_ supporting
+/// normal string types can be complex.
+///
+/// `MetaString` is an opinionated string type that abstracts over the normal string types like `String` and `&str`
+/// while also supporting alternative storage, such as string data backed by `bytes::Bytes`, or interned using
+/// `FixedSizeInterner`.
+///
+/// ## Supported types
+///
+/// `MetaString` supports the following "modes":
+///
+/// - owned (`String`)
+/// - shared (`bytes::Bytes`)
+/// - `protobuf`-specific shared (`protobuf::Chars`)
+/// - interned (`InternedString`)
+///
+/// ### Owned and borrowed strings
+///
+/// `MetaString` can be created from `String` and `&str` directly. For owned scenarios (`String`), the string value is
+/// simply wrapped. For borrowed strings, they are copied into a newly-allocated storage buffer, after which the
+/// resulting `MetaString` can be cheaply cloned and shared.
+///
+/// ### Shared strings
+///
+/// `MetaString` can be created from `bytes::Bytes` or `protobuf::Chars`, which are both shared byte buffers that use
+/// atomics -- similar to `Arc<T>` -- to allow for cheaply cloning references to the same piece of data.
+///
+/// We handle the `protobuf`-specific `Chars` type as an optimization: while it is based on `bytes::Bytes`, it cannot be
+/// trivially converted back-and-forth as the underlying bytes must be checked for UTF-8 validity. By handling
+/// `protobuf::Chars` separately, we can avoid this revalidation of the string data.
+///
+/// ### Interned strings
+///
+/// Finally, `MetaString` can be created from `InternedString`, which is a string that has been interned using
+/// `FixedSizeInterner.` Interned strings are essentially a combination of the properties of `Arc<T>` -- owned values
+/// that atomically track the reference count to a shared piece of data -- and a fixed-size buffer, where we allocate
+/// one large buffer, and write many small strings into it, and provide references to those strings through
+/// `InternedString`.
+///
+/// ## Conversion methods
+///
+/// Implementations of `From<T>` exist for all of the aforementioned types to allow for easily converting to
+/// `MetaString`. Once a caller has a `MetaString` value, they are generally expected to interact with the string in a
+/// read-only way, as `MetaString` can be dereferenced directly to `&str`.
+///
+/// If a caller needs to be able to modify the string data, they can call `into_owned` to get an owned version of the
+/// string, make their modifications to the owned version, and then convert that back to `MetaString`.
 #[derive(Clone)]
 pub struct MetaString {
     inner: Inner,
@@ -36,7 +83,8 @@ impl MetaString {
     /// Creates an empty `MetaString`.
     pub const fn empty() -> Self {
         MetaString {
-            inner: Inner::Static(""),
+            // NOTE: This does not allocate.
+            inner: Inner::Shared(bytes::Bytes::new()),
         }
     }
 
@@ -47,7 +95,6 @@ impl MetaString {
     pub fn into_owned(self) -> String {
         match self.inner {
             Inner::Owned(s) => s,
-            Inner::Static(s) => s.to_owned(),
             Inner::Shared(b) => {
                 // SAFETY: We always ensure that the bytes are valid UTF-8 when converting `Bytes` to `MetaString`.
                 unsafe { String::from_utf8_unchecked(b.to_vec()) }
@@ -149,7 +196,6 @@ impl From<MetaString> for protobuf::Chars {
     fn from(value: MetaString) -> Self {
         match value.inner {
             Inner::Owned(s) => s.into(),
-            Inner::Static(s) => s.into(),
             Inner::Shared(b) => protobuf::Chars::from_bytes(b).expect("already validated as UTF-8"),
             Inner::ProtoShared(b) => b,
             Inner::Interned(i) => i.deref().into(),
@@ -161,7 +207,6 @@ impl<'a> From<&'a MetaString> for protobuf::Chars {
     fn from(value: &'a MetaString) -> Self {
         match &value.inner {
             Inner::Owned(s) => s.as_str().into(),
-            Inner::Static(s) => (*s).into(),
             Inner::Shared(b) => protobuf::Chars::from_bytes(b.clone()).expect("already validated as UTF-8"),
             Inner::ProtoShared(b) => b.clone(),
             Inner::Interned(i) => i.deref().into(),
@@ -175,7 +220,6 @@ impl Deref for MetaString {
     fn deref(&self) -> &str {
         match &self.inner {
             Inner::Owned(s) => s,
-            Inner::Static(s) => s,
             // SAFETY: We always ensure that the bytes are valid UTF-8 when converting `Bytes` to `MetaString`.
             Inner::Shared(b) => unsafe { std::str::from_utf8_unchecked(b) },
             Inner::ProtoShared(b) => b,
