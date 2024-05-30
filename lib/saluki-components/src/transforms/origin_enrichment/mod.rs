@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
@@ -129,7 +133,6 @@ where
         // Just a thought, and doesn't really address having to eventually need to allocate a vector to hold them all
         // contiguously as `Vec<protobuf::Chars>` for when we build our request payloads, but could be incremental
         // progress.
-        //todo!()
 
         /*
         // Try to collect various pieces of client origin information from the metric tags. For any tags that we collect
