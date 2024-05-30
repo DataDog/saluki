@@ -95,11 +95,12 @@ headers = { version = "0.3", default-features = false }
 rustls-pemfile = { version = "2", default-features = false }
 tokio-rustls = { version = "0.25.0", default-features = false }
 anyhow = { version = "1", default-features = false }
-chrono = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 ubyte = { version = "0.10", default-features = false }
 criterion = { version = "0.5", features = ["html_reports"] }
-dhat = "0.3"
+dhat = { version = "0.3", default-features = false }
 average = { version = "0.15.1", default-features = false }
+loom = { version = "0.7", default-features = false }
 
 [patch.crates-io]
 # Git dependency for `containerd-client` to add specific `prost-build` settings that allow type-erased payloads in

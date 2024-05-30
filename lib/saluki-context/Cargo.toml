@@ -2,11 +2,11 @@
 name = "saluki-context"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
 
 [dependencies]
 # Internal dependencies.
 stringtheory = { workspace = true }
 
 # External dependencies.
-indexmap = { version = "2.2", default-features = false, features = ["std"] }
-owning_ref = { version = "0.4", default-features = false }
+indexmap = { workspace = true, features = ["std"] }

@@ -2,10 +2,16 @@
 name = "stringtheory"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
+
+[features]
+default = []
+loom = ["dep:loom"]
 
 [dependencies]
 ahash = { workspace = true }
 bytes = { workspace = true }
+loom = { workspace = true, optional = true }
 protobuf = { workspace = true }
 
 [dev-dependencies]
