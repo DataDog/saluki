@@ -257,14 +257,7 @@ impl std::hash::Hash for AggregationContext {
 
 impl PartialEq for AggregationContext {
     fn eq(&self, other: &Self) -> bool {
-        if self.context.name() == other.context.name() {
-            let self_tags = self.context.tags().as_sorted();
-            let other_tags = other.context.tags().as_sorted();
-
-            self_tags == other_tags
-        } else {
-            false
-        }
+        self.context == other.context
     }
 }
 

@@ -369,19 +369,11 @@ fn tag_has_name(tag: &Tag, tag_name: &str) -> bool {
 
 impl PartialEq<TagSet> for TagSet {
     fn eq(&self, other: &TagSet) -> bool {
-        // NOTE: We could try storing tags in sorted order internally, which would make this moot... but for now, we'll
-        // avoid the sort (which lets us avoid an allocation) and just do the naive per-item comparison.
         if self.0.len() != other.0.len() {
             return false;
         }
 
-        for other_tag in &other.0 {
-            if !self.0.iter().any(|tag| tag == other_tag) {
-                return false;
-            }
-        }
-
-        true
+        self.0.eq(&other.0)
     }
 }
 
@@ -405,7 +397,10 @@ impl<'a> IntoIterator for &'a TagSet {
 
 impl FromIterator<Tag> for TagSet {
     fn from_iter<I: IntoIterator<Item = Tag>>(iter: I) -> Self {
-        Self(iter.into_iter().collect())
+        let mut tags: Vec<Tag> = iter.into_iter().collect();
+        tags.sort_unstable();
+
+        Self(tags)
     }
 }
 
