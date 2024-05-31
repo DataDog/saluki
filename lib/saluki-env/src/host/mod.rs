@@ -1,5 +1,4 @@
 pub mod hostname;
-#[cfg(feature = "agent-like")]
 pub mod providers;
 
 use async_trait::async_trait;
