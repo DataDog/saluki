@@ -51,16 +51,38 @@ Local python checks can be placed in `./dist/foo.py` and configured via `./dist/
 pyo3 is used to provide python support, which works off of your system's python
 install, `sudo apt install libpython3-devel` (todo double check the package name)
 
-todo update instructions with full integrations-core package installation
-```
-#pip install datadog_checks_base # maybe not needed bc its a dependency
-#pip install datadog_checks_base[deps] # maybe not needed bc its a dependency
-cp $HOME/dev/integrations-core/requirements-agent-release.txt .
-pip install -r $(awk -v local_path_base="$HOME/dev/integrations-core" '{sub(/^datadog-/, "", $1); gsub(/-/, "_", $1); split($1, parts, "=="); package_name = parts[1]; if (index(package_name, "checks_") != 1) {local_path = local_path_base "/" package_name "/"; print local_path}}' requirements-agent-release.txt)
-# One error
-# ERROR: Package 'datadog-tokumx' requires a different Python: 3.10.12 not in '==2.7.*'
-# Not bad.
-```
+#### Getting required python libs into a venv
+This is way harder than I expected.
+
+The required python libs are all within `integrations-core` and generally
+speaking, `pip install datadog_checks_base pip install datadog_checks_base[deps]` is sufficient to
+a "hello-world" style check such as what is committed in this repo.
+
+Once we want to run "standard" checks such as `http` or `mongodb`, what we now
+want is to install all the default integrations, just like the Agent does.
+
+
+In `integrations-core` there is a file
+[requirements-agent-release.txt](https://github.com/DataDog/integrations-core/blob/master/requirements-agent-release.txt)
+which is a generated `requirements.txt` that records the versions for a given
+release.
+
+By combining this and the [wheels index](
+https://dd-integrations-core-wheels-build-stable.datadoghq.com/targets/simple/index.html)
+, we _should_ be able to install the required packages.
+
+
+Prepending `--index-url https://dd-integrations-core-wheels-build-stable.datadoghq.com/targets/simple/`
+to the `requirements-agent-release.txt` and then handing it to `pip` _should_
+work.
+
+However it does not. The above integrations-core-wheels is backed by an s3
+bucket and does not have `index_url` set to return the `index.html` when a
+directory is requested.
+
+Some amount of this can be hacked around with an `awk` script to process the
+requirements.txt, but there are more issues that I was never fully able to
+resolve.
 
 ## Contributing
 
