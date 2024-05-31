@@ -392,10 +392,8 @@ checksum = "a21f936df1771bf62b77f047b726c4625ff2e8aa607c01ec06e5a05bd8463401"
 dependencies = [
  "android-tzdata",
  "iana-time-zone",
- "js-sys",
  "num-traits",
  "serde",
- "wasm-bindgen",
  "windows-targets 0.52.5",
 ]
 
@@ -869,6 +867,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "generator"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "186014d53bc231d0090ef8d6f03e0920c54d85a5ed22f4f2f74315ec56cf83fb"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "log",
+ "rustversion",
+ "windows",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1198,7 +1210,7 @@ dependencies = [
  "iana-time-zone-haiku",
  "js-sys",
  "wasm-bindgen",
- "windows-core",
+ "windows-core 0.52.0",
 ]
 
 [[package]]
@@ -1438,6 +1450,19 @@ name = "log"
 version = "0.4.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "90ed8c1e510134f979dbc4f070f87d4313098b704861a105fe34231c70a3901c"
+
+[[package]]
+name = "loom"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "419e0dc8046cb947daa77eb95ae174acfbddb7673b4151f56d1eed8e93fbfaca"
+dependencies = [
+ "cfg-if",
+ "generator",
+ "scoped-tls",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "match_cfg"
@@ -2387,6 +2412,7 @@ dependencies = [
  "quanta",
  "rustls",
  "saluki-config",
+ "saluki-context",
  "saluki-core",
  "saluki-env",
  "saluki-error",
@@ -2395,6 +2421,7 @@ dependencies = [
  "serde",
  "slab",
  "snafu",
+ "stringtheory",
  "tokio",
  "tokio-util",
  "tower",
@@ -2414,10 +2441,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "saluki-context"
+version = "0.1.0"
+dependencies = [
+ "indexmap 2.2.6",
+ "stringtheory",
+]
+
+[[package]]
 name = "saluki-core"
 version = "0.1.0"
 dependencies = [
- "ahash",
  "async-trait",
  "bytes",
  "datadog-protos",
@@ -2435,20 +2469,22 @@ dependencies = [
  "metrics-util",
  "paste",
  "pin-project",
- "proptest",
  "protobuf",
  "quanta",
  "rustls",
+ "saluki-context",
  "saluki-env",
  "saluki-error",
  "saluki-event",
  "similar-asserts",
  "slab",
  "snafu",
+ "stringtheory",
  "tokio",
  "tokio-util",
  "tower",
  "tracing",
+ "ubyte",
 ]
 
 [[package]]
@@ -2472,8 +2508,8 @@ dependencies = [
  "regex",
  "rustls-pemfile",
  "saluki-config",
+ "saluki-context",
  "saluki-error",
- "saluki-event",
  "serde",
  "serde_json",
  "snafu",
@@ -2501,6 +2537,8 @@ dependencies = [
  "ddsketch-agent",
  "float_eq",
  "proptest",
+ "saluki-context",
+ "stringtheory",
 ]
 
 [[package]]
@@ -2534,6 +2572,7 @@ dependencies = [
  "protobuf",
  "quanta",
  "rustls",
+ "saluki-context",
  "saluki-core",
  "saluki-env",
  "saluki-event",
@@ -2564,6 +2603,12 @@ checksum = "fbc91545643bcf3a0bbb6569265615222618bdf33ce4ffbbd13c4bbd4c093534"
 dependencies = [
  "windows-sys 0.52.0",
 ]
+
+[[package]]
+name = "scoped-tls"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
 
 [[package]]
 name = "scopeguard"
@@ -2764,6 +2809,17 @@ name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+
+[[package]]
+name = "stringtheory"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "bytes",
+ "loom",
+ "proptest",
+ "protobuf",
+]
 
 [[package]]
 name = "subtle"
@@ -3115,6 +3171,7 @@ dependencies = [
  "once_cell",
  "regex",
  "sharded-slab",
+ "smallvec",
  "thread_local",
  "time",
  "tracing",
@@ -3365,10 +3422,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
+name = "windows"
+version = "0.54.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9252e5725dbed82865af151df558e754e4a3c2c30818359eb17465f1346a1b49"
+dependencies = [
+ "windows-core 0.54.0",
+ "windows-targets 0.52.5",
+]
+
+[[package]]
 name = "windows-core"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33ab640c8d7e35bf8ba19b884ba838ceb4fba93a4e8c65a9059d08afcfc683d9"
+dependencies = [
+ "windows-targets 0.52.5",
+]
+
+[[package]]
+name = "windows-core"
+version = "0.54.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12661b9c89351d684a50a8a643ce5f608e20243b9fb84687800163429f161d65"
+dependencies = [
+ "windows-result",
+ "windows-targets 0.52.5",
+]
+
+[[package]]
+name = "windows-result"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "749f0da9cc72d82e600d8d2e44cadd0b9eedb9038f71a1c58556ac1c5791813b"
 dependencies = [
  "windows-targets 0.52.5",
 ]

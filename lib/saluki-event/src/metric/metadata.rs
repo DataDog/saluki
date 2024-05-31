@@ -1,9 +1,41 @@
-use std::fmt;
+use std::{fmt, sync::Arc};
+
+use stringtheory::MetaString;
 
 const ORIGIN_PRODUCT_AGENT: u32 = 10;
 const ORIGIN_SUBPRODUCT_DOGSTATSD: u32 = 10;
 const ORIGIN_SUBPRODUCT_INTEGRATION: u32 = 11;
 const ORIGIN_PRODUCT_DETAIL_NONE: u32 = 0;
+
+/// The entity from which a metric originated from.
+///
+/// While "source type" and `MetricOrigin` describe the origin of a metric in high-level terms -- "this metric
+/// originated from the DogStatsD source", "this metric came from an integration check", etc -- the origin entity
+/// details the _specific_ sender of an individual metric in containerized environments.
+///
+/// The origin entity will generally be the process ID of the metric sender, or the container ID, both of which are then
+/// generally mapped to the relevant information for the metric, such as the orchestrator-level tags for the
+/// container/pod/deployment.
+#[derive(Clone, Debug)]
+pub enum OriginEntity {
+    /// Process ID of the sender.
+    ProcessId(u32),
+
+    /// Container ID of the sender.
+    ///
+    /// This will generally be the typical long hexadecimal string that is used by container runtimes like `containerd`,
+    /// but may sometimes also be a different form, such as the container's cgroups inode.
+    ContainerId(MetaString),
+}
+
+impl OriginEntity {
+    pub fn container_id<S>(container_id: S) -> Self
+    where
+        S: Into<MetaString>,
+    {
+        Self::ContainerId(container_id.into())
+    }
+}
 
 /// Metric metadata.
 ///
@@ -21,6 +53,18 @@ pub struct MetricMetadata {
     /// Generally based on the time the metric was received, but not always.
     pub timestamp: u64,
 
+    /// Hostname where the metric originated from.
+    ///
+    /// This could be specified as part of a metric payload that was received from a client, or set internally to the
+    /// hostname where this process is running.
+    pub hostname: Option<Arc<str>>,
+
+    /// The origin entity of the metric.
+    ///
+    /// Indicates the actual sender of the metric, such as the specific process/container, rather than just where the
+    /// metric originated from categorically (i.e. the source type or `MetricOrigin`).
+    pub origin_entity: Option<OriginEntity>,
+
     /// Origin of the metric.
     ///
     /// Indicates the source of the metric, such as the product or service that emitted it, or the source component
@@ -34,6 +78,8 @@ impl MetricMetadata {
         Self {
             sample_rate: None,
             timestamp,
+            hostname: None,
+            origin_entity: None,
             origin: None,
         }
     }
@@ -47,6 +93,21 @@ impl MetricMetadata {
     /// Set the timestamp.
     pub fn with_timestamp(mut self, timestamp: u64) -> Self {
         self.timestamp = timestamp;
+        self
+    }
+
+    /// Set the hostname,
+    pub fn with_hostname<H>(mut self, hostname: H) -> Self
+    where
+        H: Into<Arc<str>>,
+    {
+        self.hostname = Some(hostname.into());
+        self
+    }
+
+    /// Set the origin entity.
+    pub fn with_origin_entity(mut self, origin_entity: Option<OriginEntity>) -> Self {
+        self.origin_entity = origin_entity;
         self
     }
 

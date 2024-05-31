@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
-use saluki_event::metric::MetricTags;
+use saluki_context::TagSet;
 use tracing::debug;
 
 use super::{
@@ -21,11 +21,11 @@ use super::{
 pub struct TagStore {
     entity_hierarchy_mappings: HashMap<EntityId, EntityId>,
 
-    low_cardinality_entity_tags: HashMap<EntityId, MetricTags>,
-    high_cardinality_entity_tags: HashMap<EntityId, MetricTags>,
+    low_cardinality_entity_tags: HashMap<EntityId, TagSet>,
+    high_cardinality_entity_tags: HashMap<EntityId, TagSet>,
 
-    resolved_low_cardinality_entity_tags: HashMap<EntityId, MetricTags>,
-    resolved_high_cardinality_entity_tags: HashMap<EntityId, MetricTags>,
+    resolved_low_cardinality_entity_tags: HashMap<EntityId, TagSet>,
+    resolved_high_cardinality_entity_tags: HashMap<EntityId, TagSet>,
 }
 
 impl TagStore {
@@ -88,7 +88,7 @@ impl TagStore {
         self.regenerate_entity_tags(child_entity_id);
     }
 
-    fn add_entity_tags(&mut self, entity_id: EntityId, tags: MetricTags, cardinality: TagCardinality) {
+    fn add_entity_tags(&mut self, entity_id: EntityId, tags: TagSet, cardinality: TagCardinality) {
         let existing_tags = match cardinality {
             TagCardinality::Low => self.low_cardinality_entity_tags.entry(entity_id.clone()).or_default(),
             TagCardinality::High => self.high_cardinality_entity_tags.entry(entity_id.clone()).or_default(),
@@ -98,7 +98,7 @@ impl TagStore {
         self.regenerate_entity_tags(entity_id);
     }
 
-    fn set_entity_tags(&mut self, entity_id: EntityId, tags: MetricTags, cardinality: TagCardinality) {
+    fn set_entity_tags(&mut self, entity_id: EntityId, tags: TagSet, cardinality: TagCardinality) {
         let existing_tags = match cardinality {
             TagCardinality::Low => self.low_cardinality_entity_tags.entry(entity_id.clone()).or_default(),
             TagCardinality::High => self.high_cardinality_entity_tags.entry(entity_id.clone()).or_default(),
@@ -175,7 +175,7 @@ impl TagStore {
         }
     }
 
-    fn get_raw_entity_tags(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<MetricTags> {
+    fn get_raw_entity_tags(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<TagSet> {
         match cardinality {
             TagCardinality::Low => self.low_cardinality_entity_tags.get(entity_id).cloned(),
             TagCardinality::High => {
@@ -195,7 +195,7 @@ impl TagStore {
         }
     }
 
-    fn resolve_entity_tags(&self, entity_id: &EntityId, cardinality: TagCardinality) -> MetricTags {
+    fn resolve_entity_tags(&self, entity_id: &EntityId, cardinality: TagCardinality) -> TagSet {
         // Build the ancestry chain for the entity, starting with the entity itself.
         let mut entity_chain = VecDeque::new();
         entity_chain.push_back(entity_id);
@@ -210,7 +210,7 @@ impl TagStore {
         }
 
         // For each entity in the chain, grab their tags, and merge them into the resolved tags.
-        let mut resolved_tags = MetricTags::default();
+        let mut resolved_tags = TagSet::default();
 
         for ancestor_entity_id in entity_chain {
             if let Some(tags) = self.get_raw_entity_tags(ancestor_entity_id, cardinality) {
@@ -237,12 +237,12 @@ impl TagStore {
 
 #[derive(Debug, Default)]
 pub struct TagSnapshot {
-    low_cardinality_entity_tags: HashMap<EntityId, MetricTags>,
-    high_cardinality_entity_tags: HashMap<EntityId, MetricTags>,
+    low_cardinality_entity_tags: HashMap<EntityId, TagSet>,
+    high_cardinality_entity_tags: HashMap<EntityId, TagSet>,
 }
 
 impl TagSnapshot {
-    pub fn get_entity_tags(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<MetricTags> {
+    pub fn get_entity_tags(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<TagSet> {
         match cardinality {
             TagCardinality::Low => self.low_cardinality_entity_tags.get(entity_id).cloned(),
             TagCardinality::High => self.high_cardinality_entity_tags.get(entity_id).cloned(),
@@ -251,11 +251,11 @@ impl TagSnapshot {
 }
 
 // NOTE: All of the unit tests that deal with merging the "expected tags" by using `Extend` are designed/ordered to
-// avoid creating tags with multiple values, since the logic for `MetricTags` doesn't replace existing tags, but simply
+// avoid creating tags with multiple values, since the logic for `TagSet` doesn't replace existing tags, but simply
 // aggregates the values of existing tags.
 #[cfg(test)]
 mod tests {
-    use saluki_event::metric::MetricTags;
+    use saluki_context::TagSet;
 
     use crate::workload::{
         entity::EntityId,
@@ -282,18 +282,18 @@ mod tests {
 
     macro_rules! tag_values {
 		($entity_id:expr, $cardinality:expr, tags => [$($key:literal => $value:literal),+ $(,)?]) => {{
-			let mut expected_tags = MetricTags::default();
+			let mut expected_tags = TagSet::default();
 			let mut operations = Vec::new();
 
 			$(
 				let tag = format!("{}:{}", $key, $value);
-				expected_tags.insert_tag(tag);
+				expected_tags.insert_tag(tag.clone());
 
 				operations.push(MetadataOperation {
 					entity_id: $entity_id.clone(),
 					actions: OneOrMany::One(MetadataAction::AddTag {
 						cardinality: $cardinality,
-						tag: ($key, $value).into(),
+						tag: tag.into(),
 					}),
 				});
 			)+
@@ -339,10 +339,10 @@ mod tests {
         let snapshot = store.snapshot();
 
         let low_card_resolved_tags = snapshot.get_entity_tags(&entity_id, TagCardinality::Low).unwrap();
-        assert_eq!(low_card_resolved_tags.sorted(), low_card_expected_tags.sorted());
+        assert_eq!(low_card_resolved_tags.as_sorted(), low_card_expected_tags.as_sorted());
 
         let high_card_resolved_tags = snapshot.get_entity_tags(&entity_id, TagCardinality::High).unwrap();
-        assert_eq!(high_card_resolved_tags.sorted(), high_card_expected_tags.sorted());
+        assert_eq!(high_card_resolved_tags.as_sorted(), high_card_expected_tags.as_sorted());
     }
 
     #[test]
@@ -369,10 +369,10 @@ mod tests {
         let global_resolved_tags = snapshot
             .get_entity_tags(&global_entity_id, TagCardinality::Low)
             .unwrap();
-        assert_eq!(global_resolved_tags.sorted(), global_expected_tags.sorted());
+        assert_eq!(global_resolved_tags.as_sorted(), global_expected_tags.as_sorted());
 
         let resolved_tags = snapshot.get_entity_tags(&entity_id, TagCardinality::High).unwrap();
-        assert_eq!(resolved_tags.sorted(), expected_tags.sorted());
+        assert_eq!(resolved_tags.as_sorted(), expected_tags.as_sorted());
     }
 
     #[test]
@@ -414,19 +414,19 @@ mod tests {
         let snapshot = store.snapshot();
 
         let pod_resolved_tags = snapshot.get_entity_tags(&pod_entity_id, TagCardinality::Low).unwrap();
-        assert_eq!(pod_resolved_tags.sorted(), pod_expected_tags.sorted());
+        assert_eq!(pod_resolved_tags.as_sorted(), pod_expected_tags.as_sorted());
 
         let container_resolved_tags = snapshot
             .get_entity_tags(&container_entity_id, TagCardinality::Low)
             .unwrap();
-        assert_eq!(container_resolved_tags.sorted(), container_expected_tags.sorted());
+        assert_eq!(container_resolved_tags.as_sorted(), container_expected_tags.as_sorted());
 
         let container_pid_resolved_tags = snapshot
             .get_entity_tags(&container_pid_entity_id, TagCardinality::Low)
             .unwrap();
         assert_eq!(
-            container_pid_resolved_tags.sorted(),
-            container_pid_expected_tags.sorted()
+            container_pid_resolved_tags.as_sorted(),
+            container_pid_expected_tags.as_sorted()
         );
     }
 
@@ -443,7 +443,7 @@ mod tests {
         let snapshot = store.snapshot();
 
         let resolved_tags = snapshot.get_entity_tags(&entity_id, TagCardinality::Low).unwrap();
-        assert_eq!(resolved_tags.sorted(), expected_tags.clone().sorted());
+        assert_eq!(resolved_tags.as_sorted(), expected_tags.clone().as_sorted());
 
         // Create a new set of metadata entries to add an additional tag, and observe that processing the entry updates
         // the resolved tags for our entity.
@@ -457,7 +457,7 @@ mod tests {
         let snapshot = store.snapshot();
 
         let new_resolved_tags = snapshot.get_entity_tags(&entity_id, TagCardinality::Low).unwrap();
-        assert_eq!(new_resolved_tags.sorted(), new_expected_tags.sorted());
+        assert_eq!(new_resolved_tags.as_sorted(), new_expected_tags.as_sorted());
     }
 
     #[test]
@@ -485,14 +485,14 @@ mod tests {
         let snapshot = store.snapshot();
 
         let pod_resolved_tags = snapshot.get_entity_tags(&pod_entity_id, TagCardinality::Low).unwrap();
-        assert_eq!(pod_resolved_tags.sorted(), pod_expected_tags.clone().sorted());
+        assert_eq!(pod_resolved_tags.as_sorted(), pod_expected_tags.clone().as_sorted());
 
         let container_resolved_tags = snapshot
             .get_entity_tags(&container_entity_id, TagCardinality::Low)
             .unwrap();
         assert_eq!(
-            container_resolved_tags.sorted(),
-            container_expected_tags.clone().sorted()
+            container_resolved_tags.as_sorted(),
+            container_expected_tags.clone().as_sorted()
         );
 
         // Create a new set of metadata entries to add an additional tag to the pod, and observe that processing the
@@ -509,11 +509,11 @@ mod tests {
         let snapshot = store.snapshot();
 
         let new_pod_resolved_tags = snapshot.get_entity_tags(&pod_entity_id, TagCardinality::Low).unwrap();
-        assert_eq!(new_pod_resolved_tags.sorted(), new_pod_expected_tags.sorted());
+        assert_eq!(new_pod_resolved_tags.as_sorted(), new_pod_expected_tags.as_sorted());
 
         let container_resolved_tags = snapshot
             .get_entity_tags(&container_entity_id, TagCardinality::Low)
             .unwrap();
-        assert_eq!(container_resolved_tags.sorted(), container_expected_tags.sorted());
+        assert_eq!(container_resolved_tags.as_sorted(), container_expected_tags.as_sorted());
     }
 }

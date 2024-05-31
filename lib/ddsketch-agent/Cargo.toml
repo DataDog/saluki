@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 
+[features]
+ddsketch_extended = []
+
 [dependencies]
 datadog-protos = { path = "../datadog-protos" }
 float_eq = { workspace = true }
