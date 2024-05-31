@@ -10,11 +10,13 @@ datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
 memory-accounting = { workspace = true }
 saluki-config = { workspace = true }
+saluki-context = { workspace = true }
 saluki-core = { workspace = true }
 saluki-env = { workspace = true }
 saluki-error = { workspace = true }
 saluki-event = { workspace = true }
 saluki-io = { workspace = true }
+stringtheory = { workspace = true }
 
 # External dependencies.
 ahash = { workspace = true, features = ["std", "runtime-rng"] }

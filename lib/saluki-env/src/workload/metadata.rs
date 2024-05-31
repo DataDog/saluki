@@ -1,6 +1,6 @@
 use std::fmt;
 
-use saluki_event::metric::{MetricTag, MetricTags};
+use saluki_context::{Tag, TagSet};
 use serde::Deserialize;
 
 use super::{entity::EntityId, helpers::OneOrMany};
@@ -75,7 +75,7 @@ impl MetadataOperation {
     /// Creates a new `MetadataOperation` that adds a tag to an entity.
     pub fn tag<T>(entity_id: EntityId, cardinality: TagCardinality, tag: T) -> Self
     where
-        T: Into<MetricTag>,
+        T: Into<Tag>,
     {
         Self {
             entity_id,
@@ -90,7 +90,7 @@ impl MetadataOperation {
     pub fn tags<I, T>(entity_id: EntityId, cardinality: TagCardinality, tags: I) -> Self
     where
         I: IntoIterator<Item = T>,
-        T: Into<MetricTag>,
+        T: Into<Tag>,
     {
         Self {
             entity_id,
@@ -123,22 +123,13 @@ pub enum MetadataAction {
     LinkDescendant { descendant_entity_id: EntityId },
 
     /// Adds a key/value tag to the entity.
-    AddTag {
-        cardinality: TagCardinality,
-        tag: MetricTag,
-    },
+    AddTag { cardinality: TagCardinality, tag: Tag },
 
     /// Adds multiple key/value tags to the entity.
-    AddTags {
-        cardinality: TagCardinality,
-        tags: MetricTags,
-    },
+    AddTags { cardinality: TagCardinality, tags: TagSet },
 
     /// Sets the tags for the entity.
-    SetTags {
-        cardinality: TagCardinality,
-        tags: MetricTags,
-    },
+    SetTags { cardinality: TagCardinality, tags: TagSet },
 }
 
 impl fmt::Debug for MetadataAction {

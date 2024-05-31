@@ -1,16 +1,20 @@
 use std::{
+    num::NonZeroUsize,
     sync::{atomic::Ordering, Arc, OnceLock},
     time::Duration,
 };
 
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SetRecorderError, SharedString, Unit};
 use metrics_util::registry::{AtomicStorage, Registry};
+use saluki_context::{Context, ContextRef, ContextResolver};
+use stringtheory::interning::FixedSizeInterner;
 use tokio::sync::broadcast;
 
 use saluki_env::time::get_unix_timestamp;
 use saluki_event::{metric::*, Event};
 
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
+const INTERNAL_METRICS_INTERNER_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(8192) };
 
 static RECEIVER_STATE: OnceLock<Arc<State>> = OnceLock::new();
 
@@ -102,6 +106,11 @@ impl MetricsReceiver {
 }
 
 async fn flush_metrics(flush_interval: Duration) {
+    // TODO: This is only worth 8KB, but it would be good to find a proper spot to tie this into the memory
+    // bounds/accounting stuff since we currently just initialize metrics (and logging) with all-inclusive free
+    // functions that come way before we even construct a topology.
+    let context_resolver = ContextResolver::from_interner(FixedSizeInterner::new(INTERNAL_METRICS_INTERNER_SIZE));
+
     let mut flush_interval = tokio::time::interval(flush_interval);
     flush_interval.tick().await;
 
@@ -130,7 +139,7 @@ async fn flush_metrics(flush_interval: Duration) {
         for (key, counter) in counters {
             let delta = counter.swap(0, Ordering::Relaxed);
             metrics.push(Event::Metric(Metric {
-                context: context_from_key(key),
+                context: context_from_key(&context_resolver, key),
                 value: MetricValue::Counter { value: delta as f64 },
                 metadata: MetricMetadata::from_timestamp(ts),
             }));
@@ -139,7 +148,7 @@ async fn flush_metrics(flush_interval: Duration) {
         for (key, gauge) in gauges {
             let value = gauge.load(Ordering::Relaxed);
             metrics.push(Event::Metric(Metric {
-                context: context_from_key(key),
+                context: context_from_key(&context_resolver, key),
                 value: MetricValue::Gauge { value: value as f64 },
                 metadata: MetricMetadata::from_timestamp(ts),
             }));
@@ -157,7 +166,7 @@ async fn flush_metrics(flush_interval: Duration) {
             });
 
             metrics.push(Event::Metric(Metric {
-                context: context_from_key(key),
+                context: context_from_key(&context_resolver, key),
                 value: metric_value,
                 metadata: MetricMetadata::from_timestamp(ts),
             }));
@@ -168,16 +177,15 @@ async fn flush_metrics(flush_interval: Duration) {
     }
 }
 
-fn context_from_key(key: Key) -> MetricContext {
+fn context_from_key(context_resolver: &ContextResolver, key: Key) -> Context {
     let (name, labels) = key.into_parts();
-    MetricContext {
-        name: name.as_str().to_string(),
-        tags: labels
-            .into_iter()
-            .map(|l| l.into_parts())
-            .map(|(k, v)| MetricTag::from((k.into_owned(), v.into_owned())))
-            .collect(),
-    }
+    let labels = labels
+        .into_iter()
+        .map(|l| format!("{}:{}", l.key(), l.value()))
+        .collect::<Vec<_>>();
+
+    let context_ref = ContextRef::from_name_and_tags(name.as_str(), &labels);
+    context_resolver.resolve(context_ref)
 }
 
 pub async fn initialize_metrics(metrics_prefix: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

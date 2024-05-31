@@ -279,6 +279,32 @@ test: ## Runs all unit tests
 	@echo "[*] Running unit tests..."
 	cargo nextest run
 
+.PHONY: test-miri
+test-miri: check-rust-build-tools ensure-rust-miri
+test-miri: ## Runs all Miri-specific unit tests
+	@echo "[*] Running Miri-specific unit tests..."
+	cargo +nightly miri test -p stringtheory
+
+.PHONY: test-loom
+test-loom: check-rust-build-tools
+test-loom: ## Runs all Loom-specific unit tests
+	@echo "[*] Running Loom-specific unit tests..."
+	cargo nextest run --release --features loom -p stringtheory loom_tests
+
+.PHONY: test-all
+test-all: ## Test everything
+test-all: test test-miri test-loom
+
+.PHONY: ensure-rust-miri
+ensure-rust-miri:
+ifeq ($(shell command -v rustup >/dev/null || echo not-found), not-found)
+	$(error "Rustup must be present to install nightly toolchain/Miri component: https://www.rust-lang.org/tools/install")
+endif
+	@echo "[*] Installing/updating nightly Rust and Miri component..."
+	@rustup toolchain install nightly --component miri
+	@echo "[*] Ensuring Miri is setup..."
+	@cargo +nightly miri setup
+
 ##@ Utility
 
 .PHONY: clean
