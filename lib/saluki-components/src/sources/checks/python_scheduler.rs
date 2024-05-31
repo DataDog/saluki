@@ -29,6 +29,8 @@ pub struct PythonCheckScheduler {
 
 impl PythonCheckScheduler {
     pub fn new(send_check_metrics: mpsc::Sender<CheckMetric>, tlm: ChecksTelemetry) -> Result<Self, GenericError> {
+        // TODO future improvement to hook into py allocators to track memory usage
+        // ref https://docs.rs/pyembed/latest/src/pyembed/pyalloc.rs.html#605-609
         pyo3::append_to_inittab!(datadog_agent);
         pyo3::append_to_inittab!(pyagg);
 

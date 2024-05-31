@@ -111,6 +111,9 @@ impl DirCheckRequestListener {
         }
     }
     /// Retrieves all check entities from the base path that match the required check formats.
+    ///
+    /// Ref agent implementation:
+    /// https://github.com/DataDog/datadog-agent/blob/0eec38de4bfcd752cc10dfa700c06dd7bcdb3f36/comp/core/autodiscovery/providers/config_reader.go
     pub async fn get_check_entities(&self) -> Result<Vec<CheckSource>, GenericError> {
         let mut sources = vec![];
         for p in self.search_paths.iter() {
