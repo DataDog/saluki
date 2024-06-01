@@ -58,6 +58,10 @@ macro_rules! register_metric {
 /// metrics. The metrics can then be accessed with simple accessors on the struct, allowing for
 /// ergonomic access from the calling code.
 ///
+/// ## Labels
+///
+/// A fixed set of labels can be specified
+///
 /// ## Example
 ///
 /// ```rust
@@ -69,10 +73,30 @@ macro_rules! register_metric {
 ///        counter(successful_frobulations),
 ///    ],
 /// );
+///
+/// struct Frobulator {
+///     metrics: FrobulatorMetrics,
+/// }
+///
+/// impl Frobulator {
+///     fn new(process_id: u32) -> Self {
+///         Self {
+///            metrics: FrobulatorMetrics::new(process_id),
+///         }
+///     }
+///
+///     fn frobulate(&self) {
+///         /* Do the frobulation...*/
+///         self.metrics.successful_frobulations().increment(1)
+///     }
+/// }
 /// ```
 #[macro_export]
 macro_rules! static_metrics {
-    (name => $name:ident, prefix => $prefix:ident, labels => [$($label_key:ident: $label_ty:ty),*], metrics => [$($metric_type:ident($metric_name:ident)),+]) => {
+    (name => $name:ident, prefix => $prefix:ident, metrics => [$($metric_type:ident($metric_name:ident)),+ $(,)?] $(,)?) => {
+        static_metrics!(name => $name, prefix => $prefix, labels => [], metrics => [$($metric_type($metric_name)),+]);
+    };
+    (name => $name:ident, prefix => $prefix:ident, labels => [$($label_key:ident: $label_ty:ty),*], metrics => [$($metric_type:ident($metric_name:ident)),+ $(,)?] $(,)?) => {
         struct $name {
             $(
                 $metric_name: $crate::metric_type_from_lower!($metric_type),
@@ -107,4 +131,65 @@ macro_rules! static_metrics {
             )*
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(dead_code)]
+
+    use super::*;
+
+    // There's nothing to really test in an actual test case per se, but we do want to test the
+    // variants of the macro to ensure that it generates code that compiles.
+    //
+    // TODO: Do something closer to what `metrics` does itself so that we can have test cases that
+    // are meant to fail as well.
+
+    // No labels.
+    static_metrics!(
+        name => TestMetricsWithNoLabels,
+        prefix => test,
+        metrics => [
+            counter(successful_frobulations)
+        ],
+    );
+
+    // Labels.
+    static_metrics!(
+        name => TestMetricsWithLabels,
+        prefix => test,
+        labels => [process_id: u32],
+        metrics => [
+            counter(successful_frobulations)
+        ],
+    );
+
+    // Multiple metrics.
+    static_metrics!(
+        name => TestMetricsWithMultipleMetrics,
+        prefix => test,
+        metrics => [
+            counter(successful_frobulations),
+            gauge(frobulation_rate),
+        ],
+    );
+
+    // Multiple metrics.
+    static_metrics!(
+        name => TestMetricsWithAllMetrics,
+        prefix => test,
+        metrics => [
+            counter(successful_frobulations),
+            gauge(frobulation_rate),
+            histogram(frobulation_duration),
+        ],
+    );
+
+    #[test]
+    fn test_static_metrics() {
+        let _metrics1 = TestMetricsWithNoLabels::new();
+        let _metrics2 = TestMetricsWithLabels::new(42);
+        let _metrics3 = TestMetricsWithMultipleMetrics::new();
+        let _metrics4 = TestMetricsWithAllMetrics::new();
+    }
 }
