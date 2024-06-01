@@ -7,12 +7,14 @@ members = [
   "lib/saluki-app",
   "lib/saluki-components",
   "lib/saluki-config",
+  "lib/saluki-context",
   "lib/saluki-core",
   "lib/saluki-env",
   "lib/saluki-error",
   "lib/saluki-event",
   "lib/saluki-io",
   "lib/saluki-metrics",
+  "lib/stringtheory",
 ]
 resolver = "2"
 
@@ -24,12 +26,14 @@ memory-accounting = { path = "lib/memory-accounting" }
 saluki-app = { path = "lib/saluki-app" }
 saluki-components = { path = "lib/saluki-components" }
 saluki-config = { path = "lib/saluki-config" }
+saluki-context = { path = "lib/saluki-context" }
 saluki-core = { path = "lib/saluki-core" }
 saluki-env = { path = "lib/saluki-env" }
 saluki-error = { path = "lib/saluki-error" }
 saluki-event = { path = "lib/saluki-event" }
 saluki-io = { path = "lib/saluki-io" }
 saluki-metrics = { path = "lib/saluki-metrics" }
+stringtheory = { path = "lib/stringtheory" }
 
 # External dependencies.
 async-trait = { version = "0.1", default-features = false }
@@ -41,7 +45,7 @@ snafu = { version = "0.8", default-features = false, features = ["std"] }
 tokio = { version = "1", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 ahash = { version = "0.8", default-features = false }
-async-compression = { version = "0.4", default-features = false }
+async-compression = { version = "0.4.11", default-features = false }
 bitmask-enum = { version = "2.2", default-features = false }
 figment = { version = "0.10", default-features = false }
 float_eq = { version = "1.0", default-features = false }
@@ -93,11 +97,12 @@ headers = { version = "0.3", default-features = false }
 rustls-pemfile = { version = "2", default-features = false }
 tokio-rustls = { version = "0.25.0", default-features = false }
 anyhow = { version = "1", default-features = false }
-chrono = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 ubyte = { version = "0.10", default-features = false }
 criterion = { version = "0.5", features = ["html_reports"] }
-dhat = "0.3"
+dhat = { version = "0.3", default-features = false }
 average = { version = "0.15.1", default-features = false }
+loom = { version = "0.7", default-features = false }
 
 [patch.crates-io]
 # Git dependency for `containerd-client` to add specific `prost-build` settings that allow type-erased payloads in
@@ -105,11 +110,6 @@ average = { version = "0.15.1", default-features = false }
 #
 # Will be removed once a new release (current is 0.5.0) is published.
 containerd-client = { git = "https://github.com/containerd/rust-extensions", branch = "main" }
-# Git dependency for `async-compression` to add support to access `total_in`/`total_out` for determining
-# the amount of compressed data when building requests.
-#
-# Still need to submit a pull request.
-async-compression = { git = "https://github.com/tobz/async-compression.git", branch = "tobz/expose-encoder-stats-methods" }
 
 [profile.release]
 lto = "thin"

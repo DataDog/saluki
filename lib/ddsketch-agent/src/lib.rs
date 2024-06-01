@@ -1092,7 +1092,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(ddsketch_extended)]
+    #[cfg(feature = "ddsketch_extended")]
     fn test_relative_accuracy_slow() {
         // These values are based on the agent's unit tests for asserting relative accuracy of the DDSketch
         // implementation.  Notably, it does not seem to test the full extent of values that the open-source

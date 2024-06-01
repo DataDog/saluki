@@ -1,13 +1,15 @@
 use std::{cmp::Ordering, fmt};
 
+use stringtheory::MetaString;
+
 /// A metric tag value.
 #[derive(Clone, Ord, PartialOrd)]
 pub enum MetricTagValue {
     /// A single tag value.
-    Single(String),
+    Single(MetaString),
 
     /// Multiple tag values.
-    Multiple(Vec<String>),
+    Multiple(Vec<MetaString>),
 }
 
 impl MetricTagValue {
@@ -33,7 +35,7 @@ impl MetricTagValue {
         }
     }
 
-    pub fn values(&self) -> &[String] {
+    pub fn values(&self) -> &[MetaString] {
         match self {
             Self::Single(value) => std::slice::from_ref(value),
             Self::Multiple(values) => values.as_slice(),
@@ -45,7 +47,7 @@ impl MetricTagValue {
     /// Single values are returned as-is, while multiple values are joined by a comma.
     pub fn as_string(&self) -> String {
         match self {
-            Self::Single(value) => value.clone(),
+            Self::Single(value) => value.to_string(),
             Self::Multiple(values) => values.join(","),
         }
     }
@@ -55,7 +57,7 @@ impl MetricTagValue {
     /// Single values are returned as-is, while multiple values are joined by comma.
     pub fn into_string(self) -> String {
         match self {
-            Self::Single(value) => value,
+            Self::Single(value) => value.into_owned(),
             Self::Multiple(values) => values.join(","),
         }
     }
@@ -96,7 +98,7 @@ impl fmt::Debug for MetricTagValue {
 }
 
 impl IntoIterator for MetricTagValue {
-    type Item = String;
+    type Item = MetaString;
     type IntoIter = MetricTagValueIntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -107,29 +109,40 @@ impl IntoIterator for MetricTagValue {
     }
 }
 
+impl From<MetaString> for MetricTagValue {
+    fn from(value: MetaString) -> Self {
+        Self::Single(value)
+    }
+}
+
+impl From<Vec<MetaString>> for MetricTagValue {
+    fn from(values: Vec<MetaString>) -> Self {
+        Self::Multiple(values)
+    }
+}
+
 impl From<String> for MetricTagValue {
     fn from(value: String) -> Self {
-        Self::Single(value)
+        Self::Single(value.into())
+    }
+}
+
+impl From<Vec<String>> for MetricTagValue {
+    fn from(values: Vec<String>) -> Self {
+        Self::Multiple(values.into_iter().map(Into::into).collect())
     }
 }
 
 impl<'a> From<&'a str> for MetricTagValue {
     fn from(value: &'a str) -> Self {
-        Self::Single(value.to_string())
-    }
-}
-
-impl From<Vec<String>> for MetricTagValue {
-    fn from(mut values: Vec<String>) -> Self {
-        values.sort_unstable();
-        Self::Multiple(values)
+        Self::Single(value.into())
     }
 }
 
 enum IterState {
     Empty,
-    Single(Option<String>),
-    Multiple(std::vec::IntoIter<String>),
+    Single(Option<MetaString>),
+    Multiple(std::vec::IntoIter<MetaString>),
 }
 
 pub struct MetricTagValueIntoIter {
@@ -143,13 +156,13 @@ impl MetricTagValueIntoIter {
         }
     }
 
-    fn single(value: String) -> Self {
+    fn single(value: MetaString) -> Self {
         Self {
             state: IterState::Single(Some(value)),
         }
     }
 
-    fn multiple(values: Vec<String>) -> Self {
+    fn multiple(values: Vec<MetaString>) -> Self {
         Self {
             state: IterState::Multiple(values.into_iter()),
         }
@@ -157,7 +170,7 @@ impl MetricTagValueIntoIter {
 }
 
 impl Iterator for MetricTagValueIntoIter {
-    type Item = String;
+    type Item = MetaString;
 
     fn next(&mut self) -> Option<Self::Item> {
         match &mut self.state {

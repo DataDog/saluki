@@ -1,11 +1,11 @@
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
-use saluki_core::{
-    components::transforms::*,
-    constants::{datadog::*, internal::*},
-    topology::interconnect::EventBuffer,
-};
+use saluki_core::{components::transforms::*, constants::datadog::*, topology::interconnect::EventBuffer};
 use saluki_env::{
     workload::{entity::EntityId, metadata::TagCardinality},
     EnvironmentProvider, WorkloadProvider,
@@ -119,6 +119,22 @@ where
     <E::Workload as WorkloadProvider>::Error: std::error::Error + Send + Sync,
 {
     fn enrich_metric(&self, metric: &mut Metric) {
+        // TODO: This code below worked before when we could just mutate our context willy-nilly, but not so much when
+        // we're using a resolved handle.
+        //
+        // This code differs from some other usages where this is a case where we really _do_ want to attach a bunch of
+        // new tags to a metric. This would involve rebuilding the context, which isn't _horrible_ but also wouldn't be
+        // super great, just in terms of allocations... unless we also wire in the interning stuff there.
+        //
+        // My thought is that eventually we might have `TagSet` be able to chain itself, so that we could basically
+        // merge together discrete sets of tags without having to re-allocate a vector that holds all of them together
+        // contiguously.
+        //
+        // Just a thought, and doesn't really address having to eventually need to allocate a vector to hold them all
+        // contiguously as `Vec<protobuf::Chars>` for when we build our request payloads, but could be incremental
+        // progress.
+
+        /*
         // Try to collect various pieces of client origin information from the metric tags. For any tags that we collect
         // information from, we remove them from the original set of metric tags, as they're only used for driving
         // enrichment logic.
@@ -241,6 +257,7 @@ where
                 }
             }
         }
+        */
     }
 }
 

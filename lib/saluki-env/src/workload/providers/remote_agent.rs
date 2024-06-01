@@ -3,8 +3,8 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use saluki_config::GenericConfiguration;
+use saluki_context::TagSet;
 use saluki_error::GenericError;
-use saluki_event::metric::MetricTags;
 
 use crate::{
     features::{Feature, FeatureDetector},
@@ -67,7 +67,7 @@ impl RemoteAgentWorkloadProvider {
 impl WorkloadProvider for RemoteAgentWorkloadProvider {
     type Error = std::convert::Infallible;
 
-    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<MetricTags> {
+    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<TagSet> {
         self.shared_tags.load().get_entity_tags(entity_id, cardinality)
     }
 }

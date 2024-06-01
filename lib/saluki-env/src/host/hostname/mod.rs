@@ -3,19 +3,13 @@ use std::sync::OnceLock;
 use async_trait::async_trait;
 use regex::Regex;
 
-#[cfg(feature = "hostname-os")]
 mod os;
-#[cfg(feature = "hostname-os")]
 pub use self::os::OperatingSystemHostnameProvider;
 
-#[cfg(feature = "hostname-file")]
 mod maybe_file;
-#[cfg(feature = "hostname-file")]
 pub use self::maybe_file::MaybeFileHostnameProvider;
 
-#[cfg(feature = "hostname-kubernetes")]
 mod kubernetes;
-#[cfg(feature = "hostname-kubernetes")]
 pub use self::kubernetes::KubernetesHostnameProvider;
 
 mod maybe_static;

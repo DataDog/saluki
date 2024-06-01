@@ -7,7 +7,7 @@ pub mod providers;
 pub mod store;
 
 use async_trait::async_trait;
-use saluki_event::metric::MetricTags;
+use saluki_context::TagSet;
 
 use self::{entity::EntityId, metadata::TagCardinality};
 
@@ -15,7 +15,7 @@ use self::{entity::EntityId, metadata::TagCardinality};
 pub trait WorkloadProvider {
     type Error;
 
-    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<MetricTags>;
+    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<TagSet>;
 }
 
 impl<T> WorkloadProvider for Option<T>
@@ -24,7 +24,7 @@ where
 {
     type Error = T::Error;
 
-    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<MetricTags> {
+    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<TagSet> {
         match self.as_ref() {
             Some(provider) => provider.get_tags_for_entity(entity_id, cardinality),
             None => None,
