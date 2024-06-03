@@ -6,7 +6,9 @@ license = "Apache-2.0"
 
 [dependencies]
 # Internal dependencies.
+saluki-metrics = { workspace = true }
 stringtheory = { workspace = true }
 
 # External dependencies.
 indexmap = { workspace = true, features = ["std"] }
+metrics = { workspace = true }

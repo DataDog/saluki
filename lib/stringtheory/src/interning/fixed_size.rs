@@ -582,6 +582,18 @@ impl FixedSizeInterner {
         state.entries
     }
 
+    /// Returns the total number of bytes in the interner.
+    pub fn len_bytes(&self) -> usize {
+        let state = self.state.lock().unwrap();
+        state.len
+    }
+
+    /// Returns the total number of bytes the interner can hold.
+    pub fn capacity_bytes(&self) -> usize {
+        let state = self.state.lock().unwrap();
+        state.capacity.get()
+    }
+
     /// Tries to intern the given string.
     ///
     /// If the intern is at capacity and the given string cannot fit, `None` is returned. Otherwise, `Some` is

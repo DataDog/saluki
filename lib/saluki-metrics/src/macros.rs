@@ -92,6 +92,7 @@ macro_rules! static_metrics {
         static_metrics!(name => $name, prefix => $prefix, labels => [], metrics => [$($metric_type($metric_name)),+]);
     };
     (name => $name:ident, prefix => $prefix:ident, labels => [$($label_key:ident: $label_ty:ty),*], metrics => [$($metric_type:ident($metric_name:ident)),+ $(,)?] $(,)?) => {
+        #[derive(Clone)]
         struct $name {
             $(
                 $metric_name: $crate::metric_type_from_lower!($metric_type),
@@ -127,6 +128,12 @@ macro_rules! static_metrics {
                     &self.$metric_name
                 }
             )*
+        }
+
+        impl ::std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                write!(f, stringify!($name))
+            }
         }
     };
 }
