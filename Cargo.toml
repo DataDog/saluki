@@ -13,6 +13,7 @@ members = [
   "lib/saluki-error",
   "lib/saluki-event",
   "lib/saluki-io",
+  "lib/saluki-metrics",
   "lib/stringtheory",
 ]
 resolver = "2"
@@ -31,6 +32,7 @@ saluki-env = { path = "lib/saluki-env" }
 saluki-error = { path = "lib/saluki-error" }
 saluki-event = { path = "lib/saluki-event" }
 saluki-io = { path = "lib/saluki-io" }
+saluki-metrics = { path = "lib/saluki-metrics" }
 stringtheory = { path = "lib/stringtheory" }
 
 # External dependencies.
@@ -101,6 +103,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 dhat = { version = "0.3", default-features = false }
 average = { version = "0.15.1", default-features = false }
 loom = { version = "0.7", default-features = false }
+trybuild = { version = "1", default-features = false }
 
 [patch.crates-io]
 # Git dependency for `containerd-client` to add specific `prost-build` settings that allow type-erased payloads in

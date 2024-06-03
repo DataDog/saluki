@@ -1,0 +1,12 @@
+[package]
+name = "saluki-metrics"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+# External dependencies.
+metrics = { workspace = true }
+
+[dev-dependencies]
+trybuild = { workspace = true }
