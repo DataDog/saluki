@@ -16,7 +16,6 @@ target:
     DD_CLOUD_PROVIDER_METADATA: "[]"
     DD_COLLECT_GCE_TAGS: false
     DD_DOGSTATSD_SOCKET: '/tmp/dsd.socket'
-    DD_DOGSTATSD_ORIGIN_DETECTION: false
     DD_DOGSTATSD_NO_AGGREGATION_PIPELINE: false
 
   profiling_environment:
