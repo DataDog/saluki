@@ -279,6 +279,12 @@ test: ## Runs all unit tests
 	@echo "[*] Running unit tests..."
 	cargo nextest run
 
+.PHONY: test-docs
+test-docs: check-rust-build-tools
+test-docs: ## Runs all doctests
+	@echo "[*] Running doctests..."
+	cargo test --workspace --exclude datadog-protos --doc
+
 .PHONY: test-miri
 test-miri: check-rust-build-tools ensure-rust-miri
 test-miri: ## Runs all Miri-specific unit tests
@@ -293,7 +299,7 @@ test-loom: ## Runs all Loom-specific unit tests
 
 .PHONY: test-all
 test-all: ## Test everything
-test-all: test test-miri test-loom
+test-all: test test-docs test-miri test-loom
 
 .PHONY: ensure-rust-miri
 ensure-rust-miri:

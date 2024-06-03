@@ -1,0 +1,11 @@
+error: unexpected end of macro invocation
+ --> tests/macros/04_no_metrics.rs:5:24
+  |
+5 |     prefix => basic_usage,
+  |                           ^ missing tokens in macro arguments
+  |
+note: while trying to match `metrics`
+ --> src/macros.rs
+  |
+  |     (name => $name:ident, prefix => $prefix:ident, metrics => [$($metric_type:ident($metric_name:ident)),+ $(,)?] $(,)?) => {
+  |                                                    ^^^^^^^
