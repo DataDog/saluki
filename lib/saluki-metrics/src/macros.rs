@@ -1,16 +1,3 @@
-trait Stringable {
-    fn to_shared_string(&self) -> ::metrics::SharedString;
-}
-
-impl<T> Stringable for T
-where
-    T: std::fmt::Display,
-{
-    fn to_shared_string(&self) -> ::metrics::SharedString {
-        std::string::ToString::to_string(&self).into()
-    }
-}
-
 #[doc(hidden)]
 #[macro_export]
 macro_rules! metric_type_from_lower {
@@ -60,11 +47,19 @@ macro_rules! register_metric {
 ///
 /// ## Labels
 ///
-/// A fixed set of labels can be specified
+/// A fixed set of labels can be configured for all metrics that are registered. These labels have their definition
+/// defined when calling `static_metrics!`, and the label value is provided when initializing the generated struct.
+///
+/// This allows for quickly applying the same set of labels to all metrics defined within the container struct, and
+/// being able to handle them in a strong-typed way right up until the moment where they need to be rendered as strings.
 ///
 /// ## Example
 ///
 /// ```rust
+/// # use saluki_metrics::static_metrics;
+/// // We are required to provide a name for the struct, as well as the metric prefix to apply to each of the defined metrics.
+/// //
+/// // Naturally, we also have to define metrics, but labels are optionally and can be excluded from the macro usage entirely.
 /// static_metrics!(
 ///    name => FrobulatorMetrics,
 ///    prefix => frobulator,
@@ -108,9 +103,12 @@ macro_rules! static_metrics {
             where
                 Self: Sized,
             $(
-                $label_ty: Stringable,
+                $label_ty: $crate::Stringable,
             )*
             {
+                #[allow(unused_imports)]
+                use $crate::Stringable;
+
                 let labels = vec![
                     $(
                         ::metrics::Label::new(stringify!($label_key), $label_key.to_shared_string()),
@@ -131,65 +129,4 @@ macro_rules! static_metrics {
             )*
         }
     };
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(dead_code)]
-
-    use super::*;
-
-    // There's nothing to really test in an actual test case per se, but we do want to test the
-    // variants of the macro to ensure that it generates code that compiles.
-    //
-    // TODO: Do something closer to what `metrics` does itself so that we can have test cases that
-    // are meant to fail as well.
-
-    // No labels.
-    static_metrics!(
-        name => TestMetricsWithNoLabels,
-        prefix => test,
-        metrics => [
-            counter(successful_frobulations)
-        ],
-    );
-
-    // Labels.
-    static_metrics!(
-        name => TestMetricsWithLabels,
-        prefix => test,
-        labels => [process_id: u32],
-        metrics => [
-            counter(successful_frobulations)
-        ],
-    );
-
-    // Multiple metrics.
-    static_metrics!(
-        name => TestMetricsWithMultipleMetrics,
-        prefix => test,
-        metrics => [
-            counter(successful_frobulations),
-            gauge(frobulation_rate),
-        ],
-    );
-
-    // Multiple metrics.
-    static_metrics!(
-        name => TestMetricsWithAllMetrics,
-        prefix => test,
-        metrics => [
-            counter(successful_frobulations),
-            gauge(frobulation_rate),
-            histogram(frobulation_duration),
-        ],
-    );
-
-    #[test]
-    fn test_static_metrics() {
-        let _metrics1 = TestMetricsWithNoLabels::new();
-        let _metrics2 = TestMetricsWithLabels::new(42);
-        let _metrics3 = TestMetricsWithMultipleMetrics::new();
-        let _metrics4 = TestMetricsWithAllMetrics::new();
-    }
 }
