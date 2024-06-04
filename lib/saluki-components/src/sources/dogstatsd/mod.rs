@@ -184,9 +184,10 @@ impl SourceBuilder for DogStatsDConfiguration {
         Ok(Box::new(DogStatsD {
             listeners,
             io_buffer_pool: get_fixed_bytes_buffer_pool(self.buffer_count, self.buffer_size),
-            context_resolver: ContextResolver::from_interner(FixedSizeInterner::new(
-                DEFAULT_CONTEXT_INTERNER_SIZE_BYTES,
-            )),
+            context_resolver: ContextResolver::from_interner(
+                "dogstatsd",
+                FixedSizeInterner::new(DEFAULT_CONTEXT_INTERNER_SIZE_BYTES),
+            ),
             origin_detection: self.origin_detection,
         }))
     }
