@@ -1,10 +1,11 @@
 use std::{fmt::Debug, io};
 
 use bytes::{Buf, BufMut};
+use metrics::{Counter, Histogram};
 use snafu::{ResultExt as _, Snafu};
 use tracing::{debug, trace};
 
-use saluki_core::{buffers::BufferPool, topology::interconnect::EventBuffer};
+use saluki_core::{buffers::BufferPool, components::metrics::MetricsBuilder, topology::interconnect::EventBuffer};
 
 use crate::buf::ReadWriteIoBuffer;
 
@@ -48,6 +49,7 @@ pub struct Deserializer<D, B> {
     buffer_pool: B,
     eof: bool,
     eof_addr: Option<ConnectionAddress>,
+    metrics: DeserializerMetrics,
 }
 
 impl<D, B> Deserializer<D, B>
@@ -56,13 +58,14 @@ where
     B: BufferPool,
     B::Buffer: ReadWriteIoBuffer,
 {
-    pub fn new(stream: Stream, decoder: D, buffer_pool: B) -> Self {
+    fn new(stream: Stream, decoder: D, buffer_pool: B, metrics: DeserializerMetrics) -> Self {
         Self {
             stream,
             decoder,
             buffer_pool,
             eof: false,
             eof_addr: None,
+            metrics,
         }
     }
 
@@ -83,6 +86,9 @@ where
             self.eof = true;
             self.eof_addr = Some(connection_addr.clone());
         }
+
+        self.metrics.bytes_received().increment(bytes_read as u64);
+        self.metrics.bytes_received_size().record(bytes_read as f64);
 
         // When we're actually at EOF, or we're dealing with a connectionless stream, we try to decode in EOF mode.
         //
@@ -192,7 +198,12 @@ where
                     {
                         continue
                     }
-                    other => return Err(other),
+                    // If we specifically failed to decode, then track that... but still forward the error.
+                    e @ DeserializerError::FailedToDecode { .. } => {
+                        self.metrics.decoder_errors().increment(1);
+                        return Err(e);
+                    }
+                    e => return Err(e),
                 },
             }
         }
@@ -202,6 +213,7 @@ where
 pub struct DeserializerBuilder<D = (), B = ()> {
     decoder: D,
     buffer_pool: B,
+    metrics_builder: Option<MetricsBuilder>,
 }
 
 impl DeserializerBuilder {
@@ -210,6 +222,7 @@ impl DeserializerBuilder {
         Self {
             decoder: (),
             buffer_pool: (),
+            metrics_builder: None,
         }
     }
 }
@@ -223,6 +236,7 @@ impl<D, B> DeserializerBuilder<D, B> {
         DeserializerBuilder {
             decoder: framer.with_decoder(decoder),
             buffer_pool: self.buffer_pool,
+            metrics_builder: self.metrics_builder,
         }
     }
 
@@ -234,6 +248,15 @@ impl<D, B> DeserializerBuilder<D, B> {
         DeserializerBuilder {
             decoder: self.decoder,
             buffer_pool,
+            metrics_builder: self.metrics_builder,
+        }
+    }
+
+    pub fn with_metrics_builder(self, metrics_builder: MetricsBuilder) -> Self {
+        Self {
+            decoder: self.decoder,
+            buffer_pool: self.buffer_pool,
+            metrics_builder: Some(metrics_builder),
         }
     }
 }
@@ -245,6 +268,49 @@ where
     B::Buffer: ReadWriteIoBuffer,
 {
     pub fn into_deserializer(self, stream: Stream) -> Deserializer<D, B> {
-        Deserializer::new(stream, self.decoder, self.buffer_pool)
+        Deserializer::new(
+            stream,
+            self.decoder,
+            self.buffer_pool,
+            self.metrics_builder.map(build_deserializer_metrics).unwrap_or_default(),
+        )
+    }
+}
+
+struct DeserializerMetrics {
+    bytes_received: Counter,
+    bytes_received_size: Histogram,
+    decoder_errors: Counter,
+}
+
+impl DeserializerMetrics {
+    fn bytes_received(&self) -> &Counter {
+        &self.bytes_received
+    }
+
+    fn bytes_received_size(&self) -> &Histogram {
+        &self.bytes_received_size
+    }
+
+    fn decoder_errors(&self) -> &Counter {
+        &self.decoder_errors
+    }
+}
+
+impl Default for DeserializerMetrics {
+    fn default() -> Self {
+        DeserializerMetrics {
+            bytes_received: Counter::noop(),
+            bytes_received_size: Histogram::noop(),
+            decoder_errors: Counter::noop(),
+        }
+    }
+}
+
+fn build_deserializer_metrics(builder: MetricsBuilder) -> DeserializerMetrics {
+    DeserializerMetrics {
+        bytes_received: builder.register_counter("component_bytes_received_total"),
+        bytes_received_size: builder.register_histogram("component_bytes_received_size"),
+        decoder_errors: builder.register_counter_with_labels("component_errors_total", &[("error_type", "decode")]),
     }
 }
