@@ -109,7 +109,10 @@ async fn flush_metrics(flush_interval: Duration) {
     // TODO: This is only worth 8KB, but it would be good to find a proper spot to tie this into the memory
     // bounds/accounting stuff since we currently just initialize metrics (and logging) with all-inclusive free
     // functions that come way before we even construct a topology.
-    let context_resolver = ContextResolver::from_interner(FixedSizeInterner::new(INTERNAL_METRICS_INTERNER_SIZE));
+    let context_resolver = ContextResolver::from_interner(
+        "internal_metrics",
+        FixedSizeInterner::new(INTERNAL_METRICS_INTERNER_SIZE),
+    );
 
     let mut flush_interval = tokio::time::interval(flush_interval);
     flush_interval.tick().await;
@@ -149,7 +152,9 @@ async fn flush_metrics(flush_interval: Duration) {
             let value = gauge.load(Ordering::Relaxed);
             metrics.push(Event::Metric(Metric {
                 context: context_from_key(&context_resolver, key),
-                value: MetricValue::Gauge { value: value as f64 },
+                value: MetricValue::Gauge {
+                    value: f64::from_bits(value),
+                },
                 metadata: MetricMetadata::from_timestamp(ts),
             }));
         }

@@ -6,7 +6,24 @@ use std::{
 };
 
 use indexmap::{Equivalent, IndexSet};
+use metrics::Gauge;
+use saluki_metrics::static_metrics;
 use stringtheory::{interning::FixedSizeInterner, MetaString};
+
+static_metrics! {
+    name => ContextMetrics,
+    prefix => context_resolver,
+    labels => [resolver_id: String],
+    metrics => [
+        counter(resolved_existing_context_total),
+        counter(resolved_new_context_total),
+        gauge(active_contexts),
+        gauge(interner_capacity_bytes),
+        gauge(interner_len_bytes),
+        gauge(interner_entries),
+        counter(intern_fallback_total)
+    ],
+}
 
 #[derive(Debug)]
 struct State {
@@ -38,14 +55,25 @@ struct State {
 /// components.
 #[derive(Clone, Debug)]
 pub struct ContextResolver {
+    context_metrics: ContextMetrics,
     interner: FixedSizeInterner,
     state: Arc<RwLock<State>>,
 }
 
 impl ContextResolver {
     /// Creates a new `ContextResolver` with the given interner.
-    pub fn from_interner(interner: FixedSizeInterner) -> Self {
+    pub fn from_interner<S>(name: S, interner: FixedSizeInterner) -> Self
+    where
+        S: Into<String>,
+    {
+        let context_metrics = ContextMetrics::new(name.into());
+
+        context_metrics
+            .interner_capacity_bytes()
+            .set(interner.capacity_bytes() as f64);
+
         Self {
+            context_metrics,
             interner,
             state: Arc::new(RwLock::new(State {
                 resolved_contexts: IndexSet::new(),
@@ -57,13 +85,19 @@ impl ContextResolver {
     pub fn with_noop_interner() -> Self {
         // It's not _really_ a no-op, but it's as small as we can possibly make it which  will effectively make it a
         // no-op after only a single string has been interned.
-        Self::from_interner(FixedSizeInterner::new(NonZeroUsize::new(1).unwrap()))
+        Self::from_interner(
+            "noop".to_string(),
+            FixedSizeInterner::new(NonZeroUsize::new(1).unwrap()),
+        )
     }
 
     fn intern_with_fallback(&self, s: &str) -> MetaString {
         match self.interner.try_intern(s) {
             Some(interned) => MetaString::from(interned),
-            None => MetaString::from(s),
+            None => {
+                self.context_metrics.intern_fallback_total().increment(1);
+                MetaString::from(s)
+            }
         }
     }
 
@@ -77,9 +111,12 @@ impl ContextResolver {
     {
         let state = self.state.read().unwrap();
         match state.resolved_contexts.get(&context_ref) {
-            Some(context) => Context {
-                inner: Arc::clone(context),
-            },
+            Some(context) => {
+                self.context_metrics.resolved_existing_context_total().increment(1);
+                Context {
+                    inner: Arc::clone(context),
+                }
+            }
             None => {
                 // Switch from read to write lock.
                 drop(state);
@@ -97,8 +134,27 @@ impl ContextResolver {
                     .map(|tag| self.intern_with_fallback(tag.as_ref()).into())
                     .collect();
 
-                let context = Arc::new(ContextInner { name, tags });
+                // TODO: This is lazily updated during resolve, which means this metric might lag behind the actual
+                // count as interned strings are dropped/reclaimed... but we don't have a way to figure out if a given
+                // `MetaString` is an interned string and if dropping it would actually reclaim the interned string...
+                // so this is our next best option short of instrumenting `FixedSizeInterner` directly.
+                //
+                // We probably want to do that in the future, but this is just a little cleaner without adding extra
+                // fluff to `FixedSizeInterner` which is already complex as-is.
+                self.context_metrics.interner_entries().set(self.interner.len() as f64);
+                self.context_metrics
+                    .interner_len_bytes()
+                    .set(self.interner.len_bytes() as f64);
+
+                let context = Arc::new(ContextInner {
+                    name,
+                    tags,
+                    active_count: self.context_metrics.active_contexts().clone(),
+                });
                 state.resolved_contexts.insert(Arc::clone(&context));
+
+                self.context_metrics.resolved_new_context_total().increment(1);
+                self.context_metrics.active_contexts().increment(1);
 
                 Context { inner: context }
             }
@@ -209,10 +265,16 @@ where
     }
 }
 
-#[derive(Debug)]
 struct ContextInner {
     name: MetaString,
     tags: TagSet,
+    active_count: Gauge,
+}
+
+impl Drop for ContextInner {
+    fn drop(&mut self) {
+        self.active_count.decrement(1);
+    }
 }
 
 impl PartialEq<ContextInner> for ContextInner {
@@ -229,6 +291,15 @@ impl hash::Hash for ContextInner {
         for tag in &self.tags.0 {
             tag.hash(state);
         }
+    }
+}
+
+impl fmt::Debug for ContextInner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextInner")
+            .field("name", &self.name)
+            .field("tags", &self.tags)
+            .finish()
     }
 }
 
