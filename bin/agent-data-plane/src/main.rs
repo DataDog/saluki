@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use memory_accounting::{BoundsVerifier, MemoryBounds, MemoryBoundsBuilder, MemoryGrant};
 use saluki_components::{
-    destinations::DatadogMetricsConfiguration,
+    destinations::{DatadogMetricsConfiguration, PrometheusConfiguration},
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
     transforms::{
         AggregateConfiguration, ChainedConfiguration, HostEnrichmentConfiguration, OriginEnrichmentConfiguration,
@@ -94,6 +94,13 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         .connect_component("internal_metrics_agg", ["internal_metrics_in"])?
         .connect_component("enrich", ["dsd_agg", "internal_metrics_agg"])?
         .connect_component("dd_metrics_out", ["enrich"])?;
+
+    if configuration.get_typed_or_default::<bool>("telemetry_enabled") {
+        let prometheus_config = PrometheusConfiguration::from_configuration(&configuration)?;
+        blueprint
+            .add_destination("internal_metrics_out", prometheus_config)?
+            .connect_component("internal_metrics_out", ["internal_metrics_in"])?;
+    }
 
     verify_memory_bounds(&configuration, &blueprint)?;
 
