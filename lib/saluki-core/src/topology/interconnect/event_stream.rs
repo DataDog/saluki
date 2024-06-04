@@ -15,7 +15,7 @@ const NEXT_READY_RECV_LIMIT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked
 pub struct EventStream {
     inner: mpsc::Receiver<EventBuffer>,
     events_received: Counter,
-    event_buffer_size: Histogram,
+    events_received_size: Histogram,
 }
 
 impl EventStream {
@@ -24,8 +24,8 @@ impl EventStream {
 
         Self {
             inner,
-            events_received: metrics_builder.register_counter("component_events_received"),
-            event_buffer_size: metrics_builder.register_histogram("component_event_buffer_size"),
+            events_received: metrics_builder.register_counter("component_events_received_total"),
+            events_received_size: metrics_builder.register_histogram("component_events_received_size"),
         }
     }
 
@@ -33,7 +33,7 @@ impl EventStream {
         match self.inner.recv().await {
             Some(buffer) => {
                 self.events_received.increment(buffer.len() as u64);
-                self.event_buffer_size.record(buffer.len() as f64);
+                self.events_received_size.record(buffer.len() as f64);
                 Some(buffer)
             }
             None => None,
@@ -50,7 +50,7 @@ impl EventStream {
             let mut total_events_received = 0;
             for buffer in &buffers {
                 total_events_received += buffer.len() as u64;
-                self.event_buffer_size.record(buffer.len() as f64);
+                self.events_received_size.record(buffer.len() as f64);
             }
             self.events_received.increment(total_events_received);
 
