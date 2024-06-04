@@ -1,8 +1,14 @@
-use std::{io, net::SocketAddr};
+use std::{
+    io,
+    net::SocketAddr,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 use bytes::BufMut;
+use pin_project::pin_project;
 use tokio::{
-    io::AsyncReadExt as _,
+    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, ReadBuf},
     net::{TcpStream, UdpSocket},
 };
 
@@ -11,10 +17,11 @@ use super::{
     unix::{unix_recvmsg, unixgram_recvmsg},
 };
 
-enum Connection {
-    Tcp(TcpStream, SocketAddr),
+#[pin_project(project = ConnectionProjected)]
+pub enum Connection {
+    Tcp(#[pin] TcpStream, SocketAddr),
     #[cfg(unix)]
-    Unix(tokio::net::UnixStream),
+    Unix(#[pin] tokio::net::UnixStream),
 }
 
 impl Connection {
@@ -23,6 +30,42 @@ impl Connection {
             Self::Tcp(inner, addr) => inner.read_buf(buf).await.map(|n| (n, (*addr).into())),
             #[cfg(unix)]
             Self::Unix(inner) => unix_recvmsg(inner, buf).await,
+        }
+    }
+}
+
+impl AsyncRead for Connection {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+        match self.project() {
+            ConnectionProjected::Tcp(inner, _) => inner.poll_read(cx, buf),
+            #[cfg(unix)]
+            ConnectionProjected::Unix(inner) => inner.poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for Connection {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        match self.project() {
+            ConnectionProjected::Tcp(inner, _) => inner.poll_write(cx, buf),
+            #[cfg(unix)]
+            ConnectionProjected::Unix(inner) => inner.poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.project() {
+            ConnectionProjected::Tcp(inner, _) => inner.poll_flush(cx),
+            #[cfg(unix)]
+            ConnectionProjected::Unix(inner) => inner.poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.project() {
+            ConnectionProjected::Tcp(inner, _) => inner.poll_shutdown(cx),
+            #[cfg(unix)]
+            ConnectionProjected::Unix(inner) => inner.poll_shutdown(cx),
         }
     }
 }
