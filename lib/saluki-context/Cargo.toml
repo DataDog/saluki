@@ -10,5 +10,9 @@ saluki-metrics = { workspace = true }
 stringtheory = { workspace = true }
 
 # External dependencies.
+ahash = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
 metrics = { workspace = true }
+
+[dev-dependencies]
+metrics-util = { workspace = true, features = ["debugging"] }

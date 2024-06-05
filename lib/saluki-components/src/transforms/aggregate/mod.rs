@@ -1,4 +1,4 @@
-use std::{collections::hash_map::Entry, hash::BuildHasher, time::Duration};
+use std::{collections::hash_map::Entry, time::Duration};
 
 use ahash::{AHashMap, AHashSet};
 use async_trait::async_trait;
@@ -112,13 +112,13 @@ impl MemoryBounds for AggregateConfiguration {
             .firm()
             .with_fixed_amount(event_buffer_pool_size)
             // Account for our context limiter map, which is just a `HashSet`.
-            .with_array::<AggregationContext>(self.context_limit)
+            .with_array::<Context>(self.context_limit)
             .with_fixed_amount(self.context_limit * context_size)
             // Account for the actual aggregation state map, where we map contexts to the merged metric.
             //
             // TODO: We're not considering the fact there could be multiple buckets here since that's rare, but it's
             // something we may need to consider in the near term.
-            .with_map::<AggregationContext, (MetricValue, MetricMetadata)>(self.context_limit)
+            .with_map::<Context, (MetricValue, MetricMetadata)>(self.context_limit)
             .with_fixed_amount(self.context_limit * context_size);
     }
 }
@@ -218,63 +218,11 @@ impl Transform for Aggregate {
     }
 }
 
-#[derive(Clone, Debug)]
-struct AggregationContext {
-    context: Context,
-    tags_hash: u64,
-}
-
-impl AggregationContext {
-    fn from_metric_context<B: BuildHasher>(context: Context, hasher_builder: &B) -> Self {
-        // We hash each tag individually, and then XOR the hashes together, which is commutative.  This means that we'll
-        // calculate the same hash for the same set of tags even if the tags aren't in the same order.
-        //
-        // This is a simple fast path for hashing `AggregationContext` to avoid sorting tags right off the bat. If there's a
-        // hash collision between two contexts, we'll still fall back to sorting the tags when doing the follow-up equality
-        // check.
-
-        // Start out with the FNV-1a seed so that we're not just XORing a bunch of zeros.
-        let mut tags_hash = 0xcbf29ce484222325;
-
-        for tag in context.tags() {
-            tags_hash ^= hasher_builder.hash_one(tag);
-        }
-
-        Self { context, tags_hash }
-    }
-
-    fn into_inner(self) -> Context {
-        self.context
-    }
-}
-
-impl std::hash::Hash for AggregationContext {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.context.name().hash(state);
-        state.write_u64(self.tags_hash);
-    }
-}
-
-impl PartialEq for AggregationContext {
-    fn eq(&self, other: &Self) -> bool {
-        if self.context.name() == other.context.name() {
-            let self_tags = self.context.tags().as_sorted();
-            let other_tags = other.context.tags().as_sorted();
-
-            self_tags == other_tags
-        } else {
-            false
-        }
-    }
-}
-
-impl Eq for AggregationContext {}
-
 struct AggregationState {
-    contexts: AHashSet<AggregationContext>,
+    contexts: AHashSet<Context>,
     context_limit: usize,
     #[allow(clippy::type_complexity)]
-    buckets: Vec<(u64, AHashMap<AggregationContext, (MetricValue, MetricMetadata)>)>,
+    buckets: Vec<(u64, AHashMap<Context, (MetricValue, MetricMetadata)>)>,
     bucket_width: Duration,
 }
 
@@ -307,21 +255,20 @@ impl AggregationState {
     fn insert(&mut self, metric: Metric) -> bool {
         // Split the metric into its constituent parts, so that we can create the aggregation context object.
         let (metric_context, metric_value, mut metric_metadata) = metric.into_parts();
-        let context = AggregationContext::from_metric_context(metric_context, self.contexts.hasher());
 
         // If we haven't seen this context yet, track it.
-        if !self.contexts.contains(&context) {
+        if !self.contexts.contains(&metric_context) {
             if self.contexts.len() >= self.context_limit {
                 return false;
             }
 
-            self.contexts.insert(context.clone());
+            self.contexts.insert(metric_context.clone());
         }
 
         // Figure out what bucket we belong to, create it if necessary, and then merge the metric in.
         let bucket_start = align_to_bucket_start(metric_metadata.timestamp, self.bucket_width.as_secs());
         let bucket = self.get_or_create_bucket(bucket_start);
-        match bucket.entry(context) {
+        match bucket.entry(metric_context) {
             Entry::Occupied(mut entry) => {
                 let (existing_value, _) = entry.get_mut();
                 existing_value.merge(metric_value);
@@ -361,7 +308,7 @@ impl AggregationState {
                         },
                         _ => value,
                     };
-                    let metric = Metric::from_parts(context.into_inner(), value, metadata);
+                    let metric = Metric::from_parts(context, value, metadata);
                     event_buffer.push(Event::Metric(metric));
                 }
             } else {
@@ -370,9 +317,7 @@ impl AggregationState {
         }
     }
 
-    fn get_or_create_bucket(
-        &mut self, bucket_start: u64,
-    ) -> &mut AHashMap<AggregationContext, (MetricValue, MetricMetadata)> {
+    fn get_or_create_bucket(&mut self, bucket_start: u64) -> &mut AHashMap<Context, (MetricValue, MetricMetadata)> {
         match self.buckets.iter_mut().position(|(start, _)| *start == bucket_start) {
             Some(idx) => &mut self.buckets[idx].1,
             None => {
