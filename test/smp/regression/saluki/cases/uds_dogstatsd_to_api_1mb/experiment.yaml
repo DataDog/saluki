@@ -8,7 +8,7 @@ target:
   environment:
     DD_API_KEY: foo00000001
     DD_HOSTNAME: smp-regression
-    DD_DD_URL: http://127.0.0.1:9092
+    DD_DD_URL: http://127.0.0.1:9091
 
     # Disables UDP and enables listening on UDS in SOCK_DGRAM mode.
     DD_DOGSTATSD_PORT: "0"
@@ -18,3 +18,7 @@ target:
     # Datadog Agent, which obviously we don't have available to us, and perhaps further, don't
     # need for the purpose of this benchmark.
     DD_ADP_USE_NOOP_WORKLOAD_PROVIDER: "true"
+
+    # Enable internal telemetry endpoint.
+    DD_TELEMETRY_ENABLED: "true"
+    DD_PROMETHEUS_LISTEN_ADDR: tcp://127.0.0.1:5000

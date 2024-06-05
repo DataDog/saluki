@@ -311,6 +311,12 @@ endif
 	@echo "[*] Ensuring Miri is setup..."
 	@cargo +nightly miri setup
 
+##@ Development
+
+.PHONY: fast-edit-test
+fast-edit-test: fmt sync-licenses check-clippy check-deny check-licenses test-all
+fast-edit-test: ## Runs a lightweight format/lint/test pass
+
 ##@ Utility
 
 .PHONY: clean

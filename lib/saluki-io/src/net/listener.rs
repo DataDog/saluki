@@ -5,13 +5,16 @@ use tokio::net::{TcpListener, UdpSocket};
 
 use super::{
     addr::ListenAddress,
-    stream::Stream,
+    stream::{Connection, Stream},
     unix::{enable_uds_socket_credentials, ensure_unix_socket_free, set_unix_socket_write_only},
 };
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 pub enum ListenerError {
+    #[snafu(display("invalid configuration: {}", reason))]
+    InvalidConfiguration { reason: &'static str },
+
     #[snafu(display("failed to bind to listen address {}: {}", address, source))]
     FailedToBind { address: ListenAddress, source: io::Error },
 
@@ -159,6 +162,87 @@ impl Listener {
                         stream_type: "UDS (stream)",
                     })?;
                     Ok(socket.into())
+                }),
+        }
+    }
+}
+
+enum ConnectionOrientedListenerInner {
+    Tcp(TcpListener),
+    #[cfg(unix)]
+    Unix(tokio::net::UnixListener),
+}
+
+pub struct ConnectionOrientedListener {
+    listen_address: ListenAddress,
+    inner: ConnectionOrientedListenerInner,
+}
+
+impl ConnectionOrientedListener {
+    pub async fn from_listen_address(listen_address: ListenAddress) -> Result<Self, ListenerError> {
+        let inner = match &listen_address {
+            ListenAddress::Tcp(addr) => TcpListener::bind(addr)
+                .await
+                .map(ConnectionOrientedListenerInner::Tcp)
+                .context(FailedToBind {
+                    address: listen_address.clone(),
+                })?,
+            #[cfg(unix)]
+            ListenAddress::Unix(addr) => {
+                ensure_unix_socket_free(addr).await.context(FailedToBind {
+                    address: listen_address.clone(),
+                })?;
+
+                let listener = tokio::net::UnixListener::bind(addr)
+                    .map(ConnectionOrientedListenerInner::Unix)
+                    .context(FailedToBind {
+                        address: listen_address.clone(),
+                    })?;
+                set_unix_socket_write_only(addr)
+                    .await
+                    .context(FailedToConfigureListener {
+                        address: listen_address.clone(),
+                        setting: "read/write permissions",
+                    })?;
+
+                listener
+            }
+            _ => {
+                return Err(ListenerError::InvalidConfiguration {
+                    reason: "only TCP and Unix listen addresses are supported",
+                })
+            }
+        };
+
+        Ok(Self { listen_address, inner })
+    }
+
+    pub fn listen_address(&self) -> &ListenAddress {
+        &self.listen_address
+    }
+
+    pub async fn accept(&mut self) -> Result<Connection, ListenerError> {
+        match &mut self.inner {
+            ConnectionOrientedListenerInner::Tcp(tcp) => tcp
+                .accept()
+                .await
+                .map(|(stream, addr)| Connection::Tcp(stream, addr))
+                .context(FailedToAccept {
+                    address: self.listen_address.clone(),
+                }),
+            #[cfg(unix)]
+            ConnectionOrientedListenerInner::Unix(unix) => unix
+                .accept()
+                .await
+                .context(FailedToAccept {
+                    address: self.listen_address.clone(),
+                })
+                .and_then(|(socket, _)| {
+                    enable_uds_socket_credentials(&socket).context(FailedToConfigureStream {
+                        setting: "SO_PASSCRED",
+                        stream_type: "UDS (stream)",
+                    })?;
+                    Ok(Connection::Unix(socket))
                 }),
         }
     }

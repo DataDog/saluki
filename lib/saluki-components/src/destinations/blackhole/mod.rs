@@ -49,7 +49,7 @@ impl Destination for Blackhole {
             }
         }
 
-        debug!("Datadog Metrics destination stopped.");
+        debug!("Blackhole destination stopped.");
 
         Ok(())
     }

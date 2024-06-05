@@ -188,6 +188,12 @@ impl PartialEq<Context> for Context {
 
 impl Eq for Context {}
 
+impl hash::Hash for Context {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        self.inner.hash(state);
+    }
+}
+
 impl fmt::Display for Context {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.inner.name)?;

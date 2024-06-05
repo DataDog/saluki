@@ -1,7 +1,9 @@
+use serde::Deserialize;
 use std::{fmt, net::SocketAddr, path::PathBuf};
 use url::Url;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "String")]
 pub enum ListenAddress {
     Tcp(SocketAddr),
     Udp(SocketAddr),
