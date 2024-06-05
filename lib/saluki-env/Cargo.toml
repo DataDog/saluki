@@ -20,7 +20,7 @@ containerd-client = { workspace = true }
 futures = { workspace = true }
 hostname = { workspace = true }
 hyper = { version = "0.14", default-features = false, features = ["client", "http2", "tcp"] }
-hyper-rustls = { version = "0.25.0", default-features = false, features = ["http2"] }
+hyper-rustls = { version = "0.26.0", default-features = false, features = ["http2"] }
 k8s-openapi = { workspace = true, features = ["v1_24"] }
 kube = { workspace = true, features = ["client", "rustls-tls"] }
 prost = { workspace = true }
