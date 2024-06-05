@@ -8,7 +8,7 @@ target:
   environment:
     DD_API_KEY: foo00000001
     DD_HOSTNAME: smp-regression
-    DD_DD_URL: http://127.0.0.1:9092
+    DD_DD_URL: http://127.0.0.1:9091
 
     # Disables UDP and enables listening on UDS in SOCK_DGRAM mode.
     DD_DOGSTATSD_PORT: "0"
