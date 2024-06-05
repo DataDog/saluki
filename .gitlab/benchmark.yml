@@ -3,20 +3,20 @@
   - export SMP_TEAM_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-team-id --with-decryption --query "Parameter.Value" --out text)
   - export SINGLE_MACHINE_PERFORMANCE_API=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-api --with-decryption --query "Parameter.Value" --out text)
   - export SMP_ECR_HOST="${SMP_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com"
-  - 'echo "CI_COMMIT_BRANCH: ${CI_COMMIT_BRANCH}"'
   - git fetch --verbose --deepen=999 origin ${CI_COMMIT_BRANCH} main
-  - export BASELINE_SHA=$(git merge-base origin/main origin/${CI_COMMIT_BRANCH})
-  - 'echo "Baseline SHA: ${BASELINE_SHA}"'
-  - export COMPARISON_SHA="${CI_COMMIT_SHA}"
-  - 'echo "Comparison SHA: ${COMPARISON_SHA}"'
-  - export BASELINE_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:${CI_PIPELINE_IID}-${BASELINE_SHA}"
-  - 'echo "Baseline Image: ${BASELINE_IMG}"'
-  - export COMPARISON_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:${CI_PIPELINE_IID}-${COMPARISON_SHA}"
-  - 'echo "Comparison Image: ${COMPARISON_IMG}"'
+  - export BASELINE_SALUKI_SHA=$(git merge-base origin/main origin/${CI_COMMIT_BRANCH})
+  - export COMPARISON_SALUKI_SHA="${CI_COMMIT_SHA}"
+  - export BASELINE_SALUKI_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:${CI_PIPELINE_ID}-${BASELINE_SALUKI_SHA}"
+  - export COMPARISON_SALUKI_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:${CI_PIPELINE_ID}-${COMPARISON_SALUKI_SHA}"
+  - export BASELINE_DSD_VERSION="7.52.0"
+  - export COMPARISON_DSD_VERSION="7.52.1"
+  - export BASELINE_DSD_IMG="public.ecr.aws/datadog/dogstatsd:${BASELINE_DSD_VERSION}"
+  - export COMPARISON_DSD_IMG="public.ecr.aws/datadog/dogstatsd:${COMPARISON_DSD_VERSION}"
 
-build-agent-data-plane-baseline:
-  stage: test
+build-adp-baseline-image:
+  stage: benchmark
   image: "${DOCKER_BUILD_IMAGE}"
+  needs: []
   retry: 2
   before_script:
     - *setup-smp-env
@@ -37,7 +37,7 @@ build-agent-data-plane-baseline:
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
-      --tag ${BASELINE_IMG}
+      --tag ${BASELINE_SALUKI_IMG}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --label git.repository=${CI_PROJECT_NAME}
@@ -48,9 +48,10 @@ build-agent-data-plane-baseline:
       --push
       .
 
-build-agent-data-plane-comparison:
-  stage: test
+build-adp-comparison-image:
+  stage: benchmark
   image: "${DOCKER_BUILD_IMAGE}"
+  needs: []
   retry: 2
   before_script:
     - *setup-smp-env
@@ -65,7 +66,7 @@ build-agent-data-plane-comparison:
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
-      --tag ${COMPARISON_IMG}
+      --tag ${COMPARISON_SALUKI_IMG}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --label git.repository=${CI_PROJECT_NAME}
@@ -76,11 +77,11 @@ build-agent-data-plane-comparison:
       --push
       .
 
-regression_detector:
-  stage: test
+run-benchmarks-adp:
+  stage: benchmark
   needs:
-    - build-agent-data-plane-baseline
-    - build-agent-data-plane-comparison
+    - build-adp-baseline-image
+    - build-adp-comparison-image
   image: "${SALUKI_SMP_CI_IMAGE}"
   before_script:
     - *setup-smp-env
@@ -106,10 +107,10 @@ regression_detector:
     # Run SMP against our converged Agent image.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
             job submit
-            --baseline-image ${BASELINE_IMG}
-            --comparison-image ${COMPARISON_IMG}
-            --baseline-sha ${BASELINE_SHA}
-            --comparison-sha ${CI_COMMIT_SHA}
+            --baseline-image ${BASELINE_SALUKI_IMG}
+            --comparison-image ${COMPARISON_SALUKI_IMG}
+            --baseline-sha ${BASELINE_SALUKI_SHA}
+            --comparison-sha ${CI_COMMIT_SALUKI_SHA}
             --target-config-dir ./test/smp/regression/saluki/
             --submission-metadata submission_metadata
     # Wait for job to complete.
@@ -131,6 +132,64 @@ regression_detector:
     - cat outputs/report.md | sed "s/^\$/$(echo -ne '\uFEFF\u00A0\u200B')/g"
     # Post the HTML report to the PR.
     - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Saluki)"
+    # Finally, exit 1 if the job signals a regression else 0.
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+            job result
+            --submission-metadata submission_metadata
+
+run-benchmarks-dsd:
+  stage: benchmark
+  image: "${SALUKI_SMP_CI_IMAGE}"
+  needs: []
+  before_script:
+    - *setup-smp-env
+  artifacts:
+    expire_in: 1 weeks
+    paths:
+      - submission_metadata  # for provenance, debugging
+      - outputs/report.md    # for debugging, also on S3
+      - outputs/report.html  # for debugging, also on S3
+    when: always
+  variables:
+    AWS_NAMED_PROFILE: single-machine-performance
+    SMP_VERSION: 0.13.0
+    RUST_LOG: info,aws_config::profile::credentials=error
+  script:
+    # Do some pre-flight steps like creating directories, installing helper utilities, setting
+    # credentials, and so on.
+    - mkdir outputs && touch outputs/report.md outputs/report.html
+    - ./test/smp/configure-smp-aws-credentials.sh
+
+    # Download the SMP binary.
+    - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-gnu/smp smp && chmod +x smp
+    # Run SMP against our converged Agent image.
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+            job submit
+            --baseline-image ${BASELINE_DSD_IMG}
+            --comparison-image ${COMPARISON_DSD_IMG}
+            --baseline-sha ${BASELINE_DSD_VERSION}
+            --comparison-sha ${COMPARISON_DSD_VERSION}
+            --target-config-dir ./test/smp/regression/dogstatsd/
+            --submission-metadata submission_metadata
+    # Wait for job to complete.
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+            job status
+            --use-consignor welch
+            --wait
+            --wait-delay-seconds 60
+            --submission-metadata submission_metadata
+    # Pull the analysis report and output it to stdout.
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+            job sync
+            --use-consignor welch
+            --submission-metadata submission_metadata
+            --output-path outputs
+    # Replace empty lines in the output with lines containing various unicode space characters.
+    #
+    # This avoids  https://gitlab.com/gitlab-org/gitlab/-/issues/217231.
+    - cat outputs/report.md | sed "s/^\$/$(echo -ne '\uFEFF\u00A0\u200B')/g"
+    # Post the HTML report to the PR.
+    - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (DogStatsD)"
     # Finally, exit 1 if the job signals a regression else 0.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
             job result
