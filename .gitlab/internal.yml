@@ -1,5 +1,5 @@
 generate-build-ci-image:
-  stage: .pre
+  stage: internal
   tags: ["arch:amd64"]
   image: ${DOCKER_BUILD_IMAGE}
   rules:
@@ -20,7 +20,7 @@ generate-build-ci-image:
       .
 
 generate-general-ci-image:
-  stage: .pre
+  stage: internal
   tags: ["arch:amd64"]
   image: ${DOCKER_BUILD_IMAGE}
   rules:
@@ -41,7 +41,7 @@ generate-general-ci-image:
       .
 
 generate-smp-ci-image:
-  stage: .pre
+  stage: internal
   tags: ["arch:amd64"]
   image: ${DOCKER_BUILD_IMAGE}
   rules:
