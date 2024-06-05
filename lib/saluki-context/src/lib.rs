@@ -1,5 +1,6 @@
 use std::{
-    fmt, hash,
+    fmt,
+    hash::{self, Hash as _, Hasher as _},
     num::NonZeroUsize,
     ops::Deref as _,
     sync::{Arc, RwLock},
@@ -107,7 +108,7 @@ impl ContextResolver {
     /// stored. Otherwise, the existing context is returned.
     pub fn resolve<T>(&self, context_ref: ContextRef<'_, T>) -> Context
     where
-        T: AsRef<str> + std::fmt::Debug,
+        T: AsRef<str> + hash::Hash + std::fmt::Debug,
     {
         let state = self.state.read().unwrap();
         match state.resolved_contexts.get(&context_ref) {
@@ -146,11 +147,8 @@ impl ContextResolver {
                     .interner_len_bytes()
                     .set(self.interner.len_bytes() as f64);
 
-                let context = Arc::new(ContextInner {
-                    name,
-                    tags,
-                    active_count: self.context_metrics.active_contexts().clone(),
-                });
+                let active_count = self.context_metrics.active_contexts().clone();
+                let context = Arc::new(ContextInner::from_name_and_tags(name, tags, active_count));
                 state.resolved_contexts.insert(Arc::clone(&context));
 
                 self.context_metrics.resolved_new_context_total().increment(1);
@@ -163,7 +161,7 @@ impl ContextResolver {
 }
 
 /// A metric context.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Context {
     inner: Arc<ContextInner>,
 }
@@ -177,20 +175,6 @@ impl Context {
     /// Gets the tags of this context.
     pub fn tags(&self) -> &TagSet {
         &self.inner.tags
-    }
-}
-
-impl PartialEq<Context> for Context {
-    fn eq(&self, other: &Context) -> bool {
-        Arc::ptr_eq(&self.inner, &other.inner)
-    }
-}
-
-impl Eq for Context {}
-
-impl hash::Hash for Context {
-    fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        self.inner.hash(state);
     }
 }
 
@@ -218,63 +202,23 @@ impl fmt::Display for Context {
     }
 }
 
-/// A helper type for resolving a context without allocations.
-///
-/// It can be constructed entirely from borrowed strings, which allows for trivially extracting the name and tags of a
-/// metric from a byte slice and then resolving the context without needing to allocate any new memory when a context
-/// has already been resolved.
-#[derive(Debug)]
-pub struct ContextRef<'a, T> {
-    name: &'a str,
-    tags: &'a [T],
-}
-
-impl<'a, T> ContextRef<'a, T> {
-    /// Creates a new `ContextRef` from the given name and tags.
-    pub fn from_name_and_tags(name: &'a str, tags: &'a [T]) -> Self {
-        Self { name, tags }
-    }
-}
-
-impl<'a, T> hash::Hash for ContextRef<'a, T>
-where
-    T: AsRef<str>,
-{
-    fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        self.name.hash(state);
-        for tag in self.tags {
-            tag.as_ref().hash(state);
-        }
-    }
-}
-
-impl<T> Equivalent<Arc<ContextInner>> for ContextRef<'_, T>
-where
-    T: AsRef<str> + std::fmt::Debug,
-{
-    fn equivalent(&self, other: &Arc<ContextInner>) -> bool {
-        if self.name != other.name.deref() {
-            return false;
-        }
-
-        if self.tags.len() != other.tags.0.len() {
-            return false;
-        }
-
-        for (tag, other_tag) in self.tags.iter().zip(other.tags.0.iter()) {
-            if other_tag != tag.as_ref() {
-                return false;
-            }
-        }
-
-        true
-    }
-}
-
 struct ContextInner {
     name: MetaString,
     tags: TagSet,
+    hash: u64,
     active_count: Gauge,
+}
+
+impl ContextInner {
+    fn from_name_and_tags(name: MetaString, tags: TagSet, active_count: Gauge) -> Self {
+        let hash = hash_context(name.deref(), tags.0.as_slice());
+        Self {
+            name,
+            tags,
+            hash,
+            active_count,
+        }
+    }
 }
 
 impl Drop for ContextInner {
@@ -285,7 +229,8 @@ impl Drop for ContextInner {
 
 impl PartialEq<ContextInner> for ContextInner {
     fn eq(&self, other: &ContextInner) -> bool {
-        self.name == other.name && self.tags.0 == other.tags.0
+        // NOTE: See the documentation for `ContextRef` on why/how we only check equality using the hash of the context.
+        self.hash == other.hash
     }
 }
 
@@ -293,10 +238,7 @@ impl Eq for ContextInner {}
 
 impl hash::Hash for ContextInner {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        self.name.deref().hash(state);
-        for tag in &self.tags.0 {
-            tag.hash(state);
-        }
+        state.write_u64(self.hash);
     }
 }
 
@@ -305,7 +247,68 @@ impl fmt::Debug for ContextInner {
         f.debug_struct("ContextInner")
             .field("name", &self.name)
             .field("tags", &self.tags)
+            .field("hash", &self.hash)
             .finish()
+    }
+}
+
+/// A helper type for resolving a context without allocations.
+///
+/// It can be constructed entirely from borrowed strings, which allows for trivially extracting the name and tags of a
+/// metric from a byte slice and then resolving the context without needing to allocate any new memory when a context
+/// has already been resolved.
+///
+/// ## Hashing and equality
+///
+/// `ContextRef` (and `Context` itself) are order-oblivious [1] when it comes to tags, which means that we do not consider
+/// the order of the tags to be relevant to the resulting hash or when comparing two contexts for equality. This is
+/// acheived by hashing the tags in an order-oblivious way (XORing the hashes of the tags into a single value) and using
+/// the hash of the name/tags when comparing equality between two contexts, instead of comparing the names/tags directly
+/// to each other.
+///
+/// Normally, hash maps would instruct you to not use the hash values directly as a proxy for equality because of the
+/// risk of hash collisions, and they're right: this approach _does_ theoretically allow for incorrectly considering two
+/// contexts as equal purely due to a hash collision.
+///
+/// However, the risk of this is low enough that we're willing to accept it. Theoretically, for a perfectly uniform hash
+/// function with a 64-bit output, we would expect a 50% chance of observing a hash collision after hashing roughly **5
+/// billion unique inputs**. At a more practical number, like 1 million unique inputs, the chance of a collision drops
+/// down to around a 1 in 50 million chance, which we find acceptable to contend with.
+///
+/// [1]: https://stackoverflow.com/questions/5889238/why-is-xor-the-default-way-to-combine-hashes
+#[derive(Debug)]
+pub struct ContextRef<'a, T> {
+    name: &'a str,
+    tags: &'a [T],
+    hash: u64,
+}
+
+impl<'a, T> ContextRef<'a, T>
+where
+    T: hash::Hash,
+{
+    /// Creates a new `ContextRef` from the given name and tags.
+    pub fn from_name_and_tags(name: &'a str, tags: &'a [T]) -> Self {
+        let hash = hash_context(name, tags);
+        Self { name, tags, hash }
+    }
+}
+
+impl<'a, T> hash::Hash for ContextRef<'a, T>
+where
+    T: hash::Hash,
+{
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.hash);
+    }
+}
+
+impl<T> Equivalent<Arc<ContextInner>> for ContextRef<'_, T>
+where
+    T: hash::Hash + std::fmt::Debug,
+{
+    fn equivalent(&self, other: &Arc<ContextInner>) -> bool {
+        self.hash == other.hash
     }
 }
 
@@ -495,5 +498,142 @@ impl Extend<Tag> for TagSet {
 impl From<Tag> for TagSet {
     fn from(tag: Tag) -> Self {
         Self(vec![tag])
+    }
+}
+
+fn hash_context<'a, T>(name: &'a str, tags: &'a [T]) -> u64
+where
+    T: hash::Hash,
+{
+    let mut hasher = ahash::AHasher::default();
+    name.hash(&mut hasher);
+
+    // Hash the tags individually and XOR their hashes together, which allows us to be order-oblivious.
+    let mut combined_tags_hash = 0;
+    for tag in tags {
+        let mut tag_hasher = ahash::AHasher::default();
+        tag.hash(&mut tag_hasher);
+
+        combined_tags_hash ^= tag_hasher.finish();
+    }
+
+    hasher.write_u64(combined_tags_hash);
+
+    hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use metrics::{SharedString, Unit};
+    use metrics_util::{
+        debugging::{DebugValue, DebuggingRecorder},
+        CompositeKey,
+    };
+
+    use super::*;
+
+    fn get_context_arc_pointer_value(context: &Context) -> usize {
+        Arc::as_ptr(&context.inner) as usize
+    }
+
+    fn get_gauge_value(metrics: &[(CompositeKey, Option<Unit>, Option<SharedString>, DebugValue)], key: &str) -> f64 {
+        metrics
+            .iter()
+            .find(|(k, _, _, _)| k.key().name() == key)
+            .map(|(_, _, _, value)| match value {
+                DebugValue::Gauge(value) => value.into_inner(),
+                other => panic!("expected a gauge, got: {:?}", other),
+            })
+            .unwrap_or_else(|| panic!("no metric found with key: {}", key))
+    }
+
+    #[test]
+    fn basic() {
+        let resolver = ContextResolver::with_noop_interner();
+
+        // Create two distinct contexts with the same name but different tags.
+        let name = "metric_name";
+        let tags1: [&str; 0] = [];
+        let tags2 = ["tag1"];
+
+        let ref1 = ContextRef::from_name_and_tags(name, &tags1);
+        let ref2 = ContextRef::from_name_and_tags(name, &tags2);
+
+        let context1 = resolver.resolve(ref1);
+        let context2 = resolver.resolve(ref2);
+
+        // The contexts should not be equal to each other, and should have distinct underlying pointers to the shared
+        // context state:
+        assert_ne!(context1, context2);
+        assert_ne!(
+            get_context_arc_pointer_value(&context1),
+            get_context_arc_pointer_value(&context2)
+        );
+
+        // If we create the context references again, we _should_ get back the same contexts as before:
+        let ref1 = ContextRef::from_name_and_tags(name, &tags1);
+        let ref2 = ContextRef::from_name_and_tags(name, &tags2);
+
+        let context1_redo = resolver.resolve(ref1);
+        let context2_redo = resolver.resolve(ref2);
+
+        assert_ne!(context1_redo, context2_redo);
+        assert_eq!(context1, context1_redo);
+        assert_eq!(context2, context2_redo);
+        assert_eq!(
+            get_context_arc_pointer_value(&context1),
+            get_context_arc_pointer_value(&context1_redo)
+        );
+        assert_eq!(
+            get_context_arc_pointer_value(&context2),
+            get_context_arc_pointer_value(&context2_redo)
+        );
+    }
+
+    #[test]
+    fn tag_order() {
+        let resolver = ContextResolver::with_noop_interner();
+
+        // Create two distinct contexts with the same name and tags, but with the tags in a different order:
+        let name = "metric_name";
+        let tags1 = ["tag1", "tag2"];
+        let tags2 = ["tag2", "tag1"];
+
+        let ref1 = ContextRef::from_name_and_tags(name, &tags1);
+        let ref2 = ContextRef::from_name_and_tags(name, &tags2);
+
+        let context1 = resolver.resolve(ref1);
+        let context2 = resolver.resolve(ref2);
+
+        // The contexts should be equal to each other, and should have the same underlying pointer to the shared context
+        // state:
+        assert_eq!(context1, context2);
+        assert_eq!(
+            get_context_arc_pointer_value(&context1),
+            get_context_arc_pointer_value(&context2)
+        );
+    }
+
+    #[test]
+    fn active_contexts() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+
+        // Create our resolver and then create a context, which will have its metrics attached to our local recorder:
+        let context = metrics::with_local_recorder(&recorder, || {
+            let resolver = ContextResolver::with_noop_interner();
+            resolver.resolve(ContextRef::from_name_and_tags("name", &["tag1"]))
+        });
+
+        // We should be able to see that the active context count is one, representing the context we created:
+        let metrics_before = snapshotter.snapshot().into_vec();
+        let active_contexts = get_gauge_value(&metrics_before, ContextMetrics::active_contexts_name());
+        assert_eq!(active_contexts, 1.0);
+
+        // Now drop the context, and observe the active context count drop to zero:
+        drop(context);
+        let metrics_after = snapshotter.snapshot().into_vec();
+        let active_contexts = get_gauge_value(&metrics_after, ContextMetrics::active_contexts_name());
+        assert_eq!(active_contexts, 0.0);
     }
 }
