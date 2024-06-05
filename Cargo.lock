@@ -1514,9 +1514,9 @@ dependencies = [
 
 [[package]]
 name = "metrics"
-version = "0.22.3"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2be3cbd384d4e955b231c895ce10685e3d8260c5ccffae898c96c723b0772835"
+checksum = "884adb57038347dfbaf2d5065887b6cf4312330dc8e94bc30a1a839bd79d3261"
 dependencies = [
  "ahash",
  "portable-atomic",
@@ -1524,15 +1524,17 @@ dependencies = [
 
 [[package]]
 name = "metrics-util"
-version = "0.16.3"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b07a5eb561b8cbc16be2d216faf7757f9baf3bfb94dbb0fae3df8387a5bb47f"
+checksum = "4259040465c955f9f2f1a4a8a16dc46726169bca0f88e8fb2dbeced487c3e828"
 dependencies = [
  "crossbeam-epoch",
  "crossbeam-utils",
  "hashbrown 0.14.5",
+ "indexmap 2.2.6",
  "metrics",
  "num_cpus",
+ "ordered-float 4.2.0",
  "quanta",
 ]
 
@@ -2445,8 +2447,10 @@ dependencies = [
 name = "saluki-context"
 version = "0.1.0"
 dependencies = [
+ "ahash",
  "indexmap 2.2.6",
  "metrics",
+ "metrics-util",
  "saluki-metrics",
  "stringtheory",
 ]
@@ -2596,6 +2600,7 @@ name = "saluki-metrics"
 version = "0.1.0"
 dependencies = [
  "metrics",
+ "paste",
  "trybuild",
 ]
 

@@ -1,5 +1,10 @@
 mod macros;
 
+#[doc(hidden)]
+pub mod reexport {
+    pub use paste::paste;
+}
+
 /// A type that can be converted into a `SharedString`.
 ///
 /// This is a blanket trait used to generically support converting any type which already supports conversion to

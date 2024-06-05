@@ -123,11 +123,20 @@ macro_rules! static_metrics {
                 }
             }
 
+            $crate::reexport::paste! {
             $(
                 pub fn $metric_name(&self) -> &$crate::metric_type_from_lower!($metric_type) {
                     &self.$metric_name
                 }
+
+                #[doc = "Gets the full name of the `" $metric_name "` metric as it will be registered."]
+                #[doc = ""]
+                #[doc = "This can be useful when testing metrics, as it ensures you can grab the correct metric name to search for."]
+                pub fn [<$metric_name _name>]() -> &'static str {
+                    concat!(stringify!($prefix), "_", stringify!($metric_name))
+                }
             )*
+            }
         }
 
         impl ::std::fmt::Debug for $name {
