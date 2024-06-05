@@ -6,7 +6,7 @@ use saluki_config::GenericConfiguration;
 use saluki_context::ContextResolver;
 use saluki_core::{
     buffers::FixedSizeBufferPool,
-    components::sources::*,
+    components::{metrics::MetricsBuilder, sources::*},
     topology::{
         shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
         OutputDefinition,
@@ -301,6 +301,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
                         deserializer: DeserializerBuilder::new()
                             .with_framer_and_decoder(get_framer(&listen_addr), DogstatsdCodec::from_context_resolver(context_resolver.clone()))
                             .with_buffer_pool(io_buffer_pool.clone())
+                            .with_metrics_builder(MetricsBuilder::from_component_context(source_context.component_context()))
                             .into_deserializer(stream),
                     };
                     tokio::spawn(process_stream(source_context.clone(), handler_context));

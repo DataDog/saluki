@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use ddsketch_agent::DDSketch;
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SetRecorderError, SharedString, Unit};
 use metrics_util::registry::{AtomicStorage, Registry};
 use saluki_context::{Context, ContextRef, ContextResolver};
@@ -162,7 +163,9 @@ async fn flush_metrics(flush_interval: Duration) {
         for (key, histogram) in histograms {
             // TODO: We should submit a PR to `metrics-util` to allow returning a value from the closure passed to
             // `AtomicBucket::clear_with` to avoid this silly mem::replace call.
-            let mut metric_value = MetricValue::Counter { value: 0.0 };
+            let mut metric_value = MetricValue::Distribution {
+                sketch: DDSketch::default(),
+            };
             histogram.clear_with(|samples| {
                 drop(std::mem::replace(
                     &mut metric_value,
