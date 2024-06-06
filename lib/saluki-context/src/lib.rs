@@ -28,7 +28,7 @@ static_metrics! {
 
 #[derive(Debug)]
 struct State {
-    resolved_contexts: IndexSet<Arc<ContextInner>>,
+    resolved_contexts: IndexSet<Context>,
 }
 
 /// A centralized store for resolved contexts.
@@ -102,6 +102,32 @@ impl ContextResolver {
         }
     }
 
+    fn create_context_from_ref<T>(&self, context_ref: ContextRef<'_, T>, active_count: Gauge) -> Context
+    where
+        T: AsRef<str> + hash::Hash + std::fmt::Debug,
+    {
+        // Interning is fallible so what we do here is just allocate them -- yes, hold on, keep reading -- and do
+        // it via `MetaString::shared`, which at least lets us potentially share those allocations the next time
+        // the same context is resolved.
+        //
+        // Not great, but also not maximally wasteful.
+        let name = self.intern_with_fallback(context_ref.name);
+        let tags = context_ref
+            .tags
+            .iter()
+            .map(|tag| self.intern_with_fallback(tag.as_ref()).into())
+            .collect();
+
+        Context {
+            inner: Arc::new(ContextInner {
+                name,
+                tags,
+                hash: context_ref.hash,
+                active_count,
+            }),
+        }
+    }
+
     /// Resolves the given context.
     ///
     /// If the context has not yet been resolved, the name and tags are interned and a new context is created and
@@ -114,26 +140,17 @@ impl ContextResolver {
         match state.resolved_contexts.get(&context_ref) {
             Some(context) => {
                 self.context_metrics.resolved_existing_context_total().increment(1);
-                Context {
-                    inner: Arc::clone(context),
-                }
+                context.clone()
             }
             None => {
                 // Switch from read to write lock.
                 drop(state);
                 let mut state = self.state.write().unwrap();
 
-                // Interning is fallible so what we do here is just allocate them -- yes, hold on, keep reading -- and do
-                // it via `MetaString::shared`, which at least lets us potentially share those allocations the next time
-                // the same context is resolved.
-                //
-                // Not great, but also not maximally wasteful.
-                let name = self.intern_with_fallback(context_ref.name);
-                let tags = context_ref
-                    .tags
-                    .iter()
-                    .map(|tag| self.intern_with_fallback(tag.as_ref()).into())
-                    .collect();
+                // Create our new context and store it.
+                let active_count = self.context_metrics.active_contexts().clone();
+                let context = self.create_context_from_ref(context_ref, active_count);
+                state.resolved_contexts.insert(context.clone());
 
                 // TODO: This is lazily updated during resolve, which means this metric might lag behind the actual
                 // count as interned strings are dropped/reclaimed... but we don't have a way to figure out if a given
@@ -146,15 +163,10 @@ impl ContextResolver {
                 self.context_metrics
                     .interner_len_bytes()
                     .set(self.interner.len_bytes() as f64);
-
-                let active_count = self.context_metrics.active_contexts().clone();
-                let context = Arc::new(ContextInner::from_name_and_tags(name, tags, active_count));
-                state.resolved_contexts.insert(Arc::clone(&context));
-
                 self.context_metrics.resolved_new_context_total().increment(1);
                 self.context_metrics.active_contexts().increment(1);
 
-                Context { inner: context }
+                context
             }
         }
     }
@@ -207,18 +219,6 @@ struct ContextInner {
     tags: TagSet,
     hash: u64,
     active_count: Gauge,
-}
-
-impl ContextInner {
-    fn from_name_and_tags(name: MetaString, tags: TagSet, active_count: Gauge) -> Self {
-        let hash = hash_context(name.deref(), tags.0.as_slice());
-        Self {
-            name,
-            tags,
-            hash,
-            active_count,
-        }
-    }
 }
 
 impl Drop for ContextInner {
@@ -303,12 +303,12 @@ where
     }
 }
 
-impl<T> Equivalent<Arc<ContextInner>> for ContextRef<'_, T>
+impl<T> Equivalent<Context> for ContextRef<'_, T>
 where
     T: hash::Hash + std::fmt::Debug,
 {
-    fn equivalent(&self, other: &Arc<ContextInner>) -> bool {
-        self.hash == other.hash
+    fn equivalent(&self, other: &Context) -> bool {
+        self.hash == other.inner.hash
     }
 }
 
