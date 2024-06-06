@@ -177,7 +177,7 @@ fn parse_dogstatsd<'a>(
             // splitting again, otherwise the splitter will give us an empty chunk... which we could also check to see
             // if there's more iput and just ignore _that_, but I think this is cleaner.
             remaining = if !tail.is_empty() && tail[0] == b'|' {
-                &tail[1..tail.len() - 1]
+                &tail[1..tail.len()]
             } else {
                 tail
             }
@@ -431,11 +431,12 @@ mod tests {
     }
 
     #[track_caller]
-    fn check_basic_metric_eq(expected: Metric, actual: OneOrMany<Event>) {
+    fn check_basic_metric_eq(expected: Metric, actual: OneOrMany<Event>) -> Metric {
         match actual {
             OneOrMany::Single(Event::Metric(actual)) => {
                 assert_eq!(expected.context, actual.context);
                 assert_eq!(expected.value, actual.value);
+                actual
             }
             OneOrMany::Multiple(_) => unreachable!("should never be called for multi-value metric assertions"),
         }
@@ -596,7 +597,12 @@ mod tests {
 
         let (remaining, counter_actual) =
             parse_dogstatsd(counter_raw.as_bytes(), usize::MAX, usize::MAX, &context_resolver).unwrap();
-        check_basic_metric_eq(counter_expected, counter_actual);
+        let counter_actual = check_basic_metric_eq(counter_expected, counter_actual);
+        assert_eq!(
+            counter_actual.metadata.origin_entity,
+            Some(OriginEntity::container_id(container_id))
+        );
+        assert_eq!(counter_actual.metadata.timestamp, timestamp);
         assert!(remaining.is_empty());
     }
 

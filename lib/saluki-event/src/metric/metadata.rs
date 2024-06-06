@@ -16,7 +16,7 @@ const ORIGIN_PRODUCT_DETAIL_NONE: u32 = 0;
 /// The origin entity will generally be the process ID of the metric sender, or the container ID, both of which are then
 /// generally mapped to the relevant information for the metric, such as the orchestrator-level tags for the
 /// container/pod/deployment.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OriginEntity {
     /// Process ID of the sender.
     ProcessId(u32),
