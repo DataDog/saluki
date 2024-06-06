@@ -173,7 +173,14 @@ fn parse_dogstatsd<'a>(
                 }
             }
 
-            remaining = tail;
+            // If we have more chunks, then the first character in our tail will be `|`, so we just skip that before
+            // splitting again, otherwise the splitter will give us an empty chunk... which we could also check to see
+            // if there's more iput and just ignore _that_, but I think this is cleaner.
+            remaining = if !tail.is_empty() && tail[0] == b'|' {
+                &tail[1..tail.len() - 1]
+            } else {
+                tail
+            }
         }
 
         // TODO: Similarly to the above comment, should having any remaining data here cause us to throw an error, warn,
@@ -555,6 +562,36 @@ mod tests {
         let timestamp = 1234567890;
         let counter_raw = format!("{}:{}|c|T{}", counter_name, counter_value, timestamp);
         let mut counter_expected = counter(&context_resolver, counter_name, counter_value);
+        counter_expected.metadata.timestamp = timestamp;
+
+        let (remaining, counter_actual) =
+            parse_dogstatsd(counter_raw.as_bytes(), usize::MAX, usize::MAX, &context_resolver).unwrap();
+        check_basic_metric_eq(counter_expected, counter_actual);
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn multiple_extensions() {
+        let context_resolver = ContextResolver::with_noop_interner();
+
+        let counter_name = "my.counter";
+        let counter_value = 1.0;
+        let counter_sample_rate = 0.5;
+        let counter_tags = &["tag1", "tag2"];
+        let container_id = "abcdef123456";
+        let timestamp = 1234567890;
+        let counter_raw = format!(
+            "{}:{}|c|#{}|@{}|c:{}|T{}",
+            counter_name,
+            counter_value,
+            counter_tags.join(","),
+            counter_sample_rate,
+            container_id,
+            timestamp
+        );
+        let mut counter_expected = counter_with_tags(&context_resolver, counter_name, counter_tags, counter_value);
+        counter_expected.metadata.sample_rate = Some(counter_sample_rate);
+        counter_expected.metadata.origin_entity = Some(OriginEntity::container_id(container_id));
         counter_expected.metadata.timestamp = timestamp;
 
         let (remaining, counter_actual) =
