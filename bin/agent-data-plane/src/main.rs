@@ -95,6 +95,7 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         .connect_component("enrich", ["dsd_agg", "internal_metrics_agg"])?
         .connect_component("dd_metrics_out", ["enrich"])?;
 
+    // Insert a Prometheus scrape destination if we've been instructed to enable internal telemetry.
     if configuration.get_typed_or_default::<bool>("telemetry_enabled") {
         let prometheus_config = PrometheusConfiguration::from_configuration(&configuration)?;
         blueprint
