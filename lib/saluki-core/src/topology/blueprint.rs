@@ -141,22 +141,24 @@ impl TopologyBlueprint {
 
 impl MemoryBounds for TopologyBlueprint {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        let mut component_builder = builder.component("components");
+
         // Account for sources, transforms, and destinations.
+        let mut source_builder = component_builder.component("sources");
         for (name, source) in &self.sources {
-            let component_name = format!("source.{}", name);
-            let mut source_builder = builder.component(component_name);
+            let mut source_builder = source_builder.component(name.to_string());
             source.specify_bounds(&mut source_builder);
         }
 
+        let mut transform_builder = component_builder.component("transforms");
         for (name, transform) in &self.transforms {
-            let component_name = format!("transform.{}", name);
-            let mut transform_builder = builder.component(component_name);
+            let mut transform_builder = transform_builder.component(name.to_string());
             transform.specify_bounds(&mut transform_builder);
         }
 
+        let mut destination_builder = component_builder.component("destinations");
         for (name, destination) in &self.destinations {
-            let component_name = format!("destination.{}", name);
-            let mut destination_builder = builder.component(component_name);
+            let mut destination_builder = destination_builder.component(name.to_string());
             destination.specify_bounds(&mut destination_builder);
         }
 
@@ -165,6 +167,12 @@ impl MemoryBounds for TopologyBlueprint {
 
         // Every component that receives events gets an interconnect channel, which means all transforms and
         // destinations. These are fixed-sized channels, so we can account for them here.
+        //
+        // TODO: These values are semi-useless because the real memory usage is in the actual `Vec<Event>` that
+        // underpins the buffer pool-capable `EventBuffer` wrapper type. Realistically, what we _want_ is have those
+        // underlying vectors somehow be fixed-size, and then we would be able to actually say something here like our
+        // fized-size buffer pool for `EventBuffer` is worth <buffer pool max size> * <size_of::<Event>() * max events
+        // per buffer> bytes... and so on.
         builder
             .component("interconnects")
             .minimum()
