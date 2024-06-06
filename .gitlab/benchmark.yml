@@ -110,7 +110,7 @@ run-benchmarks-adp:
             --baseline-image ${BASELINE_SALUKI_IMG}
             --comparison-image ${COMPARISON_SALUKI_IMG}
             --baseline-sha ${BASELINE_SALUKI_SHA}
-            --comparison-sha ${CI_COMMIT_SALUKI_SHA}
+            --comparison-sha ${COMPARISON_SALUKI_SHA}
             --target-config-dir ./test/smp/regression/saluki/
             --submission-metadata submission_metadata
     # Wait for job to complete.
