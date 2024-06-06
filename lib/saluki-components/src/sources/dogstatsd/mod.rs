@@ -32,7 +32,7 @@ mod framer;
 use self::framer::{get_framer, DogStatsDMultiFraming};
 
 // Intern up to 1MB of metric names/tags.
-const DEFAULT_CONTEXT_INTERNER_SIZE_BYTES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(1024 * 1024) };
+const DEFAULT_CONTEXT_INTERNER_SIZE_BYTES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(2 * 1024 * 1024) };
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
