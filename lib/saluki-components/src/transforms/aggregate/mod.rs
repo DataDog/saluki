@@ -118,8 +118,7 @@ impl MemoryBounds for AggregateConfiguration {
             //
             // TODO: We're not considering the fact there could be multiple buckets here since that's rare, but it's
             // something we may need to consider in the near term.
-            .with_map::<Context, (MetricValue, MetricMetadata)>(self.context_limit)
-            .with_fixed_amount(self.context_limit * context_size);
+            .with_map::<Context, (MetricValue, MetricMetadata)>(self.context_limit);
     }
 }
 

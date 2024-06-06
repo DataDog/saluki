@@ -59,25 +59,8 @@ impl ComponentBounds {
                 .sum::<usize>()
     }
 
-    /// Returns an iterator of all leaf components within this component.
-    ///
-    /// A leaf component is a component which has no subcomponents.
-    pub fn leaf_components(&self) -> impl IntoIterator<Item = (String, &ComponentBounds)> {
-        let mut leaf_components = Vec::new();
-
-        self.leaf_components_inner("root", &mut leaf_components);
-
-        leaf_components
-    }
-
-    fn leaf_components_inner<'a>(&'a self, prefix: &str, components: &mut Vec<(String, &'a ComponentBounds)>) {
-        for (name, bounds) in &self.subcomponents {
-            let new_name = format!("{}.{}", prefix, name);
-            if bounds.subcomponents.is_empty() {
-                components.push((new_name, bounds));
-            } else {
-                bounds.leaf_components_inner(&new_name, components);
-            }
-        }
+    /// Returns an iterator of all subcomponents within this component.
+    pub fn subcomponents(&self) -> impl IntoIterator<Item = (&String, &ComponentBounds)> {
+        self.subcomponents.iter()
     }
 }
