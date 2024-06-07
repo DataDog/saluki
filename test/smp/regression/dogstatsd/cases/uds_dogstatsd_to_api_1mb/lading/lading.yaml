@@ -51,10 +51,11 @@ target_metrics:
   - expvar:
       uri: "http://127.0.0.1:5000/debug/vars"
       vars:
+        # Total number of active contexts in the aggregator.
         - "/aggregator/DogstatsdContexts"
-        - "/aggregator/DogstatsdMetricSample"
+        # Total number of series flushed by the aggregator.
+        - "/aggregator/SeriesFlushed"
+        # Total number of metric samples received by the DSD server workers.
         - "/dogstatsd/MetricPackets"
+        # Total number of bytes received by the DSD server workers in UDS mode. 
         - "/dogstatsd-uds/Bytes"
-        - "/dogstatsd-uds/Packets"
-        - "/dogstatsd-udp/Bytes"
-        - "/dogstatsd-udp/Packets"

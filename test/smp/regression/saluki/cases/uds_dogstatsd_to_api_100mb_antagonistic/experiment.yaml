@@ -1,0 +1,32 @@
+optimization_goal: ingress_throughput
+erratic: false
+
+target:
+  name: saluki
+  command: /usr/local/bin/agent-data-plane
+
+  environment:
+    DD_API_KEY: foo00000001
+    DD_HOSTNAME: smp-regression
+    DD_DD_URL: http://127.0.0.1:9091
+
+    # Sets the memory limit for bounds verification.
+    #
+    # This is _much_ larger than the average RSS, but is sized specifically to the default values
+    # we use for various components such that the bounds can be successfully verified.
+    #
+    # We _will_ eventually start to be able to ratchet this down.
+    DD_MEMORY_LIMIT: "240MB"
+
+    # Disables UDP and enables listening on UDS in SOCK_DGRAM mode.
+    DD_DOGSTATSD_PORT: "0"
+    DD_DOGSTATSD_SOCKET: /tmp/adp-dsd.sock
+
+    # Runs the workload provider in no-op mode, otherwise it would need to connect to a real
+    # Datadog Agent, which obviously we don't have available to us, and perhaps further, don't
+    # need for the purpose of this benchmark.
+    DD_ADP_USE_NOOP_WORKLOAD_PROVIDER: "true"
+
+    # Enable internal telemetry endpoint.
+    DD_TELEMETRY_ENABLED: "true"
+    DD_PROMETHEUS_LISTEN_ADDR: tcp://127.0.0.1:5000
