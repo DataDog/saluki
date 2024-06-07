@@ -110,6 +110,7 @@ average = { version = "0.15.1", default-features = false }
 loom = { version = "0.7", default-features = false }
 trybuild = { version = "1", default-features = false }
 tokio-test = { version = "0.4.4", default-features = false }
+memory-stats = { version = "1", default-features = false }
 
 [patch.crates-io]
 # Git dependency for `containerd-client` to add specific `prost-build` settings that allow type-erased payloads in
