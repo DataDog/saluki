@@ -259,7 +259,7 @@ impl Source for DogStatsD {
 
         // Wait for the global shutdown signal, then notify listeners to shutdown.
         global_shutdown.await;
-        info!("Stopping DogStatsd source...");
+        info!("Stopping DogStatsD source...");
 
         listener_shutdown_coordinator.shutdown().await;
 
@@ -310,7 +310,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
                     error!(%listen_addr, error = %e, "Failed to accept connection. Stopping listener.");
                     break
                 }
-            },
+            }
         }
     }
 
@@ -324,56 +324,65 @@ async fn process_stream(source_context: SourceContext, handler_context: HandlerC
         shutdown_handle,
         listen_addr,
         origin_detection,
-        mut deserializer,
+        deserializer,
     } = handler_context;
     tokio::pin!(shutdown_handle);
 
+    select! {
+        _ = &mut shutdown_handle => {
+            debug!("Stream handler received shutdown signal.");
+        },
+        _ = drive_stream(source_context, listen_addr, origin_detection, deserializer) => {},
+    }
+}
+
+async fn drive_stream(
+    source_context: SourceContext, listen_addr: String, origin_detection: bool,
+    mut deserializer: Deserializer<DogStatsDMultiFraming, FixedSizeBufferPool<BytesBuffer>>,
+) {
     loop {
+        source_context.memory_limiter().wait_for_capacity().await;
         let mut event_buffer = source_context.event_buffer_pool().acquire().await;
-        select! {
-            _ = &mut shutdown_handle => {
-                debug!("Stream handler received shutdown signal.");
+
+        match deserializer.decode(&mut event_buffer).await {
+            // No events decoded. Connection is done.
+            Ok((0, peer_addr)) => {
+                trace!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
                 break;
-            },
-            result = deserializer.decode(&mut event_buffer) => match result {
-                // No events decoded. Connection is done.
-                Ok((0, peer_addr)) => {
-                    trace!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
-                    break;
-                }
-                // Got events. Forward them.
-                Ok((n, peer_addr)) => {
-                    // We do one optional enrichment step here, which is to add the client's socket credentials as a tag
-                    // on each metric, if they came over UDS. This would then be utilized downstream in the pipeline by
-                    // origin enrichment, if present.
-                    if origin_detection {
-                        if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
-                            for event in &mut event_buffer {
-                                match event {
-                                    Event::Metric(metric) => {
-                                        if metric.metadata().origin_entity.is_none() {
-                                            metric.metadata_mut().origin_entity = Some(OriginEntity::ProcessId(creds.pid as u32));
-                                        }
-                                    },
+            }
+            // Got events. Forward them.
+            Ok((n, peer_addr)) => {
+                // We do one optional enrichment step here, which is to add the client's socket credentials as a tag
+                // on each metric, if they came over UDS. This would then be utilized downstream in the pipeline by
+                // origin enrichment, if present.
+                if origin_detection {
+                    if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
+                        for event in &mut event_buffer {
+                            match event {
+                                Event::Metric(metric) => {
+                                    if metric.metadata().origin_entity.is_none() {
+                                        metric.metadata_mut().origin_entity =
+                                            Some(OriginEntity::ProcessId(creds.pid as u32));
+                                    }
                                 }
                             }
                         }
                     }
-
-                    trace!(%listen_addr, %peer_addr, events_len = n, "Forwarding events.");
-
-                    if let Err(e) = source_context.forwarder().forward(event_buffer).await {
-                        error!(%listen_addr, %peer_addr, error = %e, "Failed to forward events.");
-                    }
                 }
-                Err(e) => match e {
-                    DeserializerError::Io { source } => {
-                        error!(%listen_addr, error = %source, "I/O error while decoding. Stopping stream.");
-                        break;
-                    }
-                    other => error!(%listen_addr, error = %other, "Failed to decode events."),
+
+                trace!(%listen_addr, %peer_addr, events_len = n, "Forwarding events.");
+
+                if let Err(e) = source_context.forwarder().forward(event_buffer).await {
+                    error!(%listen_addr, %peer_addr, error = %e, "Failed to forward events.");
                 }
             }
+            Err(e) => match e {
+                DeserializerError::Io { source } => {
+                    error!(%listen_addr, error = %source, "I/O error while decoding. Stopping stream.");
+                    break;
+                }
+                other => error!(%listen_addr, error = %other, "Failed to decode events."),
+            },
         }
     }
 }

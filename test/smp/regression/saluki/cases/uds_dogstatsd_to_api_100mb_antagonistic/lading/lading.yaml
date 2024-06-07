@@ -7,8 +7,8 @@ generator:
         dogstatsd:
           contexts:
             inclusive:
-              min: 1000
-              max: 10000
+              min: 4000
+              max: 15000
           name_length:
             inclusive:
               min: 1
@@ -74,4 +74,4 @@ blackhole:
 
 target_metrics:
   - prometheus:
-      uri: "http://127.0.0.1:5000/scrape"
+      uri: "http://127.0.0.1:6000/scrape"

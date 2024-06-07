@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use memory_accounting::limiter::MemoryLimiter;
 use saluki_error::{generic_error, GenericError};
 use tokio::{sync::mpsc, task::JoinHandle};
 
@@ -92,7 +93,7 @@ impl BuiltTopology {
     /// ## Errors
     ///
     /// If an error occurs while spawning the topology, an error is returned.
-    pub async fn spawn(self) -> Result<RunningTopology, GenericError> {
+    pub async fn spawn(self, memory_limiter: MemoryLimiter) -> Result<RunningTopology, TopologyError> {
         // Build our interconnects, which we'll grab from piecemeal as we spawn our components.
         let (mut forwarders, mut event_streams) = self.create_component_interconnects();
         let event_buffer_pool = FixedSizeObjectPool::with_capacity(1024);
@@ -110,7 +111,13 @@ impl BuiltTopology {
             let shutdown_handle = shutdown_coordinator.register();
 
             let component_context = ComponentContext::source(component_id);
-            let context = SourceContext::new(component_context, shutdown_handle, forwarder, event_buffer_pool.clone());
+            let context = SourceContext::new(
+                component_context,
+                shutdown_handle,
+                forwarder,
+                event_buffer_pool.clone(),
+                memory_limiter.clone(),
+            );
 
             source_handles.push(spawn_source(source, context));
         }
@@ -128,7 +135,13 @@ impl BuiltTopology {
                 .ok_or_else(|| generic_error!("No event stream found for component '{}'", component_id))?;
 
             let component_context = ComponentContext::transform(component_id);
-            let context = TransformContext::new(component_context, forwarder, event_stream, event_buffer_pool.clone());
+            let context = TransformContext::new(
+                component_context,
+                forwarder,
+                event_stream,
+                event_buffer_pool.clone(),
+                memory_limiter.clone(),
+            );
 
             transform_handles.push(spawn_transform(transform, context));
         }
@@ -142,7 +155,7 @@ impl BuiltTopology {
                 .ok_or_else(|| generic_error!("No event stream found for component '{}'", component_id))?;
 
             let component_context = ComponentContext::destination(component_id);
-            let context = DestinationContext::new(component_context, event_stream);
+            let context = DestinationContext::new(component_context, event_stream, memory_limiter.clone());
 
             destination_handles.push(spawn_destination(destination, context));
         }

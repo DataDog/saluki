@@ -1,3 +1,5 @@
+use memory_accounting::limiter::MemoryLimiter;
+
 use crate::{
     components::ComponentContext,
     pooling::FixedSizeObjectPool,
@@ -9,20 +11,22 @@ pub struct TransformContext {
     component_context: ComponentContext,
     forwarder: Forwarder,
     event_stream: EventStream,
-    event_buffer_pool: FixedSizeObjectPool<EventBuffer>,
+    event_buffer_pool: FixedSizeBufferPool<EventBuffer>,
+    memory_limiter: MemoryLimiter,
 }
 
 impl TransformContext {
     /// Creates a new `TransformContext`.
     pub fn new(
         component_context: ComponentContext, forwarder: Forwarder, event_stream: EventStream,
-        event_buffer_pool: FixedSizeObjectPool<EventBuffer>,
+        event_buffer_pool: FixedSizeBufferPool<EventBuffer>, memory_limiter: MemoryLimiter,
     ) -> Self {
         Self {
             component_context,
             forwarder,
             event_stream,
             event_buffer_pool,
+            memory_limiter,
         }
     }
 
@@ -44,5 +48,10 @@ impl TransformContext {
     /// Gets a reference to the event buffer pool.
     pub fn event_buffer_pool(&self) -> &FixedSizeObjectPool<EventBuffer> {
         &self.event_buffer_pool
+    }
+
+    /// Gets a reference to the memory limiter.
+    pub fn memory_limiter(&self) -> &MemoryLimiter {
+        &self.memory_limiter
     }
 }

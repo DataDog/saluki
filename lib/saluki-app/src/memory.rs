@@ -2,9 +2,9 @@
 
 use std::collections::VecDeque;
 
-use memory_accounting::{BoundsVerifier, MemoryBoundsBuilder, MemoryGrant, VerifiedBounds};
+use memory_accounting::{limiter::MemoryLimiter, BoundsVerifier, MemoryBoundsBuilder, MemoryGrant, VerifiedBounds};
 use saluki_config::GenericConfiguration;
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tracing::info;
 use ubyte::{ByteUnit, ToByteUnit as _};
@@ -13,9 +13,9 @@ const fn default_memory_slop_factor() -> f64 {
     0.25
 }
 
-/// Configuration for memory bounds verification.
+/// Configuration for memory bounds.
 #[derive(Deserialize)]
-pub struct MemoryBoundsVerificationConfiguration {
+pub struct MemoryBoundsConfiguration {
     /// The memory limit to adhere to.
     ///
     /// This should be the overall memory limit for the entire process. The value can either be an integer for
@@ -39,8 +39,8 @@ pub struct MemoryBoundsVerificationConfiguration {
     memory_slop_factor: f64,
 }
 
-impl MemoryBoundsVerificationConfiguration {
-    /// Attempts to read verification configuration from the provided configuration.
+impl MemoryBoundsConfiguration {
+    /// Attempts to read memory bounds configuration from the provided configuration.
     ///
     /// ## Errors
     ///
@@ -48,21 +48,27 @@ impl MemoryBoundsVerificationConfiguration {
     pub fn try_from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
         config
             .as_typed::<Self>()
-            .error_context("Failed to parse memory bounds verification configuration.")
+            .error_context("Failed to parse memory bounds configuration.")
     }
 }
 
-/// Attempts to verify the populated memory bounds against the memory limit configuration.
+/// Initializes the memory bounds system and verifies any configured bounds.
 ///
-/// If no memory limit is configured, or if the configured memory bounds can fit within the memory limit, `Ok(())` is
-/// returned.
+/// This function takes a closure that is responsible for populating the memory bounds for all components within the
+/// application that should be enforced. This allows the caller to build up the memory bounds in a structured way.
+///
+/// If no memory limit is configured, or if the populated memory bounds fit within the configured memory limit,
+/// `Ok(MemoryLimiter)` is returned. The memory limiter can be used as a global limiter for the process, allowing
+/// callers to cooperatively participate in staying within the configured memory bounds by blocking when used memory
+/// exceeds the configured limit, until it returns below the limit. The limiter uses the effective memory limit, based
+/// on the configured slop factor.
 ///
 /// ## Errors
 ///
-/// If the bounds could not be validated, an error will be returned.
-pub fn try_verify_memory_bounds<F>(
-    configuration: MemoryBoundsVerificationConfiguration, populate_bounds: F,
-) -> Result<(), GenericError>
+/// If the bounds could not be validated, an error variant will be returned.
+pub fn initialize_memory_bounds<F>(
+    configuration: MemoryBoundsConfiguration, populate_bounds: F,
+) -> Result<MemoryLimiter, GenericError>
 where
     F: FnOnce(&mut MemoryBoundsBuilder),
 {
@@ -70,7 +76,7 @@ where
         Some(limit) => MemoryGrant::with_slop_factor(limit.as_u64() as usize, configuration.memory_slop_factor)?,
         None => {
             info!("No memory limit set for the process. Skipping memory bounds verification.");
-            return Ok(());
+            return Ok(MemoryLimiter::noop());
         }
     };
 
@@ -83,6 +89,9 @@ where
     let bounds_verifier = BoundsVerifier::new(initial_grant, component_bounds);
     let verified_bounds = bounds_verifier.verify()?;
 
+    let limiter = MemoryLimiter::new(initial_grant)
+        .ok_or_else(|| generic_error!("Memory statistics cannot be gathered on this system."))?;
+
     info!(
 		"Verified memory bounds. Minimum memory requirement of {}, with a calculated firm memory bound of {} out of {} available, from an initial {} grant.",
 		verified_bounds.total_minimum_required_bytes().bytes(),
@@ -93,7 +102,7 @@ where
 
     print_verified_bounds(verified_bounds);
 
-    Ok(())
+    Ok(limiter)
 }
 
 fn print_verified_bounds(bounds: VerifiedBounds) {
