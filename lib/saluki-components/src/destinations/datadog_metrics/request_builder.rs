@@ -112,6 +112,7 @@ where
     compressor: Compressor<ChunkedBytesBuffer>,
     compression_estimator: CompressionEstimator,
     uncompressed_len: usize,
+    metrics_written: usize,
 }
 
 impl<B> RequestBuilder<B>
@@ -134,6 +135,7 @@ where
             compressor,
             compression_estimator: CompressionEstimator::default(),
             uncompressed_len: 0,
+            metrics_written: 0,
         })
     }
 
@@ -192,6 +194,7 @@ where
         self.compression_estimator
             .track_write(&self.compressor, self.scratch_buf.len());
         self.uncompressed_len += self.scratch_buf.len();
+        self.metrics_written += 1;
 
         trace!(
             encoded_len,
@@ -211,13 +214,16 @@ where
     /// ## Errors
     ///
     /// If an error occurs while finalizing the compressor or creating the request, an error variant will be returned.
-    pub async fn flush(&mut self) -> Result<Option<Request<ChunkedBytesBuffer>>, RequestBuilderError> {
+    pub async fn flush(&mut self) -> Result<Option<(usize, Request<ChunkedBytesBuffer>)>, RequestBuilderError> {
         if self.uncompressed_len == 0 {
             return Ok(None);
         }
 
         // Clear our internal state and finalize the compressor. We do it in this order so that if finalization fails,
         // somehow, the request builder is in a default state and encoding can be attempted again.
+        let metrics_written = self.metrics_written;
+        self.metrics_written = 0;
+
         let uncompressed_len = self.uncompressed_len;
         self.uncompressed_len = 0;
 
@@ -239,7 +245,7 @@ where
 
         debug!(endpoint = ?self.endpoint, uncompressed_len, compressed_len, "Flushing request.");
 
-        self.create_request(buffer).map(Some)
+        self.create_request(buffer).map(|req| Some((metrics_written, req)))
     }
 
     fn create_request(&self, buffer: ChunkedBytesBuffer) -> Result<Request<ChunkedBytesBuffer>, RequestBuilderError> {

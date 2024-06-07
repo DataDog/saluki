@@ -144,6 +144,8 @@ where
             total_events_decoded += events_decoded;
         }
 
+        self.metrics.events_received().increment(total_events_decoded as u64);
+
         Ok((bytes_read, total_events_decoded, connection_addr))
     }
 
@@ -277,13 +279,21 @@ where
     }
 }
 
+// TODO: We ought to be able to do this with `static_metrics!` but it doesn't support setting the metric name to one
+// thing and the name of the field/accessor to another.... which would makes things less ergonomic. We also have a
+// specific label for just our error metric, which is another thing the macro doesn't support.
 struct DeserializerMetrics {
+    events_received: Counter,
     bytes_received: Counter,
     bytes_received_size: Histogram,
     decoder_errors: Counter,
 }
 
 impl DeserializerMetrics {
+    fn events_received(&self) -> &Counter {
+        &self.events_received
+    }
+
     fn bytes_received(&self) -> &Counter {
         &self.bytes_received
     }
@@ -300,6 +310,7 @@ impl DeserializerMetrics {
 impl Default for DeserializerMetrics {
     fn default() -> Self {
         DeserializerMetrics {
+            events_received: Counter::noop(),
             bytes_received: Counter::noop(),
             bytes_received_size: Histogram::noop(),
             decoder_errors: Counter::noop(),
@@ -309,6 +320,7 @@ impl Default for DeserializerMetrics {
 
 fn build_deserializer_metrics(builder: MetricsBuilder) -> DeserializerMetrics {
     DeserializerMetrics {
+        events_received: builder.register_counter("component_events_received_total"),
         bytes_received: builder.register_counter("component_bytes_received_total"),
         bytes_received_size: builder.register_histogram("component_bytes_received_size"),
         decoder_errors: builder.register_counter_with_labels("component_errors_total", &[("error_type", "decode")]),
