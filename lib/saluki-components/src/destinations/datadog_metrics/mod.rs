@@ -4,8 +4,9 @@ use async_trait::async_trait;
 use http::{Request, Uri};
 use http_body_util::BodyExt as _;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use metrics::Counter;
 use saluki_config::GenericConfiguration;
-use saluki_core::components::destinations::*;
+use saluki_core::components::{destinations::*, metrics::MetricsBuilder, ComponentContext};
 use saluki_error::GenericError;
 use saluki_event::DataType;
 use saluki_io::{
@@ -25,6 +26,56 @@ const RB_BUFFER_POOL_BUF_SIZE: usize = 32_768;
 
 fn default_site() -> String {
     DEFAULT_SITE.to_owned()
+}
+
+#[derive(Clone)]
+struct Metrics {
+    events_sent: Counter,
+    bytes_sent: Counter,
+    events_dropped_http: Counter,
+    events_dropped_encoder: Counter,
+    http_failed_send: Counter,
+}
+
+impl Metrics {
+    fn from_component_context(context: ComponentContext) -> Self {
+        let builder = MetricsBuilder::from_component_context(context);
+
+        Self {
+            events_sent: builder.register_counter("component_events_sent_total"),
+            bytes_sent: builder.register_counter("component_bytes_sent_total"),
+            events_dropped_http: builder.register_counter_with_labels(
+                "component_events_dropped_total",
+                &[("intentional", "false"), ("drop_reason", "http_failure")],
+            ),
+            events_dropped_encoder: builder.register_counter_with_labels(
+                "component_events_dropped_total",
+                &[("intentional", "false"), ("drop_reason", "encoder_failure")],
+            ),
+            http_failed_send: builder
+                .register_counter_with_labels("component_errors_total", &[("error_type", "http_send")]),
+        }
+    }
+
+    fn events_sent(&self) -> &Counter {
+        &self.events_sent
+    }
+
+    fn bytes_sent(&self) -> &Counter {
+        &self.bytes_sent
+    }
+
+    fn events_dropped_http(&self) -> &Counter {
+        &self.events_dropped_http
+    }
+
+    fn events_dropped_encoder(&self) -> &Counter {
+        &self.events_dropped_encoder
+    }
+
+    fn http_failed_send(&self) -> &Counter {
+        &self.http_failed_send
+    }
 }
 
 /// Datadog Metrics destination.
@@ -164,7 +215,8 @@ impl Destination for DatadogMetrics {
         // Spawn our IO task to handle sending requests.
         let (io_shutdown_tx, io_shutdown_rx) = oneshot::channel();
         let (requests_tx, requests_rx) = mpsc::channel(32);
-        tokio::spawn(run_io_loop(requests_rx, io_shutdown_tx, http_client));
+        let metrics = Metrics::from_component_context(context.component_context());
+        tokio::spawn(run_io_loop(requests_rx, io_shutdown_tx, http_client, metrics.clone()));
 
         debug!("Datadog Metrics destination started.");
 
@@ -190,16 +242,15 @@ impl Destination for DatadogMetrics {
                             Ok(Some(metric)) => metric,
                             Err(e) => {
                                 error!(error = %e, "Failed to encode metric.");
-                                // TODO: Increment a counter here that the metric was dropped due to
-                                // an encoding failure.
+                                metrics.events_dropped_encoder().increment(1);
                                 continue;
                             }
                         };
 
                         // Get the flushed request and enqueue it to be sent.
                         match request_builder.flush().await {
-                            Ok(Some(request)) => {
-                                if requests_tx.send(request).await.is_err() {
+                            Ok(Some((metrics_written, request))) => {
+                                if requests_tx.send((metrics_written, request)).await.is_err() {
                                     error!("Failed to send request to IO task: receiver dropped.");
                                     return Err(());
                                 }
@@ -224,8 +275,7 @@ impl Destination for DatadogMetrics {
                         // time.
                         if let Err(e) = request_builder.encode(metric_to_retry).await {
                             error!(error = %e, "Failed to encode metric.");
-                            // TODO: Increment a counter here that the metric was dropped due to an
-                            // encoding failure.
+                            metrics.events_dropped_encoder().increment(1);
                         }
                     }
                 }
@@ -284,17 +334,27 @@ impl Destination for DatadogMetrics {
 }
 
 async fn run_io_loop(
-    mut requests_rx: mpsc::Receiver<Request<ChunkedBytesBuffer>>, io_shutdown_tx: oneshot::Sender<()>,
-    http_client: ChunkedHttpsClient,
+    mut requests_rx: mpsc::Receiver<(usize, Request<ChunkedBytesBuffer>)>, io_shutdown_tx: oneshot::Sender<()>,
+    http_client: ChunkedHttpsClient, metrics: Metrics,
 ) {
     // Loop and process all incoming requests.
-    while let Some(request) = requests_rx.recv().await {
+    while let Some((metrics_count, request)) = requests_rx.recv().await {
+        // TODO: This doesn't include the actual headers, or the HTTP framing, or anything... so it's a darn good
+        // approximation, but still only an approximation.
+        let request_length = request.body().len();
+
         match http_client.send(request).await {
             Ok(response) => {
                 let status = response.status();
                 if status.is_success() {
                     debug!(%status, "Request sent.");
+
+                    metrics.events_sent().increment(metrics_count as u64);
+                    metrics.bytes_sent().increment(request_length as u64);
                 } else {
+                    metrics.http_failed_send().increment(1);
+                    metrics.events_dropped_http().increment(metrics_count as u64);
+
                     match response.into_body().collect().await {
                         Ok(body) => {
                             let body = body.to_bytes();

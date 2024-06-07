@@ -138,7 +138,8 @@ impl Transform for Aggregate {
         pin!(flush);
 
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
-        let events_dropped = metrics_builder.register_counter("component_events_dropped_total");
+        let events_dropped =
+            metrics_builder.register_counter_with_labels("component_events_dropped_total", &[("intentional", "true")]);
 
         // Create our own event buffer pool.
         //
