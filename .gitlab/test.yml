@@ -1,18 +1,33 @@
 unit-tests:
   stage: test
   image: "${SALUKI_BUILD_CI_IMAGE}"
+  variables:
+    # Compiling Rust is intensive. ¯\_(ツ)_/¯
+    KUBERNETES_CPU_REQUEST: "16"
+    KUBERNETES_MEMORY_REQUEST: "8Gi"
+    KUBERNETES_MEMORY_LIMIT: "12Gi"
   script:
     - make test
 
 unit-tests-miri:
   stage: test
   image: "${SALUKI_BUILD_CI_IMAGE}"
+  variables:
+    # Compiling Rust is intensive. ¯\_(ツ)_/¯
+    KUBERNETES_CPU_REQUEST: "16"
+    KUBERNETES_MEMORY_REQUEST: "8Gi"
+    KUBERNETES_MEMORY_LIMIT: "12Gi"
   script:
     - make test-miri
 
 check-clippy:
   stage: test
   image: "${SALUKI_BUILD_CI_IMAGE}"
+  variables:
+    # Compiling Rust is intensive. ¯\_(ツ)_/¯
+    KUBERNETES_CPU_REQUEST: "16"
+    KUBERNETES_MEMORY_REQUEST: "8Gi"
+    KUBERNETES_MEMORY_LIMIT: "12Gi"
   script:
     - make check-clippy
 
@@ -37,5 +52,10 @@ check-licenses:
 check-features:
   stage: test
   image: "${SALUKI_BUILD_CI_IMAGE}"
+  variables:
+    # Compiling Rust is intensive. ¯\_(ツ)_/¯
+    KUBERNETES_CPU_REQUEST: "16"
+    KUBERNETES_MEMORY_REQUEST: "8Gi"
+    KUBERNETES_MEMORY_LIMIT: "12Gi"
   script:
     - make check-features

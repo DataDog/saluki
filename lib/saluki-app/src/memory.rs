@@ -65,7 +65,7 @@ impl MemoryBoundsConfiguration {
 ///
 /// ## Errors
 ///
-/// If the bounds could not be validated, an error variant will be returned.
+/// If the bounds could not be validated, an error is returned.
 pub fn initialize_memory_bounds<F>(
     configuration: MemoryBoundsConfiguration, populate_bounds: F,
 ) -> Result<MemoryLimiter, GenericError>
