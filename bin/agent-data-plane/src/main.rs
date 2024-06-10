@@ -7,7 +7,7 @@
 #![deny(missing_docs)]
 mod env_provider;
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use memory_accounting::MemoryBounds as _;
 use saluki_components::{
@@ -71,9 +71,9 @@ async fn run(started: Instant) -> Result<(), GenericError> {
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
     let dsd_config = DogStatsDConfiguration::from_configuration(&configuration)?;
-    let dsd_agg_config = AggregateConfiguration::from_window(Duration::from_secs(10)).with_context_limit(15500);
+    let dsd_agg_config = AggregateConfiguration::from_configuration(&configuration)?;
     let int_metrics_config = InternalMetricsConfiguration;
-    let int_metrics_agg_config = AggregateConfiguration::from_window(Duration::from_secs(10));
+    let int_metrics_agg_config = AggregateConfiguration::with_defaults();
 
     let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
     let origin_enrichment_config = OriginEnrichmentConfiguration::from_configuration(&configuration)?

@@ -3,6 +3,7 @@ use std::{collections::hash_map::Entry, time::Duration};
 use ahash::{AHashMap, AHashSet};
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_config::GenericConfiguration;
 use saluki_context::Context;
 use saluki_core::{
     components::{transforms::*, MetricsBuilder},
@@ -12,11 +13,19 @@ use saluki_core::{
 use saluki_env::time::get_unix_timestamp;
 use saluki_error::GenericError;
 use saluki_event::{metric::*, DataType, Event};
+use serde::Deserialize;
 use tokio::{pin, select, time::sleep_until};
 use tracing::{debug, error, trace};
 
 const EVENT_BUFFER_POOL_SIZE: usize = 8;
-const DEFAULT_CONTEXT_LIMIT: usize = 1000;
+
+const fn default_window_duration() -> Duration {
+    Duration::from_secs(10)
+}
+
+const fn default_context_limit() -> usize {
+    1000
+}
 
 /// Aggregate transform.
 ///
@@ -25,23 +34,20 @@ const DEFAULT_CONTEXT_LIMIT: usize = 1000;
 /// ## Missing
 ///
 /// - maintaining zero-value counters after flush until expiry
+#[derive(Deserialize)]
 pub struct AggregateConfiguration {
+    /// Size of the aggregation window.
+    ///
+    /// Metrics are aggregated into fixed-size windows, such that all updates to the same metric within a window are
+    /// aggregated into a single metric. The window size controls how efficiently metrics are aggregated, but also how
+    /// often they're flushed downstream. This represents a trade-off between the savings in network bandwidth (sending
+    /// fewer requests to downstream systems, etc) and the frequency of updates (how often updates to a metric are emitted).
+    ///
+    /// Defaults to 10 seconds.
+    #[serde(rename = "aggregate_window_duration", default = "default_window_duration")]
     window_duration: Duration,
-    context_limit: usize,
-    flush_open_windows: bool,
-}
 
-impl AggregateConfiguration {
-    /// Creates a new `AggregateConfiguration` with the given window duration.
-    pub fn from_window(window_duration: Duration) -> Self {
-        Self {
-            window_duration,
-            context_limit: DEFAULT_CONTEXT_LIMIT,
-            flush_open_windows: false,
-        }
-    }
-
-    /// Sets the maximum number of contexts to aggregate per window.
+    /// Maximum number of contexts to aggregate per window.
     ///
     /// A context is the unique combination of a metric name and its set of tags. For example,
     /// `metric.name.here{tag1=A,tag2=B}` represents a single context, and would be different than
@@ -51,20 +57,31 @@ impl AggregateConfiguration {
     /// until the next window starts.
     ///
     /// Defaults to 1000.
-    pub fn with_context_limit(self, context_limit: usize) -> Self {
-        Self { context_limit, ..self }
-    }
+    #[serde(rename = "aggregate_context_limit", default = "default_context_limit")]
+    context_limit: usize,
 
-    /// Sets whether to flush open buckets when stopping the transform.
+    /// Whether to flush open buckets when stopping the transform.
     ///
     /// Normally, an open bucket -- a bucket where the full window has not yet elapsed -- is not flushed when the
     /// transform is stopped. This is done to avoid the specific case of flushing a partial window, having the process
     /// restart, and then have it flush the same window again. Downstream systems may not be able to cope with this, and
-    /// so we avoid doing so by default.
-    pub fn flush_open_windows(self, flush_open_windows: bool) -> Self {
+    /// so we avoid doing so by default
+    #[serde(rename = "aggregate_flush_open_windows", default)]
+    flush_open_windows: bool,
+}
+
+impl AggregateConfiguration {
+    /// Creates a new `AggregateConfiguration` from the given configuration.
+    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        Ok(config.as_typed()?)
+    }
+
+    /// Creates a new `AggregateConfiguration` with default values.
+    pub fn with_defaults() -> Self {
         Self {
-            flush_open_windows,
-            ..self
+            window_duration: default_window_duration(),
+            context_limit: default_context_limit(),
+            flush_open_windows: false,
         }
     }
 }
