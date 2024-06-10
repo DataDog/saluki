@@ -44,11 +44,17 @@ impl<'a, T> MutablePointer<'a, T> {
     }
 }
 
+/// Builder for defining the memory bounds of a component and its subcomponents.
+///
+/// This builder provides a simple interface for defining the minimum and firm bounds of a component, as well as
+/// declaring subcomponents. For example, a topology can contain its own "self" memory bounds, and then define the
+/// individual bounds for each component in the topology.
 pub struct MemoryBoundsBuilder<'bounds> {
     inner: MutablePointer<'bounds, ComponentBounds>,
 }
 
 impl MemoryBoundsBuilder<'static> {
+    /// Create an empty `MemoryBoundsBuilder`.
     pub fn new() -> Self {
         Self {
             inner: MutablePointer::Owned(ComponentBounds::default()),
@@ -67,12 +73,12 @@ impl MemoryBoundsBuilder<'static> {
 }
 
 impl<'a> MemoryBoundsBuilder<'a> {
-    /// Gets a builder object that can be used to define the miniumum required memory for this component to operate.
+    /// Gets a builder object for defining the minimum bounds of the current component.
     pub fn minimum(&mut self) -> BoundsBuilder<'_, Minimum> {
         BoundsBuilder::<'_, Minimum>::new(self.inner.as_mut())
     }
 
-    /// Gets a builder object that can be used to define the firm memory limit for this component.
+    /// Gets a builder object for defining the firm bounds of the current component.
     ///
     /// The firm limit is additive with the minimum required memory, so entries that are added via `minimum` do not need
     /// to be added again here.

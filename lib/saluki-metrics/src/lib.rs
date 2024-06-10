@@ -1,3 +1,7 @@
+//! Metrics-related helpers and utilities.
+#![deny(warnings)]
+#![deny(missing_docs)]
+
 mod macros;
 
 #[doc(hidden)]
@@ -11,6 +15,7 @@ pub mod reexport {
 /// `String` into a `SharedString`. This is purely used by the `static_metrics!` macro to allow for ergonomic handling
 /// of labels, and should generally not need to be implemented manually.
 pub trait Stringable {
+    /// Converts the given value to a `SharedString`.
     fn to_shared_string(&self) -> ::metrics::SharedString;
 }
 

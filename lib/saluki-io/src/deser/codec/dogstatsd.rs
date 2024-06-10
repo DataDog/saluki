@@ -27,6 +27,17 @@ enum OneOrMany<T> {
     Multiple(Vec<T>),
 }
 
+/// A [DogStatsD][dsd] codec.
+///
+/// This codec is used to parse the DogStatsD protocol, which is a superset of the StatsD protocol. DogStatsD adds a
+/// number of additional features, such as the ability to specify tags, send histograms directly, send service checks
+/// and events (DataDog-specific), and more.
+///
+/// ## Missing
+///
+/// - Service checks and events are not currently supported.
+///
+/// [dsd]: https://docs.datadoghq.com/developers/dogstatsd/
 #[derive(Debug)]
 pub struct DogstatsdCodec {
     maximum_tag_length: usize,
@@ -47,8 +58,7 @@ impl DogstatsdCodec {
     /// Sets the maximum tag length.
     ///
     /// This controls the number of bytes that are allowed for a single tag. If a tag exceeds this limit, it is
-    /// truncated to either the limit or the closest previous UTF-8 character boundary, in order to preserve UTF-8
-    /// validity.
+    /// truncated to the closest previous UTF-8 character boundary, in order to preserve UTF-8 validity.
     ///
     /// Defaults to `usize::MAX`.
     pub fn with_maximum_tag_length(mut self, maximum_tag_length: usize) -> Self {
@@ -60,6 +70,8 @@ impl DogstatsdCodec {
     ///
     /// This is the maximum number of tags allowed for a single metric. If the number of tags exceeds this limit,
     /// remaining tags are simply ignored.
+    ///
+    /// Defaults to `usize::MAX`.
     pub fn with_maximum_tag_count(mut self, maximum_tag_count: usize) -> Self {
         self.maximum_tag_count = maximum_tag_count;
         self
@@ -205,12 +217,7 @@ fn parse_dogstatsd<'a>(
 
     match metric_values {
         OneOrMany::Single(metric_value) => {
-            let metric = Metric {
-                context,
-                value: metric_value,
-                metadata: metric_metadata,
-            };
-
+            let metric = Metric::from_parts(context, metric_value, metric_metadata);
             trace!(%metric, "Parsed metric.");
 
             Ok((remaining, OneOrMany::Single(Event::Metric(metric))))
@@ -221,12 +228,7 @@ fn parse_dogstatsd<'a>(
             let metrics = metric_values
                 .into_iter()
                 .map(|value| {
-                    let metric = Metric {
-                        context: context.clone(),
-                        value,
-                        metadata: metric_metadata.clone(),
-                    };
-
+                    let metric = Metric::from_parts(context.clone(), value, metric_metadata.clone());
                     trace!(%metric, "Parsed metric from multi-value payload.");
 
                     Event::Metric(metric)
@@ -376,11 +378,11 @@ mod tests {
         let context_ref = ContextRef::<'_, &str>::from_name_and_tags(name, tags);
         let context = context_resolver.resolve(context_ref);
 
-        Metric {
+        Metric::from_parts(
             context,
             value,
-            metadata: MetricMetadata::from_timestamp(0).with_origin(MetricOrigin::dogstatsd()),
-        }
+            MetricMetadata::from_timestamp(0).with_origin(MetricOrigin::dogstatsd()),
+        )
     }
 
     fn counter(context_resolver: &ContextResolver, name: &str, value: f64) -> Metric {
@@ -434,8 +436,8 @@ mod tests {
     fn check_basic_metric_eq(expected: Metric, actual: OneOrMany<Event>) -> Metric {
         match actual {
             OneOrMany::Single(Event::Metric(actual)) => {
-                assert_eq!(expected.context, actual.context);
-                assert_eq!(expected.value, actual.value);
+                assert_eq!(expected.context(), actual.context());
+                assert_eq!(expected.value(), actual.value());
                 actual
             }
             OneOrMany::Multiple(_) => unreachable!("should never be called for multi-value metric assertions"),
@@ -450,8 +452,8 @@ mod tests {
                 for (expected_event, actual_event) in expected.iter().zip(events.iter()) {
                     match actual_event {
                         Event::Metric(actual) => {
-                            assert_eq!(expected_event.context, actual.context);
-                            assert_eq!(expected_event.value, actual.value);
+                            assert_eq!(expected_event.context(), actual.context());
+                            assert_eq!(expected_event.value(), actual.value());
                         }
                     }
                 }
@@ -529,7 +531,7 @@ mod tests {
         let counter_sample_rate = 0.5;
         let counter_raw = format!("{}:{}|c|@{}", counter_name, counter_value, counter_sample_rate);
         let mut counter_expected = counter(&context_resolver, counter_name, counter_value);
-        counter_expected.metadata.sample_rate = Some(counter_sample_rate);
+        counter_expected.metadata_mut().sample_rate = Some(counter_sample_rate);
 
         let (remaining, counter_actual) =
             parse_dogstatsd(counter_raw.as_bytes(), usize::MAX, usize::MAX, &context_resolver).unwrap();
@@ -546,7 +548,7 @@ mod tests {
         let container_id = "abcdef123456";
         let counter_raw = format!("{}:{}|c|c:{}", counter_name, counter_value, container_id);
         let mut counter_expected = counter(&context_resolver, counter_name, counter_value);
-        counter_expected.metadata.origin_entity = Some(OriginEntity::container_id(container_id));
+        counter_expected.metadata_mut().origin_entity = Some(OriginEntity::container_id(container_id));
 
         let (remaining, counter_actual) =
             parse_dogstatsd(counter_raw.as_bytes(), usize::MAX, usize::MAX, &context_resolver).unwrap();
@@ -563,7 +565,7 @@ mod tests {
         let timestamp = 1234567890;
         let counter_raw = format!("{}:{}|c|T{}", counter_name, counter_value, timestamp);
         let mut counter_expected = counter(&context_resolver, counter_name, counter_value);
-        counter_expected.metadata.timestamp = timestamp;
+        counter_expected.metadata_mut().timestamp = timestamp;
 
         let (remaining, counter_actual) =
             parse_dogstatsd(counter_raw.as_bytes(), usize::MAX, usize::MAX, &context_resolver).unwrap();
@@ -591,18 +593,18 @@ mod tests {
             timestamp
         );
         let mut counter_expected = counter_with_tags(&context_resolver, counter_name, counter_tags, counter_value);
-        counter_expected.metadata.sample_rate = Some(counter_sample_rate);
-        counter_expected.metadata.origin_entity = Some(OriginEntity::container_id(container_id));
-        counter_expected.metadata.timestamp = timestamp;
+        counter_expected.metadata_mut().sample_rate = Some(counter_sample_rate);
+        counter_expected.metadata_mut().origin_entity = Some(OriginEntity::container_id(container_id));
+        counter_expected.metadata_mut().timestamp = timestamp;
 
         let (remaining, counter_actual) =
             parse_dogstatsd(counter_raw.as_bytes(), usize::MAX, usize::MAX, &context_resolver).unwrap();
         let counter_actual = check_basic_metric_eq(counter_expected, counter_actual);
         assert_eq!(
-            counter_actual.metadata.origin_entity,
+            counter_actual.metadata().origin_entity,
             Some(OriginEntity::container_id(container_id))
         );
-        assert_eq!(counter_actual.metadata.timestamp, timestamp);
+        assert_eq!(counter_actual.metadata().timestamp, timestamp);
         assert!(remaining.is_empty());
     }
 
@@ -665,7 +667,7 @@ mod tests {
             assert!(remaining.is_empty());
             match result {
                 OneOrMany::Single(Event::Metric(metric)) => {
-                    assert_eq!(metric.context.tags().len(), max_tag_count);
+                    assert_eq!(metric.context().tags().len(), max_tag_count);
                 }
                 _ => unreachable!("should only have a single metric"),
             }
@@ -686,7 +688,7 @@ mod tests {
             assert!(remaining.is_empty());
             match result {
                 OneOrMany::Single(Event::Metric(metric)) => {
-                    for tag in metric.context.tags().into_iter() {
+                    for tag in metric.context().tags().into_iter() {
                         assert!(tag.len() <= max_tag_length);
                     }
                 }

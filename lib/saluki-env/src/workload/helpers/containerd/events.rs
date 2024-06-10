@@ -49,7 +49,7 @@ pub enum ContainerdEvent {
     TaskStarted { id: String, pid: u32 },
 
     /// A task was deleted.
-    TaskDeleted { id: String, pid: u32, exit_status: u32 },
+    TaskDeleted { pid: u32 },
 }
 
 /// Decodes an event envelope into a minimal internal representation.
@@ -68,9 +68,10 @@ pub fn decode_envelope_to_event(mut envelope: Envelope) -> Result<Option<Contain
     // Alter the envelope event's type URL, if present, to make `prost` happy.
     //
     // This boils down to the Protocol Buffer's specification around `Any`, and how it wants the "type URL" field -- the
-    // field that declares to the FQDN of the message type, essentially -- to include at least one forward slash.. but
-    // containerd doesn't send payloads with the type URL containing a forward slash at all.. so `prost`, following the
-    // specification, generates the expected type URL as "/foo.bar" while te event has "foo.bar" and decoding fails.
+    // field that declares the FQDN of the message type's Protocol Buffers definition, essentially -- to include at
+    // least one forward slash.. but containerd doesn't send payloads with the type URL containing a forward slash at
+    // all.. so `prost`, following the specification, generates the expected type URL as "/foo.bar" while te event has
+    // "foo.bar" and decoding fails.
     if let Some(event) = &mut envelope.event {
         if !event.type_url.starts_with('/') {
             event.type_url.insert(0, '/');
@@ -105,10 +106,6 @@ impl From<containerd_events::TaskStart> for ContainerdEvent {
 
 impl From<containerd_events::TaskDelete> for ContainerdEvent {
     fn from(event: containerd_events::TaskDelete) -> Self {
-        ContainerdEvent::TaskDeleted {
-            id: event.container_id,
-            pid: event.pid,
-            exit_status: event.exit_status,
-        }
+        ContainerdEvent::TaskDeleted { pid: event.pid }
     }
 }

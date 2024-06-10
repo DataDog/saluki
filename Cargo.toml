@@ -18,6 +18,11 @@ members = [
 ]
 resolver = "2"
 
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/DataDog/saluki"
+
 [workspace.dependencies]
 # Internal dependencies.
 datadog-protos = { path = "lib/datadog-protos" }
@@ -104,6 +109,7 @@ dhat = { version = "0.3", default-features = false }
 average = { version = "0.15.1", default-features = false }
 loom = { version = "0.7", default-features = false }
 trybuild = { version = "1", default-features = false }
+tokio-test = { version = "0.4.4", default-features = false }
 
 [patch.crates-io]
 # Git dependency for `containerd-client` to add specific `prost-build` settings that allow type-erased payloads in

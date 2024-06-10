@@ -1,3 +1,6 @@
+/// Gets the hostname from the operating system.
+///
+/// If an error is encountered when querying the hostname, `None` is returned.
 pub fn get_os_hostname() -> Option<String> {
     match hostname::get() {
         Ok(hostname) => Some(hostname.to_string_lossy().to_string()),
@@ -8,16 +11,31 @@ pub fn get_os_hostname() -> Option<String> {
     }
 }
 
+/// Determines if the hostname provided by the operating system can be trusted.
+///
+/// On Linux, this checks that the process is running in the host UTS namespace, which would imply that the hostname is
+/// coming from the underlying operating system, and is not an overridden hostname in a container's dedicated UTS
+/// namespace.
+///
+/// On other operating systems, this always returns `true`.
 #[cfg(target_os = "linux")]
 pub async fn is_os_hostname_trustworthy() -> bool {
     is_running_in_host_uts_namespace().await
 }
 
+/// Determines if the hostname provided by the operating system can be trusted.
+///
+/// On Linux, this checks that the process is running in the host UTS namespace, which would imply that the hostname is
+/// coming from the underlying operating system, and is not an overridden hostname in a container's dedicated UTS
+/// namespace.
+///
+/// On other operating systems, this always returns `true`.
 #[cfg(not(target_os = "linux"))]
 pub async fn is_os_hostname_trustworthy() -> bool {
     true
 }
 
+/// Determines if the process is running in the host UTS namespace.
 #[cfg(target_os = "linux")]
 pub async fn is_running_in_host_uts_namespace() -> bool {
     use std::os::unix::fs::MetadataExt as _;

@@ -9,9 +9,17 @@ use super::{is_docker_runtime_present, path_contains, path_empty};
 
 const DEFAULT_CONTAINERD_SOCKET_PATH_LINUX: &str = "/var/run/containerd/containerd.sock";
 
+/// Helper type for detecting if containerd is available.
 pub struct ContainerdDetector;
 
 impl ContainerdDetector {
+    /// Tries to detect the containerd gRPC socket path.
+    ///
+    /// The socket path can be specified in the configuration, or if it's not present, default paths will be checked for
+    /// the presence of the socket path.
+    ///
+    /// If the socket path is configured or detected, and is a valid Unix domain socket, `Some` is returned with the
+    /// socket path. Otherwise, `None` is returned.
     pub fn detect_grpc_socket_path(config: &GenericConfiguration) -> Option<PathBuf> {
         // Try and read the socket path from either the configuration, or if it's not present there, from the possible
         // default paths we would expect it to be listening at.

@@ -4,7 +4,7 @@ use saluki_io::{
         framing::{LengthDelimitedFramer, NewlineFramer},
     },
     multi_framing,
-    net::addr::ListenAddress,
+    net::ListenAddress,
 };
 
 multi_framing!(name => DogStatsD, codec => DogstatsdCodec, {

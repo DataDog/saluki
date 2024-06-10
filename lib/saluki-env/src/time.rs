@@ -1,3 +1,5 @@
+//! Time-related functions.
+
 use std::time::SystemTime;
 
 // TODO: Think about if we need/might need to have a time provider to handle mocked time.
@@ -12,6 +14,11 @@ use std::time::SystemTime;
 // Anyways, we can defer for now but I _think_ we may want it in the future as a clean way to handle real vs mocked
 // time.
 
+// TODO: Double check that this is vDSO'd on Linux. It should be, but it would be nice to be sure. If it's not, since we
+// only care about second resolution, this could be a trivial to poll in a background thread and then just update a
+// global static or something.
+
+/// Get the current Unix timestamp in seconds.
 pub fn get_unix_timestamp() -> u64 {
     let since_unix_epoch = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)

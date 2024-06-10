@@ -5,6 +5,7 @@ use serde::Deserialize;
 
 use super::{entity::EntityId, helpers::OneOrMany};
 
+/// Cardinality of entity tags.
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(try_from = "String")]
 pub enum TagCardinality {
@@ -46,6 +47,10 @@ impl TryFrom<String> for TagCardinality {
     }
 }
 
+/// A metadata operation.
+///
+/// Operations involve a number of actions to perform in the context of the given entity. Such actions typically include
+/// setting tags or establish ancestry links.
 #[derive(Debug)]
 pub struct MetadataOperation {
     /// The entity ID this operation is associated with.
@@ -102,6 +107,7 @@ impl MetadataOperation {
     }
 }
 
+/// A metadata action.
 pub enum MetadataAction {
     /// Delete all metadata for the entity.
     Delete,
@@ -114,22 +120,48 @@ pub enum MetadataAction {
     /// Additionally, it can be used for canonicalizing an entity ID, such as mapping a container PID to the container
     /// ID which owns that process. This is useful because it can potentially help avoid the need to clone (allocate) the
     /// canonicalized version.
-    LinkAncestor { ancestor_entity_id: EntityId },
+    LinkAncestor {
+        /// Entity ID of the ancestor to link with.
+        ancestor_entity_id: EntityId,
+    },
 
     /// Establishes a link between the entity and its descendant.
     ///
     /// This creates an entity hierarchy, which allows for aggregation of entity metadata, such as including
     /// higher-level metadata, from the cluster or pod level, when getting the metadata for a specific container.
-    LinkDescendant { descendant_entity_id: EntityId },
+    LinkDescendant {
+        /// Entity ID of the descendant to link with.
+        descendant_entity_id: EntityId,
+    },
 
     /// Adds a key/value tag to the entity.
-    AddTag { cardinality: TagCardinality, tag: Tag },
+    AddTag {
+        /// Cardinality to add the tag at.
+        cardinality: TagCardinality,
+
+        /// Tag to add.
+        tag: Tag,
+    },
 
     /// Adds multiple key/value tags to the entity.
-    AddTags { cardinality: TagCardinality, tags: TagSet },
+    AddTags {
+        /// Cardinality to add the tags at.
+        cardinality: TagCardinality,
+
+        /// Tags to add.
+        tags: TagSet,
+    },
 
     /// Sets the tags for the entity.
-    SetTags { cardinality: TagCardinality, tags: TagSet },
+    ///
+    /// This overwrites any existing tags for the entity.
+    SetTags {
+        /// Cardinality to set the tags at.
+        cardinality: TagCardinality,
+
+        /// Tags to set.
+        tags: TagSet,
+    },
 }
 
 impl fmt::Debug for MetadataAction {

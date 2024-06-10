@@ -13,23 +13,23 @@ use http_body::{Body, Frame};
 use tokio::io::AsyncWrite;
 use tokio_util::sync::ReusableBoxFuture;
 
-use saluki_core::buffers::BufferPool;
+use saluki_core::pooling::ObjectPool;
 
 use super::BytesBuffer;
 
-type SharedBufferPool = Arc<dyn BufferPool<Buffer = BytesBuffer> + Send + Sync>;
+type SharedObjectPool = Arc<dyn ObjectPool<Item = BytesBuffer> + Send + Sync>;
 
-enum PollBufferPool {
+enum PollObjectPool {
     Inconsistent,
     CapacityAvailable(
-        SharedBufferPool,
-        ReusableBoxFuture<'static, (SharedBufferPool, BytesBuffer)>,
+        SharedObjectPool,
+        ReusableBoxFuture<'static, (SharedObjectPool, BytesBuffer)>,
     ),
-    WaitingForBuffer(ReusableBoxFuture<'static, (SharedBufferPool, BytesBuffer)>),
+    WaitingForBuffer(ReusableBoxFuture<'static, (SharedObjectPool, BytesBuffer)>),
 }
 
-impl PollBufferPool {
-    pub fn new(buffer_pool: SharedBufferPool) -> Self {
+impl PollObjectPool {
+    pub fn new(buffer_pool: SharedObjectPool) -> Self {
         Self::CapacityAvailable(buffer_pool, ReusableBoxFuture::new(acquire_buffer_from_pool(None)))
     }
 
@@ -58,27 +58,42 @@ impl PollBufferPool {
     }
 }
 
+/// A bytes buffer that write dynamically-sized payloads across multiple fixed-size chunks.
+///
+/// `ChunkedBytesBuffer` works in concert with [`ChunkedBytesBufferObjectPool`], which is backed by any generic buffer
+/// pool that works with [`BytesBuffer`]. As callers write data to `ChunkedBytesBuffer`, it will asynchronously acquire
+/// "chunks" (`BytesBuffer`) from the buffer pool as needed, and write the data across these chunks.
+///
+/// `ChunkedBytesBuffer` implements [`AsyncWrite`] and [`Body`], allowing it to be asynchronously written to and used as
+/// the body of an HTTP request without any additional allocations and copying/merging of data into a single buffer.
+///
+/// ## Missing
+///
+/// - `Buf` implementation to allow for general reading of the written data
 pub struct ChunkedBytesBuffer {
-    buffer_pool: PollBufferPool,
+    buffer_pool: PollObjectPool,
     chunks: VecDeque<BytesBuffer>,
     remaining_capacity: usize,
     write_chunk_idx: usize,
 }
 
 impl ChunkedBytesBuffer {
-    pub fn new(buffer_pool: SharedBufferPool) -> Self {
+    /// Creates a new `ChunkedBytesBuffer` attached to the given buffer pool.
+    pub fn new(buffer_pool: SharedObjectPool) -> Self {
         Self {
-            buffer_pool: PollBufferPool::new(buffer_pool),
+            buffer_pool: PollObjectPool::new(buffer_pool),
             chunks: VecDeque::new(),
             remaining_capacity: 0,
             write_chunk_idx: 0,
         }
     }
 
+    /// Returns `true` if the buffer has no data.
     pub fn is_empty(&self) -> bool {
         self.chunks.is_empty()
     }
 
+    /// Returns the number of bytes written to the buffer.
     pub fn len(&self) -> usize {
         self.chunks.iter().map(|chunk| chunk.remaining()).sum()
     }
@@ -163,7 +178,7 @@ impl Body for ChunkedBytesBuffer {
     }
 }
 
-async fn acquire_buffer_from_pool(buffer_pool: Option<SharedBufferPool>) -> (SharedBufferPool, BytesBuffer) {
+async fn acquire_buffer_from_pool(buffer_pool: Option<SharedObjectPool>) -> (SharedObjectPool, BytesBuffer) {
     match buffer_pool {
         Some(buffer_pool) => {
             let buffer = buffer_pool.acquire().await;
@@ -173,15 +188,17 @@ async fn acquire_buffer_from_pool(buffer_pool: Option<SharedBufferPool>) -> (Sha
     }
 }
 
+/// An object pool for `ChunkedBytesBuffer`.
 #[derive(Clone)]
-pub struct ChunkedBytesBufferPool {
-    buffer_pool: Arc<dyn BufferPool<Buffer = BytesBuffer> + Send + Sync>,
+pub struct ChunkedBytesBufferObjectPool {
+    buffer_pool: Arc<dyn ObjectPool<Item = BytesBuffer> + Send + Sync>,
 }
 
-impl ChunkedBytesBufferPool {
+impl ChunkedBytesBufferObjectPool {
+    /// Creates a new `ChunkedBytesBufferObjectPool` with the given buffer pool.
     pub fn new<B>(buffer_pool: B) -> Self
     where
-        B: BufferPool<Buffer = BytesBuffer> + Send + Sync + 'static,
+        B: ObjectPool<Item = BytesBuffer> + Send + Sync + 'static,
     {
         let buffer_pool = Arc::new(buffer_pool);
         Self { buffer_pool }
@@ -189,137 +206,156 @@ impl ChunkedBytesBufferPool {
 }
 
 #[async_trait]
-impl BufferPool for ChunkedBytesBufferPool {
-    type Buffer = ChunkedBytesBuffer;
+impl ObjectPool for ChunkedBytesBufferObjectPool {
+    type Item = ChunkedBytesBuffer;
 
-    async fn acquire(&self) -> Self::Buffer {
+    async fn acquire(&self) -> Self::Item {
         let buffer_pool = Arc::clone(&self.buffer_pool);
         ChunkedBytesBuffer::new(buffer_pool)
     }
 }
 
-// TODO: Rework these tests.
-#[cfg(foo)]
+#[cfg(test)]
 mod tests {
-    use std::io::Write as _;
-
     use bytes::BytesMut;
     use http_body_util::BodyExt as _;
+    use saluki_core::pooling::FixedSizeObjectPool;
+    use tokio::io::AsyncWriteExt as _;
+    use tokio_test::{assert_pending, assert_ready, task::spawn as test_spawn};
+
+    use crate::buf::FixedSizeVec;
 
     use super::*;
-    use crate::{io::buf::vec::FixedSizeVec, util::buffer_pool::FixedSizeBufferPool};
 
     const TEST_CHUNK_SIZE: usize = 16;
     const TEST_BUF_CHUNK_SIZED: &[u8] = b"hello world!!!!!";
     const TEST_BUF_LESS_THAN_CHUNK_SIZED: &[u8] = b"hello world!";
     const TEST_BUF_GREATER_THAN_CHUNK_SIZED: &[u8] = b"hello world, here i come!";
 
-    fn create_buffer_pool(chunks: usize, chunk_size: usize) -> (Arc<FixedSizeBufferPool<BytesBuffer>>, usize) {
-        let buffer_pool = Arc::new(FixedSizeBufferPool::<BytesBuffer>::with_builder(chunks, || {
+    fn create_buffer_pool(chunks: usize, chunk_size: usize) -> (Arc<FixedSizeObjectPool<BytesBuffer>>, usize) {
+        let buffer_pool = Arc::new(FixedSizeObjectPool::<BytesBuffer>::with_builder(chunks, || {
             FixedSizeVec::with_capacity(chunk_size)
         }));
 
         (buffer_pool, chunks * chunk_size)
     }
 
-    #[tokio::test]
-    async fn single_write_fits_within_single_chunk() {
+    #[test]
+    fn single_write_fits_within_single_chunk() {
         let (buffer_pool, total_capacity) = create_buffer_pool(1, TEST_CHUNK_SIZE);
         let mut chunked_buffer = ChunkedBytesBuffer::new(buffer_pool);
-        chunked_buffer.reserve(TEST_BUF_LESS_THAN_CHUNK_SIZED.len()).await;
 
-        // Fits within a single buffer, so it should complete in a single call.
-        let n = chunked_buffer.write(TEST_BUF_LESS_THAN_CHUNK_SIZED).unwrap();
+        // Fits within a single buffer, so it should complete without blocking.
+        let mut fut = test_spawn(chunked_buffer.write(TEST_BUF_LESS_THAN_CHUNK_SIZED));
+        let result = assert_ready!(fut.poll());
+
+        let n = result.unwrap();
         assert_eq!(n, TEST_BUF_LESS_THAN_CHUNK_SIZED.len());
         assert_eq!(chunked_buffer.chunks.len(), 1);
         assert_eq!(chunked_buffer.remaining_capacity, total_capacity - n);
     }
 
-    #[tokio::test]
-    async fn single_write_fits_single_chunk_exactly() {
+    #[test]
+    fn single_write_fits_single_chunk_exactly() {
         let (buffer_pool, total_capacity) = create_buffer_pool(1, TEST_CHUNK_SIZE);
         let mut chunked_buffer = ChunkedBytesBuffer::new(buffer_pool);
-        chunked_buffer.reserve(TEST_BUF_CHUNK_SIZED.len()).await;
 
-        // Fits within a single buffer, so it should complete in a single call.
-        let n = chunked_buffer.write(TEST_BUF_CHUNK_SIZED).unwrap();
+        // Fits within a single buffer, so it should complete without blocking.
+        let mut fut = test_spawn(chunked_buffer.write(TEST_BUF_CHUNK_SIZED));
+        let result = assert_ready!(fut.poll());
+
+        let n = result.unwrap();
         assert_eq!(n, TEST_BUF_CHUNK_SIZED.len());
         assert_eq!(chunked_buffer.chunks.len(), 1);
         assert_eq!(chunked_buffer.remaining_capacity, total_capacity - n);
     }
 
-    #[tokio::test]
-    async fn single_write_strides_two_chunks() {
+    #[test]
+    fn single_write_strides_two_chunks() {
         let (buffer_pool, total_capacity) = create_buffer_pool(2, TEST_CHUNK_SIZE);
         let mut chunked_buffer = ChunkedBytesBuffer::new(buffer_pool);
-        chunked_buffer.reserve(TEST_BUF_GREATER_THAN_CHUNK_SIZED.len()).await;
 
         // This won't fit in a single chunk, but should fit within two.
-        let n = chunked_buffer.write(TEST_BUF_GREATER_THAN_CHUNK_SIZED).unwrap();
+        let mut fut = test_spawn(chunked_buffer.write(TEST_BUF_GREATER_THAN_CHUNK_SIZED));
+        let result = assert_ready!(fut.poll());
+
+        let n = result.unwrap();
         assert_eq!(n, TEST_BUF_GREATER_THAN_CHUNK_SIZED.len());
         assert_eq!(chunked_buffer.chunks.len(), 2);
         assert_eq!(chunked_buffer.remaining_capacity, total_capacity - n);
     }
 
-    #[tokio::test]
-    async fn two_writes_fit_two_chunks_exactly() {
+    #[test]
+    fn two_writes_fit_two_chunks_exactly() {
         let (buffer_pool, _) = create_buffer_pool(2, TEST_CHUNK_SIZE);
         let mut chunked_buffer = ChunkedBytesBuffer::new(buffer_pool);
-        chunked_buffer.reserve(TEST_BUF_CHUNK_SIZED.len() * 2).await;
 
         // First write acquires one chunk, and fills it up entirely.
-        let first_n = chunked_buffer.write(TEST_BUF_CHUNK_SIZED).unwrap();
-        assert_eq!(first_n, TEST_BUF_CHUNK_SIZED.len());
-        assert_eq!(chunked_buffer.chunks.len(), 2);
-        assert_eq!(chunked_buffer.remaining_capacity, TEST_BUF_CHUNK_SIZED.len());
+        let mut fut = test_spawn(chunked_buffer.write(TEST_BUF_CHUNK_SIZED));
+        let result = assert_ready!(fut.poll());
 
-        // Second write acquires one chunk, and also fills it up entirely.
-        let second_n = chunked_buffer.write(TEST_BUF_CHUNK_SIZED).unwrap();
+        let first_n = result.unwrap();
+        assert_eq!(first_n, TEST_BUF_CHUNK_SIZED.len());
+        assert_eq!(chunked_buffer.chunks.len(), 1);
+        assert_eq!(chunked_buffer.remaining_capacity, 0);
+
+        // Second write acquires an additional chunk, and also fills it up entirely.
+        let mut fut = test_spawn(chunked_buffer.write(TEST_BUF_CHUNK_SIZED));
+        let result = assert_ready!(fut.poll());
+
+        let second_n = result.unwrap();
         assert_eq!(second_n, TEST_BUF_CHUNK_SIZED.len());
         assert_eq!(chunked_buffer.chunks.len(), 2);
         assert_eq!(chunked_buffer.remaining_capacity, 0);
     }
 
-    #[tokio::test]
-    async fn write_without_available_chunk() {
+    #[test]
+    fn write_without_available_chunk() {
+        // Create the buffer pool and immediately consume both buffers.
         let (buffer_pool, _) = create_buffer_pool(2, TEST_CHUNK_SIZE);
-        let mut chunked_buffer = ChunkedBytesBuffer::new(buffer_pool);
 
-        // First write should do nothing since we have no capacity.
-        let first_n = chunked_buffer.write(TEST_BUF_CHUNK_SIZED).unwrap();
-        assert_eq!(first_n, 0);
+        let mut buf_fut = test_spawn(buffer_pool.acquire());
+        let first_buf = assert_ready!(buf_fut.poll());
+
+        let mut buf_fut = test_spawn(buffer_pool.acquire());
+        let second_buf = assert_ready!(buf_fut.poll());
+
+        let buffer_pool = Arc::clone(&buffer_pool);
+        let mut chunked_buffer = ChunkedBytesBuffer::new(buffer_pool);
         assert_eq!(chunked_buffer.chunks.len(), 0);
         assert_eq!(chunked_buffer.remaining_capacity, 0);
 
-        // Reserve some capacity for the write.
-        chunked_buffer.reserve(TEST_BUF_CHUNK_SIZED.len()).await;
-        assert_eq!(chunked_buffer.chunks.len(), 1);
-        assert_eq!(chunked_buffer.remaining_capacity, TEST_BUF_CHUNK_SIZED.len());
+        // First write should do nothing since there's no existing capacity and we can't
+        // yet acquire a buffer chunk:
+        let mut fut = test_spawn(chunked_buffer.write(TEST_BUF_CHUNK_SIZED));
+        assert_pending!(fut.poll());
+        assert!(!fut.is_woken());
 
-        // Now we can write.
-        let second_n = chunked_buffer.write(TEST_BUF_CHUNK_SIZED).unwrap();
+        // Return one of the buffers to the pool, which should signal the blocked write:
+        drop(first_buf);
+        assert!(fut.is_woken());
+
+        // Now try our first write again:
+        let result = assert_ready!(fut.poll());
+        let first_n = result.unwrap();
+        assert_eq!(first_n, TEST_BUF_CHUNK_SIZED.len());
+        assert_eq!(chunked_buffer.chunks.len(), 1);
+        assert_eq!(chunked_buffer.remaining_capacity, 0);
+
+        // Now try a second write, which should also block since we haven't returned the
+        // second buffer back to the pool yet:
+        let mut fut = test_spawn(chunked_buffer.write(TEST_BUF_CHUNK_SIZED));
+        assert_pending!(fut.poll());
+        assert!(!fut.is_woken());
+
+        // Return the second buffer to the pool, which should signal the blocked write:
+        drop(second_buf);
+        assert!(fut.is_woken());
+
+        // Now try our second write again:
+        let result = assert_ready!(fut.poll());
+        let second_n = result.unwrap();
         assert_eq!(second_n, TEST_BUF_CHUNK_SIZED.len());
-        assert_eq!(chunked_buffer.chunks.len(), 1);
-        assert_eq!(chunked_buffer.remaining_capacity, 0);
-
-        // Try another two writes without any capacity.
-        let third_n = chunked_buffer.write(TEST_BUF_CHUNK_SIZED).unwrap();
-        assert_eq!(third_n, 0);
-
-        let fourth_n = chunked_buffer.write(TEST_BUF_CHUNK_SIZED).unwrap();
-        assert_eq!(fourth_n, 0);
-
-        assert_eq!(chunked_buffer.chunks.len(), 1);
-        assert_eq!(chunked_buffer.remaining_capacity, 0);
-
-        // Now reserve some additional capacity.
-        chunked_buffer.reserve(TEST_BUF_CHUNK_SIZED.len()).await;
-        assert_eq!(chunked_buffer.chunks.len(), 2);
-        assert_eq!(chunked_buffer.remaining_capacity, TEST_BUF_CHUNK_SIZED.len());
-
-        // No we can write... again.
-        let fifth_n = chunked_buffer.write(TEST_BUF_CHUNK_SIZED).unwrap();
-        assert_eq!(fifth_n, TEST_BUF_CHUNK_SIZED.len());
         assert_eq!(chunked_buffer.chunks.len(), 2);
         assert_eq!(chunked_buffer.remaining_capacity, 0);
     }
@@ -341,7 +377,6 @@ mod tests {
 
         let (buffer_pool, total_capacity) = create_buffer_pool(required_chunks, TEST_CHUNK_SIZE);
         let mut chunked_buffer = ChunkedBytesBuffer::new(buffer_pool);
-        chunked_buffer.reserve(test_bufs_total_len).await;
 
         // Do three writes, using the less than/exactly/greater than-sized test buffers.
         //
@@ -354,10 +389,10 @@ mod tests {
             TEST_BUF_GREATER_THAN_CHUNK_SIZED,
         ];
         let mut total_written = 0;
-        for i in 0..3 {
-            chunked_buffer.write(test_bufs[i]).unwrap();
-            expected_aggregated_body.put(test_bufs[i]);
-            total_written += test_bufs[i].len();
+        for test_buf in test_bufs {
+            chunked_buffer.write_all(test_buf).await.unwrap();
+            expected_aggregated_body.put(*test_buf);
+            total_written += test_buf.len();
         }
 
         assert_eq!(test_bufs_total_len, total_written);

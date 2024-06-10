@@ -11,9 +11,9 @@ use saluki_core::components::destinations::*;
 use saluki_error::GenericError;
 use saluki_event::{metric::MetricValue, DataType, Event};
 use saluki_io::net::{
-    addr::ListenAddress,
     listener::ConnectionOrientedListener,
     server::http::{ErrorHandle, HttpServer, ShutdownHandle},
+    ListenAddress,
 };
 use serde::Deserialize;
 use stringtheory::MetaString;
@@ -115,10 +115,10 @@ impl Destination for Prometheus {
         loop {
             select! {
                 maybe_events = context.events().next() => match maybe_events {
-                    Some(mut events) => {
+                    Some(events) => {
                         // Process each metric event in the batch, either merging it with the existing value or
                         // inserting it for the first time.
-                        for event in events.take_events() {
+                        for event in events {
                             let Event::Metric(metric) = event;
                             let (context, value, _) = metric.into_parts();
 

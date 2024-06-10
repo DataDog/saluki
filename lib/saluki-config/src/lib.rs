@@ -1,3 +1,7 @@
+//! Primitives for working with typed and untyped configuration data.
+#![deny(warnings)]
+#![deny(missing_docs)]
+
 use std::{borrow::Cow, collections::HashSet};
 
 use figment::{error::Kind, providers::Env, value::Value, Figment};
@@ -13,35 +17,59 @@ mod provider;
 #[cfg(any(feature = "json", feature = "yaml"))]
 use self::provider::ResolvedProvider;
 
+/// A configuration error.
 #[derive(Debug, Snafu)]
 pub enum ConfigurationError {
+    /// Environment variable prefix was empty.
+    #[snafu(display("Environment variable prefix must not be empty."))]
+    EmptyPrefix,
+
+    /// Rquested field was missing from the configuration.
     #[snafu(display("Missing field '{}' in configuration. {}", field, help_text))]
     MissingField {
+        /// Help text describing how to set the missing field.
+        ///
+        /// This is meant to be displayed to the user, and includes environment variable-specific text if environment
+        /// variables had been loaded originally.
         help_text: String,
+
+        /// Name of the missing field.
         field: Cow<'static, str>,
     },
 
+    /// Requested field's data type was not the unexpected data type.
     #[snafu(display(
-        "Expected value at path '{}' to be '{}', got '{}' instead.",
-        path,
+        "Expected value for field '{}' to be '{}', got '{}' instead.",
+        field,
         expected_ty,
         actual_ty
     ))]
     InvalidFieldType {
-        path: String,
+        /// Name of the invalid field.
+        ///
+        /// This is a period-separated path to the field.
+        field: String,
+
+        /// Expected data type.
         expected_ty: String,
+
+        /// Actual data type.
         actual_ty: String,
     },
 
+    /// Generic configuration error.
     #[snafu(display("{}", source))]
-    Generic { source: GenericError },
+    Generic {
+        /// Error source.
+        source: GenericError,
+    },
 }
 
 impl From<figment::Error> for ConfigurationError {
     fn from(e: figment::Error) -> Self {
         match e.kind {
             Kind::InvalidType(actual_ty, expected_ty) => Self::InvalidFieldType {
-                path: e.path.join("."),
+                field: e.path.join("."),
                 expected_ty,
                 actual_ty: actual_ty.to_string(),
             },
@@ -66,7 +94,7 @@ impl LookupSource {
     }
 }
 
-/// A configuration loader that can load configuration from various sources.
+/// A configuration loader that can pull from various sources.
 ///
 /// This loader provides a wrapper around a lower-level library, `figment`, to expose a simpler and focused API for both
 /// loading configuration data from various sources, as well as querying it.
@@ -88,6 +116,11 @@ pub struct ConfigurationLoader {
 }
 
 impl ConfigurationLoader {
+    /// Loads the given YAML configuration file.
+    ///
+    /// ## Errors
+    ///
+    /// If the file could not be read, or if the file is not valid YAML, an error will be returned.
     #[cfg(feature = "yaml")]
     pub fn from_yaml<P>(mut self, path: P) -> Result<Self, ConfigurationError>
     where
@@ -98,6 +131,9 @@ impl ConfigurationLoader {
         Ok(self)
     }
 
+    /// Attempts to load the given YAML configuration file, ignoring any errors.
+    ///
+    /// Errors include the file not existing, not being readable/accessible, and not being valid YAML.
     #[cfg(feature = "yaml")]
     pub fn try_from_yaml<P>(mut self, path: P) -> Self
     where
@@ -114,6 +150,11 @@ impl ConfigurationLoader {
         self
     }
 
+    /// Loads the given JSON configuration file.
+    ///
+    /// ## Errors
+    ///
+    /// If the file could not be read, or if the file is not valid JSON, an error will be returned.
     #[cfg(feature = "json")]
     pub fn from_json<P>(mut self, path: P) -> Result<Self, ConfigurationError>
     where
@@ -124,6 +165,9 @@ impl ConfigurationLoader {
         Ok(self)
     }
 
+    /// Attempts to load the given JSON configuration file, ignoring any errors.
+    ///
+    /// Errors include the file not existing, not being readable/accessible, and not being valid JSON.
     #[cfg(feature = "json")]
     pub fn try_from_json<P>(mut self, path: P) -> Self
     where
@@ -140,7 +184,21 @@ impl ConfigurationLoader {
         self
     }
 
-    pub fn from_environment(mut self, prefix: &'static str) -> Self {
+    /// Loads configuration from environment variables.
+    ///
+    /// The prefix given will have an underscore appended to it if it does not already end with one. For example, with a
+    /// prefix of `app`, any environment variable starting with `app_` would be matched.
+    ///
+    /// The prefix is case-insensitive.
+    ///
+    /// ## Errors
+    ///
+    /// If the prefix is empty, an error will be returned.
+    pub fn from_environment(mut self, prefix: &'static str) -> Result<Self, ConfigurationError> {
+        if prefix.is_empty() {
+            return Err(ConfigurationError::EmptyPrefix);
+        }
+
         let prefix = if prefix.ends_with('_') {
             prefix.to_string()
         } else {
@@ -149,9 +207,14 @@ impl ConfigurationLoader {
 
         self.inner = self.inner.admerge(Env::prefixed(&prefix));
         self.lookup_sources.insert(LookupSource::Environment { prefix });
-        self
+        Ok(self)
     }
 
+    /// Consumes the configuration loader, deserializing it as `T`.
+    ///
+    /// ## Errors
+    ///
+    /// If the configuration could not be deserialized into `T`, an error will be returned.
     pub fn into_typed<'a, T>(self) -> Result<T, ConfigurationError>
     where
         T: Deserialize<'a>,
@@ -159,6 +222,7 @@ impl ConfigurationLoader {
         self.inner.extract().map_err(Into::into)
     }
 
+    /// Consumes the configuration loader and wraps it in a generic wrapper.
     pub fn into_generic(self) -> Result<GenericConfiguration, ConfigurationError> {
         let inner: Value = self.inner.extract()?;
         Ok(GenericConfiguration {
@@ -258,7 +322,7 @@ impl GenericConfiguration {
     ///
     /// ## Errors
     ///
-    /// If the value could not be deserialized into `T`, an error variant will be returned.
+    /// If the value could not be deserialized into `T`, an error will be returned.
     pub fn try_get_typed<'a, T>(&self, key: &str) -> Result<Option<T>, ConfigurationError>
     where
         T: Deserialize<'a>,
@@ -279,7 +343,7 @@ impl GenericConfiguration {
     ///
     /// ## Errors
     ///
-    /// If the value could not be deserialized into `T`, an error variant will be returned.
+    /// If the value could not be deserialized into `T`, an error will be returned.
     pub fn as_typed<'a, T>(&self) -> Result<T, ConfigurationError>
     where
         T: Deserialize<'a>,
@@ -306,7 +370,7 @@ fn from_figment_error(lookup_sources: &HashSet<LookupSource>, e: figment::Error)
             ConfigurationError::MissingField { help_text, field }
         }
         Kind::InvalidType(actual_ty, expected_ty) => ConfigurationError::InvalidFieldType {
-            path: e.path.join("."),
+            field: e.path.join("."),
             expected_ty,
             actual_ty: actual_ty.to_string(),
         },

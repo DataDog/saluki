@@ -22,21 +22,22 @@ use super::MetadataCollector;
 
 static CONTAINERD_WATCH_EVENTS: &[ContainerdTopic] = &[ContainerdTopic::TaskStarted, ContainerdTopic::TaskDeleted];
 
-/// A workload provider that uses the containerd API to provide workload information.
+/// A metadata collector that watches for updates from containerd.
 pub struct ContainerdMetadataCollector {
     client: ContainerdClient,
     watched_namespaces: Vec<Namespace>,
 }
 
 impl ContainerdMetadataCollector {
-    /// Creates a new `ContainerdWorkloadProvider` from the given configuration.
+    /// Creates a new `ContainerdMetadataCollector` from the given configuration.
     ///
     /// ## Errors
     ///
-    /// If the collector fails to connect to the containerd API, an error will be returned.
+    /// If the containerd gRPC client cannot be created, or listing the namespaces in the containerd runtime fails, an
+    /// error will be returned.
     pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let client = ContainerdClient::from_configuration(config).await?;
-        let watched_namespaces = client.get_namespaces().await?;
+        let watched_namespaces = client.list_namespaces().await?;
 
         Ok(Self {
             client,
@@ -107,7 +108,7 @@ impl NamespaceWatcher {
         for container in containers {
             let pids = match self
                 .client
-                .get_pids_for_container(&self.namespace, container.id.clone())
+                .list_pids_for_container(&self.namespace, container.id.clone())
                 .await
             {
                 Ok(pids) => pids,

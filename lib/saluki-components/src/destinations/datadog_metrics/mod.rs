@@ -6,11 +6,11 @@ use http_body_util::BodyExt as _;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::Counter;
 use saluki_config::GenericConfiguration;
-use saluki_core::components::{destinations::*, metrics::MetricsBuilder, ComponentContext};
+use saluki_core::components::{destinations::*, ComponentContext, MetricsBuilder};
 use saluki_error::GenericError;
 use saluki_event::DataType;
 use saluki_io::{
-    buf::{get_fixed_bytes_buffer_pool, ChunkedBytesBuffer, ChunkedBytesBufferPool},
+    buf::{get_fixed_bytes_buffer_pool, ChunkedBytesBuffer, ChunkedBytesBufferObjectPool},
     net::client::http::{ChunkedHttpsClient, HttpClient},
 };
 use serde::Deserialize;
@@ -199,8 +199,8 @@ impl MemoryBounds for DatadogMetricsConfiguration {
 
 pub struct DatadogMetrics {
     http_client: ChunkedHttpsClient,
-    series_request_builder: RequestBuilder<ChunkedBytesBufferPool>,
-    sketches_request_builder: RequestBuilder<ChunkedBytesBufferPool>,
+    series_request_builder: RequestBuilder<ChunkedBytesBufferObjectPool>,
+    sketches_request_builder: RequestBuilder<ChunkedBytesBufferObjectPool>,
 }
 
 #[async_trait]
@@ -224,10 +224,10 @@ impl Destination for DatadogMetrics {
         while let Some(event_buffers) = context.events().next_ready().await {
             debug!(event_buffers_len = event_buffers.len(), "Received event buffers.");
 
-            for mut event_buffer in event_buffers {
+            for event_buffer in event_buffers {
                 debug!(events_len = event_buffer.len(), "Processing event buffer.");
 
-                for event in event_buffer.take_events() {
+                for event in event_buffer {
                     if let Some(metric) = event.into_metric() {
                         let request_builder = match MetricsEndpoint::from_metric(&metric) {
                             MetricsEndpoint::Series => &mut series_request_builder,
@@ -377,7 +377,7 @@ async fn run_io_loop(
     let _ = io_shutdown_tx.send(());
 }
 
-fn create_request_builder_buffer_pool() -> ChunkedBytesBufferPool {
+fn create_request_builder_buffer_pool() -> ChunkedBytesBufferObjectPool {
     // Create the underlying fixed-size buffer pool for the individual chunks.
     //
     // This is 4MB total, in 32KB chunks, which ensures we have enough to simultaneously encode a request for the
@@ -391,5 +391,5 @@ fn create_request_builder_buffer_pool() -> ChunkedBytesBufferPool {
     // `ChunkedBytesBuffer` is an optimized buffer type for writing where the target is eventually an HTTP request. This
     // is because it can be grown dynamically by acquiring more "chunks" from the wrapped buffer pool, which are then
     // written into. As well, it can be used as a `Body` type for `hyper` requests.
-    ChunkedBytesBufferPool::new(pool)
+    ChunkedBytesBufferObjectPool::new(pool)
 }

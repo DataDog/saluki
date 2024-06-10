@@ -17,9 +17,16 @@ use super::{
     unix::{unix_recvmsg, unixgram_recvmsg},
 };
 
+/// A connection-oriented socket.
+///
+/// This type wraps network sockets that operate in a connection-oriented manner, such as TCP or Unix domain sockets in
+/// stream mode.
 #[pin_project(project = ConnectionProjected)]
 pub enum Connection {
+    /// A TCP socket.
     Tcp(#[pin] TcpStream, SocketAddr),
+
+    /// A Unix domain socket in stream mode (SOCK_STREAM).
     #[cfg(unix)]
     Unix(#[pin] tokio::net::UnixStream),
 }
@@ -70,8 +77,15 @@ impl AsyncWrite for Connection {
     }
 }
 
+/// A connectionless socket.
+///
+/// This type wraps network sockets that operate in a connectionless manner, such as UDP or Unix domain sockets in
+/// datagram mode.
 enum Connectionless {
+    /// A UDP socket.
     Udp(UdpSocket),
+
+    /// A Unix domain socket in datagram mode (SOCK_DGRAM).
     #[cfg(unix)]
     Unixgram(tokio::net::UnixDatagram),
 }
@@ -91,15 +105,42 @@ enum StreamInner {
     Connectionless { socket: Connectionless },
 }
 
+/// A network stream.
+///
+/// `Stream` provides an abstraction over connectionless and connection-oriented network sockets. In many cases, it is
+/// not required to know the exact socket family (e.g. TCP, UDP, Unix domain socket) that is being used, and it can be
+/// beneficial to allow abstracting over the differences to facilitate simpler code.
+///
+/// ## Connection-oriented mode
+///
+/// In connection-oriented mode, the stream is backed by a socket that operates in a connection-oriented manner, which
+/// ensures a reliable, ordered stream of messages to and from the remote peer.
+///
+/// The connection address returned when receiving data _should_ be stable for the life of the `Stream`.
+///
+/// ## Connectionless mode
+///
+/// In connectionless mode, the stream is backed by a socket that operates in a connectionless manner, which does not
+/// provide any assurances around reliability and ordering of messages to and from the remote peer. While a stream might
+/// be backed by a Unix domain socket in datagram mode, which _does_ provide reliability of messages, this cannot and
+/// should not be relied upon when using `Stream`.
 pub struct Stream {
     inner: StreamInner,
 }
 
 impl Stream {
+    /// Returns `true` if the stream is connectionless.
     pub fn is_connectionless(&self) -> bool {
         matches!(self.inner, StreamInner::Connectionless { .. })
     }
 
+    /// Receives data from the stream.
+    ///
+    /// On success, returns the number of bytes read and the address from whence the data came.
+    ///
+    /// ## Errors
+    ///
+    /// If the underlying system call fails, an error is returned.
     pub async fn receive<B: BufMut>(&mut self, buf: &mut B) -> io::Result<(usize, ConnectionAddress)> {
         match &mut self.inner {
             StreamInner::Connection { socket } => socket.receive(buf).await,

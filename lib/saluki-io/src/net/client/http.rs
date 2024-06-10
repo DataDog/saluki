@@ -1,3 +1,5 @@
+//! Basic HTTP client.
+
 use std::io;
 
 use http::{Request, Response};

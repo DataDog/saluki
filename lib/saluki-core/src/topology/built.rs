@@ -1,13 +1,16 @@
 use std::collections::HashMap;
 
-use snafu::{OptionExt as _, Snafu};
+use saluki_error::{generic_error, GenericError};
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
-    buffers::FixedSizeBufferPool,
     components::{
-        ComponentContext, Destination, DestinationContext, Source, SourceContext, Transform, TransformContext,
+        destinations::{Destination, DestinationContext},
+        sources::{Source, SourceContext},
+        transforms::{Transform, TransformContext},
+        ComponentContext,
     },
+    pooling::FixedSizeObjectPool,
 };
 
 use super::{
@@ -18,15 +21,12 @@ use super::{
     ComponentId,
 };
 
-#[derive(Debug, Snafu)]
-#[snafu(context(suffix(false)))]
-pub enum TopologyError {
-    #[snafu(display("missing forwarder for '{}'", component_id))]
-    MissingForwarder { component_id: ComponentId },
-    #[snafu(display("missing event stream for '{}'", component_id))]
-    MissingEventStream { component_id: ComponentId },
-}
-
+/// A built topology.
+///
+/// Built topologies represent a topology blueprint where each configured component, along with their associated
+/// connections to other components, was validated and built successfully.
+///
+/// A built topology must be spawned via [`spawn`].
 pub struct BuiltTopology {
     graph: Graph,
     sources: HashMap<ComponentId, Box<dyn Source + Send>>,
@@ -35,7 +35,7 @@ pub struct BuiltTopology {
 }
 
 impl BuiltTopology {
-    pub fn from_parts(
+    pub(crate) fn from_parts(
         graph: Graph, sources: HashMap<ComponentId, Box<dyn Source + Send>>,
         transforms: HashMap<ComponentId, Box<dyn Transform + Send>>,
         destinations: HashMap<ComponentId, Box<dyn Destination + Send>>,
@@ -85,10 +85,17 @@ impl BuiltTopology {
         (forwarders, event_streams)
     }
 
-    pub async fn spawn(self) -> Result<RunningTopology, TopologyError> {
+    /// Spawns the topology.
+    ///
+    /// A handle is returned that can be used to trigger the topology to shutdown.
+    ///
+    /// ## Errors
+    ///
+    /// If an error occurs while spawning the topology, an error is returned.
+    pub async fn spawn(self) -> Result<RunningTopology, GenericError> {
         // Build our interconnects, which we'll grab from piecemeal as we spawn our components.
         let (mut forwarders, mut event_streams) = self.create_component_interconnects();
-        let event_buffer_pool = FixedSizeBufferPool::with_capacity(1024);
+        let event_buffer_pool = FixedSizeObjectPool::with_capacity(1024);
 
         let mut shutdown_coordinator = ComponentShutdownCoordinator::default();
 
@@ -98,9 +105,7 @@ impl BuiltTopology {
         for (component_id, source) in self.sources {
             let forwarder = forwarders
                 .remove(&component_id)
-                .ok_or(TopologyError::MissingForwarder {
-                    component_id: component_id.clone(),
-                })?;
+                .ok_or_else(|| generic_error!("No forwarder found for component '{}'", component_id))?;
 
             let shutdown_handle = shutdown_coordinator.register();
 
@@ -114,13 +119,13 @@ impl BuiltTopology {
         let mut transform_handles = Vec::new();
 
         for (component_id, transform) in self.transforms {
-            let forwarder = forwarders.remove(&component_id).context(MissingForwarder {
-                component_id: component_id.clone(),
-            })?;
+            let forwarder = forwarders
+                .remove(&component_id)
+                .ok_or_else(|| generic_error!("No forwarder found for component '{}'", component_id))?;
 
-            let event_stream = event_streams.remove(&component_id).context(MissingEventStream {
-                component_id: component_id.clone(),
-            })?;
+            let event_stream = event_streams
+                .remove(&component_id)
+                .ok_or_else(|| generic_error!("No event stream found for component '{}'", component_id))?;
 
             let component_context = ComponentContext::transform(component_id);
             let context = TransformContext::new(component_context, forwarder, event_stream, event_buffer_pool.clone());
@@ -132,9 +137,9 @@ impl BuiltTopology {
         let mut destination_handles = Vec::new();
 
         for (component_id, destination) in self.destinations {
-            let event_stream = event_streams.remove(&component_id).context(MissingEventStream {
-                component_id: component_id.clone(),
-            })?;
+            let event_stream = event_streams
+                .remove(&component_id)
+                .ok_or_else(|| generic_error!("No event stream found for component '{}'", component_id))?;
 
             let component_context = ComponentContext::destination(component_id);
             let context = DestinationContext::new(component_context, event_stream);

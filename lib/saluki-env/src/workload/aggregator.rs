@@ -10,6 +10,16 @@ use super::{
     store::{TagSnapshot, TagStore},
 };
 
+/// Aggregates the metadata from multiple collectors.
+///
+/// Metadata collectors are used to either scrape or listen for changes in workload metadata, and convert those into
+/// [`MetadataOperation`]s that are applied to a [`TagStore`]. [`MetadataAggregator`] is a simple manager type that
+/// controls the lifecycle of each collector added, and processes the metadata operations produced by them in order to
+/// update a single, unified tag store.
+///
+/// Tags can then be accessed through [`TagSnapshot`] (via [`MetadataAggregator::tags`]), which is a shared reference
+/// to the most up-to-date, consistent view of the tag store. This tag snapshot can be used to query for entity tags
+/// directly, with an equivalent API to [`WorkloadProvider`].
 pub struct MetadataAggregator {
     tag_store: TagStore,
     shared_tags: Arc<ArcSwap<TagSnapshot>>,

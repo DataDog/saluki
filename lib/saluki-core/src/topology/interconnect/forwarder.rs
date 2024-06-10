@@ -1,10 +1,11 @@
 use std::{collections::HashMap, time::Instant};
 
 use metrics::{Counter, Histogram, SharedString};
+use saluki_error::{generic_error, GenericError};
 use tokio::sync::mpsc;
 
 use crate::{
-    components::{metrics::MetricsBuilder, ComponentContext},
+    components::{ComponentContext, MetricsBuilder},
     topology::OutputName,
 };
 
@@ -39,6 +40,11 @@ impl ForwarderMetrics {
     }
 }
 
+/// Event forwarder.
+///
+/// [`Forwarder`] provides an ergonomic interface for forwarding events out of a component. It has support for multiple
+/// outputs (a default output, and additional "named" outputs) and provides telemetry around the number of forwarded
+/// events as well as the forwarding latency.
 pub struct Forwarder {
     context: ComponentContext,
     default: Option<(ForwarderMetrics, mpsc::Sender<EventBuffer>)>,
@@ -46,6 +52,7 @@ pub struct Forwarder {
 }
 
 impl Forwarder {
+    /// Create a new `Forwarder` for the given component context.
     pub fn new(context: ComponentContext) -> Self {
         Self {
             context,
@@ -54,6 +61,13 @@ impl Forwarder {
         }
     }
 
+    // TODO: We override the default sender, but we append when it's a named sender.... is that right? Appending makes
+    // sense because we might want to attach multiple component outputs to a single downstream component... but we would
+    // conceivably want to do the same thing for the default output as we do for named outputs.
+    //
+    // Really gotta double check this. :thinking:
+
+    /// Adds an output to the forwarder, attached to the given sender.
     pub fn add_output(&mut self, output_name: OutputName, sender: mpsc::Sender<EventBuffer>) {
         match output_name {
             OutputName::Default => {
@@ -70,15 +84,24 @@ impl Forwarder {
         }
     }
 
-    pub async fn forward(&self, buffer: EventBuffer) -> Result<(), String> {
-        let (metrics, default_output) = self.default.as_ref().ok_or("no default output")?;
+    /// Forwards the event buffer to the default output.
+    ///
+    /// ## Errors
+    ///
+    /// If the default output is not set, or there is an error sending to the default output, an error is returned.
+    pub async fn forward(&self, buffer: EventBuffer) -> Result<(), GenericError> {
+        // TODO: Switch to `GenericError` instead of `String`.
+        let (metrics, default_output) = self
+            .default
+            .as_ref()
+            .ok_or_else(|| generic_error!("No default output declared."))?;
 
         let buf_len = buffer.len();
         let start = Instant::now();
         default_output
             .send(buffer)
             .await
-            .map_err(|_| format!("failed to send to default output; {} events lost", buf_len))?;
+            .map_err(|_| generic_error!("Failed to send to default output; {} events lost", buf_len))?;
         let latency = start.elapsed();
         metrics.forwarding_latency.record(latency);
 

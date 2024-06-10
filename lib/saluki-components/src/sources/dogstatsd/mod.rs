@@ -5,8 +5,8 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::ContextResolver;
 use saluki_core::{
-    buffers::FixedSizeBufferPool,
-    components::{metrics::MetricsBuilder, sources::*},
+    components::{sources::*, MetricsBuilder},
+    pooling::{FixedSizeObjectPool, ObjectPool as _},
     topology::{
         shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
         OutputDefinition,
@@ -18,8 +18,8 @@ use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, BytesBuffer},
     deser::{codec::DogstatsdCodec, Deserializer, DeserializerBuilder, DeserializerError},
     net::{
-        addr::{ConnectionAddress, ListenAddress},
         listener::{Listener, ListenerError},
+        ConnectionAddress, ListenAddress,
     },
 };
 use serde::Deserialize;
@@ -215,20 +215,20 @@ struct HandlerContext {
     shutdown_handle: DynamicShutdownHandle,
     listen_addr: String,
     origin_detection: bool,
-    deserializer: Deserializer<DogStatsDMultiFraming, FixedSizeBufferPool<BytesBuffer>>,
+    deserializer: Deserializer<DogStatsDMultiFraming, FixedSizeObjectPool<BytesBuffer>>,
 }
 
 struct ListenerContext {
     shutdown_handle: DynamicShutdownHandle,
     listener: Listener,
-    io_buffer_pool: FixedSizeBufferPool<BytesBuffer>,
+    io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     context_resolver: ContextResolver,
     origin_detection: bool,
 }
 
 pub struct DogStatsD {
     listeners: Vec<Listener>,
-    io_buffer_pool: FixedSizeBufferPool<BytesBuffer>,
+    io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     context_resolver: ContextResolver,
     origin_detection: bool,
 }
@@ -351,8 +351,8 @@ async fn process_stream(source_context: SourceContext, handler_context: HandlerC
                             for event in &mut event_buffer {
                                 match event {
                                     Event::Metric(metric) => {
-                                        if metric.metadata.origin_entity.is_none() {
-                                            metric.metadata.origin_entity = Some(OriginEntity::ProcessId(creds.pid as u32));
+                                        if metric.metadata().origin_entity.is_none() {
+                                            metric.metadata_mut().origin_entity = Some(OriginEntity::ProcessId(creds.pid as u32));
                                         }
                                     },
                                 }

@@ -7,6 +7,11 @@ use crate::net::addr::{ConnectionAddress, ProcessCredentials};
 
 use super::ancillary::{ControlMessage, SocketCredentialsAncillaryData};
 
+/// Enables the `SO_PASSCRED` option on the given socket.
+///
+/// ## Errors
+///
+/// If the underlying system call fails, an error is returned.
 pub fn enable_uds_socket_credentials<'sock, S>(socket: &'sock S) -> io::Result<()>
 where
     SockRef<'sock>: From<&'sock S>,

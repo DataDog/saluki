@@ -1,3 +1,5 @@
+//! Memory management.
+
 use std::collections::VecDeque;
 
 use memory_accounting::{BoundsVerifier, MemoryBoundsBuilder, MemoryGrant, VerifiedBounds};
@@ -42,7 +44,7 @@ impl MemoryBoundsVerificationConfiguration {
     ///
     /// ## Errors
     ///
-    /// If an error occurs during deserialization, an error variant will be returned.
+    /// If an error occurs during deserialization, an error will be returned.
     pub fn try_from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
         config
             .as_typed::<Self>()
@@ -57,7 +59,7 @@ impl MemoryBoundsVerificationConfiguration {
 ///
 /// ## Errors
 ///
-/// If the bounds could not be validated, an error variant will be returned.
+/// If the bounds could not be validated, an error will be returned.
 pub fn try_verify_memory_bounds<F>(
     configuration: MemoryBoundsVerificationConfiguration, populate_bounds: F,
 ) -> Result<(), GenericError>

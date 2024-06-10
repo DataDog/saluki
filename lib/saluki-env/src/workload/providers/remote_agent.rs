@@ -31,7 +31,7 @@ pub struct RemoteAgentWorkloadProvider {
 }
 
 impl RemoteAgentWorkloadProvider {
-    /// Create a new `RemoteAgentWorkloadProvider` based on the given detected features.
+    /// Create a new `RemoteAgentWorkloadProvider` based on the given configuration.
     pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let feature_detector = FeatureDetector::automatic(config);
 
@@ -53,20 +53,10 @@ impl RemoteAgentWorkloadProvider {
 
         Ok(Self { shared_tags })
     }
-
-    /// Gets a shared reference to the latest tag store snapshot.
-    ///
-    /// This can be used to query for the tags of a specific entity, and is updated as workload changes are observed and
-    /// processed.
-    pub fn tags(&self) -> ArcSwap<TagSnapshot> {
-        ArcSwap::new(self.shared_tags.load_full())
-    }
 }
 
 #[async_trait]
 impl WorkloadProvider for RemoteAgentWorkloadProvider {
-    type Error = std::convert::Infallible;
-
     fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<TagSet> {
         self.shared_tags.load().get_entity_tags(entity_id, cardinality)
     }

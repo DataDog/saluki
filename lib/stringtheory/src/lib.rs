@@ -1,3 +1,12 @@
+//! Sharing-optimized strings and string interning utilities.
+//!
+//! `stringtheory` provides two main components: a sharing-optimized string type, `MetaString`, and a string interning
+//! implementation, `FixedSizeInterner`. These compponents are meant to work in concert, allowing for using a single
+//! string type that can handle owned, shared, and interned strings, and providing a way to efficiently intern strings
+//! strings when possible.
+#![deny(warnings)]
+#![deny(missing_docs)]
+
 use std::{borrow::Borrow, fmt, hash, ops::Deref};
 
 pub mod interning;

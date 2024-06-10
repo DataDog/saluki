@@ -1,20 +1,22 @@
 use crate::{
-    buffers::FixedSizeBufferPool,
     components::ComponentContext,
+    pooling::FixedSizeObjectPool,
     topology::interconnect::{EventBuffer, EventStream, Forwarder},
 };
 
+/// Transform context.
 pub struct TransformContext {
     component_context: ComponentContext,
     forwarder: Forwarder,
     event_stream: EventStream,
-    event_buffer_pool: FixedSizeBufferPool<EventBuffer>,
+    event_buffer_pool: FixedSizeObjectPool<EventBuffer>,
 }
 
 impl TransformContext {
+    /// Creates a new `TransformContext`.
     pub fn new(
         component_context: ComponentContext, forwarder: Forwarder, event_stream: EventStream,
-        event_buffer_pool: FixedSizeBufferPool<EventBuffer>,
+        event_buffer_pool: FixedSizeObjectPool<EventBuffer>,
     ) -> Self {
         Self {
             component_context,
@@ -24,20 +26,23 @@ impl TransformContext {
         }
     }
 
+    /// Returns the component context.
     pub fn component_context(&self) -> ComponentContext {
         self.component_context.clone()
     }
 
+    /// Gets a reference to the forwarder.
     pub fn forwarder(&self) -> &Forwarder {
         &self.forwarder
     }
 
+    /// Gets a mutable reference to the event stream.
     pub fn event_stream(&mut self) -> &mut EventStream {
         &mut self.event_stream
     }
 
-    #[allow(unused)]
-    pub fn event_buffer_pool(&self) -> &FixedSizeBufferPool<EventBuffer> {
+    /// Gets a reference to the event buffer pool.
+    pub fn event_buffer_pool(&self) -> &FixedSizeObjectPool<EventBuffer> {
         &self.event_buffer_pool
     }
 }

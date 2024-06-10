@@ -1,3 +1,4 @@
+//! Helpers for signaling the controlled shutdown of tasks.
 use std::{
     future::Future,
     pin::Pin,
@@ -14,16 +15,22 @@ use tokio::sync::{
     Notify,
 };
 
+/// A component-specific shutdown coordinator.
+///
+/// This coordinator is designed for use by the topology to signal components to shutdown. Once a handle is registerd,
+/// it can not be unregistered. If you required the ability to unregister handles, consider using [`DynamicShutdownCoordinator`].
 #[derive(Default)]
 pub struct ComponentShutdownCoordinator {
     handles: Vec<Sender<()>>,
 }
 
+/// A component shutdown handle.
 pub struct ComponentShutdownHandle {
     receiver: Receiver<()>,
 }
 
 impl ComponentShutdownCoordinator {
+    /// Registers a shutdown handle.
     pub fn register(&mut self) -> ComponentShutdownHandle {
         let (sender, receiver) = channel();
         self.handles.push(sender);
@@ -31,6 +38,7 @@ impl ComponentShutdownCoordinator {
         ComponentShutdownHandle { receiver }
     }
 
+    /// Triggers shutdown and notifies all registered handles.
     pub fn shutdown(self) {
         for handle in self.handles {
             let _ = handle.send(());
@@ -88,7 +96,7 @@ impl DynamicShutdownCoordinator {
         }
     }
 
-    /// Triggers shutdown and notifies all outstanding handles.
+    /// Triggers shutdown and notifies all outstanding handles, waiting until all handles have been dropped.
     ///
     /// If there are any outstanding handles, they are signaled to shutdown and this function will only return once all
     /// outstanding handles have been dropped. If there are no outstanding handles, the function returns immediately.
