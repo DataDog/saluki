@@ -3,6 +3,7 @@ use tokio::task::JoinHandle;
 
 use super::shutdown::ComponentShutdownCoordinator;
 
+/// A running topology.
 pub struct RunningTopology {
     shutdown_coordinator: ComponentShutdownCoordinator,
     source_handles: Vec<JoinHandle<Result<(), ()>>>,
@@ -11,7 +12,8 @@ pub struct RunningTopology {
 }
 
 impl RunningTopology {
-    pub fn from_parts(
+    /// Creates a new `RunningTopology`.
+    pub(super) fn from_parts(
         shutdown_coordinator: ComponentShutdownCoordinator, source_handles: Vec<JoinHandle<Result<(), ()>>>,
         transform_handles: Vec<JoinHandle<Result<(), ()>>>, destination_handles: Vec<JoinHandle<Result<(), ()>>>,
     ) -> Self {
@@ -23,6 +25,11 @@ impl RunningTopology {
         }
     }
 
+    /// Triggers the topology to shutdown, waiting until all components have stopped.
+    ///
+    /// ## Errors
+    ///
+    /// If any component returns an error during shutdown, the error will be returned.
     pub async fn shutdown(self) -> Result<(), GenericError> {
         // Trigger shutdown of sources, which will then cascade to the downstream components connected to those sources,
         // eventually leading to all components shutting down.

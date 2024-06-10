@@ -42,6 +42,12 @@ impl fmt::Display for ComponentId {
 pub struct ComponentOutputId(Cow<'static, str>);
 
 impl ComponentOutputId {
+    /// Creates a new `ComponentOutputId` from an identifier and output definition.
+    ///
+    /// ## Errors
+    ///
+    /// If generated component output ID is not valid, such as due the identifier or output definition containing
+    /// invalid characters, an error is returned.
     pub fn from_definition(component_id: ComponentId, output_def: &OutputDefinition) -> Result<Self, (String, String)> {
         match output_def.output_name() {
             None => Ok(Self(component_id.0)),
@@ -58,6 +64,7 @@ impl ComponentOutputId {
         }
     }
 
+    /// Returns the component ID.
     pub fn component_id(&self) -> ComponentId {
         if let Some((component_id, _)) = self.0.split_once('.') {
             ComponentId(component_id.to_string().into())
@@ -66,6 +73,7 @@ impl ComponentOutputId {
         }
     }
 
+    /// Returns the output name.
     pub fn output(&self) -> OutputName {
         if let Some((_, output_name)) = self.0.split_once('.') {
             OutputName::Given(output_name.to_string().into())
@@ -131,12 +139,25 @@ const fn validate_component_id(id: &str, as_output_id: bool) -> bool {
     true
 }
 
+/// An output name.
+///
+/// Components must always have at least one output, but an output can either be the default output or a named output.
+/// This allows for components to have multiple outputs, potentially with one (the default) acting as a catch-all.
+///
+/// `OutputName` is used to differentiate between a default output and named outputs.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum OutputName {
+    /// Default output.
     Default,
+
+    /// Named output.
     Given(Cow<'static, str>),
 }
 
+/// An output definition.
+///
+/// Outputs are a combination of the output name and data type, which defines the data type (or types) of events that
+/// can be emitted from a particular component output.
 #[derive(Clone, Debug)]
 pub struct OutputDefinition {
     name: OutputName,
@@ -144,6 +165,7 @@ pub struct OutputDefinition {
 }
 
 impl OutputDefinition {
+    /// Creates a default output with the given data type.
     pub const fn default_output(data_ty: DataType) -> Self {
         Self {
             name: OutputName::Default,
@@ -151,7 +173,7 @@ impl OutputDefinition {
         }
     }
 
-    #[allow(unused)]
+    /// Creates a named output with the given name and data type.
     pub fn named_output<S>(name: S, data_ty: DataType) -> Self
     where
         S: Into<Cow<'static, str>>,
@@ -162,6 +184,9 @@ impl OutputDefinition {
         }
     }
 
+    /// Returns the output name.
+    ///
+    /// If this is a default output, `None` is returned.
     pub fn output_name(&self) -> Option<&str> {
         match &self.name {
             OutputName::Default => None,
@@ -169,6 +194,7 @@ impl OutputDefinition {
         }
     }
 
+    /// Returns the data type.
     pub fn data_ty(&self) -> DataType {
         self.data_ty
     }
@@ -182,6 +208,7 @@ pub struct TypedComponentOutputId {
 }
 
 impl TypedComponentOutputId {
+    /// Creates a new `TypedComponentOutputId` from the given component output ID and output data type.
     pub fn new(component_output: ComponentOutputId, output_ty: DataType) -> Self {
         Self {
             component_output,
@@ -189,10 +216,12 @@ impl TypedComponentOutputId {
         }
     }
 
+    /// Gets a reference to the component output ID.
     pub fn component_output(&self) -> &ComponentOutputId {
         &self.component_output
     }
 
+    /// Returns the output data type.
     pub fn output_ty(&self) -> DataType {
         self.output_ty
     }

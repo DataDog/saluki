@@ -8,7 +8,6 @@ use datadog_protos::agent::{
 use hyper::Uri;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use snafu::{ResultExt as _, Snafu};
 use tokio::sync::mpsc;
 use tonic::{
     service::interceptor::InterceptedService,
@@ -28,23 +27,6 @@ use super::MetadataCollector;
 const DEFAULT_AGENT_IPC_ENDPOINT: &str = "https://127.0.0.1:5001";
 const DEFAULT_AGENT_AUTH_TOKEN_FILE_PATH: &str = "/etc/datadog-agent/auth/token";
 
-#[derive(Debug, Snafu)]
-#[snafu(context(suffix(false)))]
-pub enum CollectorError {
-    #[snafu(display(
-        "Failed to read Datadog Agent authentication token from '{}': {}",
-        token_path,
-        source
-    ))]
-    FailedToReadAuthToken { token_path: String, source: GenericError },
-
-    #[snafu(display("Failed to connect to the Datadog Agent IPC endpoint '{}': {}", ipc_endpoint, source))]
-    FailedToConnect {
-        ipc_endpoint: String,
-        source: tonic::transport::Error,
-    },
-}
-
 /// A workload provider that uses the remote tagger API from a Datadog Agent, or Datadog Cluster
 /// Agent, to provide workload information.
 pub struct RemoteAgentMetadataCollector {
@@ -56,7 +38,8 @@ impl RemoteAgentMetadataCollector {
     ///
     /// ## Errors
     ///
-    /// If the collector fails to connect to the tagger API, an error will be returined.
+    /// If the Agent gRPC client cannot be created (invalid API endpoint, missing authentication token, etc), or if the
+    /// authentication token is invalid, an error will be returned.
     pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let raw_ipc_endpoint = config
             .try_get_typed::<String>("agent_ipc_endpoint")?
@@ -90,9 +73,7 @@ impl RemoteAgentMetadataCollector {
             .connect_timeout(Duration::from_secs(2))
             .connect_with_connector(build_self_signed_https_connector())
             .await
-            .context(FailedToConnect {
-                ipc_endpoint: raw_ipc_endpoint,
-            })?;
+            .with_error_context(|| format!("Failed to connect to Datadog Agent IPC endpoint '{}'", raw_ipc_endpoint))?;
 
         let mut agent_client = AgentSecureClient::with_interceptor(channel, bearer_token_interceptor);
 

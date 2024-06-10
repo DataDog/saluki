@@ -5,8 +5,9 @@ use saluki_error::GenericError;
 use saluki_event::DataType;
 
 use crate::components::{
-    Destination, DestinationBuilder, DestinationContext, Source, SourceBuilder, SourceContext, Transform,
-    TransformBuilder, TransformContext,
+    destinations::{Destination, DestinationBuilder, DestinationContext},
+    sources::{Source, SourceBuilder, SourceContext},
+    transforms::{Transform, TransformBuilder, TransformContext},
 };
 
 use super::OutputDefinition;

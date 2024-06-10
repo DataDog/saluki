@@ -1,3 +1,5 @@
+//! Transform implementations.
+
 mod aggregate;
 pub use self::aggregate::AggregateConfiguration;
 

@@ -1,9 +1,16 @@
 use bytes::{buf::UninitSlice, Buf, BufMut};
 
-use saluki_core::buffers::{buffered_newtype, Clearable};
+use saluki_core::pooling::{pooled_newtype, Clearable};
 
 use super::ReadIoBuffer;
 
+/// A fixed-size byte vector.
+///
+/// This is a simple wrapper around a `Vec<u8>` that provides fixed-size semantics by disallowing writes that extend
+/// beyond the initial capacity. `FixedSizeVec` cannot be used directly, and must be interacted with via the [`Buf`] and
+/// [`BufMut`] traits.
+///
+/// Additionally, it is designed for use in object pools (implements [`Clearable`]).
 pub struct FixedSizeVec {
     start_idx: usize,
     read_idx: usize,
@@ -11,6 +18,9 @@ pub struct FixedSizeVec {
 }
 
 impl FixedSizeVec {
+    /// Creates a new `FixedSizeVec` with the given capacity.
+    ///
+    /// The vector will not grow once all available capacity has been consumed, and must be cleared to be reused.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             start_idx: 0,
@@ -28,10 +38,9 @@ impl Clearable for FixedSizeVec {
     }
 }
 
-buffered_newtype! {
+pooled_newtype! {
     outer => BytesBuffer,
     inner => FixedSizeVec,
-    clear => |this| this.clear()
 }
 
 impl Buf for BytesBuffer {

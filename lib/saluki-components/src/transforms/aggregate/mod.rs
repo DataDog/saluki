@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_context::Context;
 use saluki_core::{
-    buffers::FixedSizeBufferPool,
-    components::{metrics::MetricsBuilder, transforms::*},
+    components::{transforms::*, MetricsBuilder},
+    pooling::{FixedSizeObjectPool, ObjectPool as _},
     topology::{interconnect::EventBuffer, OutputDefinition},
 };
 use saluki_env::time::get_unix_timestamp;
@@ -147,7 +147,7 @@ impl Transform for Aggregate {
         // events per event buffer. If we use the global event buffer pool, we risk churning through many event buffers,
         // having them reserve a lot of underlying capacity, and then having a ton of event buffers in the pool with
         // high capacity when we only need one every few seconds, etc.
-        let event_buffer_pool = FixedSizeBufferPool::<EventBuffer>::with_capacity(EVENT_BUFFER_POOL_SIZE);
+        let event_buffer_pool = FixedSizeObjectPool::<EventBuffer>::with_capacity(EVENT_BUFFER_POOL_SIZE);
 
         debug!("Aggregation transform started.");
 
@@ -187,10 +187,10 @@ impl Transform for Aggregate {
                     flush.as_mut().reset(state.get_next_flush_instant());
                 },
                 maybe_event_buffer = context.event_stream().next(), if !final_flush => match maybe_event_buffer {
-                    Some(mut event_buffer) => {
+                    Some(event_buffer) => {
                         trace!(events_len = event_buffer.len(), "Received events.");
 
-                        for event in event_buffer.take_events() {
+                        for event in event_buffer {
                             if let Some(metric) = event.into_metric() {
                                 if !state.insert(metric) {
                                     trace!("Dropping metric due to context limit.");

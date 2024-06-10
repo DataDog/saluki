@@ -1,3 +1,5 @@
+//! Basic HTTP server.
+
 use std::{
     future::Future,
     pin::Pin,

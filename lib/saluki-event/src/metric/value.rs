@@ -2,16 +2,61 @@ use std::{collections::HashSet, fmt, time::Duration};
 
 use ddsketch_agent::DDSketch;
 
+/// A metric value.
 #[derive(Clone, Debug)]
 pub enum MetricValue {
-    Counter { value: f64 },
-    Rate { value: f64, interval: Duration },
-    Gauge { value: f64 },
-    Set { values: HashSet<String> },
-    Distribution { sketch: DDSketch },
+    /// A counter.
+    ///
+    /// Counters generally represent a monotonically increasing value, such as the number of requests received.
+    Counter {
+        /// Counter value.
+        value: f64,
+    },
+
+    /// A rate.
+    ///
+    /// Rates define the rate of change over a given interval, in seconds.
+    ///
+    /// For example, a rate with a value of 1.5 and an interval of 10 seconds would indicate that the value increases by
+    /// 15 every 10 seconds.
+    Rate {
+        /// Normalized per-second value.
+        value: f64,
+
+        /// Interval over which the rate is calculated.
+        interval: Duration,
+    },
+
+    /// A gauge.
+    ///
+    /// Gauges represent the latest value of a quantity, such as the current number of active connections. This value
+    /// can go up or down, but gauges do not track the individual changes to the value, only the latest value.
+    Gauge {
+        /// Gauge value.
+        value: f64,
+    },
+
+    /// A set.
+    ///
+    /// Sets represent a collection of unique values, such as the unique IP addresses that have connected to a service.
+    Set {
+        /// Unique values in the set.
+        values: HashSet<String>,
+    },
+
+    /// A distribution.
+    ///
+    /// Distributions represent the distribution of a quantity, such as the response times for a service. By tracking
+    /// each individual measurement, statistics can be derived over the sample set to provide insight, such as minimum
+    /// and maximum value, how many of the values are above or below a specific threshold, and more.
+    Distribution {
+        /// The internal sketch representing the distribution.
+        sketch: DDSketch,
+    },
 }
 
 impl MetricValue {
+    /// Returns the type of the metric value.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Counter { .. } => "counter",
@@ -22,18 +67,27 @@ impl MetricValue {
         }
     }
 
+    /// Creates a distribution from a single value.
     pub fn distribution_from_value(value: f64) -> Self {
         let mut sketch = DDSketch::default();
         sketch.insert(value);
         Self::Distribution { sketch }
     }
 
+    /// Creates a distribution from multiple values.
     pub fn distribution_from_values(values: &[f64]) -> Self {
         let mut sketch = DDSketch::default();
         sketch.insert_many(values);
         Self::Distribution { sketch }
     }
 
+    /// Merges another metric value into this one.
+    ///
+    /// If both `self` and `other` are the same metric type, their values will be merged appropriately. If the metric
+    /// types are different, the incoming value will override the existing value.
+    ///
+    /// For rates, the interval of both rates must match to be merged. For gauges, the incoming value will override the
+    /// existing value.
     pub fn merge(&mut self, other: Self) {
         match (self, other) {
             (Self::Counter { value: a }, Self::Counter { value: b }) => *a += b,
@@ -87,5 +141,130 @@ impl fmt::Display for MetricValue {
             Self::Set { values } => write!(f, "set<{:?}>", values),
             Self::Distribution { sketch } => write!(f, "distribution<{:?}>", sketch),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_counter() {
+        let mut a = MetricValue::Counter { value: 1.0 };
+        let b = MetricValue::Counter { value: 2.0 };
+
+        a.merge(b);
+
+        assert_eq!(a, MetricValue::Counter { value: 3.0 });
+    }
+
+    #[test]
+    fn merge_rate_same_interval() {
+        let mut a = MetricValue::Rate {
+            value: 1.0,
+            interval: Duration::from_secs(1),
+        };
+        let b = MetricValue::Rate {
+            value: 2.0,
+            interval: Duration::from_secs(1),
+        };
+
+        a.merge(b);
+
+        assert_eq!(
+            a,
+            MetricValue::Rate {
+                value: 3.0,
+                interval: Duration::from_secs(1),
+            }
+        );
+    }
+
+    #[test]
+    fn merge_rate_different_interval() {
+        let mut a = MetricValue::Rate {
+            value: 1.0,
+            interval: Duration::from_secs(1),
+        };
+        let b = MetricValue::Rate {
+            value: 2.0,
+            interval: Duration::from_secs(2),
+        };
+
+        a.merge(b);
+
+        assert_eq!(
+            a,
+            MetricValue::Rate {
+                value: 2.0,
+                interval: Duration::from_secs(2),
+            }
+        );
+    }
+
+    #[test]
+    fn merge_gauge() {
+        let mut a = MetricValue::Gauge { value: 1.0 };
+        let b = MetricValue::Gauge { value: 2.0 };
+
+        a.merge(b);
+
+        assert_eq!(a, MetricValue::Gauge { value: 2.0 });
+    }
+
+    #[test]
+    fn merge_set() {
+        let mut a = MetricValue::Set {
+            values: vec!["a".to_string(), "b".to_string()].into_iter().collect(),
+        };
+        let b = MetricValue::Set {
+            values: vec!["b".to_string(), "c".to_string()].into_iter().collect(),
+        };
+
+        a.merge(b);
+
+        assert_eq!(
+            a,
+            MetricValue::Set {
+                values: vec!["a".to_string(), "b".to_string(), "c".to_string()]
+                    .into_iter()
+                    .collect()
+            }
+        );
+    }
+
+    #[test]
+    fn merge_distribution() {
+        let mut sketch_a = DDSketch::default();
+        sketch_a.insert(1.0);
+        let mut a = MetricValue::Distribution { sketch: sketch_a };
+
+        let mut sketch_b = DDSketch::default();
+        sketch_b.insert(2.0);
+        let b = MetricValue::Distribution { sketch: sketch_b };
+
+        a.merge(b);
+
+        assert_eq!(
+            a,
+            MetricValue::Distribution {
+                sketch: {
+                    let mut sketch = DDSketch::default();
+                    sketch.insert(1.0);
+                    sketch.insert(2.0);
+                    sketch
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn merge_different_type() {
+        let mut a = MetricValue::Counter { value: 1.0 };
+        let b = MetricValue::Gauge { value: 2.0 };
+
+        a.merge(b);
+
+        assert_eq!(a, MetricValue::Gauge { value: 2.0 });
     }
 }

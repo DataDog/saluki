@@ -2,13 +2,32 @@ use serde::Deserialize;
 use std::{fmt, net::SocketAddr, path::PathBuf};
 use url::Url;
 
+/// A listen address.
+///
+/// Listen addresses are used to bind listeners to specific local addresses and ports, and multiple address families and
+/// protocols are supported. In textual form, listen addresses are represented as URLs, with the scheme indicating the
+/// protocol and the authority/path representing the address to listen on.
+///
+/// ## Examples
+///
+/// - `tcp://127.0.0.1:6789` (listen on IPv4 loopback, TCP port 6789)
+/// - `udp://[::1]:53` (listen on IPv6 loopback, UDP port 53)
+/// - `unixgram:///tmp/app.socket` (listen on a Unix datagram socket at `/tmp/app.socket`)
+/// - `unix:///tmp/app.socket` (listen on a Unix stream socket at `/tmp/app.socket`)
 #[derive(Clone, Debug, Deserialize)]
 #[serde(try_from = "String")]
 pub enum ListenAddress {
+    /// A TCP listen address.
     Tcp(SocketAddr),
+
+    /// A UDP listen address.
     Udp(SocketAddr),
+
+    /// A Unix datagram listen address.
     #[cfg(unix)]
     Unixgram(PathBuf),
+
+    /// A Unix stream listen address.
     #[cfg(unix)]
     Unix(PathBuf),
 }
@@ -98,17 +117,37 @@ impl<'a> TryFrom<&'a str> for ListenAddress {
     }
 }
 
+/// Process credentials for a Unix domain socket connection.
+///
+/// When dealing with Unix domain sockets, they can be configured such that the "process credentials" of the remote peer
+/// are sent as part of each received message. These "credentials" are the process ID of the remote peer, and the user
+/// ID and group ID that the process is running as.
+///
+/// In some cases, this information can be useful for identifying the remote peer and enriching the received data in an
+/// automatic way.
 #[cfg(unix)]
 #[derive(Clone)]
 pub struct ProcessCredentials {
+    /// Process ID of the remote peer.
     pub pid: i32,
+
+    /// User ID of the remote peer process.
     pub uid: u32,
+
+    /// Group ID of the remote peer process.
     pub gid: u32,
 }
 
+/// Connection address.
+///
+/// A generic representation of the address of a remote peer. This can either be a typical socket address (used for
+/// IPv4/IPv6), or potentially the process credentials of a Unix domain socket connection.
 #[derive(Clone)]
 pub enum ConnectionAddress {
+    /// A socket-like address.
     SocketLike(SocketAddr),
+
+    /// A process-like address.
     #[cfg(unix)]
     ProcessLike(Option<ProcessCredentials>),
 }

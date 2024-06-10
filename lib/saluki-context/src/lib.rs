@@ -1,3 +1,7 @@
+//! Metric context and context resolving.
+#![deny(warnings)]
+#![deny(missing_docs)]
+
 use std::{
     fmt,
     hash::{self, Hash as _, Hasher as _},
@@ -252,7 +256,7 @@ impl fmt::Debug for ContextInner {
     }
 }
 
-/// A helper type for resolving a context without allocations.
+/// A context reference that requires zero allocations.
 ///
 /// It can be constructed entirely from borrowed strings, which allows for trivially extracting the name and tags of a
 /// metric from a byte slice and then resolving the context without needing to allocate any new memory when a context
@@ -260,11 +264,11 @@ impl fmt::Debug for ContextInner {
 ///
 /// ## Hashing and equality
 ///
-/// `ContextRef` (and `Context` itself) are order-oblivious [1] when it comes to tags, which means that we do not consider
-/// the order of the tags to be relevant to the resulting hash or when comparing two contexts for equality. This is
-/// acheived by hashing the tags in an order-oblivious way (XORing the hashes of the tags into a single value) and using
-/// the hash of the name/tags when comparing equality between two contexts, instead of comparing the names/tags directly
-/// to each other.
+/// `ContextRef` (and `Context` itself) are order-oblivious [1] when it comes to tags, which means that we do not
+/// consider the order of the tags to be relevant to the resulting hash or when comparing two contexts for equality.
+/// This is acheived by hashing the tags in an order-oblivious way (XORing the hashes of the tags into a single value)
+/// and using the hash of the name/tags when comparing equality between two contexts, instead of comparing the
+/// names/tags directly to each other.
 ///
 /// Normally, hash maps would instruct you to not use the hash values directly as a proxy for equality because of the
 /// risk of hash collisions, and they're right: this approach _does_ theoretically allow for incorrectly considering two
@@ -312,22 +316,30 @@ where
     }
 }
 
+/// A metric tag.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Tag(MetaString);
 
 impl Tag {
+    /// Creates a new, empty tag.
     pub const fn empty() -> Self {
         Self(MetaString::empty())
     }
 
+    /// Returns `true` if the tag is empty.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
+    /// Returns the length of the tag, in bytes.
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
+    /// Gets the name of the tag.
+    ///
+    /// For bare tags (e.g. `production`), this is simply the tag value itself. For key/value-style tags (e.g.
+    /// `service:web`), this is the key part of the tag, or `service` based on the example.
     pub fn name(&self) -> &str {
         let s = self.0.deref();
         match s.split_once(':') {
@@ -336,10 +348,15 @@ impl Tag {
         }
     }
 
+    /// Gets the value of the tag.
+    ///
+    /// For bare tags (e.g. `production`), this always returns `None`. For key/value-style tags (e.g. `service:web`),
+    /// this is the value part of the tag, or `web` based on the example.
     pub fn value(&self) -> Option<&str> {
         self.0.deref().split_once(':').map(|(_, value)| value)
     }
 
+    /// Consumes the tag and returns the inner `MetaString`.
     pub fn into_inner(self) -> MetaString {
         self.0
     }
@@ -372,18 +389,24 @@ where
     }
 }
 
+/// A set of tags.
 #[derive(Clone, Debug, Default)]
 pub struct TagSet(Vec<Tag>);
 
 impl TagSet {
+    /// Returns `true` if the tag set is empty.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
+    /// Returns the number of tags in the set.
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
+    /// Inserts a tag into the set.
+    ///
+    /// If the tag is already present in the set, this does nothing.
     pub fn insert_tag<T>(&mut self, tag: T)
     where
         T: Into<Tag>,
@@ -394,6 +417,7 @@ impl TagSet {
         }
     }
 
+    /// Removes a tag, by name, from the set.
     pub fn remove_tags<T>(&mut self, tag_name: T) -> Option<Vec<Tag>>
     where
         T: AsRef<str>,
@@ -419,14 +443,16 @@ impl TagSet {
         }
     }
 
+    /// Merges the tags from another set into this set.
+    ///
+    /// If a tag from `other` is already present in this set, it will not be added.
     pub fn merge_missing(&mut self, other: Self) {
         for tag in other.0 {
-            if !self.0.iter().any(|existing| existing == &tag) {
-                self.0.push(tag);
-            }
+            self.insert_tag(tag);
         }
     }
 
+    /// Returns a sorted version of the tag set.
     pub fn as_sorted(&self) -> Self {
         let mut tags = self.0.clone();
         tags.sort_unstable();

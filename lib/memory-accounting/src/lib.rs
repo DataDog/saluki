@@ -1,4 +1,6 @@
-#![allow(dead_code)]
+//! Helpers for defining memory bounds and accounting for process-wide memory usage.
+#![deny(warnings)]
+#![deny(missing_docs)]
 
 use std::collections::HashMap;
 
@@ -25,9 +27,11 @@ pub use self::verifier::{BoundsVerifier, VerifiedBounds, VerifierError};
 /// bounds builder exposes a simple interface for tallying up the memory usage of individual pieces of a component, such
 /// as buffers and buffer pools, containers, and more.
 pub trait MemoryBounds {
+    /// Specifies the minimum and firm memory bounds for this component and its subcomponents.
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder);
 }
 
+/// Memory bounds for a component.
 #[derive(Default)]
 pub struct ComponentBounds {
     self_minimum_required_bytes: usize,
@@ -60,6 +64,8 @@ impl ComponentBounds {
     }
 
     /// Returns an iterator of all subcomponents within this component.
+    ///
+    /// Only iterates over direct subcomponents, not the subcomponents of those subcomponents, and so on.
     pub fn subcomponents(&self) -> impl IntoIterator<Item = (&String, &ComponentBounds)> {
         self.subcomponents.iter()
     }

@@ -3,24 +3,40 @@ use ubyte::ToByteUnit as _;
 
 use crate::{ComponentBounds, MemoryGrant};
 
+/// A verification error.
 #[derive(Debug, Eq, PartialEq, Snafu)]
 pub enum VerifierError {
+    /// Component bounds were invalid.
     #[snafu(display("invalid component bounds for {}: {}", component_name, reason))]
-    InvalidComponentBounds { component_name: String, reason: String },
+    InvalidComponentBounds {
+        /// Name of the component.
+        component_name: String,
 
+        /// Reason that the bounds were invalid.
+        reason: String,
+    },
+
+    /// Insufficient memory available to meet the minimum required memory for all components.
     #[snafu(display(
         "minimum require memory ({}) exceeds available memory ({})",
         minimum_required_bytes.bytes(),
         available_bytes.bytes()
     ))]
     InsufficientMinimumMemory {
+        /// Total number of bytes available.
         available_bytes: usize,
+
+        /// Total number of minimum required bytes.
         minimum_required_bytes: usize,
     },
 
+    /// Insufficient memory available to meet the firm limit for all components.
     #[snafu(display("firm limit ({}) exceeds available memory ({})", firm_limit_bytes.bytes(), available_bytes.bytes()))]
     FirmLimitExceedsAvailable {
+        /// Total number of bytes available.
         available_bytes: usize,
+
+        /// Total number of firm limit bytes.
         firm_limit_bytes: usize,
     },
 }

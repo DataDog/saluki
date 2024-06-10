@@ -5,7 +5,7 @@ use metrics::{Counter, Histogram};
 use snafu::{ResultExt as _, Snafu};
 use tracing::{debug, trace};
 
-use saluki_core::{buffers::BufferPool, components::metrics::MetricsBuilder, topology::interconnect::EventBuffer};
+use saluki_core::{components::MetricsBuilder, pooling::ObjectPool, topology::interconnect::EventBuffer};
 
 use crate::buf::ReadWriteIoBuffer;
 
@@ -13,7 +13,7 @@ use self::framing::Framer;
 
 use super::{
     buf::ReadIoBuffer,
-    net::{addr::ConnectionAddress, stream::Stream},
+    net::{ConnectionAddress, Stream},
 };
 
 pub mod codec;
@@ -55,8 +55,8 @@ pub struct Deserializer<D, B> {
 impl<D, B> Deserializer<D, B>
 where
     D: Decoder,
-    B: BufferPool,
-    B::Buffer: ReadWriteIoBuffer,
+    B: ObjectPool,
+    B::Item: ReadWriteIoBuffer,
 {
     fn new(stream: Stream, decoder: D, buffer_pool: B, metrics: DeserializerMetrics) -> Self {
         Self {
@@ -70,7 +70,7 @@ where
     }
 
     async fn decode_oneshot(
-        &mut self, buffer: &mut B::Buffer, events: &mut EventBuffer,
+        &mut self, buffer: &mut B::Item, events: &mut EventBuffer,
     ) -> Result<(usize, usize, ConnectionAddress), DeserializerError<D>> {
         // If our buffer is full, we can't do any reads.
         if !buffer.has_remaining_mut() {
@@ -244,8 +244,8 @@ impl<D, B> DeserializerBuilder<D, B> {
 
     pub fn with_buffer_pool<B2>(self, buffer_pool: B2) -> DeserializerBuilder<D, B2>
     where
-        B2: BufferPool,
-        B2::Buffer: ReadWriteIoBuffer,
+        B2: ObjectPool,
+        B2::Item: ReadWriteIoBuffer,
     {
         DeserializerBuilder {
             decoder: self.decoder,
@@ -266,8 +266,8 @@ impl<D, B> DeserializerBuilder<D, B> {
 impl<D, B> DeserializerBuilder<D, B>
 where
     D: Decoder,
-    B: BufferPool,
-    B::Buffer: ReadWriteIoBuffer,
+    B: ObjectPool,
+    B::Item: ReadWriteIoBuffer,
 {
     pub fn into_deserializer(self, stream: Stream) -> Deserializer<D, B> {
         Deserializer::new(

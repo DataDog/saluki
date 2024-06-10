@@ -3,7 +3,7 @@ use std::{future::poll_fn, num::NonZeroUsize};
 use metrics::{Counter, Histogram};
 use tokio::sync::mpsc;
 
-use crate::components::{metrics::MetricsBuilder, ComponentContext};
+use crate::components::{ComponentContext, MetricsBuilder};
 
 use super::EventBuffer;
 
@@ -12,6 +12,14 @@ use super::EventBuffer;
 // wildly large batches, so this number is sized conservatively for now.
 const NEXT_READY_RECV_LIMIT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(128) };
 
+/// A stream of events sent to a component.
+///
+/// For transforms and destinations, their events can only come from other components that have forwarded them onwards.
+/// `EventStream` is the receiving end of the interconnection between two components, where
+/// [`Forwarder`][crate::topology::interconnect::Forwarder] is the sending end.
+///
+/// Like `Forwarder`, `EventStream` works with batches of events ([`EventBuffer`]) and provides telemetry around the
+/// number of events received and the size of event buffers.
 pub struct EventStream {
     inner: mpsc::Receiver<EventBuffer>,
     events_received: Counter,
@@ -19,6 +27,7 @@ pub struct EventStream {
 }
 
 impl EventStream {
+    /// Create a new `EventStream` for the given component context and inner receiver.
     pub fn new(context: ComponentContext, inner: mpsc::Receiver<EventBuffer>) -> Self {
         let metrics_builder = MetricsBuilder::from_component_context(context);
 
@@ -29,6 +38,9 @@ impl EventStream {
         }
     }
 
+    /// Gets the next event buffer in the stream.
+    ///
+    /// If the component (or components) connected to this event stream have stopped, `None` is returned.
     pub async fn next(&mut self) -> Option<EventBuffer> {
         match self.inner.recv().await {
             Some(buffer) => {
@@ -40,6 +52,13 @@ impl EventStream {
         }
     }
 
+    /// Gets the next batch of event buffers in the stream.
+    ///
+    /// While [`next`] will only return a single event buffer, this method will take as many event buffers (up to 128)
+    /// as are immediately available and return them in a single call. If no event buffers are available, then it will
+    /// wait until at least one is available, just like [`next`].
+    ///
+    /// If the component (or components) connected to this event stream have stopped, `None` is returned.
     pub async fn next_ready(&mut self) -> Option<Vec<EventBuffer>> {
         let mut buffers = Vec::new();
         poll_fn(|cx| self.inner.poll_recv_many(cx, &mut buffers, NEXT_READY_RECV_LIMIT.get())).await;

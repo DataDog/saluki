@@ -40,40 +40,4 @@ macro_rules! multi_framing {
 	}
 }
 
-/*
-enum MultiFramer {
-    Newline(NewlineFramer),
-    LengthDelimited(LengthDelimitedFramer),
-}
-
-#[derive(Debug)]
-enum MultiFraming {
-    Newline(<NewlineFramer as Framer<DogstatsdCodec>>::Output),
-    LengthDelimited(<LengthDelimitedFramer as Framer<DogstatsdCodec>>::Output),
-}
-
-impl Decoder for MultiFraming {
-    type Error = FramingError<DogstatsdCodec>;
-
-    fn decode<B: ReadIoBuffer>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error> {
-        match self {
-            Self::Newline(inner) => inner.decode(buf, events),
-            Self::LengthDelimited(inner) => inner.decode(buf, events),
-        }
-    }
-
-}
-
-impl Framer<DogstatsdCodec> for MultiFramer {
-    type Output = MultiFraming;
-
-    fn with_decoder(self, decoder: DogstatsdCodec) -> Self::Output {
-        match self {
-            MultiFramer::Newline(framer) => MultiFraming::Newline(framer.with_decoder(decoder)),
-            MultiFramer::LengthDelimited(framer) => MultiFraming::LengthDelimited(framer.with_decoder(decoder)),
-        }
-    }
-}
-*/
-
 pub use multi_framing;

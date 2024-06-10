@@ -15,12 +15,19 @@ use tonic::{
     Request, Status,
 };
 
+/// A Tonic request interceptor that adds a bearer token to the request metadata.
 #[derive(Clone)]
 pub struct BearerAuthInterceptor {
     bearer_token: MetadataValue<Ascii>,
 }
 
 impl BearerAuthInterceptor {
+    /// Creates a new `BearerAuthInterceptor` from the bearer token in the given file.
+    ///
+    /// ## Errors
+    ///
+    /// If the file path is invalid, if the file cannot be read, or if the bearer token is not valid ASCII, an error
+    /// variant will be returned.
     pub async fn from_file<P>(file_path: P) -> Result<Self, GenericError>
     where
         P: AsRef<Path>,
@@ -47,6 +54,7 @@ impl Interceptor for BearerAuthInterceptor {
     }
 }
 
+/// Builds an HTTPS connector that trusts any server certificate.
 pub fn build_self_signed_https_connector() -> HttpsConnector<HttpConnector> {
     let tls_client_config = ClientConfig::builder_with_protocol_versions(&[&TLS13])
         .dangerous()

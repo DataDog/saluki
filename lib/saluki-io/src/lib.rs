@@ -1,3 +1,5 @@
+#![deny(warnings)]
+
 pub mod buf;
 pub mod compression;
 pub mod deser;

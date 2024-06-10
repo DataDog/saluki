@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::{components::sources::*, observability::metrics::MetricsReceiver, topology::OutputDefinition};
+use saluki_core::{
+    components::sources::*, observability::metrics::MetricsReceiver, pooling::ObjectPool as _,
+    topology::OutputDefinition,
+};
 use saluki_error::GenericError;
 use saluki_event::DataType;
 use tokio::select;
@@ -48,18 +51,15 @@ impl Source for InternalMetrics {
                     debug!("Received shutdown signal.");
                     break;
                 }
-                maybe_metrics = receiver.next() => match maybe_metrics {
-                    Some(metrics) => {
-                        debug!(metrics_len = metrics.len(), "Received internal metrics.");
+                metrics = receiver.next() => {
+                    debug!(metrics_len = metrics.len(), "Received internal metrics.");
 
-                        let mut event_buffer = context.event_buffer_pool().acquire().await;
-                        event_buffer.extend(metrics.iter().cloned());
+                    let mut event_buffer = context.event_buffer_pool().acquire().await;
+                    event_buffer.extend(metrics.iter().cloned());
 
-                        if let Err(e) = context.forwarder().forward(event_buffer).await {
-                            error!(error = %e, "Failed to forward events.");
-                        }
-                    },
-                    None => break,
+                    if let Err(e) = context.forwarder().forward(event_buffer).await {
+                        error!(error = %e, "Failed to forward events.");
+                    }
                 },
             }
         }

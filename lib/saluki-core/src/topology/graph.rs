@@ -5,7 +5,7 @@ use snafu::Snafu;
 
 use saluki_event::DataType;
 
-use crate::components::{DestinationBuilder, SourceBuilder, TransformBuilder};
+use crate::components::{destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder};
 
 use super::{ComponentId, ComponentOutputId, OutputDefinition, OutputName, TypedComponentOutputId};
 

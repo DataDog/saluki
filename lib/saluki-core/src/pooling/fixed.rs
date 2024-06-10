@@ -6,16 +6,21 @@ use std::{
 use async_trait::async_trait;
 use tokio::sync::Semaphore;
 
-use super::{BufferPool, Bufferable, Clearable, Strategy};
+use super::{Clearable, ObjectPool, Poolable, Strategy};
 
-pub struct FixedSizeBufferPool<T: Bufferable> {
+/// A fixed-size object pool.
+///
+/// All items for this object pool are created up front, and when the object pool is empty, calls to `acquire` will
+/// block until an item is returned to the pool.
+pub struct FixedSizeObjectPool<T: Poolable> {
     strategy: Arc<FixedSizeStrategy<T::Data>>,
 }
 
-impl<T: Bufferable> FixedSizeBufferPool<T>
+impl<T: Poolable> FixedSizeObjectPool<T>
 where
     T::Data: Default,
 {
+    /// Creates a new `FixedSizeObjectPool` with the given capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             strategy: Arc::new(FixedSizeStrategy::new(capacity)),
@@ -23,7 +28,10 @@ where
     }
 }
 
-impl<T: Bufferable> FixedSizeBufferPool<T> {
+impl<T: Poolable> FixedSizeObjectPool<T> {
+    /// Creates a new `FixedSizeObjectPool` with the given capacity and item builder.
+    ///
+    /// `builder` is called to construct each item.
     pub fn with_builder<B>(capacity: usize, builder: B) -> Self
     where
         B: Fn() -> T::Data,
@@ -32,15 +40,9 @@ impl<T: Bufferable> FixedSizeBufferPool<T> {
             strategy: Arc::new(FixedSizeStrategy::with_builder(capacity, builder)),
         }
     }
-
-    pub async fn acquire(&self) -> T {
-        let data = self.strategy.acquire().await;
-        let strategy_ref = Arc::clone(&self.strategy);
-        T::from_data(strategy_ref, data)
-    }
 }
 
-impl<T: Bufferable> Clone for FixedSizeBufferPool<T> {
+impl<T: Poolable> Clone for FixedSizeObjectPool<T> {
     fn clone(&self) -> Self {
         Self {
             strategy: self.strategy.clone(),
@@ -49,21 +51,23 @@ impl<T: Bufferable> Clone for FixedSizeBufferPool<T> {
 }
 
 #[async_trait]
-impl<T: Bufferable> BufferPool for FixedSizeBufferPool<T> {
-    type Buffer = T;
+impl<T: Poolable> ObjectPool for FixedSizeObjectPool<T> {
+    type Item = T;
 
-    async fn acquire(&self) -> Self::Buffer {
-        self.acquire().await
+    async fn acquire(&self) -> Self::Item {
+        let data = self.strategy.acquire().await;
+        let strategy_ref = Arc::clone(&self.strategy);
+        T::from_data(strategy_ref, data)
     }
 }
 
-pub struct FixedSizeStrategy<T: Clearable> {
+struct FixedSizeStrategy<T: Clearable> {
     items: Mutex<VecDeque<T>>,
     available: Semaphore,
 }
 
 impl<T: Clearable + Default> FixedSizeStrategy<T> {
-    pub fn new(capacity: usize) -> Self {
+    fn new(capacity: usize) -> Self {
         let mut items = VecDeque::with_capacity(capacity);
         items.extend((0..capacity).map(|_| T::default()));
         let available = Semaphore::new(capacity);
@@ -76,7 +80,7 @@ impl<T: Clearable + Default> FixedSizeStrategy<T> {
 }
 
 impl<T: Clearable> FixedSizeStrategy<T> {
-    pub fn with_builder<B>(capacity: usize, builder: B) -> Self
+    fn with_builder<B>(capacity: usize, builder: B) -> Self
     where
         B: Fn() -> T,
     {

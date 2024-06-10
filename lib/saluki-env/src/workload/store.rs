@@ -13,10 +13,16 @@ use super::{
 // processing a whole batch of operations.
 //
 // We at least will likely want to support taking a batch of operations, and maybe move the incremental resolving logic
-// to `process_operationss` (theoretical name for method) so that we can give it a list of entity IDs to resolve, based
+// to `process_operations` (theoretical name for method) so that we can give it a list of entity IDs to resolve, based
 // on the operations we processed, and then adjust the resolving code to start from a list of IDs instead of a single
 // one.
 
+/// A unified tag store for entities.
+///
+/// Entities will, in general, have a number of specific tags associated with them. Additionally, many entities will be
+/// related to other entities, such as a container belong to a specific pod, and so on. [`TagStore`] is designed to hold
+/// all of the information necessary to compute the "unified" tag set of an entity based on combining the tags of the
+/// entity itself and its ancestors.
 #[derive(Default)]
 pub struct TagStore {
     entity_hierarchy_mappings: HashMap<EntityId, EntityId>,
@@ -24,11 +30,15 @@ pub struct TagStore {
     low_cardinality_entity_tags: HashMap<EntityId, TagSet>,
     high_cardinality_entity_tags: HashMap<EntityId, TagSet>,
 
-    resolved_low_cardinality_entity_tags: HashMap<EntityId, TagSet>,
-    resolved_high_cardinality_entity_tags: HashMap<EntityId, TagSet>,
+    unified_low_cardinality_entity_tags: HashMap<EntityId, TagSet>,
+    unified_high_cardinality_entity_tags: HashMap<EntityId, TagSet>,
 }
 
 impl TagStore {
+    /// Processes a metadata operation.
+    ///
+    /// When necessary, the unified tag set of the given entity will be updated, along with any other entities who are
+    /// descendents of the entity in the operation.
     pub fn process_operation(&mut self, operation: MetadataOperation) {
         debug!(?operation, "Processing metadata operation.");
 
@@ -56,11 +66,11 @@ impl TagStore {
     }
 
     fn delete_entity(&mut self, entity_id: EntityId) {
-        // Delete all of the tags for the entity, both raw and resolved.
+        // Delete all of the tags for the entity, both raw and unified.
         self.low_cardinality_entity_tags.remove(&entity_id);
         self.high_cardinality_entity_tags.remove(&entity_id);
-        self.resolved_low_cardinality_entity_tags.remove(&entity_id);
-        self.resolved_high_cardinality_entity_tags.remove(&entity_id);
+        self.unified_low_cardinality_entity_tags.remove(&entity_id);
+        self.unified_high_cardinality_entity_tags.remove(&entity_id);
 
         // Delete the ancestry mapping, if it exists, for the entity itself.
         self.entity_hierarchy_mappings.remove(&entity_id);
@@ -109,25 +119,26 @@ impl TagStore {
     }
 
     fn regenerate_entity_tags(&mut self, entity_id: EntityId) {
-        // We want to incrementally resolve the tags for the given entity, which is directional: we have to regenerate
-        // the tags for both the entity itself _and_ any descendants of the entity, based on our ancestry mapping.
+        // We want to incrementally resolve the unified tags for the given entity, which is directional: we have to
+        // regenerate the tags for both the entity itself _and_ any descendants of the entity, based on our ancestry
+        // mapping.
         //
-        // We'll regenerate tags for the entity itself first, and then for any descendants.
+        // We'll regenerate fied tags for the entity itself first, and then for any descendants.
         let new_low_cardinality_entity_tags = self.resolve_entity_tags(&entity_id, TagCardinality::Low);
         let new_high_cardinality_entity_tags = self.resolve_entity_tags(&entity_id, TagCardinality::High);
 
-        match self.resolved_low_cardinality_entity_tags.get_mut(&entity_id) {
+        match self.unified_low_cardinality_entity_tags.get_mut(&entity_id) {
             Some(existing_tags) => *existing_tags = new_low_cardinality_entity_tags,
             None => {
-                self.resolved_low_cardinality_entity_tags
+                self.unified_low_cardinality_entity_tags
                     .insert(entity_id.clone(), new_low_cardinality_entity_tags);
             }
         }
 
-        match self.resolved_high_cardinality_entity_tags.get_mut(&entity_id) {
+        match self.unified_high_cardinality_entity_tags.get_mut(&entity_id) {
             Some(existing_tags) => *existing_tags = new_high_cardinality_entity_tags,
             None => {
-                self.resolved_high_cardinality_entity_tags
+                self.unified_high_cardinality_entity_tags
                     .insert(entity_id.clone(), new_high_cardinality_entity_tags);
             }
         }
@@ -150,18 +161,18 @@ impl TagStore {
             let new_low_cardinality_entity_tags = self.resolve_entity_tags(&sub_entity_id, TagCardinality::Low);
             let new_high_cardinality_entity_tags = self.resolve_entity_tags(&sub_entity_id, TagCardinality::High);
 
-            match self.resolved_low_cardinality_entity_tags.get_mut(&sub_entity_id) {
+            match self.unified_low_cardinality_entity_tags.get_mut(&sub_entity_id) {
                 Some(existing_tags) => *existing_tags = new_low_cardinality_entity_tags,
                 None => {
-                    self.resolved_low_cardinality_entity_tags
+                    self.unified_low_cardinality_entity_tags
                         .insert(sub_entity_id.clone(), new_low_cardinality_entity_tags);
                 }
             }
 
-            match self.resolved_high_cardinality_entity_tags.get_mut(&sub_entity_id) {
+            match self.unified_high_cardinality_entity_tags.get_mut(&sub_entity_id) {
                 Some(existing_tags) => *existing_tags = new_high_cardinality_entity_tags,
                 None => {
-                    self.resolved_high_cardinality_entity_tags
+                    self.unified_high_cardinality_entity_tags
                         .insert(sub_entity_id.clone(), new_high_cardinality_entity_tags);
                 }
             }
@@ -209,12 +220,12 @@ impl TagStore {
             }
         }
 
-        // For each entity in the chain, grab their tags, and merge them into the resolved tags.
-        let mut resolved_tags = TagSet::default();
+        // For each entity in the chain, grab their tags, and merge them into the unified tags.
+        let mut unified_tags = TagSet::default();
 
         for ancestor_entity_id in entity_chain {
             if let Some(tags) = self.get_raw_entity_tags(ancestor_entity_id, cardinality) {
-                resolved_tags.merge_missing(tags);
+                unified_tags.merge_missing(tags);
             }
         }
 
@@ -222,19 +233,21 @@ impl TagStore {
         let global_tags = self
             .get_raw_entity_tags(&EntityId::Global, cardinality)
             .unwrap_or_default();
-        resolved_tags.merge_missing(global_tags);
+        unified_tags.merge_missing(global_tags);
 
-        resolved_tags
+        unified_tags
     }
 
+    /// Returns a snapshot of the current state of the tag store.
     pub fn snapshot(&self) -> TagSnapshot {
         TagSnapshot {
-            low_cardinality_entity_tags: self.resolved_low_cardinality_entity_tags.clone(),
-            high_cardinality_entity_tags: self.resolved_high_cardinality_entity_tags.clone(),
+            low_cardinality_entity_tags: self.unified_low_cardinality_entity_tags.clone(),
+            high_cardinality_entity_tags: self.unified_high_cardinality_entity_tags.clone(),
         }
     }
 }
 
+/// A point-in-time snapshot of the unified
 #[derive(Debug, Default)]
 pub struct TagSnapshot {
     low_cardinality_entity_tags: HashMap<EntityId, TagSet>,
@@ -242,6 +255,9 @@ pub struct TagSnapshot {
 }
 
 impl TagSnapshot {
+    /// Gets the tags for an entity at the given cardinality.
+    ///
+    /// If no tags can be found for the entity, or at the given cardinality, `None` is returned.
     pub fn get_entity_tags(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<TagSet> {
         match cardinality {
             TagCardinality::Low => self.low_cardinality_entity_tags.get(entity_id).cloned(),
@@ -314,8 +330,8 @@ mod tests {
 
         let snapshot = store.snapshot();
 
-        let resolved_tags = snapshot.get_entity_tags(&entity_id, TagCardinality::Low).unwrap();
-        assert_eq!(resolved_tags, expected_tags);
+        let unified_tags = snapshot.get_entity_tags(&entity_id, TagCardinality::Low).unwrap();
+        assert_eq!(unified_tags, expected_tags);
     }
 
     #[test]
@@ -338,11 +354,11 @@ mod tests {
 
         let snapshot = store.snapshot();
 
-        let low_card_resolved_tags = snapshot.get_entity_tags(&entity_id, TagCardinality::Low).unwrap();
-        assert_eq!(low_card_resolved_tags.as_sorted(), low_card_expected_tags.as_sorted());
+        let low_card_unified_tags = snapshot.get_entity_tags(&entity_id, TagCardinality::Low).unwrap();
+        assert_eq!(low_card_unified_tags.as_sorted(), low_card_expected_tags.as_sorted());
 
-        let high_card_resolved_tags = snapshot.get_entity_tags(&entity_id, TagCardinality::High).unwrap();
-        assert_eq!(high_card_resolved_tags.as_sorted(), high_card_expected_tags.as_sorted());
+        let high_card_unified_tags = snapshot.get_entity_tags(&entity_id, TagCardinality::High).unwrap();
+        assert_eq!(high_card_unified_tags.as_sorted(), high_card_expected_tags.as_sorted());
     }
 
     #[test]
@@ -366,13 +382,13 @@ mod tests {
 
         let snapshot = store.snapshot();
 
-        let global_resolved_tags = snapshot
+        let global_unified_tags = snapshot
             .get_entity_tags(&global_entity_id, TagCardinality::Low)
             .unwrap();
-        assert_eq!(global_resolved_tags.as_sorted(), global_expected_tags.as_sorted());
+        assert_eq!(global_unified_tags.as_sorted(), global_expected_tags.as_sorted());
 
-        let resolved_tags = snapshot.get_entity_tags(&entity_id, TagCardinality::High).unwrap();
-        assert_eq!(resolved_tags.as_sorted(), expected_tags.as_sorted());
+        let unified_tags = snapshot.get_entity_tags(&entity_id, TagCardinality::High).unwrap();
+        assert_eq!(unified_tags.as_sorted(), expected_tags.as_sorted());
     }
 
     #[test]
@@ -413,19 +429,19 @@ mod tests {
 
         let snapshot = store.snapshot();
 
-        let pod_resolved_tags = snapshot.get_entity_tags(&pod_entity_id, TagCardinality::Low).unwrap();
-        assert_eq!(pod_resolved_tags.as_sorted(), pod_expected_tags.as_sorted());
+        let pod_unified_tags = snapshot.get_entity_tags(&pod_entity_id, TagCardinality::Low).unwrap();
+        assert_eq!(pod_unified_tags.as_sorted(), pod_expected_tags.as_sorted());
 
-        let container_resolved_tags = snapshot
+        let container_unified_tags = snapshot
             .get_entity_tags(&container_entity_id, TagCardinality::Low)
             .unwrap();
-        assert_eq!(container_resolved_tags.as_sorted(), container_expected_tags.as_sorted());
+        assert_eq!(container_unified_tags.as_sorted(), container_expected_tags.as_sorted());
 
-        let container_pid_resolved_tags = snapshot
+        let container_pid_unified_tags = snapshot
             .get_entity_tags(&container_pid_entity_id, TagCardinality::Low)
             .unwrap();
         assert_eq!(
-            container_pid_resolved_tags.as_sorted(),
+            container_pid_unified_tags.as_sorted(),
             container_pid_expected_tags.as_sorted()
         );
     }
@@ -442,8 +458,8 @@ mod tests {
 
         let snapshot = store.snapshot();
 
-        let resolved_tags = snapshot.get_entity_tags(&entity_id, TagCardinality::Low).unwrap();
-        assert_eq!(resolved_tags.as_sorted(), expected_tags.clone().as_sorted());
+        let unified_tags = snapshot.get_entity_tags(&entity_id, TagCardinality::Low).unwrap();
+        assert_eq!(unified_tags.as_sorted(), expected_tags.clone().as_sorted());
 
         // Create a new set of metadata entries to add an additional tag, and observe that processing the entry updates
         // the resolved tags for our entity.
@@ -456,8 +472,8 @@ mod tests {
 
         let snapshot = store.snapshot();
 
-        let new_resolved_tags = snapshot.get_entity_tags(&entity_id, TagCardinality::Low).unwrap();
-        assert_eq!(new_resolved_tags.as_sorted(), new_expected_tags.as_sorted());
+        let new_unified_tags = snapshot.get_entity_tags(&entity_id, TagCardinality::Low).unwrap();
+        assert_eq!(new_unified_tags.as_sorted(), new_expected_tags.as_sorted());
     }
 
     #[test]
@@ -484,14 +500,14 @@ mod tests {
 
         let snapshot = store.snapshot();
 
-        let pod_resolved_tags = snapshot.get_entity_tags(&pod_entity_id, TagCardinality::Low).unwrap();
-        assert_eq!(pod_resolved_tags.as_sorted(), pod_expected_tags.clone().as_sorted());
+        let pod_unified_tags = snapshot.get_entity_tags(&pod_entity_id, TagCardinality::Low).unwrap();
+        assert_eq!(pod_unified_tags.as_sorted(), pod_expected_tags.clone().as_sorted());
 
-        let container_resolved_tags = snapshot
+        let container_unified_tags = snapshot
             .get_entity_tags(&container_entity_id, TagCardinality::Low)
             .unwrap();
         assert_eq!(
-            container_resolved_tags.as_sorted(),
+            container_unified_tags.as_sorted(),
             container_expected_tags.clone().as_sorted()
         );
 
@@ -508,12 +524,12 @@ mod tests {
 
         let snapshot = store.snapshot();
 
-        let new_pod_resolved_tags = snapshot.get_entity_tags(&pod_entity_id, TagCardinality::Low).unwrap();
-        assert_eq!(new_pod_resolved_tags.as_sorted(), new_pod_expected_tags.as_sorted());
+        let new_pod_unified_tags = snapshot.get_entity_tags(&pod_entity_id, TagCardinality::Low).unwrap();
+        assert_eq!(new_pod_unified_tags.as_sorted(), new_pod_expected_tags.as_sorted());
 
-        let container_resolved_tags = snapshot
+        let container_unified_tags = snapshot
             .get_entity_tags(&container_entity_id, TagCardinality::Low)
             .unwrap();
-        assert_eq!(container_resolved_tags.as_sorted(), container_expected_tags.as_sorted());
+        assert_eq!(container_unified_tags.as_sorted(), container_expected_tags.as_sorted());
     }
 }

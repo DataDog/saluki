@@ -7,7 +7,7 @@ use snafu::{ResultExt, Snafu};
 use tokio::io::AsyncWriteExt as _;
 use tracing::{debug, trace};
 
-use saluki_core::buffers::BufferPool;
+use saluki_core::pooling::ObjectPool;
 use saluki_event::metric::*;
 use saluki_io::{buf::ChunkedBytesBuffer, compression::*};
 
@@ -82,7 +82,7 @@ impl MetricsEndpoint {
 
     /// Gets the endpoint for the given metric.
     pub fn from_metric(metric: &Metric) -> Self {
-        match &metric.value {
+        match metric.value() {
             MetricValue::Counter { .. }
             | MetricValue::Rate { .. }
             | MetricValue::Gauge { .. }
@@ -102,7 +102,7 @@ impl MetricsEndpoint {
 
 pub struct RequestBuilder<B>
 where
-    B: BufferPool<Buffer = ChunkedBytesBuffer>,
+    B: ObjectPool<Item = ChunkedBytesBuffer>,
 {
     api_key: String,
     api_uri: Uri,
@@ -117,7 +117,7 @@ where
 
 impl<B> RequestBuilder<B>
 where
-    B: BufferPool<Buffer = ChunkedBytesBuffer>,
+    B: ObjectPool<Item = ChunkedBytesBuffer>,
 {
     /// Creates a new `RequestBuilder` for the given endpoint, using the specified API key and base URI.
     pub async fn new(
@@ -147,13 +147,13 @@ where
     /// ## Errors
     ///
     /// If the given metric is not valid for the endpoint this request builder is configured for, or if there is an
-    /// error during compression of the encoded metric, an error variant will be returned.
+    /// error during compression of the encoded metric, an error will be returned.
     pub async fn encode(&mut self, metric: Metric) -> Result<Option<Metric>, RequestBuilderError> {
         // Make sure this metric is valid for the endpoint this request builder is configured for.
         let endpoint = MetricsEndpoint::from_metric(&metric);
         if endpoint != self.endpoint {
             return Err(RequestBuilderError::InvalidMetricForEndpoint {
-                metric_type: metric.value.as_str(),
+                metric_type: metric.value().as_str(),
                 endpoint: self.endpoint,
             });
         }
@@ -213,7 +213,7 @@ where
     ///
     /// ## Errors
     ///
-    /// If an error occurs while finalizing the compressor or creating the request, an error variant will be returned.
+    /// If an error occurs while finalizing the compressor or creating the request, an error will be returned.
     pub async fn flush(&mut self) -> Result<Option<(usize, Request<ChunkedBytesBuffer>)>, RequestBuilderError> {
         if self.uncompressed_len == 0 {
             return Ok(None);
@@ -281,7 +281,7 @@ fn build_uri_for_endpoint(api_base_uri: Uri, endpoint: MetricsEndpoint) -> Resul
 
 async fn create_compressor<B>(buffer_pool: &B) -> Compressor<ChunkedBytesBuffer>
 where
-    B: BufferPool<Buffer = ChunkedBytesBuffer>,
+    B: ObjectPool<Item = ChunkedBytesBuffer>,
 {
     let write_buffer = buffer_pool.acquire().await;
     Compressor::from_scheme(CompressionScheme::zlib_default(), write_buffer)
@@ -326,7 +326,7 @@ impl EncodedMetric {
 }
 
 fn encode_single_metric(metric: &Metric) -> EncodedMetric {
-    match &metric.value {
+    match metric.value() {
         MetricValue::Counter { .. }
         | MetricValue::Rate { .. }
         | MetricValue::Gauge { .. }
@@ -337,19 +337,19 @@ fn encode_single_metric(metric: &Metric) -> EncodedMetric {
 
 fn encode_series_metric(metric: &Metric) -> proto::MetricSeries {
     let mut series = proto::MetricSeries::new();
-    series.set_metric(metric.context.name().clone().into());
+    series.set_metric(metric.context().name().clone().into());
 
     // Set our tags.
     //
     // This involves extracting some specific tags first that have to be set on dedicated fields (host, resources, etc)
     // and then setting the rest as generic tags.
-    let mut tags = metric.context.tags().clone();
+    let mut tags = metric.context().tags().clone();
 
     let mut host_resource = Resource::new();
     host_resource.set_type("host".to_string().into());
     host_resource.set_name(
         metric
-            .metadata
+            .metadata()
             .hostname
             .as_deref()
             .map(|h| h.into())
@@ -371,7 +371,7 @@ fn encode_series_metric(metric: &Metric) -> proto::MetricSeries {
     series.set_tags(tags.into_iter().map(|tag| tag.into_inner().into()).collect());
 
     // Set the origin metadata, if it exists.
-    if let Some(origin) = &metric.metadata.origin {
+    if let Some(origin) = &metric.metadata().origin {
         match origin {
             MetricOrigin::SourceType(source_type) => {
                 series.set_source_type_name(source_type.clone().into());
@@ -390,7 +390,7 @@ fn encode_series_metric(metric: &Metric) -> proto::MetricSeries {
         }
     }
 
-    let (metric_type, metric_value, maybe_interval) = match &metric.value {
+    let (metric_type, metric_value, maybe_interval) = match metric.value() {
         MetricValue::Counter { value } => (proto::MetricType::COUNT, *value, None),
         MetricValue::Rate { value, interval } => (proto::MetricType::RATE, *value, Some(duration_to_secs(*interval))),
         MetricValue::Gauge { value } => (proto::MetricType::GAUGE, *value, None),
@@ -402,7 +402,7 @@ fn encode_series_metric(metric: &Metric) -> proto::MetricSeries {
 
     let mut point = proto::MetricPoint::new();
     point.set_value(metric_value);
-    point.set_timestamp(metric.metadata.timestamp as i64);
+    point.set_timestamp(metric.metadata().timestamp as i64);
 
     series.mut_points().push(point);
 
@@ -422,10 +422,10 @@ fn encode_sketch_metric(metric: &Metric) -> proto::Sketch {
     //
     // Something to benchmark in the future.
     let mut sketch = proto::Sketch::new();
-    sketch.set_metric(metric.context.name().into());
+    sketch.set_metric(metric.context().name().into());
     sketch.set_host(
         metric
-            .metadata
+            .metadata()
             .hostname
             .as_deref()
             .map(|h| h.into())
@@ -433,7 +433,7 @@ fn encode_sketch_metric(metric: &Metric) -> proto::Sketch {
     );
     sketch.set_tags(
         metric
-            .context
+            .context()
             .tags()
             .into_iter()
             .cloned()
@@ -446,7 +446,7 @@ fn encode_sketch_metric(metric: &Metric) -> proto::Sketch {
         product,
         subproduct,
         product_detail,
-    }) = &metric.metadata.origin
+    }) = &metric.metadata().origin
     {
         sketch.set_metadata(origin_metadata_to_proto_metadata(
             *product,
@@ -455,13 +455,13 @@ fn encode_sketch_metric(metric: &Metric) -> proto::Sketch {
         ));
     }
 
-    let ddsketch = match &metric.value {
+    let ddsketch = match metric.value() {
         MetricValue::Distribution { sketch: ddsketch } => ddsketch,
         _ => unreachable!(),
     };
 
     let mut dogsketch = proto::Dogsketch::new();
-    dogsketch.set_ts(metric.metadata.timestamp as i64);
+    dogsketch.set_ts(metric.metadata().timestamp as i64);
     ddsketch.merge_to_dogsketch(&mut dogsketch);
     sketch.mut_dogsketches().push(dogsketch);
 

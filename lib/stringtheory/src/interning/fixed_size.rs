@@ -27,6 +27,9 @@ const HEADER_LEN: usize = std::mem::size_of::<EntryHeader>();
 const HEADER_ALIGN: usize = std::mem::align_of::<EntryHeader>();
 
 /// An interned string.
+///
+/// This string type is read-only, and dereferences to `&str` for ergonomic usage. It is cheap to clone (8 bytes), but
+/// generally will not be interacted with directly. Instead, most usages should be wrapped in `MetaString`.
 #[derive(Clone, Debug)]
 pub struct InternedString {
     state: Arc<StringState>,

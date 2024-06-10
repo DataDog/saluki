@@ -2,13 +2,14 @@
 //!
 //! This binary emulates the standalone DogStatsD binary, listening for DogStatsD over UDS, aggregating metrics over a
 //! 10 second window, and shipping those metrics to the Datadog Platform.
+
 #![deny(warnings)]
 #![deny(missing_docs)]
 mod env_provider;
 
 use std::time::{Duration, Instant};
 
-use memory_accounting::MemoryBounds;
+use memory_accounting::MemoryBounds as _;
 use saluki_components::{
     destinations::{DatadogMetricsConfiguration, PrometheusConfiguration},
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
@@ -25,7 +26,7 @@ use saluki_app::{
     memory::{try_verify_memory_bounds, MemoryBoundsVerificationConfiguration},
     metrics::initialize_metrics,
 };
-use saluki_core::topology::blueprint::TopologyBlueprint;
+use saluki_core::topology::TopologyBlueprint;
 
 use crate::env_provider::ADPEnvironmentProvider;
 
@@ -62,7 +63,7 @@ async fn run(started: Instant) -> Result<(), GenericError> {
 
     let configuration = ConfigurationLoader::default()
         .try_from_yaml("/etc/datadog-agent/datadog.yaml")
-        .from_environment("DD")
+        .from_environment("DD")?
         .into_generic()?;
 
     let env_provider = ADPEnvironmentProvider::from_configuration(&configuration).await?;

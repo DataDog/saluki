@@ -1,3 +1,4 @@
+//! Internal metrics support.
 use std::{
     num::NonZeroUsize,
     sync::{atomic::Ordering, Arc, OnceLock},
@@ -84,11 +85,16 @@ impl Recorder for MetricsRecorder {
     }
 }
 
+/// Internal metrics receiver.
+///
+/// Used to receive periodic snapshots of the internal metrics registry, which contains all metrics that are currently
+/// active within the process.
 pub struct MetricsReceiver {
     flush_rx: broadcast::Receiver<Arc<Vec<Event>>>,
 }
 
 impl MetricsReceiver {
+    /// Creates a new `MetricsReceiver` and registers it for updates.
     pub fn register() -> Self {
         let state = RECEIVER_STATE.get().expect("metrics receiver should be set");
         Self {
@@ -96,13 +102,9 @@ impl MetricsReceiver {
         }
     }
 
-    pub async fn next(&mut self) -> Option<Arc<Vec<Event>>> {
-        // We convert receive errors into `Option<T>` here because we shouldn't ever actually get to a place where the
-        // sender somehow goes away: it's tied up in an `Arc<T>` held in a static, so once it's set, it should live
-        // forever.
-        //
-        // However, we're just being safe here because who knows. ¯\_(ツ)_/¯
-        self.flush_rx.recv().await.ok()
+    /// Waits for the next metrics snapshot.
+    pub async fn next(&mut self) -> Arc<Vec<Event>> {
+        self.flush_rx.recv().await.expect("metrics receiver should be set")
     }
 }
 
@@ -142,22 +144,22 @@ async fn flush_metrics(flush_interval: Duration) {
 
         for (key, counter) in counters {
             let delta = counter.swap(0, Ordering::Relaxed);
-            metrics.push(Event::Metric(Metric {
-                context: context_from_key(&context_resolver, key),
-                value: MetricValue::Counter { value: delta as f64 },
-                metadata: MetricMetadata::from_timestamp(ts),
-            }));
+            metrics.push(Event::Metric(Metric::from_parts(
+                context_from_key(&context_resolver, key),
+                MetricValue::Counter { value: delta as f64 },
+                MetricMetadata::from_timestamp(ts),
+            )));
         }
 
         for (key, gauge) in gauges {
             let value = gauge.load(Ordering::Relaxed);
-            metrics.push(Event::Metric(Metric {
-                context: context_from_key(&context_resolver, key),
-                value: MetricValue::Gauge {
+            metrics.push(Event::Metric(Metric::from_parts(
+                context_from_key(&context_resolver, key),
+                MetricValue::Gauge {
                     value: f64::from_bits(value),
                 },
-                metadata: MetricMetadata::from_timestamp(ts),
-            }));
+                MetricMetadata::from_timestamp(ts),
+            )));
         }
 
         for (key, histogram) in histograms {
@@ -173,11 +175,11 @@ async fn flush_metrics(flush_interval: Duration) {
                 ))
             });
 
-            metrics.push(Event::Metric(Metric {
-                context: context_from_key(&context_resolver, key),
-                value: metric_value,
-                metadata: MetricMetadata::from_timestamp(ts),
-            }));
+            metrics.push(Event::Metric(Metric::from_parts(
+                context_from_key(&context_resolver, key),
+                metric_value,
+                MetricMetadata::from_timestamp(ts),
+            )));
         }
 
         let shared = Arc::new(metrics);
@@ -196,6 +198,11 @@ fn context_from_key(context_resolver: &ContextResolver, key: Key) -> Context {
     context_resolver.resolve(context_ref)
 }
 
+/// Initializes the metrics subsystem with the given metrics prefix.
+///
+/// ## Errors
+///
+/// If a global recorder was already installed, an error will be returned.
 pub async fn initialize_metrics(metrics_prefix: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let recorder = MetricsRecorder::new(metrics_prefix);
     recorder.install()?;

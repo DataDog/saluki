@@ -19,7 +19,7 @@ struct ChainedProvider {
 }
 
 impl ChainedProvider {
-    pub fn authoritative<H>(provider: H) -> Self
+    fn authoritative<H>(provider: H) -> Self
     where
         H: HostnameProvider + Send + Sync + 'static,
     {
@@ -29,7 +29,7 @@ impl ChainedProvider {
         }
     }
 
-    pub fn non_authoritative<H>(provider: H) -> Self
+    fn non_authoritative<H>(provider: H) -> Self
     where
         H: HostnameProvider + Send + Sync + 'static,
     {
@@ -39,7 +39,7 @@ impl ChainedProvider {
         }
     }
 
-    pub const fn is_authoritative(&self) -> bool {
+    const fn is_authoritative(&self) -> bool {
         self.authoritative
     }
 }
@@ -61,6 +61,16 @@ pub struct AgentLikeHostProvider {
 }
 
 impl AgentLikeHostProvider {
+    /// Creates a new `AgentLikeHostProvider` from the given configuration.
+    ///
+    /// Attempts to read multiple values from the provided configuration to control specific behavior when attempting to
+    /// resolve the correct hostname. The following parameters control which configuration keys are read:
+    /// - `hostname_config_key`: fixed hostname to use (highest priority; optional)
+    /// - `hostname_file_config_key`: file path to read hostname from (second highest priority; optional)
+    ///
+    /// `trust_os_hostname_config_key` describes the configuration value that determines whether or not the operating
+    /// system hostname should be trusted. This is only relevant for some environments where the hostname might not be
+    /// correct when queried from Saluki.
     pub fn new(
         config: &GenericConfiguration, hostname_config_key: &str, hostname_file_config_key: &str,
         trust_os_hostname_config_key: &str,

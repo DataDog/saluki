@@ -1,3 +1,5 @@
+//! Source implementations.
+
 mod dogstatsd;
 pub use self::dogstatsd::DogStatsDConfiguration;
 

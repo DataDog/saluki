@@ -1,3 +1,5 @@
+//! Destination implementations.
+
 mod blackhole;
 pub use self::blackhole::BlackholeConfiguration;
 

@@ -4,7 +4,7 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_error::GenericError;
 use snafu::{ResultExt as _, Snafu};
 
-use crate::components::{DestinationBuilder, SourceBuilder, TransformBuilder};
+use crate::components::{destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder};
 
 use super::{
     built::BuiltTopology,
@@ -13,14 +13,26 @@ use super::{
     ComponentId, ComponentOutputId,
 };
 
+/// A topology blueprint error.
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 pub enum BlueprintError {
+    /// Adding a component/connection lead to an invalid graph.
     #[snafu(display("Failed to build/validate topology graph: {}", source))]
-    InvalidGraph { source: GraphError },
+    InvalidGraph {
+        /// The underlying graph error.
+        source: GraphError,
+    },
 
+    /// Failed to build a component.
     #[snafu(display("Failed to build component '{}': {}", id, source))]
-    FailedToBuildComponent { id: ComponentId, source: GenericError },
+    FailedToBuildComponent {
+        /// Component ID for the component that failed to build.
+        id: ComponentId,
+
+        /// The underlying component build error.
+        source: GenericError,
+    },
 }
 
 /// A topology blueprint represents a directed graph of components.
@@ -33,6 +45,11 @@ pub struct TopologyBlueprint {
 }
 
 impl TopologyBlueprint {
+    /// Adds a source component to the blueprint.
+    ///
+    /// ## Errors
+    ///
+    /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
     pub fn add_source<I, B>(&mut self, maybe_raw_component_id: I, builder: B) -> Result<&mut Self, BlueprintError>
     where
         I: Into<String> + Clone,
@@ -49,6 +66,11 @@ impl TopologyBlueprint {
         Ok(self)
     }
 
+    /// Adds a transform component to the blueprint.
+    ///
+    /// ## Errors
+    ///
+    /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
     pub fn add_transform<I, B>(&mut self, maybe_raw_component_id: I, builder: B) -> Result<&mut Self, BlueprintError>
     where
         I: Into<String> + Clone,
@@ -65,6 +87,11 @@ impl TopologyBlueprint {
         Ok(self)
     }
 
+    /// Adds a destination component to the blueprint.
+    ///
+    /// ## Errors
+    ///
+    /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
     pub fn add_destination<I, B>(&mut self, maybe_raw_component_id: I, builder: B) -> Result<&mut Self, BlueprintError>
     where
         I: Into<String> + Clone,
@@ -81,6 +108,12 @@ impl TopologyBlueprint {
         Ok(self)
     }
 
+    /// Connects one or more source components to a destination commponent.
+    ///
+    /// ## Errors
+    ///
+    /// If the destination component ID, or any of the source component IDs, are invalid or do not exist, or if the data
+    /// types between one of the source/destination component pairs is incompatible, an error is returned.
     pub fn connect_component<I, I2, I2T>(
         &mut self, maybe_raw_component_id: I, inputs: I2,
     ) -> Result<&mut Self, BlueprintError>
@@ -102,6 +135,11 @@ impl TopologyBlueprint {
         Ok(self)
     }
 
+    /// Builds the topology.
+    ///
+    /// ## Errors
+    ///
+    /// If any of the components could not be built, an error is returned.
     pub async fn build(self) -> Result<BuiltTopology, BlueprintError> {
         self.graph.validate().context(InvalidGraph)?;
 

@@ -1,3 +1,8 @@
+//! Feature detection.
+//!
+//! This module provides helpers for detecting the prescence of various "features" in the environment, such as if
+//! containerd is running, and so on. Feature detection is useful for knowing what capabilities are available, and what
+//! code should or shouldn't be run.
 use std::{
     io::ErrorKind,
     net::Shutdown,

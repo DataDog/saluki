@@ -18,6 +18,7 @@ mod util;
 
 const HOSTNAME_MAX_LENGTH: usize = 255;
 
+/// Provides the hostname of the host.
 #[async_trait]
 pub trait HostnameProvider {
     // TODO: The Agent passes whatever the latest detected hostname is so far to each equivalent call of our
@@ -28,6 +29,16 @@ pub trait HostnameProvider {
     async fn get_hostname(&self) -> Option<String>;
 }
 
+/// Checks that the given hostname is valid.
+///
+/// The hostname must satisfy the following conditions:
+///
+/// - hostname is not empty
+/// - hostname is not a local hostname
+/// - hostname is not longer than 255 characters
+/// - hostname is [RFC1123][rfc1123] compliant
+///
+/// [rfc1123]: https://tools.ietf.org/html/rfc1123
 pub fn validate_hostname(hostname: &str) -> Result<(), String> {
     if hostname.is_empty() {
         return Err("hostname is empty".to_string());
@@ -51,6 +62,10 @@ pub fn validate_hostname(hostname: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Checks if the given hostname is a local hostname.
+///
+/// Local hostnames are hostnames that are commonly used to refer to the local machine, and are generally mapped by
+/// default to the loopback addresses (127.0.0.1 and ::1).
 pub fn is_local_hostname(hostname: &str) -> bool {
     static LOCAL_HOSTNAME_IDS: [&str; 4] = [
         "localhost",
@@ -69,6 +84,9 @@ pub fn is_local_hostname(hostname: &str) -> bool {
     false
 }
 
+/// Checks if the given hostname is [RFC1123][rfc1123] compliant.
+///
+/// [rfc1123]: https://tools.ietf.org/html/rfc1123
 pub fn is_rfc1123_compliant_hostname(hostname: &str) -> bool {
     static HOSTNAME_REGEX: OnceLock<Regex> = OnceLock::new();
 

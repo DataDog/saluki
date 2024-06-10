@@ -7,7 +7,7 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_core::{components::transforms::*, constants::datadog::*, topology::interconnect::EventBuffer};
 use saluki_env::{
-    workload::{entity::EntityId, metadata::TagCardinality},
+    workload::{EntityId, TagCardinality},
     EnvironmentProvider, WorkloadProvider,
 };
 use saluki_error::GenericError;
@@ -90,7 +90,6 @@ impl<E> OriginEnrichmentConfiguration<E> {
 impl<E> SynchronousTransformBuilder for OriginEnrichmentConfiguration<E>
 where
     E: EnvironmentProvider + Clone + Send + Sync + 'static,
-    <E::Workload as WorkloadProvider>::Error: std::error::Error + Send + Sync,
 {
     async fn build(&self) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         Ok(Box::new(OriginEnrichment {
@@ -116,7 +115,6 @@ pub struct OriginEnrichment<E> {
 impl<E> OriginEnrichment<E>
 where
     E: EnvironmentProvider,
-    <E::Workload as WorkloadProvider>::Error: std::error::Error + Send + Sync,
 {
     fn enrich_metric(&self, metric: &mut Metric) {
         // TODO: This code below worked before when we could just mutate our context willy-nilly, but not so much when
@@ -264,7 +262,6 @@ where
 impl<E> SynchronousTransform for OriginEnrichment<E>
 where
     E: EnvironmentProvider,
-    <E::Workload as WorkloadProvider>::Error: std::error::Error + Send + Sync,
 {
     fn transform_buffer(&self, event_buffer: &mut EventBuffer) {
         for event in event_buffer {

@@ -1,20 +1,38 @@
+//! Workload provider.
+//!
+//! This modules provides the `WorkloadProvider` trait, which dels with providing information about workloads running on
+//! the process host.
+//!
+//! A number of building blocks are included -- generic entity identifiers, tag storage, metadata collection and
+//! aggregation -- along with a default workload provider implementation based on the Datadog Agent.
 mod aggregator;
 mod collectors;
-pub mod entity;
+
+mod entity;
+pub use self::entity::EntityId;
+
 mod helpers;
-pub mod metadata;
+
+mod metadata;
+pub use self::metadata::{MetadataAction, MetadataOperation, TagCardinality};
+
 pub mod providers;
-pub mod store;
+
+mod store;
+pub use self::store::{TagSnapshot, TagStore};
 
 use async_trait::async_trait;
 use saluki_context::TagSet;
 
-use self::{entity::EntityId, metadata::TagCardinality};
-
+/// Provides information about workloads running on the process host.
 #[async_trait]
 pub trait WorkloadProvider {
-    type Error;
-
+    /// Gets the tags for an entity.
+    ///
+    /// Entities are workload resources running on the process host, such as containers or pods. The cardinality of the
+    /// tags to get can be controlled via `cardinality`.
+    ///
+    /// If no tags can be found for the entity, or at the given cardinality, `None` is returned.
     fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<TagSet>;
 }
 
@@ -22,8 +40,6 @@ impl<T> WorkloadProvider for Option<T>
 where
     T: WorkloadProvider,
 {
-    type Error = T::Error;
-
     fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<TagSet> {
         match self.as_ref() {
             Some(provider) => provider.get_tags_for_entity(entity_id, cardinality),

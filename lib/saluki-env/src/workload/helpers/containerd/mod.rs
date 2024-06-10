@@ -20,22 +20,29 @@ use self::events::{decode_envelope_to_event, ContainerdEvent, ContainerdTopic};
 
 const CONTAINERD_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// A [`ContainerdClient`] error.
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 pub enum ClientError {
+    /// Failed to build the client.
     #[snafu(display("failed to build client: {}", reason))]
     Build { reason: &'static str },
+
+    /// Failed to create the gRPC transport.
     #[snafu(display("failed to create gRPC transport: {}", source))]
     Tonic { source: tonic::transport::Error },
+
+    /// Failed to send a gRPC request.
     #[snafu(display("failed to make gRPC request: {}", source))]
     Response { source: tonic::Status },
+
+    /// Received an invalid event response from containerd.
     #[snafu(display("invalid containerd event response: {}", reason))]
     InvalidEvent { reason: String },
-    #[snafu(display("failed to get resource"))]
-    ResourceMissing,
 }
 
 impl ClientError {
+    /// Gets the status of the response, if this is a response error.
     pub fn as_response_error(&self) -> Option<tonic::Status> {
         match self {
             ClientError::Response { source } => Some(source.clone()),
@@ -44,12 +51,19 @@ impl ClientError {
     }
 }
 
+/// Containerd gRPC client.
 #[derive(Clone)]
 pub struct ContainerdClient {
     client: Arc<Client>,
 }
 
 impl ContainerdClient {
+    /// Creates a new `ContainerdClient` from the given configuration.
+    ///
+    /// ## Errors
+    ///
+    /// If the containerd socket path was not present in the configuration or could not be detected, or if the gRPC
+    /// transport to containerd could not be created, an error will be returned.
     pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, ClientError> {
         let socket_path = ContainerdDetector::detect_grpc_socket_path(config)
             .ok_or(ClientError::Build {
@@ -68,7 +82,12 @@ impl ContainerdClient {
         })
     }
 
-    pub async fn get_namespaces(&self) -> Result<Vec<Namespace>, ClientError> {
+    /// Lists all namespaces.
+    ///
+    /// ## Errors
+    ///
+    /// If an error occurs while sending the request or receiving the response, an error will be returned.
+    pub async fn list_namespaces(&self) -> Result<Vec<Namespace>, ClientError> {
         let request = ListNamespacesRequest::default();
         let namespaces = self
             .client
@@ -81,6 +100,11 @@ impl ContainerdClient {
         Ok(namespaces.namespaces)
     }
 
+    /// Lists all containers in the given namespace.
+    ///
+    /// ## Errors
+    ///
+    /// If an error occurs while sending the request or receiving the response, an error will be returned.
     pub async fn list_containers(&self, namespace: &Namespace) -> Result<Vec<Container>, ClientError> {
         let request = ListContainersRequest::default();
         let request = create_namespaced_request(request, namespace);
@@ -96,6 +120,13 @@ impl ContainerdClient {
         Ok(response.containers)
     }
 
+    /// Watches for specific containerd events in the given namespace.
+    ///
+    /// Multiple topics (topics map directly to event types) can be watched on the same stream.
+    ///
+    /// ## Errors
+    ///
+    /// If an error occurs while sending the request or receiving the response, an error will be returned.
     pub async fn watch_events(
         &self, topics: &[ContainerdTopic], namespace: &Namespace,
     ) -> Result<impl Stream<Item = Result<ContainerdEvent, ClientError>> + Unpin, ClientError> {
@@ -138,7 +169,12 @@ impl ContainerdClient {
             .boxed())
     }
 
-    pub async fn get_pids_for_container(
+    /// Lists all process IDs for the given container in the given namespace.
+    ///
+    /// ## Errors
+    ///
+    /// If an error occurs while sending the request or receiving the response, an error will be returned.
+    pub async fn list_pids_for_container(
         &self, namespace: &Namespace, container_id: String,
     ) -> Result<Vec<u32>, ClientError> {
         let request = ListPidsRequest { container_id };

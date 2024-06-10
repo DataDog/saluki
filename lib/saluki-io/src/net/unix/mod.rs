@@ -1,3 +1,4 @@
+//! Unix-specific helpers.
 use std::{
     fs::Permissions,
     io,
@@ -32,6 +33,10 @@ use super::addr::ConnectionAddress;
 ///
 /// If the path already exists, and is a UNIX socket, it will be removed. If it is not a UNIX socket, an error will be
 /// returned.
+///
+/// ## Errors
+///
+/// If the underlying system call fails, an error is returned.
 pub(super) async fn ensure_unix_socket_free<P: AsRef<Path>>(path: P) -> io::Result<()> {
     let path = path.as_ref();
 
@@ -69,10 +74,24 @@ pub(super) async fn ensure_unix_socket_free<P: AsRef<Path>>(path: P) -> io::Resu
 /// Sets the UNIX socket at the given path to be write-only by non-owners.
 ///
 /// This ensures that normal clients can write to the socket but not read from it.
+///
+/// ## Errors
+///
+/// If the underlying system call fails, an error is returned.
 pub(super) async fn set_unix_socket_write_only<P: AsRef<Path>>(path: P) -> io::Result<()> {
     tokio::fs::set_permissions(path, Permissions::from_mode(0o722)).await
 }
 
+/// Receives data from the Unix domain socket.
+///
+/// This function is specifically for Unix domain sockets in stream mode (i.e. SOCK_STREAM), which are represented via
+/// `UnixStream` in `tokio`.
+///
+/// On success, returns the number of bytes read and the address from whence the data came.
+///
+/// ## Errors
+///
+/// If the underlying system call fails, an error is returned.
 pub async fn unix_recvmsg<B: BufMut>(socket: &mut UnixStream, buf: &mut B) -> io::Result<(usize, ConnectionAddress)> {
     // TODO: We technically don't need to do this for SOCK_STREAM because we can do it once when the
     // connection is accepted, and then just do "normal" reads after that. We do still need to do it
@@ -88,6 +107,16 @@ pub async fn unix_recvmsg<B: BufMut>(socket: &mut UnixStream, buf: &mut B) -> io
         .await
 }
 
+/// Receives data from the Unix domain socket.
+///
+/// This function is specifically for Unix domain sockets in datagram mode (i.e. SOCK_DGRAM), which are represented via
+/// `UnixDatagram` in `tokio`.
+///
+/// On success, returns the number of bytes read and the address from whence the data came.
+///
+/// ## Errors
+///
+/// If the underlying system call fails, an error is returned.
 pub async fn unixgram_recvmsg<B: BufMut>(
     socket: &mut UnixDatagram, buf: &mut B,
 ) -> io::Result<(usize, ConnectionAddress)> {

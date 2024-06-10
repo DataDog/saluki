@@ -29,6 +29,7 @@ pub enum OriginEntity {
 }
 
 impl OriginEntity {
+    /// Creates a new `OriginEntity` with the given container ID.
     pub fn container_id<S>(container_id: S) -> Self
     where
         S: Into<MetaString>,
@@ -146,6 +147,11 @@ impl fmt::Display for MetricMetadata {
 // luckily, that is only the case for check metrics, which we don't deal with in ADP (yet).
 //
 // Eventually, we likely will have to consider exposing both of these fields.
+
+/// Categorical origin of a metric.
+///
+/// This is used to describe, in high-level terms, where a metric originated from, such as the specific software package
+/// or library that emitted. This is distinct from the `OriginEntity`, which describes the specific sender of the metric.
 #[derive(Clone, Debug)]
 pub enum MetricOrigin {
     /// Originated from a generic source.
@@ -156,12 +162,17 @@ pub enum MetricOrigin {
 
     /// Originated from a specific product, category, and/or service.
     OriginMetadata {
+        /// Product that emitted the metric.
         product: u32,
 
-        // Previously known as "category".
+        /// Subproduct that emitted the metric.
+        ///
+        /// Previously known as "category".
         subproduct: u32,
 
-        // Previously known as "service".
+        /// Product detail.
+        ///
+        /// Previously known as "service".
         product_detail: u32,
     },
 }
