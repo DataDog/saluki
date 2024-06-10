@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use memory_accounting::MemoryLimiter;
+
 use crate::{
     components::ComponentContext,
     pooling::FixedSizeObjectPool,
@@ -13,6 +15,7 @@ struct SourceContextInner {
     component_context: ComponentContext,
     forwarder: Forwarder,
     event_buffer_pool: FixedSizeObjectPool<EventBuffer>,
+    memory_limiter: MemoryLimiter,
 }
 
 /// Source context.
@@ -25,7 +28,7 @@ impl SourceContext {
     /// Creates a new `SourceContext`.
     pub fn new(
         component_context: ComponentContext, shutdown_handle: ComponentShutdownHandle, forwarder: Forwarder,
-        event_buffer_pool: FixedSizeObjectPool<EventBuffer>,
+        event_buffer_pool: FixedSizeObjectPool<EventBuffer>, memory_limiter: MemoryLimiter,
     ) -> Self {
         Self {
             shutdown_handle: Some(shutdown_handle),
@@ -33,6 +36,7 @@ impl SourceContext {
                 component_context,
                 forwarder,
                 event_buffer_pool,
+                memory_limiter,
             }),
         }
     }
@@ -57,6 +61,11 @@ impl SourceContext {
     /// Gets a reference to the event buffer pool.
     pub fn event_buffer_pool(&self) -> &FixedSizeObjectPool<EventBuffer> {
         &self.inner.event_buffer_pool
+    }
+
+    /// Gets a reference to the memory limiter.
+    pub fn memory_limiter(&self) -> &MemoryLimiter {
+        &self.inner.memory_limiter
     }
 }
 

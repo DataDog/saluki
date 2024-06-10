@@ -6,8 +6,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+memory-stats = { workspace = true }
 ordered-float = { workspace = true }
 snafu = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing = { workspace = true }
 ubyte = { workspace = true }
 
 [dev-dependencies]

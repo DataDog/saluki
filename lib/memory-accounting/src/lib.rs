@@ -15,6 +15,9 @@ pub use self::builder::MemoryBoundsBuilder;
 mod grant;
 pub use self::grant::MemoryGrant;
 
+mod limiter;
+pub use self::limiter::MemoryLimiter;
+
 mod verifier;
 pub use self::verifier::{BoundsVerifier, VerifiedBounds, VerifierError};
 
