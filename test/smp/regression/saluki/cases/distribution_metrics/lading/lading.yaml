@@ -47,4 +47,4 @@ blackhole:
 
 target_metrics:
   - prometheus:
-      uri: "http://127.0.0.1:5000/scrape"
+      uri: "http://127.0.0.1:6000/scrape"

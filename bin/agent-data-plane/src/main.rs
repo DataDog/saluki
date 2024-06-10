@@ -18,12 +18,12 @@ use saluki_components::{
     },
 };
 use saluki_config::ConfigurationLoader;
-use saluki_error::GenericError;
-use tracing::{error, info, warn};
+use saluki_error::{ErrorContext as _, GenericError};
+use tracing::{error, info};
 
 use saluki_app::{
     logging::{fatal_and_exit, initialize_logging},
-    memory::{try_verify_memory_bounds, MemoryBoundsVerificationConfiguration},
+    memory::{initialize_memory_bounds, MemoryBoundsConfiguration},
     metrics::initialize_metrics,
 };
 use saluki_core::topology::TopologyBlueprint;
@@ -105,19 +105,17 @@ async fn run(started: Instant) -> Result<(), GenericError> {
     }
 
     // Handle verification of memory bounds.
-    let bounds_configuration = MemoryBoundsVerificationConfiguration::try_from_config(&configuration)?;
-    let verify_result = try_verify_memory_bounds(bounds_configuration, |builder| {
+    let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;
+    let verify_result = initialize_memory_bounds(bounds_configuration, |builder| {
         let mut topology_builder = builder.component("topology");
         blueprint.specify_bounds(&mut topology_builder);
     });
 
-    if let Err(e) = verify_result {
-        warn!(error = %e, "Memory bounds verification failed. Proceeding...");
-    }
+    let memory_limiter = verify_result.error_context("Failed to initialize memory bounds.")?;
 
     // Time to run the topology!
     let built_topology = blueprint.build().await?;
-    let running_topology = built_topology.spawn().await?;
+    let running_topology = built_topology.spawn(memory_limiter).await?;
 
     let startup_time = started.elapsed();
 

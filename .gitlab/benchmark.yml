@@ -21,6 +21,10 @@ build-adp-baseline-image:
   before_script:
     - *setup-smp-env
   variables:
+    # Compiling Rust is intensive. ¯\_(ツ)_/¯
+    KUBERNETES_CPU_REQUEST: "16"
+    KUBERNETES_MEMORY_REQUEST: "8Gi"
+    KUBERNETES_MEMORY_LIMIT: "12Gi"
     AWS_NAMED_PROFILE: single-machine-performance
   script:
     # Initialize our AWS credentials.
@@ -56,6 +60,10 @@ build-adp-comparison-image:
   before_script:
     - *setup-smp-env
   variables:
+    # Compiling Rust is intensive. ¯\_(ツ)_/¯
+    KUBERNETES_CPU_REQUEST: "16"
+    KUBERNETES_MEMORY_REQUEST: "8Gi"
+    KUBERNETES_MEMORY_LIMIT: "12Gi"
     AWS_NAMED_PROFILE: single-machine-performance
   script:
     # Initialize our AWS credentials.
