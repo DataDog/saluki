@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use memory_accounting::{limiter::MemoryLimiter, BoundsVerifier, MemoryBoundsBuilder, MemoryGrant, VerifiedBounds};
+use memory_accounting::{BoundsVerifier, MemoryBoundsBuilder, MemoryGrant, MemoryLimiter, VerifiedBounds};
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;

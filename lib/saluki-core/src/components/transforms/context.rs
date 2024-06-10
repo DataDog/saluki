@@ -1,4 +1,4 @@
-use memory_accounting::limiter::MemoryLimiter;
+use memory_accounting::MemoryLimiter;
 
 use crate::{
     components::ComponentContext,
@@ -11,7 +11,7 @@ pub struct TransformContext {
     component_context: ComponentContext,
     forwarder: Forwarder,
     event_stream: EventStream,
-    event_buffer_pool: FixedSizeBufferPool<EventBuffer>,
+    event_buffer_pool: FixedSizeObjectPool<EventBuffer>,
     memory_limiter: MemoryLimiter,
 }
 
@@ -19,7 +19,7 @@ impl TransformContext {
     /// Creates a new `TransformContext`.
     pub fn new(
         component_context: ComponentContext, forwarder: Forwarder, event_stream: EventStream,
-        event_buffer_pool: FixedSizeBufferPool<EventBuffer>, memory_limiter: MemoryLimiter,
+        event_buffer_pool: FixedSizeObjectPool<EventBuffer>, memory_limiter: MemoryLimiter,
     ) -> Self {
         Self {
             component_context,

@@ -338,7 +338,7 @@ async fn process_stream(source_context: SourceContext, handler_context: HandlerC
 
 async fn drive_stream(
     source_context: SourceContext, listen_addr: String, origin_detection: bool,
-    mut deserializer: Deserializer<DogStatsDMultiFraming, FixedSizeBufferPool<BytesBuffer>>,
+    mut deserializer: Deserializer<DogStatsDMultiFraming, FixedSizeObjectPool<BytesBuffer>>,
 ) {
     loop {
         source_context.memory_limiter().wait_for_capacity().await;

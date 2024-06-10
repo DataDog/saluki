@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use memory_accounting::limiter::MemoryLimiter;
+use memory_accounting::MemoryLimiter;
 
 use crate::{
     components::ComponentContext,
@@ -14,7 +14,7 @@ use crate::{
 struct SourceContextInner {
     component_context: ComponentContext,
     forwarder: Forwarder,
-    event_buffer_pool: FixedSizeBufferPool<EventBuffer>,
+    event_buffer_pool: FixedSizeObjectPool<EventBuffer>,
     memory_limiter: MemoryLimiter,
 }
 
@@ -28,7 +28,7 @@ impl SourceContext {
     /// Creates a new `SourceContext`.
     pub fn new(
         component_context: ComponentContext, shutdown_handle: ComponentShutdownHandle, forwarder: Forwarder,
-        event_buffer_pool: FixedSizeBufferPool<EventBuffer>, memory_limiter: MemoryLimiter,
+        event_buffer_pool: FixedSizeObjectPool<EventBuffer>, memory_limiter: MemoryLimiter,
     ) -> Self {
         Self {
             shutdown_handle: Some(shutdown_handle),

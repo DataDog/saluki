@@ -1,4 +1,4 @@
-use memory_accounting::limiter::MemoryLimiter;
+use memory_accounting::MemoryLimiter;
 
 use crate::{components::ComponentContext, topology::interconnect::EventStream};
 
@@ -29,7 +29,7 @@ impl DestinationContext {
         &mut self.events
     }
 
-    #[allow(unused)]
+    /// Gets a reference to the memory limiter.
     pub fn memory_limiter(&self) -> &MemoryLimiter {
         &self.memory_limiter
     }

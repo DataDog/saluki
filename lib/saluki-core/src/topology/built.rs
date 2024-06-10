@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use memory_accounting::limiter::MemoryLimiter;
+use memory_accounting::MemoryLimiter;
 use saluki_error::{generic_error, GenericError};
 use tokio::{sync::mpsc, task::JoinHandle};
 
@@ -93,7 +93,7 @@ impl BuiltTopology {
     /// ## Errors
     ///
     /// If an error occurs while spawning the topology, an error is returned.
-    pub async fn spawn(self, memory_limiter: MemoryLimiter) -> Result<RunningTopology, TopologyError> {
+    pub async fn spawn(self, memory_limiter: MemoryLimiter) -> Result<RunningTopology, GenericError> {
         // Build our interconnects, which we'll grab from piecemeal as we spawn our components.
         let (mut forwarders, mut event_streams) = self.create_component_interconnects();
         let event_buffer_pool = FixedSizeObjectPool::with_capacity(1024);
