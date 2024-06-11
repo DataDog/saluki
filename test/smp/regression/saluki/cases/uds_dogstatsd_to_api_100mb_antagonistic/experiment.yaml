@@ -12,11 +12,16 @@ target:
 
     # Sets the memory limit for bounds verification.
     #
-    # This is _much_ larger than the average RSS, but is sized specifically to the default values
-    # we use for various components such that the bounds can be successfully verified.
+    # This is currently set empirically around where we see the memory level off, but where the memory levels off _is_
+    # above the firm limit because we don't (yet) have any limiting at the context resolver step, which means we
+    # allocate in an unbounded fashion.
     #
-    # We _will_ eventually start to be able to ratchet this down.
+    # There is work slated to address that, which when it happens, will allow us to ratchet this limit down.
     DD_MEMORY_LIMIT: "240MB"
+
+    # Set the context limit in the aggregator to 75K, which matches the maximum number of contexts we expect to
+    # generate. We essentially don't want the aggregator to be a limiting factor.
+    DD_AGGREGATE_CONTEXT_LIMIT: "75000"
 
     # Disables UDP and enables listening on UDS in SOCK_DGRAM mode.
     DD_DOGSTATSD_PORT: "0"
