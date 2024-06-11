@@ -36,14 +36,14 @@ impl MemoryLimiter {
     /// `wait_for_capacity` will observe waiting once the memory usage exceeds the configured limit threshold. The
     /// waiting time will scale progressively the closer the memory usage is to the configured limit.
     ///
-    /// Defaults to a 90% threshold (i.e. threshold begins at 90% of the limit), a minimum backoff duration of 1ms, and
+    /// Defaults to a 95% threshold (i.e. threshold begins at 95% of the limit), a minimum backoff duration of 1ms, and
     /// a maximum backoff duration of 25ms. The effective limit of the grant is used as the memory limit.
     pub fn new(grant: MemoryGrant) -> Option<Self> {
         // Smoke test to see if we can even collect memory stats on this system.
         memory_stats::memory_stats()?;
 
         let rss_limit = grant.effective_limit_bytes();
-        let backoff_threshold = 0.9;
+        let backoff_threshold = 0.95;
         let backoff_min = Duration::from_millis(1);
         let backoff_max = Duration::from_millis(25);
 
