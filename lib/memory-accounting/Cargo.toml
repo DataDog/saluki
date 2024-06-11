@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 memory-stats = { workspace = true }
+metrics = { workspace = true }
 ordered-float = { workspace = true }
 snafu = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }

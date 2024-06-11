@@ -1507,6 +1507,7 @@ name = "memory-accounting"
 version = "0.1.0"
 dependencies = [
  "memory-stats",
+ "metrics",
  "ordered-float 4.2.0",
  "proptest",
  "snafu",
