@@ -97,12 +97,17 @@ impl ContextResolver {
     }
 
     fn intern_with_fallback(&self, s: &str) -> MetaString {
-        match self.interner.try_intern(s) {
-            Some(interned) => MetaString::from(interned),
-            None => {
-                self.context_metrics.intern_fallback_total().increment(1);
-                MetaString::from(s)
-            }
+        // First we'll see if we can inline the string, and if we can't, then we try to actually intern it. If interning
+        // fails, then we just fall back to allocating a new `MetaString` instance.
+        match MetaString::try_inline(s) {
+            Some(inlined) => inlined,
+            None => match self.interner.try_intern(s) {
+                Some(interned) => MetaString::from(interned),
+                None => {
+                    self.context_metrics.intern_fallback_total().increment(1);
+                    MetaString::from(s)
+                }
+            },
         }
     }
 
