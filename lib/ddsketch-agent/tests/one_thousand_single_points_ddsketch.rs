@@ -4,7 +4,7 @@
 //! and avoid interference from other tests. See notes at:
 //! https://docs.rs/dhat/latest/dhat/#heap-usage-testing.
 
-use crate::common::{insert_single_and_serialize, make_points, MathableHeapStats};
+use crate::common::{insert_single_and_serialize, make_points};
 
 mod common;
 
@@ -13,18 +13,16 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 
 #[test]
 fn test_one_thousand_single_points_ddsketch() {
-    let _profiler = dhat::Profiler::builder().testing().build();
     let points = make_points(1000);
 
-    let before: MathableHeapStats = dhat::HeapStats::get().into();
+    let _profiler = dhat::Profiler::builder().testing().build();
     insert_single_and_serialize(&points);
-    let after: MathableHeapStats = dhat::HeapStats::get().into();
+    let stats = dhat::HeapStats::get();
 
-    let diff = after - before;
-    dhat::assert_eq!(diff.total_blocks, 21);
-    dhat::assert_eq!(diff.total_bytes, 6096);
-    dhat::assert_eq!(diff.max_blocks, 3);
-    dhat::assert_eq!(diff.max_bytes, 3072);
-    dhat::assert_eq!(diff.curr_blocks, 0);
-    dhat::assert_eq!(diff.curr_bytes, 0);
+    dhat::assert_eq!(stats.total_blocks, 21);
+    dhat::assert_eq!(stats.total_bytes, 6096);
+    dhat::assert_eq!(stats.max_blocks, 3);
+    dhat::assert_eq!(stats.max_bytes, 3072);
+    dhat::assert_eq!(stats.curr_blocks, 0);
+    dhat::assert_eq!(stats.curr_bytes, 0);
 }
