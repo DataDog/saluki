@@ -2,7 +2,6 @@
 
 use datadog_protos::metrics::Dogsketch;
 use ddsketch_agent::DDSketch;
-use dhat::HeapStats;
 use rand::SeedableRng;
 use rand_distr::{Distribution, Pareto};
 
