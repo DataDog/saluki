@@ -52,7 +52,15 @@ impl MemoryLimiter {
 
         std::thread::Builder::new()
             .name("memory-limiter-checker".to_string())
-            .spawn(move || check_memory_usage(active_backoff_nanos2, rss_limit, backoff_threshold, backoff_min, backoff_max))
+            .spawn(move || {
+                check_memory_usage(
+                    active_backoff_nanos2,
+                    rss_limit,
+                    backoff_threshold,
+                    backoff_min,
+                    backoff_max,
+                )
+            })
             .unwrap();
 
         Some(Self { active_backoff_nanos })
@@ -80,7 +88,8 @@ impl MemoryLimiter {
 }
 
 fn check_memory_usage(
-    active_backoff_nanos: Arc<AtomicU64>, rss_limit: usize, backoff_threshold: f64, backoff_min: Duration, backoff_max: Duration,
+    active_backoff_nanos: Arc<AtomicU64>, rss_limit: usize, backoff_threshold: f64, backoff_min: Duration,
+    backoff_max: Duration,
 ) {
     debug!("Memory limiter checker started.");
 
