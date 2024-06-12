@@ -2603,6 +2603,7 @@ dependencies = [
  "saluki-env",
  "saluki-error",
  "saluki-event",
+ "saluki-metrics",
  "serde",
  "slab",
  "snafu",

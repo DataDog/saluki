@@ -521,7 +521,7 @@ mod tests {
 
         let resolver = ContextResolver::with_noop_interner();
         let context_ref = ContextRef::from_name_and_tags(name, EMPTY_TAGS);
-        let context = resolver.resolve(context_ref);
+        let context = resolver.resolve(context_ref).unwrap();
 
         let metadata = MetricMetadata {
             timestamp: get_unix_timestamp(),

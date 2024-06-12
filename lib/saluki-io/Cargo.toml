@@ -14,6 +14,7 @@ saluki-core = { workspace = true }
 saluki-env = { workspace = true }
 saluki-error = { workspace = true }
 saluki-event = { workspace = true }
+saluki-metrics = { workspace = true }
 
 # External dependencies.
 ahash = { workspace = true, features = ["std", "runtime-rng"] }
