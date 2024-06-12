@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use saluki_event::Event;
 
-use crate::pooling::pooled;
+use crate::pooling::helpers::pooled;
 
 pooled! {
     /// An event buffer.
