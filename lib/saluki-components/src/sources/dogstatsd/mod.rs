@@ -59,6 +59,10 @@ const fn default_port() -> u16 {
     8125
 }
 
+const fn default_allow_context_heap_allocations() -> bool {
+    true
+}
+
 /// DogStatsD source.
 ///
 /// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format.
@@ -135,7 +139,7 @@ pub struct DogStatsDConfiguration {
     /// interned, the metric is skipped.
     ///
     /// Defaults to `true`.
-    #[serde(rename = "dogstatsd_allow_context_heap_allocs", default)]
+    #[serde(rename = "dogstatsd_allow_context_heap_allocs", default = "default_allow_context_heap_allocations")]
     allow_context_heap_allocations: bool,
 }
 
