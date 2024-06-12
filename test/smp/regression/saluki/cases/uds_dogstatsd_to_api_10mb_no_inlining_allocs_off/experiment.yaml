@@ -19,6 +19,9 @@ target:
     # There is work slated to address that, which when it happens, will allow us to ratchet this limit down.
     DD_MEMORY_LIMIT: "72MB"
 
+    # Disable heap allocations when resolving contexts.
+    DD_DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS: "false"
+
     # Set the context limit in the aggregator to 6K, which matches the maximum number of contexts we expect to
     # generate. We essentially don't want the aggregator to be a limiting factor.
     DD_AGGREGATE_CONTEXT_LIMIT: "6000"
