@@ -59,6 +59,10 @@ const fn default_port() -> u16 {
     8125
 }
 
+const fn default_allow_context_heap_allocations() -> bool {
+    true
+}
+
 /// DogStatsD source.
 ///
 /// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format.
@@ -125,6 +129,21 @@ pub struct DogStatsDConfiguration {
     /// Defaults to `false`.
     #[serde(rename = "dogstatsd_origin_detection", default)]
     origin_detection: bool,
+
+    /// Whether or not to allow heap allocations when resolving contexts.
+    ///
+    /// When resolving contexts during parsing, the metric name and tags are interned to reduce memory usage. The
+    /// interner has a fixed size, however, which means some strings can fail to be interned if the interner is full.
+    /// When set to `true`, we allow these strings to be allocated on the heap like normal, but this can lead to
+    /// increased (unbounded) memory usage. When set to `false`, if the metric name and all of its tags cannot be
+    /// interned, the metric is skipped.
+    ///
+    /// Defaults to `true`.
+    #[serde(
+        rename = "dogstatsd_allow_context_heap_allocs",
+        default = "default_allow_context_heap_allocations"
+    )]
+    allow_context_heap_allocations: bool,
 }
 
 impl DogStatsDConfiguration {
@@ -181,13 +200,14 @@ impl SourceBuilder for DogStatsDConfiguration {
             return Err(Error::NoListenersConfigured.into());
         }
 
+        let mut context_resolver =
+            ContextResolver::from_interner("dogstatsd", FixedSizeInterner::new(DEFAULT_CONTEXT_INTERNER_SIZE_BYTES));
+        context_resolver.allow_heap_allocations(self.allow_context_heap_allocations);
+
         Ok(Box::new(DogStatsD {
             listeners,
             io_buffer_pool: get_fixed_bytes_buffer_pool(self.buffer_count, self.buffer_size),
-            context_resolver: ContextResolver::from_interner(
-                "dogstatsd",
-                FixedSizeInterner::new(DEFAULT_CONTEXT_INTERNER_SIZE_BYTES),
-            ),
+            context_resolver,
             origin_detection: self.origin_detection,
         }))
     }

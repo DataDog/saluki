@@ -63,6 +63,7 @@ pub struct ContextResolver {
     context_metrics: ContextMetrics,
     interner: FixedSizeInterner,
     state: Arc<RwLock<State>>,
+    allow_heap_allocations: bool,
 }
 
 impl ContextResolver {
@@ -83,12 +84,13 @@ impl ContextResolver {
             state: Arc::new(RwLock::new(State {
                 resolved_contexts: IndexSet::new(),
             })),
+            allow_heap_allocations: true,
         }
     }
 
     /// Creates a new `ContextResolver` with a no-op interner.
     pub fn with_noop_interner() -> Self {
-        // It's not _really_ a no-op, but it's as small as we can possibly make it which  will effectively make it a
+        // It's not _really_ a no-op, but it's as small as we can possibly make it which will effectively make it a
         // no-op after only a single string has been interned.
         Self::from_interner(
             "noop".to_string(),
@@ -96,52 +98,54 @@ impl ContextResolver {
         )
     }
 
-    fn intern_with_fallback(&self, s: &str) -> MetaString {
-        // First we'll see if we can inline the string, and if we can't, then we try to actually intern it. If interning
-        // fails, then we just fall back to allocating a new `MetaString` instance.
-        match MetaString::try_inline(s) {
-            Some(inlined) => inlined,
-            None => match self.interner.try_intern(s) {
-                Some(interned) => MetaString::from(interned),
-                None => {
-                    self.context_metrics.intern_fallback_total().increment(1);
-                    MetaString::from(s)
-                }
-            },
-        }
+    /// Sets whether or not to allow heap allocations when interning strings.
+    ///
+    /// In cases where the interner is full, this setting determines whether or not we refuse to resolve a context, or
+    /// if we instead allocate strings normally (which will not be interned and will not be shared with other contexts)
+    /// to satisfy the request.
+    ///
+    /// Defaults to `true`.
+    pub fn allow_heap_allocations(&mut self, allow: bool) {
+        self.allow_heap_allocations = allow;
     }
 
-    fn create_context_from_ref<T>(&self, context_ref: ContextRef<'_, T>, active_count: Gauge) -> Context
+    fn intern(&self, s: &str) -> Option<MetaString> {
+        // First we'll see if we can inline the string, and if we can't, then we try to actually intern it. If interning
+        // fails, then we just fall back to allocating a new `MetaString` instance.
+        MetaString::try_inline(s)
+            .or_else(|| self.interner.try_intern(s).map(MetaString::from))
+            .or_else(|| self.allow_heap_allocations.then(|| MetaString::from(s)))
+    }
+
+    fn create_context_from_ref<T>(&self, context_ref: ContextRef<'_, T>, active_count: Gauge) -> Option<Context>
     where
         T: AsRef<str> + hash::Hash + std::fmt::Debug,
     {
-        // Interning is fallible so what we do here is just allocate them -- yes, hold on, keep reading -- and do
-        // it via `MetaString::shared`, which at least lets us potentially share those allocations the next time
-        // the same context is resolved.
-        //
-        // Not great, but also not maximally wasteful.
-        let name = self.intern_with_fallback(context_ref.name);
-        let tags = context_ref
-            .tags
-            .iter()
-            .map(|tag| self.intern_with_fallback(tag.as_ref()).into())
-            .collect();
+        let name = self.intern(context_ref.name)?;
+        let mut tags = TagSet::default();
+        for tag in context_ref.tags {
+            let tag = self.intern(tag.as_ref())?;
+            tags.insert_tag(tag);
+        }
 
-        Context {
+        Some(Context {
             inner: Arc::new(ContextInner {
                 name,
                 tags,
                 hash: context_ref.hash,
                 active_count,
             }),
-        }
+        })
     }
 
     /// Resolves the given context.
     ///
     /// If the context has not yet been resolved, the name and tags are interned and a new context is created and
     /// stored. Otherwise, the existing context is returned.
-    pub fn resolve<T>(&self, context_ref: ContextRef<'_, T>) -> Context
+    ///
+    /// `None` may be returned if the interner is full and outside allocations are disallowed. See
+    /// `allow_heap_allocations` for more information.
+    pub fn resolve<T>(&self, context_ref: ContextRef<'_, T>) -> Option<Context>
     where
         T: AsRef<str> + hash::Hash + std::fmt::Debug,
     {
@@ -149,7 +153,7 @@ impl ContextResolver {
         match state.resolved_contexts.get(&context_ref) {
             Some(context) => {
                 self.context_metrics.resolved_existing_context_total().increment(1);
-                context.clone()
+                Some(context.clone())
             }
             None => {
                 // Switch from read to write lock.
@@ -158,7 +162,7 @@ impl ContextResolver {
 
                 // Create our new context and store it.
                 let active_count = self.context_metrics.active_contexts().clone();
-                let context = self.create_context_from_ref(context_ref, active_count);
+                let context = self.create_context_from_ref(context_ref, active_count)?;
                 state.resolved_contexts.insert(context.clone());
 
                 // TODO: This is lazily updated during resolve, which means this metric might lag behind the actual
@@ -175,7 +179,7 @@ impl ContextResolver {
                 self.context_metrics.resolved_new_context_total().increment(1);
                 self.context_metrics.active_contexts().increment(1);
 
-                context
+                Some(context)
             }
         }
     }
@@ -563,8 +567,11 @@ mod tests {
 
     use super::*;
 
-    fn get_context_arc_pointer_value(context: &Context) -> usize {
-        Arc::as_ptr(&context.inner) as usize
+    fn get_context_arc_pointer_value(context: &Option<Context>) -> usize {
+        match context {
+            Some(context) => Arc::as_ptr(&context.inner) as usize,
+            None => 0,
+        }
     }
 
     fn get_gauge_value(metrics: &[(CompositeKey, Option<Unit>, Option<SharedString>, DebugValue)], key: &str) -> f64 {
