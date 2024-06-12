@@ -195,7 +195,9 @@ fn context_from_key(context_resolver: &ContextResolver, key: Key) -> Context {
         .collect::<Vec<_>>();
 
     let context_ref = ContextRef::from_name_and_tags(name.as_str(), &labels);
-    context_resolver.resolve(context_ref)
+    context_resolver
+        .resolve(context_ref)
+        .expect("resolver should always allow falling back")
 }
 
 /// Initializes the metrics subsystem with the given metrics prefix.

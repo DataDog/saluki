@@ -1,0 +1,49 @@
+generator:
+  - unix_datagram:
+      seed: [5, 15, 17, 20, 22, 24, 48, 52, 61, 65, 73, 81, 97, 104, 109, 119, 147, 149, 153, 156, 158, 168, 175, 186, 193, 201, 216, 219, 224, 230, 232, 249]
+      path: "/tmp/adp-dsd.sock"
+      block_cache_method: Fixed
+      variant:
+        dogstatsd:
+          contexts:
+            inclusive:
+              min: 4000
+              max: 6000
+          name_length:
+            inclusive:
+              min: 32
+              max: 200
+          tag_length:
+            inclusive:
+              min: 32
+              max: 150
+          tags_per_msg:
+            inclusive:
+              min: 2
+              max: 50
+          multivalue_count:
+            inclusive:
+              min: 1
+              max: 2
+          multivalue_pack_probability: 0.0
+          kind_weights:
+            metric: 100
+            event: 0
+            service_check: 0
+          metric_weights:
+            count: 100
+            gauge: 10
+            timer: 0
+            distribution: 0
+            set: 0
+            histogram: 0
+      bytes_per_second: "10 MiB"
+      maximum_prebuild_cache_size_bytes: "256 Mb"
+
+blackhole:
+  - http:
+      binding_addr: "127.0.0.1:9091"
+
+target_metrics:
+  - prometheus:
+      uri: "http://127.0.0.1:6000/scrape"
