@@ -1,3 +1,11 @@
+//! Helpers for creating and working with poolable objects.
+
+use std::{marker::PhantomData, sync::Arc};
+
+use async_trait::async_trait;
+
+use super::{Clearable, Poolable, Strategy};
+
 /// Creates a struct that can be stored in an object pool, based on an inline struct definition.
 ///
 /// In order to store a value in an object pool, the item must implement the [`Poolable`] trait. This trait, and
@@ -29,7 +37,7 @@
 /// ## Usage
 ///
 /// ```rust
-/// use saluki_core::pooling::pooled;
+/// use saluki_core::pooling::helpers::pooled;
 ///
 /// pooled! {
 ///    /// A simple Poolable struct.
@@ -141,7 +149,7 @@ macro_rules! pooled {
 /// ## Usage
 ///
 /// ```rust
-/// use saluki_core::pooling::{pooled_newtype, Clearable};
+/// use saluki_core::{pooled_newtype, pooling::Clearable};
 ///
 /// pub struct PreallocatedByteBuffer {
 ///     data: Vec<u8>,
@@ -234,3 +242,47 @@ macro_rules! pooled_newtype {
 
 pub use pooled;
 pub use pooled_newtype;
+
+/// An object pool strategy that performs no pooling.
+struct NoopStrategy<T> {
+    _t: PhantomData<T>,
+}
+
+impl<T> NoopStrategy<T> {
+    const fn new() -> Self {
+        Self { _t: PhantomData }
+    }
+}
+
+#[async_trait]
+impl<T> Strategy<T> for NoopStrategy<T>
+where
+    T: Clearable + Send + Sync,
+{
+    async fn acquire(&self) -> T {
+        unreachable!("NoopStrategy should never be used to acquire items")
+    }
+
+    fn reclaim(&self, _: T) {}
+}
+
+/// Creates an poolable object (of type `T`) when `T::Data` implements `Default`.
+#[allow(dead_code)]
+pub fn get_pooled_object_via_default<T>() -> T
+where
+    T: Poolable,
+    T::Data: Default + Sync,
+{
+    T::from_data(Arc::new(NoopStrategy::<_>::new()), T::Data::default())
+}
+
+/// Creates an poolable object (of type `T`) when `T::Data` implements `Default`.
+#[allow(dead_code)]
+pub fn get_pooled_object_via_builder<F, T>(f: F) -> T
+where
+    F: FnOnce() -> T::Data,
+    T: Poolable,
+    T::Data: Sync,
+{
+    T::from_data(Arc::new(NoopStrategy::<_>::new()), f())
+}

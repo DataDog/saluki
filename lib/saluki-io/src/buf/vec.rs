@@ -1,6 +1,6 @@
 use bytes::{buf::UninitSlice, Buf, BufMut};
 
-use saluki_core::pooling::{pooled_newtype, Clearable};
+use saluki_core::pooling::{helpers::pooled_newtype, Clearable};
 
 use super::ReadIoBuffer;
 
@@ -12,7 +12,6 @@ use super::ReadIoBuffer;
 ///
 /// Additionally, it is designed for use in object pools (implements [`Clearable`]).
 pub struct FixedSizeVec {
-    start_idx: usize,
     read_idx: usize,
     data: Vec<u8>,
 }
@@ -23,7 +22,6 @@ impl FixedSizeVec {
     /// The vector will not grow once all available capacity has been consumed, and must be cleared to be reused.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            start_idx: 0,
             read_idx: 0,
             data: Vec::with_capacity(capacity),
         }
@@ -32,7 +30,6 @@ impl FixedSizeVec {
 
 impl Clearable for FixedSizeVec {
     fn clear(&mut self) {
-        self.start_idx = 0;
         self.read_idx = 0;
         self.data.clear();
     }
@@ -45,18 +42,18 @@ pooled_newtype! {
 
 impl Buf for BytesBuffer {
     fn remaining(&self) -> usize {
-        self.data().read_idx - self.data().start_idx
+        self.data().data.len() - self.data().read_idx
     }
 
     fn chunk(&self) -> &[u8] {
         let data = self.data();
-        &data.data[data.start_idx..data.read_idx]
+        &data.data[data.read_idx..data.data.len()]
     }
 
     fn advance(&mut self, cnt: usize) {
         let data = self.data_mut();
-        assert!(data.start_idx + cnt <= data.read_idx);
-        data.start_idx += cnt;
+        assert!(data.read_idx + cnt <= data.data.len());
+        data.read_idx += cnt;
     }
 }
 
@@ -73,12 +70,69 @@ unsafe impl BufMut for BytesBuffer {
     unsafe fn advance_mut(&mut self, cnt: usize) {
         let new_len = self.data().data.len() + cnt;
         self.data_mut().data.set_len(new_len);
-        self.data_mut().read_idx += cnt;
     }
 }
 
 impl ReadIoBuffer for BytesBuffer {
     fn capacity(&self) -> usize {
         self.data().data.capacity()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_core::pooling::helpers::get_pooled_object_via_builder;
+
+    use super::*;
+
+    #[test]
+    fn basic() {
+        let mut buf = get_pooled_object_via_builder::<_, BytesBuffer>(|| FixedSizeVec::with_capacity(13));
+
+        let first_write = b"hello";
+        let second_write = b", worl";
+        let third_write = b"d!";
+
+        // We start out empty:
+        assert_eq!(buf.remaining(), 0);
+        assert_eq!(buf.remaining_mut(), 13);
+
+        // Write the first chunk:
+        buf.put_slice(first_write);
+        assert_eq!(buf.remaining(), 5);
+        assert_eq!(buf.remaining_mut(), 8);
+
+        // Write the second chunk:
+        buf.put_slice(second_write);
+        assert_eq!(buf.remaining(), 11);
+        assert_eq!(buf.remaining_mut(), 2);
+
+        // Read 7 bytes worth:
+        let first_chunk = buf.chunk();
+        assert_eq!(first_chunk.len(), 11);
+        assert_eq!(first_chunk, b"hello, worl");
+
+        buf.advance(7);
+        assert_eq!(buf.remaining(), 4);
+        assert_eq!(buf.remaining_mut(), 2);
+
+        // Write the third chunk:
+        buf.put_slice(third_write);
+        assert_eq!(buf.remaining(), 6);
+        assert_eq!(buf.remaining_mut(), 0);
+
+        // Read the rest:
+        let second_chunk = buf.chunk();
+        assert_eq!(second_chunk.len(), 6);
+        assert_eq!(second_chunk, b"world!");
+
+        buf.advance(6);
+        assert_eq!(buf.remaining(), 0);
+        assert_eq!(buf.remaining_mut(), 0);
+
+        // Clear the buffer:
+        buf.data_mut().clear();
+        assert_eq!(buf.remaining(), 0);
+        assert_eq!(buf.remaining_mut(), 13);
     }
 }

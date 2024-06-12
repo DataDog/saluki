@@ -476,32 +476,13 @@ const fn align_to_bucket_start(timestamp: u64, bucket_width: u64) -> u64 {
 // about flushing out our idea to create a time provider in `saluki-env` so that time can be mocked out in tests.
 #[cfg(test)]
 mod tests {
-    use std::{marker::PhantomData, sync::Arc};
-
     use saluki_context::{ContextRef, ContextResolver};
-    use saluki_core::pooling::{Clearable, Poolable, Strategy};
+    use saluki_core::pooling::helpers::get_pooled_object_via_default;
 
     use super::*;
 
-    struct DefaultStrategy<T> {
-        _t: PhantomData<T>,
-    }
-
-    #[async_trait]
-    impl<T> Strategy<T> for DefaultStrategy<T>
-    where
-        T: Clearable + Default + Send + Sync,
-    {
-        async fn acquire(&self) -> T {
-            T::default()
-        }
-
-        fn reclaim(&self, _: T) {}
-    }
-
     fn get_event_buffer() -> EventBuffer {
-        let strategy = Arc::new(DefaultStrategy::<<EventBuffer as Poolable>::Data> { _t: PhantomData });
-        EventBuffer::from_data(strategy, <EventBuffer as Poolable>::Data::default())
+        get_pooled_object_via_default::<EventBuffer>()
     }
 
     fn get_flushed_metrics(state: &mut AggregationState) -> Vec<Metric> {

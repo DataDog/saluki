@@ -6,8 +6,7 @@ use async_trait::async_trait;
 
 pub use self::fixed::FixedSizeObjectPool;
 
-mod helpers;
-pub use self::helpers::{pooled, pooled_newtype};
+pub mod helpers;
 
 /// An item that can be cleared.
 pub trait Clearable {
