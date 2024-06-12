@@ -139,7 +139,10 @@ pub struct DogStatsDConfiguration {
     /// interned, the metric is skipped.
     ///
     /// Defaults to `true`.
-    #[serde(rename = "dogstatsd_allow_context_heap_allocs", default = "default_allow_context_heap_allocations")]
+    #[serde(
+        rename = "dogstatsd_allow_context_heap_allocs",
+        default = "default_allow_context_heap_allocations"
+    )]
     allow_context_heap_allocations: bool,
 }
 

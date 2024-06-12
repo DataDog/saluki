@@ -117,15 +117,13 @@ impl<D: Decoder> NewlineFraming<D> {
 
             // Pass the frame to the inner decoder.
             let frame_len = frame.len();
-            trace!(frame_len, "Decoding frame.");
             let event_count = self.inner.decode(&mut frame, events).context(FailedToDecode)?;
-            if event_count == 0 {
-                // It's not normal to encounter a full frame and be unable to decode even a single event from it.
+            trace!(frame_len, event_count, "Decoded frame.");
 
-                // TODO: do we return `Ok(n)` if we've decoded some events successfully, or do we return an error about
-                // an undecodable frame? or maybe we log the error if n > 0 and return Ok(n)?
-                return Err(FramingError::UndecodableFrame { frame_len });
-            }
+            // TODO: Emit a metric if `event_count` is zero, since that means we've decoded zero events _without_ an
+            // error. In some cases, this is entirely fine (e.g. DogStatsD couldn't resolve the context due to string
+            // interner being full) and so we don't want to emit an error -- it's intentional! -- but we should still
+            // emit a metric to track that it's happening.
 
             events_decoded += event_count;
         }
