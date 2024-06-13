@@ -2,7 +2,7 @@ use bytes::{buf::UninitSlice, Buf, BufMut};
 
 use saluki_core::pooling::{helpers::pooled_newtype, Clearable};
 
-use super::ReadIoBuffer;
+use super::{ClearableIoBuffer, ReadIoBuffer};
 
 /// A fixed-size byte vector.
 ///
@@ -76,6 +76,12 @@ unsafe impl BufMut for BytesBuffer {
 impl ReadIoBuffer for BytesBuffer {
     fn capacity(&self) -> usize {
         self.data().data.capacity()
+    }
+}
+
+impl ClearableIoBuffer for BytesBuffer {
+    fn clear(&mut self) {
+        self.data_mut().clear();
     }
 }
 

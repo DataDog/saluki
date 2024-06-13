@@ -7,7 +7,7 @@ use tracing::{debug, trace};
 
 use saluki_core::{components::MetricsBuilder, pooling::ObjectPool, topology::interconnect::EventBuffer};
 
-use crate::buf::ReadWriteIoBuffer;
+use crate::buf::{ClearableIoBuffer, ReadWriteIoBuffer};
 
 use self::framing::Framer;
 
@@ -56,7 +56,7 @@ impl<D, B> Deserializer<D, B>
 where
     D: Decoder,
     B: ObjectPool,
-    B::Item: ReadWriteIoBuffer,
+    B::Item: ReadWriteIoBuffer + ClearableIoBuffer,
 {
     fn new(stream: Stream, decoder: D, buffer_pool: B, metrics: DeserializerMetrics) -> Self {
         Self {
@@ -164,7 +164,23 @@ where
             // afterwards.
             match self.decode_oneshot(&mut buffer, events).await {
                 Ok((bytes_read, events_decoded, connection_addr)) => {
-                    if events_decoded == 0 {
+                    if events_decoded > 0 {
+                        // We decoded some events successfully.
+                        return Ok((events_decoded, connection_addr));
+                    }
+
+                    // We didn't decode any events, which could be for a few reasons:
+                    // - we're dealing with a connectionless stream, which sometimes sends zero-byte payloads in order
+                    //   to probe if a remote peer is listening
+                    // - we skipped over some bad data, or data we intentionally did not want to handle
+                    //
+                    // In either case, we need to clear the buffer before we try again. This is effectively the same as
+                    // starting the `decode` call over again, but we do it intentionally without breaking the loop so
+                    // that callers don't have to deal with "no events decoded" and so that we skip the overhead of
+                    // returning and reacquiring the I/O buffer.
+                    buffer.clear();
+                    //
+                    if bytes_read == 0 {
                         // When we're dealing with a connectionless stream, we _may_ not decode any events, since it's
                         // sometimes common for clients to probe UDP sockets by sending zero-byte payloads.
                         //
@@ -172,23 +188,20 @@ where
                         if self.stream.is_connectionless() {
                             continue;
                         }
-
-                        // If we decoded no events from the buffer, but we managed to read some data, then we might just
-                        // need to receive some more data to get the complete payload.
-                        //
-                        // Continue trying to receive/decode.
-                        //
-                        // (A note here is that we might be here because the payload is too big for our buffer, and we
-                        // only just received what we had left for remaining buffer capacity... but the next iteration
-                        // will let us know that the buffer is full before it tries to receive again, so we'll fall
-                        // through to the error logic further down.)
-                        if bytes_read != 0 {
-                            continue;
-                        }
                     }
 
-                    // We decoded some events successfully.
-                    return Ok((events_decoded, connection_addr));
+                    // If we decoded no events from the buffer, but we managed to read some data, then we likely skipped
+                    // over some bad data (or just intentionally skipped over good data that we decided not to handle)
+                    // so we need to reset the buffer to prepare for the next read.
+                    buffer.clear();
+
+                    // TODO: This breaks being able to handle partial reads, which is a bit of a bummer. We don't
+                    // _currently_ need to handle them, given that we're only supporting DogStatsD, but we should add
+                    // that support back.
+                    //
+                    // We'll likely need some sort of way to indicate that we either decoded no events because we
+                    // didn't have enough data, _or_ that we purposefully skipped over the data... and then that logic
+                    // would drive whether we clear the buffer or not.
                 }
                 Err(e) => match e {
                     // If we're not dealing with a connectionless stream, then that means there's still a chance of more
@@ -267,7 +280,7 @@ impl<D, B> DeserializerBuilder<D, B>
 where
     D: Decoder,
     B: ObjectPool,
-    B::Item: ReadWriteIoBuffer,
+    B::Item: ReadWriteIoBuffer + ClearableIoBuffer,
 {
     pub fn into_deserializer(self, stream: Stream) -> Deserializer<D, B> {
         Deserializer::new(
