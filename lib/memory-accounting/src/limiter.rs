@@ -135,7 +135,12 @@ fn calculate_backoff(
         let threshold_delta = actual_rss as f64 - (rss_limit as f64 * backoff_threshold);
         let variable_backoff_duration = backoff_duration_range.as_secs_f64() * (threshold_delta / rss_backoff_range);
 
-        Some(backoff_min + Duration::from_secs_f64(variable_backoff_duration))
+        let backoff = backoff_min + Duration::from_secs_f64(variable_backoff_duration);
+        if backoff > backoff_max {
+            Some(backoff_max)
+        } else {
+            Some(backoff)
+        }
     } else {
         None
     }
