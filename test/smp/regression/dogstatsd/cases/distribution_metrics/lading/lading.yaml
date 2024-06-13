@@ -53,9 +53,13 @@ target_metrics:
       vars:
         # Total number of active contexts in the aggregator.
         - "/aggregator/DogstatsdContexts"
-        # Total number of series flushed by the aggregator.
+        # Total number of series and sketches flushed by the aggregator.
         - "/aggregator/SeriesFlushed"
+        - "/aggregator/SketchesFlushed"
         # Total number of metric samples received by the DSD server workers.
         - "/dogstatsd/MetricPackets"
         # Total number of bytes received by the DSD server workers in UDS mode. 
         - "/dogstatsd-uds/Bytes"
+        # Total number of payload bytes sent by the default forwarder.
+        - "/forwarder/Transactions/SuccessBytesByEndpoint/series_v2"
+        - "/forwarder/Transactions/SuccessBytesByEndpoint/series_v2"
