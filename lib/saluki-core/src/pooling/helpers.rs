@@ -8,9 +8,9 @@ use super::{Clearable, Poolable, Strategy};
 
 /// Creates a struct that can be stored in an object pool, based on an inline struct definition.
 ///
-/// In order to store a value in an object pool, the item must implement the [`Poolable`] trait. This trait, and
-/// overall design of [`ObjectPool`], dictates that a pooled data type actually holds an inner value, which is the
-/// value that is actually pooled, while the outer struct is simply a wrapper around the data that ensures it is
+/// In order to store a value in an object pool, the item must implement the [`Poolable`] trait. This trait, and overall
+/// design of [`ObjectPool`][super::ObjectPool], dictates that a pooled data type actually holds an inner value, which
+/// is the value that is actually pooled, while the outer struct is simply a wrapper around the data that ensures it is
 /// returned to the object pool when no longer in use.
 ///
 /// In practice, this means that if you wanted to create some struct that could be pooled (for example,
@@ -134,9 +134,9 @@ macro_rules! pooled {
 /// Creates a struct that can be stored in an object pool, based on an existing struct definition.
 ///
 /// In order to store a value in an object pool, the item must implement the [`Poolable`] trait. This trait, and overall
-/// design of [`ObjectPool`], dictates that a pooled data type actually holds an inner value, which is the value that is
-/// actually pooled, while the outer struct is simply a wrapper around the data that ensures it is returned to the object
-/// pool when no longer in use.
+/// design of [`ObjectPool`][super::ObjectPool], dictates that a pooled data type actually holds an inner value, which
+/// is the value that is actually pooled, while the outer struct is simply a wrapper around the data that ensures it is
+/// returned to the object pool when no longer in use.
 ///
 /// In many cases, the "inner value" might be either an existing type that cannot be modified, or there might be a need
 /// to define that struct further, such as defining struct methods or trait implementations which would be

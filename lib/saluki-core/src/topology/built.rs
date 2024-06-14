@@ -27,7 +27,7 @@ use super::{
 /// Built topologies represent a topology blueprint where each configured component, along with their associated
 /// connections to other components, was validated and built successfully.
 ///
-/// A built topology must be spawned via [`spawn`].
+/// A built topology must be spawned via [`spawn`][Self::spawn].
 pub struct BuiltTopology {
     graph: Graph,
     sources: HashMap<ComponentId, Box<dyn Source + Send>>,

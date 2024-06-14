@@ -84,7 +84,7 @@ impl MemoryGrant {
     /// Initial number of bytes granted.
     ///
     /// This value is purely informational, and should not be used to calculating the memory available for use. For that
-    /// value, see [`effective_limit_bytes`].
+    /// value, see [`effective_limit_bytes`][Self::effective_limit_bytes].
     pub fn initial_limit_bytes(&self) -> usize {
         self.initial_limit_bytes
     }

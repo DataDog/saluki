@@ -503,19 +503,22 @@ unsafe impl Sync for InternerState {}
 ///
 /// The layout of an entry is as follows:
 ///
-/// ┌─────────────────────────────── entry #1 ───────────────────────────────┐ ┌── entry #2 ──┐ ┌── entry .. ──┐
-/// ▼                                                                        ▼ ▼              ▼ ▼              ▼
-/// ┏━━━━━━━━━━━━━┯━━━━━━━━━━━┯━━━━━━━━━━━━┯━━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━━━━┓ ┏━━━━━━━━━━━━━━┓ ┏━━━━━━━━━━━━━━┓
-/// ┃ string hash │  ref cnt  │ string len │ string data │ alignment padding ┃ ┃    header    ┃ ┃    header    ┃
-/// ┃  (8 bytes)  │ (8 bytes) │ (8 bytes)  │  (N bytes)  │    (variable)     ┃ ┃   & string   ┃ ┃   & string   ┃
-/// ┗━━━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━━┷━━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━━┛ ┗━━━━━━━━━━━━━━┛ ┗━━━━━━━━━━━━━━┛
-/// ▲                                      ▲                                 ▲
-/// └──────────── `EntryHeader` ───────────┘       alignment matched to ─────┘
-///            (8 byte alignment)                  `EntryHeader` via padding    
+/// ```text
+/// ┌───────────────────────── entry #1 ──────────────────────────┐ ┌─ entry #2 ─┐ ┌─ entry .. ─┐
+/// ▼                                                             ▼ ▼            ▼ ▼            ▼
+/// ┏━━━━━━━━━━━┯━━━━━━━━━━━┯━━━━━━━━━━━┯━━━━━━━━━━━┯━━━━━━━━━━━━━┓ ┏━━━━━━━━━━━━┓ ┏━━━━━━━━━━━━┓
+/// ┃ str hash  │  ref cnt  │  str len  │ str data  │   padding   ┃ ┃   header   ┃ ┃   header   ┃
+/// ┃ (8 bytes) │ (8 bytes) │ (8 bytes) │ (N bytes) │ (1-7 bytes) ┃ ┃  & string  ┃ ┃  & string  ┃
+/// ┗━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━━━┛ ┗━━━━━━━━━━━━┛ ┗━━━━━━━━━━━━┛
+/// ▲                                   ▲                           ▲
+/// └────────── `EntryHeader` ──────────┘                           └── aligned for `EntryHeader`
+///          (8 byte alignment)                                         via trailing padding    
+/// ```
 ///
 /// The backing buffer is always aligned properly for `EntryHeader`, so that the first entry can be referenced
 /// correctly. However, when appending additional entries to the buffer, we need to ensure that those entries also have
-/// an aligned start for accessing the header. This is complicated due to the variable number of bytes for the string data.
+/// an aligned start for accessing the header. This is complicated due to the variable number of bytes for the string
+/// data.
 ///
 /// Alignment padding is added to the end of the entry to ensure that when appending the next entry, the start of the
 /// entry is properly aligned for `EntryHeader`. In the worst case, up to 7 bytes could be added (and thus wasted) on
