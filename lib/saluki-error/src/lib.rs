@@ -11,7 +11,7 @@
 
 /// A wrapper around a dynamic error type.
 ///
-/// `GenericError` works a lot like `Box<dyn std::error::Error>``, but with these differences:
+/// `GenericError` works a lot like `Box<dyn std::error::Error>`, but with these differences:
 ///
 /// - `GenericError` requires that the error is `Send`, `Sync`, and `'static`.
 /// - `GenericError` guarantees that a backtrace is available, even if the underlying error type does not provide one.

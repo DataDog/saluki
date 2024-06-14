@@ -54,9 +54,9 @@ impl EventStream {
 
     /// Gets the next batch of event buffers in the stream.
     ///
-    /// While [`next`] will only return a single event buffer, this method will take as many event buffers (up to 128)
-    /// as are immediately available and return them in a single call. If no event buffers are available, then it will
-    /// wait until at least one is available, just like [`next`].
+    /// While [`next`][Self::next] will only return a single event buffer, this method will take as many event buffers
+    /// (up to 128) as are immediately available and return them in a single call. If no event buffers are available,
+    /// then it will wait until at least one is available, just like [`next`][Self::next].
     ///
     /// If the component (or components) connected to this event stream have stopped, `None` is returned.
     pub async fn next_ready(&mut self) -> Option<Vec<EventBuffer>> {
