@@ -57,7 +57,7 @@ float_eq = { version = "1.0", default-features = false }
 hostname = { version = "0.3", default-features = false }
 http = { version = "1", default-features = false }
 http-body = { version = "1", default-features = false }
-http-body-util = { version = "0.1.0", default-features = false }
+http-body-util = { version = "0.1.2", default-features = false }
 hyper = { version = "1", default-features = false }
 hyper-rustls = { version = "0.26.0", default-features = false }
 hyper-util = { version = "0.1.3", default-features = false }
