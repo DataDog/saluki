@@ -362,14 +362,14 @@ impl InternerShardState {
     }
 
     fn find_entry(&self, hash: u64, s: &str) -> Option<NonNull<EntryHeader>> {
-        println!(
+        /*println!(
             "find_entry: self={{ptr={:p} cap={} len={}}} hash={} s->len={}",
             self.ptr,
             self.capacity.get(),
             self.len,
             hash,
             s.len()
-        );
+        );*/
 
         let mut offset = 0;
 
@@ -378,7 +378,7 @@ impl InternerShardState {
             let header_ptr = self.get_entry_ptr(offset);
             let header = unsafe { header_ptr.as_ref() };
 
-            println!("find_entry iteration: self={{ptr={:p} cap={} len={}}} offset={} header={{cap={} hash={} refs={} len={}}}",
+            /*println!("find_entry iteration: self={{ptr={:p} cap={} len={}}} offset={} header={{cap={} hash={} refs={} len={}}}",
             self.ptr,
             self.capacity.get(),
             self.len,
@@ -386,7 +386,7 @@ impl InternerShardState {
                     header.capacity(),
                     header.hash,
                     header.refs.load(Acquire),
-                    header.len());
+                    header.len());*/
 
             // See if this entry is active or not. If it's active, then we'll quickly check the hash/length of the
             // string to see if this is likely to be a match for `s`.
@@ -432,7 +432,7 @@ impl InternerShardState {
 
         let entry_ptr = self.get_entry_ptr(offset);
 
-        println!(
+        /*println!(
             "write_entry: self={{ptr={:p} cap={} len={}}} offset={} header={{cap={} hash={} refs={} len={}}}",
             self.ptr,
             self.capacity.get(),
@@ -442,7 +442,7 @@ impl InternerShardState {
             entry_header.hash,
             entry_header.refs.load(Acquire),
             entry_header.len()
-        );
+        );*/
 
         // Write the entry header.
         unsafe { entry_ptr.as_ptr().write(entry_header) };
@@ -464,14 +464,14 @@ impl InternerShardState {
     }
 
     fn write_to_unoccupied(&mut self, s_hash: u64, s: &str) -> NonNull<EntryHeader> {
-        println!(
+        /*println!(
             "write_to_unoccupied: self={{ptr={:p} cap={} len={}}} s_hash={} s->len={}",
             self.ptr,
             self.capacity.get(),
             self.len,
             s_hash,
             s.len()
-        );
+        );*/
 
         let entry_header = EntryHeader::new(s_hash, s);
         let entry_len = entry_header.entry_len();
@@ -486,7 +486,7 @@ impl InternerShardState {
     fn write_to_reclaimed_entry(
         &mut self, mut reclaimed_entry: ReclaimedEntry, s_hash: u64, s: &str,
     ) -> NonNull<EntryHeader> {
-        println!(
+        /*println!(
             "write_to_reclaimed_entry: self={{ptr={:p} cap={} len={}}} rentry={{offset={} cap={} str_cap={}}} s_hash={} s->len={}",
             self.ptr,
             self.capacity.get(),
@@ -496,7 +496,7 @@ impl InternerShardState {
             reclaimed_entry.str_capacity(),
             s_hash,
             s.len()
-        );
+        );*/
 
         let entry_len = EntryHeader::entry_len_for_str(s);
         let entry_offset = reclaimed_entry.offset;
@@ -531,7 +531,7 @@ impl InternerShardState {
         debug_assert!(entry_offset >= 0, "entry offset must be non-negative");
 
         let header = unsafe { header_ptr.as_ref() };
-        println!("add_reclaimed_from_header: self={{ptr={:p} cap={} len={}}} header={{offset={} cap={} hash={} refs={} len={}}}", self.ptr, self.capacity.get(), self.len, entry_offset, header.capacity(), header.hash, header.refs.load(Acquire), header.len());
+        /*println!("add_reclaimed_from_header: self={{ptr={:p} cap={} len={}}} header={{offset={} cap={} hash={} refs={} len={}}}", self.ptr, self.capacity.get(), self.len, entry_offset, header.capacity(), header.hash, header.refs.load(Acquire), header.len());*/
 
         let reclaimed_entry = ReclaimedEntry::new(entry_offset as usize, header.entry_len());
         self.add_reclaimed(reclaimed_entry);
@@ -581,14 +581,14 @@ impl InternerShardState {
             current_entry.merge(next_entry);
         }
 
-        println!(
+        /*println!(
             "add_reclaimed: self={{ptr={:p} cap={} len={}}} rentry={{offset={} cap={}}}",
             self.ptr,
             self.capacity.get(),
             self.len,
             current_entry.offset,
             current_entry.capacity()
-        );
+        );*/
 
         self.reclaimed.insert(current_entry);
 
@@ -618,14 +618,14 @@ impl InternerShardState {
     fn write_entry_tombstone(&mut self, reclaimed_entry: ReclaimedEntry) {
         let entry_ptr = self.get_entry_ptr(reclaimed_entry.offset);
 
-        println!(
+        /*println!(
             "write_entry_tombstone: self={{ptr={:p} cap={} len={}}} rentry={{offset={} cap={}}}",
             self.ptr,
             self.capacity.get(),
             self.len,
             reclaimed_entry.offset,
             reclaimed_entry.capacity,
-        );
+        );*/
 
         // Write the entry tombstone itself.
         //
