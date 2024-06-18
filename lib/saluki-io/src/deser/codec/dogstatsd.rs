@@ -395,7 +395,7 @@ mod tests {
     }
 
     fn create_metric_with_tags(name: &str, tags: &[&str], value: MetricValue) -> Metric {
-        let context_resolver = ContextResolver::with_noop_interner();
+        let context_resolver: ContextResolver = ContextResolver::with_noop_interner();
         let context_ref = ContextRef::<'_, &str>::from_name_and_tags(name, tags);
         let context = context_resolver.resolve(context_ref).unwrap();
 
