@@ -2,7 +2,7 @@ generator:
   - unix_datagram:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/dsd.socket"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -39,13 +39,28 @@ generator:
             distribution: 72
             set: 9
             histogram: 1
-      bytes_per_second: "1 MiB"
+      bytes_per_second: "512 KiB"
       maximum_prebuild_cache_size_bytes: "500 Mb"
 
 blackhole:
   - http:
       binding_addr: "127.0.0.1:9091"
+  - http:
+      binding_addr: "127.0.0.1:9092"
 
 target_metrics:
-  - prometheus:
-      uri: "http://127.0.0.1:6000/scrape"
+  - expvar:
+      uri: "http://127.0.0.1:5000/debug/vars"
+      vars:
+        # Total number of active contexts in the aggregator.
+        - "/aggregator/DogstatsdContexts"
+        # Total number of series and sketches flushed by the aggregator.
+        - "/aggregator/SeriesFlushed"
+        - "/aggregator/SketchesFlushed"
+        # Total number of metric samples received by the DSD server workers.
+        - "/dogstatsd/MetricPackets"
+        # Total number of bytes received by the DSD server workers in UDS mode. 
+        - "/dogstatsd-uds/Bytes"
+        # Total number of payload bytes sent by the default forwarder.
+        - "/forwarder/Transactions/SuccessBytesByEndpoint/series_v2"
+        - "/forwarder/Transactions/SuccessBytesByEndpoint/series_v2"
