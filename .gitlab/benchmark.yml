@@ -102,7 +102,7 @@ run-benchmarks-adp:
     when: always
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
-    SMP_VERSION: 0.13.0
+    SMP_VERSION: 0.15.1
     RUST_LOG: info,aws_config::profile::credentials=error
   script:
     # Do some pre-flight steps like creating directories, installing helper utilities, setting
@@ -119,6 +119,7 @@ run-benchmarks-adp:
             --comparison-image ${COMPARISON_SALUKI_IMG}
             --baseline-sha ${BASELINE_SALUKI_SHA}
             --comparison-sha ${COMPARISON_SALUKI_SHA}
+            --total-samples 1800
             --target-config-dir ./test/smp/regression/saluki/
             --submission-metadata submission_metadata
     # Wait for job to complete.
@@ -160,7 +161,7 @@ run-benchmarks-dsd:
     when: always
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
-    SMP_VERSION: 0.13.0
+    SMP_VERSION: 0.15.1
     RUST_LOG: info,aws_config::profile::credentials=error
   script:
     # Do some pre-flight steps like creating directories, installing helper utilities, setting
@@ -177,6 +178,7 @@ run-benchmarks-dsd:
             --comparison-image ${COMPARISON_DSD_IMG}
             --baseline-sha ${BASELINE_DSD_VERSION}
             --comparison-sha ${COMPARISON_DSD_VERSION}
+            --total-samples 1800
             --target-config-dir ./test/smp/regression/dogstatsd/
             --submission-metadata submission_metadata
     # Wait for job to complete.
