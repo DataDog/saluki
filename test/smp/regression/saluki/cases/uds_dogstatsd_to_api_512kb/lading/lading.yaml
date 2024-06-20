@@ -1,21 +1,22 @@
 generator:
   - unix_datagram:
-      seed: [5, 15, 17, 20, 22, 24, 48, 52, 61, 65, 73, 81, 97, 104, 109, 119, 147, 149, 153, 156, 158, 168, 175, 186, 193, 201, 216, 219, 224, 230, 232, 249]
+      seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
+             59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
       path: "/tmp/adp-dsd.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
           contexts:
             inclusive:
-              min: 4000
-              max: 6000
+              min: 1000
+              max: 10000
           name_length:
             inclusive:
-              min: 32
+              min: 1
               max: 200
           tag_length:
             inclusive:
-              min: 32
+              min: 3
               max: 150
           tags_per_msg:
             inclusive:
@@ -23,9 +24,9 @@ generator:
               max: 50
           multivalue_count:
             inclusive:
-              min: 1
-              max: 2
-          multivalue_pack_probability: 0.0
+              min: 2
+              max: 32
+          multivalue_pack_probability: 0.08
           kind_weights:
             metric: 100
             event: 0
@@ -38,8 +39,8 @@ generator:
             distribution: 72
             set: 9
             histogram: 1
-      bytes_per_second: "10 MiB"
-      maximum_prebuild_cache_size_bytes: "256 Mb"
+      bytes_per_second: "512 KiB"
+      maximum_prebuild_cache_size_bytes: "500 Mb"
 
 blackhole:
   - http:
