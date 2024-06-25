@@ -6,4 +6,12 @@
 /target
 /test
 /tooling
+.gitignore
+.gitlab-ci.yml
+CONTRIBUTING.md
+deny.toml
+license-tool.toml
 Makefile
+README.md
+rustfmt.toml
+SECURITY.md
