@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "bin/agent-data-plane",
+  "bin/testing/intake-collector",
   "lib/datadog-protos",
   "lib/ddsketch-agent",
   "lib/memory-accounting",
@@ -15,6 +16,7 @@ members = [
   "lib/saluki-io",
   "lib/saluki-metrics",
   "lib/stringtheory",
+  "lib/testing/intake-data-store",
 ]
 resolver = "2"
 
@@ -27,6 +29,7 @@ repository = "https://github.com/DataDog/saluki"
 # Internal dependencies.
 datadog-protos = { path = "lib/datadog-protos" }
 ddsketch-agent = { path = "lib/ddsketch-agent" }
+intake-data-store = { path = "lib/testing/intake-data-store" }
 memory-accounting = { path = "lib/memory-accounting" }
 saluki-app = { path = "lib/saluki-app" }
 saluki-components = { path = "lib/saluki-components" }

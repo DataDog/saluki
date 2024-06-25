@@ -8,6 +8,7 @@ use std::{
 
 use datadog_protos::metrics::Dogsketch;
 use ordered_float::OrderedFloat;
+use serde::{Deserialize, Serialize};
 
 const AGENT_DEFAULT_BIN_LIMIT: u16 = 4096;
 const AGENT_DEFAULT_EPS: f64 = 1.0 / 128.0;
@@ -134,7 +135,8 @@ impl Default for Config {
 }
 
 /// A sketch bin.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(from = "FlattenedBin", into = "FlattenedBin")]
 pub(crate) struct Bin {
     /// The bin index.
     k: i16,
@@ -156,6 +158,21 @@ impl Bin {
         // is u16, so next can't possibly be larger than a u16.
         self.n = next as u16;
         0
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+struct FlattenedBin(i16, u16);
+
+impl From<FlattenedBin> for Bin {
+    fn from(value: FlattenedBin) -> Self {
+        Self { k: value.0, n: value.1 }
+    }
+}
+
+impl From<Bin> for FlattenedBin {
+    fn from(value: Bin) -> Self {
+        Self(value.k, value.n)
     }
 }
 
@@ -191,14 +208,16 @@ pub struct Bucket {
 ///
 /// [ddsketch]: https://www.vldb.org/pvldb/vol12/p2195-masson.pdf
 /// [ddagent]: https://github.com/DataDog/datadog-agent
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DDSketch {
+    #[serde(skip)]
     config: Config,
 
     /// The bins within the sketch.
     bins: Vec<Bin>,
 
     /// The number of observations within the sketch.
+    #[serde(rename = "cnt")]
     count: u32,
 
     /// The minimum value of all observations within the sketch.
@@ -739,6 +758,29 @@ impl Default for DDSketch {
 }
 
 impl Eq for DDSketch {}
+
+impl From<&Dogsketch> for DDSketch {
+    fn from(value: &Dogsketch) -> Self {
+        let mut sketch = DDSketch::default();
+        sketch.count = value.cnt() as u32;
+        sketch.min = value.min();
+        sketch.max = value.max();
+        sketch.avg = value.avg();
+        sketch.sum = value.sum();
+
+        let k = value.k();
+        let n = value.n();
+
+        for i in 0..k.len() {
+            sketch.bins.push(Bin {
+                k: k[i] as i16,
+                n: n[i] as u16,
+            });
+        }
+
+        sketch
+    }
+}
 
 fn float_eq(l_value: f64, r_value: f64) -> bool {
     use float_eq::FloatEq as _;

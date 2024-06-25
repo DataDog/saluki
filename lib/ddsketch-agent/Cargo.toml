@@ -12,6 +12,7 @@ ddsketch_extended = []
 datadog-protos = { path = "../datadog-protos" }
 float_eq = { workspace = true }
 ordered-float = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
