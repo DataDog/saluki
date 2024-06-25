@@ -10,7 +10,7 @@ use nom::{
     multi::separated_list1,
     number::complete::double,
     sequence::{preceded, separated_pair, terminated},
-    IResult, InputTakeAtPosition as _,
+    IResult,
 };
 use saluki_context::{ContextRef, ContextResolver};
 use saluki_metrics::static_metrics;
@@ -163,7 +163,7 @@ fn parse_dogstatsd<'a>(
     let remaining = if !remaining.is_empty() {
         let (mut remaining, _) = tag("|")(remaining)?;
 
-        while let Ok((tail, chunk)) = remaining.split_at_position_complete::<_, ()>(|b| b == b'|') {
+        while let Some((chunk, tail)) = split_at_delimiter(remaining, b'|') {
             if chunk.is_empty() {
                 break;
             }
@@ -198,14 +198,7 @@ fn parse_dogstatsd<'a>(
                 }
             }
 
-            // If we have more chunks, then the first character in our tail will be `|`, so we just skip that before
-            // splitting again, otherwise the splitter will give us an empty chunk... which we could also check to see
-            // if there's more iput and just ignore _that_, but I think this is cleaner.
-            remaining = if !tail.is_empty() && tail[0] == b'|' {
-                &tail[1..tail.len()]
-            } else {
-                tail
-            }
+            remaining = tail;
         }
 
         // TODO: Similarly to the above comment, should having any remaining data here cause us to throw an error, warn,
@@ -257,6 +250,20 @@ fn parse_dogstatsd<'a>(
                 .collect();
 
             Ok((remaining, OneOrMany::Multiple(metrics)))
+        }
+    }
+}
+
+#[inline]
+fn split_at_delimiter(input: &[u8], delimiter: u8) -> Option<(&[u8], &[u8])> {
+    match memchr::memchr(delimiter, input) {
+        Some(index) => Some((&input[0..index], &input[index + 1..input.len()])),
+        None => {
+            if input.is_empty() {
+                None
+            } else {
+                Some((input, &[]))
+            }
         }
     }
 }
@@ -319,20 +326,22 @@ fn metric_type_to_metric_value(metric_type: &[u8], value: f64) -> Result<MetricV
 fn metric_tags(maximum_tag_count: usize, maximum_tag_length: usize) -> impl Fn(&[u8]) -> IResult<&[u8], Vec<&str>> {
     move |input: &[u8]| {
         // Take everything that's not a control character or pipe character.
-        let (remaining, raw_tag_bytes) = take_while1(|c: u8| !c.is_ascii_control() && c != b'|')(input)?;
+        let (remaining, mut raw_tag_bytes) = take_while1(|c: u8| !c.is_ascii_control() && c != b'|')(input)?;
 
         let mut tags = Vec::new();
-        for raw_tag in raw_tag_bytes.split(|c| *c == b',') {
+        while let Some((raw_tag, tail)) = split_at_delimiter(raw_tag_bytes, b',') {
             if tags.len() >= maximum_tag_count {
                 // We've reached the maximum number of tags, so we just skip the rest.
                 break;
             }
 
-            let tag = std::str::from_utf8(raw_tag)
+            let tag = simdutf8::basic::from_utf8(raw_tag)
                 .map(|s| limit_str_to_len(s, maximum_tag_length))
                 .map_err(|_| nom::Err::Error(Error::new(input, ErrorKind::Char)))?;
 
             tags.push(tag);
+
+            raw_tag_bytes = tail;
         }
 
         Ok((remaining, tags))
