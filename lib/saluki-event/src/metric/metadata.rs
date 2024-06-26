@@ -42,92 +42,164 @@ impl OriginEntity {
 ///
 /// Metadata includes all information that is not specifically related to the context or value of the metric itself,
 /// such as sample rate and timestamp.
+#[must_use]
 #[derive(Clone, Debug, Default)]
 pub struct MetricMetadata {
-    /// Sample rate of this metric
-    ///
-    /// A value between 0 and 1, inclusive.
-    pub sample_rate: Option<f64>,
-
-    /// Timestamp of the metric, in seconds since the Unix epoch.
-    ///
-    /// Generally based on the time the metric was received, but not always.
-    pub timestamp: u64,
-
-    /// Hostname where the metric originated from.
-    ///
-    /// This could be specified as part of a metric payload that was received from a client, or set internally to the
-    /// hostname where this process is running.
-    pub hostname: Option<Arc<str>>,
-
-    /// The origin entity of the metric.
-    ///
-    /// Indicates the actual sender of the metric, such as the specific process/container, rather than just where the
-    /// metric originated from categorically (i.e. the source type or `MetricOrigin`).
-    pub origin_entity: Option<OriginEntity>,
-
-    /// Origin of the metric.
-    ///
-    /// Indicates the source of the metric, such as the product or service that emitted it, or the source component
-    /// itself that emitted it.
-    pub origin: Option<MetricOrigin>,
+    sample_rate: Option<f64>,
+    timestamp: Option<u64>,
+    hostname: Option<Arc<str>>,
+    origin_entity: Option<OriginEntity>,
+    origin: Option<MetricOrigin>,
 }
 
 impl MetricMetadata {
-    /// Creates a new `MetricMetadata` with the given timestamp.
-    pub fn from_timestamp(timestamp: u64) -> Self {
-        Self {
-            sample_rate: None,
-            timestamp,
-            hostname: None,
-            origin_entity: None,
-            origin: None,
-        }
+    /// Gets the sample rate.
+    ///
+    /// This value is between 0 and 1, inclusive.
+    pub fn sample_rate(&self) -> Option<f64> {
+        self.sample_rate
+    }
+
+    /// Gets the timestamp.
+    pub fn timestamp(&self) -> Option<u64> {
+        self.timestamp
+    }
+
+    /// Gets the hostname.
+    pub fn hostname(&self) -> Option<&str> {
+        self.hostname.as_deref()
+    }
+
+    /// Gets the origin entity.
+    pub fn origin_entity(&self) -> Option<&OriginEntity> {
+        self.origin_entity.as_ref()
+    }
+
+    /// Gets the metric origin.
+    pub fn origin(&self) -> Option<&MetricOrigin> {
+        self.origin.as_ref()
     }
 
     /// Set the sample rate.
+    ///
+    /// This value must be between 0 and 1, inclusive. If the value is outside of this range, it will be clamped to fit.
+    ///
+    /// This variant is specifically for use in builder-style APIs.
     pub fn with_sample_rate(mut self, sample_rate: impl Into<Option<f64>>) -> Self {
-        self.sample_rate = sample_rate.into();
+        self.sample_rate = sample_rate.into().map(|sr| sr.clamp(0.0, 1.0));
+        self
+    }
+
+    /// Set the sample rate.
+    ///
+    /// This value must be between 0 and 1, inclusive. If the value is outside of this range, it will be clamped to fit.
+    pub fn set_sample_rate(&mut self, sample_rate: impl Into<Option<f64>>) {
+        self.sample_rate = sample_rate.into().map(|sr| sr.clamp(0.0, 1.0));
+    }
+
+    /// Set the timestamp.
+    ///
+    /// Represented as a Unix timestamp, or the number of seconds since the Unix epoch. Generally based on the time the
+    /// metric was received, but not always.
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_timestamp(mut self, timestamp: impl Into<Option<u64>>) -> Self {
+        self.timestamp = timestamp.into();
         self
     }
 
     /// Set the timestamp.
-    pub fn with_timestamp(mut self, timestamp: u64) -> Self {
-        self.timestamp = timestamp;
+    ///
+    /// Represented as a Unix timestamp, or the number of seconds since the Unix epoch. Generally based on the time the
+    /// metric was received, but not always.
+    pub fn set_timestamp(&mut self, timestamp: impl Into<Option<u64>>) {
+        self.timestamp = timestamp.into();
+    }
+
+    /// Set the hostname where the metric originated from.
+    ///
+    /// This could be specified as part of a metric payload that was received from a client, or set internally to the
+    /// hostname where this process is running.
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_hostnam(mut self, hostname: impl Into<Option<Arc<str>>>) -> Self {
+        self.hostname = hostname.into();
         self
     }
 
-    /// Set the hostname,
-    pub fn with_hostname<H>(mut self, hostname: H) -> Self
-    where
-        H: Into<Arc<str>>,
-    {
-        self.hostname = Some(hostname.into());
+    /// Set the hostname where the metric originated from.
+    ///
+    /// This could be specified as part of a metric payload that was received from a client, or set internally to the
+    /// hostname where this process is running.
+    pub fn set_hostname(&mut self, hostname: impl Into<Option<Arc<str>>>) {
+        self.hostname = hostname.into();
+    }
+
+    /// Set the origin entity of the metric.
+    ///
+    /// Origin entity relates to the actual sender of the metric, such as the specific process/container, rather than
+    /// just where the metric originated from categorically (i.e. the source type or `MetricOrigin`).
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_origin_entity(mut self, origin_entity: impl Into<Option<OriginEntity>>) -> Self {
+        self.origin_entity = origin_entity.into();
         self
     }
 
-    /// Set the origin entity.
-    pub fn with_origin_entity(mut self, origin_entity: Option<OriginEntity>) -> Self {
-        self.origin_entity = origin_entity;
+    /// Set the origin entity of the metric.
+    ///
+    /// Origin entity relates to the actual sender of the metric, such as the specific process/container, rather than
+    /// just where the metric originated from categorically (i.e. the source type or `MetricOrigin`).
+    pub fn set_origin_entity(&mut self, origin_entity: impl Into<Option<OriginEntity>>) {
+        self.origin_entity = origin_entity.into();
+    }
+
+    /// Set the metric origin to the given source type.
+    ///
+    /// Indicates the source of the metric, such as the product or service that emitted it, or the source component
+    /// itself that emitted it.
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_source_type(mut self, source_type: impl Into<Option<String>>) -> Self {
+        self.origin = source_type.into().map(MetricOrigin::SourceType);
         self
     }
 
     /// Set the metric origin to the given source type.
-    pub fn with_source_type(mut self, source_type: String) -> Self {
-        self.origin = Some(MetricOrigin::SourceType(source_type));
+    ///
+    /// Indicates the source of the metric, such as the product or service that emitted it, or the source component
+    /// itself that emitted it.
+    pub fn set_source_type(&mut self, source_type: impl Into<Option<String>>) {
+        self.origin = source_type.into().map(MetricOrigin::SourceType);
+    }
+
+    /// Set the metric origin to the given origin.
+    ///
+    /// Indicates the source of the metric, such as the product or service that emitted it, or the source component
+    /// itself that emitted it.
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_origin(mut self, origin: impl Into<Option<MetricOrigin>>) -> Self {
+        self.origin = origin.into();
         self
     }
 
     /// Set the metric origin to the given origin.
-    pub fn with_origin(mut self, origin: MetricOrigin) -> Self {
-        self.origin = Some(origin);
-        self
+    ///
+    /// Indicates the source of the metric, such as the product or service that emitted it, or the source component
+    /// itself that emitted it.
+    pub fn set_origin(&mut self, origin: impl Into<Option<MetricOrigin>>) {
+        self.origin = origin.into();
     }
 }
 
 impl fmt::Display for MetricMetadata {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ts={}", self.timestamp)?;
+        if let Some(timestamp) = self.timestamp {
+            write!(f, "ts={}", timestamp)?;
+        } else {
+            write!(f, "ts=none")?;
+        }
 
         if let Some(sample_rate) = self.sample_rate {
             write!(f, " sample_rate={}", sample_rate)?;

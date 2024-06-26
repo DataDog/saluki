@@ -15,7 +15,7 @@ use saluki_io::{
 };
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error, trace};
+use tracing::{debug, error, trace, Instrument as _};
 
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
@@ -216,7 +216,7 @@ impl Destination for DatadogMetrics {
         let (io_shutdown_tx, io_shutdown_rx) = oneshot::channel();
         let (requests_tx, requests_rx) = mpsc::channel(32);
         let metrics = Metrics::from_component_context(context.component_context());
-        tokio::spawn(run_io_loop(requests_rx, io_shutdown_tx, http_client, metrics.clone()));
+        tokio::spawn(run_io_loop(requests_rx, io_shutdown_tx, http_client, metrics.clone()).in_current_span());
 
         debug!("Datadog Metrics destination started.");
 

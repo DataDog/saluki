@@ -105,8 +105,9 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
     /// to satisfy the request.
     ///
     /// Defaults to `true`.
-    pub fn allow_heap_allocations(&mut self, allow: bool) {
+    pub fn with_heap_allocations(mut self, allow: bool) -> Self {
         self.allow_heap_allocations = allow;
+        self
     }
 
     fn intern(&self, s: &str) -> Option<MetaString> {
