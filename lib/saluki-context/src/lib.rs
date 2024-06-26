@@ -32,7 +32,7 @@ static_metrics! {
 
 #[derive(Debug)]
 struct State {
-    resolved_contexts: IndexSet<Context>,
+    resolved_contexts: IndexSet<Context, ahash::RandomState>,
 }
 
 /// A centralized store for resolved contexts.
@@ -82,7 +82,7 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
             context_metrics,
             interner,
             state: Arc::new(RwLock::new(State {
-                resolved_contexts: IndexSet::new(),
+                resolved_contexts: IndexSet::with_hasher(ahash::RandomState::new()),
             })),
             allow_heap_allocations: true,
         }

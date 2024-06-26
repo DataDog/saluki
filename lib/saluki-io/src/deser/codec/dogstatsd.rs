@@ -268,6 +268,7 @@ fn split_at_delimiter(input: &[u8], delimiter: u8) -> Option<(&[u8], &[u8])> {
     }
 }
 
+#[inline]
 fn metric_name(input: &[u8]) -> IResult<&[u8], &str> {
     let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.';
     map(take_while1(valid_char), |b| {
@@ -277,6 +278,7 @@ fn metric_name(input: &[u8]) -> IResult<&[u8], &str> {
     })(input)
 }
 
+#[inline]
 fn metric_value(input: &[u8]) -> IResult<&[u8], OneOrMany<MetricValue>> {
     let (remaining, raw_value) = terminated(take_while1(|b| b != b'|'), tag("|"))(input)?;
     let (remaining, raw_kind) = alt((tag(b"g"), tag(b"c"), tag(b"ms"), tag(b"h"), tag(b"s"), tag(b"d")))(remaining)?;
@@ -309,6 +311,7 @@ fn metric_value(input: &[u8]) -> IResult<&[u8], OneOrMany<MetricValue>> {
     Ok((remaining, metric_value))
 }
 
+#[inline]
 fn metric_type_to_metric_value(metric_type: &[u8], value: f64) -> Result<MetricValue, nom::Err<Error<&[u8]>>> {
     match metric_type {
         b"g" => Ok(MetricValue::Gauge { value }),
@@ -323,12 +326,13 @@ fn metric_type_to_metric_value(metric_type: &[u8], value: f64) -> Result<MetricV
     }
 }
 
+#[inline]
 fn metric_tags(maximum_tag_count: usize, maximum_tag_length: usize) -> impl Fn(&[u8]) -> IResult<&[u8], Vec<&str>> {
     move |input: &[u8]| {
         // Take everything that's not a control character or pipe character.
         let (remaining, mut raw_tag_bytes) = take_while1(|c: u8| !c.is_ascii_control() && c != b'|')(input)?;
 
-        let mut tags = Vec::new();
+        let mut tags = Vec::with_capacity(16);
         while let Some((raw_tag, tail)) = split_at_delimiter(raw_tag_bytes, b',') {
             if tags.len() >= maximum_tag_count {
                 // We've reached the maximum number of tags, so we just skip the rest.
@@ -348,10 +352,12 @@ fn metric_tags(maximum_tag_count: usize, maximum_tag_length: usize) -> impl Fn(&
     }
 }
 
+#[inline]
 fn unix_timestamp(input: &[u8]) -> IResult<&[u8], u64> {
     parse_u64(input)
 }
 
+#[inline]
 fn container_id(input: &[u8]) -> IResult<&[u8], &str> {
     // We generally only expect container IDs to be either long hexadecimal strings (like 64 characters), or in special
     // cases, the inode number of the cgroup controller that contains the container sending the metrics, where the value
@@ -364,6 +370,7 @@ fn container_id(input: &[u8]) -> IResult<&[u8], &str> {
     })(input)
 }
 
+#[inline]
 fn limit_str_to_len(s: &str, limit: usize) -> &str {
     if limit >= s.len() {
         s
