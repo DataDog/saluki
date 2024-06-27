@@ -32,7 +32,7 @@ static_metrics! {
 
 #[derive(Debug)]
 struct State {
-    resolved_contexts: IndexSet<Context>,
+    resolved_contexts: IndexSet<Context, ahash::RandomState>,
 }
 
 /// A centralized store for resolved contexts.
@@ -59,16 +59,16 @@ struct State {
 /// cheaply cloned. It points directly to the underlying context data (name and tags) and provides access to these
 /// components.
 #[derive(Clone, Debug)]
-pub struct ContextResolver {
+pub struct ContextResolver<const SHARD_FACTOR: usize = 8> {
     context_metrics: ContextMetrics,
-    interner: FixedSizeInterner,
+    interner: FixedSizeInterner<SHARD_FACTOR>,
     state: Arc<RwLock<State>>,
     allow_heap_allocations: bool,
 }
 
-impl ContextResolver {
+impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
     /// Creates a new `ContextResolver` with the given interner.
-    pub fn from_interner<S>(name: S, interner: FixedSizeInterner) -> Self
+    pub fn from_interner<S>(name: S, interner: FixedSizeInterner<SHARD_FACTOR>) -> Self
     where
         S: Into<String>,
     {
@@ -82,7 +82,7 @@ impl ContextResolver {
             context_metrics,
             interner,
             state: Arc::new(RwLock::new(State {
-                resolved_contexts: IndexSet::new(),
+                resolved_contexts: IndexSet::with_hasher(ahash::RandomState::new()),
             })),
             allow_heap_allocations: true,
         }
@@ -94,7 +94,7 @@ impl ContextResolver {
         // no-op after only a single string has been interned.
         Self::from_interner(
             "noop".to_string(),
-            FixedSizeInterner::new(NonZeroUsize::new(1).unwrap()),
+            FixedSizeInterner::<SHARD_FACTOR>::new(NonZeroUsize::new(1).unwrap()),
         )
     }
 
@@ -587,7 +587,7 @@ mod tests {
 
     #[test]
     fn basic() {
-        let resolver = ContextResolver::with_noop_interner();
+        let resolver: ContextResolver = ContextResolver::with_noop_interner();
 
         // Create two distinct contexts with the same name but different tags.
         let name = "metric_name";
@@ -630,7 +630,7 @@ mod tests {
 
     #[test]
     fn tag_order() {
-        let resolver = ContextResolver::with_noop_interner();
+        let resolver: ContextResolver = ContextResolver::with_noop_interner();
 
         // Create two distinct contexts with the same name and tags, but with the tags in a different order:
         let name = "metric_name";
@@ -659,7 +659,7 @@ mod tests {
 
         // Create our resolver and then create a context, which will have its metrics attached to our local recorder:
         let context = metrics::with_local_recorder(&recorder, || {
-            let resolver = ContextResolver::with_noop_interner();
+            let resolver: ContextResolver = ContextResolver::with_noop_interner();
             resolver.resolve(ContextRef::from_name_and_tags("name", &["tag1"]))
         });
 

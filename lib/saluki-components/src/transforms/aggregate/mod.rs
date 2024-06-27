@@ -500,7 +500,7 @@ mod tests {
     fn create_metric(name: &str, value: MetricValue) -> Metric {
         const EMPTY_TAGS: &[&str] = &[];
 
-        let resolver = ContextResolver::with_noop_interner();
+        let resolver: ContextResolver = ContextResolver::with_noop_interner();
         let context_ref = ContextRef::from_name_and_tags(name, EMPTY_TAGS);
         let context = resolver.resolve(context_ref).unwrap();
 

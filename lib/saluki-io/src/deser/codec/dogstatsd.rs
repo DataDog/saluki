@@ -10,7 +10,7 @@ use nom::{
     multi::separated_list1,
     number::complete::double,
     sequence::{preceded, separated_pair, terminated},
-    IResult, InputTakeAtPosition as _,
+    IResult,
 };
 use saluki_context::{ContextRef, ContextResolver};
 use saluki_metrics::static_metrics;
@@ -163,7 +163,7 @@ fn parse_dogstatsd<'a>(
     let remaining = if !remaining.is_empty() {
         let (mut remaining, _) = tag("|")(remaining)?;
 
-        while let Ok((tail, chunk)) = remaining.split_at_position_complete::<_, ()>(|b| b == b'|') {
+        while let Some((chunk, tail)) = split_at_delimiter(remaining, b'|') {
             if chunk.is_empty() {
                 break;
             }
@@ -198,14 +198,7 @@ fn parse_dogstatsd<'a>(
                 }
             }
 
-            // If we have more chunks, then the first character in our tail will be `|`, so we just skip that before
-            // splitting again, otherwise the splitter will give us an empty chunk... which we could also check to see
-            // if there's more iput and just ignore _that_, but I think this is cleaner.
-            remaining = if !tail.is_empty() && tail[0] == b'|' {
-                &tail[1..tail.len()]
-            } else {
-                tail
-            }
+            remaining = tail;
         }
 
         // TODO: Similarly to the above comment, should having any remaining data here cause us to throw an error, warn,
@@ -261,6 +254,21 @@ fn parse_dogstatsd<'a>(
     }
 }
 
+#[inline]
+fn split_at_delimiter(input: &[u8], delimiter: u8) -> Option<(&[u8], &[u8])> {
+    match memchr::memchr(delimiter, input) {
+        Some(index) => Some((&input[0..index], &input[index + 1..input.len()])),
+        None => {
+            if input.is_empty() {
+                None
+            } else {
+                Some((input, &[]))
+            }
+        }
+    }
+}
+
+#[inline]
 fn metric_name(input: &[u8]) -> IResult<&[u8], &str> {
     let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.';
     map(take_while1(valid_char), |b| {
@@ -270,6 +278,7 @@ fn metric_name(input: &[u8]) -> IResult<&[u8], &str> {
     })(input)
 }
 
+#[inline]
 fn metric_value(input: &[u8]) -> IResult<&[u8], OneOrMany<MetricValue>> {
     let (remaining, raw_value) = terminated(take_while1(|b| b != b'|'), tag("|"))(input)?;
     let (remaining, raw_kind) = alt((tag(b"g"), tag(b"c"), tag(b"ms"), tag(b"h"), tag(b"s"), tag(b"d")))(remaining)?;
@@ -302,6 +311,7 @@ fn metric_value(input: &[u8]) -> IResult<&[u8], OneOrMany<MetricValue>> {
     Ok((remaining, metric_value))
 }
 
+#[inline]
 fn metric_type_to_metric_value(metric_type: &[u8], value: f64) -> Result<MetricValue, nom::Err<Error<&[u8]>>> {
     match metric_type {
         b"g" => Ok(MetricValue::Gauge { value }),
@@ -316,33 +326,38 @@ fn metric_type_to_metric_value(metric_type: &[u8], value: f64) -> Result<MetricV
     }
 }
 
+#[inline]
 fn metric_tags(maximum_tag_count: usize, maximum_tag_length: usize) -> impl Fn(&[u8]) -> IResult<&[u8], Vec<&str>> {
     move |input: &[u8]| {
         // Take everything that's not a control character or pipe character.
-        let (remaining, raw_tag_bytes) = take_while1(|c: u8| !c.is_ascii_control() && c != b'|')(input)?;
+        let (remaining, mut raw_tag_bytes) = take_while1(|c: u8| !c.is_ascii_control() && c != b'|')(input)?;
 
-        let mut tags = Vec::new();
-        for raw_tag in raw_tag_bytes.split(|c| *c == b',') {
+        let mut tags = Vec::with_capacity(16);
+        while let Some((raw_tag, tail)) = split_at_delimiter(raw_tag_bytes, b',') {
             if tags.len() >= maximum_tag_count {
                 // We've reached the maximum number of tags, so we just skip the rest.
                 break;
             }
 
-            let tag = std::str::from_utf8(raw_tag)
+            let tag = simdutf8::basic::from_utf8(raw_tag)
                 .map(|s| limit_str_to_len(s, maximum_tag_length))
                 .map_err(|_| nom::Err::Error(Error::new(input, ErrorKind::Char)))?;
 
             tags.push(tag);
+
+            raw_tag_bytes = tail;
         }
 
         Ok((remaining, tags))
     }
 }
 
+#[inline]
 fn unix_timestamp(input: &[u8]) -> IResult<&[u8], u64> {
     parse_u64(input)
 }
 
+#[inline]
 fn container_id(input: &[u8]) -> IResult<&[u8], &str> {
     // We generally only expect container IDs to be either long hexadecimal strings (like 64 characters), or in special
     // cases, the inode number of the cgroup controller that contains the container sending the metrics, where the value
@@ -355,6 +370,7 @@ fn container_id(input: &[u8]) -> IResult<&[u8], &str> {
     })(input)
 }
 
+#[inline]
 fn limit_str_to_len(s: &str, limit: usize) -> &str {
     if limit >= s.len() {
         s
@@ -395,7 +411,7 @@ mod tests {
     }
 
     fn create_metric_with_tags(name: &str, tags: &[&str], value: MetricValue) -> Metric {
-        let context_resolver = ContextResolver::with_noop_interner();
+        let context_resolver: ContextResolver = ContextResolver::with_noop_interner();
         let context_ref = ContextRef::<'_, &str>::from_name_and_tags(name, tags);
         let context = context_resolver.resolve(context_ref).unwrap();
 

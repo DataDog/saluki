@@ -24,6 +24,7 @@ export ADP_APP_IMAGE ?= debian:buster-slim
 export GO_BUILD_IMAGE ?= golang:1.22-bullseye
 export GO_APP_IMAGE ?= debian:bullseye-slim
 export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
+export GIT_COMMIT ?= $(shell git rev-parse --short HEAD)
 
 FMT_YELLOW = \033[0;33m
 FMT_BLUE = \033[0;36m
@@ -310,6 +311,47 @@ endif
 	@rustup toolchain install nightly --component miri
 	@echo "[*] Ensuring Miri is setup..."
 	@cargo +nightly miri setup
+
+##@ Profiling
+
+.PHONY: profile-ddprof-local
+profile-ddprof-local: ensure-ddprof build-adp
+profile-ddprof-local: ## Runs ADP under ddprof locally
+	@echo "[*] Running ADP under ddprof (service: adp, environment: local, version: $(GIT_COMMIT))..."
+	@DD_API_KEY=00000001adp DD_HOSTNAME=adp-profiling DD_DD_URL=http://127.0.0.1:9091 \
+	DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_SOCKET=/tmp/adp-dsd.sock DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true \
+	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:6000 DD_LOG_LEVEL=info \
+	DD_DOGSTATSD_EXPIRY_SECONDS=30 \
+	./test/ddprof/bin/ddprof --service adp --environment local --service-version $(GIT_COMMIT) \
+	--url unix:///var/run/datadog/apm.socket \
+	--inlined-functions true --timeline --upload-period 10 --preset cpu_live_heap \
+	target/release/agent-data-plane
+
+.PHONY: profile-run-lading-500mb
+profile-run-lading-500mb: ensure-lading
+profile-run-lading-500mb: ## Runs the 500MB/s variant of the UDS DogStatsD experiment
+	@echo "[*] Running the 500MB/s UDS DogStatsD experiment (15 minutes)..."
+	@./test/lading/bin/lading --config-path test/smp/regression/saluki/cases/uds_dogstatsd_to_api_500mb/lading/lading.yaml \
+	--no-target --warmup-duration-seconds 1 --experiment-duration-seconds 900
+
+.PHONY: ensure-ddprof
+ensure-ddprof:
+ifeq ($(shell test -f test/ddprof/bin/ddprof || echo not-found), not-found)
+	@echo "[*] Downloading ddprof v0.17.1..."
+	@curl -q -L -o /tmp/ddprof.tar.xz https://github.com/DataDog/ddprof/releases/download/v0.17.1/ddprof-0.17.1-amd64-linux.tar.xz
+	@tar -C test -xf /tmp/ddprof.tar.xz
+	@rm -f /tmp/ddprof.tar.xz
+endif
+
+.PHONY: ensure-lading
+ensure-lading:
+ifeq ($(shell test -f test/lading/bin/lading || echo not-found), not-found)
+	@echo "[*] Downloading lading v0.21.1..."
+	@curl -q -L -o /tmp/lading.tar.gz https://github.com/DataDog/lading/releases/download/v0.21.1/lading-x86_64-unknown-linux-gnu.tar.gz
+	@mkdir -p test/lading/bin
+	@tar -C test/lading/bin -xf /tmp/lading.tar.gz
+	@rm -f /tmp/lading.tar.gz
+endif
 
 ##@ Development
 

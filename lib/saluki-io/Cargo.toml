@@ -42,6 +42,7 @@ protobuf = { workspace = true }
 quanta = { workspace = true }
 rustls = { workspace = true, features = ["aws_lc_rs", "logging", "tls12"] }
 serde = { workspace = true }
+simdutf8 = { version = "0.1.4", default-features = false, features = ["std"] }
 slab = { workspace = true }
 snafu = { workspace = true }
 socket2 = { workspace = true }
