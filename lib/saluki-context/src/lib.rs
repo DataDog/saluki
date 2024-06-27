@@ -193,6 +193,23 @@ pub struct Context {
 }
 
 impl Context {
+    /// Creates a new `Context` from the given static name and given static tags.
+    pub fn from_static_parts(name: &'static str, tags: &'static [&'static str]) -> Self {
+        let mut tag_set = TagSet::default();
+        for tag in tags {
+            tag_set.insert_tag(MetaString::from_static(tag));
+        }
+
+        Self {
+            inner: Arc::new(ContextInner {
+                name: MetaString::from_static(name),
+                tags: tag_set,
+                hash: hash_context(name, tags),
+                active_count: Gauge::noop(),
+            }),
+        }
+    }
+
     /// Gets the name of this context.
     pub fn name(&self) -> &MetaString {
         &self.inner.name

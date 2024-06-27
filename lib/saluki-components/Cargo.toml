@@ -20,7 +20,7 @@ saluki-io = { workspace = true }
 stringtheory = { workspace = true }
 
 # External dependencies.
-ahash = { workspace = true, features = ["std", "runtime-rng"] }
+ahash = { workspace = true }
 async-compression = { workspace = true, features = ["tokio", "zlib"] }
 async-trait = { workspace = true }
 bitmask-enum = { workspace = true }

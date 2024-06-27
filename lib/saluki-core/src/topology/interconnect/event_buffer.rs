@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, fmt};
 
 use saluki_event::Event;
 
@@ -36,6 +36,14 @@ impl EventBuffer {
     /// Appends an event to the back of the event buffer.
     pub fn push(&mut self, event: Event) {
         self.data_mut().events.push_back(event);
+    }
+}
+
+impl fmt::Debug for EventBuffer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EventBuffer")
+            .field("event_len", &self.data().events.len())
+            .finish()
     }
 }
 
