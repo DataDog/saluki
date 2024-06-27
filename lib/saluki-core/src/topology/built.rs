@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use memory_accounting::MemoryLimiter;
 use saluki_error::{generic_error, GenericError};
 use tokio::{sync::mpsc, task::JoinHandle};
+use tracing::{debug, error_span, Instrument as _};
 
 use crate::{
     components::{
@@ -49,36 +50,50 @@ impl BuiltTopology {
         }
     }
 
-    fn create_component_interconnects(&self) -> (HashMap<ComponentId, Forwarder>, HashMap<ComponentId, EventStream>) {
+    fn create_component_interconnects(
+        &self, event_buffer_pool: FixedSizeObjectPool<EventBuffer>,
+    ) -> (HashMap<ComponentId, Forwarder>, HashMap<ComponentId, EventStream>) {
+        // Collect all of the outbound edges in our topology graph.
+        //
+        // This gives us a mapping of components which send events to another component, grouped by output name.
         let outbound_edges = self.graph.get_outbound_directed_edges();
 
         let mut forwarders = HashMap::new();
         let mut event_streams = HashMap::new();
         let mut event_stream_senders: HashMap<ComponentId, mpsc::Sender<EventBuffer>> = HashMap::new();
 
-        for (source_cid, output_map) in outbound_edges {
-            let forwarder: &mut Forwarder = forwarders.entry(source_cid.clone()).or_insert_with(|| {
-                let component_context = ComponentContext::source(source_cid);
-                Forwarder::new(component_context)
+        for (upstream_id, output_map) in outbound_edges {
+            // Get a reference to the forwarder for the current upstream component
+            let forwarder: &mut Forwarder = forwarders.entry(upstream_id.clone()).or_insert_with(|| {
+                // TODO: This is wrong, because an upstream component is simply any component that can forward, which is
+                // either a source or transform.
+                let component_context = ComponentContext::source(upstream_id.clone());
+                Forwarder::new(component_context, event_buffer_pool.clone())
             });
 
-            for (output_id, destination_cids) in output_map {
-                for destination_cid in destination_cids {
-                    let sender = match event_stream_senders.get(&destination_cid) {
+            for (upstream_output_id, downstream_ids) in output_map {
+                // For each downstream component mapped to this upstream component's output, we need to grab a copy of
+                // the sender we'll use to actually send to them... so we either clone it here or we do the initial
+                // creation.
+                for downstream_id in downstream_ids {
+                    let sender = match event_stream_senders.get(&downstream_id) {
                         Some(sender) => sender.clone(),
                         None => {
                             let (sender, receiver) = build_interconnect_channel();
 
-                            let component_context = ComponentContext::destination(destination_cid.clone());
+                            // TODO: Similarly broken here, since a downstream component is any component that can
+                            // receive events, which is either a transform or destination.
+                            let component_context = ComponentContext::destination(downstream_id.clone());
                             let event_stream = EventStream::new(component_context, receiver);
 
-                            event_streams.insert(destination_cid.clone(), event_stream);
-                            event_stream_senders.insert(destination_cid, sender.clone());
+                            event_streams.insert(downstream_id.clone(), event_stream);
+                            event_stream_senders.insert(downstream_id.clone(), sender.clone());
                             sender
                         }
                     };
 
-                    forwarder.add_output(output_id.clone(), sender);
+                    debug!(%upstream_id, %upstream_output_id, %downstream_id, "Adding forwarder output.");
+                    forwarder.add_output(upstream_output_id.clone(), sender);
                 }
             }
         }
@@ -95,8 +110,8 @@ impl BuiltTopology {
     /// If an error occurs while spawning the topology, an error is returned.
     pub async fn spawn(self, memory_limiter: MemoryLimiter) -> Result<RunningTopology, GenericError> {
         // Build our interconnects, which we'll grab from piecemeal as we spawn our components.
-        let (mut forwarders, mut event_streams) = self.create_component_interconnects();
         let event_buffer_pool = FixedSizeObjectPool::with_capacity(1024);
+        let (mut forwarders, mut event_streams) = self.create_component_interconnects(event_buffer_pool.clone());
 
         let mut shutdown_coordinator = ComponentShutdownCoordinator::default();
 
@@ -170,17 +185,32 @@ impl BuiltTopology {
 }
 
 fn spawn_source(source: Box<dyn Source + Send>, context: SourceContext) -> JoinHandle<Result<(), ()>> {
-    tokio::spawn(async move { source.run(context).await })
+    let component_span = error_span!(
+        "component",
+        "type" = context.component_context().component_type(),
+        id = %context.component_context().component_id(),
+    );
+    tokio::spawn(async move { source.run(context).instrument(component_span).await })
 }
 
 fn spawn_transform(transform: Box<dyn Transform + Send>, context: TransformContext) -> JoinHandle<Result<(), ()>> {
-    tokio::spawn(async move { transform.run(context).await })
+    let component_span = error_span!(
+        "component",
+        "type" = context.component_context().component_type(),
+        id = %context.component_context().component_id(),
+    );
+    tokio::spawn(async move { transform.run(context).instrument(component_span).await })
 }
 
 fn spawn_destination(
     destination: Box<dyn Destination + Send>, context: DestinationContext,
 ) -> JoinHandle<Result<(), ()>> {
-    tokio::spawn(async move { destination.run(context).await })
+    let component_span = error_span!(
+        "component",
+        "type" = context.component_context().component_type(),
+        id = %context.component_context().component_id(),
+    );
+    tokio::spawn(async move { destination.run(context).instrument(component_span).await })
 }
 
 fn build_interconnect_channel() -> (mpsc::Sender<EventBuffer>, mpsc::Receiver<EventBuffer>) {

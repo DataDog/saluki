@@ -77,3 +77,80 @@ impl EventStream {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    // TODO: Tests asserting we emit metrics, and the right metrics.
+
+    use crate::{pooling::helpers::get_pooled_object_via_default, topology::ComponentId};
+
+    use super::*;
+
+    fn create_event_stream(channel_size: usize) -> (EventStream, mpsc::Sender<EventBuffer>) {
+        let component_context = ComponentId::try_from("event_stream_test")
+            .map(ComponentContext::source)
+            .expect("component ID should never be invalid");
+
+        let (tx, rx) = mpsc::channel(channel_size);
+        let event_stream = EventStream::new(component_context, rx);
+
+        (event_stream, tx)
+    }
+
+    #[tokio::test]
+    async fn next() {
+        let (mut event_stream, tx) = create_event_stream(1);
+
+        // Send an event buffer, and make sure we can receive it:
+        let ebuf = get_pooled_object_via_default::<EventBuffer>();
+        assert!(ebuf.is_empty());
+
+        tx.send(ebuf).await.expect("should not fail to send event buffer");
+
+        let received_ebuf = event_stream.next().await.expect("should receive event buffer");
+        assert!(received_ebuf.is_empty());
+
+        // Now drop the sender, which should close the event stream:
+        drop(tx);
+
+        assert!(event_stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn next_ready() {
+        let (mut event_stream, tx) = create_event_stream(1);
+
+        // Send an event buffer, and make sure we can receive it:
+        let ebuf = get_pooled_object_via_default::<EventBuffer>();
+        tx.send(ebuf).await.expect("should not fail to send event buffer");
+
+        let received_ebufs = event_stream.next_ready().await.expect("should receive event buffers");
+        assert_eq!(received_ebufs.len(), 1);
+
+        // Now drop the sender, which should close the event stream:
+        drop(tx);
+
+        assert!(event_stream.next_ready().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn next_ready_obeys_limit() {
+        // We'll send a ton of event buffers, more than `NEXT_READY_RECV_LIMIT`, and make sure that when we call
+        // `next_ready`, we only get up to `NEXT_READY_RECV_LIMIT` event buffers.
+        let bufs_to_send = (NEXT_READY_RECV_LIMIT.get() as f64 * 1.75) as usize;
+        let (mut event_stream, tx) = create_event_stream(bufs_to_send);
+
+        for _ in 0..bufs_to_send {
+            let ebuf = get_pooled_object_via_default::<EventBuffer>();
+            tx.send(ebuf).await.expect("should not fail to send event buffer");
+        }
+
+        // Now call `next_ready` and make sure we only get `NEXT_READY_RECV_LIMIT` event buffers:
+        let received_ebufs1 = event_stream.next_ready().await.expect("should receive event buffers");
+        assert_eq!(received_ebufs1.len(), NEXT_READY_RECV_LIMIT.get());
+
+        // And one more time to get the rest:
+        let received_ebufs2 = event_stream.next_ready().await.expect("should receive event buffers");
+        assert_eq!(received_ebufs2.len(), bufs_to_send - received_ebufs1.len());
+    }
+}

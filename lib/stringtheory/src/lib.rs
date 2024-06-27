@@ -107,16 +107,26 @@ pub struct MetaString {
 
 impl MetaString {
     /// Creates an empty `MetaString`.
+    ///
+    /// This does not allocate.
     pub const fn empty() -> Self {
-        MetaString {
-            // NOTE: This does not allocate.
+        Self {
             inner: Inner::Shared(bytes::Bytes::new()),
+        }
+    }
+
+    /// Creates a new `MetaString` from the given static string.
+    ///
+    /// This does not allocate.
+    pub const fn from_static(s: &'static str) -> Self {
+        Self {
+            inner: Inner::Shared(bytes::Bytes::from_static(s.as_bytes())),
         }
     }
 
     /// Attempts to create a new `MetaString` from the given string if it can be inlined.
     pub fn try_inline(s: &str) -> Option<Self> {
-        InlinedString::new(s).map(|i| MetaString {
+        InlinedString::new(s).map(|i| Self {
             inner: Inner::Inlined(i),
         })
     }
@@ -141,7 +151,7 @@ impl MetaString {
 
 impl Default for MetaString {
     fn default() -> Self {
-        MetaString::empty()
+        Self::empty()
     }
 }
 
@@ -166,13 +176,13 @@ impl PartialEq<MetaString> for MetaString {
 impl Eq for MetaString {}
 
 impl PartialOrd for MetaString {
-    fn partial_cmp(&self, other: &MetaString) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for MetaString {
-    fn cmp(&self, other: &MetaString) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.deref().cmp(other.deref())
     }
 }
@@ -192,10 +202,10 @@ impl From<String> for MetaString {
 impl From<&str> for MetaString {
     fn from(s: &str) -> Self {
         match InlinedString::new(s) {
-            Some(i) => MetaString {
+            Some(i) => Self {
                 inner: Inner::Inlined(i),
             },
-            None => MetaString {
+            None => Self {
                 inner: Inner::Shared(bytes::Bytes::copy_from_slice(s.as_bytes())),
             },
         }
@@ -207,7 +217,7 @@ impl TryFrom<bytes::Bytes> for MetaString {
 
     fn try_from(value: bytes::Bytes) -> Result<Self, Self::Error> {
         let _ = std::str::from_utf8(&value)?;
-        Ok(MetaString {
+        Ok(Self {
             inner: Inner::Shared(value),
         })
     }
@@ -215,7 +225,7 @@ impl TryFrom<bytes::Bytes> for MetaString {
 
 impl From<InternedString> for MetaString {
     fn from(s: InternedString) -> Self {
-        MetaString {
+        Self {
             inner: Inner::Interned(s),
         }
     }
@@ -223,7 +233,7 @@ impl From<InternedString> for MetaString {
 
 impl From<protobuf::Chars> for MetaString {
     fn from(value: protobuf::Chars) -> Self {
-        MetaString {
+        Self {
             inner: Inner::ProtoShared(value),
         }
     }

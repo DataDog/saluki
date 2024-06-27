@@ -62,8 +62,8 @@ impl HostEnrichment {
 
     fn enrich_metric(&self, metric: &mut Metric) {
         // Only add the hostname if it's not already present.
-        if metric.metadata().hostname.is_none() {
-            metric.metadata_mut().hostname = Some(self.hostname.clone());
+        if metric.metadata().hostname().is_none() {
+            metric.metadata_mut().set_hostname(self.hostname.clone());
         }
     }
 }

@@ -3,6 +3,7 @@ use std::{io, time::Duration};
 use datadog_protos::metrics::{self as proto, Resource};
 use http::{Method, Request, Uri};
 use protobuf::CodedOutputStream;
+use saluki_env::time::get_unix_timestamp;
 use snafu::{ResultExt, Snafu};
 use tokio::io::AsyncWriteExt as _;
 use tracing::{debug, trace};
@@ -347,14 +348,7 @@ fn encode_series_metric(metric: &Metric) -> proto::MetricSeries {
 
     let mut host_resource = Resource::new();
     host_resource.set_type("host".to_string().into());
-    host_resource.set_name(
-        metric
-            .metadata()
-            .hostname
-            .as_deref()
-            .map(|h| h.into())
-            .unwrap_or_default(),
-    );
+    host_resource.set_name(metric.metadata().hostname().map(|h| h.into()).unwrap_or_default());
     series.mut_resources().push(host_resource);
 
     if let Some(ir_tags) = tags.remove_tags("dd.internal.resource") {
@@ -371,7 +365,7 @@ fn encode_series_metric(metric: &Metric) -> proto::MetricSeries {
     series.set_tags(tags.into_iter().map(|tag| tag.into_inner().into()).collect());
 
     // Set the origin metadata, if it exists.
-    if let Some(origin) = &metric.metadata().origin {
+    if let Some(origin) = metric.metadata().origin() {
         match origin {
             MetricOrigin::SourceType(source_type) => {
                 series.set_source_type_name(source_type.clone().into());
@@ -402,7 +396,7 @@ fn encode_series_metric(metric: &Metric) -> proto::MetricSeries {
 
     let mut point = proto::MetricPoint::new();
     point.set_value(metric_value);
-    point.set_timestamp(metric.metadata().timestamp as i64);
+    point.set_timestamp(metric.metadata().timestamp().unwrap_or_else(get_unix_timestamp) as i64);
 
     series.mut_points().push(point);
 
@@ -423,14 +417,7 @@ fn encode_sketch_metric(metric: &Metric) -> proto::Sketch {
     // Something to benchmark in the future.
     let mut sketch = proto::Sketch::new();
     sketch.set_metric(metric.context().name().into());
-    sketch.set_host(
-        metric
-            .metadata()
-            .hostname
-            .as_deref()
-            .map(|h| h.into())
-            .unwrap_or_default(),
-    );
+    sketch.set_host(metric.metadata().hostname().map(|h| h.into()).unwrap_or_default());
     sketch.set_tags(
         metric
             .context()
@@ -446,7 +433,7 @@ fn encode_sketch_metric(metric: &Metric) -> proto::Sketch {
         product,
         subproduct,
         product_detail,
-    }) = &metric.metadata().origin
+    }) = metric.metadata().origin()
     {
         sketch.set_metadata(origin_metadata_to_proto_metadata(
             *product,
@@ -461,7 +448,7 @@ fn encode_sketch_metric(metric: &Metric) -> proto::Sketch {
     };
 
     let mut dogsketch = proto::Dogsketch::new();
-    dogsketch.set_ts(metric.metadata().timestamp as i64);
+    dogsketch.set_ts(metric.metadata().timestamp().unwrap_or_else(get_unix_timestamp) as i64);
     ddsketch.merge_to_dogsketch(&mut dogsketch);
     sketch.mut_dogsketches().push(dogsketch);
 

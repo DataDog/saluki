@@ -17,7 +17,7 @@ saluki-event = { workspace = true }
 saluki-metrics = { workspace = true }
 
 # External dependencies.
-ahash = { workspace = true, features = ["std", "runtime-rng"] }
+ahash = { workspace = true }
 async-compression = { workspace = true, features = ["tokio", "zlib"] }
 async-trait = { workspace = true }
 average = { workspace = true, features = ["std"] }
@@ -42,7 +42,7 @@ protobuf = { workspace = true }
 quanta = { workspace = true }
 rustls = { workspace = true, features = ["aws_lc_rs", "logging", "tls12"] }
 serde = { workspace = true }
-simdutf8 = { version = "0.1.4", default-features = false, features = ["std"] }
+simdutf8 = { workspace = true, features = ["std"] }
 slab = { workspace = true }
 snafu = { workspace = true }
 socket2 = { workspace = true }

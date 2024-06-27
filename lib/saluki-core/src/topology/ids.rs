@@ -154,6 +154,15 @@ pub enum OutputName {
     Given(Cow<'static, str>),
 }
 
+impl fmt::Display for OutputName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OutputName::Default => write!(f, "_default"),
+            OutputName::Given(name) => write!(f, "{}", name),
+        }
+    }
+}
+
 /// An output definition.
 ///
 /// Outputs are a combination of the output name and data type, which defines the data type (or types) of events that
