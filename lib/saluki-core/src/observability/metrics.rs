@@ -5,14 +5,12 @@ use std::{
     time::Duration,
 };
 
-use ddsketch_agent::DDSketch;
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SetRecorderError, SharedString, Unit};
 use metrics_util::registry::{AtomicStorage, Registry};
 use saluki_context::{Context, ContextRef, ContextResolver};
 use stringtheory::interning::FixedSizeInterner;
 use tokio::sync::broadcast;
 
-use saluki_env::time::get_unix_timestamp;
 use saluki_event::{metric::*, Event};
 
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
@@ -140,14 +138,12 @@ async fn flush_metrics(flush_interval: Duration) {
         let gauges = state.registry.get_gauge_handles();
         let histograms = state.registry.get_histogram_handles();
 
-        let ts = get_unix_timestamp();
-
         for (key, counter) in counters {
             let delta = counter.swap(0, Ordering::Relaxed);
             metrics.push(Event::Metric(Metric::from_parts(
                 context_from_key(&context_resolver, key),
                 MetricValue::Counter { value: delta as f64 },
-                MetricMetadata::from_timestamp(ts),
+                MetricMetadata::default(),
             )));
         }
 
@@ -158,27 +154,26 @@ async fn flush_metrics(flush_interval: Duration) {
                 MetricValue::Gauge {
                     value: f64::from_bits(value),
                 },
-                MetricMetadata::from_timestamp(ts),
+                MetricMetadata::default(),
             )));
         }
 
         for (key, histogram) in histograms {
-            // TODO: We should submit a PR to `metrics-util` to allow returning a value from the closure passed to
-            // `AtomicBucket::clear_with` to avoid this silly mem::replace call.
-            let mut metric_value = MetricValue::Distribution {
-                sketch: DDSketch::default(),
-            };
-            histogram.clear_with(|samples| {
-                drop(std::mem::replace(
-                    &mut metric_value,
-                    MetricValue::distribution_from_values(samples),
-                ))
-            });
+            // Collect all of the samples from the histogram.
+            //
+            // If the histogram was empty, skip emitting a metric for this histogram entirely. Empty sketches don't make
+            // sense to send.
+            let mut distribution_samples = Vec::new();
+            histogram.clear_with(|samples| distribution_samples.extend(samples));
+
+            if distribution_samples.is_empty() {
+                continue;
+            }
 
             metrics.push(Event::Metric(Metric::from_parts(
                 context_from_key(&context_resolver, key),
-                metric_value,
-                MetricMetadata::from_timestamp(ts),
+                MetricValue::distribution_from_values(&distribution_samples),
+                MetricMetadata::default(),
             )));
         }
 

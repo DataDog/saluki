@@ -2478,6 +2478,7 @@ dependencies = [
 name = "saluki-core"
 version = "0.1.0"
 dependencies = [
+ "ahash",
  "async-trait",
  "bytes",
  "datadog-protos",
@@ -2507,6 +2508,7 @@ dependencies = [
  "snafu",
  "stringtheory",
  "tokio",
+ "tokio-test",
  "tokio-util",
  "tower",
  "tracing",

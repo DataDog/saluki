@@ -31,6 +31,10 @@ const fn default_counter_expiry_seconds() -> u64 {
     300
 }
 
+const fn default_forward_timestamped_metrics() -> bool {
+    true
+}
+
 /// Aggregate transform.
 ///
 /// Aggregates metrics into fixed-size windows, flushing them at a regular interval.
@@ -102,6 +106,20 @@ pub struct AggregateConfiguration {
     /// Defaults to 300 seconds (5 minutes).
     #[serde(alias = "dogstatsd_expiry_seconds", default = "default_counter_expiry_seconds")]
     counter_expiry_seconds: u64,
+
+    /// Whether or not to immediately forward metrics with pre-defined timestamps.
+    ///
+    /// When enabled, this causes the aggregator to immediately forward metrics that already have a timestamp present.
+    /// Only metrics without a timestamp will be aggregated. This can be useful when metrics are already pre-aggregated
+    /// client-side and both timeliness and memory efficiency are paramount, as it avoids the overhead of aggregating
+    /// within the pipeline.
+    ///
+    /// Defaults to `true`.
+    #[serde(
+        rename = "dogstatsd_no_aggregation_pipeline",
+        default = "default_forward_timestamped_metrics"
+    )]
+    forward_timestamped_metrics: bool,
 }
 
 impl AggregateConfiguration {
@@ -117,6 +135,7 @@ impl AggregateConfiguration {
             context_limit: default_context_limit(),
             flush_open_windows: false,
             counter_expiry_seconds: default_counter_expiry_seconds(),
+            forward_timestamped_metrics: default_forward_timestamped_metrics(),
         }
     }
 }
@@ -129,6 +148,7 @@ impl TransformBuilder for AggregateConfiguration {
             context_limit: self.context_limit,
             flush_open_windows: self.flush_open_windows,
             counter_expiry_seconds: self.counter_expiry_seconds,
+            forward_timestamped_metrics: self.forward_timestamped_metrics,
         }))
     }
 
@@ -178,6 +198,7 @@ pub struct Aggregate {
     context_limit: usize,
     flush_open_windows: bool,
     counter_expiry_seconds: u64,
+    forward_timestamped_metrics: bool,
 }
 
 #[async_trait]
@@ -210,6 +231,12 @@ impl Transform for Aggregate {
         let mut final_flush = false;
 
         loop {
+            let mut unaggregated_events = 0;
+            let mut flushed_events = 0;
+
+            let mut event_buffer = event_buffer_pool.acquire().await;
+            debug!(buf_cap = event_buffer.capacity(), "Acquired event buffer.");
+
             select! {
                 _ = &mut flush => {
                     // We've reached the end of the current window. Flush our aggregation state and forward the metrics
@@ -220,20 +247,10 @@ impl Transform for Aggregate {
 
                         let should_flush_open_windows = final_flush && self.flush_open_windows;
 
-                        let mut event_buffer = event_buffer_pool.acquire().await;
-                        debug!(buf_cap = event_buffer.capacity(), "Acquired event buffer.");
+                        let event_buffer_len = event_buffer.len();
                         state.flush(should_flush_open_windows, &mut event_buffer);
 
-                        if !event_buffer.is_empty() {
-                            let events_forwarded = event_buffer.len();
-
-                            if let Err(e) = context.forwarder().forward(event_buffer).await {
-                                error!(error = %e, "Failed to forward events.");
-                                return Err(());
-                            }
-
-                            debug!(events_len = events_forwarded, "Forwarded events.");
-                        }
+                        flushed_events = event_buffer.len() - event_buffer_len;
                     }
 
                     // If this is the final flush, we break out of the loop.
@@ -244,18 +261,24 @@ impl Transform for Aggregate {
 
                     flush.as_mut().reset(state.get_next_flush_instant());
                 },
-                maybe_event_buffer = context.event_stream().next(), if !final_flush => match maybe_event_buffer {
-                    Some(event_buffer) => {
-                        trace!(events_len = event_buffer.len(), "Received events.");
+                maybe_events = context.event_stream().next(), if !final_flush => match maybe_events {
+                    Some(events) => {
+                        trace!(events_len = events.len(), "Received events.");
 
-                        for event in event_buffer {
+                        let event_buffer_len = event_buffer.len();
+
+                        for event in events {
                             if let Some(metric) = event.into_metric() {
-                                if !state.insert(metric) {
+                                if self.forward_timestamped_metrics && metric.metadata().timestamp().is_some() {
+                                    event_buffer.push(Event::Metric(metric));
+                                } else if !state.insert(metric) {
                                     trace!("Dropping metric due to context limit.");
                                     events_dropped.increment(1);
                                 }
                             }
                         }
+
+                        unaggregated_events = event_buffer.len() - event_buffer_len;
                     },
                     None => {
                         // We've reached the end of our input stream, so mark ourselves for a final flush and reset the
@@ -267,6 +290,15 @@ impl Transform for Aggregate {
                         debug!("Aggregation transform stopping...");
                     }
                 },
+            }
+
+            if !event_buffer.is_empty() {
+                if let Err(e) = context.forwarder().forward(event_buffer).await {
+                    error!(error = %e, "Failed to forward events.");
+                    return Err(());
+                }
+
+                debug!(unaggregated_events, flushed_events, "Forwarded events.");
             }
         }
 
@@ -330,7 +362,8 @@ impl AggregationState {
         }
 
         // Figure out what bucket we belong to, create it if necessary, and then merge the metric in.
-        let bucket_start = align_to_bucket_start(metric_metadata.timestamp, self.bucket_width.as_secs());
+        let metric_timestamp = metric_metadata.timestamp().unwrap_or_else(get_unix_timestamp);
+        let bucket_start = align_to_bucket_start(metric_timestamp, self.bucket_width.as_secs());
         let bucket = self.get_or_create_bucket(bucket_start);
         match bucket.entry(metric_context) {
             Entry::Occupied(mut entry) => {
@@ -339,7 +372,7 @@ impl AggregationState {
             }
             Entry::Vacant(entry) => {
                 // Set the metric's timestamp to the start of the bucket.
-                metric_metadata.timestamp = bucket_start;
+                metric_metadata.set_timestamp(bucket_start);
 
                 entry.insert((metric_value, metric_metadata));
             }
@@ -412,8 +445,7 @@ impl AggregationState {
                 if !flushed_counters.contains(context) {
                     // Update our timestamp to coincide with the start of the latest possible bucket that we could be
                     // flushing right now, as this is the bucket we're looking to backfill this value into.
-                    let mut metadata = metadata.clone();
-                    metadata.timestamp = zero_value_timestamp;
+                    let metadata = metadata.clone().with_timestamp(zero_value_timestamp);
 
                     let metric = Metric::from_parts(
                         context.clone(),
@@ -421,7 +453,7 @@ impl AggregationState {
                             value: 0.0,
                             interval: self.bucket_width,
                         },
-                        metadata.clone(),
+                        metadata,
                     );
                     event_buffer.push(Event::Metric(metric));
 
@@ -504,12 +536,7 @@ mod tests {
         let context_ref = ContextRef::from_name_and_tags(name, EMPTY_TAGS);
         let context = resolver.resolve(context_ref).unwrap();
 
-        let metadata = MetricMetadata {
-            timestamp: get_unix_timestamp(),
-            ..Default::default()
-        };
-
-        Metric::from_parts(context, value, metadata)
+        Metric::from_parts(context, value, MetricMetadata::default())
     }
 
     fn create_counter(name: &str, value: f64) -> Metric {

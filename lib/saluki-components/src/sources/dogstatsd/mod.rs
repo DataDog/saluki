@@ -16,7 +16,10 @@ use saluki_error::GenericError;
 use saluki_event::{metric::OriginEntity, DataType, Event};
 use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, BytesBuffer},
-    deser::{codec::DogstatsdCodec, Deserializer, DeserializerBuilder, DeserializerError},
+    deser::{
+        codec::{DogstatsdCodec, DogstatsdCodecConfiguration},
+        Deserializer, DeserializerBuilder, DeserializerError,
+    },
     net::{
         listener::{Listener, ListenerError},
         ConnectionAddress, ListenAddress,
@@ -26,7 +29,7 @@ use serde::Deserialize;
 use snafu::{ResultExt as _, Snafu};
 use stringtheory::interning::FixedSizeInterner;
 use tokio::select;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, Instrument as _};
 
 mod framer;
 use self::framer::{get_framer, DogStatsDMultiFraming};
@@ -60,6 +63,10 @@ const fn default_port() -> u16 {
 }
 
 const fn default_allow_context_heap_allocations() -> bool {
+    true
+}
+
+const fn default_no_aggregation_pipeline_support() -> bool {
     true
 }
 
@@ -144,6 +151,19 @@ pub struct DogStatsDConfiguration {
         default = "default_allow_context_heap_allocations"
     )]
     allow_context_heap_allocations: bool,
+
+    /// Whether or not to enable support for no-aggregation pipelines.
+    ///
+    /// When enabled, this influences how metrics are parsed, specifically around user-provided metric timestamps. When
+    /// metric timestamps are present, it is used as a signal to any aggregation transforms that the metric should not
+    /// be aggregated.
+    ///
+    /// Defaults to `true`.
+    #[serde(
+        rename = "dogstatsd_no_aggregation_pipeline",
+        default = "default_no_aggregation_pipeline_support"
+    )]
+    no_aggregation_pipeline_support: bool,
 }
 
 impl DogStatsDConfiguration {
@@ -200,14 +220,17 @@ impl SourceBuilder for DogStatsDConfiguration {
             return Err(Error::NoListenersConfigured.into());
         }
 
-        let mut context_resolver =
-            ContextResolver::from_interner("dogstatsd", FixedSizeInterner::new(DEFAULT_CONTEXT_INTERNER_SIZE_BYTES));
-        context_resolver.allow_heap_allocations(self.allow_context_heap_allocations);
+        let context_interner = FixedSizeInterner::new(DEFAULT_CONTEXT_INTERNER_SIZE_BYTES);
+        let context_resolver = ContextResolver::from_interner("dogstatsd", context_interner)
+            .with_heap_allocations(self.allow_context_heap_allocations);
+
+        let codec_config = DogstatsdCodecConfiguration::default().with_timestamps(self.no_aggregation_pipeline_support);
+        let codec = DogstatsdCodec::from_context_resolver(context_resolver).with_configuration(codec_config);
 
         Ok(Box::new(DogStatsD {
             listeners,
             io_buffer_pool: get_fixed_bytes_buffer_pool(self.buffer_count, self.buffer_size),
-            context_resolver,
+            codec,
             origin_detection: self.origin_detection,
         }))
     }
@@ -242,14 +265,14 @@ struct ListenerContext {
     shutdown_handle: DynamicShutdownHandle,
     listener: Listener,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
-    context_resolver: ContextResolver,
+    codec: DogstatsdCodec,
     origin_detection: bool,
 }
 
 pub struct DogStatsD {
     listeners: Vec<Listener>,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
-    context_resolver: ContextResolver,
+    codec: DogstatsdCodec,
     origin_detection: bool,
 }
 
@@ -268,11 +291,11 @@ impl Source for DogStatsD {
                 shutdown_handle: listener_shutdown_coordinator.register(),
                 listener,
                 io_buffer_pool: self.io_buffer_pool.clone(),
-                context_resolver: self.context_resolver.clone(),
+                codec: self.codec.clone(),
                 origin_detection: self.origin_detection,
             };
 
-            tokio::spawn(process_listener(context.clone(), listener_context));
+            tokio::spawn(process_listener(context.clone(), listener_context).in_current_span());
         }
 
         info!("DogStatsD source started.");
@@ -294,7 +317,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
         shutdown_handle,
         mut listener,
         io_buffer_pool,
-        context_resolver,
+        codec,
         origin_detection,
     } = listener_context;
     tokio::pin!(shutdown_handle);
@@ -319,12 +342,12 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
                         listen_addr: listen_addr.to_string(),
                         origin_detection,
                         deserializer: DeserializerBuilder::new()
-                            .with_framer_and_decoder(get_framer(&listen_addr), DogstatsdCodec::from_context_resolver(context_resolver.clone()))
+                            .with_framer_and_decoder(get_framer(&listen_addr), codec.clone())
                             .with_buffer_pool(io_buffer_pool.clone())
                             .with_metrics_builder(MetricsBuilder::from_component_context(source_context.component_context()))
                             .into_deserializer(stream),
                     };
-                    tokio::spawn(process_stream(source_context.clone(), handler_context));
+                    tokio::spawn(process_stream(source_context.clone(), handler_context).in_current_span());
                 }
                 Err(e) => {
                     error!(%listen_addr, error = %e, "Failed to accept connection. Stopping listener.");
@@ -380,9 +403,10 @@ async fn drive_stream(
                         for event in &mut event_buffer {
                             match event {
                                 Event::Metric(metric) => {
-                                    if metric.metadata().origin_entity.is_none() {
-                                        metric.metadata_mut().origin_entity =
-                                            Some(OriginEntity::ProcessId(creds.pid as u32));
+                                    if metric.metadata().origin_entity().is_none() {
+                                        metric
+                                            .metadata_mut()
+                                            .set_origin_entity(OriginEntity::ProcessId(creds.pid as u32));
                                     }
                                 }
                             }

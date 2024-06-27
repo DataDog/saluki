@@ -3,6 +3,8 @@
 pub mod destinations;
 
 mod metrics;
+use std::fmt;
+
 pub use self::metrics::MetricsBuilder;
 
 pub mod sources;
@@ -56,5 +58,11 @@ impl ComponentContext {
     /// Returns the component type.
     pub fn component_type(&self) -> &'static str {
         self.component_type
+    }
+}
+
+impl fmt::Display for ComponentContext {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}[{}]", self.component_type, self.component_id)
     }
 }

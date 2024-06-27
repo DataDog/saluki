@@ -17,6 +17,7 @@ saluki-event = { workspace = true }
 stringtheory = { workspace = true }
 
 # External dependencies.
+ahash = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
@@ -44,3 +45,4 @@ ubyte = { workspace = true }
 
 [dev-dependencies]
 similar-asserts = { workspace = true, features = ["unicode"] }
+tokio-test = { workspace = true }
