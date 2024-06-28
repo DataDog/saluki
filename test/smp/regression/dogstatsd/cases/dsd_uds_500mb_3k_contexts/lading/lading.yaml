@@ -8,9 +8,9 @@ generator:
         dogstatsd:
           contexts:
             contexts:
-            inclusive:
-              min: 3000
-              max: 3001
+              inclusive:
+                min: 3000
+                max: 3001
           name_length:
             inclusive:
               min: 1
