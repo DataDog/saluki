@@ -17,7 +17,7 @@ target:
     # allocate in an unbounded fashion.
     #
     # There is work slated to address that, which when it happens, will allow us to ratchet this limit down.
-    DD_MEMORY_LIMIT: "72MB"
+    DD_MEMORY_LIMIT: "72MiB"
 
     # Disable heap allocations when resolving contexts.
     DD_DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS: "false"
