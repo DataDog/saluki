@@ -11,7 +11,6 @@ datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
 saluki-context = { workspace = true }
 saluki-core = { workspace = true }
-saluki-env = { workspace = true }
 saluki-error = { workspace = true }
 saluki-event = { workspace = true }
 saluki-metrics = { workspace = true }
@@ -23,10 +22,8 @@ async-trait = { workspace = true }
 average = { workspace = true, features = ["std"] }
 bitmask-enum = { workspace = true }
 bytes = { workspace = true }
-futures = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
-http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["client", "server"] }
 hyper-rustls = { workspace = true, features = ["http2", "rustls-native-certs"] }
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "http2", "server", "tokio"] }
@@ -46,12 +43,13 @@ simdutf8 = { workspace = true, features = ["std"] }
 slab = { workspace = true }
 snafu = { workspace = true }
 socket2 = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
 tokio-util = { workspace = true }
 tower = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+http-body-util = { workspace = true }
 proptest = { workspace = true, features = ["std"] }
 tokio-test = { workspace = true }

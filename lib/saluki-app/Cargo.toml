@@ -10,7 +10,6 @@ repository.workspace = true
 memory-accounting = { workspace = true }
 saluki-config = { workspace = true }
 saluki-core = { workspace = true }
-saluki-env = { workspace = true }
 saluki-error = { workspace = true }
 
 # External dependencies.
