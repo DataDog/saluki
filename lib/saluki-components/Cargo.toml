@@ -49,4 +49,5 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-mu
 tokio-util = { workspace = true }
 tower = { workspace = true }
 tracing = { workspace = true }
+ubyte = { workspace = true }
 url = { workspace = true }
