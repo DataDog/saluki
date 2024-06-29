@@ -17,6 +17,7 @@ saluki-error = { workspace = true }
 saluki-io = { workspace = true }
 
 # External dependencies.
+mimalloc = { version = "0.1", default-features = false }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "signal"] }
 tracing = { workspace = true }
