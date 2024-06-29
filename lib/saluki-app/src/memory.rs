@@ -13,6 +13,10 @@ const fn default_memory_slop_factor() -> f64 {
     0.25
 }
 
+const fn default_enable_global_limiter() -> bool {
+    true
+}
+
 /// Configuration for memory bounds.
 #[derive(Deserialize)]
 pub struct MemoryBoundsConfiguration {
@@ -37,6 +41,15 @@ pub struct MemoryBoundsConfiguration {
     /// 100MB, we would then verify that the memory bounds can fit within 75MB (100MB * (1 - 0.25) => 75MB).
     #[serde(default = "default_memory_slop_factor")]
     memory_slop_factor: f64,
+
+    /// Whether or not to enable the global memory limiter.
+    ///
+    /// When set to `false`, the global memory limiter will operate in a no-op mode. All calls to use it will never exert
+    /// backpressure, and only the inherent memory bounds of the running components will influence memory usage.
+    ///
+    /// Defaults to `true`.
+    #[serde(default = "default_enable_global_limiter")]
+    enable_global_limiter: bool,
 }
 
 impl MemoryBoundsConfiguration {
@@ -89,8 +102,13 @@ where
     let bounds_verifier = BoundsVerifier::new(initial_grant, component_bounds);
     let verified_bounds = bounds_verifier.verify()?;
 
-    let limiter = MemoryLimiter::new(initial_grant)
-        .ok_or_else(|| generic_error!("Memory statistics cannot be gathered on this system."))?;
+    let limiter = configuration
+        .enable_global_limiter
+        .then(|| {
+            MemoryLimiter::new(initial_grant)
+                .ok_or_else(|| generic_error!("Memory statistics cannot be gathered on this system."))
+        })
+        .unwrap_or_else(|| Ok(MemoryLimiter::noop()))?;
 
     info!(
 		"Verified memory bounds. Minimum memory requirement of {}, with a calculated firm memory bound of {} out of {} available, from an initial {} grant.",

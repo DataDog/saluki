@@ -18,6 +18,10 @@ target:
     # Sets the context resolver's string interner size to 2MiB.
     DD_DOGSTATS_STRING_INTERNER_SIZE: "2MiB"
 
+    # Disable the global memory limiter so that we're doing full-fat allocations to demonstrate the difference when
+    # allocations are turned off.
+    DD_ENABLE_GLOBAL_LIMITER: false
+
     # Disable heap allocations when resolving contexts.
     DD_DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS: "false"
 
