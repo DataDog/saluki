@@ -1,0 +1,43 @@
+optimization_goal: ingress_throughput
+erratic: false
+
+target:
+  name: saluki
+  command: /usr/local/bin/agent-data-plane
+
+  environment:
+    DD_API_KEY: foo00000001
+    DD_HOSTNAME: smp-regression
+    DD_DD_URL: http://127.0.0.1:9091
+
+    # Sets the memory limit to appropriately allow for the configured number of contexts for this test.
+    #
+    # We _do_ disable heap allocations here, so the limit should end up being largely above
+    DD_MEMORY_LIMIT: "80MiB"
+
+    # Sets the context resolver's string interner size to 2MiB.
+    DD_DOGSTATS_STRING_INTERNER_SIZE: "2MiB"
+
+    # Disable the global memory limiter so that we're doing full-fat allocations to demonstrate the difference when
+    # allocations are turned off.
+    DD_ENABLE_GLOBAL_LIMITER: false
+
+    # Disable heap allocations when resolving contexts.
+    DD_DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS: "false"
+
+    # Set the context limit in the aggregator to 6K, which matches the maximum number of contexts we expect to
+    # generate. We essentially don't want the aggregator to be a limiting factor.
+    DD_AGGREGATE_CONTEXT_LIMIT: "6000"
+
+    # Disables UDP and enables listening on UDS in SOCK_DGRAM mode.
+    DD_DOGSTATSD_PORT: "0"
+    DD_DOGSTATSD_SOCKET: /tmp/adp-dsd.sock
+
+    # Runs the workload provider in no-op mode, otherwise it would need to connect to a real
+    # Datadog Agent, which obviously we don't have available to us, and perhaps further, don't
+    # need for the purpose of this benchmark.
+    DD_ADP_USE_NOOP_WORKLOAD_PROVIDER: "true"
+
+    # Enable internal telemetry endpoint.
+    DD_TELEMETRY_ENABLED: "true"
+    DD_PROMETHEUS_LISTEN_ADDR: tcp://127.0.0.1:6000
