@@ -39,7 +39,6 @@ impl<D: Decoder + 'static> Framer<D> for NewlineFramer {
     fn with_decoder(self, decoder: D) -> Self::Output {
         NewlineFraming {
             inner: decoder,
-            last_idx: 0,
             required_on_eof: self.required_on_eof,
         }
     }
@@ -48,7 +47,6 @@ impl<D: Decoder + 'static> Framer<D> for NewlineFramer {
 #[derive(Debug)]
 pub struct NewlineFraming<D> {
     inner: D,
-    last_idx: usize,
     required_on_eof: bool,
 }
 
@@ -68,56 +66,35 @@ impl<D: Decoder> NewlineFraming<D> {
 
             trace!(events_decoded, chunk_len = chunk.len(), "Received chunk.");
 
-            // Do a sanity check that our internal index doesn't extend past the end of the buffer. This _shouldn't_
-            // happen unless the inner decoder, or something above the framer, is messing with the buffer... but better
-            // to be safe and avoid a panic if we can help it.
-            if self.last_idx > chunk.len() {
-                self.last_idx = 0;
-            }
-
-            // Search through the buffer for our delimiter. We slice the buffer chunk by starting at where we last left
-            // off, avoiding searching over the same bytes again.
-            let mut frame = match find_newline(&chunk[self.last_idx..]) {
-                Some(idx) => {
-                    // We found our delimiter. Do a small amount of math to figure out how many bytes to actually carve
-                    // out, based on the fact the index we just got is relative to `self.last_idx`.
-                    let frame_len = self.last_idx + idx;
-
-                    // Extract our frame by itself, which advances the buffer by the length of the frame, and then do an
-                    // additional advance to move past the delimiter.
-                    //
-                    // Finally, reset our internal index.
-                    let frame = buf.copy_to_bytes(frame_len);
-                    buf.advance(1);
-
-                    self.last_idx = 0;
-
-                    frame
-                }
+            // Search through the buffer for our delimiter.
+            let (mut frame, advance_len) = match find_newline(chunk) {
+                Some(idx) => (&chunk[..idx], idx + 1),
                 None => {
-                    // We didn't find our delimiter.
-                    //
-                    // If we're at EOF, then we just try to decode what we have left in the buffer and see what happens.
-                    // Otherwise, we track how many bytes we just searched over, update our internal index, and break
-                    // out of the loop so the caller can wait for more data.
-                    if is_eof {
-                        if self.required_on_eof {
-                            return Err(FramingError::InvalidFrame {
-                                buffer_len: buf.remaining(),
-                            });
-                        }
-
-                        buf.copy_to_bytes(chunk.len())
-                    } else {
-                        self.last_idx = chunk.len();
+                    // If we're not at EOF, then we can't do anything else right now.
+                    if !is_eof {
                         break;
                     }
+
+                    // If we're at EOF and we require the delimiter, then this is an invalid frame.
+                    if self.required_on_eof {
+                        return Err(FramingError::InvalidFrame {
+                            buffer_len: buf.remaining(),
+                        });
+                    }
+
+                    (chunk, chunk.len())
                 }
             };
 
             // Pass the frame to the inner decoder.
+            //
+            // We specifically advance the buffer before checking the result, just to make sure we don't forget to
+            // advance it.
             let frame_len = frame.len();
-            let event_count = self.inner.decode(&mut frame, events).context(FailedToDecode)?;
+            let decode_result = self.inner.decode(&mut frame, events).context(FailedToDecode);
+            buf.advance(advance_len);
+
+            let event_count = decode_result?;
             trace!(frame_len, event_count, "Decoded frame.");
 
             // TODO: Emit a metric if `event_count` is zero, since that means we've decoded zero events _without_ an

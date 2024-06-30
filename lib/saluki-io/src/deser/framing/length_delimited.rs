@@ -52,7 +52,8 @@ impl<D: Decoder> LengthDelimitedFraming<D> {
             }
 
             let frame_len = u32::from_le_bytes(chunk[0..4].try_into().unwrap()) as usize;
-            if chunk.len() < frame_len + 4 {
+            let delimited_frame_len = frame_len + 4;
+            if chunk.len() < delimited_frame_len {
                 if is_eof {
                     // If we've hit EOF and we have a partial frame here, well, then... it's invalid.
                     return Err(FramingError::InvalidFrame {
@@ -71,12 +72,13 @@ impl<D: Decoder> LengthDelimitedFraming<D> {
             }
 
             // Advance past the length delimiter, and carve out the frame.
-            buf.advance(4);
-            let mut frame = buf.copy_to_bytes(frame_len);
+            let mut frame = &chunk[4..delimited_frame_len];
 
             // Pass the frame to the inner decoder.
-            let frame_len = frame.len();
-            let event_count = self.inner.decode(&mut frame, events).context(FailedToDecode)?;
+            let decode_result = self.inner.decode(&mut frame, events).context(FailedToDecode);
+            buf.advance(delimited_frame_len);
+
+            let event_count = decode_result?;
             trace!(frame_len, event_count, "Decoded frame.");
 
             // TODO: Emit a metric if `event_count` is zero, since that means we've decoded zero events _without_ an

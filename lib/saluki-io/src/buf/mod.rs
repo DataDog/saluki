@@ -1,4 +1,4 @@
-use bytes::{Buf, BufMut, Bytes};
+use bytes::{Buf, BufMut};
 
 use saluki_core::pooling::FixedSizeObjectPool;
 
@@ -10,16 +10,10 @@ pub use self::vec::{BytesBuffer, FixedSizeVec};
 
 /// An I/O buffer that can be read from.
 pub trait ReadIoBuffer: Buf {
-    // TODO: This is a little restrictive because it doesn't quite allow for the possibly of a buffer that can grow
-    // which is the basis of normal buffer types (`Vec<u8>`, `BytesMut`) as well as our own, such as
-    // `ChunkedBytesBuffer`.
-    //
-    // I think it's OK for now to let us implement our behavior in the length-delimited framer, but we might want to
-    // revisit this in the future.
     fn capacity(&self) -> usize;
 }
 
-impl ReadIoBuffer for Bytes {
+impl<'a> ReadIoBuffer for &'a [u8] {
     fn capacity(&self) -> usize {
         self.len()
     }
