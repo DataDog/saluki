@@ -10,14 +10,19 @@ target:
     DD_HOSTNAME: smp-regression
     DD_DD_URL: http://127.0.0.1:9091
 
-    # Sets the memory limit to activate the global memory limiter.
+    # Sets the memory limit to appropriately allow for the configured number of contexts for this test.
     #
-    # This is currently set empirically around where we see the memory level off, but where the memory levels off _is_
-    # above the firm limit because we don't (yet) have any limiting at the context resolver step, which means we
-    # allocate in an unbounded fashion.
-    #
-    # There is work slated to address that, which when it happens, will allow us to ratchet this limit down.
-    DD_MEMORY_LIMIT: "72MB"
+    # We specifically _don't_ disallow heap allocations here so we do expect the memory usage to grow over the course of
+    # the experiment, although based on empirical testing, this should be sufficient to avoid hitting the global memory
+    # limiter, at least until the very end of the experiment run.
+    DD_MEMORY_LIMIT: "80MiB"
+
+    # Sets the context resolver's string interner size to 2MiB.
+    DD_DOGSTATS_STRING_INTERNER_SIZE: "2MiB"
+
+    # Disable the global memory limiter so that we're doing full-fat allocations to demonstrate the difference when
+    # allocations are turned off.
+    DD_ENABLE_GLOBAL_LIMITER: false
 
     # Set the context limit in the aggregator to 6K, which matches the maximum number of contexts we expect to
     # generate. We essentially don't want the aggregator to be a limiting factor.

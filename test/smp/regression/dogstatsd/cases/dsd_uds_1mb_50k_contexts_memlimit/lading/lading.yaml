@@ -1,15 +1,14 @@
 generator:
   - unix_datagram:
-      seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
-             59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+      seed: [5, 15, 17, 20, 22, 24, 48, 52, 61, 65, 73, 81, 97, 104, 109, 119, 147, 149, 153, 156, 158, 168, 175, 186, 193, 201, 216, 219, 224, 230, 232, 249]
       path: "/tmp/dsd.socket"
       block_cache_method: Fixed
-      variant:
+      variant: &variant
         dogstatsd:
           contexts:
             inclusive:
-              min: 3000
-              max: 3001
+              min: 50000
+              max: 50001
           name_length:
             inclusive:
               min: 1
@@ -39,8 +38,8 @@ generator:
             distribution: 72
             set: 9
             histogram: 1
-      bytes_per_second: "500 MiB"
-      maximum_prebuild_cache_size_bytes: "500 Mb"
+      bytes_per_second: "1 MiB"
+      maximum_prebuild_cache_size_bytes: "256 Mb"
 
 blackhole:
   - http:

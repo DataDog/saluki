@@ -12,7 +12,7 @@ use saluki_core::{
         OutputDefinition,
     },
 };
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use saluki_event::{metric::OriginEntity, DataType, Event};
 use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, BytesBuffer},
@@ -30,12 +30,10 @@ use snafu::{ResultExt as _, Snafu};
 use stringtheory::interning::FixedSizeInterner;
 use tokio::select;
 use tracing::{debug, error, info, trace, Instrument as _};
+use ubyte::ByteUnit;
 
 mod framer;
 use self::framer::{get_framer, DogStatsDMultiFraming};
-
-// Intern up to 1MB of metric names/tags.
-const DEFAULT_CONTEXT_INTERNER_SIZE_BYTES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(2 * 1024 * 1024) };
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -68,6 +66,10 @@ const fn default_allow_context_heap_allocations() -> bool {
 
 const fn default_no_aggregation_pipeline_support() -> bool {
     true
+}
+
+const fn default_context_string_interner_size() -> ByteUnit {
+    ByteUnit::Mebibyte(2)
 }
 
 /// DogStatsD source.
@@ -164,6 +166,17 @@ pub struct DogStatsDConfiguration {
         default = "default_no_aggregation_pipeline_support"
     )]
     no_aggregation_pipeline_support: bool,
+
+    /// Total size of the string interner used for contexts.
+    ///
+    /// This controls the amount of memory that can be used to intern metric names and tags. If the interner is full,
+    /// metrics with contexts that have not already been resolved may or may not be dropped, depending on the value of
+    /// `allow_context_heap_allocations`.
+    #[serde(
+        rename = "dogstatsd_string_interner_size",
+        default = "default_context_string_interner_size"
+    )]
+    context_string_interner_bytes: ByteUnit,
 }
 
 impl DogStatsDConfiguration {
@@ -220,7 +233,9 @@ impl SourceBuilder for DogStatsDConfiguration {
             return Err(Error::NoListenersConfigured.into());
         }
 
-        let context_interner = FixedSizeInterner::new(DEFAULT_CONTEXT_INTERNER_SIZE_BYTES);
+        let context_string_interner_size = NonZeroUsize::new(self.context_string_interner_bytes.as_u64() as usize)
+            .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
+        let context_interner = FixedSizeInterner::new(context_string_interner_size);
         let context_resolver = ContextResolver::from_interner("dogstatsd", context_interner)
             .with_heap_allocations(self.allow_context_heap_allocations);
 
@@ -250,7 +265,7 @@ impl MemoryBounds for DogStatsDConfiguration {
             .with_fixed_amount(self.buffer_count * self.buffer_size)
             // We also allocate the backing storage for the string interner up front, which is used by our context
             // resolver.
-            .with_fixed_amount(DEFAULT_CONTEXT_INTERNER_SIZE_BYTES.get());
+            .with_fixed_amount(self.context_string_interner_bytes.as_u64() as usize);
     }
 }
 
