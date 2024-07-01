@@ -99,11 +99,13 @@ impl AllocationStats {
         }
     }
 
+    #[inline]
     fn track_allocation(&self, size: usize) {
         self.allocated_bytes.fetch_add(size, Relaxed);
         self.allocated_objects.fetch_add(1, Relaxed);
     }
 
+    #[inline]
     fn track_deallocation(&self, size: usize) {
         self.deallocated_bytes.fetch_add(size, Relaxed);
         self.deallocated_objects.fetch_add(1, Relaxed);
@@ -140,6 +142,13 @@ impl TrackingToken {
         Self { component_ptr }
     }
 
+    fn current() -> Self {
+        CURRENT_COMPONENT.with(|current_component| {
+            let component_ptr = current_component.borrow();
+            Self::new(*component_ptr)
+        })
+    }
+
     fn root() -> Self {
         Self::new(NonNull::from(&ROOT_COMPONENT))
     }
@@ -162,6 +171,9 @@ impl TrackingToken {
     }
 }
 
+// SAFETY: There's nothing inherently thread-specific about the token.
+unsafe impl Send for TrackingToken {}
+
 /// A guard that resets the currently-tracked component to its previous value when dropped.
 pub struct TrackingGuard<'a> {
     previous_component_ptr: NonNull<AllocationStats>,
@@ -178,20 +190,51 @@ impl<'a> Drop for TrackingGuard<'a> {
     }
 }
 
-/// A [`Future`] that tracks allocations and attributes them to a specific component.
+/// An object wrapper that tracks allocations and attributes them to a specific component.
+///
+/// Provides methods and implementations to help ensure that operations against/using the wrapped object have all
+/// allocations properly tracked and attributed to a given component.
+///
+/// Implements [`Future`] when the wrapped object itself implements [`Future`].
+//
+// TODO: A more complete example of this sort of thing is `tracing::Instrumented`, where they also have some fancy code
+// to trace execution even in the drop logic of the wrapped future. I'm not sure we need that here, because we don't
+// care about what components an object is deallocated in, and I don't think we expect to have any futures where the
+// drop logic actually _allocates_, and certainly not in a way where we want to attribute it to that future's attached
+// component... but for posterity, I'm mentioning it here since we _might_ consider doing it. Might.
 #[pin_project]
-pub struct Tracked<F> {
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+pub struct Tracked<Inner> {
     token: TrackingToken,
 
     #[pin]
-    inner: F,
+    inner: Inner,
 }
 
-impl<F> Future for Tracked<F>
+impl<Inner> Tracked<Inner> {
+    /// Enters the tracking context for this token, attributing allocations to the component it represents.
+    ///
+    /// This method returns a guard that will reset the currently-tracked component to its previous value when dropped.
+    pub fn enter(&self) -> TrackingGuard<'_> {
+        self.token.enter()
+    }
+
+    /// Gets a reference to the inner object.
+    pub fn inner_ref(&self) -> &Inner {
+        &self.inner
+    }
+
+    /// Consumes this object and returns the inner object and tracking token.
+    pub fn into_parts(self) -> (TrackingToken, Inner) {
+        (self.token, self.inner)
+    }
+}
+
+impl<Inner> Future for Tracked<Inner>
 where
-    F: Future,
+    Inner: Future,
 {
-    type Output = F::Output;
+    type Output = Inner::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
@@ -199,6 +242,24 @@ where
         this.inner.poll(cx)
     }
 }
+
+/// Attaches tracking tokens to a [`Future`].
+pub trait Track: Sized {
+    /// Tracks allocations and deallocations for this object using the given token.
+    fn track_allocations(self, token: TrackingToken) -> Tracked<Self> {
+        Tracked { token, inner: self }
+    }
+
+    /// Tracks allocations and deallocations for this object using the current component.
+    fn in_current_component(self) -> Tracked<Self> {
+        Tracked {
+            token: TrackingToken::current(),
+            inner: self,
+        }
+    }
+}
+
+impl<T: Sized> Track for T {}
 
 /// A registry of components that can have allocations and deallocations attributed to them.
 pub struct ComponentRegistry {
@@ -267,13 +328,24 @@ pub fn spawn_background_reporter() {
         loop {
             std::thread::sleep(std::time::Duration::from_secs(5));
 
+            let mut total_live_bytes = 0;
+            let mut total_live_objects = 0;
+
             println!("Component allocation statistics:");
             registry.visit_components(|name, stats| {
                 let live_bytes = stats.allocated_bytes() - stats.deallocated_bytes();
                 let live_objects = stats.allocated_objects() - stats.deallocated_objects();
+                total_live_bytes += live_bytes;
+                total_live_objects += live_objects;
 
                 println!("  {}: {} live ({} objects)", name, live_bytes.bytes(), live_objects);
             });
+            println!("--------------------------------");
+            println!(
+                "total: {} live ({} objects)\n",
+                total_live_bytes.bytes(),
+                total_live_objects
+            );
         }
     });
 }

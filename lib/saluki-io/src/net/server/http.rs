@@ -13,6 +13,7 @@ use hyper_util::{
     rt::{TokioExecutor, TokioIo},
     server::conn::auto::Builder,
 };
+use memory_accounting::allocator::Track as _;
 use saluki_error::GenericError;
 use tokio::{select, sync::oneshot};
 use tracing::{debug, error, info};
@@ -67,7 +68,7 @@ where
                             let listen_addr = listener.listen_address().clone();
 
                             tokio::spawn(async move {
-                                if let Err(e) = conn_builder.serve_connection(TokioIo::new(stream), service).await {
+                                if let Err(e) = conn_builder.serve_connection(TokioIo::new(stream), service).in_current_component().await {
                                     error!(%listen_addr, error = %e, "Failed to serve HTTP connection.");
                                 }
                             });
@@ -86,7 +87,7 @@ where
             }
 
             info!(listen_addr = %listener.listen_address(), "HTTP server stopped.");
-        });
+        }.in_current_component());
 
         (ShutdownHandle(shutdown_tx), ErrorHandle(error_rx))
     }

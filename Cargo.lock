@@ -2599,6 +2599,7 @@ dependencies = [
  "indexmap 2.2.6",
  "libc",
  "memchr",
+ "memory-accounting",
  "metrics",
  "metrics-util",
  "nom",

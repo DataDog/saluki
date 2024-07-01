@@ -9,6 +9,7 @@ repository.workspace = true
 # Internal dependencies.
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
+memory-accounting = { workspace = true }
 saluki-context = { workspace = true }
 saluki-core = { workspace = true }
 saluki-error = { workspace = true }
