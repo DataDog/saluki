@@ -1,7 +1,7 @@
 use std::num::NonZeroUsize;
 
 use async_trait::async_trait;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use memory_accounting::{allocator::Track as _, MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::ContextResolver;
 use saluki_core::{
@@ -310,7 +310,11 @@ impl Source for DogStatsD {
                 origin_detection: self.origin_detection,
             };
 
-            tokio::spawn(process_listener(context.clone(), listener_context).in_current_span());
+            tokio::spawn(
+                process_listener(context.clone(), listener_context)
+                    .in_current_span()
+                    .in_current_component(),
+            );
         }
 
         info!("DogStatsD source started.");
@@ -362,7 +366,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
                             .with_metrics_builder(MetricsBuilder::from_component_context(source_context.component_context()))
                             .into_deserializer(stream),
                     };
-                    tokio::spawn(process_stream(source_context.clone(), handler_context).in_current_span());
+                    tokio::spawn(process_stream(source_context.clone(), handler_context).in_current_span().in_current_component());
                 }
                 Err(e) => {
                     error!(%listen_addr, error = %e, "Failed to accept connection. Stopping listener.");
