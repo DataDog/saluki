@@ -322,14 +322,21 @@ where
 
 /// Spawns a background reporter that prints component allocation statistics every 5 seconds.
 pub fn spawn_background_reporter() {
+    const REPORTING_DURATION_SECS: u64 = 5;
+
     std::thread::spawn(|| {
         let registry = ComponentRegistry::global();
 
+        let mut previous_allocated_bytes = 0;
+        let mut previous_allocated_objects = 0;
+
         loop {
-            std::thread::sleep(std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_secs(REPORTING_DURATION_SECS));
 
             let mut total_live_bytes = 0;
             let mut total_live_objects = 0;
+            let mut allocated_bytes = 0;
+            let mut allocated_objects = 0;
 
             println!("Component allocation statistics:");
             registry.visit_components(|name, stats| {
@@ -337,14 +344,30 @@ pub fn spawn_background_reporter() {
                 let live_objects = stats.allocated_objects() - stats.deallocated_objects();
                 total_live_bytes += live_bytes;
                 total_live_objects += live_objects;
+                allocated_bytes += stats.allocated_bytes();
+                allocated_objects += stats.allocated_objects();
 
                 println!("  {}: {} live ({} objects)", name, live_bytes.bytes(), live_objects);
             });
+
+            let delta_live_bytes = (allocated_bytes - previous_allocated_bytes) / REPORTING_DURATION_SECS as usize;
+            let delta_live_objects =
+                (allocated_objects - previous_allocated_objects) / REPORTING_DURATION_SECS as usize;
+
+            previous_allocated_bytes = allocated_bytes;
+            previous_allocated_objects = allocated_objects;
+
             println!("--------------------------------");
             println!(
-                "total: {} live ({} objects)\n",
+                "total: {} live ({} objects)",
                 total_live_bytes.bytes(),
                 total_live_objects
+            );
+
+            println!(
+                "allocation rate: {}/second ({} objects/second)\n",
+                delta_live_bytes.bytes(),
+                delta_live_objects
             );
         }
     });
