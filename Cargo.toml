@@ -1,8 +1,11 @@
 [workspace]
 members = [
   "bin/agent-data-plane",
+  "bin/piecemeal-dd-proto-test",
   "lib/datadog-protos",
   "lib/ddsketch-agent",
+  "lib/piecemeal",
+  "lib/piecemeal-build",
   "lib/memory-accounting",
   "lib/saluki-app",
   "lib/saluki-components",
@@ -27,6 +30,8 @@ repository = "https://github.com/DataDog/saluki"
 # Internal dependencies.
 datadog-protos = { path = "lib/datadog-protos" }
 ddsketch-agent = { path = "lib/ddsketch-agent" }
+piecemeal = { path = "lib/piecemeal" }
+piecemeal-build = { path = "lib/piecemeal-build" }
 memory-accounting = { path = "lib/memory-accounting" }
 saluki-app = { path = "lib/saluki-app" }
 saluki-components = { path = "lib/saluki-components" }
@@ -67,7 +72,7 @@ kube = { version = "0.89", default-features = false }
 memchr = { version = "2.7", default-features = false }
 metrics = { version = "0.23", default-features = false }
 metrics-util = { version = "0.17", default-features = false }
-nom = { version = "7", default-features = false }
+nom = { version = "7", default-features = false, features = ["std"] }
 ordered-float = { version = "4.2.0", default-features = false }
 paste = { version = "1", default-features = false }
 pin-project = { version = "1.1", default-features = false }

@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 fn main() {
     // Always rerun if the build script itself changes.
     println!("cargo:rerun-if-changed=build.rs");
@@ -31,5 +33,24 @@ fn main() {
         .build_server(false)
         .include_file("api.mod.rs")
         .compile(&["proto/datadog/api/v1/api.proto"], &["proto"])
-        .expect("failed to build gRPC service definitions for DCA")
+        .expect("failed to build gRPC service definitions for DCA");
+
+    // Handle code generation for pure Protocol Buffers message types via `piecemeal-build`.
+    let ipb_out_directory = PathBuf::from(std::env::var("OUT_DIR").unwrap())
+        .join("protos")
+        .join("piecemeal");
+
+    let config = piecemeal_build::ConfigBuilder::new(
+        &[
+            "./proto/ddsketch_full.proto",
+            "./proto/dd_metric.proto",
+            "./proto/dd_trace.proto",
+        ],
+        ipb_out_directory,
+        &["./proto"],
+    )
+    .expect("failed to build `piecemeal-build` configuration");
+
+    piecemeal_build::types::FileDescriptor::run(&config.build())
+        .expect("failed to generate pure Protocol Buffers message types");
 }
