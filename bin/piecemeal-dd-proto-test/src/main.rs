@@ -1,31 +1,28 @@
 use base64::Engine as _;
 use datadog_protos::piecemeal_include::datadog::agentpayload::MetricPayloadBuilder;
-use piecemeal::Writer;
+use piecemeal::ScratchWriter;
 
 fn main() {
-    let mut buf = Vec::with_capacity(1024);
-    let mut writer = Writer::new(&mut buf);
+    let mut scratch_buf = Vec::with_capacity(1024);
+    let mut scratch_writer = ScratchWriter::new(&mut scratch_buf);
 
-    let mut payload_builder = MetricPayloadBuilder::with_writer(&mut writer);
-    let result = payload_builder.add_series(|series_builder| {
-        series_builder
-            .metric("metric.name")?
-            .add_points(|pb| {
-                pb.timestamp(1234567890)?
-                .value(42.0)?;
-
+    let mut payload_builder = MetricPayloadBuilder::new(&mut scratch_writer);
+    payload_builder
+        .add_series(|series_builder| {
+            series_builder.metric("metric.name")?.add_points(|pb| {
+                pb.timestamp(1234567890)?.value(42.0)?;
                 Ok(())
             })?;
 
-        Ok(())
-    });
+            Ok(())
+        })
+        .expect("should not fail to build series");
 
-    match result {
-        Ok(_) => {
-            drop(payload_builder);
-            let encoded = base64::engine::general_purpose::STANDARD.encode(&buf);
-            println!("encoded: {}", encoded)
-        }
-        Err(e) => eprintln!("Error: {}", e),
-    }
+    let mut output_buf = Vec::new();
+    payload_builder
+        .finish(&mut output_buf)
+        .expect("should not fail to finish");
+
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&output_buf);
+    println!("encoded: {}", encoded)
 }

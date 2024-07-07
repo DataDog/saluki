@@ -24,7 +24,7 @@ pub enum Error {
 }
 
 /// A wrapper for `Result<T, Error>`
-pub type Result<T> = ::core::result::Result<T, Error>;
+pub type ProtoResult<T> = ::core::result::Result<T, Error>;
 
 impl From<Error> for std::io::Error {
     fn from(val: Error) -> Self {

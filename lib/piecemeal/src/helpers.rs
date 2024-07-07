@@ -2,6 +2,50 @@
 //!
 //! This module is used primilarly when implementing the `MessageWrite::get_size`
 
+/// Wire type.
+pub enum WireType {
+    /// Variable-width integer.
+    ///
+    /// Encodes integers using a variable number of bytes, depending on the magnitude of the value,
+    /// consuming between one and ten bytes on the wire.
+    ///
+    /// See https://protobuf.dev/programming-guides/encoding/#varints for more information.
+    Varint,
+
+    /// Fixed 64-bit integer or double-precision floating-point number.
+    ///
+    /// Consumes eight bytes (64-bit) on the wire.
+    Fixed64,
+
+    /// Length-delimiter field.
+    ///
+    /// Used for fields with variable length, such as strings, bytes, embedded messages, and packed
+    /// repeated fields.
+    LengthDelimited,
+
+    /// Fixed 32-bit integer or single-precision floating-point number.
+    ///
+    /// Consumes four bytes (32-bit) on the wire.
+    Fixed32,
+}
+
+impl WireType {
+    /// Gets the integer representation of the wire type.
+    pub const fn as_u32(&self) -> u32 {
+        match self {
+            WireType::Varint => 0,
+            WireType::Fixed64 => 1,
+            WireType::LengthDelimited => 2,
+            WireType::Fixed32 => 5,
+        }
+    }
+}
+
+/// Computes the tag for the given field number and wire type.
+pub const fn tag(field_number: u32, wire_type: WireType) -> u32 {
+    (field_number << 3) | wire_type.as_u32()
+}
+
 /// Computes the binary size of the varint encoded u64
 ///
 /// https://developers.google.com/protocol-buffers/docs/encoding

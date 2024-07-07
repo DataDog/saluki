@@ -32,7 +32,6 @@ pub mod agent {
     pub use super::agent_include::datadog::model::v1::*;
 }
 
-
 pub mod piecemeal_include {
     include!(concat!(env!("OUT_DIR"), "/protos/piecemeal/mod.rs"));
 }

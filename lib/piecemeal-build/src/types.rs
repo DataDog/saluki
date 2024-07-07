@@ -1615,7 +1615,7 @@ impl Message {
             writeln!(w, "impl<'a> MessageRead<'a> for {} {{", self.name)?;
             writeln!(
                 w,
-                "    fn from_reader(r: &mut BytesReader, _: &[u8]) -> Result<Self> {{"
+                "    fn from_reader(r: &mut BytesReader, _: &[u8]) -> ProtoResult<Self> {{"
             )?;
             writeln!(w, "        r.read_to_end();")?;
             writeln!(w, "        Ok(Self::default())")?;
@@ -1632,13 +1632,13 @@ impl Message {
             writeln!(w, "impl<'a> MessageRead<'a> for {}<'a> {{", self.name)?;
             writeln!(
                 w,
-                "    fn from_reader(r: &mut BytesReader, bytes: &'a [u8]) -> Result<Self> {{"
+                "    fn from_reader(r: &mut BytesReader, bytes: &'a [u8]) -> ProtoResult<Self> {{"
             )?;
         } else {
             writeln!(w, "impl<'a> MessageRead<'a> for {} {{", self.name)?;
             writeln!(
                 w,
-                "    fn from_reader(r: &mut BytesReader, bytes: &'a [u8]) -> Result<Self> {{"
+                "    fn from_reader(r: &mut BytesReader, bytes: &'a [u8]) -> ProtoResult<Self> {{"
             )?;
         }
 
@@ -1685,18 +1685,25 @@ impl Message {
     }
 
     fn write_message_builder<W: Write>(&self, w: &mut W, desc: &FileDescriptor, config: &Config) -> Result<()> {
-        writeln!(w, "pub struct {}Builder<'write, W: WriterBackend> {{", self.name)?;
-        writeln!(w, "    writer: &'write mut Writer<W>,")?;
+        writeln!(w, "pub struct {}Builder<'w, 's, S: ScratchBuffer> {{", self.name)?;
+        writeln!(w, "    writer: &'w mut ScratchWriter<'s, S>")?;
         writeln!(w, "}}")?;
         writeln!(w)?;
-        writeln!(w, "impl<'write, W: WriterBackend> {}Builder<'write, W> {{", self.name)?;
-        writeln!(w, "    pub fn with_writer(writer: &'write mut Writer<W>) -> Self {{")?;
+        writeln!(w, "impl<'w, 's, S: ScratchBuffer> {}Builder<'w, 's, S> {{", self.name)?;
+        writeln!(w, "    pub fn new(writer: &'w mut ScratchWriter<'s, S>) -> Self {{")?;
         writeln!(w, "        Self {{ writer }}")?;
         writeln!(w, "    }}")?;
         for field in &self.fields {
             writeln!(w)?;
             self.write_message_builder_field(w, field, desc, config)?;
         }
+        writeln!(w)?;
+        writeln!(
+            w,
+            "    pub fn finish<W: Writer>(self, output: &mut W) -> ProtoResult<()> {{"
+        )?;
+        writeln!(w, "        self.writer.finalize(output)")?;
+        writeln!(w, "    }}")?;
         writeln!(w, "}}")?;
         Ok(())
     }
@@ -1729,11 +1736,20 @@ impl Message {
             false => field.name.clone(),
         };
 
-        writeln!(w, "    pub fn {}{}(&mut self, value: {}) -> Result<&mut Self> {{", method_name, generic_arg_type, value_typ)?;
+        writeln!(
+            w,
+            "    pub fn {}{}(&mut self, value: {}) -> ProtoResult<&mut Self> {{",
+            method_name, generic_arg_type, value_typ
+        )?;
         if convert_as_ref {
             writeln!(w, "        let value = value.as_ref();")?;
         }
-        writeln!(w, "        self.writer.write_with_tag({}, |w| w.{})?;", field.tag(), field.typ.get_write("value", false))?;
+        writeln!(
+            w,
+            "        self.writer.write_with_tag({}, |w| w.{})?;",
+            field.tag(),
+            field.typ.get_write("value", false)
+        )?;
         writeln!(w, "        Ok(self)")?;
         writeln!(w, "    }}")?;
         Ok(())
@@ -1742,20 +1758,6 @@ impl Message {
     fn write_message_builder_field_message<W: Write>(
         &self, w: &mut W, field: &Field, desc: &FileDescriptor, config: &Config,
     ) -> Result<()> {
-        // TODO: For message-based fields, they're going to be length-delimited, which means knowing the size of the
-        // message in its entirety. Obviously, to do that when we're building it piecemeal, that means we need to  write
-        // into a scratch buffer, and then write the scratch buffer length and copy the scratch buffer.
-        //
-        // We can't really do anything with a placeholder and then seek back because 1) we'd need a custom trait for
-        // that which makes things less ergonomic and 2) since it's a varint, we wouldn't know how big of a placeholder
-        // to make.
-        //
-        // Realistically, using a scratch buffer is easiest because it's inherently simple and we can't mess it up.
-        // There's also potentialllllll optimizations we could do where builders could have their own stack-allocated
-        // fixed-size buffers when we know the upper bound on the possible fields and it's below a threshold, etc....
-        // but that's advanced and we don't need that to start.
-        todo!("this is broken, see code comment");
-    
         let typ = field.typ.rust_type(desc, config, false);
 
         let method_name = match field.frequency.is_repeated() {
@@ -1763,22 +1765,31 @@ impl Message {
             false => field.name.clone(),
         };
 
-        writeln!(w, "    pub fn {}<F>(&mut self, f: F) -> Result<&mut Self>", method_name)?;
+        writeln!(
+            w,
+            "    pub fn {}<F>(&mut self, f: F) -> ProtoResult<&mut Self>",
+            method_name
+        )?;
         writeln!(w, "    where")?;
-        writeln!(w, "        F: for<'a> FnOnce(&mut {}Builder<'a, W>) -> Result<()>", typ)?;
+        writeln!(
+            w,
+            "        F: for<'a> FnOnce(&mut {}Builder<'a, 's, S>) -> ProtoResult<()>",
+            typ
+        )?;
         writeln!(w, "    {{")?;
         writeln!(w, "        {{")?;
-        writeln!(w, "            let mut msg_builder = {}Builder::with_writer(self.writer);", typ)?;
-        writeln!(w, "            let _ = f(&mut msg_builder)?;")?;
+        writeln!(w, "            self.writer.write_tag({})?;", field.tag())?;
+        writeln!(w, "            self.writer.track_message(|sw| {{")?;
+        writeln!(w, "              let mut msg_builder = {}Builder::new(sw);", typ)?;
+        writeln!(w, "              f(&mut msg_builder)")?;
+        writeln!(w, "            }})?;")?;
         writeln!(w, "        }}")?;
         writeln!(w, "        Ok(self)")?;
         writeln!(w, "    }}")?;
         Ok(())
     }
 
-    fn write_message_builder_field_map<W: Write>(
-        &self, w: &mut W, field: &Field, desc: &FileDescriptor,
-    ) -> Result<()> {
+    fn write_message_builder_field_map<W: Write>(&self, w: &mut W, field: &Field, desc: &FileDescriptor) -> Result<()> {
         // TODO: We need to add logic to build field-specific map builders when there's a map field that has a key
         // and/or value type where that type is a message and not just a scalar.
         let (key_field_type, value_field_type) = field.typ.map().expect("field should be a map");
@@ -1789,7 +1800,11 @@ impl Message {
         let key_typ = key_field_type.builder_scalar_rust_type(desc);
         let value_typ = value_field_type.builder_scalar_rust_type(desc);
 
-        writeln!(w, "    pub fn {}(&mut self) -> GenericMapBuilder<'_, W, {}, {}> {{", field.name, key_typ, value_typ)?;
+        writeln!(
+            w,
+            "    pub fn {}(&mut self) -> GenericMapBuilder<'_, 's, S, {}, {}> {{",
+            field.name, key_typ, value_typ
+        )?;
         writeln!(w, "        GenericMapBuilder::new({}, self.writer)", field.tag())?;
         writeln!(w, "    }}")?;
         Ok(())
@@ -1870,7 +1885,7 @@ impl Message {
             impl TryFrom<Vec<u8>> for {name}Owned {{
                 type Error=piecemeal::Error;
 
-                fn try_from(buf: Vec<u8>) -> Result<Self> {{
+                fn try_from(buf: Vec<u8>) -> ProtoResult<Self> {{
                     Ok(Self {{ inner: {name}OwnedInner::new(buf)? }})
                 }}
             }}
@@ -1936,7 +1951,7 @@ impl Message {
             impl TryFrom<&[u8]> for {name} {{
                 type Error=piecemeal::Error;
 
-                fn try_from(buf: &[u8]) -> Result<Self> {{
+                fn try_from(buf: &[u8]) -> ProtoResult<Self> {{
                     let mut reader = BytesReader::from_bytes(&buf);
                     Ok({name}::from_reader(&mut reader, &buf)?)
                 }}
@@ -1950,7 +1965,7 @@ impl Message {
     fn write_write_message<W: Write>(&self, w: &mut W, desc: &FileDescriptor, config: &Config) -> Result<()> {
         writeln!(
             w,
-            "    fn write_message<W: WriterBackend>(&self, w: &mut Writer<W>) -> Result<()> {{"
+            "    fn write_message<W: Writer>(&self, w: &mut W) -> ProtoResult<()> {{"
         )?;
         for f in &self.fields {
             f.write_write(w, desc, config)?;
@@ -2963,7 +2978,7 @@ impl FileDescriptor {
         if self.messages.iter().all(|m| m.is_unit()) {
             writeln!(
                 w,
-                "use piecemeal::{{BytesReader, Result, MessageInfo, MessageRead, MessageWrite}};"
+                "use piecemeal::{{BytesReader, ProtoResult, MessageInfo, MessageRead, MessageWrite}};"
             )?;
             if self.owned {
                 writeln!(w, "use core::convert::{{TryFrom, TryInto}};")?;
@@ -2975,14 +2990,14 @@ impl FileDescriptor {
 
         writeln!(
             w,
-            "use piecemeal::{{MessageInfo, MessageRead, MessageWrite, BytesReader, Writer, WriterBackend, Result, PackedFixed, PackedFixedIntoIter, PackedFixedRefIter}};"
+            "use piecemeal::{{MessageInfo, MessageRead, MessageWrite, BytesReader, ScratchBuffer, ScratchWriter, Writer, ProtoResult, PackedFixed, PackedFixedIntoIter, PackedFixedRefIter}};"
         )?;
 
         if self.owned {
             writeln!(w, "use core::convert::{{TryFrom, TryInto}};")?;
         }
 
-        writeln!(w, "use piecemeal::sizeofs::*;")?;
+        writeln!(w, "use piecemeal::helpers::*;")?;
         for include in &config.custom_includes {
             writeln!(w, "{}", include)?;
         }
