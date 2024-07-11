@@ -1922,6 +1922,7 @@ version = "0.1.0"
 dependencies = [
  "nom",
  "tracing",
+ "walkdir",
 ]
 
 [[package]]
@@ -2474,6 +2475,7 @@ dependencies = [
  "metrics",
  "metrics-util",
  "paste",
+ "piecemeal",
  "pin-project",
  "protobuf",
  "quanta",

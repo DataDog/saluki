@@ -2,27 +2,27 @@
 
 use std::marker::PhantomData;
 
-use crate::{helpers::*, ProtoResult, ScratchBuffer, ScratchWriter, Writer};
+use crate::{helpers::*, types::ProtobufValue, ProtoResult, ScratchBuffer, ScratchWriter, Writer};
 
-pub struct GenericMapBuilder<'w, 's, S, K, V>
+pub struct GenericMapBuilder<'w, S, K, V>
 where
     S: ScratchBuffer,
     K: MapScalar + ?Sized,
     V: MapScalar + ?Sized,
 {
     field_tag: u32,
-    writer: &'w mut ScratchWriter<'s, S>,
+    writer: &'w mut ScratchWriter<S>,
     _key_type: PhantomData<K>,
     _value_type: PhantomData<V>,
 }
 
-impl<'w, 's, S, K, V> GenericMapBuilder<'w, 's, S, K, V>
+impl<'w, S, K, V> GenericMapBuilder<'w, S, K, V>
 where
     S: ScratchBuffer,
     K: MapScalar + ?Sized,
     V: MapScalar + ?Sized,
 {
-    pub fn new(field_tag: u32, writer: &'w mut ScratchWriter<'s, S>) -> Self {
+    pub fn new(field_tag: u32, writer: &'w mut ScratchWriter<S>) -> Self {
         Self {
             field_tag,
             writer,
@@ -104,3 +104,54 @@ map_scalar_impl!(deref, from => f64, sizeof_f64, write_double);
 map_scalar_impl!(deref, from => bool, sizeof_bool, write_bool);
 map_scalar_impl!(from => str, sizeof_str, write_string);
 map_scalar_impl!(from => [u8], sizeof_bytes, write_bytes);
+
+pub struct RepeatedBuilder<'w, S, T, V: ?Sized> {
+    field_number: u32,
+    writer: &'w mut ScratchWriter<S>,
+    _value_type: PhantomData<(T, V)>,
+}
+
+impl<'w, S, T, V> RepeatedBuilder<'w, S, T, V>
+where
+    S: ScratchBuffer,
+    T: ProtobufValue<V>,
+    V: ?Sized,
+{
+    pub fn new(field_number: u32, writer: &'w mut ScratchWriter<S>) -> Self {
+        Self {
+            field_number,
+            writer,
+            _value_type: PhantomData,
+        }
+    }
+
+    pub fn add(&mut self, value: &V) -> ProtoResult<()> {
+        self.writer.write_tag(tag(self.field_number, T::wire_type()))?;
+        T::write_value(self.writer, value)
+    }
+
+    pub fn add_many_mapped<'a, I, F, R>(&mut self, values: impl IntoIterator<Item = &'a I>, map: F) -> ProtoResult<()>
+    where
+        I: 'a,
+        F: Fn(&'a I) -> R,
+        R: std::borrow::Borrow<V> + 'a,
+    {
+        if T::packable() {
+            self.writer
+                .write_tag(tag(self.field_number, WireType::LengthDelimited))?;
+            self.writer.track_message(|writer| {
+                for value in values {
+                    let value = map(value);
+                    T::write_value(writer, value.borrow())?;
+                }
+                Ok(())
+            })
+        } else {
+            for value in values {
+                let value = map(value);
+                self.add(value.borrow())?;
+            }
+            Ok(())
+        }
+    }
+}

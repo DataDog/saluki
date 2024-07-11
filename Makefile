@@ -327,11 +327,25 @@ profile-ddprof-local: ## Runs ADP under ddprof locally
 	--inlined-functions true --timeline --upload-period 10 --preset cpu_live_heap \
 	target/release/agent-data-plane
 
+.PHONY: profile-run-lading-10mb
+profile-run-lading-10mb: ensure-lading
+profile-run-lading-10mb: ## Runs the 10MB/s variant of the UDS DogStatsD experiment
+	@echo "[*] Running the 10MB/s UDS DogStatsD experiment (15 minutes)..."
+	@./test/lading/bin/lading --config-path test/smp/regression/saluki/cases/dsd_uds_10mb_3k_contexts/lading/lading.yaml \
+	--no-target --warmup-duration-seconds 1 --experiment-duration-seconds 900
+
+.PHONY: profile-run-lading-100mb
+profile-run-lading-100mb: ensure-lading
+profile-run-lading-100mb: ## Runs the 100MB/s variant of the UDS DogStatsD experiment
+	@echo "[*] Running the 100MB/s UDS DogStatsD experiment (15 minutes)..."
+	@./test/lading/bin/lading --config-path test/smp/regression/saluki/cases/dsd_uds_100mb_3k_contexts/lading/lading.yaml \
+	--no-target --warmup-duration-seconds 1 --experiment-duration-seconds 900
+
 .PHONY: profile-run-lading-500mb
 profile-run-lading-500mb: ensure-lading
 profile-run-lading-500mb: ## Runs the 500MB/s variant of the UDS DogStatsD experiment
 	@echo "[*] Running the 500MB/s UDS DogStatsD experiment (15 minutes)..."
-	@./test/lading/bin/lading --config-path test/smp/regression/saluki/cases/uds_dogstatsd_to_api_500mb/lading/lading.yaml \
+	@./test/lading/bin/lading --config-path test/smp/regression/saluki/cases/dsd_uds_500mb_3k_contexts/lading/lading.yaml \
 	--no-target --warmup-duration-seconds 1 --experiment-duration-seconds 900
 
 .PHONY: ensure-ddprof

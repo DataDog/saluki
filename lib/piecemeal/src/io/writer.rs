@@ -190,7 +190,7 @@ pub trait Writer {
     /// Writes tag then repeated field
     ///
     /// If array is empty, then do nothing (do not even write the tag)
-    fn write_packed_with_tag<M, F, S>(&mut self, tag: u32, v: &[M], mut write: F, size: &S) -> ProtoResult<()>
+    fn write_packed_with_tag<M, F, S>(&mut self, tag: u32, v: &[M], mut write: F, size: S) -> ProtoResult<()>
     where
         F: FnMut(&mut Self, &M) -> ProtoResult<()>,
         S: Fn(&M) -> usize,

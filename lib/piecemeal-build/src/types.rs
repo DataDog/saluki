@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
@@ -211,7 +211,7 @@ impl FieldType {
     // primitive type, like `i32`). This means that our codegen sometimes
     // sometimes needs to dereference an argument to avoid passing a reference
     // when we should not. This function allows us to check for this case.
-    fn need_to_dereference(&self) -> bool {
+    fn needs_deref(&self) -> bool {
         matches!(
             self,
             FieldType::Enum(_)
@@ -297,6 +297,11 @@ impl FieldType {
         }
     }
 
+    /// Gets the Protocol Buffers type.
+    ///
+    /// This is distinct from `proto_rust_type`, as it refers to the individual Protocol Buffers
+    /// types, and not the condensed helper types (e.g., `Varint`, `Sfixed32`) that we use to encode
+    /// writing logic into the type system.
     fn proto_type(&self) -> &str {
         match *self {
             FieldType::Int32 => "int32",
@@ -320,6 +325,31 @@ impl FieldType {
             FieldType::Message(_) => "message",
             FieldType::Map(_, _) => "map",
             FieldType::MessageOrEnum(_) => unreachable!("Message / Enum not resolved"),
+        }
+    }
+
+    /// Gets the Protocol Buffers type.
+    ///
+    /// This is distinct from `proto_rust_type`, as it refers to the individual Protocol Buffers
+    /// types, and not the condensed helper types (e.g., `Varint`, `Sfixed32`) that we use to encode
+    /// writing logic into the type system.
+    fn proto_rust_type(&self) -> &str {
+        match *self {
+            FieldType::Bool
+            | FieldType::Int32
+            | FieldType::Int64
+            | FieldType::Uint32
+            | FieldType::Uint64
+            | FieldType::Enum(_) => "Varint",
+            FieldType::Sint32 => "Sint32",
+            FieldType::Sint64 => "Sint64",
+            FieldType::Fixed32 => "Fixed32",
+            FieldType::Fixed64 => "Fixed64",
+            FieldType::Sfixed32 | FieldType::Float => "Sfixed32",
+            FieldType::Sfixed64 | FieldType::Double => "Sfixed64",
+            FieldType::String_ | FieldType::Bytes_ | FieldType::StringCow | FieldType::BytesCow => "Bytes",
+            FieldType::MessageOrEnum(_) => unreachable!("Message / Enum not resolved"),
+            _ => unreachable!("not a scalar type"),
         }
     }
 
@@ -395,7 +425,11 @@ impl FieldType {
         }
     }
 
-    fn rust_type(&self, desc: &FileDescriptor, config: &Config, with_lifetime: bool) -> String {
+    /// Gets the Rust type for the given field type as it would exist in a generated message struct.
+    ///
+    /// Compared to `write_rust_type`, this specifically covers cases where a field needs to be
+    /// borrowed and can't be trivially copied, such as strings, bytes, messages, and maps.
+    fn struct_rust_type(&self, desc: &FileDescriptor, config: &Config, with_lifetime: bool) -> String {
         match *self {
             FieldType::Int32 | FieldType::Sint32 | FieldType::Sfixed32 => "i32".to_string(),
             FieldType::Int64 | FieldType::Sint64 | FieldType::Sfixed64 => "i64".to_string(),
@@ -423,14 +457,21 @@ impl FieldType {
             }
             FieldType::Map(ref key, ref value) => format!(
                 "KVMap<{}, {}>",
-                key.rust_type(desc, config, with_lifetime),
-                value.rust_type(desc, config, with_lifetime)
+                key.struct_rust_type(desc, config, with_lifetime),
+                value.struct_rust_type(desc, config, with_lifetime)
             ),
             FieldType::MessageOrEnum(_) => unreachable!("Message / Enum not resolved"),
         }
     }
 
-    fn builder_scalar_rust_type(&self, desc: &FileDescriptor) -> String {
+    /// Gets the Rust type for the given field type as it would be passed in when writing the field.
+    ///
+    /// This is generally used when writing a field in a message builder, as it relates to the form
+    /// that callers will most likely be using, rather than what would be needed to hold the value
+    /// in a struct.
+    ///
+    /// Specifically covers scalar types, as other complex types (messages and maps) have dedicated builders.
+    fn write_rust_type(&self, desc: &FileDescriptor) -> String {
         match self {
             FieldType::Int32 | FieldType::Sint32 | FieldType::Sfixed32 => "i32".to_string(),
             FieldType::Int64 | FieldType::Sint64 | FieldType::Sfixed64 => "i64".to_string(),
@@ -482,6 +523,14 @@ impl FieldType {
         })
     }
 
+    fn get_fixed_size(&self) -> Option<usize> {
+        match *self {
+            FieldType::Fixed64 | FieldType::Sfixed64 | FieldType::Double => Some(8),
+            FieldType::Fixed32 | FieldType::Sfixed32 | FieldType::Float => Some(4),
+            _ => None,
+        }
+    }
+
     fn get_size(&self, s: &str) -> String {
         match *self {
             FieldType::Int32
@@ -500,7 +549,7 @@ impl FieldType {
 
             FieldType::String_ | FieldType::Bytes_ => format!("sizeof_len({}.len())", s),
 
-            FieldType::Message(_) => format!("sizeof_len(({}).get_size())", s),
+            FieldType::Message(_) => format!("sizeof_len({}.get_size())", s),
 
             FieldType::Map(ref k, ref v) => {
                 format!("2 + {} + {}", k.get_size("k"), v.get_size("v"))
@@ -509,9 +558,10 @@ impl FieldType {
         }
     }
 
-    fn get_write(&self, s: &str, boxed: bool) -> String {
+    fn get_write(&self, s: &str, needs_deref: bool) -> String {
+        let with_deref = if needs_deref { "*" } else { "" };
         match *self {
-            FieldType::Enum(_) => format!("write_enum(*&{} as i32)", s),
+            FieldType::Enum(_) => format!("write_enum({}{} as i32)", with_deref, s),
 
             FieldType::Int32
             | FieldType::Sint32
@@ -525,14 +575,14 @@ impl FieldType {
             | FieldType::Double
             | FieldType::Fixed32
             | FieldType::Sfixed32
-            | FieldType::Float => format!("write_{}({})", self.proto_type(), s),
+            | FieldType::Float => format!("write_{}({}{})", self.proto_type(), with_deref, s),
 
             FieldType::StringCow => format!("write_string({})", s),
             FieldType::BytesCow => format!("write_bytes({})", s),
             FieldType::String_ => format!("write_string({})", s),
             FieldType::Bytes_ => format!("write_bytes({})", s),
 
-            FieldType::Message(_) if boxed => format!("write_message(&*({}))", s),
+            FieldType::Message(_) if needs_deref => format!("write_message(&*({}))", s),
             FieldType::Message(_) => format!("write_message({})", s),
 
             FieldType::Map(ref k, ref v) => format!(
@@ -671,8 +721,7 @@ impl Field {
         // up with Rust's, so we don't need to add custom defaults.
         let is_proto3 = desc.syntax == Syntax::Proto3;
 
-        let is_message_or_map =
-            !self.typ.need_to_dereference() && !self.typ.is_cow() && !self.typ.is_non_cow_string_or_byte();
+        let is_message_or_map = !self.typ.needs_deref() && !self.typ.is_cow() && !self.typ.is_non_cow_string_or_byte();
 
         let no_custom_default = self.default.is_none();
 
@@ -697,7 +746,7 @@ impl Field {
                 _ => unreachable!(),
             }
         } else {
-            self.typ.rust_type(desc, config, true)
+            self.typ.struct_rust_type(desc, config, true)
         }
     }
 
@@ -791,7 +840,7 @@ impl Field {
 
     fn sanitize_default(&mut self, desc: &FileDescriptor, config: &Config) -> Result<()> {
         if let Some(ref mut d) = self.default {
-            *d = match &*self.typ.rust_type(desc, config, true) {
+            *d = match &*self.typ.struct_rust_type(desc, config, true) {
                 "u32" => format!("{}u32", *d),
                 "u64" => format!("{}u64", *d),
                 "i32" => format!("{}i32", *d),
@@ -825,7 +874,7 @@ impl Field {
     }
 
     pub fn get_type(&self, desc: &FileDescriptor, config: &Config) -> String {
-        let rust_type = self.typ.rust_type(desc, config, true);
+        let rust_type = self.typ.struct_rust_type(desc, config, true);
         if self.boxed {
             return format!("Option<Box<{}>>", rust_type);
         }
@@ -960,29 +1009,29 @@ impl Field {
                 size to the tally.
                 */
                 fn get_size_addition(field: &Field, tag_size: usize, s: &str) -> String {
-                    format!(
-                        "{tag_size} + {actual_size}",
-                        actual_size = field.typ.get_size(if field.typ.is_fixed_size() { "" } else { s })
-                    )
+                    match field.typ.get_fixed_size() {
+                        Some(fixed_size) => (tag_size + fixed_size).to_string(),
+                        None => {
+                            format!(
+                                "{tag_size} + {actual_size}",
+                                actual_size = field.typ.get_size(if field.typ.is_fixed_size() { "" } else { s })
+                            )
+                        }
+                    }
                 }
 
                 let conditions_checked = {
                     let name = self.name.clone();
                     let def = self.get_field_default(desc, config);
-                    let m_size_addition = get_size_addition(self, tag_size, "m");
+                    let field_param = if self.typ.is_fixed_size() { "_" } else { "m" };
+                    let maybe_deref_field_param = if self.typ.needs_deref() { "*m" } else { "m" };
+                    let m_size_addition = get_size_addition(self, tag_size, maybe_deref_field_param);
                     let self_name_size_addition = get_size_addition(self, tag_size, format!("self.{name}").as_str());
-                    let maybe_deref_m = if self.typ.is_fixed_size() {
-                        "_"
-                    } else if self.boxed || !self.typ.is_primitive() {
-                        "m"
-                    } else {
-                        "&m"
-                    };
 
                     match (!self.has_presence(), self.frequency.is_optional()) {
-                        (true, true) => format!("self.{name}.as_ref().map_or(0, |{maybe_deref_m}| if m != {def} {{ {m_size_addition} }} else {{ 0 }}"),
+                        (true, true) => format!("self.{name}.as_ref().map_or(0, |{field_param}| if m != {def} {{ {m_size_addition} }} else {{ 0 }}"),
                         (true, false) => format!("if self.{name} == {def} {{ 0 }} else {{ {self_name_size_addition} }}"),
-                        (false, true) => format!("self.{name}.as_ref().map_or(0, |{maybe_deref_m}| {m_size_addition})"),
+                        (false, true) => format!("self.{name}.as_ref().map_or(0, |{field_param}| {m_size_addition})"),
                         (false, false) => get_size_addition(self, tag_size, format!("self.{}", self.name).as_str()),
                     }
                 };
@@ -990,6 +1039,7 @@ impl Field {
                 writeln!(w, "{}", conditions_checked.as_str(),)?;
             }
             GeneratedType::ArrayLikeType => {
+                let s_size_arg = if self.typ.needs_deref() { "*s" } else { "s" };
                 if self.packed() {
                     write!(w, "if self.{}.is_empty() {{ 0 }} else {{ {} + ", self.name, tag_size)?;
                     match self.typ.wire_type_num_non_packed() {
@@ -997,9 +1047,9 @@ impl Field {
                         5 => writeln!(w, "sizeof_len(self.{}.len() * 4) }}", self.name)?,
                         _ => writeln!(
                             w,
-                            "sizeof_len(self.{}.iter().map(|&s| {}).sum::<usize>()) }}",
+                            "sizeof_len(self.{}.iter().map(|s| {}).sum::<usize>()) }}",
                             self.name,
-                            self.typ.get_size("s")
+                            self.typ.get_size(s_size_arg)
                         )?,
                     }
                 } else {
@@ -1008,10 +1058,9 @@ impl Field {
                         5 => writeln!(w, "({} + 4) * self.{}.len()", tag_size, self.name)?,
                         _ => writeln!(
                             w,
-                            "self.{name}.iter().map(|{maybe_ampersand}s| {tag_size} + {got_size}).sum::<usize>()",
-                            maybe_ampersand = if self.typ.need_to_dereference() { "&" } else { "" },
+                            "self.{name}.iter().map(|s| {tag_size} + {got_size}).sum::<usize>()",
                             name = self.name,
-                            got_size = self.typ.get_size("s")
+                            got_size = self.typ.get_size(s_size_arg)
                         )?,
                     }
                 }
@@ -1022,8 +1071,8 @@ impl Field {
                     writeln!(
                         w,
                         "self.{name}.iter().map(|({maybe_ampersand_k}k, {v_arg})| {tag_size} + sizeof_len({got_size})).sum::<usize>()",
-                        maybe_ampersand_k = if k.need_to_dereference() { "&" } else { "" },
-                        v_arg = if v_fixed_size { "_" } else if v.need_to_dereference() { "&v" } else { "v" },
+                        maybe_ampersand_k = if k.needs_deref() { "&" } else { "" },
+                        v_arg = if v_fixed_size { "_" } else if v.needs_deref() { "&v" } else { "v" },
                         name = self.name,
                         got_size = self.typ.get_size(""),
                     )?;
@@ -1104,7 +1153,7 @@ impl Field {
                     }
 
                     // Required message, map and byte_ fields
-                    if !f.typ.need_to_dereference()
+                    if !f.typ.needs_deref()
                         && !f.typ.is_cow()
                         && !f.frequency.is_optional()
                         && !f.typ.is_non_cow_string_or_byte()
@@ -1142,15 +1191,13 @@ impl Field {
                 let conditions_checked = {
                     let name = self.name.clone();
                     let def = self.get_field_default(desc, config);
+                    let maybe_deref_field_param = if self.typ.needs_deref() { "*m" } else { "m" };
                     let m_core = apply_unwrapping_code(self, false, "m");
                     let self_name_core = apply_unwrapping_code(self, false, format!("self.{name}").as_str());
-                    let m_write_method = get_write_method(self, m_core.as_str());
+                    let m_write_method = get_write_method(self, maybe_deref_field_param);
                     let self_name_write_method = get_write_method(self, &self_name_core);
-                    let maybe_deref_m = if self.boxed || !self.typ.is_primitive() {
-                        "m"
-                    } else {
-                        "&m"
-                    };
+                    let maybe_deref_m = "m";
+
                     let self_name_core_equating_cows =
                         apply_unwrapping_code(self, true, format!("self.{name}").as_str());
 
@@ -1165,6 +1212,7 @@ impl Field {
                 writeln!(w, "{}", conditions_checked.as_str(),)?;
             }
             GeneratedType::ArrayLikeType => {
+                let m_size_arg = if self.typ.needs_deref() { "*m" } else { "m" };
                 if self.packed() {
                     if self.typ.is_fixed_size() {
                         writeln!(
@@ -1176,15 +1224,15 @@ impl Field {
                     } else {
                         writeln!(
                             w,
-                            "w.write_packed_with_tag({}, &self.{}, |w, &m| w.{}, &|&m| {})?;",
+                            "w.write_packed_with_tag({}, &self.{}, |w, m| w.{}, |m| {})?;",
                             self.tag(),
                             self.name,
-                            self.typ.get_write("m", self.boxed),
-                            self.typ.get_size("m")
+                            self.typ.get_write("m", self.boxed || self.typ.needs_deref()),
+                            self.typ.get_size(m_size_arg)
                         )?
                     }
                 } else {
-                    let maybe_deref_s = if self.typ.need_to_dereference() { "*s" } else { "s" };
+                    let maybe_deref_s = if self.typ.needs_deref() { "*s" } else { "s" };
                     writeln!(
                         w,
                         "for s in &self.{} {{ w.write_with_tag({}, |w| w.{})?; }}",
@@ -1199,8 +1247,8 @@ impl Field {
                     writeln!(
                         w,
                         "for ({maybe_ampersand_k}k, {maybe_ampersand_v}v) in self.{name}.iter() {{ w.write_with_tag({tag}, |w| w.{got_write})?; }}",
-                        maybe_ampersand_k = if k.need_to_dereference() { "&" } else { "" },
-                        maybe_ampersand_v = if v.need_to_dereference() { "&" } else { "" },
+                        maybe_ampersand_k = if k.needs_deref() { "&" } else { "" },
+                        maybe_ampersand_v = if v.needs_deref() { "&" } else { "" },
                         name = self.name,
                         tag = self.tag(),
                         got_write = self.typ.get_write("", false),
@@ -1220,8 +1268,11 @@ fn get_modules(module: &str, imported: bool, desc: &FileDescriptor) -> String {
         .split('.')
         .filter(|p| !p.is_empty())
         .skip(skip)
-        .map(|p| format!("{}::", p))
-        .collect()
+        .fold(String::new(), |mut s, p| {
+            s.push_str(p);
+            s.push_str("::");
+            s
+        })
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1403,6 +1454,14 @@ impl Message {
                 writeln!(w, "type KVMap<K, V> = HashMap<K, V>;")?;
             }
             writeln!(w, "use piecemeal::GenericMapBuilder;")?
+        }
+
+        if messages
+            .iter()
+            .filter(|m| !m.imported)
+            .any(|m| m.all_fields().any(|f| f.frequency.is_repeated()))
+        {
+            writeln!(w, "use piecemeal::RepeatedBuilder;")?;
         }
 
         Ok(())
@@ -1685,12 +1744,12 @@ impl Message {
     }
 
     fn write_message_builder<W: Write>(&self, w: &mut W, desc: &FileDescriptor, config: &Config) -> Result<()> {
-        writeln!(w, "pub struct {}Builder<'w, 's, S: ScratchBuffer> {{", self.name)?;
-        writeln!(w, "    writer: &'w mut ScratchWriter<'s, S>")?;
+        writeln!(w, "pub struct {}Builder<'w, S: ScratchBuffer> {{", self.name)?;
+        writeln!(w, "    writer: &'w mut ScratchWriter<S>")?;
         writeln!(w, "}}")?;
         writeln!(w)?;
-        writeln!(w, "impl<'w, 's, S: ScratchBuffer> {}Builder<'w, 's, S> {{", self.name)?;
-        writeln!(w, "    pub fn new(writer: &'w mut ScratchWriter<'s, S>) -> Self {{")?;
+        writeln!(w, "impl<'w, S: ScratchBuffer> {}Builder<'w, S> {{", self.name)?;
+        writeln!(w, "    pub fn new(writer: &'w mut ScratchWriter<S>) -> Self {{")?;
         writeln!(w, "        Self {{ writer }}")?;
         writeln!(w, "    }}")?;
         for field in &self.fields {
@@ -1702,7 +1761,14 @@ impl Message {
             w,
             "    pub fn finish<W: Writer>(self, output: &mut W) -> ProtoResult<()> {{"
         )?;
-        writeln!(w, "        self.writer.finalize(output)")?;
+        writeln!(w, "        self.writer.finish(output, false)")?;
+        writeln!(w, "    }}")?;
+        writeln!(w)?;
+        writeln!(
+            w,
+            "    pub fn finish_length_delimited<W: Writer>(self, output: &mut W) -> ProtoResult<()> {{"
+        )?;
+        writeln!(w, "        self.writer.finish(output, true)")?;
         writeln!(w, "    }}")?;
         writeln!(w, "}}")?;
         Ok(())
@@ -1721,44 +1787,59 @@ impl Message {
     fn write_message_builder_field_scalar<W: Write>(
         &self, w: &mut W, field: &Field, desc: &FileDescriptor,
     ) -> Result<()> {
-        let raw_value_typ = field.typ.builder_scalar_rust_type(desc);
-        let (generic_arg_type, value_typ, convert_as_ref) = if field.typ.need_to_dereference() {
-            // This is something like `i32` or `bool` where we just want to accept it directly.
-            ("".to_string(), raw_value_typ, false)
+        let is_repeated = field.frequency.is_repeated();
+        let proto_typ = field.typ.proto_rust_type();
+        let value_typ = field.typ.write_rust_type(desc);
+
+        if is_repeated {
+            writeln!(
+                w,
+                "    pub fn {}<F>(&mut self, f: F) -> ProtoResult<&mut Self>",
+                field.name
+            )?;
+            writeln!(w, "    where")?;
+            writeln!(
+                w,
+                "        F: for<'a> FnOnce(&mut RepeatedBuilder<'a, S, {}, {}>) -> ProtoResult<()>,",
+                proto_typ, value_typ
+            )?;
+            writeln!(w, "    {{")?;
+            writeln!(
+                w,
+                "        let mut repeated_builder = RepeatedBuilder::new({}, self.writer);",
+                field.number
+            )?;
+            writeln!(w, "        f(&mut repeated_builder)?;")?;
+            writeln!(w, "        Ok(self)")?;
+            writeln!(w, "    }}")?;
         } else {
-            // This is something like a string or bytes where we want to be able to use anything that can just give a
-            // reference to the data, like `&str` or `&[u8]`.
-            (format!("<V: AsRef<{}>>", raw_value_typ), "V".to_string(), true)
-        };
-
-        let method_name = match field.frequency.is_repeated() {
-            true => format!("add_{}", field.name),
-            false => field.name.clone(),
-        };
-
-        writeln!(
-            w,
-            "    pub fn {}{}(&mut self, value: {}) -> ProtoResult<&mut Self> {{",
-            method_name, generic_arg_type, value_typ
-        )?;
-        if convert_as_ref {
-            writeln!(w, "        let value = value.as_ref();")?;
+            // Field isn't repeated, so just a basic write.
+            let value_typ = if !field.typ.is_primitive() {
+                format!("&{}", value_typ)
+            } else {
+                value_typ.to_string()
+            };
+            writeln!(
+                w,
+                "    pub fn {}(&mut self, value: {}) -> ProtoResult<&mut Self> {{",
+                field.name, value_typ
+            )?;
+            writeln!(
+                w,
+                "        self.writer.write_with_tag({}, |w| w.{})?;",
+                field.tag(),
+                field.typ.get_write("value", false)
+            )?;
+            writeln!(w, "        Ok(self)")?;
+            writeln!(w, "    }}")?;
         }
-        writeln!(
-            w,
-            "        self.writer.write_with_tag({}, |w| w.{})?;",
-            field.tag(),
-            field.typ.get_write("value", false)
-        )?;
-        writeln!(w, "        Ok(self)")?;
-        writeln!(w, "    }}")?;
         Ok(())
     }
 
     fn write_message_builder_field_message<W: Write>(
         &self, w: &mut W, field: &Field, desc: &FileDescriptor, config: &Config,
     ) -> Result<()> {
-        let typ = field.typ.rust_type(desc, config, false);
+        let typ = field.typ.struct_rust_type(desc, config, false);
 
         let method_name = match field.frequency.is_repeated() {
             true => format!("add_{}", field.name),
@@ -1773,7 +1854,7 @@ impl Message {
         writeln!(w, "    where")?;
         writeln!(
             w,
-            "        F: for<'a> FnOnce(&mut {}Builder<'a, 's, S>) -> ProtoResult<()>",
+            "        F: for<'a> FnOnce(&mut {}Builder<'a, S>) -> ProtoResult<()>",
             typ
         )?;
         writeln!(w, "    {{")?;
@@ -1797,12 +1878,12 @@ impl Message {
             unimplemented!("map builder for non-scalar key/value types does not yet exist");
         }
 
-        let key_typ = key_field_type.builder_scalar_rust_type(desc);
-        let value_typ = value_field_type.builder_scalar_rust_type(desc);
+        let key_typ = key_field_type.write_rust_type(desc);
+        let value_typ = value_field_type.write_rust_type(desc);
 
         writeln!(
             w,
-            "    pub fn {}(&mut self) -> GenericMapBuilder<'_, 's, S, {}, {}> {{",
+            "    pub fn {}(&mut self) -> GenericMapBuilder<'_, S, {}, {}> {{",
             field.name, key_typ, value_typ
         )?;
         writeln!(w, "        GenericMapBuilder::new({}, self.writer)", field.tag())?;
@@ -2045,16 +2126,8 @@ impl Message {
 
     fn set_repeated_as_packed(&mut self) {
         for f in self.all_fields_mut() {
-            if f.packed.is_none() && f.frequency.is_repeated() {
+            if f.packed.is_none() && f.frequency.is_repeated() && f.typ.is_primitive() {
                 f.packed = Some(true);
-            }
-        }
-    }
-
-    fn unset_packed_non_primitives(&mut self) {
-        for f in self.all_fields_mut() {
-            if !f.typ.is_primitive() && f.packed.is_some() {
-                f.packed = None;
             }
         }
     }
@@ -2299,7 +2372,7 @@ impl OneOf {
                 }
             }
 
-            let rust_type = f.typ.rust_type(desc, config, true);
+            let rust_type = f.typ.struct_rust_type(desc, config, true);
             if f.boxed {
                 writeln!(w, "    {}(Box<{}>),", f.name, rust_type)?;
             } else {
@@ -2324,7 +2397,7 @@ impl OneOf {
             .iter()
             .filter(|f| !f.deprecated || config.add_deprecated_fields)
         {
-            let rust_type = f.typ.rust_type(desc, config, true);
+            let rust_type = f.typ.struct_rust_type(desc, config, true);
             if handled_fields.contains(&rust_type) {
                 continue;
             }
@@ -2426,7 +2499,7 @@ impl OneOf {
                     tag_size,
                     f.typ.get_size("")
                 )?;
-            } else if f.typ.need_to_dereference() {
+            } else if f.typ.needs_deref() {
                 writeln!(
                     w,
                     "            {}OneOf{}::{}(m) => {} + {},",
@@ -2465,7 +2538,7 @@ impl OneOf {
             .iter()
             .filter(|f| !f.deprecated || config.add_deprecated_fields)
         {
-            if f.typ.need_to_dereference() || f.boxed {
+            if f.typ.needs_deref() || f.boxed {
                 writeln!(
                     w,
                     "            {}OneOf{}::{}(m) => {{ w.write_with_tag({}, |w| w.{})? }},",
@@ -2684,10 +2757,10 @@ impl FileDescriptor {
                     m.set_package(&package, &module);
                 }
                 if m.path.as_os_str().is_empty() {
-                    m.path = proto_file.clone();
+                    m.path.clone_from(&proto_file);
                 }
                 if m.import.as_os_str().is_empty() {
-                    m.import = import.clone();
+                    m.import.clone_from(import);
                 }
                 m.set_imported();
                 m
@@ -2697,10 +2770,10 @@ impl FileDescriptor {
                     e.set_package(&package, &module);
                 }
                 if e.path.as_os_str().is_empty() {
-                    e.path = proto_file.clone();
+                    e.path.clone_from(&proto_file);
                 }
                 if e.import.as_os_str().is_empty() {
-                    e.import = import.clone();
+                    e.import.clone_from(import);
                 }
                 e.imported = true;
                 e
@@ -2710,10 +2783,32 @@ impl FileDescriptor {
     }
 
     fn set_defaults(&mut self, config: &Config) -> Result<()> {
-        // if proto3, then changes several defaults
+        // Set specific default behavior for messages/fields if we're using Protocol Buffers v3 syntax.
         if let Syntax::Proto3 = self.syntax {
+            let mut nested_messages = VecDeque::new();
+
+            // Go through the top-level first, collecting the first line of any nested messages
+            // within those. We'll go through the nested messages afterwards to fully crawl the file
+            // scriptor and ensure all messages have been visited.
             for m in &mut self.messages {
                 m.set_repeated_as_packed();
+
+                for f in m.all_fields() {
+                    if let Some(m_idx) = f.typ.message() {
+                        nested_messages.push_back(m_idx.clone());
+                    }
+                }
+            }
+
+            while let Some(m) = nested_messages.pop_front() {
+                let m = m.get_message_mut(self);
+                m.set_repeated_as_packed();
+
+                for f in m.all_fields() {
+                    if let Some(m_idx) = f.typ.message() {
+                        nested_messages.push_back(m_idx.clone());
+                    }
+                }
             }
         }
         // this is very inefficient but we don't care ...
@@ -2722,10 +2817,7 @@ impl FileDescriptor {
         for m in &mut self.messages {
             m.sanitize_defaults(&copy, config)?; //&msgs, &self.enums)?; ???
         }
-        // force packed only on primitives
-        for m in &mut self.messages {
-            m.unset_packed_non_primitives();
-        }
+
         Ok(())
     }
 
@@ -2997,7 +3089,7 @@ impl FileDescriptor {
             writeln!(w, "use core::convert::{{TryFrom, TryInto}};")?;
         }
 
-        writeln!(w, "use piecemeal::helpers::*;")?;
+        writeln!(w, "use piecemeal::{{helpers::*, types::protobuf::*}};")?;
         for include in &config.custom_includes {
             writeln!(w, "{}", include)?;
         }

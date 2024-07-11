@@ -10,6 +10,7 @@ repository.workspace = true
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
 memory-accounting = { workspace = true }
+piecemeal = { workspace = true }
 saluki-config = { workspace = true }
 saluki-context = { workspace = true }
 saluki-core = { workspace = true }

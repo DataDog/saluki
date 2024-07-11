@@ -33,7 +33,7 @@ const WIRE_TYPE_FIXED32: u8 = 5;
 ///
 /// ```rust
 /// # mod foo_bar {
-/// #     use piecemeal::{MessageRead, BytesReader, Result};
+/// #     use piecemeal::{MessageRead, BytesReader, ProtoResult};
 /// #     pub struct Foo {}
 /// #     pub struct Bar {}
 /// #     pub struct FooBar { pub foos: Vec<Foo>, pub bars: Vec<Bar>, }
@@ -533,7 +533,7 @@ impl BytesReader {
 ///
 /// ```rust,should_panic
 /// # mod foo_bar {
-/// #     use piecemeal::{MessageRead, BytesReader, Result};
+/// #     use piecemeal::{MessageRead, BytesReader, ProtoResult};
 /// #     pub struct Foo {}
 /// #     pub struct Bar {}
 /// #     pub struct FooBar { pub foos: Vec<Foo>, pub bars: Vec<Bar>, }

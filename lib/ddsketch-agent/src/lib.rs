@@ -135,7 +135,7 @@ impl Default for Config {
 
 /// A sketch bin.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct Bin {
+pub struct Bin {
     /// The bin index.
     k: i16,
 
@@ -144,6 +144,16 @@ pub(crate) struct Bin {
 }
 
 impl Bin {
+    /// Gets the key of the bin.
+    pub fn key(&self) -> i16 {
+        self.k
+    }
+
+    /// Gets the count of samples in the bin.
+    pub fn count(&self) -> u16 {
+        self.n
+    }
+
     #[allow(clippy::cast_possible_truncation)]
     fn increment(&mut self, n: u32) -> u32 {
         let next = n + u32::from(self.n);
@@ -220,11 +230,6 @@ impl DDSketch {
         self.bins.len()
     }
 
-    #[cfg(test)]
-    fn bins(&self) -> &[Bin] {
-        &self.bins
-    }
-
     /// Whether or not this sketch is empty.
     pub fn is_empty(&self) -> bool {
         self.count == 0
@@ -287,6 +292,11 @@ impl DDSketch {
         self.avg = 0.0;
         self.sum = 0.0;
         self.bins.clear();
+    }
+
+    /// Gets the bins for the sketch.
+    pub fn bins(&self) -> &[Bin] {
+        &self.bins
     }
 
     fn adjust_basic_stats(&mut self, v: f64, n: u32) {

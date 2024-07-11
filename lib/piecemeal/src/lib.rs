@@ -11,7 +11,10 @@ pub mod helpers;
 pub mod io;
 pub mod message;
 
-pub use crate::builder::GenericMapBuilder;
+#[allow(missing_docs)]
+pub mod types;
+
+pub use crate::builder::{GenericMapBuilder, RepeatedBuilder};
 pub use crate::errors::{Error, ProtoResult};
 pub use crate::io::{
     reader::{deserialize_from_slice, BytesReader, PackedFixed, PackedFixedIntoIter, PackedFixedRefIter, Reader},

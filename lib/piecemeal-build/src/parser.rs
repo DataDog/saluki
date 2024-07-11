@@ -43,6 +43,7 @@ enum EnumEvent {
     Ignore,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 enum Event {
     Syntax(Syntax),
