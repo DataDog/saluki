@@ -20,6 +20,8 @@ use saluki_event::{metric::*, Event};
 
 use crate::deser::Decoder;
 
+type NomParserError<'a> = nom::Err<nom::error::Error<&'a [u8]>>;
+
 static_metrics! {
     name => CodecMetrics,
     prefix => dogstatsd,
@@ -129,8 +131,8 @@ pub enum ParseError {
     Structural { kind: nom::error::ErrorKind, data: String },
 }
 
-impl<'a> From<nom::Err<nom::error::Error<&'a [u8]>>> for ParseError {
-    fn from(err: nom::Err<nom::error::Error<&'a [u8]>>) -> Self {
+impl<'a> From<NomParserError<'a>> for ParseError {
+    fn from(err: NomParserError<'a>) -> Self {
         match err {
             nom::Err::Error(e) | nom::Err::Failure(e) => ParseError::Structural {
                 kind: e.code,
@@ -297,9 +299,13 @@ fn metric_name(input: &[u8]) -> IResult<&[u8], &str> {
 
 #[inline]
 fn metric_value(input: &[u8]) -> IResult<&[u8], ValueIter<'_>> {
-    // TODO: do full UTF-8 validation on the value bytes before feeding them to `ValueIter`
     let (remaining, raw_values) = terminated(take_while1(|b| b != b'|'), tag("|"))(input)?;
     let (remaining, raw_kind) = alt((tag(b"g"), tag(b"c"), tag(b"ms"), tag(b"h"), tag(b"s"), tag(b"d")))(remaining)?;
+
+    // Make sure the raw value(s) are valid UTF-8 before we use them later on.
+    if simdutf8::basic::from_utf8(raw_values).is_err() {
+        return Err(nom::Err::Error(Error::new(raw_values, ErrorKind::Verify)));
+    }
 
     let kind = match raw_kind {
         b"s" => ValueKind::Set,
@@ -322,8 +328,12 @@ fn metric_tags(config: &DogstatsdCodecConfiguration) -> impl Fn(&[u8]) -> IResul
     let max_tag_count = config.maximum_tag_count;
     let max_tag_len = config.maximum_tag_length;
 
-    // TODO: do full UTF-8 on the resulting bytes before feeding them to `TagSplitter`
     move |input: &[u8]| {
+        // Make sure the raw value(s) are valid UTF-8 before we use them later on.
+        if simdutf8::basic::from_utf8(input).is_err() {
+            return Err(nom::Err::Error(Error::new(input, ErrorKind::Verify)));
+        }
+
         map(take_while1(|c: u8| !c.is_ascii_control() && c != b'|'), |s| {
             TagSplitter::new(s, max_tag_count, max_tag_len)
         })(input)
@@ -490,9 +500,12 @@ impl<'a> Iterator for ValueIter<'a> {
         let (raw_value, tail) = split_at_delimiter(self.raw_values, b':')?;
         self.raw_values = tail;
 
-        let value = match double(raw_value) {
-            Ok((_, value)) => value,
-            Err(e) => return Some(Err(e)),
+        // SAFETY: The caller that creates `ValueIter` is responsible for ensuring that the entire byte slice is valid
+        // UTF-8.
+        let value_s = unsafe { std::str::from_utf8_unchecked(raw_value) };
+        let value = match value_s.parse::<f64>() {
+            Ok(value) => value,
+            Err(_) => return Some(Err(nom::Err::Error(Error::new(raw_value, ErrorKind::Float)))),
         };
 
         Some(Ok(match self.kind {
