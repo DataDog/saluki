@@ -7,10 +7,12 @@ repository.workspace = true
 
 [dependencies]
 bytes = { workspace = true }
+piecemeal = { workspace = true }
 prost = { workspace = true, features = ["derive", "std"] }
 protobuf = { workspace = true }
 tonic = { workspace = true, features = ["codegen", "prost"] }
 
 [build-dependencies]
+piecemeal-build = { workspace = true }
 protobuf-codegen = { workspace = true }
 tonic-build = { workspace = true, features = ["prost"] }

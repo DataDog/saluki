@@ -389,9 +389,29 @@ impl Tag {
     }
 }
 
+impl std::ops::Deref for Tag {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::borrow::Borrow<str> for Tag {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'a> std::borrow::Borrow<str> for &'a Tag {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
 impl PartialEq<str> for Tag {
     fn eq(&self, other: &str) -> bool {
-        self.0.deref() == other
+        &self.0 == other
     }
 }
 

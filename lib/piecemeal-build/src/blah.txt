@@ -1,0 +1,118 @@
+ASSUMPTIONS:
+- scalar fields written below already have their tag as part of `len`) so we only mention specific
+  tags when talking about the tags of message fields
+
+Overall structure:
+
+  message A:
+    - field 1 (scalar)
+    - field 2 (scalar)
+    - field 3 (message B)
+      - field 1 (scalar)
+      - field 2 (scalar)
+      - field 3 (message C)
+        - field 1 (scalar)
+        - field 2 (scalar)
+
+Example:
+
+  - start message A
+  - write field A.1
+  - write field A.2
+  - start message B (field A.3)
+  - write field B.1
+  - write field B.2
+  - start message C (field B.3)
+  - write field C.1
+  - write field C.2
+
+Annotated example:
+
+  - start message A (parent message, no tag, scratch_len = 0)
+	- write field A.1 (tag_bytes = 1, data_bytes = 3, scratch_len = 4)
+	- write field A.2 (tag_bytes = 1, data_bytes = 2, scratch_len = 7)
+	- start field A.3 (tag_bytes = 1, scratch_len = 8)
+	  - start message B (scratch_len = 8)
+	  - write field B.1 (tag_bytes = 1, data_bytes = 17, scratch_len = 26)
+	  - write field B.2 (tag_bytes = 1, data_bytes = 2, scratch_len = 29)
+	  - start field B.3 (tag_bytes = 1, scratch_len = 30)
+	    - write field C.1 (tag_bytes = 1, data_bytes = 3, scratch_len = 34)
+	    - write field C.2 (tag_bytes = 1, data_bytes = 2, scratch_len = 37)
+	  - end field B.3 (scratch_len = 37)
+	    - message length: 7 (37 - 30)
+		- field length: 8 (37 - 29)
+		- tag length: 1 (30 - 29)
+	  	- write field B.3 length (7) at position 30
+    - end field A.3 (scratch_len = 37)
+	  - message length: 29 (37 - 8)
+	  - field length: 30 (37 - 7)
+	  - tag length: 1 (8 - 7)
+	  - write field A.3 length (29) at position 8 (SHOULD BE 30, missing varint_len(C))
+  - end message A (scratch_len = 37)
+	- message length: 37 (37 - 0) (SHOULD BE 39, missing varint_len(B) + varint_len(C))
+	- write message A length (37) at position 0
+
+So for `TrackedScratch`, maybe we make the `calculate delta position` method take the delta, and
+then get varint_len(delta), and add that to the delta, and use that value as the overall change.
+
+So essentially:
+
+  - message C finalize:
+    - no submsgs
+	- start_idx = 30, msg_len = 7, submsg_len_offset = 0
+	- TrackedScratch::add_len_marker(start_idx, msg_len + submsg_len_offset)
+	- marker of [30, 7]
+  - message B finalize:
+    - 1 direct submsg (C)
+	- start_idx = 8, msg_len = 29, submsg_len_offset = 1
+	- TrackedScratch::add_len_marker(start_idx, msg_len + submsg_len_offset)
+	- marker of [8, 30]
+  - message A finalize:
+	- 1 direct submsg (B), 1 indirect submsg(C)
+	- start_idx = 0, msg_len = 37, submsg_len_offset = 1
+	- TrackedScratch::add_len_marker(start_idx, msg_len + submsg_len_offset)
+	- marker of [0, 39] <--- this is wrong, should be 40 instead of 39
+
+
+
+	
+
+Manually calculated sizing:
+
+  - message C:
+    written (direct): 7 bytes
+    written (indirect): 0 bytes
+	message length: 7 bytes
+    total length: 9 bytes (tag_bytes = 1, len_bytes = 1, msg_bytes = 7)
+
+  - message B:
+    written (direct): 21 bytes
+	written (indirect): 9 bytes
+	message length: 30 bytes
+	total length: 32 bytes (tag_bytes = 1, len_bytes = 1, msg_bytes = 30)
+
+  - message A:
+    written (direct): 7 bytes
+	written (indirect): 32 bytes
+	message length: 39 bytes
+	total length: 40 bytes (len_bytes = 1, msg_bytes = 39)
+
+Actual scratch:
+[tag A.1][field A.1][tag A.2][field A.2][tag A.3][tag B.1][field B.1][tag B.2][field B.2][tag B.3][tag C.1][field C.1][tag C.2][field C.2]
+
+Desired output:
+[len A][tag A.1][field A.1][tag A.2][field A.2][tag A.3][len B][tag B.1][field B.1][tag B.2][field B.2][tag B.3][len C][tag C.1][field C.1][tag C.2][field C.2]
+
+Length insertions needed at:
+
+- 0 (length A)
+- 7 (length B)
+- 29 (length C)
+
+msg_len(A) = 39 (direct + varint_len(B) + len(B) + varint_len(C) + len(C))
+		   = 39 (     7 + varint_len(B) + len(B) +             1 + 7)
+		   = 39 (     7 + varint_len(B) + len(B) +             1 + 7)
+
+
+Example order of message write-out:
+

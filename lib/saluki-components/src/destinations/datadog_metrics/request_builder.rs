@@ -1,8 +1,11 @@
 use std::{io, time::Duration};
 
-use datadog_protos::metrics::{self as proto, Resource};
+use datadog_protos::piecemeal_include::datadog::agentpayload::{
+    mod_MetricPayload::{MetricSeriesBuilder, MetricType},
+    mod_SketchPayload::SketchBuilder,
+};
 use http::{Method, Request, Uri};
-use protobuf::CodedOutputStream;
+use piecemeal::{ScratchBuffer, ScratchWriter};
 use saluki_env::time::get_unix_timestamp;
 use snafu::{ResultExt, Snafu};
 use tokio::io::AsyncWriteExt as _;
@@ -23,7 +26,7 @@ pub enum RequestBuilderError {
         endpoint: MetricsEndpoint,
     },
     #[snafu(display("failed to encode/write payload: {}", source))]
-    FailedToEncode { source: protobuf::Error },
+    FailedToEncode { source: piecemeal::Error },
     #[snafu(display(
         "request payload was too large after compressing ({} > {})",
         compressed_size_bytes,
@@ -51,6 +54,12 @@ impl RequestBuilderError {
             Self::Io { .. } => false,
             _ => true,
         }
+    }
+}
+
+impl From<piecemeal::Error> for RequestBuilderError {
+    fn from(source: piecemeal::Error) -> Self {
+        Self::FailedToEncode { source }
     }
 }
 
@@ -109,7 +118,11 @@ where
     api_uri: Uri,
     endpoint: MetricsEndpoint,
     buffer_pool: B,
-    scratch_buf: Vec<u8>,
+    // TODO: we probably just want two scratch buffers: one for the writer and one that we finish
+    // into so the rest of the existing compressor logic can stay as it is and we can avoid having
+    // to bake async write support into `piecemeal`
+    scratch_writer: ScratchWriter<Vec<u8>>,
+    scratch_output_buf: Vec<u8>,
     compressor: Compressor<ChunkedBytesBuffer>,
     compression_estimator: CompressionEstimator,
     uncompressed_len: usize,
@@ -132,7 +145,8 @@ where
             api_uri,
             endpoint,
             buffer_pool,
-            scratch_buf: Vec::with_capacity(SCRATCH_BUF_CAPACITY),
+            scratch_writer: ScratchWriter::new(Vec::with_capacity(SCRATCH_BUF_CAPACITY)),
+            scratch_output_buf: Vec::with_capacity(SCRATCH_BUF_CAPACITY),
             compressor,
             compression_estimator: CompressionEstimator::default(),
             uncompressed_len: 0,
@@ -159,12 +173,14 @@ where
             });
         }
 
+        //println!("metric: {:?}", metric);
+
         // Encode the metric and then see if it will fit into the current request payload.
         //
         // If not, we return the original metric, signaling to the caller that they need to flush the current request
         // payload before encoding additional metrics.
-        let encoded_metric = encode_single_metric(&metric);
-        encoded_metric.write(&mut self.scratch_buf)?;
+        encode_single_metric(&metric, &mut self.scratch_writer)?;
+        self.scratch_writer.finish(&mut self.scratch_output_buf, false)?;
 
         // If the metric can't fit into the current request payload based on the uncompressed size limit, or isn't
         // likely to fit into the current request payload based on the estimated compressed size limit, then return it
@@ -173,7 +189,7 @@ where
         // TODO: Use of the estimated compressed size limit is a bit of a stopgap to avoid having to do full incremental
         // request building. We can still improve it, but the only sure-fire way to not exceed the (un)compressed
         // payload size limits is to be able to re-do the encoding/compression process in smaller chunks.
-        let encoded_len = self.scratch_buf.len();
+        let encoded_len = self.scratch_output_buf.len();
         let new_uncompressed_len = self.uncompressed_len + encoded_len;
         if new_uncompressed_len > self.endpoint.uncompressed_size_limit()
             || self
@@ -191,11 +207,12 @@ where
         }
 
         // Write the scratch buffer to the compressor.
-        self.compressor.write_all(&self.scratch_buf).await.context(Io)?;
+        self.compressor.write_all(&self.scratch_output_buf).await.context(Io)?;
         self.compression_estimator
-            .track_write(&self.compressor, self.scratch_buf.len());
-        self.uncompressed_len += self.scratch_buf.len();
+            .track_write(&self.compressor, self.scratch_output_buf.len());
+        self.uncompressed_len += self.scratch_output_buf.len();
         self.metrics_written += 1;
+        self.scratch_output_buf.clear();
 
         trace!(
             encoded_len,
@@ -288,145 +305,102 @@ where
     Compressor::from_scheme(CompressionScheme::zlib_default(), write_buffer)
 }
 
-enum EncodedMetric {
-    Series(proto::MetricSeries),
-    Sketch(proto::Sketch),
-}
-
-impl EncodedMetric {
-    fn field_number(&self) -> u32 {
-        // TODO: We _should_ derive this from the Protocol Buffers definitions themselves.
-        //
-        // This is more about establishing provenance than worrying about field numbers changing, though, since field
-        // numbers changing is not backwards-compatible and should basically never, ever happen.
-        match self {
-            Self::Series(_) => 1,
-            Self::Sketch(_) => 1,
-        }
-    }
-
-    fn write(&self, buf: &mut Vec<u8>) -> Result<(), RequestBuilderError> {
-        buf.clear();
-
-        let mut output_stream = CodedOutputStream::vec(buf);
-
-        // Write the field tag.
-        let field_number = self.field_number();
-        output_stream
-            .write_tag(field_number, protobuf::rt::WireType::LengthDelimited)
-            .context(FailedToEncode)?;
-
-        // Write the message.
-        match self {
-            Self::Series(series) => output_stream.write_message_no_tag(series).context(FailedToEncode)?,
-            Self::Sketch(sketch) => output_stream.write_message_no_tag(sketch).context(FailedToEncode)?,
-        }
-
-        Ok(())
-    }
-}
-
-fn encode_single_metric(metric: &Metric) -> EncodedMetric {
+fn encode_single_metric<S: ScratchBuffer>(
+    metric: &Metric, scratch_writer: &mut ScratchWriter<S>,
+) -> Result<(), RequestBuilderError> {
     match metric.value() {
         MetricValue::Counter { .. }
         | MetricValue::Rate { .. }
         | MetricValue::Gauge { .. }
-        | MetricValue::Set { .. } => EncodedMetric::Series(encode_series_metric(metric)),
-        MetricValue::Distribution { .. } => EncodedMetric::Sketch(encode_sketch_metric(metric)),
+        | MetricValue::Set { .. } => encode_series_metric(metric, scratch_writer),
+        MetricValue::Distribution { .. } => encode_sketch_metric(metric, scratch_writer),
     }
 }
 
-fn encode_series_metric(metric: &Metric) -> proto::MetricSeries {
-    let mut series = proto::MetricSeries::new();
-    series.set_metric(metric.context().name().clone().into());
+fn encode_series_metric<S: ScratchBuffer>(
+    metric: &Metric, scratch_writer: &mut ScratchWriter<S>,
+) -> Result<(), RequestBuilderError> {
+    let mut series_builder = MetricSeriesBuilder::new(scratch_writer);
+    series_builder.metric(metric.context().name())?;
 
-    // Set our tags.
-    //
-    // This involves extracting some specific tags first that have to be set on dedicated fields (host, resources, etc)
-    // and then setting the rest as generic tags.
-    let mut tags = metric.context().tags().clone();
-
-    let mut host_resource = Resource::new();
-    host_resource.set_type("host".to_string().into());
-    host_resource.set_name(metric.metadata().hostname().map(|h| h.into()).unwrap_or_default());
-    series.mut_resources().push(host_resource);
-
-    if let Some(ir_tags) = tags.remove_tags("dd.internal.resource") {
-        for ir_tag in ir_tags {
-            if let Some((resource_type, resource_name)) = ir_tag.value().and_then(|s| s.split_once(':')) {
-                let mut resource = Resource::new();
-                resource.set_type(resource_type.into());
-                resource.set_name(resource_name.into());
-                series.mut_resources().push(resource);
+    for tag in metric.context().tags() {
+        // If the tag is an internal resource tag, we actually write it as a resource entry and not
+        // a tag. Otherwise... just write it as a tag.
+        if tag.name() == "dd.internal.resource" {
+            if let Some((resource_type, resource_name)) = tag.value().and_then(|s| s.split_once(':')) {
+                series_builder.add_resources(|resource_builder| {
+                    resource_builder.type_pb(resource_type)?.name(resource_name)?;
+                    Ok(())
+                })?;
             }
+        } else {
+            series_builder.tags(|tags_builder| tags_builder.add(tag))?;
         }
     }
 
-    series.set_tags(tags.into_iter().map(|tag| tag.into_inner().into()).collect());
+    series_builder.add_resources(|resource_builder| {
+        resource_builder
+            .type_pb("host")?
+            .name(metric.metadata().hostname().unwrap_or_default())?;
+        Ok(())
+    })?;
 
     // Set the origin metadata, if it exists.
     if let Some(origin) = metric.metadata().origin() {
         match origin {
             MetricOrigin::SourceType(source_type) => {
-                series.set_source_type_name(source_type.clone().into());
+                series_builder.source_type_name(source_type)?;
             }
             MetricOrigin::OriginMetadata {
                 product,
                 subproduct,
                 product_detail,
             } => {
-                series.set_metadata(origin_metadata_to_proto_metadata(
-                    *product,
-                    *subproduct,
-                    *product_detail,
-                ));
+                series_builder.metadata(|metadata_builder| {
+                    metadata_builder.origin(|origin_builder| {
+                        origin_builder
+                            .origin_product(*product)?
+                            .origin_category(*subproduct)?
+                            .origin_service(*product_detail)?;
+                        Ok(())
+                    })?;
+                    Ok(())
+                })?;
             }
         }
     }
 
     let (metric_type, metric_value, maybe_interval) = match metric.value() {
-        MetricValue::Counter { value } => (proto::MetricType::COUNT, *value, None),
-        MetricValue::Rate { value, interval } => (proto::MetricType::RATE, *value, Some(duration_to_secs(*interval))),
-        MetricValue::Gauge { value } => (proto::MetricType::GAUGE, *value, None),
-        MetricValue::Set { values } => (proto::MetricType::GAUGE, values.len() as f64, None),
+        MetricValue::Counter { value } => (MetricType::COUNT, *value, None),
+        MetricValue::Rate { value, interval } => (MetricType::RATE, *value, Some(duration_to_secs(*interval))),
+        MetricValue::Gauge { value } => (MetricType::GAUGE, *value, None),
+        MetricValue::Set { values } => (MetricType::GAUGE, values.len() as f64, None),
         _ => unreachable!(),
     };
 
-    series.set_type(metric_type);
-
-    let mut point = proto::MetricPoint::new();
-    point.set_value(metric_value);
-    point.set_timestamp(metric.metadata().timestamp().unwrap_or_else(get_unix_timestamp) as i64);
-
-    series.mut_points().push(point);
+    series_builder.type_pb(metric_type)?;
+    series_builder.add_points(|point_builder| {
+        point_builder
+            .value(metric_value)?
+            .timestamp(metric.metadata().timestamp().unwrap_or_else(get_unix_timestamp) as i64)?;
+        Ok(())
+    })?;
 
     if let Some(interval) = maybe_interval {
-        series.set_interval(interval);
+        series_builder.interval(interval)?;
     }
 
-    series
+    Ok(())
 }
 
-fn encode_sketch_metric(metric: &Metric) -> proto::Sketch {
-    // TODO: I wonder if it would be more efficient to keep a `proto::Sketch` around and just clear it before encoding a
-    // sketch metric. We'd avoid a few allocations for things that involve `Vec<T>`, although we wouldn't save anything
-    // on string fields, since we're still allocating owned copies to convert into `Chars`, and clearing the existing
-    // `Chars` ends up as a call to `Bytes::clear`... which seems like it has very little overhead, but it might be more
-    // overhead than just creating a fresh `proto::Sketch` each time.
-    //
-    // Something to benchmark in the future.
-    let mut sketch = proto::Sketch::new();
-    sketch.set_metric(metric.context().name().into());
-    sketch.set_host(metric.metadata().hostname().map(|h| h.into()).unwrap_or_default());
-    sketch.set_tags(
-        metric
-            .context()
-            .tags()
-            .into_iter()
-            .cloned()
-            .map(|tag| tag.into_inner().into())
-            .collect(),
-    );
+fn encode_sketch_metric<S: ScratchBuffer>(
+    metric: &Metric, scratch_writer: &mut ScratchWriter<S>,
+) -> Result<(), RequestBuilderError> {
+    let mut sketch_builder = SketchBuilder::new(scratch_writer);
+    sketch_builder.metric(metric.context().name())?;
+    sketch_builder.host(metric.metadata().hostname().unwrap_or_default())?;
+
+    sketch_builder.tags(|tags_builder| tags_builder.add_many_mapped(metric.context().tags(), |t| &**t))?;
 
     // Set the origin metadata, if it exists.
     if let Some(MetricOrigin::OriginMetadata {
@@ -435,11 +409,16 @@ fn encode_sketch_metric(metric: &Metric) -> proto::Sketch {
         product_detail,
     }) = metric.metadata().origin()
     {
-        sketch.set_metadata(origin_metadata_to_proto_metadata(
-            *product,
-            *subproduct,
-            *product_detail,
-        ));
+        sketch_builder.metadata(|metadata_builder| {
+            metadata_builder.origin(|origin_builder| {
+                origin_builder
+                    .origin_product(*product)?
+                    .origin_category(*subproduct)?
+                    .origin_service(*product_detail)?;
+                Ok(())
+            })?;
+            Ok(())
+        })?;
     }
 
     let ddsketch = match metric.value() {
@@ -447,24 +426,21 @@ fn encode_sketch_metric(metric: &Metric) -> proto::Sketch {
         _ => unreachable!(),
     };
 
-    let mut dogsketch = proto::Dogsketch::new();
-    dogsketch.set_ts(metric.metadata().timestamp().unwrap_or_else(get_unix_timestamp) as i64);
-    ddsketch.merge_to_dogsketch(&mut dogsketch);
-    sketch.mut_dogsketches().push(dogsketch);
+    sketch_builder.add_dogsketches(|dogsketch_builder| {
+        dogsketch_builder
+            .ts(metric.metadata().timestamp().unwrap_or_else(get_unix_timestamp) as i64)?
+            .cnt(ddsketch.count() as i64)?
+            .min(ddsketch.min().unwrap_or_default())?
+            .max(ddsketch.max().unwrap_or_default())?
+            .sum(ddsketch.sum().unwrap_or_default())?
+            .avg(ddsketch.avg().unwrap_or_default())?
+            .k(|b| b.add_many_mapped(ddsketch.bins(), |bin| bin.key() as i32))?
+            .n(|b| b.add_many_mapped(ddsketch.bins(), |bin| bin.count() as u32))?;
 
-    sketch
-}
+        Ok(())
+    })?;
 
-fn origin_metadata_to_proto_metadata(product: u32, subproduct: u32, product_detail: u32) -> proto::Metadata {
-    // NOTE: The naming discrepancies here -- category vs subproduct and service vs product detail -- are a consequence
-    // of how these fields are named in the Datadog Platform, and the Protocol Buffers definitions used by the Datadog
-    // Agent -- which we build off of -- have not yet caught up with renaming them to match.
-    let mut metadata = proto::Metadata::new();
-    let proto_origin = metadata.mut_origin();
-    proto_origin.set_origin_product(product);
-    proto_origin.set_origin_category(subproduct);
-    proto_origin.set_origin_service(product_detail);
-    metadata
+    Ok(())
 }
 
 fn duration_to_secs(duration: Duration) -> i64 {

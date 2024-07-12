@@ -28,6 +28,7 @@ block-buffer,https://github.com/RustCrypto/utils,MIT OR Apache-2.0,RustCrypto De
 bstr,https://github.com/BurntSushi/bstr,MIT OR Apache-2.0,Andrew Gallant <jamslam@gmail.com>
 bumpalo,https://github.com/fitzgen/bumpalo,MIT OR Apache-2.0,Nick Fitzgerald <fitzgen@gmail.com>
 bytemuck,https://github.com/Lokathor/bytemuck,Zlib OR Apache-2.0 OR MIT,Lokathor <zefria@gmail.com>
+byteorder,https://github.com/BurntSushi/byteorder,Unlicense OR MIT,Andrew Gallant <jamslam@gmail.com>
 bytes,https://github.com/tokio-rs/bytes,MIT,"Carl Lerche <me@carllerche.com>, Sean McArthur <sean@seanmonstar.com>"
 cast,https://github.com/japaric/cast.rs,MIT OR Apache-2.0,Jorge Aparicio <jorge@japaric.io>
 cc,https://github.com/rust-lang/cc-rs,MIT OR Apache-2.0,Alex Crichton <alex@alexcrichton.com>
