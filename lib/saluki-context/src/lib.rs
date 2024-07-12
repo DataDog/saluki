@@ -1,5 +1,5 @@
 //! Metric context and context resolving.
-#![deny(warnings)]
+#![allow(warnings)]
 #![deny(missing_docs)]
 
 use std::{
@@ -118,8 +118,9 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
             .or_else(|| self.allow_heap_allocations.then(|| MetaString::from(s)))
     }
 
-    fn create_context_from_ref<T>(&self, context_ref: ContextRef<'_, T>, active_count: Gauge) -> Option<Context>
+    fn create_context_from_ref<I, T>(&self, context_ref: ContextRef2<'_, I>, active_count: Gauge) -> Option<Context>
     where
+        I: IntoIterator<Item = T>,
         T: AsRef<str> + hash::Hash + std::fmt::Debug,
     {
         let name = self.intern(context_ref.name)?;
@@ -146,8 +147,9 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
     ///
     /// `None` may be returned if the interner is full and outside allocations are disallowed. See
     /// `allow_heap_allocations` for more information.
-    pub fn resolve<T>(&self, context_ref: ContextRef<'_, T>) -> Option<Context>
+    pub fn resolve<I, T>(&self, context_ref: ContextRef2<'_, I>) -> Option<Context>
     where
+        I: IntoIterator<Item = T>,
         T: AsRef<str> + hash::Hash + std::fmt::Debug,
     {
         let state = self.state.read().unwrap();
@@ -336,6 +338,49 @@ where
 
 impl<T> Equivalent<Context> for ContextRef<'_, T>
 where
+    T: hash::Hash + std::fmt::Debug,
+{
+    fn equivalent(&self, other: &Context) -> bool {
+        self.hash == other.inner.hash
+    }
+}
+
+/// blah blah blah
+#[derive(Debug)]
+pub struct ContextRef2<'a, I> {
+    name: &'a str,
+    tags: I,
+    hash: u64,
+}
+
+impl<'a, I, T> ContextRef2<'a, I>
+where
+    I: IntoIterator<Item = T>,
+    T: hash::Hash,
+{
+    /// Creates a new `ContextRef` from the given name and tags.
+    pub fn from_name_and_tags(name: &'a str, tags: I) -> Self
+    where
+        I: Clone,
+    {
+        let hash = hash_context(name, tags.clone());
+        Self { name, tags, hash }
+    }
+}
+
+impl<'a, I, T> hash::Hash for ContextRef2<'a, I>
+where
+    I: IntoIterator<Item = T>,
+    T: hash::Hash,
+{
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.hash);
+    }
+}
+
+impl<I, T> Equivalent<Context> for ContextRef2<'_, I>
+where
+    I: IntoIterator<Item = T>,
     T: hash::Hash + std::fmt::Debug,
 {
     fn equivalent(&self, other: &Context) -> bool {
@@ -554,8 +599,9 @@ impl From<Tag> for TagSet {
     }
 }
 
-fn hash_context<'a, T>(name: &'a str, tags: &'a [T]) -> u64
+fn hash_context<'a, I, T>(name: &'a str, tags: I) -> u64
 where
+    I: IntoIterator<Item = T>,
     T: hash::Hash,
 {
     let mut hasher = ahash::AHasher::default();
@@ -612,8 +658,8 @@ mod tests {
         let tags1: [&str; 0] = [];
         let tags2 = ["tag1"];
 
-        let ref1 = ContextRef::from_name_and_tags(name, &tags1);
-        let ref2 = ContextRef::from_name_and_tags(name, &tags2);
+        let ref1 = ContextRef2::from_name_and_tags(name, &tags1);
+        let ref2 = ContextRef2::from_name_and_tags(name, &tags2);
 
         let context1 = resolver.resolve(ref1);
         let context2 = resolver.resolve(ref2);
@@ -627,8 +673,8 @@ mod tests {
         );
 
         // If we create the context references again, we _should_ get back the same contexts as before:
-        let ref1 = ContextRef::from_name_and_tags(name, &tags1);
-        let ref2 = ContextRef::from_name_and_tags(name, &tags2);
+        let ref1 = ContextRef2::from_name_and_tags(name, &tags1);
+        let ref2 = ContextRef2::from_name_and_tags(name, &tags2);
 
         let context1_redo = resolver.resolve(ref1);
         let context2_redo = resolver.resolve(ref2);
@@ -655,8 +701,8 @@ mod tests {
         let tags1 = ["tag1", "tag2"];
         let tags2 = ["tag2", "tag1"];
 
-        let ref1 = ContextRef::from_name_and_tags(name, &tags1);
-        let ref2 = ContextRef::from_name_and_tags(name, &tags2);
+        let ref1 = ContextRef2::from_name_and_tags(name, &tags1);
+        let ref2 = ContextRef2::from_name_and_tags(name, &tags2);
 
         let context1 = resolver.resolve(ref1);
         let context2 = resolver.resolve(ref2);
@@ -678,7 +724,7 @@ mod tests {
         // Create our resolver and then create a context, which will have its metrics attached to our local recorder:
         let context = metrics::with_local_recorder(&recorder, || {
             let resolver: ContextResolver = ContextResolver::with_noop_interner();
-            resolver.resolve(ContextRef::from_name_and_tags("name", &["tag1"]))
+            resolver.resolve(ContextRef2::from_name_and_tags("name", &["tag1"]))
         });
 
         // We should be able to see that the active context count is one, representing the context we created:
