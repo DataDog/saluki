@@ -1,13 +1,11 @@
 //! A DDSketch implementation based on the Datadog Agent's DDSketch implementation.
 #![deny(warnings)]
 #![deny(missing_docs)]
-use std::{
-    cmp::{self, Ordering},
-    mem,
-};
+use std::{cmp::Ordering, mem};
 
 use datadog_protos::metrics::Dogsketch;
 use ordered_float::OrderedFloat;
+use smallvec::SmallVec;
 
 const AGENT_DEFAULT_BIN_LIMIT: u16 = 4096;
 const AGENT_DEFAULT_EPS: f64 = 1.0 / 128.0;
@@ -16,7 +14,6 @@ const AGENT_DEFAULT_MIN_VALUE: f64 = 1.0e-9;
 const UV_INF: i16 = i16::MAX;
 const MAX_KEY: i16 = UV_INF;
 
-const INITIAL_BINS: u16 = 0;
 const MAX_BIN_WIDTH: u16 = u16::MAX;
 
 #[inline]
@@ -196,7 +193,7 @@ pub struct DDSketch {
     config: Config,
 
     /// The bins within the sketch.
-    bins: Vec<Bin>,
+    bins: SmallVec<[Bin; 4]>,
 
     /// The number of observations within the sketch.
     count: u32,
@@ -314,7 +311,7 @@ impl DDSketch {
         // Counts need to be sorted by key.
         counts.sort_unstable_by(|(k1, _), (k2, _)| k1.cmp(k2));
 
-        let mut temp = Vec::new();
+        let mut temp = SmallVec::<[Bin; 4]>::new();
 
         let mut bins_idx = 0;
         let mut key_idx = 0;
@@ -373,7 +370,7 @@ impl DDSketch {
 
         keys.sort_unstable();
 
-        let mut temp = Vec::new();
+        let mut temp = SmallVec::<[Bin; 4]>::new();
 
         let mut bins_idx = 0;
         let mut key_idx = 0;
@@ -653,7 +650,7 @@ impl DDSketch {
         self.avg = self.avg + (other.avg - self.avg) * f64::from(other.count) / f64::from(self.count);
 
         // Now merge the bins.
-        let mut temp = Vec::new();
+        let mut temp = SmallVec::<[Bin; 4]>::new();
 
         let mut bins_idx = 0;
         for other_bin in &other.bins {
@@ -724,11 +721,10 @@ impl PartialEq for DDSketch {
 impl Default for DDSketch {
     fn default() -> Self {
         let config = Config::default();
-        let initial_bins = cmp::min(INITIAL_BINS, config.bin_limit) as usize;
 
         Self {
             config,
-            bins: Vec::with_capacity(initial_bins),
+            bins: SmallVec::new(),
             count: 0,
             min: f64::MAX,
             max: f64::MIN,
@@ -767,7 +763,7 @@ fn buf_count_leading_equal(keys: &[i16], start_idx: usize) -> u32 {
     (idx - start_idx) as u32
 }
 
-fn trim_left(bins: &mut Vec<Bin>, bin_limit: u16) {
+fn trim_left(bins: &mut SmallVec<[Bin; 4]>, bin_limit: u16) {
     // We won't ever support Vector running on anything other than a 32-bit platform and above, I imagine, so this
     // should always be safe.
     let bin_limit = bin_limit as usize;
@@ -777,7 +773,7 @@ fn trim_left(bins: &mut Vec<Bin>, bin_limit: u16) {
 
     let num_to_remove = bins.len() - bin_limit;
     let mut missing = 0;
-    let mut overflow = Vec::new();
+    let mut overflow = SmallVec::<[Bin; 4]>::new();
 
     for bin in bins.iter().take(num_to_remove) {
         missing += u32::from(bin.n);
@@ -810,7 +806,7 @@ fn trim_left(bins: &mut Vec<Bin>, bin_limit: u16) {
 }
 
 #[allow(clippy::cast_possible_truncation)]
-fn generate_bins(bins: &mut Vec<Bin>, k: i16, n: u32) {
+fn generate_bins(bins: &mut SmallVec<[Bin; 4]>, k: i16, n: u32) {
     if n < u32::from(MAX_BIN_WIDTH) {
         // SAFETY: Cannot truncate `n`, as it's less than a u16 value.
         bins.push(Bin { k, n: n as u16 });
