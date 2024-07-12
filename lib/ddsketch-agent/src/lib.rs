@@ -7,49 +7,32 @@ use datadog_protos::metrics::Dogsketch;
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 
-const AGENT_DEFAULT_BIN_LIMIT: u16 = 4096;
-const AGENT_DEFAULT_EPS: f64 = 1.0 / 128.0;
-const AGENT_DEFAULT_MIN_VALUE: f64 = 1.0e-9;
+#[allow(dead_code)]
+mod config {
+    include!(concat!(env!("OUT_DIR"), "/config.rs"));
+}
 
+static SKETCH_CONFIG: Config = Config::new(
+    config::DDSKETCH_CONF_BIN_LIMIT,
+    config::DDSKETCH_CONF_GAMMA_V,
+    config::DDSKETCH_CONF_GAMMA_LN,
+    config::DDSKETCH_CONF_NORM_MIN,
+    config::DDSKETCH_CONF_NORM_BIAS,
+);
 const UV_INF: i16 = i16::MAX;
 const MAX_KEY: i16 = UV_INF;
-
 const MAX_BIN_WIDTH: u16 = u16::MAX;
-
-#[inline]
-fn log_gamma(gamma_ln: f64, v: f64) -> f64 {
-    v.ln() / gamma_ln
-}
-
-#[inline]
-fn pow_gamma(gamma_v: f64, y: f64) -> f64 {
-    gamma_v.powf(y)
-}
-
-#[inline]
-fn lower_bound(gamma_v: f64, bias: i32, k: i16) -> f64 {
-    if k < 0 {
-        return -lower_bound(gamma_v, bias, -k);
-    }
-
-    if k == MAX_KEY {
-        return f64::INFINITY;
-    }
-
-    if k == 0 {
-        return 0.0;
-    }
-
-    pow_gamma(gamma_v, f64::from(i32::from(k) - bias))
-}
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 struct Config {
+    // Maximum number of bins per sketch.
     bin_limit: u16,
+
     // gamma_ln is the natural log of gamma_v, used to speed up calculating log base gamma.
     gamma_v: f64,
     gamma_ln: f64,
-    // Min and max values representable by a sketch with these params.
+
+    // Minimum and maximum values representable by a sketch with these params.
     //
     // key(x) =
     //    0 : -min > x < min
@@ -58,29 +41,13 @@ struct Config {
     // +Inf : x > max
     // -Inf : x < -max.
     norm_min: f64,
+
     // Bias of the exponent, used to ensure key(x) >= 1.
     norm_bias: i32,
 }
 
 impl Config {
-    #[allow(clippy::cast_possible_truncation)]
-    pub(self) fn new(mut eps: f64, min_value: f64, bin_limit: u16) -> Self {
-        assert!(eps > 0.0 && eps < 1.0, "eps must be between 0.0 and 1.0");
-        assert!(min_value > 0.0, "min value must be greater than 0.0");
-        assert!(bin_limit > 0, "bin limit must be greater than 0");
-
-        eps *= 2.0;
-        let gamma_v = 1.0 + eps;
-        let gamma_ln = eps.ln_1p();
-
-        // SAFETY: We expect `log_gamma` to return a value between -2^16 and 2^16, so it will always fit in an i32.
-        let norm_eff_min = log_gamma(gamma_ln, min_value).floor() as i32;
-        let norm_bias = -norm_eff_min + 1;
-
-        let norm_min = lower_bound(gamma_v, norm_bias, 1);
-
-        assert!(norm_min <= min_value, "norm min should not exceed min_value");
-
+    const fn new(bin_limit: u16, gamma_v: f64, gamma_ln: f64, norm_min: f64, norm_bias: i32) -> Self {
         Self {
             bin_limit,
             gamma_v,
@@ -91,8 +58,21 @@ impl Config {
     }
 
     /// Gets the value lower bound of the bin at the given key.
+    #[inline]
     pub fn bin_lower_bound(&self, k: i16) -> f64 {
-        lower_bound(self.gamma_v, self.norm_bias, k)
+        if k < 0 {
+            return -self.bin_lower_bound(-k);
+        }
+
+        if k == MAX_KEY {
+            return f64::INFINITY;
+        }
+
+        if k == 0 {
+            return 0.0;
+        }
+
+        self.gamma_v.powf(f64::from(i32::from(k) - self.norm_bias))
     }
 
     /// Gets the key for the given value.
@@ -100,6 +80,7 @@ impl Config {
     /// The key corresponds to the bin where this value would be represented. The value returned here is such that: γ^k
     /// <= v < γ^(k+1).
     #[allow(clippy::cast_possible_truncation)]
+    #[inline]
     pub fn key(&self, v: f64) -> i16 {
         if v < 0.0 {
             return -self.key(-v);
@@ -119,14 +100,9 @@ impl Config {
         key.clamp(1, i32::from(MAX_KEY)) as i16
     }
 
+    #[inline]
     pub fn log_gamma(&self, v: f64) -> f64 {
-        log_gamma(self.gamma_ln, v)
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config::new(AGENT_DEFAULT_EPS, AGENT_DEFAULT_MIN_VALUE, AGENT_DEFAULT_BIN_LIMIT)
+        v.ln() / self.gamma_ln
     }
 }
 
@@ -190,8 +166,6 @@ pub struct Bucket {
 /// [ddagent]: https://github.com/DataDog/datadog-agent
 #[derive(Clone, Debug)]
 pub struct DDSketch {
-    config: Config,
-
     /// The bins within the sketch.
     bins: SmallVec<[Bin; 4]>,
 
@@ -356,7 +330,7 @@ impl DDSketch {
             key_idx += 1;
         }
 
-        trim_left(&mut temp, self.config.bin_limit);
+        trim_left(&mut temp, SKETCH_CONFIG.bin_limit);
 
         // PERF TODO: This is where we might do a mem::swap instead so that we could shove the bin vector into an object
         // pool but I'm not sure this actually matters at the moment.
@@ -416,7 +390,7 @@ impl DDSketch {
             key_idx += kn as usize;
         }
 
-        trim_left(&mut temp, self.config.bin_limit);
+        trim_left(&mut temp, SKETCH_CONFIG.bin_limit);
 
         // PERF TODO: This is where we might do a mem::swap instead so that we could shove the bin vector into an object
         // pool but I'm not sure this actually matters at the moment.
@@ -429,7 +403,7 @@ impl DDSketch {
         // hitting `self.config.max_count()`
         self.adjust_basic_stats(v, 1);
 
-        let key = self.config.key(v);
+        let key = SKETCH_CONFIG.key(v);
 
         let mut insert_at = None;
 
@@ -455,17 +429,17 @@ impl DDSketch {
         } else {
             self.bins.push(Bin { k: key, n: 1 });
         }
-        trim_left(&mut self.bins, self.config.bin_limit);
+        trim_left(&mut self.bins, SKETCH_CONFIG.bin_limit);
     }
 
     /// Inserts many values into the sketch.
     pub fn insert_many(&mut self, vs: &[f64]) {
         // TODO: This should return a result that makes sure we have enough room to actually add N more samples without
-        // hitting `self.config.max_count()`.
+        // hitting `self.config.bin_limit`.
         let mut keys = Vec::with_capacity(vs.len());
         for v in vs {
             self.adjust_basic_stats(*v, 1);
-            keys.push(self.config.key(*v));
+            keys.push(SKETCH_CONFIG.key(*v));
         }
         self.insert_keys(keys);
     }
@@ -476,15 +450,15 @@ impl DDSketch {
         // hitting `self.config.max_count()`
         self.adjust_basic_stats(v, n);
 
-        let key = self.config.key(v);
+        let key = SKETCH_CONFIG.key(v);
         self.insert_key_counts(vec![(key, n)]);
     }
 
     fn insert_interpolate_bucket(&mut self, lower: f64, upper: f64, count: u32) {
         // Find the keys for the bins where the lower bound and upper bound would end up, and collect all of the keys in
         // between, inclusive.
-        let lower_key = self.config.key(lower);
-        let upper_key = self.config.key(upper);
+        let lower_key = SKETCH_CONFIG.key(lower);
+        let upper_key = SKETCH_CONFIG.key(upper);
         let keys = (lower_key..=upper_key).collect::<Vec<_>>();
 
         let mut key_counts = Vec::new();
@@ -492,14 +466,14 @@ impl DDSketch {
         let distance = upper - lower;
         let mut start_idx = 0;
         let mut end_idx = 1;
-        let mut lower_bound = self.config.bin_lower_bound(keys[start_idx]);
+        let mut lower_bound = SKETCH_CONFIG.bin_lower_bound(keys[start_idx]);
         let mut remainder = 0.0;
 
         while end_idx < keys.len() && remaining_count > 0 {
             // For each key, map the total distance between the input lower/upper bound against the sketch lower/upper
             // bound for the current sketch bin, which tells us how much of the input count to apply to the current
             // sketch bin.
-            let upper_bound = self.config.bin_lower_bound(keys[end_idx]);
+            let upper_bound = SKETCH_CONFIG.bin_lower_bound(keys[end_idx]);
             let fkn = ((upper_bound - lower_bound) / distance) * f64::from(count);
             if fkn > 1.0 {
                 remainder += fkn - fkn.trunc();
@@ -532,7 +506,7 @@ impl DDSketch {
 
         if remaining_count > 0 {
             let last_key = keys[start_idx];
-            lower_bound = self.config.bin_lower_bound(last_key);
+            lower_bound = SKETCH_CONFIG.bin_lower_bound(last_key);
             self.adjust_basic_stats(lower_bound, remaining_count);
             key_counts.push((last_key, remaining_count));
         }
@@ -587,7 +561,7 @@ impl DDSketch {
     /// resulting bins when feeding in specific values, as well as generating explicitly bad layouts for testing.
     #[allow(dead_code)]
     pub(crate) fn insert_raw_bin(&mut self, k: i16, n: u16) {
-        let v = self.config.bin_lower_bound(k);
+        let v = SKETCH_CONFIG.bin_lower_bound(k);
         self.adjust_basic_stats(v, u32::from(n));
         self.bins.push(Bin { k, n });
     }
@@ -617,8 +591,8 @@ impl DDSketch {
             }
 
             let weight = (n - wanted_rank) / f64::from(bin.n);
-            let mut v_low = self.config.bin_lower_bound(bin.k);
-            let mut v_high = v_low * self.config.gamma_v;
+            let mut v_low = SKETCH_CONFIG.bin_lower_bound(bin.k);
+            let mut v_high = v_low * SKETCH_CONFIG.gamma_v;
 
             if i == self.bins.len() {
                 v_high = self.max;
@@ -674,7 +648,7 @@ impl DDSketch {
         }
 
         temp.extend_from_slice(&self.bins[bins_idx..]);
-        trim_left(&mut temp, self.config.bin_limit);
+        trim_left(&mut temp, SKETCH_CONFIG.bin_limit);
 
         self.bins = temp;
     }
@@ -720,10 +694,7 @@ impl PartialEq for DDSketch {
 
 impl Default for DDSketch {
     fn default() -> Self {
-        let config = Config::default();
-
         Self {
-            config,
             bins: SmallVec::new(),
             count: 0,
             min: f64::MAX,
@@ -832,7 +803,7 @@ mod tests {
     use rand::thread_rng;
     use rand_distr::{Distribution, Pareto};
 
-    use super::{Bucket, Config, DDSketch, AGENT_DEFAULT_EPS, MAX_KEY};
+    use super::{config::AGENT_DEFAULT_EPS, Bucket, Config, DDSketch, MAX_KEY, SKETCH_CONFIG};
 
     const FLOATING_POINT_ACCEPTABLE_ERROR: f64 = 1.0e-10;
 
@@ -858,9 +829,8 @@ mod tests {
 
     #[test]
     fn test_ddsketch_config_key_lower_bound_identity() {
-        let config = Config::default();
         for k in (-MAX_KEY + 1)..MAX_KEY {
-            assert_eq!(k, config.key(config.bin_lower_bound(k)));
+            assert_eq!(k, SKETCH_CONFIG.key(SKETCH_CONFIG.bin_lower_bound(k)));
         }
     }
 
@@ -1078,13 +1048,12 @@ mod tests {
         //
         // Another noteworthy thing: it seems that they don't test from the actual targeted minimum value, which is
         // 1.0e-9, which would give nanosecond granularity vs just microsecond granularity.
-        let config = Config::default();
         let min_value = 1.0;
         // We don't care about precision loss, just consistency.
         #[allow(clippy::cast_possible_truncation)]
-        let max_value = config.gamma_v.powf(5.0) as f32;
+        let max_value = SKETCH_CONFIG.gamma_v.powf(5.0) as f32;
 
-        test_relative_accuracy(config, AGENT_DEFAULT_EPS, min_value, max_value);
+        test_relative_accuracy(&SKETCH_CONFIG, AGENT_DEFAULT_EPS, min_value, max_value);
     }
 
     #[test]
@@ -1100,11 +1069,10 @@ mod tests {
         //
         // This test uses a far larger range of values, and takes 60-70 seconds, hence why we've guarded it here behind
         // a cfg flag.
-        let config = Config::default();
         let min_value = 1.0e-6;
         let max_value = i64::MAX as f32;
 
-        test_relative_accuracy(config, AGENT_DEFAULT_EPS, min_value, max_value)
+        test_relative_accuracy(&SKETCH_CONFIG, AGENT_DEFAULT_EPS, min_value, max_value)
     }
 
     fn parse_sketch_from_string_bins(layout: &str) -> DDSketch {
@@ -1319,7 +1287,7 @@ mod tests {
         }
     }
 
-    fn test_relative_accuracy(config: Config, rel_acc: f64, min_value: f32, max_value: f32) {
+    fn test_relative_accuracy(config: &Config, rel_acc: f64, min_value: f32, max_value: f32) {
         let max_observed_rel_acc = check_max_relative_accuracy(config, min_value, max_value);
         assert!(
             max_observed_rel_acc <= rel_acc + FLOATING_POINT_ACCEPTABLE_ERROR,
@@ -1348,7 +1316,7 @@ mod tests {
         }
     }
 
-    fn check_max_relative_accuracy(config: Config, min_value: f32, max_value: f32) -> f64 {
+    fn check_max_relative_accuracy(config: &Config, min_value: f32, max_value: f32) -> f64 {
         assert!(min_value < max_value, "min_value must be less than max_value");
 
         let mut v = min_value;
