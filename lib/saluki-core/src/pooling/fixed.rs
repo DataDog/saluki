@@ -1,19 +1,23 @@
 use std::{
     collections::VecDeque,
+    future::Future,
+    pin::Pin,
     sync::{Arc, Mutex},
+    task::{ready, Context, Poll},
 };
 
-use async_trait::async_trait;
+use pin_project::pin_project;
 use tokio::sync::Semaphore;
+use tokio_util::sync::PollSemaphore;
 
-use super::{Clearable, ObjectPool, Poolable, Strategy};
+use super::{Clearable, ObjectPool, Poolable, ReclaimStrategy};
 
 /// A fixed-size object pool.
 ///
 /// All items for this object pool are created up front, and when the object pool is empty, calls to `acquire` will
 /// block until an item is returned to the pool.
 pub struct FixedSizeObjectPool<T: Poolable> {
-    strategy: Arc<FixedSizeStrategy<T::Data>>,
+    strategy: Arc<FixedSizeStrategy<T>>,
 }
 
 impl<T: Poolable> FixedSizeObjectPool<T>
@@ -50,27 +54,32 @@ impl<T: Poolable> Clone for FixedSizeObjectPool<T> {
     }
 }
 
-#[async_trait]
-impl<T: Poolable> ObjectPool for FixedSizeObjectPool<T> {
+impl<T> ObjectPool for FixedSizeObjectPool<T>
+where
+    T: Poolable + Send + Unpin + 'static,
+{
     type Item = T;
+    type AcquireFuture = FixedSizeAcquireFuture<T>;
 
-    async fn acquire(&self) -> Self::Item {
-        let data = self.strategy.acquire().await;
-        let strategy_ref = Arc::clone(&self.strategy);
-        T::from_data(strategy_ref, data)
+    fn acquire(&self) -> Self::AcquireFuture {
+        FixedSizeStrategy::acquire(&self.strategy)
     }
 }
 
-struct FixedSizeStrategy<T: Clearable> {
-    items: Mutex<VecDeque<T>>,
-    available: Semaphore,
+struct FixedSizeStrategy<T: Poolable> {
+    items: Mutex<VecDeque<T::Data>>,
+    available: Arc<Semaphore>,
 }
 
-impl<T: Clearable + Default> FixedSizeStrategy<T> {
+impl<T> FixedSizeStrategy<T>
+where
+    T: Poolable,
+    T::Data: Default,
+{
     fn new(capacity: usize) -> Self {
         let mut items = VecDeque::with_capacity(capacity);
-        items.extend((0..capacity).map(|_| T::default()));
-        let available = Semaphore::new(capacity);
+        items.extend((0..capacity).map(|_| T::Data::default()));
+        let available = Arc::new(Semaphore::new(capacity));
 
         Self {
             items: Mutex::new(items),
@@ -79,14 +88,14 @@ impl<T: Clearable + Default> FixedSizeStrategy<T> {
     }
 }
 
-impl<T: Clearable> FixedSizeStrategy<T> {
+impl<T: Poolable> FixedSizeStrategy<T> {
     fn with_builder<B>(capacity: usize, builder: B) -> Self
     where
-        B: Fn() -> T,
+        B: Fn() -> T::Data,
     {
         let mut items = VecDeque::with_capacity(capacity);
         items.extend((0..capacity).map(|_| builder()));
-        let available = Semaphore::new(capacity);
+        let available = Arc::new(Semaphore::new(capacity));
 
         Self {
             items: Mutex::new(items),
@@ -95,17 +104,59 @@ impl<T: Clearable> FixedSizeStrategy<T> {
     }
 }
 
-#[async_trait]
-impl<T: Clearable + Send + 'static> Strategy<T> for FixedSizeStrategy<T> {
-    async fn acquire(&self) -> T {
-        self.available.acquire().await.unwrap().forget();
-        self.items.lock().unwrap().pop_back().unwrap()
+impl<T> FixedSizeStrategy<T>
+where
+    T: Poolable,
+    T::Data: Send + 'static,
+{
+    fn acquire(strategy: &Arc<Self>) -> FixedSizeAcquireFuture<T> {
+        FixedSizeAcquireFuture::new(Arc::clone(strategy))
     }
+}
 
-    fn reclaim(&self, mut data: T) {
+impl<T: Poolable> ReclaimStrategy<T> for FixedSizeStrategy<T> {
+    fn reclaim(&self, mut data: T::Data) {
         data.clear();
 
         self.items.lock().unwrap().push_back(data);
         self.available.add_permits(1);
+    }
+}
+
+#[pin_project]
+pub struct FixedSizeAcquireFuture<T: Poolable> {
+    strategy: Option<Arc<FixedSizeStrategy<T>>>,
+    semaphore: PollSemaphore,
+}
+
+impl<T: Poolable> FixedSizeAcquireFuture<T> {
+    fn new(strategy: Arc<FixedSizeStrategy<T>>) -> Self {
+        let semaphore = PollSemaphore::new(Arc::clone(&strategy.available));
+        Self {
+            strategy: Some(strategy),
+            semaphore,
+        }
+    }
+}
+
+impl<T> Future for FixedSizeAcquireFuture<T>
+where
+    T: Poolable + 'static,
+{
+    type Output = T;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+
+        match ready!(this.semaphore.poll_acquire(cx)) {
+            Some(permit) => {
+                permit.forget();
+
+                let strategy = this.strategy.take().unwrap();
+                let data = strategy.items.lock().unwrap().pop_front().unwrap();
+                Poll::Ready(T::from_data(strategy, data))
+            }
+            None => unreachable!("semaphore should never be closed"),
+        }
     }
 }

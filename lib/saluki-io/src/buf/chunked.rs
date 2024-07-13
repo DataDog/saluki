@@ -1,13 +1,13 @@
 use std::{
     collections::VecDeque,
     convert::Infallible,
+    future::Ready,
     io,
     pin::Pin,
     sync::Arc,
     task::{ready, Context, Poll},
 };
 
-use async_trait::async_trait;
 use bytes::{Buf as _, BufMut as _};
 use http_body::{Body, Frame};
 use tokio::io::AsyncWrite;
@@ -15,25 +15,26 @@ use tokio_util::sync::ReusableBoxFuture;
 
 use saluki_core::pooling::ObjectPool;
 
-use super::BytesBuffer;
+use super::ReadWriteIoBuffer;
 
-type SharedObjectPool = Arc<dyn ObjectPool<Item = BytesBuffer> + Send + Sync>;
-
-enum PollObjectPool {
+enum PollObjectPool<O>
+where
+    O: ObjectPool,
+{
     Inconsistent,
-    CapacityAvailable(
-        SharedObjectPool,
-        ReusableBoxFuture<'static, (SharedObjectPool, BytesBuffer)>,
-    ),
-    WaitingForBuffer(ReusableBoxFuture<'static, (SharedObjectPool, BytesBuffer)>),
+    CapacityAvailable(Arc<O>, ReusableBoxFuture<'static, (Arc<O>, O::Item)>),
+    WaitingForBuffer(ReusableBoxFuture<'static, (Arc<O>, O::Item)>),
 }
 
-impl PollObjectPool {
-    pub fn new(buffer_pool: SharedObjectPool) -> Self {
+impl<O> PollObjectPool<O>
+where
+    O: ObjectPool + 'static,
+{
+    pub fn new(buffer_pool: Arc<O>) -> Self {
         Self::CapacityAvailable(buffer_pool, ReusableBoxFuture::new(acquire_buffer_from_pool(None)))
     }
 
-    pub fn poll_acquire(&mut self, cx: &mut Context<'_>) -> Poll<BytesBuffer> {
+    pub fn poll_acquire(&mut self, cx: &mut Context<'_>) -> Poll<O::Item> {
         loop {
             let state = std::mem::replace(self, Self::Inconsistent);
             *self = match state {
@@ -60,26 +61,33 @@ impl PollObjectPool {
 
 /// A bytes buffer that write dynamically-sized payloads across multiple fixed-size chunks.
 ///
-/// `ChunkedBytesBuffer` works in concert with [`ChunkedBytesBufferObjectPool`], which is backed by any generic buffer
-/// pool that works with [`BytesBuffer`]. As callers write data to `ChunkedBytesBuffer`, it will asynchronously acquire
+/// `ChunkedBuffer` works in concert with [`ChunkedBufferObjectPool`], which is backed by any generic buffer
+/// pool that works with [`BytesBuffer`]. As callers write data to `ChunkedBuffer`, it will asynchronously acquire
 /// "chunks" (`BytesBuffer`) from the buffer pool as needed, and write the data across these chunks.
 ///
-/// `ChunkedBytesBuffer` implements [`AsyncWrite`] and [`Body`], allowing it to be asynchronously written to and used as
+/// `ChunkedBuffer` implements [`AsyncWrite`] and [`Body`], allowing it to be asynchronously written to and used as
 /// the body of an HTTP request without any additional allocations and copying/merging of data into a single buffer.
 ///
 /// ## Missing
 ///
 /// - `Buf` implementation to allow for general reading of the written data
-pub struct ChunkedBytesBuffer {
-    buffer_pool: PollObjectPool,
-    chunks: VecDeque<BytesBuffer>,
+pub struct ChunkedBuffer<O>
+where
+    O: ObjectPool,
+{
+    buffer_pool: PollObjectPool<O>,
+    chunks: VecDeque<O::Item>,
     remaining_capacity: usize,
     write_chunk_idx: usize,
 }
 
-impl ChunkedBytesBuffer {
-    /// Creates a new `ChunkedBytesBuffer` attached to the given buffer pool.
-    pub fn new(buffer_pool: SharedObjectPool) -> Self {
+impl<O> ChunkedBuffer<O>
+where
+    O: ObjectPool + 'static,
+    O::Item: ReadWriteIoBuffer,
+{
+    /// Creates a new `ChunkedBuffer` attached to the given buffer pool.
+    pub fn new(buffer_pool: Arc<O>) -> Self {
         Self {
             buffer_pool: PollObjectPool::new(buffer_pool),
             chunks: VecDeque::new(),
@@ -98,12 +106,12 @@ impl ChunkedBytesBuffer {
         self.chunks.iter().map(|chunk| chunk.remaining()).sum()
     }
 
-    fn register_chunk(&mut self, chunk: BytesBuffer) {
+    fn register_chunk(&mut self, chunk: O::Item) {
         self.remaining_capacity += chunk.remaining_mut();
         self.chunks.push_back(chunk);
     }
 
-    fn pop_chunk(&mut self) -> Option<BytesBuffer> {
+    fn pop_chunk(&mut self) -> Option<O::Item> {
         match self.chunks.pop_front() {
             Some(chunk) => {
                 self.remaining_capacity -= chunk.remaining_mut();
@@ -118,7 +126,11 @@ impl ChunkedBytesBuffer {
     }
 }
 
-impl AsyncWrite for ChunkedBytesBuffer {
+impl<O> AsyncWrite for ChunkedBuffer<O>
+where
+    O: ObjectPool + 'static,
+    O::Item: ReadWriteIoBuffer,
+{
     fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
         while self.remaining_capacity < buf.len() {
             let chunk = ready!(self.buffer_pool.poll_acquire(cx));
@@ -167,8 +179,12 @@ impl AsyncWrite for ChunkedBytesBuffer {
     }
 }
 
-impl Body for ChunkedBytesBuffer {
-    type Data = BytesBuffer;
+impl<O> Body for ChunkedBuffer<O>
+where
+    O: ObjectPool + 'static,
+    O::Item: ReadWriteIoBuffer,
+{
+    type Data = O::Item;
     type Error = Infallible;
 
     fn poll_frame(
@@ -178,7 +194,10 @@ impl Body for ChunkedBytesBuffer {
     }
 }
 
-async fn acquire_buffer_from_pool(buffer_pool: Option<SharedObjectPool>) -> (SharedObjectPool, BytesBuffer) {
+async fn acquire_buffer_from_pool<O>(buffer_pool: Option<Arc<O>>) -> (Arc<O>, O::Item)
+where
+    O: ObjectPool,
+{
     match buffer_pool {
         Some(buffer_pool) => {
             let buffer = buffer_pool.acquire().await;
@@ -188,30 +207,32 @@ async fn acquire_buffer_from_pool(buffer_pool: Option<SharedObjectPool>) -> (Sha
     }
 }
 
-/// An object pool for `ChunkedBytesBuffer`.
+/// An object pool for `ChunkedBuffer`.
 #[derive(Clone)]
-pub struct ChunkedBytesBufferObjectPool {
-    buffer_pool: Arc<dyn ObjectPool<Item = BytesBuffer> + Send + Sync>,
+pub struct ChunkedBufferObjectPool<O> {
+    buffer_pool: Arc<O>,
 }
 
-impl ChunkedBytesBufferObjectPool {
-    /// Creates a new `ChunkedBytesBufferObjectPool` with the given buffer pool.
-    pub fn new<B>(buffer_pool: B) -> Self
-    where
-        B: ObjectPool<Item = BytesBuffer> + Send + Sync + 'static,
-    {
+impl<O> ChunkedBufferObjectPool<O> {
+    /// Creates a new `ChunkedBufferObjectPool` with the given buffer pool.
+    pub fn new(buffer_pool: O) -> Self {
         let buffer_pool = Arc::new(buffer_pool);
         Self { buffer_pool }
     }
 }
 
-#[async_trait]
-impl ObjectPool for ChunkedBytesBufferObjectPool {
-    type Item = ChunkedBytesBuffer;
+impl<O> ObjectPool for ChunkedBufferObjectPool<O>
+where
+    O: ObjectPool + 'static,
+    O::Item: ReadWriteIoBuffer + Send,
+{
+    type Item = ChunkedBuffer<O>;
 
-    async fn acquire(&self) -> Self::Item {
+    type AcquireFuture = Ready<Self::Item>;
+
+    fn acquire(&self) -> Self::AcquireFuture {
         let buffer_pool = Arc::clone(&self.buffer_pool);
-        ChunkedBytesBuffer::new(buffer_pool)
+        std::future::ready(ChunkedBuffer::new(buffer_pool))
     }
 }
 
@@ -223,7 +244,7 @@ mod tests {
     use tokio::io::AsyncWriteExt as _;
     use tokio_test::{assert_pending, assert_ready, task::spawn as test_spawn};
 
-    use crate::buf::FixedSizeVec;
+    use crate::buf::{BytesBuffer, FixedSizeVec};
 
     use super::*;
 
@@ -243,7 +264,7 @@ mod tests {
     #[test]
     fn single_write_fits_within_single_chunk() {
         let (buffer_pool, total_capacity) = create_buffer_pool(1, TEST_CHUNK_SIZE);
-        let mut chunked_buffer = ChunkedBytesBuffer::new(buffer_pool);
+        let mut chunked_buffer = ChunkedBuffer::new(buffer_pool);
 
         // Fits within a single buffer, so it should complete without blocking.
         let mut fut = test_spawn(chunked_buffer.write(TEST_BUF_LESS_THAN_CHUNK_SIZED));
@@ -258,7 +279,7 @@ mod tests {
     #[test]
     fn single_write_fits_single_chunk_exactly() {
         let (buffer_pool, total_capacity) = create_buffer_pool(1, TEST_CHUNK_SIZE);
-        let mut chunked_buffer = ChunkedBytesBuffer::new(buffer_pool);
+        let mut chunked_buffer = ChunkedBuffer::new(buffer_pool);
 
         // Fits within a single buffer, so it should complete without blocking.
         let mut fut = test_spawn(chunked_buffer.write(TEST_BUF_CHUNK_SIZED));
@@ -273,7 +294,7 @@ mod tests {
     #[test]
     fn single_write_strides_two_chunks() {
         let (buffer_pool, total_capacity) = create_buffer_pool(2, TEST_CHUNK_SIZE);
-        let mut chunked_buffer = ChunkedBytesBuffer::new(buffer_pool);
+        let mut chunked_buffer = ChunkedBuffer::new(buffer_pool);
 
         // This won't fit in a single chunk, but should fit within two.
         let mut fut = test_spawn(chunked_buffer.write(TEST_BUF_GREATER_THAN_CHUNK_SIZED));
@@ -288,7 +309,7 @@ mod tests {
     #[test]
     fn two_writes_fit_two_chunks_exactly() {
         let (buffer_pool, _) = create_buffer_pool(2, TEST_CHUNK_SIZE);
-        let mut chunked_buffer = ChunkedBytesBuffer::new(buffer_pool);
+        let mut chunked_buffer = ChunkedBuffer::new(buffer_pool);
 
         // First write acquires one chunk, and fills it up entirely.
         let mut fut = test_spawn(chunked_buffer.write(TEST_BUF_CHUNK_SIZED));
@@ -321,7 +342,7 @@ mod tests {
         let second_buf = assert_ready!(buf_fut.poll());
 
         let buffer_pool = Arc::clone(&buffer_pool);
-        let mut chunked_buffer = ChunkedBytesBuffer::new(buffer_pool);
+        let mut chunked_buffer = ChunkedBuffer::new(buffer_pool);
         assert_eq!(chunked_buffer.chunks.len(), 0);
         assert_eq!(chunked_buffer.remaining_capacity, 0);
 
@@ -376,7 +397,7 @@ mod tests {
             };
 
         let (buffer_pool, total_capacity) = create_buffer_pool(required_chunks, TEST_CHUNK_SIZE);
-        let mut chunked_buffer = ChunkedBytesBuffer::new(buffer_pool);
+        let mut chunked_buffer = ChunkedBuffer::new(buffer_pool);
 
         // Do three writes, using the less than/exactly/greater than-sized test buffers.
         //
