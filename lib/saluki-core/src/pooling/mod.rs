@@ -1,8 +1,7 @@
 //! Object pooling.
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 mod fixed;
-use async_trait::async_trait;
 
 pub use self::fixed::FixedSizeObjectPool;
 
@@ -29,30 +28,28 @@ pub trait Poolable {
     type Data: Clearable + Send + 'static;
 
     /// Creates a new `Self` from the object pool strategy and data value.
-    fn from_data(strategy: Arc<dyn Strategy<Self::Data> + Send + Sync>, data: Self::Data) -> Self;
+    fn from_data(strategy: Arc<dyn ReclaimStrategy<Self> + Send + Sync>, data: Self::Data) -> Self;
 }
 
-/// Object pool strategy.
+/// Object pool reclaimation strategy.
 ///
-/// This trait is used to define the strategy for acquiring and releasing items from an object pool.
-#[async_trait]
-pub trait Strategy<T>
+/// This trait is used to define the strategy for reclaiming items to an object pool.
+pub trait ReclaimStrategy<T>
 where
-    T: Clearable,
+    T: Poolable,
 {
-    /// Acquires an item from the object pool.
-    async fn acquire(&self) -> T;
-
     /// Returns an item to the object pool.
-    fn reclaim(&self, data: T);
+    fn reclaim(&self, data: T::Data);
 }
 
 /// An object pool.
-#[async_trait]
-pub trait ObjectPool {
+pub trait ObjectPool: Send + Sync {
     /// The pooled value.
-    type Item;
+    type Item: Send + Unpin;
+
+    /// Type of future returned by `acquire`.
+    type AcquireFuture: Future<Output = Self::Item> + Send;
 
     /// Acquires an item from the object pool.
-    async fn acquire(&self) -> Self::Item;
+    fn acquire(&self) -> Self::AcquireFuture;
 }
