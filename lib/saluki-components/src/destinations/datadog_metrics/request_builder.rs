@@ -10,7 +10,10 @@ use tracing::{debug, trace};
 
 use saluki_core::pooling::ObjectPool;
 use saluki_event::metric::*;
-use saluki_io::{buf::ChunkedBytesBuffer, compression::*};
+use saluki_io::{
+    buf::{ChunkedBuffer, ChunkedBufferObjectPool, ReadWriteIoBuffer},
+    compression::*,
+};
 
 pub(super) const SCRATCH_BUF_CAPACITY: usize = 8192;
 
@@ -101,37 +104,40 @@ impl MetricsEndpoint {
     }
 }
 
-pub struct RequestBuilder<B>
+pub struct RequestBuilder<O>
 where
-    B: ObjectPool<Item = ChunkedBytesBuffer>,
+    O: ObjectPool + 'static,
+    O::Item: ReadWriteIoBuffer,
 {
     api_key: String,
     api_uri: Uri,
     endpoint: MetricsEndpoint,
-    buffer_pool: B,
+    buffer_pool: ChunkedBufferObjectPool<O>,
     scratch_buf: Vec<u8>,
-    compressor: Compressor<ChunkedBytesBuffer>,
+    compressor: Compressor<ChunkedBuffer<O>>,
     compression_estimator: CompressionEstimator,
     uncompressed_len: usize,
     metrics_written: usize,
 }
 
-impl<B> RequestBuilder<B>
+impl<O> RequestBuilder<O>
 where
-    B: ObjectPool<Item = ChunkedBytesBuffer>,
+    O: ObjectPool + 'static,
+    O::Item: ReadWriteIoBuffer,
 {
     /// Creates a new `RequestBuilder` for the given endpoint, using the specified API key and base URI.
     pub async fn new(
-        api_key: String, api_base_uri: Uri, endpoint: MetricsEndpoint, buffer_pool: B,
+        api_key: String, api_base_uri: Uri, endpoint: MetricsEndpoint, buffer_pool: O,
     ) -> Result<Self, RequestBuilderError> {
-        let compressor = create_compressor(&buffer_pool).await;
+        let chunked_buffer_pool = ChunkedBufferObjectPool::new(buffer_pool);
+        let compressor = create_compressor(&chunked_buffer_pool).await;
         let api_uri = build_uri_for_endpoint(api_base_uri, endpoint)?;
 
         Ok(Self {
             api_key,
             api_uri,
             endpoint,
-            buffer_pool,
+            buffer_pool: chunked_buffer_pool,
             scratch_buf: Vec::with_capacity(SCRATCH_BUF_CAPACITY),
             compressor,
             compression_estimator: CompressionEstimator::default(),
@@ -215,7 +221,7 @@ where
     /// ## Errors
     ///
     /// If an error occurs while finalizing the compressor or creating the request, an error will be returned.
-    pub async fn flush(&mut self) -> Result<Option<(usize, Request<ChunkedBytesBuffer>)>, RequestBuilderError> {
+    pub async fn flush(&mut self) -> Result<Option<(usize, Request<ChunkedBuffer<O>>)>, RequestBuilderError> {
         if self.uncompressed_len == 0 {
             return Ok(None);
         }
@@ -249,7 +255,7 @@ where
         self.create_request(buffer).map(|req| Some((metrics_written, req)))
     }
 
-    fn create_request(&self, buffer: ChunkedBytesBuffer) -> Result<Request<ChunkedBytesBuffer>, RequestBuilderError> {
+    fn create_request(&self, buffer: ChunkedBuffer<O>) -> Result<Request<ChunkedBuffer<O>>, RequestBuilderError> {
         Request::builder()
             .method(Method::POST)
             .uri(self.api_uri.clone())
@@ -280,9 +286,10 @@ fn build_uri_for_endpoint(api_base_uri: Uri, endpoint: MetricsEndpoint) -> Resul
     builder.build().context(Http)
 }
 
-async fn create_compressor<B>(buffer_pool: &B) -> Compressor<ChunkedBytesBuffer>
+async fn create_compressor<O>(buffer_pool: &ChunkedBufferObjectPool<O>) -> Compressor<ChunkedBuffer<O>>
 where
-    B: ObjectPool<Item = ChunkedBytesBuffer>,
+    O: ObjectPool + 'static,
+    O::Item: ReadWriteIoBuffer,
 {
     let write_buffer = buffer_pool.acquire().await;
     Compressor::from_scheme(CompressionScheme::zlib_default(), write_buffer)

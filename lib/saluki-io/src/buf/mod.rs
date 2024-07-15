@@ -3,7 +3,7 @@ use bytes::{Buf, BufMut};
 use saluki_core::pooling::FixedSizeObjectPool;
 
 mod chunked;
-pub use self::chunked::{ChunkedBytesBuffer, ChunkedBytesBufferObjectPool};
+pub use self::chunked::{ChunkedBuffer, ChunkedBufferObjectPool};
 
 mod vec;
 pub use self::vec::{BytesBuffer, FixedSizeVec};

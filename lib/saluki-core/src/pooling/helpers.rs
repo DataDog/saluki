@@ -2,9 +2,7 @@
 
 use std::{marker::PhantomData, sync::Arc};
 
-use async_trait::async_trait;
-
-use super::{Clearable, Poolable, Strategy};
+use super::{Poolable, ReclaimStrategy};
 
 /// Creates a struct that can be stored in an object pool, based on an inline struct definition.
 ///
@@ -93,7 +91,7 @@ macro_rules! pooled {
 
             $(#[$outer])*
             pub struct $name {
-                strategy_ref: ::std::sync::Arc<dyn $crate::pooling::Strategy<[<$name Inner>]> + Send + Sync>,
+                strategy_ref: ::std::sync::Arc<dyn $crate::pooling::ReclaimStrategy<$name> + Send + Sync>,
                 data: ::std::mem::ManuallyDrop<[<$name Inner>]>,
             }
 
@@ -112,7 +110,7 @@ macro_rules! pooled {
             impl $crate::pooling::Poolable for $name {
                 type Data = [<$name Inner>];
 
-                fn from_data(strategy_ref: ::std::sync::Arc<dyn $crate::pooling::Strategy<Self::Data> + Send + Sync>, data: Self::Data) -> Self {
+                fn from_data(strategy_ref: ::std::sync::Arc<dyn $crate::pooling::ReclaimStrategy<Self> + Send + Sync>, data: Self::Data) -> Self {
                     Self {
                         strategy_ref,
                         data: ::std::mem::ManuallyDrop::new(data),
@@ -199,7 +197,7 @@ macro_rules! pooled_newtype {
         paste::paste! {
             #[doc = "Poolable version of `" $inner_ty "`."]
             pub struct $name {
-                strategy_ref: ::std::sync::Arc<dyn $crate::pooling::Strategy<$inner_ty> + Send + Sync>,
+                strategy_ref: ::std::sync::Arc<dyn $crate::pooling::ReclaimStrategy<$name> + Send + Sync>,
                 data: ::std::mem::ManuallyDrop<$inner_ty>,
             }
         }
@@ -220,7 +218,7 @@ macro_rules! pooled_newtype {
             type Data = $inner_ty;
 
             fn from_data(
-                strategy_ref: ::std::sync::Arc<dyn $crate::pooling::Strategy<Self::Data> + Send + Sync>,
+                strategy_ref: ::std::sync::Arc<dyn $crate::pooling::ReclaimStrategy<Self> + Send + Sync>,
                 data: Self::Data,
             ) -> Self {
                 Self {
@@ -254,23 +252,18 @@ impl<T> NoopStrategy<T> {
     }
 }
 
-#[async_trait]
-impl<T> Strategy<T> for NoopStrategy<T>
+impl<T> ReclaimStrategy<T> for NoopStrategy<T>
 where
-    T: Clearable + Send + Sync,
+    T: Poolable,
 {
-    async fn acquire(&self) -> T {
-        unreachable!("NoopStrategy should never be used to acquire items")
-    }
-
-    fn reclaim(&self, _: T) {}
+    fn reclaim(&self, _: T::Data) {}
 }
 
 /// Creates an poolable object (of type `T`) when `T::Data` implements `Default`.
 #[allow(dead_code)]
 pub fn get_pooled_object_via_default<T>() -> T
 where
-    T: Poolable,
+    T: Poolable + Send + Sync + 'static,
     T::Data: Default + Sync,
 {
     T::from_data(Arc::new(NoopStrategy::<_>::new()), T::Data::default())
@@ -281,7 +274,7 @@ where
 pub fn get_pooled_object_via_builder<F, T>(f: F) -> T
 where
     F: FnOnce() -> T::Data,
-    T: Poolable,
+    T: Poolable + Send + Sync + 'static,
     T::Data: Sync,
 {
     T::from_data(Arc::new(NoopStrategy::<_>::new()), f())

@@ -14,9 +14,9 @@ use hyper_util::{
 };
 use rustls::crypto::aws_lc_rs::default_provider as aws_lc_rs_default_provider;
 
-use crate::buf::ChunkedBytesBuffer;
+use crate::buf::ChunkedBuffer;
 
-pub type ChunkedHttpsClient = HttpClient<HttpsConnector<HttpConnector>, ChunkedBytesBuffer>;
+pub type ChunkedHttpsClient<O> = HttpClient<HttpsConnector<HttpConnector>, ChunkedBuffer<O>>;
 
 pub struct HttpClient<C = (), B = ()> {
     inner: Client<C, B>,
