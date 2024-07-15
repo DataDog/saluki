@@ -331,9 +331,9 @@ profile-ddprof-local: ## Runs ADP under ddprof locally
 profile-run-smp-experiment: ensure-lading
 profile-run-smp-experiment: ## Runs a specific SMP experiment for Saluki
 ifeq ($(shell test -f test/smp/regression/saluki/cases/$(EXPERIMENT)/lading/lading.yaml || echo not-found), not-found)
-    $(error "Lading configuration for '$(EXPERIMENT)' not found. (test/smp/regression/saluki/cases/$(EXPERIMENT)/lading/lading.yaml) ")
+	$(error "Lading configuration for '$(EXPERIMENT)' not found. (test/smp/regression/saluki/cases/$(EXPERIMENT)/lading/lading.yaml) ")
 endif
-	@echo "[*] Running '$(SMP_EXPERIMENT)'' experiment (15 minutes)..."
+	@echo "[*] Running '$(EXPERIMENT)'' experiment (15 minutes)..."
 	@./test/lading/bin/lading --config-path test/smp/regression/saluki/cases/$(EXPERIMENT)/lading/lading.yaml \
 	--no-target --warmup-duration-seconds 1 --experiment-duration-seconds 900
 
