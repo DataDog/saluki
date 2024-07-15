@@ -163,6 +163,12 @@ impl Decoder for DogstatsdCodec {
         };
 
         // For each value we parsed, create a metric from it and add it to the events buffer.
+        //
+        // We reserve enough capacity in the event buffer for however many events we're going to add, since we can't
+        // depend on any specialization that the standard library types enjoy that allow them to more precisely reserve
+        // capacity and avoid the potentially over-allocating behavior of naively `push`ing each element.
+        events.reserve(values_iter.len());
+
         let mut events_decoded = 0;
         let mut value_err = None;
         for value in values_iter {
@@ -470,6 +476,11 @@ struct ValueIter<'a> {
 impl<'a> ValueIter<'a> {
     fn new(raw_values: &'a [u8], kind: ValueKind) -> Self {
         Self { raw_values, kind }
+    }
+
+    /// Returns the number of values in the iterator.
+    fn len(&self) -> usize {
+        memchr::memchr_iter(b':', self.raw_values).count() + 1
     }
 }
 
