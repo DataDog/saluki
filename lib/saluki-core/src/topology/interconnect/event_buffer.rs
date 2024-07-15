@@ -37,6 +37,17 @@ impl EventBuffer {
     pub fn push(&mut self, event: Event) {
         self.data_mut().events.push_back(event);
     }
+
+    /// Reserves capacity for at least `additional` more elements to be inserted in the event buffer.
+    ///
+    /// The event buffer may reserve more space to speculatively avoid frequent reallocations.
+    ///
+    /// ## Panics
+    ///
+    /// Panics if the new capacity overflows `usize`.
+    pub fn reserve(&mut self, additional: usize) {
+        self.data_mut().events.reserve(additional);
+    }
 }
 
 impl fmt::Debug for EventBuffer {
