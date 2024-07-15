@@ -6,11 +6,14 @@ use http_body_util::BodyExt as _;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::Counter;
 use saluki_config::GenericConfiguration;
-use saluki_core::components::{destinations::*, ComponentContext, MetricsBuilder};
+use saluki_core::{
+    components::{destinations::*, ComponentContext, MetricsBuilder},
+    pooling::{FixedSizeObjectPool, ObjectPool},
+};
 use saluki_error::GenericError;
 use saluki_event::DataType;
 use saluki_io::{
-    buf::{get_fixed_bytes_buffer_pool, ChunkedBytesBuffer, ChunkedBytesBufferObjectPool},
+    buf::{get_fixed_bytes_buffer_pool, BytesBuffer, ChunkedBuffer, ReadWriteIoBuffer},
     net::client::http::{ChunkedHttpsClient, HttpClient},
 };
 use serde::Deserialize;
@@ -197,14 +200,22 @@ impl MemoryBounds for DatadogMetricsConfiguration {
     }
 }
 
-pub struct DatadogMetrics {
-    http_client: ChunkedHttpsClient,
-    series_request_builder: RequestBuilder<ChunkedBytesBufferObjectPool>,
-    sketches_request_builder: RequestBuilder<ChunkedBytesBufferObjectPool>,
+pub struct DatadogMetrics<O>
+where
+    O: ObjectPool + 'static,
+    O::Item: ReadWriteIoBuffer,
+{
+    http_client: ChunkedHttpsClient<O>,
+    series_request_builder: RequestBuilder<O>,
+    sketches_request_builder: RequestBuilder<O>,
 }
 
 #[async_trait]
-impl Destination for DatadogMetrics {
+impl<O> Destination for DatadogMetrics<O>
+where
+    O: ObjectPool + 'static,
+    O::Item: ReadWriteIoBuffer,
+{
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), ()> {
         let Self {
             http_client,
@@ -333,10 +344,13 @@ impl Destination for DatadogMetrics {
     }
 }
 
-async fn run_io_loop(
-    mut requests_rx: mpsc::Receiver<(usize, Request<ChunkedBytesBuffer>)>, io_shutdown_tx: oneshot::Sender<()>,
-    http_client: ChunkedHttpsClient, metrics: Metrics,
-) {
+async fn run_io_loop<O>(
+    mut requests_rx: mpsc::Receiver<(usize, Request<ChunkedBuffer<O>>)>, io_shutdown_tx: oneshot::Sender<()>,
+    http_client: ChunkedHttpsClient<O>, metrics: Metrics,
+) where
+    O: ObjectPool + 'static,
+    O::Item: ReadWriteIoBuffer,
+{
     // Loop and process all incoming requests.
     while let Some((metrics_count, request)) = requests_rx.recv().await {
         // TODO: This doesn't include the actual headers, or the HTTP framing, or anything... so it's a darn good
@@ -377,19 +391,12 @@ async fn run_io_loop(
     let _ = io_shutdown_tx.send(());
 }
 
-fn create_request_builder_buffer_pool() -> ChunkedBytesBufferObjectPool {
+fn create_request_builder_buffer_pool() -> FixedSizeObjectPool<BytesBuffer> {
     // Create the underlying fixed-size buffer pool for the individual chunks.
     //
     // This is 4MB total, in 32KB chunks, which ensures we have enough to simultaneously encode a request for the
     // Series/Sketch V1 endpoint (max of 3.2MB) as well as the Series V2 endpoint (max 512KB).
     //
     // We chunk it up into 32KB segments mostly to allow for balancing fragmentation vs acquisition overhead.
-    let pool = get_fixed_bytes_buffer_pool(RB_BUFFER_POOL_COUNT, RB_BUFFER_POOL_BUF_SIZE);
-
-    // Turn it into a chunked buffer pool.
-    //
-    // `ChunkedBytesBuffer` is an optimized buffer type for writing where the target is eventually an HTTP request. This
-    // is because it can be grown dynamically by acquiring more "chunks" from the wrapped buffer pool, which are then
-    // written into. As well, it can be used as a `Body` type for `hyper` requests.
-    ChunkedBytesBufferObjectPool::new(pool)
+    get_fixed_bytes_buffer_pool(RB_BUFFER_POOL_COUNT, RB_BUFFER_POOL_BUF_SIZE)
 }
