@@ -153,7 +153,7 @@ where
                 permit.forget();
 
                 let strategy = this.strategy.take().unwrap();
-                let data = strategy.items.lock().unwrap().pop_front().unwrap();
+                let data = strategy.items.lock().unwrap().pop_back().unwrap();
                 Poll::Ready(T::from_data(strategy, data))
             }
             None => unreachable!("semaphore should never be closed"),
