@@ -636,6 +636,7 @@ dependencies = [
  "ordered-float 4.2.0",
  "rand",
  "rand_distr",
+ "smallvec",
 ]
 
 [[package]]
