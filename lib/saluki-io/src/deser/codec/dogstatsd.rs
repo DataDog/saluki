@@ -11,7 +11,7 @@ use nom::{
     sequence::{preceded, separated_pair, terminated},
     IResult,
 };
-use saluki_context::{ContextRef2, ContextResolver};
+use saluki_context::{ContextRef, ContextResolver};
 use saluki_metrics::static_metrics;
 use snafu::Snafu;
 
@@ -152,7 +152,7 @@ impl Decoder for DogstatsdCodec {
         let (remaining, (metric_name, tags_iter, values_iter, metadata)) = parse_dogstatsd(data, &self.config)?;
 
         // Try resolving the context first, since we might need to bail if we can't.
-        let context_ref = ContextRef2::from_name_and_tags(metric_name, tags_iter);
+        let context_ref = ContextRef::from_name_and_tags(metric_name, tags_iter);
         let context = match self.context_resolver.resolve(context_ref) {
             Some(context) => context,
             None => {
@@ -532,7 +532,7 @@ impl<'a> Iterator for ValueIter<'a> {
 mod tests {
     use nom::IResult;
     use proptest::{collection::vec as arb_vec, prelude::*};
-    use saluki_context::{ContextRef2, ContextResolver};
+    use saluki_context::{ContextRef, ContextResolver};
     use saluki_event::{metric::*, Event};
 
     use super::{parse_dogstatsd, DogstatsdCodecConfiguration};
@@ -548,7 +548,7 @@ mod tests {
 
     fn create_metric_with_tags(name: &str, tags: &[&str], value: MetricValue) -> Metric {
         let context_resolver: ContextResolver = ContextResolver::with_noop_interner();
-        let context_ref = ContextRef2::from_name_and_tags(name, tags);
+        let context_ref = ContextRef::from_name_and_tags(name, tags);
         let context = context_resolver.resolve(context_ref).unwrap();
 
         Metric::from_parts(
@@ -614,7 +614,7 @@ mod tests {
     ) -> IResult<&'input [u8], OneOrMany<Event>> {
         let (remaining, (name, tags_iter, values_iter, metadata)) = parse_dogstatsd(input, config)?;
 
-        let context_ref = ContextRef2::from_name_and_tags(name, tags_iter);
+        let context_ref = ContextRef::from_name_and_tags(name, tags_iter);
         let context = match context_resolver.resolve(context_ref) {
             Some(context) => context,
             None => return Ok((remaining, OneOrMany::Multiple(Vec::new()))),

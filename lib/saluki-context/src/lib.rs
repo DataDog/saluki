@@ -118,13 +118,13 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
             .or_else(|| self.allow_heap_allocations.then(|| MetaString::from(s)))
     }
 
-    fn create_context_from_ref<I, T>(&self, context_ref: ContextRef2<'_, I>, active_count: Gauge) -> Option<Context>
+    fn create_context_from_ref<I, T>(&self, context_ref: ContextRef<'_, I>, active_count: Gauge) -> Option<Context>
     where
         I: IntoIterator<Item = T>,
         T: AsRef<str> + hash::Hash + std::fmt::Debug,
     {
         let name = self.intern(context_ref.name)?;
-        let mut tags = TagSet::default();
+        let mut tags = TagSet::with_capacity(context_ref.tag_len);
         for tag in context_ref.tags {
             let tag = self.intern(tag.as_ref())?;
             tags.insert_tag(tag);
@@ -147,7 +147,7 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
     ///
     /// `None` may be returned if the interner is full and outside allocations are disallowed. See
     /// `allow_heap_allocations` for more information.
-    pub fn resolve<I, T>(&self, context_ref: ContextRef2<'_, I>) -> Option<Context>
+    pub fn resolve<I, T>(&self, context_ref: ContextRef<'_, I>) -> Option<Context>
     where
         I: IntoIterator<Item = T>,
         T: AsRef<str> + hash::Hash + std::fmt::Debug,
@@ -197,16 +197,17 @@ pub struct Context {
 impl Context {
     /// Creates a new `Context` from the given static name and given static tags.
     pub fn from_static_parts(name: &'static str, tags: &'static [&'static str]) -> Self {
-        let mut tag_set = TagSet::default();
+        let mut tag_set = TagSet::with_capacity(tags.len());
         for tag in tags {
             tag_set.insert_tag(MetaString::from_static(tag));
         }
 
+        let (hash, _) = hash_context(name, tags);
         Self {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
                 tags: tag_set,
-                hash: hash_context(name, tags),
+                hash,
                 active_count: Gauge::noop(),
             }),
         }
@@ -310,50 +311,14 @@ impl fmt::Debug for ContextInner {
 ///
 /// [1]: https://stackoverflow.com/questions/5889238/why-is-xor-the-default-way-to-combine-hashes
 #[derive(Debug)]
-pub struct ContextRef<'a, T> {
-    name: &'a str,
-    tags: &'a [T],
-    hash: u64,
-}
-
-impl<'a, T> ContextRef<'a, T>
-where
-    T: hash::Hash,
-{
-    /// Creates a new `ContextRef` from the given name and tags.
-    pub fn from_name_and_tags(name: &'a str, tags: &'a [T]) -> Self {
-        let hash = hash_context(name, tags);
-        Self { name, tags, hash }
-    }
-}
-
-impl<'a, T> hash::Hash for ContextRef<'a, T>
-where
-    T: hash::Hash,
-{
-    fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        state.write_u64(self.hash);
-    }
-}
-
-impl<T> Equivalent<Context> for ContextRef<'_, T>
-where
-    T: hash::Hash + std::fmt::Debug,
-{
-    fn equivalent(&self, other: &Context) -> bool {
-        self.hash == other.inner.hash
-    }
-}
-
-/// blah blah blah
-#[derive(Debug)]
-pub struct ContextRef2<'a, I> {
+pub struct ContextRef<'a, I> {
     name: &'a str,
     tags: I,
+    tag_len: usize,
     hash: u64,
 }
 
-impl<'a, I, T> ContextRef2<'a, I>
+impl<'a, I, T> ContextRef<'a, I>
 where
     I: IntoIterator<Item = T>,
     T: hash::Hash,
@@ -363,12 +328,17 @@ where
     where
         I: Clone,
     {
-        let hash = hash_context(name, tags.clone());
-        Self { name, tags, hash }
+        let (hash, tag_len) = hash_context(name, tags.clone());
+        Self {
+            name,
+            tags,
+            tag_len,
+            hash,
+        }
     }
 }
 
-impl<'a, I, T> hash::Hash for ContextRef2<'a, I>
+impl<'a, I, T> hash::Hash for ContextRef<'a, I>
 where
     I: IntoIterator<Item = T>,
     T: hash::Hash,
@@ -378,7 +348,7 @@ where
     }
 }
 
-impl<I, T> Equivalent<Context> for ContextRef2<'_, I>
+impl<I, T> Equivalent<Context> for ContextRef<'_, I>
 where
     I: IntoIterator<Item = T>,
     T: hash::Hash + std::fmt::Debug,
@@ -466,6 +436,11 @@ where
 pub struct TagSet(Vec<Tag>);
 
 impl TagSet {
+    /// Creates a new, empty tag set with the given capacity.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self(Vec::with_capacity(capacity))
+    }
+
     /// Returns `true` if the tag set is empty.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
@@ -599,7 +574,7 @@ impl From<Tag> for TagSet {
     }
 }
 
-fn hash_context<'a, I, T>(name: &'a str, tags: I) -> u64
+fn hash_context<'a, I, T>(name: &'a str, tags: I) -> (u64, usize)
 where
     I: IntoIterator<Item = T>,
     T: hash::Hash,
@@ -609,16 +584,18 @@ where
 
     // Hash the tags individually and XOR their hashes together, which allows us to be order-oblivious.
     let mut combined_tags_hash = 0;
+    let mut tag_count = 0;
     for tag in tags {
         let mut tag_hasher = ahash::AHasher::default();
         tag.hash(&mut tag_hasher);
 
         combined_tags_hash ^= tag_hasher.finish();
+        tag_count += 1;
     }
 
     hasher.write_u64(combined_tags_hash);
 
-    hasher.finish()
+    (hasher.finish(), tag_count)
 }
 
 #[cfg(test)]
@@ -658,8 +635,8 @@ mod tests {
         let tags1: [&str; 0] = [];
         let tags2 = ["tag1"];
 
-        let ref1 = ContextRef2::from_name_and_tags(name, &tags1);
-        let ref2 = ContextRef2::from_name_and_tags(name, &tags2);
+        let ref1 = ContextRef::from_name_and_tags(name, &tags1);
+        let ref2 = ContextRef::from_name_and_tags(name, &tags2);
 
         let context1 = resolver.resolve(ref1);
         let context2 = resolver.resolve(ref2);
@@ -673,8 +650,8 @@ mod tests {
         );
 
         // If we create the context references again, we _should_ get back the same contexts as before:
-        let ref1 = ContextRef2::from_name_and_tags(name, &tags1);
-        let ref2 = ContextRef2::from_name_and_tags(name, &tags2);
+        let ref1 = ContextRef::from_name_and_tags(name, &tags1);
+        let ref2 = ContextRef::from_name_and_tags(name, &tags2);
 
         let context1_redo = resolver.resolve(ref1);
         let context2_redo = resolver.resolve(ref2);
@@ -701,8 +678,8 @@ mod tests {
         let tags1 = ["tag1", "tag2"];
         let tags2 = ["tag2", "tag1"];
 
-        let ref1 = ContextRef2::from_name_and_tags(name, &tags1);
-        let ref2 = ContextRef2::from_name_and_tags(name, &tags2);
+        let ref1 = ContextRef::from_name_and_tags(name, &tags1);
+        let ref2 = ContextRef::from_name_and_tags(name, &tags2);
 
         let context1 = resolver.resolve(ref1);
         let context2 = resolver.resolve(ref2);
@@ -724,7 +701,7 @@ mod tests {
         // Create our resolver and then create a context, which will have its metrics attached to our local recorder:
         let context = metrics::with_local_recorder(&recorder, || {
             let resolver: ContextResolver = ContextResolver::with_noop_interner();
-            resolver.resolve(ContextRef2::from_name_and_tags("name", &["tag1"]))
+            resolver.resolve(ContextRef::from_name_and_tags("name", &["tag1"]))
         });
 
         // We should be able to see that the active context count is one, representing the context we created:

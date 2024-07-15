@@ -7,7 +7,7 @@ use std::{
 
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SetRecorderError, SharedString, Unit};
 use metrics_util::registry::{AtomicStorage, Registry};
-use saluki_context::{Context, ContextRef2, ContextResolver};
+use saluki_context::{Context, ContextRef, ContextResolver};
 use stringtheory::interning::FixedSizeInterner;
 use tokio::sync::broadcast;
 
@@ -189,7 +189,7 @@ fn context_from_key(context_resolver: &ContextResolver, key: Key) -> Context {
         .map(|l| format!("{}:{}", l.key(), l.value()))
         .collect::<Vec<_>>();
 
-    let context_ref = ContextRef2::from_name_and_tags(name.as_str(), &labels);
+    let context_ref = ContextRef::from_name_and_tags(name.as_str(), &labels);
     context_resolver
         .resolve(context_ref)
         .expect("resolver should always allow falling back")
