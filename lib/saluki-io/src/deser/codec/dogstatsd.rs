@@ -7,7 +7,6 @@ use nom::{
     character::complete::u64 as parse_u64,
     combinator::{all_consuming, map},
     error::{Error, ErrorKind},
-    multi::separated_list1,
     number::complete::double,
     sequence::{preceded, separated_pair, terminated},
     IResult,
@@ -18,9 +17,10 @@ use snafu::Snafu;
 
 use saluki_core::topology::interconnect::EventBuffer;
 use saluki_event::{metric::*, Event};
-use tracing::trace;
 
 use crate::deser::Decoder;
+
+type NomParserError<'a> = nom::Err<nom::error::Error<&'a [u8]>>;
 
 static_metrics! {
     name => CodecMetrics,
@@ -28,11 +28,6 @@ static_metrics! {
     metrics => [
         counter(failed_context_resolve_total),
     ]
-}
-
-enum OneOrMany<T> {
-    Single(T),
-    Multiple(Vec<T>),
 }
 
 /// DogStatsD codec configuration.
@@ -132,11 +127,20 @@ impl DogstatsdCodec {
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 pub enum ParseError {
-    #[snafu(display("structural error: {}", reason))]
-    Structural { reason: String },
+    #[snafu(display("encountered error '{:?}' while processing message '{}'", kind, data))]
+    Structural { kind: nom::error::ErrorKind, data: String },
+}
 
-    #[snafu(display("incomplete input (needed {} bytes)", needed))]
-    IncompleteInput { needed: usize },
+impl<'a> From<NomParserError<'a>> for ParseError {
+    fn from(err: NomParserError<'a>) -> Self {
+        match err {
+            nom::Err::Error(e) | nom::Err::Failure(e) => ParseError::Structural {
+                kind: e.code,
+                data: String::from_utf8_lossy(e.input).to_string(),
+            },
+            nom::Err::Incomplete(_) => unreachable!("dogstatsd codec only supports complete payloads"),
+        }
+    }
 }
 
 impl Decoder for DogstatsdCodec {
@@ -145,44 +149,66 @@ impl Decoder for DogstatsdCodec {
     fn decode<B: Buf>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error> {
         let data = buf.chunk();
 
-        match parse_dogstatsd(data, &self.config, &self.context_resolver, &self.codec_metrics) {
-            Ok((remaining, parsed_events)) => {
-                buf.advance(data.len() - remaining.len());
+        // Decode the payload and get the representative parts of the metric.
+        let (remaining, (metric_name, tags_iter, values_iter, metadata)) = parse_dogstatsd(data, &self.config)?;
 
-                match parsed_events {
-                    OneOrMany::Single(parsed_event) => {
-                        events.push(parsed_event);
-                        Ok(1)
-                    }
-                    OneOrMany::Multiple(parsed_events) => {
-                        let events_len = parsed_events.len();
-                        events.extend(parsed_events);
-                        Ok(events_len)
-                    }
-                }
+        // Try resolving the context first, since we might need to bail if we can't.
+        let context_ref = ContextRef::from_name_and_tags(metric_name, tags_iter);
+        let context = match self.context_resolver.resolve(context_ref) {
+            Some(context) => context,
+            None => {
+                self.codec_metrics.failed_context_resolve_total().increment(1);
+
+                return Ok(0);
             }
-            Err(e) => match e {
-                // If we need more data, it's not an error, so we just break out.
-                nom::Err::Incomplete(_) => unreachable!("incomplete error should not be emitted"),
-                nom::Err::Error(e) | nom::Err::Failure(e) => Err(ParseError::Structural {
-                    reason: format!(
-                        "encountered error '{:?}' while processing message '{}'",
-                        e.code,
-                        String::from_utf8_lossy(data)
-                    ),
-                }),
-            },
+        };
+
+        // For each value we parsed, create a metric from it and add it to the events buffer.
+        //
+        // We reserve enough capacity in the event buffer for however many events we're going to add, since we can't
+        // depend on any specialization that the standard library types enjoy that allow them to more precisely reserve
+        // capacity and avoid the potentially over-allocating behavior of naively `push`ing each element.
+        //
+        // TODO: Once `TrustedLen` is stabilized, we could make `ValueIter` implement this and then we could use
+        // `extend` again... although we're also doing some validation of the values in the iterator which might require
+        // bailing out early, so it would take some work to make that succinct when using `extend`.
+        events.reserve(values_iter.len());
+
+        let mut events_decoded = 0;
+        let mut value_err = None;
+        for value in values_iter {
+            let value = match value.map_err(Into::into) {
+                Ok(value) => value,
+                Err(e) => {
+                    // We intentionally avoid returning early here since we want to make sure we reach the call to
+                    // `Buf::advance` to properly consume the bytes we've read and avoid the decoder trying to read the
+                    // same invalid data in an infinite loop.
+                    value_err = Some(Err(e));
+                    break;
+                }
+            };
+
+            events.push(Event::Metric(Metric::from_parts(
+                context.clone(),
+                value,
+                metadata.clone(),
+            )));
+            events_decoded += 1;
         }
+
+        // Advance the input buffer by the number of bytes we consumed while parsing.
+        buf.advance(data.len() - remaining.len());
+
+        value_err.unwrap_or(Ok(events_decoded))
     }
 }
 
 fn parse_dogstatsd<'a>(
-    input: &'a [u8], config: &DogstatsdCodecConfiguration, context_resolver: &ContextResolver,
-    codec_metrics: &CodecMetrics,
-) -> IResult<&'a [u8], OneOrMany<Event>> {
-    // We always parse the metric name and value first, where value is both the kind (counter, gauge, etc) and the
+    input: &'a [u8], config: &DogstatsdCodecConfiguration,
+) -> IResult<&'a [u8], (&'a str, TagSplitter<'a>, ValueIter<'a>, MetricMetadata)> {
+    // We always parse the metric name and value(s) first, where value is both the kind (counter, gauge, etc) and the
     // actual value itself.
-    let (remaining, (metric_name, metric_values)) = separated_pair(metric_name, tag(":"), metric_value)(input)?;
+    let (remaining, (metric_name, values_iter)) = separated_pair(metric_name, tag(":"), metric_value)(input)?;
 
     // At this point, we may have some of this additional data, and if so, we also then would have a pipe separator at
     // the very front, which we'd want to consume before going further.
@@ -244,49 +270,21 @@ fn parse_dogstatsd<'a>(
         remaining
     };
 
-    let tags = maybe_tags.unwrap_or_default();
-
-    // Resolve the context now that we have the name and any tags.
-    let context_ref = ContextRef::from_name_and_tags(metric_name, &tags);
-    let context = match context_resolver.resolve(context_ref) {
-        Some(context) => context,
-        None => {
-            codec_metrics.failed_context_resolve_total().increment(1);
-
-            // We couldn't resolve the context, so we just skip this metric.
-            return Ok((remaining, OneOrMany::Multiple(Vec::new())));
-        }
-    };
-
     let metric_metadata = MetricMetadata::default()
         .with_timestamp(maybe_timestamp)
         .with_sample_rate(maybe_sample_rate)
         .with_origin_entity(maybe_container_id.map(OriginEntity::container_id))
         .with_origin(MetricOrigin::dogstatsd());
 
-    match metric_values {
-        OneOrMany::Single(metric_value) => {
-            let metric = Metric::from_parts(context, metric_value, metric_metadata);
-            trace!(%metric, "Parsed metric.");
-
-            Ok((remaining, OneOrMany::Single(Event::Metric(metric))))
-        }
-        OneOrMany::Multiple(metric_values) => {
-            // TODO: This could be more efficient if we used a helper to determine if we were iterating over the last
-            // element, such that we avoid the additional, unnecessary clone. `itertools` provides a helper for this.
-            let metrics = metric_values
-                .into_iter()
-                .map(|value| {
-                    let metric = Metric::from_parts(context.clone(), value, metric_metadata.clone());
-                    trace!(%metric, "Parsed metric from multi-value payload.");
-
-                    Event::Metric(metric)
-                })
-                .collect();
-
-            Ok((remaining, OneOrMany::Multiple(metrics)))
-        }
-    }
+    Ok((
+        remaining,
+        (
+            metric_name,
+            maybe_tags.unwrap_or_else(TagSplitter::empty),
+            values_iter,
+            metric_metadata,
+        ),
+    ))
 }
 
 #[inline]
@@ -314,76 +312,45 @@ fn metric_name(input: &[u8]) -> IResult<&[u8], &str> {
 }
 
 #[inline]
-fn metric_value(input: &[u8]) -> IResult<&[u8], OneOrMany<MetricValue>> {
-    let (remaining, raw_value) = terminated(take_while1(|b| b != b'|'), tag("|"))(input)?;
+fn metric_value(input: &[u8]) -> IResult<&[u8], ValueIter<'_>> {
+    let (remaining, raw_values) = terminated(take_while1(|b| b != b'|'), tag("|"))(input)?;
     let (remaining, raw_kind) = alt((tag(b"g"), tag(b"c"), tag(b"ms"), tag(b"h"), tag(b"s"), tag(b"d")))(remaining)?;
 
-    let metric_value = match raw_kind {
-        b"s" => {
-            let value = String::from_utf8_lossy(raw_value).to_string();
-            OneOrMany::Single(MetricValue::Set {
-                values: HashSet::from([value]),
-            })
-        }
-        other => {
-            // All other metric types interpret the raw value as an integer/float, so do that first so we can return
-            // early due to any error from parsing.
-            //
-            // We try to split the value by colons, if possible, which would indicate we have a multi-value payload.
-            let (_, values) = all_consuming(separated_list1(tag(b":"), double))(raw_value)?;
-            if values.len() == 1 {
-                OneOrMany::Single(metric_type_to_metric_value(other, values[0])?)
-            } else {
-                let mut metric_values = Vec::with_capacity(values.len());
-                for value in values {
-                    metric_values.push(metric_type_to_metric_value(other, value)?);
-                }
-                OneOrMany::Multiple(metric_values)
-            }
-        }
-    };
+    // Make sure the raw value(s) are valid UTF-8 before we use them later on.
+    if simdutf8::basic::from_utf8(raw_values).is_err() {
+        return Err(nom::Err::Error(Error::new(raw_values, ErrorKind::Verify)));
+    }
 
-    Ok((remaining, metric_value))
-}
-
-#[inline]
-fn metric_type_to_metric_value(metric_type: &[u8], value: f64) -> Result<MetricValue, nom::Err<Error<&[u8]>>> {
-    match metric_type {
-        b"g" => Ok(MetricValue::Gauge { value }),
-        b"c" => Ok(MetricValue::Counter { value }),
+    let kind = match raw_kind {
+        b"s" => ValueKind::Set,
+        b"g" => ValueKind::Gauge,
+        b"c" => ValueKind::Counter,
         // TODO: We're handling distributions 100% correctly, but we're taking a shortcut here by also handling
         // timers/histograms directly as distributions.
         //
         // We need to figure out if this is OK or if we need to keep them separate and only convert up at the source
         // level based on configuration or something.
-        b"ms" | b"h" | b"d" => Ok(MetricValue::distribution_from_value(value)),
-        _ => Err(nom::Err::Error(Error::new(metric_type, ErrorKind::Char))),
-    }
+        b"ms" | b"h" | b"d" => ValueKind::Distribution,
+        _ => return Err(nom::Err::Error(Error::new(raw_kind, ErrorKind::Char))),
+    };
+
+    Ok((remaining, ValueIter::new(raw_values, kind)))
 }
 
 #[inline]
-fn metric_tags(config: &DogstatsdCodecConfiguration) -> impl Fn(&[u8]) -> IResult<&[u8], Vec<&str>> + '_ {
+fn metric_tags(config: &DogstatsdCodecConfiguration) -> impl Fn(&[u8]) -> IResult<&[u8], TagSplitter<'_>> {
+    let max_tag_count = config.maximum_tag_count;
+    let max_tag_len = config.maximum_tag_length;
+
     move |input: &[u8]| {
-        // Take everything that's not a control character or pipe character.
-        let (remaining, mut raw_tag_bytes) = take_while1(|c: u8| !c.is_ascii_control() && c != b'|')(input)?;
-
-        let mut tags = Vec::with_capacity(16);
-        while let Some((raw_tag, tail)) = split_at_delimiter(raw_tag_bytes, b',') {
-            if tags.len() >= config.maximum_tag_count {
-                // We've reached the maximum number of tags, so we just skip the rest.
-                break;
-            }
-
-            let tag = simdutf8::basic::from_utf8(raw_tag)
-                .map(|s| limit_str_to_len(s, config.maximum_tag_length))
-                .map_err(|_| nom::Err::Error(Error::new(input, ErrorKind::Char)))?;
-
-            tags.push(tag);
-
-            raw_tag_bytes = tail;
+        // Make sure the raw value(s) are valid UTF-8 before we use them later on.
+        if simdutf8::basic::from_utf8(input).is_err() {
+            return Err(nom::Err::Error(Error::new(input, ErrorKind::Verify)));
         }
 
-        Ok((remaining, tags))
+        map(take_while1(|c: u8| !c.is_ascii_control() && c != b'|'), |s| {
+            TagSplitter::new(s, max_tag_count, max_tag_len)
+        })(input)
     }
 }
 
@@ -432,6 +399,158 @@ fn limit_str_to_len(s: &str, limit: usize) -> &str {
     }
 }
 
+/// An iterator for splitting tags out of an input byte slice.
+///
+/// Extracts individual tags from the input byte slice by splitting on the comma (`,`, 0x2C) character.
+///
+/// ## Cloning
+///
+/// `TagSplitter` can be cloned to create a new iterator with its own iteration state. The same underlying input byte
+/// slice is retained.
+#[derive(Clone)]
+struct TagSplitter<'a> {
+    raw_tags: &'a [u8],
+    max_tag_count: usize,
+    max_tag_len: usize,
+}
+
+impl<'a> TagSplitter<'a> {
+    /// Creates a new `TagSplitter` from the given input byte slice.
+    ///
+    /// The maximum tag count and maximum tag length control how many tags are returned from the iterator and their
+    /// length. If the iterator encounters more tags than the maximum count, it will simply stop returning tags. If the
+    /// iterator encounters any tag that is longer than the maximum length, it will truncate the tag to configured
+    /// length, or to a smaller length, whichever is closer to a valid UTF-8 character boundary.
+    const fn new(raw_tags: &'a [u8], max_tag_count: usize, max_tag_len: usize) -> Self {
+        Self {
+            raw_tags,
+            max_tag_count,
+            max_tag_len,
+        }
+    }
+
+    /// Creates an empty `TagSplitter`.
+    const fn empty() -> Self {
+        Self {
+            raw_tags: &[],
+            max_tag_count: 0,
+            max_tag_len: 0,
+        }
+    }
+}
+
+impl<'a> IntoIterator for TagSplitter<'a> {
+    type Item = &'a str;
+    type IntoIter = TagIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        TagIter {
+            raw_tags: self.raw_tags,
+            parsed_tags: 0,
+            max_tag_len: self.max_tag_len,
+            max_tag_count: self.max_tag_count,
+        }
+    }
+}
+
+struct TagIter<'a> {
+    raw_tags: &'a [u8],
+    parsed_tags: usize,
+    max_tag_len: usize,
+    max_tag_count: usize,
+}
+
+impl<'a> Iterator for TagIter<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (raw_tag, tail) = split_at_delimiter(self.raw_tags, b',')?;
+        self.raw_tags = tail;
+
+        if self.parsed_tags >= self.max_tag_count {
+            // We've reached the maximum number of tags, so we just skip the rest.
+            return None;
+        }
+
+        // SAFETY: The caller that creates `TagSplitter` is responsible for ensuring that the entire byte slice is
+        // valid UTF-8, which means we should also have valid UTF-8 here since only `TagSplitter` creates `TagIter`.
+        let tag = unsafe { std::str::from_utf8_unchecked(raw_tag) };
+        let tag = limit_str_to_len(tag, self.max_tag_len);
+
+        self.parsed_tags += 1;
+
+        Some(tag)
+    }
+}
+
+#[derive(Eq, PartialEq)]
+enum ValueKind {
+    Counter,
+    Gauge,
+    Set,
+    Distribution,
+}
+
+struct ValueIter<'a> {
+    raw_values: &'a [u8],
+    kind: ValueKind,
+}
+
+impl<'a> ValueIter<'a> {
+    fn new(raw_values: &'a [u8], kind: ValueKind) -> Self {
+        Self { raw_values, kind }
+    }
+
+    /// Returns the number of values in the iterator.
+    fn len(&self) -> usize {
+        memchr::memchr_iter(b':', self.raw_values).count() + 1
+    }
+}
+
+impl<'a> Iterator for ValueIter<'a> {
+    type Item = Result<MetricValue, nom::Err<nom::error::Error<&'a [u8]>>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.raw_values.is_empty() {
+            return None;
+        }
+
+        // Sets cannot be multi-value payloads, so if we're here, literally just return a single value and then mark
+        // ourselves as being done.
+        if self.kind == ValueKind::Set {
+            // SAFETY: The caller that creates `ValueIter` is responsible for ensuring that the entire byte slice is
+            // valid UTF-8.
+            let value = unsafe { std::str::from_utf8_unchecked(self.raw_values) };
+            let value = Ok(MetricValue::Set {
+                values: HashSet::from([value.to_string()]),
+            });
+
+            self.raw_values = &[];
+            return Some(value);
+        }
+
+        // For all other metric types, we always parse the value as a double, so we do that first and then figure out
+        // what kind of `MetricValue` we need to emit.
+        let (raw_value, tail) = split_at_delimiter(self.raw_values, b':')?;
+        self.raw_values = tail;
+
+        // SAFETY: The caller that creates `ValueIter` is responsible for ensuring that the entire byte slice is valid
+        // UTF-8.
+        let value_s = unsafe { std::str::from_utf8_unchecked(raw_value) };
+        let value = match value_s.parse::<f64>() {
+            Ok(value) => value,
+            Err(_) => return Some(Err(nom::Err::Error(Error::new(raw_value, ErrorKind::Float)))),
+        };
+
+        Some(Ok(match self.kind {
+            ValueKind::Counter => MetricValue::Counter { value },
+            ValueKind::Gauge => MetricValue::Gauge { value },
+            ValueKind::Distribution => MetricValue::distribution_from_value(value),
+            _ => unreachable!("set values should have been handled above"),
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use nom::IResult;
@@ -439,7 +558,12 @@ mod tests {
     use saluki_context::{ContextRef, ContextResolver};
     use saluki_event::{metric::*, Event};
 
-    use super::{parse_dogstatsd, CodecMetrics, DogstatsdCodecConfiguration, OneOrMany};
+    use super::{parse_dogstatsd, DogstatsdCodecConfiguration};
+
+    enum OneOrMany<T> {
+        Single(T),
+        Multiple(Vec<T>),
+    }
 
     fn create_metric(name: &str, value: MetricValue) -> Metric {
         create_metric_with_tags(name, &[], value)
@@ -447,7 +571,7 @@ mod tests {
 
     fn create_metric_with_tags(name: &str, tags: &[&str], value: MetricValue) -> Metric {
         let context_resolver: ContextResolver = ContextResolver::with_noop_interner();
-        let context_ref = ContextRef::<'_, &str>::from_name_and_tags(name, tags);
+        let context_ref = ContextRef::from_name_and_tags(name, tags);
         let context = context_resolver.resolve(context_ref).unwrap();
 
         Metric::from_parts(
@@ -504,9 +628,35 @@ mod tests {
         input: &'input [u8], config: &DogstatsdCodecConfiguration,
     ) -> IResult<&'input [u8], OneOrMany<Event>> {
         let context_resolver = ContextResolver::with_noop_interner();
-        let codec_metrics = CodecMetrics::new();
 
-        parse_dogstatsd(input, config, &context_resolver, &codec_metrics)
+        parse_dogstatsd_direct(input, config, &context_resolver)
+    }
+
+    fn parse_dogstatsd_direct<'input>(
+        input: &'input [u8], config: &DogstatsdCodecConfiguration, context_resolver: &ContextResolver,
+    ) -> IResult<&'input [u8], OneOrMany<Event>> {
+        let (remaining, (name, tags_iter, values_iter, metadata)) = parse_dogstatsd(input, config)?;
+
+        let context_ref = ContextRef::from_name_and_tags(name, tags_iter);
+        let context = match context_resolver.resolve(context_ref) {
+            Some(context) => context,
+            None => return Ok((remaining, OneOrMany::Multiple(Vec::new()))),
+        };
+
+        let mut events = Vec::new();
+        for value in values_iter {
+            events.push(Event::Metric(Metric::from_parts(
+                context.clone(),
+                value?,
+                metadata.clone(),
+            )));
+        }
+
+        if events.len() == 1 {
+            Ok((remaining, OneOrMany::Single(events.remove(0))))
+        } else {
+            Ok((remaining, OneOrMany::Multiple(events)))
+        }
     }
 
     #[track_caller]
@@ -788,11 +938,10 @@ mod tests {
 
         let default_config = DogstatsdCodecConfiguration::default();
         let context_resolver = ContextResolver::with_noop_interner().with_heap_allocations(false);
-        let codec_metrics = CodecMetrics::new();
 
         let input = "big_metric_name_that_cant_possibly_be_inlined:1|c|#tag1:value1,tag2:value2,tag3:value3";
 
-        let (remaining, result) = parse_dogstatsd(input.as_bytes(), &default_config, &context_resolver, &codec_metrics)
+        let (remaining, result) = parse_dogstatsd_direct(input.as_bytes(), &default_config, &context_resolver)
             .expect("should not fail to parse");
 
         assert!(remaining.is_empty());
