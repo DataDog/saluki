@@ -1,5 +1,5 @@
 //! Metric context and context resolving.
-#![allow(warnings)]
+#![deny(warnings)]
 #![deny(missing_docs)]
 
 use std::{
@@ -324,6 +324,10 @@ where
     T: hash::Hash,
 {
     /// Creates a new `ContextRef` from the given name and tags.
+    ///
+    /// The given tags must be `Clone` as the iterator is consumed to calculate the hash of the context without storing
+    /// an owned version of the tags. This allows for zero-allocation context resolution, but requires that the iterator
+    /// be cloneable in order to take the tags later on if the context was not already resolved.
     pub fn from_name_and_tags(name: &'a str, tags: I) -> Self
     where
         I: Clone,
@@ -574,11 +578,18 @@ impl From<Tag> for TagSet {
     }
 }
 
-fn hash_context<'a, I, T>(name: &'a str, tags: I) -> (u64, usize)
+fn hash_context<I, T>(name: &str, tags: I) -> (u64, usize)
 where
     I: IntoIterator<Item = T>,
     T: hash::Hash,
 {
+    // TODO: We don't do anything here to avoid duplicate tags canceling each other out (i.e., 0 XOR 0 and 1 XOR 1
+    // always equal 0) which could mean, for example, a hash collision between two identically-named metrics with
+    // different tags, where the tags were duplicated (e.g., metric_a{tag1, tag1} and metric_a{tag2, tag2} would have
+    // the same hash).
+    //
+    // This should be _exceedingly_ rare in practice, but we're noting it here for completeness.
+
     let mut hasher = ahash::AHasher::default();
     name.hash(&mut hasher);
 

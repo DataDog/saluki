@@ -149,6 +149,7 @@ impl Decoder for DogstatsdCodec {
     fn decode<B: Buf>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error> {
         let data = buf.chunk();
 
+        // Decode the payload and get the representative parts of the metric.
         let (remaining, (metric_name, tags_iter, values_iter, metadata)) = parse_dogstatsd(data, &self.config)?;
 
         // Try resolving the context first, since we might need to bail if we can't.
@@ -167,6 +168,10 @@ impl Decoder for DogstatsdCodec {
         // We reserve enough capacity in the event buffer for however many events we're going to add, since we can't
         // depend on any specialization that the standard library types enjoy that allow them to more precisely reserve
         // capacity and avoid the potentially over-allocating behavior of naively `push`ing each element.
+        //
+        // TODO: Once `TrustedLen` is stabilized, we could make `ValueIter` implement this and then we could use
+        // `extend` again... although we're also doing some validation of the values in the iterator which might require
+        // bailing out early, so it would take some work to make that succinct when using `extend`.
         events.reserve(values_iter.len());
 
         let mut events_decoded = 0;
@@ -175,6 +180,9 @@ impl Decoder for DogstatsdCodec {
             let value = match value.map_err(Into::into) {
                 Ok(value) => value,
                 Err(e) => {
+                    // We intentionally avoid returning early here since we want to make sure we reach the call to
+                    // `Buf::advance` to properly consume the bytes we've read and avoid the decoder trying to read the
+                    // same invalid data in an infinite loop.
                     value_err = Some(Err(e));
                     break;
                 }
@@ -198,7 +206,7 @@ impl Decoder for DogstatsdCodec {
 fn parse_dogstatsd<'a>(
     input: &'a [u8], config: &DogstatsdCodecConfiguration,
 ) -> IResult<&'a [u8], (&'a str, TagSplitter<'a>, ValueIter<'a>, MetricMetadata)> {
-    // We always parse the metric name and value first, where value is both the kind (counter, gauge, etc) and the
+    // We always parse the metric name and value(s) first, where value is both the kind (counter, gauge, etc) and the
     // actual value itself.
     let (remaining, (metric_name, values_iter)) = separated_pair(metric_name, tag(":"), metric_value)(input)?;
 
@@ -391,6 +399,14 @@ fn limit_str_to_len(s: &str, limit: usize) -> &str {
     }
 }
 
+/// An iterator for splitting tags out of an input byte slice.
+///
+/// Extracts individual tags from the input byte slice by splitting on the comma (`,`, 0x2C) character.
+///
+/// ## Cloning
+///
+/// `TagSplitter` can be cloned to create a new iterator with its own iteration state. The same underlying input byte
+/// slice is retained.
 #[derive(Clone)]
 struct TagSplitter<'a> {
     raw_tags: &'a [u8],
@@ -399,6 +415,12 @@ struct TagSplitter<'a> {
 }
 
 impl<'a> TagSplitter<'a> {
+    /// Creates a new `TagSplitter` from the given input byte slice.
+    ///
+    /// The maximum tag count and maximum tag length control how many tags are returned from the iterator and their
+    /// length. If the iterator encounters more tags than the maximum count, it will simply stop returning tags. If the
+    /// iterator encounters any tag that is longer than the maximum length, it will truncate the tag to configured
+    /// length, or to a smaller length, whichever is closer to a valid UTF-8 character boundary.
     const fn new(raw_tags: &'a [u8], max_tag_count: usize, max_tag_len: usize) -> Self {
         Self {
             raw_tags,
@@ -407,6 +429,7 @@ impl<'a> TagSplitter<'a> {
         }
     }
 
+    /// Creates an empty `TagSplitter`.
     const fn empty() -> Self {
         Self {
             raw_tags: &[],
