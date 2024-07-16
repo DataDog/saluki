@@ -6,7 +6,6 @@
 // to the buffer, and then we waste space doing so when we could have potentially had a more optimal usage if the
 // available capacity was simply larger.
 
-#![allow(dead_code)]
 use std::{
     alloc::Layout,
     collections::BTreeSet,
@@ -44,7 +43,7 @@ const MAX_INTERNABLE_STRING_LENGTH: usize = ENTRY_CAP_MASK;
 //
 // 32 bytes is the minimum size that such a split would need to be.. This accounts for the header itself (24 bytes) plus
 // the smallest possible string capacity (8 bytes, since we always align to 8 bytes).
-const MINIMUM_ENTRY_LEN: usize = HEADER_LEN + 8;
+const MINIMUM_ENTRY_LEN: usize = HEADER_LEN + HEADER_ALIGN;
 
 /// An interned string.
 ///
@@ -79,11 +78,6 @@ struct StringState {
 }
 
 impl StringState {
-    #[cfg(test)]
-    fn get_entry_header(&self) -> &EntryHeader {
-        unsafe { self.header.as_ref() }
-    }
-
     fn get_entry<'a>(&'a self) -> &'a str {
         // NOTE: We're specifically upholding a safety variant here by tying the lifetime of the string reference to our
         // own lifetime, as the lifetime of the string reference *cannot* exceed the lifetime of the interner state,
@@ -226,16 +220,6 @@ impl ReclaimedEntry {
         Self { offset, capacity }
     }
 
-    /// Returns the offset of the reclaimed entry in the data buffer.
-    const fn offset(&self) -> usize {
-        self.offset
-    }
-
-    /// Returns the total size, in bytes, of the reclaimed entry.
-    const fn capacity(&self) -> usize {
-        self.capacity
-    }
-
     /// Returns the maximum string size, in bytes, that the reclaimed entry could hold.
     const fn str_capacity(&self) -> usize {
         self.capacity - HEADER_LEN
@@ -362,31 +346,12 @@ impl InternerShardState {
     }
 
     fn find_entry(&self, hash: u64, s: &str) -> Option<NonNull<EntryHeader>> {
-        /*println!(
-            "find_entry: self={{ptr={:p} cap={} len={}}} hash={} s->len={}",
-            self.ptr,
-            self.capacity.get(),
-            self.len,
-            hash,
-            s.len()
-        );*/
-
         let mut offset = 0;
 
         while offset < self.len {
             // Construct a pointer to the entry at `offset`, and get a reference to the header value.
             let header_ptr = self.get_entry_ptr(offset);
             let header = unsafe { header_ptr.as_ref() };
-
-            /*println!("find_entry iteration: self={{ptr={:p} cap={} len={}}} offset={} header={{cap={} hash={} refs={} len={}}}",
-            self.ptr,
-            self.capacity.get(),
-            self.len,
-                    offset,
-                    header.capacity(),
-                    header.hash,
-                    header.refs.load(Acquire),
-                    header.len());*/
 
             // See if this entry is active or not. If it's active, then we'll quickly check the hash/length of the
             // string to see if this is likely to be a match for `s`.
@@ -403,20 +368,6 @@ impl InternerShardState {
             }
 
             // Either this was a reclaimed entry or we didn't have a match, so we move on to the next entry.
-            let header_size = header.entry_len();
-            if header_size > 100000 {
-                panic!(
-                    "find_entry: self={{ptr={:p} cap={} len={}}} offset={} header={{cap={} hash={} refs={} len={}}}",
-                    self.ptr,
-                    self.capacity.get(),
-                    self.len,
-                    offset,
-                    header.capacity(),
-                    header.hash,
-                    header.refs.load(Acquire),
-                    header.len()
-                );
-            }
             offset += header.entry_len();
         }
 
@@ -431,18 +382,6 @@ impl InternerShardState {
         );
 
         let entry_ptr = self.get_entry_ptr(offset);
-
-        /*println!(
-            "write_entry: self={{ptr={:p} cap={} len={}}} offset={} header={{cap={} hash={} refs={} len={}}}",
-            self.ptr,
-            self.capacity.get(),
-            self.len,
-            offset,
-            entry_header.capacity(),
-            entry_header.hash,
-            entry_header.refs.load(Acquire),
-            entry_header.len()
-        );*/
 
         // Write the entry header.
         unsafe { entry_ptr.as_ptr().write(entry_header) };
@@ -464,15 +403,6 @@ impl InternerShardState {
     }
 
     fn write_to_unoccupied(&mut self, s_hash: u64, s: &str) -> NonNull<EntryHeader> {
-        /*println!(
-            "write_to_unoccupied: self={{ptr={:p} cap={} len={}}} s_hash={} s->len={}",
-            self.ptr,
-            self.capacity.get(),
-            self.len,
-            s_hash,
-            s.len()
-        );*/
-
         let entry_header = EntryHeader::new(s_hash, s);
         let entry_len = entry_header.entry_len();
 
@@ -486,23 +416,11 @@ impl InternerShardState {
     fn write_to_reclaimed_entry(
         &mut self, mut reclaimed_entry: ReclaimedEntry, s_hash: u64, s: &str,
     ) -> NonNull<EntryHeader> {
-        /*println!(
-            "write_to_reclaimed_entry: self={{ptr={:p} cap={} len={}}} rentry={{offset={} cap={} str_cap={}}} s_hash={} s->len={}",
-            self.ptr,
-            self.capacity.get(),
-            self.len,
-            reclaimed_entry.offset,
-            reclaimed_entry.capacity,
-            reclaimed_entry.str_capacity(),
-            s_hash,
-            s.len()
-        );*/
-
         let entry_len = EntryHeader::entry_len_for_str(s);
         let entry_offset = reclaimed_entry.offset;
 
         // First, figure out if we can/should split the reclaimed entry.
-        let remainder = reclaimed_entry.capacity() - entry_len;
+        let remainder = reclaimed_entry.capacity - entry_len;
         if remainder >= MINIMUM_ENTRY_LEN {
             // We can split the reclaimed entry, so we'll update the reclaimed entry to reflect the new entry that's
             // been written, and then add the remainder as a new reclaimed entry.
@@ -531,7 +449,6 @@ impl InternerShardState {
         debug_assert!(entry_offset >= 0, "entry offset must be non-negative");
 
         let header = unsafe { header_ptr.as_ref() };
-        /*println!("add_reclaimed_from_header: self={{ptr={:p} cap={} len={}}} header={{offset={} cap={} hash={} refs={} len={}}}", self.ptr, self.capacity.get(), self.len, entry_offset, header.capacity(), header.hash, header.refs.load(Acquire), header.len());*/
 
         let reclaimed_entry = ReclaimedEntry::new(entry_offset as usize, header.entry_len());
         self.add_reclaimed(reclaimed_entry);
@@ -581,15 +498,6 @@ impl InternerShardState {
             current_entry.merge(next_entry);
         }
 
-        /*println!(
-            "add_reclaimed: self={{ptr={:p} cap={} len={}}} rentry={{offset={} cap={}}}",
-            self.ptr,
-            self.capacity.get(),
-            self.len,
-            current_entry.offset,
-            current_entry.capacity()
-        );*/
-
         self.reclaimed.insert(current_entry);
 
         // Now that we've ensured we have the biggest possible reclaimed entry after merging adjacent entries, we can
@@ -617,15 +525,6 @@ impl InternerShardState {
 
     fn write_entry_tombstone(&mut self, reclaimed_entry: ReclaimedEntry) {
         let entry_ptr = self.get_entry_ptr(reclaimed_entry.offset);
-
-        /*println!(
-            "write_entry_tombstone: self={{ptr={:p} cap={} len={}}} rentry={{offset={} cap={}}}",
-            self.ptr,
-            self.capacity.get(),
-            self.len,
-            reclaimed_entry.offset,
-            reclaimed_entry.capacity,
-        );*/
 
         // Write the entry tombstone itself.
         //
@@ -675,7 +574,7 @@ impl InternerShardState {
         // First, try and see if we have a reclaimed entry that can fit this string and is aligned. If nothing suitable
         // is found, then we'll just try to fit it in the remaining capacity of our data buffer.
         if !self.reclaimed.is_empty() {
-            let maybe_reclaimed_entry = self.reclaimed.iter().find(|re| re.capacity() >= entry_len).copied();
+            let maybe_reclaimed_entry = self.reclaimed.iter().find(|re| re.capacity >= entry_len).copied();
             if let Some(reclaimed_entry) = maybe_reclaimed_entry {
                 // We found a suitable reclaimed entry, so remove it from the list and then write into it.
                 self.reclaimed.remove(&reclaimed_entry);
@@ -718,7 +617,7 @@ struct InternerState<const SHARD_FACTOR: usize> {
 
 impl<const SHARD_FACTOR: usize> InternerState<SHARD_FACTOR> {
     // Ensure our shard factor is a power of two at compile, so that we can just use a mask to get the shard index.
-    const POWER_OF_TWO_SHARD_FACTOR: () = {
+    const _POWER_OF_TWO_SHARD_FACTOR: () = {
         if !SHARD_FACTOR.is_power_of_two() {
             panic!("shard factor must be a power of two")
         }
@@ -985,20 +884,6 @@ mod tests {
         shard.lock().unwrap().reclaimed.first().copied().unwrap()
     }
 
-    fn shard_reclaimed_entries(shard: &Arc<Mutex<InternerShardState>>) -> Vec<ReclaimedEntry> {
-        shard.lock().unwrap().reclaimed.iter().copied().collect()
-    }
-
-    fn do_reclaimed_entries_overlap(a: ReclaimedEntry, b: ReclaimedEntry) -> bool {
-        let a_start = a.offset;
-        let a_end = a.offset + a.capacity() - 1;
-
-        let b_start = b.offset;
-        let b_end = b.offset + b.capacity() - 1;
-
-        (a_start <= b_start && b_start <= a_end) || (a_start <= b_end && b_end <= a_end)
-    }
-
     fn entry_len(s: &str) -> usize {
         EntryHeader::entry_len_for_str(s)
     }
@@ -1114,7 +999,6 @@ mod tests {
         assert!(entry_len(s_medium2) < entry_len(s_large));
 
         // Phase 1: intern our two larger strings.
-        println!("======== phase 1 ========");
         let s1 = intern_for_shard(&shard, s_large).expect("should not fail to intern");
         let s2 = intern_for_shard(&shard, s_medium1).expect("should not fail to intern");
 
@@ -1123,14 +1007,12 @@ mod tests {
         assert_eq!(shard_reclaimed_len(&shard), 0);
 
         // Phase 2: drop `s_large` so it gets reclaimed.
-        println!("======== phase 2 ========");
         drop(s1);
         assert_eq!(shard_entries(&shard), 1);
         assert_eq!(shard_reclaimed_len(&shard), 1);
 
         // Phase 3: intern `s_medium2`, which should fit in the reclaimed entry for `s_large`. This should leave a
         // small, split off reclaimed entry.
-        println!("======== phase 3 ========");
         let s3 = intern_for_shard(&shard, s_medium2).expect("should not fail to intern");
 
         assert_eq!(shard_entries(&shard), 2);
@@ -1138,7 +1020,6 @@ mod tests {
 
         // Phase 4: intern `s_small`, which should not fit in the leftover reclaimed entry from `s_large` _or_ the
         // available capacity.
-        println!("======== phase 4 ========");
         let s4 = intern_for_shard(&shard, s_small);
         assert_eq!(s4, None);
 
@@ -1335,11 +1216,6 @@ mod tests {
         // The reclaimed entry should be the sum of the reclaimed entries for `s1`, `s2`, and `s3`.
         let merged_reclaimed = shard_first_reclaimed_entry(&shard);
 
-        println!(
-            "s1 entry: {:?}, s2 entry: {:?}, s3 entry: {:?}",
-            s1_reclaimed_expected, s2_reclaimed_expected, s3_reclaimed_expected
-        );
-
         let mut expected_reclaimed = s1_reclaimed_expected;
         expected_reclaimed.merge(s2_reclaimed_expected);
         expected_reclaimed.merge(s3_reclaimed_expected);
@@ -1386,6 +1262,20 @@ mod tests {
     #[cfg(feature = "loom")]
     #[test]
     fn concurrent_drop_and_intern() {
+        fn shard_reclaimed_entries(shard: &Arc<Mutex<InternerShardState>>) -> Vec<ReclaimedEntry> {
+            shard.lock().unwrap().reclaimed.iter().copied().collect()
+        }
+
+        fn do_reclaimed_entries_overlap(a: ReclaimedEntry, b: ReclaimedEntry) -> bool {
+            let a_start = a.offset;
+            let a_end = a.offset + a.capacity - 1;
+
+            let b_start = b.offset;
+            let b_end = b.offset + b.capacity - 1;
+
+            (a_start <= b_start && b_start <= a_end) || (a_start <= b_end && b_end <= a_end)
+        }
+
         const STRING_TO_INTERN: &str = "hello, world!";
 
         // This test is meant to explore the thread orderings when one thread is trying to drop (and thus reclaim) the
