@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 
-use memory_accounting::MemoryLimiter;
+use memory_accounting::{
+    allocator::{Tracked, TrackingToken},
+    MemoryLimiter,
+};
 use saluki_error::{generic_error, GenericError};
 use tokio::{sync::mpsc, task::JoinHandle};
-use tracing::{debug, error_span, Instrument as _};
+use tracing::{debug, error_span};
 
 use crate::{
     components::{
@@ -13,6 +16,7 @@ use crate::{
         ComponentContext,
     },
     pooling::FixedSizeObjectPool,
+    spawn_traced,
 };
 
 use super::{
@@ -31,16 +35,16 @@ use super::{
 /// A built topology must be spawned via [`spawn`][Self::spawn].
 pub struct BuiltTopology {
     graph: Graph,
-    sources: HashMap<ComponentId, Box<dyn Source + Send>>,
-    transforms: HashMap<ComponentId, Box<dyn Transform + Send>>,
-    destinations: HashMap<ComponentId, Box<dyn Destination + Send>>,
+    sources: HashMap<ComponentId, Tracked<Box<dyn Source + Send>>>,
+    transforms: HashMap<ComponentId, Tracked<Box<dyn Transform + Send>>>,
+    destinations: HashMap<ComponentId, Tracked<Box<dyn Destination + Send>>>,
 }
 
 impl BuiltTopology {
     pub(crate) fn from_parts(
-        graph: Graph, sources: HashMap<ComponentId, Box<dyn Source + Send>>,
-        transforms: HashMap<ComponentId, Box<dyn Transform + Send>>,
-        destinations: HashMap<ComponentId, Box<dyn Destination + Send>>,
+        graph: Graph, sources: HashMap<ComponentId, Tracked<Box<dyn Source + Send>>>,
+        transforms: HashMap<ComponentId, Tracked<Box<dyn Transform + Send>>>,
+        destinations: HashMap<ComponentId, Tracked<Box<dyn Destination + Send>>>,
     ) -> Self {
         Self {
             graph,
@@ -119,6 +123,8 @@ impl BuiltTopology {
         let mut source_handles = Vec::new();
 
         for (component_id, source) in self.sources {
+            let (component_token, source) = source.into_parts();
+
             let forwarder = forwarders
                 .remove(&component_id)
                 .ok_or_else(|| generic_error!("No forwarder found for component '{}'", component_id))?;
@@ -134,13 +140,15 @@ impl BuiltTopology {
                 memory_limiter.clone(),
             );
 
-            source_handles.push(spawn_source(source, context));
+            source_handles.push(spawn_source(source, component_token, context));
         }
 
         // Spawn our transforms.
         let mut transform_handles = Vec::new();
 
         for (component_id, transform) in self.transforms {
+            let (component_token, transform) = transform.into_parts();
+
             let forwarder = forwarders
                 .remove(&component_id)
                 .ok_or_else(|| generic_error!("No forwarder found for component '{}'", component_id))?;
@@ -158,13 +166,15 @@ impl BuiltTopology {
                 memory_limiter.clone(),
             );
 
-            transform_handles.push(spawn_transform(transform, context));
+            transform_handles.push(spawn_transform(transform, component_token, context));
         }
 
         // Spawn our destinations.
         let mut destination_handles = Vec::new();
 
         for (component_id, destination) in self.destinations {
+            let (component_token, destination) = destination.into_parts();
+
             let event_stream = event_streams
                 .remove(&component_id)
                 .ok_or_else(|| generic_error!("No event stream found for component '{}'", component_id))?;
@@ -172,7 +182,7 @@ impl BuiltTopology {
             let component_context = ComponentContext::destination(component_id);
             let context = DestinationContext::new(component_context, event_stream, memory_limiter.clone());
 
-            destination_handles.push(spawn_destination(destination, context));
+            destination_handles.push(spawn_destination(destination, component_token, context));
         }
 
         Ok(RunningTopology::from_parts(
@@ -184,33 +194,49 @@ impl BuiltTopology {
     }
 }
 
-fn spawn_source(source: Box<dyn Source + Send>, context: SourceContext) -> JoinHandle<Result<(), ()>> {
-    let component_span = error_span!(
-        "component",
-        "type" = context.component_context().component_type(),
-        id = %context.component_context().component_id(),
-    );
-    tokio::spawn(async move { source.run(context).instrument(component_span).await })
-}
-
-fn spawn_transform(transform: Box<dyn Transform + Send>, context: TransformContext) -> JoinHandle<Result<(), ()>> {
-    let component_span = error_span!(
-        "component",
-        "type" = context.component_context().component_type(),
-        id = %context.component_context().component_id(),
-    );
-    tokio::spawn(async move { transform.run(context).instrument(component_span).await })
-}
-
-fn spawn_destination(
-    destination: Box<dyn Destination + Send>, context: DestinationContext,
+fn spawn_source(
+    source: Box<dyn Source + Send>, component_token: TrackingToken, context: SourceContext,
 ) -> JoinHandle<Result<(), ()>> {
     let component_span = error_span!(
         "component",
         "type" = context.component_context().component_type(),
         id = %context.component_context().component_id(),
     );
-    tokio::spawn(async move { destination.run(context).instrument(component_span).await })
+
+    let _span = component_span.enter();
+    let _guard = component_token.enter();
+
+    spawn_traced(async move { source.run(context).await })
+}
+
+fn spawn_transform(
+    transform: Box<dyn Transform + Send>, component_token: TrackingToken, context: TransformContext,
+) -> JoinHandle<Result<(), ()>> {
+    let component_span = error_span!(
+        "component",
+        "type" = context.component_context().component_type(),
+        id = %context.component_context().component_id(),
+    );
+
+    let _span = component_span.enter();
+    let _guard = component_token.enter();
+
+    spawn_traced(async move { transform.run(context).await })
+}
+
+fn spawn_destination(
+    destination: Box<dyn Destination + Send>, component_token: TrackingToken, context: DestinationContext,
+) -> JoinHandle<Result<(), ()>> {
+    let component_span = error_span!(
+        "component",
+        "type" = context.component_context().component_type(),
+        id = %context.component_context().component_id(),
+    );
+
+    let _span = component_span.enter();
+    let _guard = component_token.enter();
+
+    spawn_traced(async move { destination.run(context).await })
 }
 
 fn build_interconnect_channel() -> (mpsc::Sender<EventBuffer>, mpsc::Receiver<EventBuffer>) {
