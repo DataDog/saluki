@@ -1,5 +1,9 @@
 //! A global allocator that tracks allocations and deallocations and attributes them to specific components.
 
+// TODO: The current design does not allow for deregistering components, which is currently fine and likely will be for
+// a while, but would be a limitation in a world where we dynamically launched data pipelines and wanted to clean up
+// removed components, and so on.
+
 use std::{
     alloc::{GlobalAlloc, Layout},
     cell::RefCell,
@@ -16,7 +20,6 @@ use std::{
 };
 
 use pin_project::pin_project;
-use ubyte::ToByteUnit as _;
 
 const STATS_LAYOUT: Layout = Layout::new::<*const AllocationStats>();
 
@@ -99,6 +102,16 @@ impl AllocationStats {
         }
     }
 
+    /// Gets a reference to the root component.
+    pub fn root() -> &'static Self {
+        &ROOT_COMPONENT
+    }
+
+    /// Returns `true` if the given component has allocated any memory at all.
+    pub fn has_allocated(&self) -> bool {
+        self.allocated_bytes.load(Relaxed) > 0
+    }
+
     #[inline]
     fn track_allocation(&self, size: usize) {
         self.allocated_bytes.fetch_add(size, Relaxed);
@@ -111,24 +124,55 @@ impl AllocationStats {
         self.deallocated_objects.fetch_add(1, Relaxed);
     }
 
-    /// Gets the total number of bytes allocated by this component.
-    pub fn allocated_bytes(&self) -> usize {
-        self.allocated_bytes.load(Relaxed)
+    /// Consumes the current value of each statistics, resetting them to zero.
+    ///
+    /// Deltas represent the total change in each value since the _last_ delta, and the caller must keep track of these
+    /// changes themselves if they wish to track the total values over the life of the process.
+    pub fn consume(&self) -> AllocationStatsDelta {
+        AllocationStatsDelta {
+            allocated_bytes: self.allocated_bytes.swap(0, Relaxed),
+            allocated_objects: self.allocated_objects.swap(0, Relaxed),
+            deallocated_bytes: self.deallocated_bytes.swap(0, Relaxed),
+            deallocated_objects: self.deallocated_objects.swap(0, Relaxed),
+        }
+    }
+}
+
+/// Delta allocation statistics for a component.
+pub struct AllocationStatsDelta {
+    /// Number of allocated bytes since the last delta.
+    pub allocated_bytes: usize,
+
+    /// Number of allocated objects since the last delta.
+    pub allocated_objects: usize,
+
+    /// Number of deallocated bytes since the last delta.
+    pub deallocated_bytes: usize,
+
+    /// Number of deallocated objects since the last delta.
+    pub deallocated_objects: usize,
+}
+
+impl AllocationStatsDelta {
+    /// Creates an empty `AllocationStatsDelta`.
+    pub const fn empty() -> Self {
+        Self {
+            allocated_bytes: 0,
+            allocated_objects: 0,
+            deallocated_bytes: 0,
+            deallocated_objects: 0,
+        }
     }
 
-    /// Gets the total number of objects allocated by this component.
-    pub fn allocated_objects(&self) -> usize {
-        self.allocated_objects.load(Relaxed)
-    }
-
-    /// Gets the total number of bytes deallocated by this component.
-    pub fn deallocated_bytes(&self) -> usize {
-        self.deallocated_bytes.load(Relaxed)
-    }
-
-    /// Gets the total number of objects deallocated by this component.
-    pub fn deallocated_objects(&self) -> usize {
-        self.deallocated_objects.load(Relaxed)
+    /// Merges `other` into `self`.
+    ///
+    /// This can be used to accumulate the total number of (de)allocated bytes and objects when handling the deltas
+    /// generated from `AllocationStats::consume`.
+    pub fn merge(&mut self, other: &Self) {
+        self.allocated_bytes += other.allocated_bytes;
+        self.allocated_objects += other.allocated_objects;
+        self.deallocated_bytes += other.deallocated_bytes;
+        self.deallocated_objects += other.deallocated_objects;
     }
 }
 
@@ -318,57 +362,4 @@ where
     let token = TrackingToken::root();
     let _enter = token.enter();
     f()
-}
-
-/// Spawns a background reporter that prints component allocation statistics every 5 seconds.
-pub fn spawn_background_reporter() {
-    const REPORTING_DURATION_SECS: u64 = 5;
-
-    std::thread::spawn(|| {
-        let registry = ComponentRegistry::global();
-
-        let mut previous_allocated_bytes = 0;
-        let mut previous_allocated_objects = 0;
-
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(REPORTING_DURATION_SECS));
-
-            let mut total_live_bytes = 0;
-            let mut total_live_objects = 0;
-            let mut allocated_bytes = 0;
-            let mut allocated_objects = 0;
-
-            println!("Component allocation statistics:");
-            registry.visit_components(|name, stats| {
-                let live_bytes = stats.allocated_bytes() - stats.deallocated_bytes();
-                let live_objects = stats.allocated_objects() - stats.deallocated_objects();
-                total_live_bytes += live_bytes;
-                total_live_objects += live_objects;
-                allocated_bytes += stats.allocated_bytes();
-                allocated_objects += stats.allocated_objects();
-
-                println!("  {}: {} live ({} objects)", name, live_bytes.bytes(), live_objects);
-            });
-
-            let delta_live_bytes = (allocated_bytes - previous_allocated_bytes) / REPORTING_DURATION_SECS as usize;
-            let delta_live_objects =
-                (allocated_objects - previous_allocated_objects) / REPORTING_DURATION_SECS as usize;
-
-            previous_allocated_bytes = allocated_bytes;
-            previous_allocated_objects = allocated_objects;
-
-            println!("--------------------------------");
-            println!(
-                "total: {} live ({} objects)",
-                total_live_bytes.bytes(),
-                total_live_objects
-            );
-
-            println!(
-                "allocation rate: {}/second ({} objects/second)\n",
-                delta_live_bytes.bytes(),
-                delta_live_objects
-            );
-        }
-    });
 }
