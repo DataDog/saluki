@@ -198,9 +198,12 @@ impl ComponentAllocationMetrics {
         self.allocated_bytes_total.increment(delta.allocated_bytes as u64);
         self.allocated_objects_total.increment(delta.allocated_objects as u64);
         self.deallocated_bytes_total.increment(delta.deallocated_bytes as u64);
-        self.deallocated_objects_total.increment(delta.deallocated_objects as u64);
-        self.allocated_bytes_live.set((self.totals.allocated_bytes - self.totals.deallocated_bytes) as f64);
-        self.allocated_objects_live.set((self.totals.allocated_objects - self.totals.deallocated_objects) as f64);
+        self.deallocated_objects_total
+            .increment(delta.deallocated_objects as u64);
+        self.allocated_bytes_live
+            .set((self.totals.allocated_bytes - self.totals.deallocated_bytes) as f64);
+        self.allocated_objects_live
+            .set((self.totals.allocated_objects - self.totals.deallocated_objects) as f64);
     }
 }
 
