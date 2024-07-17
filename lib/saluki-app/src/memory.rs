@@ -1,12 +1,21 @@
 //! Memory management.
 
-use std::collections::VecDeque;
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::atomic::{AtomicBool, Ordering::Relaxed},
+    time::Duration,
+};
 
-use memory_accounting::{BoundsVerifier, MemoryBoundsBuilder, MemoryGrant, MemoryLimiter, VerifiedBounds};
+use memory_accounting::{
+    allocator::{AllocationStats, AllocationStatsDelta, ComponentRegistry},
+    BoundsVerifier, MemoryBoundsBuilder, MemoryGrant, MemoryLimiter, VerifiedBounds,
+};
+use metrics::{counter, gauge, Counter, Gauge};
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
-use tracing::info;
+use tokio::time::sleep;
+use tracing::{info, warn};
 use ubyte::{ByteUnit, ToByteUnit as _};
 
 const fn default_memory_slop_factor() -> f64 {
@@ -157,4 +166,90 @@ fn print_verified_bounds(bounds: VerifiedBounds) {
     }
 
     info!("");
+}
+
+struct ComponentAllocationMetrics {
+    totals: AllocationStatsDelta,
+    allocated_bytes_total: Counter,
+    allocated_bytes_live: Gauge,
+    allocated_objects_total: Counter,
+    allocated_objects_live: Gauge,
+    deallocated_bytes_total: Counter,
+    deallocated_objects_total: Counter,
+}
+
+impl ComponentAllocationMetrics {
+    fn new(component_name: &str) -> Self {
+        Self {
+            totals: AllocationStatsDelta::empty(),
+            allocated_bytes_total: counter!("component_allocated_bytes_total", "component_id" => component_name.to_string()),
+            allocated_bytes_live: gauge!("component_allocated_bytes_live", "component_id" => component_name.to_string()),
+            allocated_objects_total: counter!("component_allocated_objects_total", "component_id" => component_name.to_string()),
+            allocated_objects_live: gauge!("component_allocated_objects_live", "component_id" => component_name.to_string()),
+            deallocated_bytes_total: counter!("component_deallocated_bytes_total", "component_id" => component_name.to_string()),
+            deallocated_objects_total: counter!("component_deallocated_objects_total", "component_id" => component_name.to_string()),
+        }
+    }
+
+    fn update(&mut self, stats: &AllocationStats) {
+        let delta = stats.consume();
+        self.totals.merge(&delta);
+
+        self.allocated_bytes_total.increment(delta.allocated_bytes as u64);
+        self.allocated_objects_total.increment(delta.allocated_objects as u64);
+        self.deallocated_bytes_total.increment(delta.deallocated_bytes as u64);
+        self.deallocated_objects_total
+            .increment(delta.deallocated_objects as u64);
+        self.allocated_bytes_live
+            .set((self.totals.allocated_bytes - self.totals.deallocated_bytes) as f64);
+        self.allocated_objects_live
+            .set((self.totals.allocated_objects - self.totals.deallocated_objects) as f64);
+    }
+}
+
+/// Initializes the memory allocator telemetry subsystem.
+///
+/// This spawns a background task that will periodically collect memory usage statistics, such as which components are
+/// responsible for which portion of the live heap, and report them as internal telemetry.
+///
+/// ## Errors
+///
+/// If the memory allocator subsystem has already been initialized, an error will be returned.
+pub async fn initialize_allocator_telemetry() -> Result<(), GenericError> {
+    static INIT: AtomicBool = AtomicBool::new(false);
+    if INIT.swap(true, Relaxed) {
+        return Err(generic_error!("Memory allocator subsystem already initialized."));
+    }
+
+    // We can't enforce, at compile-time, that the tracking allocator must be installed if a caller is trying to
+    // initialize the allocator's reporting infrastructure... but we can at least warn them if we detect it's not
+    // installed.
+    //
+    // (Our logic here is that since a custom global allocator is used for _everything_ by default, the root component
+    // _has_ to have handled some allocations by the point we get here if it's actually installed.)
+    if !AllocationStats::root().has_allocated() {
+        warn!("Tracking allocator not detected. Memory telemetry will not be available.");
+    }
+
+    // Spawn the background task that will periodically collect memory usage statistics.
+    tokio::spawn(async {
+        let mut metrics = HashMap::new();
+
+        loop {
+            sleep(Duration::from_secs(1)).await;
+
+            ComponentRegistry::global().visit_components(|component_name, stats| {
+                let component_metrics = match metrics.get_mut(component_name) {
+                    Some(component_metrics) => component_metrics,
+                    None => metrics
+                        .entry(component_name.to_string())
+                        .or_insert_with(|| ComponentAllocationMetrics::new(component_name)),
+                };
+
+                component_metrics.update(stats);
+            })
+        }
+    });
+
+    Ok(())
 }

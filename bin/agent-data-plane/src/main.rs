@@ -23,12 +23,16 @@ use tracing::{error, info};
 
 use saluki_app::{
     logging::{fatal_and_exit, initialize_logging},
-    memory::{initialize_memory_bounds, MemoryBoundsConfiguration},
+    memory::{initialize_allocator_telemetry, initialize_memory_bounds, MemoryBoundsConfiguration},
     metrics::initialize_metrics,
 };
 use saluki_core::topology::TopologyBlueprint;
 
 use crate::env_provider::ADPEnvironmentProvider;
+
+#[global_allocator]
+static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System> =
+    memory_accounting::allocator::TrackingAllocator::new(std::alloc::System);
 
 const ADP_VERSION: &str = env!("ADP_VERSION");
 const ADP_BUILD_DESC: &str = env!("ADP_BUILD_DESC");
@@ -43,6 +47,10 @@ async fn main() {
 
     if let Err(e) = initialize_metrics("datadog.saluki").await {
         fatal_and_exit(format!("failed to initialize metrics: {}", e));
+    }
+
+    if let Err(e) = initialize_allocator_telemetry().await {
+        fatal_and_exit(format!("failed to initialize allocator telemetry: {}", e));
     }
 
     match run(started).await {

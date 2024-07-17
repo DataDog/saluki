@@ -9,6 +9,7 @@ use std::collections::HashMap;
 #[cfg(test)]
 pub mod test_util;
 
+pub mod allocator;
 mod builder;
 pub use self::builder::MemoryBoundsBuilder;
 

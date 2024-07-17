@@ -7,6 +7,7 @@ use saluki_context::ContextResolver;
 use saluki_core::{
     components::{sources::*, MetricsBuilder},
     pooling::{FixedSizeObjectPool, ObjectPool as _},
+    spawn_traced,
     topology::{
         shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
         OutputDefinition,
@@ -29,7 +30,7 @@ use serde::Deserialize;
 use snafu::{ResultExt as _, Snafu};
 use stringtheory::interning::FixedSizeInterner;
 use tokio::select;
-use tracing::{debug, error, info, trace, Instrument as _};
+use tracing::{debug, error, info, trace};
 use ubyte::ByteUnit;
 
 mod framer;
@@ -310,7 +311,7 @@ impl Source for DogStatsD {
                 origin_detection: self.origin_detection,
             };
 
-            tokio::spawn(process_listener(context.clone(), listener_context).in_current_span());
+            spawn_traced(process_listener(context.clone(), listener_context));
         }
 
         info!("DogStatsD source started.");
@@ -362,7 +363,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
                             .with_metrics_builder(MetricsBuilder::from_component_context(source_context.component_context()))
                             .into_deserializer(stream),
                     };
-                    tokio::spawn(process_stream(source_context.clone(), handler_context).in_current_span());
+                    spawn_traced(process_stream(source_context.clone(), handler_context));
                 }
                 Err(e) => {
                     error!(%listen_addr, error = %e, "Failed to accept connection. Stopping listener.");
