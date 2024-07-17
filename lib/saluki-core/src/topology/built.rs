@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
 use memory_accounting::{
-    allocator::{Track as _, Tracked, TrackingToken},
+    allocator::{Tracked, TrackingToken},
     MemoryLimiter,
 };
 use saluki_error::{generic_error, GenericError};
 use tokio::{sync::mpsc, task::JoinHandle};
-use tracing::{debug, error_span, Instrument as _};
+use tracing::{debug, error_span};
 
 use crate::{
     components::{
@@ -16,6 +16,7 @@ use crate::{
         ComponentContext,
     },
     pooling::FixedSizeObjectPool,
+    spawn_traced,
 };
 
 use super::{
@@ -202,13 +203,10 @@ fn spawn_source(
         id = %context.component_context().component_id(),
     );
 
-    tokio::spawn(async move {
-        source
-            .run(context)
-            .instrument(component_span)
-            .track_allocations(component_token)
-            .await
-    })
+    let _span = component_span.enter();
+    let _guard = component_token.enter();
+
+    spawn_traced(async move { source.run(context).await })
 }
 
 fn spawn_transform(
@@ -220,13 +218,10 @@ fn spawn_transform(
         id = %context.component_context().component_id(),
     );
 
-    tokio::spawn(async move {
-        transform
-            .run(context)
-            .instrument(component_span)
-            .track_allocations(component_token)
-            .await
-    })
+    let _span = component_span.enter();
+    let _guard = component_token.enter();
+
+    spawn_traced(async move { transform.run(context).await })
 }
 
 fn spawn_destination(
@@ -238,13 +233,10 @@ fn spawn_destination(
         id = %context.component_context().component_id(),
     );
 
-    tokio::spawn(async move {
-        destination
-            .run(context)
-            .instrument(component_span)
-            .track_allocations(component_token)
-            .await
-    })
+    let _span = component_span.enter();
+    let _guard = component_token.enter();
+
+    spawn_traced(async move { destination.run(context).await })
 }
 
 fn build_interconnect_channel() -> (mpsc::Sender<EventBuffer>, mpsc::Receiver<EventBuffer>) {

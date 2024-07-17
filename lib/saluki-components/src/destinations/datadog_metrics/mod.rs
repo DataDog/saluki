@@ -3,12 +3,13 @@ use std::error::Error as _;
 use async_trait::async_trait;
 use http::{Request, Uri};
 use http_body_util::BodyExt as _;
-use memory_accounting::{allocator::Track as _, MemoryBounds, MemoryBoundsBuilder};
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::Counter;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{destinations::*, ComponentContext, MetricsBuilder},
     pooling::{FixedSizeObjectPool, ObjectPool},
+    spawn_traced,
 };
 use saluki_error::GenericError;
 use saluki_event::DataType;
@@ -18,7 +19,7 @@ use saluki_io::{
 };
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error, trace, Instrument as _};
+use tracing::{debug, error, trace};
 
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
@@ -227,11 +228,7 @@ where
         let (io_shutdown_tx, io_shutdown_rx) = oneshot::channel();
         let (requests_tx, requests_rx) = mpsc::channel(32);
         let metrics = Metrics::from_component_context(context.component_context());
-        tokio::spawn(
-            run_io_loop(requests_rx, io_shutdown_tx, http_client, metrics.clone())
-                .in_current_span()
-                .in_current_component(),
-        );
+        spawn_traced(run_io_loop(requests_rx, io_shutdown_tx, http_client, metrics.clone()));
 
         debug!("Datadog Metrics destination started.");
 
