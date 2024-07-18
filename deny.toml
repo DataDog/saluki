@@ -34,9 +34,10 @@ license-files = [
 
 [sources]
 allow-git = [
-    # Git dependency for `containerd-client` to add specific `prost-build` settings that allow type-erased payloads in
-    # containerd events to be decoded.
+    # Git dependency for `containerd-client` to:
+    # - add specific `prost-build` settings that allow type-erased payloads in containerd events to be decoded
+    # - update to tonic 0.12/prost 0.13 to eliminate having both hyper 0.14/hyper 1.0 in the the dep tree
     #
-    # Will be removed once a new release (current is 0.5.0) is published.
-    "https://github.com/containerd/rust-extensions",
+    # Will be removed once all work is upstreamed and a release is published.
+    "https://github.com/tobz/rust-extensions",
 ]

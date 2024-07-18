@@ -54,16 +54,16 @@ async-compression = { version = "0.4.11", default-features = false }
 bitmask-enum = { version = "2.2", default-features = false }
 figment = { version = "0.10", default-features = false }
 float_eq = { version = "1.0", default-features = false }
-hostname = { version = "0.3", default-features = false }
+hostname = { version = "0.4", default-features = false }
 http = { version = "1", default-features = false }
 http-body = { version = "1", default-features = false }
 http-body-util = { version = "0.1.0", default-features = false }
 hyper = { version = "1", default-features = false }
-hyper-rustls = { version = "0.26.0", default-features = false }
+hyper-rustls = { version = "0.27.0", default-features = false }
 hyper-util = { version = "0.1.3", default-features = false }
 indexmap = { version = "2", default-features = false }
-k8s-openapi = { version = "0.21", default-features = false }
-kube = { version = "0.89", default-features = false }
+k8s-openapi = { version = "0.22", default-features = false }
+kube = { version = "0.92", default-features = false }
 memchr = { version = "2.7", default-features = false }
 metrics = { version = "0.23", default-features = false }
 metrics-util = { version = "0.17", default-features = false }
@@ -72,12 +72,12 @@ ordered-float = { version = "4.2.0", default-features = false }
 paste = { version = "1", default-features = false }
 pin-project = { version = "1.1", default-features = false }
 proptest = { version = "1.4", default-features = false }
-prost = { version = "0.12", default-features = false }
+prost = { version = "0.13", default-features = false }
 quanta = { version = "0.12", default-features = false }
 rand = { version = "0.8.5", default-features = false }
 rand_distr = { version = "0.4.3", default-features = false }
 regex = { version = "1.10", default-features = false }
-rustls = { version = "0.22", default-features = false }
+rustls = { version = "0.23", default-features = false }
 similar-asserts = { version = "1.5", default-features = false }
 slab = { version = "0.4", default-features = false }
 tokio-util = { version = "0.7.10", default-features = false }
@@ -90,17 +90,17 @@ noisy_float = { version = "0.2", default-features = false }
 libc = { version = "0.2.153", default-features = false }
 socket2 = { version = "0.5.7", default-features = false }
 containerd-client = { version = "0.5.0", default-features = false }
-tonic-build = { version = "0.11", default-features = false }
-tonic = { version = "0.11", default-features = false }
+tonic-build = { version = "0.12", default-features = false }
+tonic = { version = "0.12", default-features = false }
 arc-swap = { version = "1.7.1", default-features = false }
 async-stream = { version = "0.3.5", default-features = false }
 futures = { version = "0.3.30", default-features = false }
 oci-spec = { version = "0.6.5", default-features = false }
-prost-types = { version = "0.12", default-features = false }
+prost-types = { version = "0.13", default-features = false }
 serde_json = { version = "1.0.116", default-features = false }
-headers = { version = "0.3", default-features = false }
+headers = { version = "0.4", default-features = false }
 rustls-pemfile = { version = "2", default-features = false }
-tokio-rustls = { version = "0.25.0", default-features = false }
+tokio-rustls = { version = "0.26.0", default-features = false }
 anyhow = { version = "1", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 ubyte = { version = "0.10", default-features = false, features = ["serde"] }
@@ -115,11 +115,12 @@ simdutf8 = { version = "0.1.4", default-features = false }
 smallvec = { version = "1.13", default-features = false }
 
 [patch.crates-io]
-# Git dependency for `containerd-client` to add specific `prost-build` settings that allow type-erased payloads in
-# containerd events to be decoded.
+# Git dependency for `containerd-client` to:
+# - add specific `prost-build` settings that allow type-erased payloads in containerd events to be decoded
+# - update to tonic 0.12/prost 0.13 to eliminate having both hyper 0.14/hyper 1.0 in the the dep tree
 #
-# Will be removed once a new release (current is 0.5.0) is published.
-containerd-client = { git = "https://github.com/containerd/rust-extensions", branch = "main" }
+# Will be removed once all work is upstreamed and a release is published.
+containerd-client = { git = "https://github.com/tobz/rust-extensions", branch = "tobz/tonic-0.12-prost-0.13" }
 
 [profile.release]
 lto = "thin"

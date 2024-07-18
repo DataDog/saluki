@@ -7,6 +7,7 @@ use containerd_client::{
     Client,
 };
 use futures::{Stream, StreamExt as _, TryStreamExt as _};
+use hyper_util::rt::TokioIo;
 use saluki_config::GenericConfiguration;
 use snafu::{ResultExt as _, Snafu};
 use tokio::net::UnixStream;
@@ -73,7 +74,10 @@ impl ContainerdClient {
         let channel = Endpoint::try_from("https://[::]")
             .unwrap()
             .connect_timeout(CONTAINERD_CONNECT_TIMEOUT)
-            .connect_with_connector(service_fn(move |_| UnixStream::connect(socket_path.clone())))
+            .connect_with_connector(service_fn(move |_| {
+                let socket_path = socket_path.clone();
+                async move { UnixStream::connect(socket_path).await.map(TokioIo::new) }
+            }))
             .await
             .context(Tonic)?;
 

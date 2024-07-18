@@ -5,13 +5,12 @@ use datadog_protos::agent::{
     AgentSecureClient, EntityId as RemoteEntityId, EventType, FetchEntityRequest, StreamTagsRequest,
     TagCardinality as RemoteTagCardinality,
 };
-use hyper::Uri;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::sync::mpsc;
 use tonic::{
     service::interceptor::InterceptedService,
-    transport::{Channel, Endpoint},
+    transport::{Channel, Endpoint, Uri},
     Code,
 };
 use tracing::{debug, warn};
