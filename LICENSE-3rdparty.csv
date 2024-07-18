@@ -138,7 +138,7 @@ num_cpus,https://github.com/seanmonstar/num_cpus,MIT OR Apache-2.0,Sean McArthur
 num_threads,https://github.com/jhpratt/num_threads,MIT OR Apache-2.0,Jacob Pratt <open-source@jhpratt.dev>
 object,https://github.com/gimli-rs/object,Apache-2.0 OR MIT,The object Authors
 once_cell,https://github.com/matklad/once_cell,MIT OR Apache-2.0,Aleksey Kladov <aleksey.kladov@gmail.com>
-oorandom,https://sr.ht/~icefox/oorandom,MIT,Simon Heath <icefox@dreamquest.io>
+oorandom,https://hg.sr.ht/~icefox/oorandom,MIT,Simon Heath <icefox@dreamquest.io>
 openssl-probe,https://github.com/alexcrichton/openssl-probe,MIT OR Apache-2.0,Alex Crichton <alex@alexcrichton.com>
 ordered-float,https://github.com/reem/rust-ordered-float,MIT,"Jonathan Reem <jonathan.reem@gmail.com>, Matt Brubeck <mbrubeck@limpet.net>"
 overload,https://github.com/danaugrs/overload,MIT,Daniel Salvadori <danaugrs@gmail.com>
