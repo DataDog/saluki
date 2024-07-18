@@ -1,0 +1,82 @@
+# Generic component-level labels and high-level groupings.
+"area/core":
+  - changed-files:
+    - any-glob-to-any-file: 
+      - "lib/saluki-core/**/*"
+      - "lib/saluki-context/**/*"
+      - "lib/saluki-event/**/*"
+      - "lib/saluki-error/**/*"
+      - "lib/ddsketch-agent/**/*"
+
+"area/config":
+  - changed-files:
+    - any-glob-to-any-file:
+      - "lib/saluki-config/**/*"
+      - "lib/saluki-env/**/*"
+
+"area/ci":
+  - changed-files:
+    - any-glob-to-any-file:
+      - ".gitlab/**/*"
+      - ".ci/**/*"
+      - "test/smp/**/*"
+      - ".gitlab-ci.yml"
+
+"area/components":
+  - changed-files:
+    - any-glob-to-any-file:
+      - "lib/saluki-components/**/*"
+
+"area/io":
+  - changed-files:
+    - any-glob-to-any-file:
+      - "lib/saluki-io/**/*"
+      - "lib/datadog-protos/**/*"
+
+"area/memory":
+  - changed-files:
+    - any-glob-to-any-file:
+      - "lib/memory-accounting/**/*"
+      - "lib/stringtheory/**/*"
+
+"area/observability":
+  - changed-files:
+    - any-glob-to-any-file:
+      - "lib/saluki-app/**/*"
+      - "lib/saluki-metrics/**/*"
+
+"source/dogstatsd":
+  - changed-files:
+    - any-glob-to-any-file: ["lib/saluki-components/src/sources/dogstatsd/**/*"]
+
+"source/internal-metrics":
+  - changed-files:
+    - any-glob-to-any-file: ["lib/saluki-components/src/sources/internal_metrics/**/*"]
+
+"transform/aggregate":
+  - changed-files:
+    - any-glob-to-any-file: ["lib/saluki-components/src/transforms/aggregate/**/*"]
+
+"transform/chained":
+  - changed-files:
+    - any-glob-to-any-file: ["lib/saluki-components/src/transforms/chained/**/*"]
+
+"transform/host-enrichment":
+  - changed-files:
+    - any-glob-to-any-file: ["lib/saluki-components/src/transforms/host_enrichment/**/*"]
+
+"transform/origin-enrichment":
+  - changed-files:
+    - any-glob-to-any-file: ["lib/saluki-components/src/transforms/origin_enrichment/**/*"]
+
+"destination/blackhole":
+  - changed-files:
+    - any-glob-to-any-file: ["lib/saluki-components/src/destinations/blackhole/**/*"]
+
+"destination/datadog-metrics":
+  - changed-files:
+    - any-glob-to-any-file: ["lib/saluki-components/src/destinations/datadog_metrics/**/*"]
+
+"destination/prometheus":
+  - changed-files:
+    - any-glob-to-any-file: ["lib/saluki-components/src/destinations/prometheus/**/*"]
