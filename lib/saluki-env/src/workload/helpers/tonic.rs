@@ -1,7 +1,7 @@
 use std::{path::Path, str::FromStr as _, sync::Arc};
 
-use hyper::client::HttpConnector;
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
+use hyper_util::client::legacy::connect::HttpConnector;
 use saluki_error::{generic_error, GenericError};
 use tokio_rustls::rustls::{
     client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
