@@ -128,6 +128,32 @@ endif
 
 ##@ Running
 
+.PHONY: run-adp
+run-adp: build-adp
+run-adp: ## Runs ADP locally (requires Datadog Agent for tagging)
+ifeq ($(shell test -f /etc/datadog-agent/auth/token || echo not-found), not-found)
+	$(error "Authentication token not found at /etc/datadog-agent/auth/token. Is the Datadog Agent running? Is the current user in the right group to access it?")
+endif
+ifeq ($(shell test -n "$(DD_API_KEY)" || echo not-found), not-found)
+	$(error "API key not set. Please set the DD_API_KEY environment variable.")
+endif
+	@echo "[*] Running ADP..."
+	@DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_SOCKET=/tmp/adp-dsd.sock DD_DOGSTATSD_EXPIRY_SECONDS=30 \
+	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:6000 DD_LOG_LEVEL=info \
+	target/release/agent-data-plane
+
+.PHONY: run-adp-standalone
+run-adp-standalone: build-adp
+run-adp-standalone: ## Runs ADP locally in standalone mode
+ifeq ($(shell test -n "$(DD_API_KEY)" || echo not-found), not-found)
+	$(error "API key not set. Please set the DD_API_KEY environment variable.")
+endif
+	@echo "[*] Running ADP..."
+	@DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true \
+	DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_SOCKET=/tmp/adp-dsd.sock DD_DOGSTATSD_EXPIRY_SECONDS=30 \
+	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:6000 DD_LOG_LEVEL=info \
+	target/release/agent-data-plane
+
 .PHONY: run-dsd-basic-udp
 run-dsd-basic-udp: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDP)
 	@echo "[*] Sending basic metrics via Dogstatsd (UDP, 127.0.0.1:9191)..."
@@ -314,9 +340,12 @@ endif
 
 ##@ Profiling
 
-.PHONY: profile-ddprof-local
-profile-ddprof-local: ensure-ddprof build-adp
-profile-ddprof-local: ## Runs ADP under ddprof locally
+.PHONY: profile-run-adp-ddprof
+profile-run-adp-ddprof: ensure-ddprof build-adp
+profile-run-adp-ddprof: ## Runs ADP under ddprof locally
+ifeq ($(shell test -f /var/run/datadog/apm.socket || echo not-found), not-found)
+	$(error "APM socket at /var/run/datadog/apm.socket not found. Is the Datadog Agent running?")
+endif
 	@echo "[*] Running ADP under ddprof (service: adp, environment: local, version: $(GIT_COMMIT))..."
 	@DD_API_KEY=00000001adp DD_HOSTNAME=adp-profiling DD_DD_URL=http://127.0.0.1:9091 \
 	DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_SOCKET=/tmp/adp-dsd.sock DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true \
