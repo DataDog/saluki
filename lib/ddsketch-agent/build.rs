@@ -38,7 +38,7 @@ fn calculate_configuration_params(bin_limit: u16, mut eps: f64, min_value: f64) 
 }
 
 fn main() {
-    println!("cargo::rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=build.rs");
 
     // Calculate the sketch configuration parameters for the Agent-specific defaults, and write them out as constants to
     // the given file, which gets imported in lib.rs.
