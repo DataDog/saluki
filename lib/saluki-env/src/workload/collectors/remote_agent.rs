@@ -168,9 +168,18 @@ impl MetadataCollector for RemoteAgentMetadataCollector {
 }
 
 fn remote_entity_id_to_entity_id(remote_entity_id: RemoteEntityId) -> Option<EntityId> {
+    // TODO: Realistically, we should have our own string interner to hold these entity IDs... something like the
+    // workload collector having its own or maybe the workload provider, which then passes out a reference to it for all
+    // collectors it's using.
+    //
+    // Either way, we would want to intern, and as such as, we'd want to ideally change our generated code for the
+    // protos to hand us string references rather than allocating.
+    //
+    // Potentially a good reason to do the incremental protobuf encoding work sooner rather than later, since we could
+    // switch to the zero-copy structs it has for reading serialized protos.
     match remote_entity_id.prefix.as_str() {
-        "container_id" => Some(EntityId::Container(remote_entity_id.uid)),
-        "kubernetes_pod_uid" => Some(EntityId::PodUid(remote_entity_id.uid)),
+        "container_id" => Some(EntityId::Container(remote_entity_id.uid.into())),
+        "kubernetes_pod_uid" => Some(EntityId::PodUid(remote_entity_id.uid.into())),
         other => {
             warn!("Unhandled entity ID prefix: {}", other);
             None

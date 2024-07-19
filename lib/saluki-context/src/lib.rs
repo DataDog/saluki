@@ -539,6 +539,17 @@ impl TagSet {
         }
     }
 
+    /// Retains only the tags specified by the predicate.
+    ///
+    /// In other words, remove all tags `t` for which `f(&t)`` returns `false``. This method operates in place, visiting
+    /// each element exactly once in the original order, and preserves the order of the retained tags.
+    pub fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&Tag) -> bool,
+    {
+        self.0.retain(|tag| f(tag));
+    }
+
     /// Merges the tags from another set into this set.
     ///
     /// If a tag from `other` is already present in this set, it will not be added.

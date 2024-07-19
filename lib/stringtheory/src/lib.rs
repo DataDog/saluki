@@ -118,10 +118,10 @@ impl MetaString {
     /// Creates a new `MetaString` from the given static string.
     ///
     /// This does not allocate.
-    pub const fn from_static(s: &'static str) -> Self {
-        Self {
+    pub fn from_static(s: &'static str) -> Self {
+        Self::try_inline(s).unwrap_or_else(|| Self {
             inner: Inner::Shared(bytes::Bytes::from_static(s.as_bytes())),
-        }
+        })
     }
 
     /// Attempts to create a new `MetaString` from the given string if it can be inlined.
