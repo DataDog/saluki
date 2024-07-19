@@ -7,13 +7,15 @@ use std::{
     hash::{self, Hash as _, Hasher as _},
     num::NonZeroUsize,
     ops::Deref as _,
-    sync::{Arc, RwLock},
+    sync::{Arc, OnceLock, RwLock},
 };
 
 use indexmap::{Equivalent, IndexSet};
 use metrics::Gauge;
 use saluki_metrics::static_metrics;
 use stringtheory::{interning::FixedSizeInterner, MetaString};
+
+static DIRTY_CONTEXT_HASH: OnceLock<u64> = OnceLock::new();
 
 static_metrics! {
     name => ContextMetrics,
@@ -213,6 +215,15 @@ impl Context {
         }
     }
 
+    fn inner_mut(&mut self) -> &mut ContextInner {
+        Arc::make_mut(&mut self.inner)
+    }
+
+    fn mark_dirty(&mut self) {
+        let inner = self.inner_mut();
+        inner.hash = get_dirty_context_hash_value();
+    }
+
     /// Gets the name of this context.
     pub fn name(&self) -> &MetaString {
         &self.inner.name
@@ -221,6 +232,20 @@ impl Context {
     /// Gets the tags of this context.
     pub fn tags(&self) -> &TagSet {
         &self.inner.tags
+    }
+
+    /// Gets a mutable reference to the tags of this context.
+    pub fn tags_mut(&mut self) -> &mut TagSet {
+        // Mark the context as dirty. We have to do this before giving back a mutable reference to the tags, which means
+        // we are _potentially_ marking the context dirty even if nothing is changed about the tags.
+        //
+        // If this somehow became a problem, we could always move part of the hash to `TagSet` itself where we had
+        // granular control and could mark ourselves dirty only when the tags were actually changed. Shouldn't matter
+        // right now, though.
+        self.mark_dirty();
+
+        let inner = self.inner_mut();
+        &mut inner.tags
     }
 }
 
@@ -255,6 +280,21 @@ struct ContextInner {
     active_count: Gauge,
 }
 
+impl Clone for ContextInner {
+    fn clone(&self) -> Self {
+        // Increment the context count when cloning the context, since we only get here when we're about to create a
+        // brand new context for the purpose of mutating the data... so we have a new context.
+        self.active_count.increment(1);
+
+        Self {
+            name: self.name.clone(),
+            tags: self.tags.clone(),
+            hash: self.hash,
+            active_count: self.active_count.clone(),
+        }
+    }
+}
+
 impl Drop for ContextInner {
     fn drop(&mut self) {
         self.active_count.decrement(1);
@@ -272,7 +312,14 @@ impl Eq for ContextInner {}
 
 impl hash::Hash for ContextInner {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        state.write_u64(self.hash);
+        // If the context is dirty -- has changed since it was originally resolved -- then our cached hash is now
+        // invalid, so we need to re-hash the context. Otherwise, we can just use the cached hash.
+        if is_context_dirty(self.hash) {
+            let (hash, _) = hash_context(&self.name, &self.tags);
+            state.write_u64(hash);
+        } else {
+            state.write_u64(self.hash);
+        }
     }
 }
 
@@ -473,8 +520,6 @@ impl TagSet {
     where
         T: AsRef<str>,
     {
-        // TODO: This is a super naive approach, and clobbers insertion order due to `swap_remove`. This wouldn't work,
-        // naturally, if we need to depend on keeping a sorted order.
         let tag_name = tag_name.as_ref();
 
         let mut tags = Vec::new();
@@ -593,7 +638,7 @@ where
     let mut hasher = ahash::AHasher::default();
     name.hash(&mut hasher);
 
-    // Hash the tags individually and XOR their hashes together, which allows us to be order-oblivious.
+    // Hash the tags individually and XOR their hashes together, which allows us to be order-oblivious:
     let mut combined_tags_hash = 0;
     let mut tag_count = 0;
     for tag in tags {
@@ -609,6 +654,18 @@ where
     (hasher.finish(), tag_count)
 }
 
+fn get_dirty_context_hash_value() -> u64 {
+    const EMPTY_TAGS: &[&str] = &[];
+    *DIRTY_CONTEXT_HASH.get_or_init(|| {
+        let (hash, _) = hash_context("", EMPTY_TAGS);
+        hash
+    })
+}
+
+fn is_context_dirty(hash: u64) -> bool {
+    hash == get_dirty_context_hash_value()
+}
+
 #[cfg(test)]
 mod tests {
     use metrics::{SharedString, Unit};
@@ -619,11 +676,8 @@ mod tests {
 
     use super::*;
 
-    fn get_context_arc_pointer_value(context: &Option<Context>) -> usize {
-        match context {
-            Some(context) => Arc::as_ptr(&context.inner) as usize,
-            None => 0,
-        }
+    fn get_context_arc_pointer_value(context: &Context) -> usize {
+        Arc::as_ptr(&context.inner) as usize
     }
 
     fn get_gauge_value(metrics: &[(CompositeKey, Option<Unit>, Option<SharedString>, DebugValue)], key: &str) -> f64 {
@@ -637,20 +691,30 @@ mod tests {
             .unwrap_or_else(|| panic!("no metric found with key: {}", key))
     }
 
+    fn refs_approx_eq<I1, I2, T>(ref1: &ContextRef<'_, I1>, ref2: &ContextRef<'_, I2>) -> bool
+    where
+        I1: IntoIterator<Item = T>,
+        I2: IntoIterator<Item = T>,
+        T: hash::Hash,
+    {
+        ref1.name == ref2.name && ref1.hash == ref2.hash && ref1.tag_len == ref2.tag_len
+    }
+
     #[test]
     fn basic() {
         let resolver: ContextResolver = ContextResolver::with_noop_interner();
 
-        // Create two distinct contexts with the same name but different tags.
+        // Create two distinct contexts with the same name but different tags:
         let name = "metric_name";
         let tags1: [&str; 0] = [];
         let tags2 = ["tag1"];
 
         let ref1 = ContextRef::from_name_and_tags(name, &tags1);
         let ref2 = ContextRef::from_name_and_tags(name, &tags2);
+        assert!(!refs_approx_eq(&ref1, &ref2));
 
-        let context1 = resolver.resolve(ref1);
-        let context2 = resolver.resolve(ref2);
+        let context1 = resolver.resolve(ref1).expect("should not fail to resolve");
+        let context2 = resolver.resolve(ref2).expect("should not fail to resolve");
 
         // The contexts should not be equal to each other, and should have distinct underlying pointers to the shared
         // context state:
@@ -663,9 +727,10 @@ mod tests {
         // If we create the context references again, we _should_ get back the same contexts as before:
         let ref1 = ContextRef::from_name_and_tags(name, &tags1);
         let ref2 = ContextRef::from_name_and_tags(name, &tags2);
+        assert!(!refs_approx_eq(&ref1, &ref2));
 
-        let context1_redo = resolver.resolve(ref1);
-        let context2_redo = resolver.resolve(ref2);
+        let context1_redo = resolver.resolve(ref1).expect("should not fail to resolve");
+        let context2_redo = resolver.resolve(ref2).expect("should not fail to resolve");
 
         assert_ne!(context1_redo, context2_redo);
         assert_eq!(context1, context1_redo);
@@ -691,9 +756,10 @@ mod tests {
 
         let ref1 = ContextRef::from_name_and_tags(name, &tags1);
         let ref2 = ContextRef::from_name_and_tags(name, &tags2);
+        assert!(refs_approx_eq(&ref1, &ref2));
 
-        let context1 = resolver.resolve(ref1);
-        let context2 = resolver.resolve(ref2);
+        let context1 = resolver.resolve(ref1).expect("should not fail to resolve");
+        let context2 = resolver.resolve(ref2).expect("should not fail to resolve");
 
         // The contexts should be equal to each other, and should have the same underlying pointer to the shared context
         // state:
@@ -712,7 +778,9 @@ mod tests {
         // Create our resolver and then create a context, which will have its metrics attached to our local recorder:
         let context = metrics::with_local_recorder(&recorder, || {
             let resolver: ContextResolver = ContextResolver::with_noop_interner();
-            resolver.resolve(ContextRef::from_name_and_tags("name", &["tag1"]))
+            resolver
+                .resolve(ContextRef::from_name_and_tags("name", &["tag1"]))
+                .expect("should not fail to resolve")
         });
 
         // We should be able to see that the active context count is one, representing the context we created:
@@ -725,5 +793,51 @@ mod tests {
         let metrics_after = snapshotter.snapshot().into_vec();
         let active_contexts = get_gauge_value(&metrics_after, ContextMetrics::active_contexts_name());
         assert_eq!(active_contexts, 0.0);
+    }
+
+    #[test]
+    fn mutate_tags() {
+        let resolver: ContextResolver = ContextResolver::with_noop_interner();
+
+        // Create a basic context.
+        //
+        // We create two identical references so that we can later try and resolve the original context again to make
+        // sure things are still working as expected:
+        let name = "metric_name";
+        let tags = ["tag1"];
+
+        let ref1 = ContextRef::from_name_and_tags(name, &tags);
+        let ref2 = ContextRef::from_name_and_tags(name, &tags);
+        assert!(refs_approx_eq(&ref1, &ref2));
+
+        let context1 = resolver.resolve(ref1).expect("should not fail to resolve");
+        let mut context2 = context1.clone();
+
+        // Mutate the tags of `context2`, which should end up cloning the inner state and becoming its own instance:
+        let tags = context2.tags_mut();
+        tags.insert_tag("tag2");
+
+        // The contexts should no longer be equal to each other, and should have distinct underlying pointers to the
+        // shared context state:
+        assert_ne!(context1, context2);
+        assert_ne!(
+            get_context_arc_pointer_value(&context1),
+            get_context_arc_pointer_value(&context2)
+        );
+
+        let expected_tags_context1 = TagSet::from_iter(vec![Tag::from("tag1")]);
+        assert_eq!(context1.tags(), &expected_tags_context1);
+
+        let expected_tags_context2 = TagSet::from_iter(vec![Tag::from("tag1"), Tag::from("tag2")]);
+        assert_eq!(context2.tags(), &expected_tags_context2);
+
+        // And just for good measure, check that we can still resolve the original context reference and get back a
+        // context that is equal to `context1`:
+        let context1_redo = resolver.resolve(ref2).expect("should not fail to resolve");
+        assert_eq!(context1, context1_redo);
+        assert_eq!(
+            get_context_arc_pointer_value(&context1),
+            get_context_arc_pointer_value(&context1_redo)
+        );
     }
 }
