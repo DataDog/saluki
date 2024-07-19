@@ -704,7 +704,7 @@ mod tests {
     fn basic() {
         let resolver: ContextResolver = ContextResolver::with_noop_interner();
 
-        // Create two distinct contexts with the same name but different tags.
+        // Create two distinct contexts with the same name but different tags:
         let name = "metric_name";
         let tags1: [&str; 0] = [];
         let tags2 = ["tag1"];
@@ -802,7 +802,7 @@ mod tests {
         // Create a basic context.
         //
         // We create two identical references so that we can later try and resolve the original context again to make
-        // sure things are still working as expected.
+        // sure things are still working as expected:
         let name = "metric_name";
         let tags = ["tag1"];
 
@@ -813,7 +813,7 @@ mod tests {
         let context1 = resolver.resolve(ref1).expect("should not fail to resolve");
         let mut context2 = context1.clone();
 
-        // Mutate the tags of `context2`, which should end up cloning the inner state and becoming its own instance.
+        // Mutate the tags of `context2`, which should end up cloning the inner state and becoming its own instance:
         let tags = context2.tags_mut();
         tags.insert_tag("tag2");
 
