@@ -638,7 +638,7 @@ where
     let mut hasher = ahash::AHasher::default();
     name.hash(&mut hasher);
 
-    // Hash the tags individually and XOR their hashes together, which allows us to be order-oblivious.
+    // Hash the tags individually and XOR their hashes together, which allows us to be order-oblivious:
     let mut combined_tags_hash = 0;
     let mut tag_count = 0;
     for tag in tags {
