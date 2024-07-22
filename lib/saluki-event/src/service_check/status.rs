@@ -1,15 +1,15 @@
-/// ServiceCheckStatus is the status type for service checks
+/// Service status
 #[derive(Clone, Debug)]
 pub enum ServiceCheckStatus {
-    /// Ok is the "ok" ServiceCheck status
+    /// The service is operating normally.
     Ok,
 
-    /// Warn is the "warning" ServiceCheck status
+    /// The service is in a warning state.
     Warn,
 
-    /// Critical is the "critical" ServiceCheck status
+    /// The service is in a critical state.
     Critical,
 
-    /// Unknown is the "unknown" ServiceCheck status
+    /// The service is in an unknown state.
     Unknown,
 }

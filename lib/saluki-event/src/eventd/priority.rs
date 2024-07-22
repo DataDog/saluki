@@ -1,9 +1,9 @@
-/// EventPriority is the event priority for events
+/// Event priority
 #[derive(Clone, Debug)]
 pub enum EventPriority {
-    /// Normal is the "normal" Priority for events
+    /// The event has normal priority.
     Normal,
 
-    /// Low is the "low" Priority for events
+    /// The event has low priority.
     Low,
 }

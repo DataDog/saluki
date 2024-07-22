@@ -78,8 +78,17 @@ impl Event {
     pub fn into_metric(self) -> Option<Metric> {
         match self {
             Event::Metric(metric) => Some(metric),
-            Event::EventD(_) => None,
-            Event::ServiceCheck(_) => None,
+            _ => None,
+        }
+    }
+
+    /// Converts this event into `Metric`.
+    ///
+    /// If the underlying event is not a `Metric`, this will return `None`.
+    pub fn as_metric_mut(&mut self) -> Option<&mut Metric> {
+        match self {
+            Event::Metric(metric) => Some(metric),
+            _ => None,
         }
     }
 
@@ -89,8 +98,7 @@ impl Event {
     pub fn into_eventd(self) -> Option<EventD> {
         match self {
             Event::EventD(eventd) => Some(eventd),
-            Event::Metric(_) => None,
-            Event::ServiceCheck(_) => None,
+            _ => None,
         }
     }
 
@@ -100,8 +108,7 @@ impl Event {
     pub fn into_service_check(self) -> Option<ServiceCheck> {
         match self {
             Event::ServiceCheck(service_check) => Some(service_check),
-            Event::Metric(_) => None,
-            Event::EventD(_) => None,
+            _ => None,
         }
     }
 }

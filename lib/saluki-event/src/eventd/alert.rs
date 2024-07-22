@@ -1,15 +1,15 @@
-/// EventAlertType is the alert type for events
+/// Event alert type
 #[derive(Clone, Debug)]
 pub enum EventAlertType {
-    /// Info is the "info" AlertType for events
+    /// Indicates an informational event.
     Info,
 
-    /// Error is the "error" AlertType for events
+    /// Indicates an error event.
     Error,
 
-    /// Warning is the "warning" AlertType for events
+    /// Indicates a warning event.
     Warning,
 
-    /// Success is the "success" AlertType for events
+    /// Indicates a successful event.
     Success,
 }

@@ -9,7 +9,7 @@ use saluki_config::GenericConfiguration;
 use saluki_context::{Context, TagSet};
 use saluki_core::components::destinations::*;
 use saluki_error::GenericError;
-use saluki_event::{metric::MetricValue, DataType, Event};
+use saluki_event::{metric::MetricValue, DataType};
 use saluki_io::net::{
     listener::ConnectionOrientedListener,
     server::http::{ErrorHandle, HttpServer, ShutdownHandle},
@@ -119,46 +119,42 @@ impl Destination for Prometheus {
                         // Process each metric event in the batch, either merging it with the existing value or
                         // inserting it for the first time.
                         for event in events {
-                            match event {
-                                Event::Metric(metric)=>{
-                                    let (context, value, _) = metric.into_parts();
+                            if let Some(metric) = event.into_metric() {
+                                let (context, value, _) = metric.into_parts();
 
-                                    // Skip any metric types we can't handle.
-                                    let value = match value {
-                                        // Skip sets and rates, because we can't convert them to a Prometheus-compatible type.
-                                        MetricValue::Rate { .. } | MetricValue::Set { .. } => continue,
-                                        // Everything else is fine as-is.
-                                        value => value,
-                                    };
+                                // Skip any metric types we can't handle.
+                                let value = match value {
+                                    // Skip sets and rates, because we can't convert them to a Prometheus-compatible type.
+                                    MetricValue::Rate { .. } | MetricValue::Set { .. } => continue,
+                                    // Everything else is fine as-is.
+                                    value => value,
+                                };
 
-                                    // Generate a Prometheus-specific context, which is essentially the metric name + metric
-                                    // type.
-                                    //
-                                    // We need to do this because we have to group all contexts with the same name to generate
-                                    // their payload output as a group, as it's required by the Prometheus exposition specification.
-                                    let prom_context = PrometheusMetricContext {
-                                        metric_name: context.name().clone(),
-                                        metric_type: PrometheusMetricType::from_value(&value),
-                                    };
+                                // Generate a Prometheus-specific context, which is essentially the metric name + metric
+                                // type.
+                                //
+                                // We need to do this because we have to group all contexts with the same name to generate
+                                // their payload output as a group, as it's required by the Prometheus exposition specification.
+                                let prom_context = PrometheusMetricContext {
+                                    metric_name: context.name().clone(),
+                                    metric_type: PrometheusMetricType::from_value(&value),
+                                };
 
-                                    let existing_contexts = metrics.entry(prom_context).or_insert_with(IndexMap::new);
-                                    match existing_contexts.get_mut(&context) {
-                                        Some(existing_value) => {
-                                            existing_value.merge(value);
-                                        },
-                                        None => {
-                                            if contexts >= CONTEXT_LIMIT {
-                                                debug!("Prometheus destination reached context limit. Skipping metric '{}'.", context.name());
-                                                continue
-                                            }
+                                let existing_contexts = metrics.entry(prom_context).or_insert_with(IndexMap::new);
+                                match existing_contexts.get_mut(&context) {
+                                    Some(existing_value) => {
+                                        existing_value.merge(value);
+                                    },
+                                    None => {
+                                        if contexts >= CONTEXT_LIMIT {
+                                            debug!("Prometheus destination reached context limit. Skipping metric '{}'.", context.name());
+                                            continue
+                                        }
 
-                                            existing_contexts.insert(context, value);
-                                            self.contexts += 1;
-                                        },
-                                    }
-                                },
-                                Event::EventD(_) => todo!(),
-                                Event::ServiceCheck(_) => todo!(),
+                                        existing_contexts.insert(context, value);
+                                        self.contexts += 1;
+                                    },
+                                }
                             }
                         }
 

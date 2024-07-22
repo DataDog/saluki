@@ -14,7 +14,7 @@ use saluki_core::{
     },
 };
 use saluki_error::{generic_error, GenericError};
-use saluki_event::{metric::OriginEntity, DataType, Event};
+use saluki_event::{metric::OriginEntity, DataType};
 use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, BytesBuffer},
     deser::{
@@ -417,16 +417,12 @@ async fn drive_stream(
                 if origin_detection {
                     if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
                         for event in &mut event_buffer {
-                            match event {
-                                Event::Metric(metric) => {
-                                    if metric.metadata().origin_entity().is_none() {
-                                        metric
-                                            .metadata_mut()
-                                            .set_origin_entity(OriginEntity::ProcessId(creds.pid as u32));
-                                    }
+                            if let Some(metric) = event.as_metric_mut() {
+                                if metric.metadata().origin_entity().is_none() {
+                                    metric
+                                        .metadata_mut()
+                                        .set_origin_entity(OriginEntity::ProcessId(creds.pid as u32));
                                 }
-                                Event::EventD(_) => todo!(),
-                                Event::ServiceCheck(_) => todo!(),
                             }
                         }
                     }
