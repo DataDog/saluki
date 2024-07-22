@@ -247,8 +247,8 @@ where
 {
     fn transform_buffer(&self, event_buffer: &mut EventBuffer) {
         for event in event_buffer {
-            match event {
-                Event::Metric(metric) => self.enrich_metric(metric),
+            if let Some(metric) = event.as_metric_mut() {
+                self.enrich_metric(metric)
             }
         }
     }
