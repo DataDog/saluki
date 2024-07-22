@@ -667,6 +667,8 @@ mod tests {
                 assert_eq!(expected.value(), actual.value());
                 actual
             }
+            OneOrMany::Single(Event::EventD(_)) => unreachable!("should never be called for eventd type"),
+            OneOrMany::Single(Event::ServiceCheck(_)) => unreachable!("should never be called for service check type"),
             OneOrMany::Multiple(_) => unreachable!("should never be called for multi-value metric assertions"),
         }
     }
@@ -682,6 +684,8 @@ mod tests {
                             assert_eq!(expected_event.context(), actual.context());
                             assert_eq!(expected_event.value(), actual.value());
                         }
+                        Event::EventD(_) => unreachable!("should never be called for eventd type"),
+                        Event::ServiceCheck(_) => unreachable!("should never be called for service check type"),
                     }
                 }
             }
