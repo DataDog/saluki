@@ -5,7 +5,6 @@ pub use self::priority::*;
 mod alert;
 pub use self::alert::*;
 
-
 /// EventD is an object that can be posted to the DataDog event stream.
 #[derive(Clone, Debug)]
 pub struct EventD {
@@ -17,7 +16,7 @@ pub struct EventD {
     priority: EventPriority,
     source_type_name: String,
     alert_type: EventAlertType,
-    tags: Vec<String>
+    tags: Vec<String>,
 }
 
 impl EventD {

@@ -157,8 +157,8 @@ impl Destination for Prometheus {
                                         },
                                     }
                                 },
-                                Event::EventD(_) => todo!(), 
-                                Event::ServiceCheck(_) => todo!(), 
+                                Event::EventD(_) => todo!(),
+                                Event::ServiceCheck(_) => todo!(),
                             }
                         }
 
