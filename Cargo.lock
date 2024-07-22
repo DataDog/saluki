@@ -2478,6 +2478,7 @@ dependencies = [
  "serde_json",
  "snafu",
  "socket2",
+ "stringtheory",
  "tokio",
  "tokio-rustls",
  "tokio-util",
