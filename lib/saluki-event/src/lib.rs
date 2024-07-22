@@ -9,6 +9,12 @@ use bitmask_enum::bitmask;
 pub mod metric;
 use self::metric::Metric;
 
+pub mod eventd;
+use self::eventd::EventD;
+
+pub mod service_check;
+use self::service_check::ServiceCheck;
+
 /// Telemetry data type.
 ///
 /// This type is a bitmask, which means different data types can be combined together. This makes `DataType` mainly
@@ -57,6 +63,12 @@ impl fmt::Display for DataType {
 pub enum Event {
     /// A metric.
     Metric(Metric),
+
+    /// An event.
+    EventD(EventD),
+
+    /// A service check.
+    ServiceCheck(ServiceCheck),
 }
 
 impl Event {
@@ -66,6 +78,30 @@ impl Event {
     pub fn into_metric(self) -> Option<Metric> {
         match self {
             Event::Metric(metric) => Some(metric),
+            Event::EventD(_) => None,
+            Event::ServiceCheck(_) => None,
+        }
+    }
+
+    /// Converts this event into `Eventd`.
+    ///
+    /// If the underlying event is not a `Eventd`, this will return `None`.
+    pub fn into_eventd(self) -> Option<EventD> {
+        match self {
+            Event::EventD(eventd) => Some(eventd),
+            Event::Metric(_) => None,
+            Event::ServiceCheck(_) => None,
+        }
+    }
+
+    /// Converts this event into `ServiceCheck`.
+    ///
+    /// If the underlying event is not a `Eventd`, this will return `None`.
+    pub fn into_service_check(self) -> Option<ServiceCheck> {
+        match self {
+            Event::ServiceCheck(service_check) => Some(service_check),
+            Event::Metric(_) => None,
+            Event::EventD(_) => None,
         }
     }
 }

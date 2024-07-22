@@ -73,6 +73,8 @@ impl SynchronousTransform for HostEnrichment {
         for event in event_buffer {
             match event {
                 Event::Metric(metric) => self.enrich_metric(metric),
+                Event::EventD(_) => todo!(),
+                Event::ServiceCheck(_) => todo!(),
             }
         }
     }

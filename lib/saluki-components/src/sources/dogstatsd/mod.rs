@@ -425,6 +425,8 @@ async fn drive_stream(
                                             .set_origin_entity(OriginEntity::ProcessId(creds.pid as u32));
                                     }
                                 }
+                                Event::EventD(_) => todo!(),
+                                Event::ServiceCheck(_) => todo!(),
                             }
                         }
                     }
