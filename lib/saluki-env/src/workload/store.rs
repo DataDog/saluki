@@ -320,7 +320,7 @@ mod tests {
 
     #[test]
     fn basic_entity() {
-        let entity_id = EntityId::Container("container-id".to_string());
+        let entity_id = EntityId::Container("container-id".into());
         let (expected_tags, operations) = low_cardinality!(&entity_id, tags => ["service" => "foo"]);
 
         let mut store = TagStore::default();
@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn high_cardinality_is_superset() {
-        let entity_id = EntityId::Container("container-id".to_string());
+        let entity_id = EntityId::Container("container-id".into());
         let (low_card_expected_tags, low_card_operations) = low_cardinality!(&entity_id, tags => ["service" => "foo"]);
         let (mut high_card_expected_tags, high_card_operations) =
             high_cardinality!(&entity_id, tags => ["pod" => "foo-8xl-ah2z7"]);
@@ -367,7 +367,7 @@ mod tests {
         let (global_expected_tags, global_operations) =
             low_cardinality!(&global_entity_id, tags => ["kube_cluster_name" => "saluki"]);
 
-        let entity_id = EntityId::Container("container-id".to_string());
+        let entity_id = EntityId::Container("container-id".into());
         let (mut expected_tags, operations) = low_cardinality!(&entity_id, tags => ["service" => "foo"]);
 
         expected_tags.extend(global_expected_tags.clone());
@@ -396,11 +396,11 @@ mod tests {
         // We establish a three-level hierarchy -- pod -> container ID -> container PID -- which is indeed not a
         // real-world thing but we're just doing it to have more than one level of ancestry, to better exercise the
         // resolution logic.
-        let pod_entity_id = EntityId::PodUid("datadog-agent-pod-uid".to_string());
+        let pod_entity_id = EntityId::PodUid("datadog-agent-pod-uid".into());
         let (pod_expected_tags, pod_operations) =
             low_cardinality!(&pod_entity_id, tags => ["kube_pod_name" => "datadog-agent-z1ha3"]);
 
-        let container_entity_id = EntityId::Container("process-agent-container-id".to_string());
+        let container_entity_id = EntityId::Container("process-agent-container-id".into());
         let (mut container_expected_tags, container_operations) =
             low_cardinality!(&container_entity_id, tags => ["service" => "foo"]);
 
@@ -448,7 +448,7 @@ mod tests {
 
     #[test]
     fn direct_resolve() {
-        let entity_id = EntityId::Container("container-id".to_string());
+        let entity_id = EntityId::Container("container-id".into());
         let (expected_tags, operations) = low_cardinality!(&entity_id, tags => ["service" => "foo"]);
 
         let mut store = TagStore::default();
@@ -478,11 +478,11 @@ mod tests {
 
     #[test]
     fn ancestor_resolve() {
-        let pod_entity_id = EntityId::PodUid("datadog-agent-pod-uid".to_string());
+        let pod_entity_id = EntityId::PodUid("datadog-agent-pod-uid".into());
         let (pod_expected_tags, pod_operations) =
             low_cardinality!(&pod_entity_id, tags => ["kube_pod_name" => "datadog-agent-z1ha3"]);
 
-        let container_entity_id = EntityId::Container("process-agent-container-id".to_string());
+        let container_entity_id = EntityId::Container("process-agent-container-id".into());
         let (mut container_expected_tags, container_operations) =
             low_cardinality!(&container_entity_id, tags => ["service" => "foo"]);
 

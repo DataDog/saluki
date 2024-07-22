@@ -1,5 +1,7 @@
 use std::fmt;
 
+use stringtheory::MetaString;
+
 const ENTITY_PREFIX_POD_UID: &str = "kubernetes_pod_uid://";
 const ENTITY_PREFIX_CONTAINER_ID: &str = "container_id://";
 const ENTITY_PREFIX_CONTAINER_INODE: &str = "container_inode://";
@@ -18,12 +20,12 @@ pub enum EntityId {
     /// A Kubernetes pod UID.
     ///
     /// Represents the UUID of a specific Kubernetes pod.
-    PodUid(String),
+    PodUid(MetaString),
 
     /// A container ID.
     ///
     /// This is generally a long hexadecimal string, as generally used by container runtimes like `containerd`.
-    Container(String),
+    Container(MetaString),
 
     /// A container inode.
     ///
@@ -42,16 +44,19 @@ impl EntityId {
     /// This handles the special case where the "container ID" is actually the inode of the cgroups controller for the
     /// container, and so should be used in scenarios where a raw container "ID" is received that can either be the true
     /// ID or the inode value.
-    pub fn from_raw_container_id(raw_container_id: String) -> Option<Self> {
-        if raw_container_id.starts_with("in-") {
+    pub fn from_raw_container_id<S>(raw_container_id: S) -> Option<Self>
+    where
+        S: AsRef<str> + Into<MetaString>,
+    {
+        if raw_container_id.as_ref().starts_with("in-") {
             // We have a "container ID" that is actually the inode of the cgroups controller for the container where
             // the metric originated. We treat this separately from true container IDs, which are typically 64 character
             // hexadecimal strings.
-            let raw_inode = raw_container_id.trim_start_matches("in-");
+            let raw_inode = raw_container_id.as_ref().trim_start_matches("in-");
             let inode = raw_inode.parse().ok()?;
             Some(Self::ContainerInode(inode))
         } else {
-            Some(Self::Container(raw_container_id))
+            Some(Self::Container(raw_container_id.into()))
         }
     }
 }

@@ -36,6 +36,22 @@ impl OriginEntity {
     {
         Self::ContainerId(container_id.into())
     }
+
+    /// Consumes the `OriginEntity` and returns the process ID, if it is one.
+    pub fn into_process_id(self) -> Option<u32> {
+        match self {
+            Self::ProcessId(pid) => Some(pid),
+            _ => None,
+        }
+    }
+
+    /// Consumes the `OriginEntity` and returns the container ID, if it is one.
+    pub fn into_container_id(self) -> Option<MetaString> {
+        match self {
+            Self::ContainerId(container_id) => Some(container_id),
+            _ => None,
+        }
+    }
 }
 
 /// Metric metadata.

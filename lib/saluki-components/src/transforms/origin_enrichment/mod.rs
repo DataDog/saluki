@@ -12,10 +12,11 @@ use saluki_env::{
 };
 use saluki_error::GenericError;
 use saluki_event::{
-    metric::{Metric, MetricOrigin},
+    metric::{Metric, MetricOrigin, OriginEntity},
     Event,
 };
 use serde::Deserialize;
+use stringtheory::MetaString;
 use tracing::trace;
 
 const fn default_tag_cardinality() -> TagCardinality {
@@ -117,22 +118,6 @@ where
     E: EnvironmentProvider,
 {
     fn enrich_metric(&self, metric: &mut Metric) {
-        // TODO: This code below worked before when we could just mutate our context willy-nilly, but not so much when
-        // we're using a resolved handle.
-        //
-        // This code differs from some other usages where this is a case where we really _do_ want to attach a bunch of
-        // new tags to a metric. This would involve rebuilding the context, which isn't _horrible_ but also wouldn't be
-        // super great, just in terms of allocations... unless we also wire in the interning stuff there.
-        //
-        // My thought is that eventually we might have `TagSet` be able to chain itself, so that we could basically
-        // merge together discrete sets of tags without having to re-allocate a vector that holds all of them together
-        // contiguously.
-        //
-        // Just a thought, and doesn't really address having to eventually need to allocate a vector to hold them all
-        // contiguously as `Vec<protobuf::Chars>` for when we build our request payloads, but could be incremental
-        // progress.
-
-        /*
         // Try to collect various pieces of client origin information from the metric tags. For any tags that we collect
         // information from, we remove them from the original set of metric tags, as they're only used for driving
         // enrichment logic.
@@ -144,48 +129,46 @@ where
         // removed from the vector by simply overwriting the slot with the next non-consumed tag. This would let us let
         // us avoid having to shift all elements after the tag to remove.
         let mut maybe_entity_id = None;
-        let mut maybe_container_id = None;
+        let maybe_container_id = metric
+            .metadata()
+            .origin_entity()
+            .cloned()
+            .and_then(|oe| oe.into_container_id().map(EntityId::Container));
+        let maybe_origin_pid = metric
+            .metadata()
+            .origin_entity()
+            .cloned()
+            .and_then(|oe| oe.into_process_id().map(EntityId::ContainerPid));
         let mut tag_cardinality = self.tag_cardinality;
         let mut maybe_jmx_check_name = None;
-        let mut maybe_origin_pid = None;
 
-        metric.context.tags.retain(|tag| {
-            if tag.key() == ENTITY_ID_TAG_KEY {
+        metric.context_mut().tags_mut().retain(|tag| match tag.name() {
+            ENTITY_ID_TAG_KEY => {
                 maybe_entity_id = tag
-                    .as_value_string()
-                    .filter(|s| s != ENTITY_ID_IGNORE_VALUE)
+                    .value()
+                    .filter(|s| *s != ENTITY_ID_IGNORE_VALUE)
+                    .map(MetaString::from)
                     .map(EntityId::PodUid);
                 false
-            } else if tag.key() == CARDINALITY_TAG_KEY {
-                if let Some(cardinality) = tag.as_value_string().and_then(TagCardinality::parse) {
+            }
+            CARDINALITY_TAG_KEY => {
+                if let Some(cardinality) = tag.value().and_then(TagCardinality::parse) {
                     tag_cardinality = cardinality;
                 }
                 false
-            } else if tag.key() == JMX_CHECK_NAME_TAG_KEY {
-                maybe_jmx_check_name = tag.as_value_string();
-                false
-            } else if tag.key() == CONTAINER_ID_TAG_KEY {
-                // NOTE: This isn't _actually_ set as a tag on the metric, but directly by the DogStatsD decoder since
-                // we want to keep the metric data model a little cleaner.
-                //
-                // This is a bit of a hack, but it's a bit cleaner than adding a new field to `Metric` that never gets
-                // used after enrichment.
-                maybe_container_id = tag.as_value_string().and_then(EntityId::from_raw_container_id);
-                false
-            } else if tag.key() == ORIGIN_PID_TAG_KEY {
-                maybe_origin_pid = tag
-                    .as_value_string()
-                    .and_then(|s| s.parse::<u32>().ok())
-                    .map(EntityId::ContainerPid);
-                false
-            } else {
-                true
             }
+            JMX_CHECK_NAME_TAG_KEY => {
+                maybe_jmx_check_name = tag.value().map(String::from);
+                false
+            }
+            _ => true,
         });
 
         // If this metric originates from a JMX check, update the metric's origin.
         if let Some(jmx_check_name) = maybe_jmx_check_name {
-            metric.metadata.origin = Some(MetricOrigin::jmx_check(&jmx_check_name));
+            metric
+                .metadata_mut()
+                .set_origin(MetricOrigin::jmx_check(&jmx_check_name));
         }
 
         // Examine the various possible entity ID values, and based on their state, use one or more of them to enrich
@@ -196,7 +179,7 @@ where
         //   extension in DogStatsD protocol; non-prefixed container ID)
         // - origin PID (extracted via UDS socket credentials)
         //
-        // NOTE: There's the possibility that a metric is enriched multiple times, regardless of whether or not we're in
+        // TODO: There's the possibility that a metric is enriched multiple times, regardless of whether or not we're in
         // unified mode. We're currently using an extend approach, which would lead to duplicate tag values if we extend
         // with a tag key that already exists. Need to figure to figure out if the Datadog Agent's approach is based on
         // an override strategy (i.e. if a tag key already exists, it's overwritten) or an extend strategy, like we
@@ -214,7 +197,7 @@ where
                     {
                         Some(tags) => {
                             trace!(entity_id = ?origin_pid, tags_len = tags.len(), "Found tags for entity.");
-                            metric.context.tags.extend(tags);
+                            metric.context_mut().tags_mut().extend(tags);
                         }
                         None => trace!(entity_id = ?origin_pid, "No tags found for entity."),
                     }
@@ -232,7 +215,7 @@ where
                 {
                     Some(tags) => {
                         trace!(?entity_id, tags_len = tags.len(), "Found tags for entity.");
-                        metric.context.tags.extend(tags);
+                        metric.context_mut().tags_mut().extend(tags);
                     }
                     None => trace!(?entity_id, "No tags found for entity."),
                 }
@@ -249,13 +232,12 @@ where
                 {
                     Some(tags) => {
                         trace!(?entity_id, tags_len = tags.len(), "Found tags for entity.");
-                        metric.context.tags.extend(tags);
+                        metric.context_mut().tags_mut().extend(tags);
                     }
                     None => trace!(?entity_id, "No tags found for entity."),
                 }
             }
         }
-        */
     }
 }
 
