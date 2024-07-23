@@ -44,49 +44,49 @@ pub struct EventD {
 }
 
 impl EventD {
-    /// Gets the title of the event.
+    /// Returns the title of the event.
     pub fn title(&self) -> &str {
         &self.title
     }
 
-    /// Gets the text of the event.
+    /// Returns the text of the event.
     pub fn text(&self) -> &str {
         &self.text
     }
 
-    /// Gets the host where the event originated from.
+    /// Returns the host where the event originated from.
     pub fn host(&self) -> &str {
         &self.host
     }
 
-    /// Gets the aggregation key of the event.
+    /// Returns the aggregation key of the event.
     pub fn aggregation_key(&self) -> &str {
         &self.aggregation_key
     }
 
-    /// Gets the priority of the event.
+    /// Returns the priority of the event.
     pub fn priority(&self) -> Priority {
         self.priority
     }
 
-    /// Gets the source type name of the event.
+    /// Returns the source type name of the event.
     pub fn source_type_name(&self) -> &str {
         &self.source_type_name
     }
 
-    /// Gets the alert type of the event.
+    /// Returns the alert type of the event.
     pub fn alert_type(&self) -> AlertType {
         self.alert_type
     }
 
-    /// Gets the timestamp of the event.
+    /// Returns the timestamp of the event.
     ///
     /// This is a Unix timestamp, or the number of seconds since the Unix epoch.
     pub fn timestamp(&self) -> u64 {
         self.timestamp
     }
 
-    /// Gets the tags associated with the event.
+    /// Returns the tags associated with the event.
     pub fn tags(&self) -> &[String] {
         &self.tags
     }

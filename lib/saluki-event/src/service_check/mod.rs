@@ -34,34 +34,34 @@ pub struct ServiceCheck {
 }
 
 impl ServiceCheck {
-    /// Gets the name of the check.
+    /// Returns the name of the check.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// Gets the status of the check.
+    /// Returns the status of the check.
     pub fn status(&self) -> CheckStatus {
         self.status
     }
 
-    /// Gets the timestamp of the check.
+    /// Returns the timestamp of the check.
     ///
     /// This is a Unix timestamp, or the number of seconds since the Unix epoch.
     pub fn timestamp(&self) -> u64 {
         self.timestamp
     }
 
-    /// Gets the host where the check originated from.
+    /// Returns the host where the check originated from.
     pub fn host(&self) -> &str {
         &self.host
     }
 
-    /// Gets the message associated with the check.
+    /// Returns the message associated with the check.
     pub fn message(&self) -> &str {
         &self.message
     }
 
-    /// Gets the tags associated with the check.
+    /// Returns the tags associated with the check.
     pub fn tags(&self) -> &[String] {
         &self.tags
     }
