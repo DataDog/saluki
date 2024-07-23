@@ -447,9 +447,9 @@ mod test {
     fn invalid_input_id() {
         let mut graph = Graph::default();
         let result = graph
-            .with_source("in_log", DataType::Log)
-            .with_destination("out_log", DataType::Log)
-            .with_edge_fallible("in log", "out_log")
+            .with_source("in_eventd", DataType::EventD)
+            .with_destination("out_eventd", DataType::EventD)
+            .with_edge_fallible("in log", "out_eventd")
             .map(|_| ()); // ditch mutable self ref to allow for equality check
 
         assert!(result.is_err());
@@ -460,9 +460,9 @@ mod test {
     fn nonexistent_input_id() {
         let mut graph = Graph::default();
         let result = graph
-            .with_source("in_log", DataType::Log)
-            .with_destination("out_log", DataType::Log)
-            .with_edge_fallible("in_loog", "out_log")
+            .with_source("in_eventd", DataType::EventD)
+            .with_destination("out_eventd", DataType::EventD)
+            .with_edge_fallible("in_loog", "out_eventd")
             .map(|_| ()); // ditch mutable self ref to allow for equality check
 
         assert_eq!(result, Err(component_id_doesnt_exist("in_loog")));
@@ -470,8 +470,8 @@ mod test {
         let mut graph = Graph::default();
         let result = graph
             .with_source("in_all_but_logs", DataType::all_bits())
-            .with_destination("out_log", DataType::Log)
-            .with_edge_fallible("in_all_but_logs.logs", "out_log")
+            .with_destination("out_eventd", DataType::EventD)
+            .with_edge_fallible("in_all_but_logs.logs", "out_eventd")
             .map(|_| ()); // ditch mutable self ref to allow for equality check
 
         assert_eq!(result, Err(output_id_doesnt_exist("in_all_but_logs.logs")));
@@ -481,17 +481,17 @@ mod test {
     fn multiple_outputs() {
         let mut graph = Graph::default();
         graph
-            .with_source("in_log", DataType::Log)
+            .with_source("in_eventd", DataType::EventD)
             .with_transform_multiple_outputs(
-                "log_to_log",
-                DataType::Log,
-                &[(None, DataType::Log), (Some("errors"), DataType::Log)],
+                "eventd_to_eventd",
+                DataType::EventD,
+                &[(None, DataType::EventD), (Some("errors"), DataType::EventD)],
             )
-            .with_destination("out_log", DataType::Log)
-            .with_destination("out_errored_log", DataType::Log)
-            .with_edge("in_log", "log_to_log")
-            .with_edge("log_to_log", "out_log")
-            .with_edge("log_to_log.errors", "out_errored_log");
+            .with_destination("out_eventd", DataType::EventD)
+            .with_destination("out_errored_eventd", DataType::EventD)
+            .with_edge("in_eventd", "eventd_to_eventd")
+            .with_edge("eventd_to_eventd", "out_eventd")
+            .with_edge("eventd_to_eventd.errors", "out_errored_eventd");
 
         assert_eq!(Ok(()), graph.check_data_types());
     }
@@ -500,11 +500,11 @@ mod test {
     fn detect_cycles() {
         let mut graph = Graph::default();
         graph
-            .with_source("in", DataType::Log)
-            .with_transform("one", DataType::Log, DataType::Log)
-            .with_transform("two", DataType::Log, DataType::Log)
-            .with_transform("three", DataType::Log, DataType::Log)
-            .with_destination("out", DataType::Log)
+            .with_source("in", DataType::EventD)
+            .with_transform("one", DataType::EventD, DataType::EventD)
+            .with_transform("two", DataType::EventD, DataType::EventD)
+            .with_transform("three", DataType::EventD, DataType::EventD)
+            .with_destination("out", DataType::EventD)
             .with_multi_edge(&["in", "three"], "one")
             .with_edge("one", "two")
             .with_edge("two", "three")
@@ -519,11 +519,11 @@ mod test {
 
         let mut graph = Graph::default();
         graph
-            .with_source("in", DataType::Log)
-            .with_transform("one", DataType::Log, DataType::Log)
-            .with_transform("two", DataType::Log, DataType::Log)
-            .with_transform("three", DataType::Log, DataType::Log)
-            .with_destination("out", DataType::Log)
+            .with_source("in", DataType::EventD)
+            .with_transform("one", DataType::EventD, DataType::EventD)
+            .with_transform("two", DataType::EventD, DataType::EventD)
+            .with_transform("three", DataType::EventD, DataType::EventD)
+            .with_destination("out", DataType::EventD)
             .with_multi_edge(&["in", "three"], "one")
             .with_edge("one", "two")
             .with_edge("two", "three")
@@ -541,10 +541,10 @@ mod test {
     fn disconnected_components() {
         let mut graph = Graph::default();
         graph
-            .with_source("in", DataType::Log)
-            .with_transform("one", DataType::Log, DataType::Log)
-            .with_transform("two", DataType::Log, DataType::Log)
-            .with_destination("out", DataType::Log)
+            .with_source("in", DataType::EventD)
+            .with_transform("one", DataType::EventD, DataType::EventD)
+            .with_transform("two", DataType::EventD, DataType::EventD)
+            .with_destination("out", DataType::EventD)
             .with_edge("in", "out");
 
         assert_eq!(
@@ -559,11 +559,11 @@ mod test {
     fn diamond_edge_formation() {
         let mut graph = Graph::default();
         graph
-            .with_source("in", DataType::Log)
-            .with_transform("one", DataType::Log, DataType::Log)
-            .with_transform("two", DataType::Log, DataType::Log)
-            .with_transform("three", DataType::Log, DataType::Log)
-            .with_destination("out", DataType::Log)
+            .with_source("in", DataType::EventD)
+            .with_transform("one", DataType::EventD, DataType::EventD)
+            .with_transform("two", DataType::EventD, DataType::EventD)
+            .with_transform("three", DataType::EventD, DataType::EventD)
+            .with_destination("out", DataType::EventD)
             .with_edge("in", "one")
             .with_edge("in", "two")
             .with_multi_edge(&["one", "two"], "three")
@@ -576,14 +576,14 @@ mod test {
     fn datatype_disjoint_sets() {
         let mut graph = Graph::default();
         graph
-            .with_source("in", DataType::Log)
+            .with_source("in", DataType::EventD)
             .with_destination("out", DataType::Metric)
             .with_edge("in", "out");
 
         assert_eq!(
             Err(GraphError::DataTypeMismatch {
                 from_component_output_id: try_into_component_output_id("in").unwrap(),
-                from_ty: DataType::Log,
+                from_ty: DataType::EventD,
                 to_component_id: try_into_component_id("out").unwrap(),
                 to_ty: DataType::Metric,
             }),
@@ -595,10 +595,10 @@ mod test {
     fn datatype_subset_into_superset() {
         let mut graph = Graph::default();
         graph
-            .with_source("in_log", DataType::Log)
+            .with_source("in_eventd", DataType::EventD)
             .with_source("in_metric", DataType::Metric)
             .with_destination("out", DataType::all_bits())
-            .with_multi_edge(&["in_log", "in_metric"], "out");
+            .with_multi_edge(&["in_eventd", "in_metric"], "out");
 
         assert_eq!(Ok(()), graph.check_data_types());
     }
@@ -608,14 +608,14 @@ mod test {
         let mut graph = Graph::default();
         graph
             .with_source("in", DataType::all_bits())
-            .with_transform("log_to_any", DataType::Log, DataType::all_bits())
-            .with_transform("any_to_log", DataType::all_bits(), DataType::Log)
-            .with_destination("out_log", DataType::Log)
+            .with_transform("eventd_to_any", DataType::EventD, DataType::all_bits())
+            .with_transform("any_to_eventd", DataType::all_bits(), DataType::EventD)
+            .with_destination("out_eventd", DataType::EventD)
             .with_destination("out_metric", DataType::Metric)
-            .with_edge("in", "log_to_any")
-            .with_edge("in", "any_to_log")
-            .with_multi_edge(&["in", "log_to_any", "any_to_log"], "out_log")
-            .with_multi_edge(&["in", "log_to_any"], "out_metric");
+            .with_edge("in", "eventd_to_any")
+            .with_edge("in", "any_to_eventd")
+            .with_multi_edge(&["in", "eventd_to_any", "any_to_eventd"], "out_eventd")
+            .with_multi_edge(&["in", "eventd_to_any"], "out_metric");
 
         assert_eq!(Ok(()), graph.check_data_types());
     }
@@ -624,21 +624,21 @@ mod test {
     fn allows_both_directions_for_metrics() {
         let mut graph = Graph::default();
         graph
-            .with_source("in_log", DataType::Log)
+            .with_source("in_eventd", DataType::EventD)
             .with_source("in_metric", DataType::Metric)
-            .with_transform("log_to_log", DataType::Log, DataType::Log)
+            .with_transform("eventd_to_eventd", DataType::EventD, DataType::EventD)
             .with_transform("metric_to_metric", DataType::Metric, DataType::Metric)
             .with_transform("any_to_any", DataType::all_bits(), DataType::all_bits())
-            .with_transform("any_to_log", DataType::all_bits(), DataType::Log)
+            .with_transform("any_to_eventd", DataType::all_bits(), DataType::EventD)
             .with_transform("any_to_metric", DataType::all_bits(), DataType::Metric)
-            .with_destination("out_log", DataType::Log)
+            .with_destination("out_eventd", DataType::EventD)
             .with_destination("out_metric", DataType::Metric)
-            .with_edge("in_log", "log_to_log")
+            .with_edge("in_eventd", "eventd_to_eventd")
             .with_edge("in_metric", "metric_to_metric")
-            .with_multi_edge(&["log_to_log", "metric_to_metric"], "any_to_any")
-            .with_edge("any_to_any", "any_to_log")
+            .with_multi_edge(&["eventd_to_eventd", "metric_to_metric"], "any_to_any")
+            .with_edge("any_to_any", "any_to_eventd")
             .with_edge("any_to_any", "any_to_metric")
-            .with_edge("any_to_log", "out_log")
+            .with_edge("any_to_eventd", "out_eventd")
             .with_edge("any_to_metric", "out_metric");
 
         assert_eq!(Ok(()), graph.check_data_types());

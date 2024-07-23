@@ -25,11 +25,11 @@ pub enum DataType {
     /// Metrics.
     Metric,
 
-    /// Logs.
-    Log,
+    /// Datadog Events.
+    EventD,
 
-    /// Traces.
-    Trace,
+    /// Service checks.
+    ServiceCheck,
 }
 
 impl Default for DataType {
@@ -46,12 +46,12 @@ impl fmt::Display for DataType {
             types.push("Metric");
         }
 
-        if self.contains(Self::Log) {
-            types.push("Log");
+        if self.contains(Self::EventD) {
+            types.push("DatadogEvent");
         }
 
-        if self.contains(Self::Trace) {
-            types.push("Trace");
+        if self.contains(Self::ServiceCheck) {
+            types.push("ServiceCheck");
         }
 
         write!(f, "{}", types.join("|"))
@@ -64,7 +64,7 @@ pub enum Event {
     /// A metric.
     Metric(Metric),
 
-    /// An event.
+    /// A Datadog Event.
     EventD(EventD),
 
     /// A service check.
@@ -72,9 +72,9 @@ pub enum Event {
 }
 
 impl Event {
-    /// Converts this event into `Metric`.
+    /// Returns the inner event value, if this event is a `Metric`.
     ///
-    /// If the underlying event is not a `Metric`, this will return `None`.
+    /// Otherwise, `None` is returned and the original event is consumed.
     pub fn into_metric(self) -> Option<Metric> {
         match self {
             Event::Metric(metric) => Some(metric),
@@ -82,19 +82,19 @@ impl Event {
         }
     }
 
-    /// Converts this event into `Metric`.
+    /// Returns a mutable reference inner event value, if this event is a `Metric`.
     ///
-    /// If the underlying event is not a `Metric`, this will return `None`.
-    pub fn as_metric_mut(&mut self) -> Option<&mut Metric> {
+    /// Otherwise, `None` is returned.
+    pub fn try_as_metric_mut(&mut self) -> Option<&mut Metric> {
         match self {
             Event::Metric(metric) => Some(metric),
             _ => None,
         }
     }
 
-    /// Converts this event into `Eventd`.
+    /// Returns the inner event value, if this event is a `EventD`.
     ///
-    /// If the underlying event is not a `Eventd`, this will return `None`.
+    /// Otherwise, `None` is returned and the original event is consumed.
     pub fn into_eventd(self) -> Option<EventD> {
         match self {
             Event::EventD(eventd) => Some(eventd),
@@ -102,9 +102,9 @@ impl Event {
         }
     }
 
-    /// Converts this event into `ServiceCheck`.
+    /// Returns the inner event value, if this event is a `ServiceCheck`.
     ///
-    /// If the underlying event is not a `Eventd`, this will return `None`.
+    /// Otherwise, `None` is returned and the original event is consumed.
     pub fn into_service_check(self) -> Option<ServiceCheck> {
         match self {
             Event::ServiceCheck(service_check) => Some(service_check),
