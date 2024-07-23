@@ -75,7 +75,7 @@ impl Event {
     /// Returns the inner event value, if this event is a `Metric`.
     ///
     /// Otherwise, `None` is returned and the original event is consumed.
-    pub fn into_metric(self) -> Option<Metric> {
+    pub fn try_into_metric(self) -> Option<Metric> {
         match self {
             Event::Metric(metric) => Some(metric),
             _ => None,
@@ -95,7 +95,7 @@ impl Event {
     /// Returns the inner event value, if this event is a `EventD`.
     ///
     /// Otherwise, `None` is returned and the original event is consumed.
-    pub fn into_eventd(self) -> Option<EventD> {
+    pub fn try_into_eventd(self) -> Option<EventD> {
         match self {
             Event::EventD(eventd) => Some(eventd),
             _ => None,
@@ -105,7 +105,7 @@ impl Event {
     /// Returns the inner event value, if this event is a `ServiceCheck`.
     ///
     /// Otherwise, `None` is returned and the original event is consumed.
-    pub fn into_service_check(self) -> Option<ServiceCheck> {
+    pub fn try_into_service_check(self) -> Option<ServiceCheck> {
         match self {
             Event::ServiceCheck(service_check) => Some(service_check),
             _ => None,

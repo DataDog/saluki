@@ -268,7 +268,7 @@ impl Transform for Aggregate {
                         let event_buffer_len = event_buffer.len();
 
                         for event in events {
-                            if let Some(metric) = event.into_metric() {
+                            if let Some(metric) = event.try_into_metric() {
                                 if self.forward_timestamped_metrics && metric.metadata().timestamp().is_some() {
                                     event_buffer.push(Event::Metric(metric));
                                 } else if !state.insert(metric) {
@@ -523,7 +523,7 @@ mod tests {
 
         let mut metrics = event_buffer
             .into_iter()
-            .filter_map(|event| event.into_metric())
+            .filter_map(|event| event.try_into_metric())
             .collect::<Vec<_>>();
         metrics.sort_by(|a, b| a.context().name().cmp(b.context().name()));
         metrics

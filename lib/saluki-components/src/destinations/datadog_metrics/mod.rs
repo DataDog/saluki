@@ -240,7 +240,7 @@ where
                 debug!(events_len = event_buffer.len(), "Processing event buffer.");
 
                 for event in event_buffer {
-                    if let Some(metric) = event.into_metric() {
+                    if let Some(metric) = event.try_into_metric() {
                         let request_builder = match MetricsEndpoint::from_metric(&metric) {
                             MetricsEndpoint::Series => &mut series_request_builder,
                             MetricsEndpoint::Sketches => &mut sketches_request_builder,
