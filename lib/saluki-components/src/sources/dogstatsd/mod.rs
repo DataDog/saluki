@@ -417,7 +417,7 @@ async fn drive_stream(
                 if origin_detection {
                     if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
                         for event in &mut event_buffer {
-                            if let Some(metric) = event.as_metric_mut() {
+                            if let Some(metric) = event.try_as_metric_mut() {
                                 if metric.metadata().origin_entity().is_none() {
                                     metric
                                         .metadata_mut()

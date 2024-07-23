@@ -119,7 +119,7 @@ impl Destination for Prometheus {
                         // Process each metric event in the batch, either merging it with the existing value or
                         // inserting it for the first time.
                         for event in events {
-                            if let Some(metric) = event.into_metric() {
+                            if let Some(metric) = event.try_into_metric() {
                                 let (context, value, _) = metric.into_parts();
 
                                 // Skip any metric types we can't handle.

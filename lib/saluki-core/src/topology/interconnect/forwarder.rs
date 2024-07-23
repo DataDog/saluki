@@ -214,7 +214,7 @@ mod tests {
         let forwarded_metric = forwarded_ebuf
             .into_iter()
             .next()
-            .and_then(|event| event.into_metric())
+            .and_then(|event| event.try_into_metric())
             .expect("should be single metric in the buffer");
         assert_eq!(forwarded_metric.context(), metric.context());
     }
@@ -242,7 +242,7 @@ mod tests {
         let forwarded_metric = forwarded_ebuf
             .into_iter()
             .next()
-            .and_then(|event| event.into_metric())
+            .and_then(|event| event.try_into_metric())
             .expect("should be single metric in the buffer");
         assert_eq!(forwarded_metric.context(), metric.context());
     }
@@ -274,14 +274,14 @@ mod tests {
         let forwarded_metric1 = forwarded_ebuf1
             .into_iter()
             .next()
-            .and_then(|event| event.into_metric())
+            .and_then(|event| event.try_into_metric())
             .expect("should be single metric in the buffer");
         assert_eq!(forwarded_metric1.context(), metric.context());
 
         let forwarded_metric2 = forwarded_ebuf2
             .into_iter()
             .next()
-            .and_then(|event| event.into_metric())
+            .and_then(|event| event.try_into_metric())
             .expect("should be single metric in the buffer");
         assert_eq!(forwarded_metric2.context(), metric.context());
     }
@@ -313,14 +313,14 @@ mod tests {
         let forwarded_metric1 = forwarded_ebuf1
             .into_iter()
             .next()
-            .and_then(|event| event.into_metric())
+            .and_then(|event| event.try_into_metric())
             .expect("should be single metric in the buffer");
         assert_eq!(forwarded_metric1.context(), metric.context());
 
         let forwarded_metric2 = forwarded_ebuf2
             .into_iter()
             .next()
-            .and_then(|event| event.into_metric())
+            .and_then(|event| event.try_into_metric())
             .expect("should be single metric in the buffer");
         assert_eq!(forwarded_metric2.context(), metric.context());
     }
