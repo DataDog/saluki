@@ -529,20 +529,28 @@ impl TagSetChunk {
         }
     }
 
-    fn contains(&self, tag: &Tag) -> bool {
+    fn has_any<F>(&self, f: F) -> bool
+    where
+        F: FnMut(&Tag) -> bool,
+    {
         match self {
-            Self::Shared(tags) => tags.iter().any(|t| t == tag),
-            Self::Owned(tags) => tags.iter().any(|t| t == tag),
+            Self::Shared(tags) => tags.iter().any(f),
+            Self::Owned(tags) => tags.iter().any(f),
         }
+    }
+
+    fn contains(&self, tag: &Tag) -> bool {
+        self.has_any(|t| t == tag)
     }
 
     fn retain<F>(&mut self, mut f: F)
     where
         F: FnMut(&Tag) -> bool,
     {
-        // TODO: This is naive, but we're just shooting for correctness at the moment.
-        let tags = self.get_or_into_mut();
-        tags.retain(|tag| f(tag));
+        if self.has_any(&mut f) {
+            let tags = self.get_or_into_mut();
+            tags.retain(f);
+        }
     }
 
     fn insert_tag(&mut self, tag: Tag) {
