@@ -2414,6 +2414,7 @@ dependencies = [
  "metrics",
  "metrics-util",
  "saluki-metrics",
+ "smallvec",
  "stringtheory",
 ]
 
