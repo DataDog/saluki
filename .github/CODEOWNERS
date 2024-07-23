@@ -1,2 +1,4 @@
 # Currently, APR owns all code in this repository.
-* @DataDog/agent-processing-and-routing
+#
+# AML is also a major stakeholder and so has blanket ownership as well.
+* @DataDog/agent-processing-and-routing @DataDog/agent-metrics-logs
