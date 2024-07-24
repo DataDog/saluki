@@ -136,7 +136,7 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
         Some(Context {
             inner: Arc::new(ContextInner {
                 name,
-                tags: TagSet::from_chunk(TagSetChunk::new_shared(tags)),
+                tags: TagSet::from_chunk(TagSetChunk::Shared(Arc::new(tags))),
                 hash: context_ref.hash,
                 active_count,
             }),
@@ -500,7 +500,6 @@ impl TagSetChunk {
         Self::Owned(tags.into_iter().collect())
     }
 
-    #[allow(dead_code)]
     fn new_shared<I, T>(tags: I) -> Self
     where
         I: IntoIterator<Item = T>,
