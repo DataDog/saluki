@@ -103,7 +103,7 @@ impl TagStore {
             TagCardinality::Low => self.low_cardinality_entity_tags.entry(entity_id.clone()).or_default(),
             TagCardinality::High => self.high_cardinality_entity_tags.entry(entity_id.clone()).or_default(),
         };
-        existing_tags.extend(tags.into_iter().map(Into::into));
+        existing_tags.merge(tags);
 
         self.regenerate_entity_tags(entity_id);
     }
@@ -197,7 +197,7 @@ impl TagStore {
                     .cloned()
                     .map(|mut tags| {
                         if let Some(high_cardinality_tags) = self.high_cardinality_entity_tags.get(entity_id) {
-                            tags.extend(high_cardinality_tags.clone());
+                            tags.merge(high_cardinality_tags.clone());
                         }
                         tags
                     })
@@ -266,9 +266,6 @@ impl TagSnapshot {
     }
 }
 
-// NOTE: All of the unit tests that deal with merging the "expected tags" by using `Extend` are designed/ordered to
-// avoid creating tags with multiple values, since the logic for `TagSet` doesn't replace existing tags, but simply
-// aggregates the values of existing tags.
 #[cfg(test)]
 mod tests {
     use saluki_context::TagSet;
@@ -331,7 +328,7 @@ mod tests {
         let snapshot = store.snapshot();
 
         let unified_tags = snapshot.get_entity_tags(&entity_id, TagCardinality::Low).unwrap();
-        assert_eq!(unified_tags, expected_tags);
+        assert_eq!(unified_tags.as_sorted(), expected_tags.as_sorted());
     }
 
     #[test]
@@ -342,7 +339,7 @@ mod tests {
             high_cardinality!(&entity_id, tags => ["pod" => "foo-8xl-ah2z7"]);
 
         // Make sure to make our expected high cardinality tags a superset.
-        high_card_expected_tags.extend(low_card_expected_tags.clone());
+        high_card_expected_tags.merge(low_card_expected_tags.clone());
 
         let mut store = TagStore::default();
         for operation in low_card_operations {
@@ -370,7 +367,7 @@ mod tests {
         let entity_id = EntityId::Container("container-id".into());
         let (mut expected_tags, operations) = low_cardinality!(&entity_id, tags => ["service" => "foo"]);
 
-        expected_tags.extend(global_expected_tags.clone());
+        expected_tags.merge(global_expected_tags.clone());
 
         let mut store = TagStore::default();
         for operation in global_operations {
@@ -404,13 +401,13 @@ mod tests {
         let (mut container_expected_tags, container_operations) =
             low_cardinality!(&container_entity_id, tags => ["service" => "foo"]);
 
-        container_expected_tags.extend(pod_expected_tags.clone());
+        container_expected_tags.merge(pod_expected_tags.clone());
 
         let container_pid_entity_id = EntityId::ContainerPid(422);
         let (mut container_pid_expected_tags, container_pid_operations) =
             low_cardinality!(&container_pid_entity_id, tags => ["pid" => "422"]);
 
-        container_pid_expected_tags.extend(container_expected_tags.clone());
+        container_pid_expected_tags.merge(container_expected_tags.clone());
 
         let mut store = TagStore::default();
         for operation in pod_operations {
@@ -464,7 +461,7 @@ mod tests {
         // Create a new set of metadata entries to add an additional tag, and observe that processing the entry updates
         // the resolved tags for our entity.
         let (mut new_expected_tags, new_operations) = low_cardinality!(&entity_id, tags => ["app" => "bar"]);
-        new_expected_tags.extend(expected_tags.clone());
+        new_expected_tags.merge(expected_tags.clone());
 
         for operation in new_operations {
             store.process_operation(operation);
@@ -486,7 +483,7 @@ mod tests {
         let (mut container_expected_tags, container_operations) =
             low_cardinality!(&container_entity_id, tags => ["service" => "foo"]);
 
-        container_expected_tags.extend(pod_expected_tags.clone());
+        container_expected_tags.merge(pod_expected_tags.clone());
 
         let mut store = TagStore::default();
         for operation in pod_operations {
@@ -515,8 +512,8 @@ mod tests {
         // entry updates the resolved tags for both the pod entity as well as the container entity.
         let (mut new_pod_expected_tags, new_pod_operations) =
             low_cardinality!(&pod_entity_id, tags => ["app" => "bar"]);
-        container_expected_tags.extend(new_pod_expected_tags.clone());
-        new_pod_expected_tags.extend(pod_expected_tags.clone());
+        container_expected_tags.merge(new_pod_expected_tags.clone());
+        new_pod_expected_tags.merge(pod_expected_tags.clone());
 
         for operation in new_pod_operations {
             store.process_operation(operation);

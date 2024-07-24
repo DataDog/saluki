@@ -197,7 +197,7 @@ where
                     {
                         Some(tags) => {
                             trace!(entity_id = ?origin_pid, tags_len = tags.len(), "Found tags for entity.");
-                            metric.context_mut().tags_mut().extend(tags);
+                            metric.context_mut().tags_mut().merge(tags);
                         }
                         None => trace!(entity_id = ?origin_pid, "No tags found for entity."),
                     }
@@ -215,7 +215,7 @@ where
                 {
                     Some(tags) => {
                         trace!(?entity_id, tags_len = tags.len(), "Found tags for entity.");
-                        metric.context_mut().tags_mut().extend(tags);
+                        metric.context_mut().tags_mut().merge(tags);
                     }
                     None => trace!(?entity_id, "No tags found for entity."),
                 }
@@ -232,7 +232,7 @@ where
                 {
                     Some(tags) => {
                         trace!(?entity_id, tags_len = tags.len(), "Found tags for entity.");
-                        metric.context_mut().tags_mut().extend(tags);
+                        metric.context_mut().tags_mut().merge(tags);
                     }
                     None => trace!(?entity_id, "No tags found for entity."),
                 }
