@@ -101,7 +101,7 @@ pub struct DogstatsdCodec<TMI = ()> {
     codec_metrics: CodecMetrics,
 }
 
-impl DogstatsdCodec<()>  {
+impl DogstatsdCodec<()> {
     /// Creates a new `DogstatsdCodec` with the given context resolver, using a default configuration.
     pub fn from_context_resolver(context_resolver: ContextResolver) -> Self {
         Self {
@@ -113,7 +113,7 @@ impl DogstatsdCodec<()>  {
     }
 }
 
-impl<TMI> DogstatsdCodec<TMI>  {
+impl<TMI> DogstatsdCodec<TMI> {
     /// Sets the given configuration for the codec.
     ///
     /// Different aspects of the codec's behavior (such as tag length, tag count, and timestamp parsing) can be
@@ -127,6 +127,14 @@ impl<TMI> DogstatsdCodec<TMI>  {
         }
     }
 
+    /// Sets the given tag metadata interceptor to use.
+    ///
+    /// The tag metadata interceptor is used to evaluate and potentially intercept raw tags on a metric prior to context
+    /// resolving. This can be used to generically drop tags as metrics enter the system, but is generally used to
+    /// filter out specific tags that are only used to set metadata on the metric, and aren't inherently present as a
+    /// way to facet the metric itself.
+    ///
+    /// Defaults to a no-op interceptor, which retains all tags.
     pub fn with_tag_metadata_interceptor<TMI2>(self, tag_metadata_interceptor: TMI2) -> DogstatsdCodec<TMI2> {
         DogstatsdCodec {
             config: self.config,
@@ -573,15 +581,25 @@ impl<'a> Iterator for ValueIter<'a> {
     }
 }
 
+/// Action to take for a given tag.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum InterceptAction {
+    /// The tag should be passed through as-is.
     Pass,
+
+    /// The tag should be intercepted for metadata purposes.
     Intercept,
+
+    /// The tag should be dropped entirely.
     Drop,
 }
 
+/// Evaluator for deciding how to handle a given tag prior to context resolving.
 pub trait TagMetadataInterceptor: std::fmt::Debug {
+    /// Evaluate the given tag.
     fn evaluate(&self, tag: &str) -> InterceptAction;
+
+    /// Intercept the given tag, updating the metric metadata based on it.
     fn intercept(&self, tag: &str, metadata: &mut MetricMetadata);
 }
 
@@ -598,11 +616,11 @@ where
     T: TagMetadataInterceptor,
 {
     fn evaluate(&self, tag: &str) -> InterceptAction {
-        (&**self).evaluate(tag)
+        (**self).evaluate(tag)
     }
 
     fn intercept(&self, tag: &str, metadata: &mut MetricMetadata) {
-        (&**self).intercept(tag, metadata)
+        (**self).intercept(tag, metadata)
     }
 }
 
@@ -681,7 +699,7 @@ mod tests {
     use saluki_core::{pooling::helpers::get_pooled_object_via_default, topology::interconnect::EventBuffer};
     use saluki_event::{metric::*, Event};
 
-    use crate::deser::{Decoder, codec::DogstatsdCodec};
+    use crate::deser::{codec::DogstatsdCodec, Decoder};
 
     use super::{parse_dogstatsd, DogstatsdCodecConfiguration, InterceptAction, TagMetadataInterceptor};
 
@@ -696,7 +714,7 @@ mod tests {
     impl TagMetadataInterceptor for StaticInterceptor {
         fn evaluate(&self, tag: &str) -> InterceptAction {
             if tag.starts_with("host") {
-              InterceptAction::Intercept
+                InterceptAction::Intercept
             } else if tag.starts_with("deprecated") {
                 InterceptAction::Drop
             } else {
@@ -705,10 +723,9 @@ mod tests {
         }
 
         fn intercept(&self, tag: &str, metadata: &mut MetricMetadata) {
-            if let Some((key, value)) = tag.split_once(":") {
-                match key {
-                    "host" => metadata.set_hostname(Arc::from(value)),
-                    _ => {}
+            if let Some((key, value)) = tag.split_once(':') {
+                if key == "host" {
+                    metadata.set_hostname(Arc::from(value));
                 }
             }
         }
@@ -1114,7 +1131,9 @@ mod tests {
 
         let input = b"some_metric:1|c|#tag_a:should_pass,deprecated_tag_b:should_drop,host:should_intercept";
         let mut event_buffer = get_pooled_object_via_default::<EventBuffer>();
-        let events_decoded = codec.decode(&mut &input[..], &mut event_buffer).expect("should not fail to decode");
+        let events_decoded = codec
+            .decode(&mut &input[..], &mut event_buffer)
+            .expect("should not fail to decode");
         assert_eq!(events_decoded, 1);
 
         let event = event_buffer.into_iter().next().expect("should have an event");
