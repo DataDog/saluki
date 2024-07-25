@@ -118,59 +118,6 @@ where
     E: EnvironmentProvider,
 {
     fn enrich_metric(&self, metric: &mut Metric) {
-        // Try to collect various pieces of client origin information from the metric tags. For any tags that we collect
-        // information from, we remove them from the original set of metric tags, as they're only used for driving
-        // enrichment logic.
-        //
-        // This may also result in changing the origin metadata in certain cases, such as if we're dealing with a JMX
-        // check metric.
-        //
-        // TODO: Follow the approach that the Agent takes where the tags are iterated directly by index, and then
-        // removed from the vector by simply overwriting the slot with the next non-consumed tag. This would let us let
-        // us avoid having to shift all elements after the tag to remove.
-        let mut maybe_entity_id = None;
-        let maybe_container_id = metric
-            .metadata()
-            .origin_entity()
-            .cloned()
-            .and_then(|oe| oe.into_container_id().map(EntityId::Container));
-        let maybe_origin_pid = metric
-            .metadata()
-            .origin_entity()
-            .cloned()
-            .and_then(|oe| oe.into_process_id().map(EntityId::ContainerPid));
-        let mut tag_cardinality = self.tag_cardinality;
-        let mut maybe_jmx_check_name = None;
-
-        metric.context_mut().tags_mut().retain(|tag| match tag.name() {
-            ENTITY_ID_TAG_KEY => {
-                maybe_entity_id = tag
-                    .value()
-                    .filter(|s| *s != ENTITY_ID_IGNORE_VALUE)
-                    .map(MetaString::from)
-                    .map(EntityId::PodUid);
-                false
-            }
-            CARDINALITY_TAG_KEY => {
-                if let Some(cardinality) = tag.value().and_then(TagCardinality::parse) {
-                    tag_cardinality = cardinality;
-                }
-                false
-            }
-            JMX_CHECK_NAME_TAG_KEY => {
-                maybe_jmx_check_name = tag.value().map(String::from);
-                false
-            }
-            _ => true,
-        });
-
-        // If this metric originates from a JMX check, update the metric's origin.
-        if let Some(jmx_check_name) = maybe_jmx_check_name {
-            metric
-                .metadata_mut()
-                .set_origin(MetricOrigin::jmx_check(&jmx_check_name));
-        }
-
         // Examine the various possible entity ID values, and based on their state, use one or more of them to enrich
         // the tags for the given metric. Below is a description of each entity ID we may have extracted:
         //
@@ -184,6 +131,14 @@ where
         // with a tag key that already exists. Need to figure to figure out if the Datadog Agent's approach is based on
         // an override strategy (i.e. if a tag key already exists, it's overwritten) or an extend strategy, like we
         // have. Perhaps even further, does the Datadog Agent ignore duplicate _values_ for a given tag key?
+
+        let origin_entity = metric.metadata().origin_entity();
+        let maybe_entity_id = origin_entity.pod_uid().and_then(EntityId::from_pod_uid);
+        let maybe_container_id = origin_entity.container_id().and_then(EntityId::from_raw_container_id);
+        let maybe_origin_pid = origin_entity.process_id().map(EntityId::ContainerPid);
+
+        // TODO: Figure out where we can store this if it's overridden via tag in the given metric.
+        let tag_cardinality = self.tag_cardinality;
 
         if !self.origin_detection_unified {
             // If we discovered an entity ID via origin detection, and no client-provided entity ID was provided (or it was,
@@ -204,7 +159,7 @@ where
                 }
             }
 
-            // If we have a client-provided entity ID or a container ID, try to get tags for the entity based on those. A
+            // If we have a client-provided pod UID or a container ID, try to get tags for the entity based on those. A
             // client-provided entity ID takes precedence over the container ID.
             let maybe_client_entity_id = maybe_entity_id.or(maybe_container_id);
             if let Some(entity_id) = maybe_client_entity_id {
