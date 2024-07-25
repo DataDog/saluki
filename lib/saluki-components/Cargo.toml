@@ -1,30 +1,18 @@
 [package]
 name = "saluki-components"
 version = "0.1.0"
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
 
 [dependencies]
-# Internal dependencies.
-datadog-protos = { workspace = true }
-ddsketch-agent = { workspace = true }
-memory-accounting = { workspace = true }
-saluki-config = { workspace = true }
-saluki-context = { workspace = true }
-saluki-core = { workspace = true }
-saluki-env = { workspace = true }
-saluki-error = { workspace = true }
-saluki-event = { workspace = true }
-saluki-io = { workspace = true }
-stringtheory = { workspace = true }
-
-# External dependencies.
 ahash = { workspace = true }
 async-compression = { workspace = true, features = ["tokio", "zlib"] }
 async-trait = { workspace = true }
 bitmask-enum = { workspace = true }
 bytes = { workspace = true }
+datadog-protos = { workspace = true }
+ddsketch-agent = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
@@ -34,6 +22,7 @@ hyper-rustls = { workspace = true, features = ["http2", "rustls-native-certs"] }
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "tokio"] }
 indexmap = { workspace = true, features = ["std"] }
 memchr = { workspace = true, features = ["std"] }
+memory-accounting = { workspace = true }
 metrics = { workspace = true }
 metrics-util = { workspace = true, features = ["handles", "recency", "registry"] }
 nom = { workspace = true }
@@ -42,9 +31,17 @@ pin-project = { workspace = true }
 protobuf = { workspace = true }
 quanta = { workspace = true }
 rustls = { workspace = true, features = ["aws_lc_rs", "logging", "tls12"] }
+saluki-config = { workspace = true }
+saluki-context = { workspace = true }
+saluki-core = { workspace = true }
+saluki-env = { workspace = true }
+saluki-error = { workspace = true }
+saluki-event = { workspace = true }
+saluki-io = { workspace = true }
 serde = { workspace = true }
 slab = { workspace = true }
 snafu = { workspace = true }
+stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
 tokio-util = { workspace = true }
 tower = { workspace = true }

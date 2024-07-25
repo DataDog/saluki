@@ -1,34 +1,31 @@
 [package]
 name = "saluki-core"
 version = "0.1.0"
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
 
 [dependencies]
-# Internal dependencies.
-datadog-protos = { workspace = true }
-ddsketch-agent = { workspace = true }
-memory-accounting = { workspace = true }
-saluki-context = { workspace = true }
-saluki-error = { workspace = true }
-saluki-event = { workspace = true }
-stringtheory = { workspace = true }
-
-# External dependencies.
 ahash = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
+datadog-protos = { workspace = true }
+ddsketch-agent = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
 memchr = { workspace = true, features = ["std"] }
+memory-accounting = { workspace = true }
 metrics = { workspace = true }
 metrics-util = { workspace = true, features = ["handles", "recency", "registry"] }
 paste = { workspace = true }
 pin-project = { workspace = true }
 protobuf = { workspace = true }
 quanta = { workspace = true }
+saluki-context = { workspace = true }
+saluki-error = { workspace = true }
+saluki-event = { workspace = true }
 slab = { workspace = true }
 snafu = { workspace = true }
+stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
 tokio-util = { workspace = true }
 tower = { workspace = true }
