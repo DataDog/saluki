@@ -35,7 +35,9 @@ const fn default_tag_cardinality() -> TagCardinality {
 ///
 /// ## Missing
 ///
-/// - full alignment with entity ID/client origin handling in terms of which one we use for getting enrichment tags
+/// - support for External Data [1]
+///
+/// [1]: https://github.com/DataDog/datadog-agent/blob/6b4e6ec490148848c282ef304d6696cc910e5efc/comp/core/tagger/taggerimpl/tagger.go#L498-L535
 #[derive(Deserialize)]
 pub struct OriginEnrichmentConfiguration<E = ()> {
     #[serde(skip)]
@@ -125,20 +127,16 @@ where
         // - container ID (extracted from `saluki.internal.container_id` tag, which comes from special "container ID"
         //   extension in DogStatsD protocol; non-prefixed container ID)
         // - origin PID (extracted via UDS socket credentials)
-        //
-        // TODO: There's the possibility that a metric is enriched multiple times, regardless of whether or not we're in
-        // unified mode. We're currently using an extend approach, which would lead to duplicate tag values if we extend
-        // with a tag key that already exists. Need to figure to figure out if the Datadog Agent's approach is based on
-        // an override strategy (i.e. if a tag key already exists, it's overwritten) or an extend strategy, like we
-        // have. Perhaps even further, does the Datadog Agent ignore duplicate _values_ for a given tag key?
 
         let origin_entity = metric.metadata().origin_entity();
         let maybe_entity_id = origin_entity.pod_uid().and_then(EntityId::from_pod_uid);
         let maybe_container_id = origin_entity.container_id().and_then(EntityId::from_raw_container_id);
         let maybe_origin_pid = origin_entity.process_id().map(EntityId::ContainerPid);
 
-        // TODO: Figure out where we can store this if it's overridden via tag in the given metric.
-        let tag_cardinality = self.tag_cardinality;
+        let tag_cardinality = origin_entity
+            .cardinality()
+            .and_then(TagCardinality::parse)
+            .unwrap_or(self.tag_cardinality);
 
         if !self.origin_detection_unified {
             // If we discovered an entity ID via origin detection, and no client-provided entity ID was provided (or it was,
@@ -152,7 +150,7 @@ where
                     {
                         Some(tags) => {
                             trace!(entity_id = ?origin_pid, tags_len = tags.len(), "Found tags for entity.");
-                            metric.context_mut().tags_mut().extend(tags);
+                            metric.context_mut().tags_mut().merge_missing(tags);
                         }
                         None => trace!(entity_id = ?origin_pid, "No tags found for entity."),
                     }
@@ -187,7 +185,7 @@ where
                 {
                     Some(tags) => {
                         trace!(?entity_id, tags_len = tags.len(), "Found tags for entity.");
-                        metric.context_mut().tags_mut().extend(tags);
+                        metric.context_mut().tags_mut().merge_missing(tags);
                     }
                     None => trace!(?entity_id, "No tags found for entity."),
                 }

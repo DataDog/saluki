@@ -31,6 +31,11 @@ pub struct OriginEntity {
     ///
     /// This is generally only used in Kubernetes environments to uniquely identify the pod. UIDs are equivalent to UUIDs.
     pod_uid: Option<MetaString>,
+
+    /// Desired cardinality of any tags associated with the entity.
+    ///
+    /// This controls the cardinality of the tags added to this metric when enriching based on the available entity IDs.
+    cardinality: Option<MetaString>,
 }
 
 impl OriginEntity {
@@ -57,6 +62,14 @@ impl OriginEntity {
         self.pod_uid = Some(pod_uid.into());
     }
 
+    /// Sets the desired cardinality of any tags associated with the entity.
+    pub fn set_cardinality<S>(&mut self, cardinality: S)
+    where
+        S: Into<MetaString>,
+    {
+        self.cardinality = Some(cardinality.into());
+    }
+
     /// Gets the process ID of the sender.
     pub fn process_id(&self) -> Option<u32> {
         self.process_id.map(NonZeroU32::get)
@@ -70,6 +83,11 @@ impl OriginEntity {
     /// Gets the pod UID of the sender.
     pub fn pod_uid(&self) -> Option<&str> {
         self.pod_uid.as_deref()
+    }
+
+    /// Gets the desired cardinality of any tags associated with the entity.
+    pub fn cardinality(&self) -> Option<&str> {
+        self.cardinality.as_deref()
     }
 }
 

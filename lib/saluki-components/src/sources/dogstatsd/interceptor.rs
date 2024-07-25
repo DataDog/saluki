@@ -30,11 +30,8 @@ impl TagMetadataInterceptor for AgentLikeTagMetadataInterceptor {
             (Some(JMX_CHECK_NAME_TAG_KEY), Some(jmx_check_name)) => {
                 metadata.set_origin(MetricOrigin::jmx_check(jmx_check_name));
             }
-            (Some(CARDINALITY_TAG_KEY), _) => {
-                // There's no metadata field for cardinality at the moment, so we're just ignoring it but with `todo!()`
-                // so that we don't silently ignore it... basically, we want to make sure a panic happens the first time
-                // we hit this so we don't forget to handle it. :)
-                todo!()
+            (Some(CARDINALITY_TAG_KEY), Some(value)) => {
+                metadata.origin_entity_mut().set_cardinality(value);
             }
             _ => {}
         }
