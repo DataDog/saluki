@@ -1,19 +1,16 @@
 [package]
 name = "saluki-event"
 version = "0.1.0"
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
 
 [dependencies]
-# Internal dependencies.
+bitmask-enum = { workspace = true }
 ddsketch-agent = { workspace = true }
+float_eq = { workspace = true }
 saluki-context = { workspace = true }
 stringtheory = { workspace = true }
-
-# External dependencies.
-bitmask-enum = { workspace = true }
-float_eq = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true, features = ["std"] }

@@ -1,28 +1,19 @@
 [package]
 name = "saluki-io"
 version = "0.1.0"
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
 
 [dependencies]
-# Internal dependencies.
-datadog-protos = { workspace = true }
-ddsketch-agent = { workspace = true }
-memory-accounting = { workspace = true }
-saluki-context = { workspace = true }
-saluki-core = { workspace = true }
-saluki-error = { workspace = true }
-saluki-event = { workspace = true }
-saluki-metrics = { workspace = true }
-
-# External dependencies.
 ahash = { workspace = true }
 async-compression = { workspace = true, features = ["tokio", "zlib"] }
 async-trait = { workspace = true }
 average = { workspace = true, features = ["std"] }
 bitmask-enum = { workspace = true }
 bytes = { workspace = true }
+datadog-protos = { workspace = true }
+ddsketch-agent = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 hyper = { workspace = true, features = ["client", "server"] }
@@ -31,6 +22,7 @@ hyper-util = { workspace = true, features = ["client", "client-legacy", "http1",
 indexmap = { workspace = true, features = ["std"] }
 libc = { workspace = true }
 memchr = { workspace = true, features = ["std"] }
+memory-accounting = { workspace = true }
 metrics = { workspace = true }
 metrics-util = { workspace = true, features = ["handles", "recency", "registry"] }
 nom = { workspace = true, features = ["alloc"] }
@@ -39,6 +31,11 @@ pin-project = { workspace = true }
 protobuf = { workspace = true }
 quanta = { workspace = true }
 rustls = { workspace = true, features = ["aws_lc_rs", "logging", "tls12"] }
+saluki-context = { workspace = true }
+saluki-core = { workspace = true }
+saluki-error = { workspace = true }
+saluki-event = { workspace = true }
+saluki-metrics = { workspace = true }
 serde = { workspace = true }
 simdutf8 = { workspace = true, features = ["std"] }
 slab = { workspace = true }

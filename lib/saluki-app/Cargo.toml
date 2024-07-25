@@ -1,20 +1,17 @@
 [package]
 name = "saluki-app"
 version = "0.1.0"
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
 
 [dependencies]
-# Internal dependencies.
 memory-accounting = { workspace = true }
+metrics = { workspace = true }
+metrics-util = { workspace = true, features = ["handles", "recency", "registry"] }
 saluki-config = { workspace = true }
 saluki-core = { workspace = true }
 saluki-error = { workspace = true }
-
-# External dependencies.
-metrics = { workspace = true }
-metrics-util = { workspace = true, features = ["handles", "recency", "registry"] }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
