@@ -20,8 +20,7 @@ RUN chmod +x /install-protoc.sh && /install-protoc.sh
 # Build ADP, and strip the binary to to optimize the size.
 WORKDIR /adp
 COPY . /adp
-RUN cargo build --release && \
-	strip --strip-unneeded --strip-debug /adp/target/release/agent-data-plane
+RUN cargo build --release
 
 # Now stick our resulting binary in a clean image.
 FROM ${APP_IMAGE}
