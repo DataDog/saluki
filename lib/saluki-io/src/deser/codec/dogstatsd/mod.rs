@@ -677,7 +677,7 @@ impl<'a> ValueIter<'a> {
             // For sets, they can't be multi-value, so iterating over the value bytes is pointless. Likewise, for
             // distributions, we take an optimization where we just read all of the values in one call and build a
             // single distribution, so in both cases, we're only ever emitting a single metric.
-            return 1
+            return 1;
         }
 
         memchr::memchr_iter(b':', self.raw_values).count() + 1
