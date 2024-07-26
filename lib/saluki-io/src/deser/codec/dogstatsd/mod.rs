@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use bytes::Buf;
+use message::MessageType;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_while1},
@@ -18,8 +19,9 @@ use snafu::Snafu;
 use saluki_core::topology::interconnect::EventBuffer;
 use saluki_event::{eventd::EventD, metric::*, Event};
 
-use crate::deser::codec::message::MessageType;
-use crate::deser::codec::{event, message::parse_metric_type};
+mod event;
+mod message;
+use crate::deser::codec::dogstatsd::message::parse_metric_type;
 use crate::deser::Decoder;
 
 type NomParserError<'a> = nom::Err<nom::error::Error<&'a [u8]>>;
@@ -217,9 +219,9 @@ impl Decoder for DogstatsdCodec {
         let message_type = parse_metric_type(data);
 
         match message_type {
-            MessageType::MetricSampleType => self.decode_metric(buf, events),
-            MessageType::EventType => self.decode_event(buf, events),
-            MessageType::ServiceCheckType => todo!(),
+            MessageType::MetricSample => self.decode_metric(buf, events),
+            MessageType::Event => self.decode_event(buf, events),
+            MessageType::ServiceCheck => todo!(),
         }
     }
 }
@@ -712,7 +714,7 @@ mod tests {
         input: &'input [u8], config: &DogstatsdCodecConfiguration,
     ) -> IResult<&'input [u8], OneOrMany<Event>> {
         let (reamining, event) = parse_dogstatsd_event(input, config)?;
-        return Ok((b"", OneOrMany::Single(saluki_event::Event::EventD(event))));
+        Ok((b"", OneOrMany::Single(saluki_event::Event::EventD(event))))
     }
 
     fn parse_dogstatsd_metric_direct<'input>(

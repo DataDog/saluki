@@ -63,7 +63,7 @@ pub fn parse_dogstatsd_event_header<'a>(
         .map_err(|_| nom::Err::Error(Error::new(raw_event_header.as_bytes(), ErrorKind::Verify)))?;
 
     // Title and Text are required
-    if title_length <= 0 || text_length <= 0 {
+    if title_length == 0 || text_length == 0 {
         return Err(nom::Err::Error(Error::new(
             raw_event_header.as_bytes(),
             ErrorKind::Verify,
@@ -89,11 +89,11 @@ pub fn parse_dogstatsd_event_data(header: &Header, raw_event_data: &str) -> (Str
 }
 
 fn clean_data(s: &str) -> String {
-    return s.replace("\\n", "\n");
+    s.replace("\\n", "\n")
 }
 
 fn next_field(message: &str) -> Option<(&str, &str)> {
-    message.split_once("|")
+    message.split_once('|')
 }
 
 #[allow(unused)]
