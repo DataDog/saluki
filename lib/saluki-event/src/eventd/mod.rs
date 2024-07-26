@@ -34,13 +34,13 @@ pub enum Priority {
 pub struct EventD {
     title: String,
     text: String,
-    timestamp: u64,
-    host: String,
-    aggregation_key: String,
-    priority: Priority,
-    source_type_name: String,
-    alert_type: AlertType,
-    tags: Vec<String>,
+    timestamp: Option<u64>,
+    hostname: Option<String>,
+    aggregation_key: Option<String>,
+    priority: Option<Priority>,
+    source_type_name: Option<String>,
+    alert_type: Option<AlertType>,
+    tags: Option<Vec<String>>,
 }
 
 impl EventD {
@@ -55,39 +55,153 @@ impl EventD {
     }
 
     /// Returns the host where the event originated from.
-    pub fn host(&self) -> &str {
-        &self.host
+    pub fn host(&self) -> Option<&str> {
+        self.hostname.as_deref()
     }
 
     /// Returns the aggregation key of the event.
-    pub fn aggregation_key(&self) -> &str {
-        &self.aggregation_key
+    pub fn aggregation_key(&self) -> Option<&str> {
+        self.aggregation_key.as_deref()
     }
 
     /// Returns the priority of the event.
-    pub fn priority(&self) -> Priority {
+    pub fn priority(&self) -> Option<Priority> {
         self.priority
     }
 
     /// Returns the source type name of the event.
-    pub fn source_type_name(&self) -> &str {
-        &self.source_type_name
+    pub fn source_type_name(&self) -> Option<&str> {
+        self.source_type_name.as_deref()
     }
 
     /// Returns the alert type of the event.
-    pub fn alert_type(&self) -> AlertType {
+    pub fn alert_type(&self) -> Option<AlertType> {
         self.alert_type
     }
 
     /// Returns the timestamp of the event.
     ///
     /// This is a Unix timestamp, or the number of seconds since the Unix epoch.
-    pub fn timestamp(&self) -> u64 {
+    pub fn timestamp(&self) -> Option<u64> {
         self.timestamp
     }
 
     /// Returns the tags associated with the event.
-    pub fn tags(&self) -> &[String] {
-        &self.tags
+    pub fn tags(&self) -> Option<&[String]> {
+        self.tags.as_deref()
+    }
+
+    /// Set the timestamp.
+    ///
+    /// Represented as a Unix timestamp, or the number of seconds since the Unix epoch.
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_timestamp(mut self, timestamp: impl Into<Option<u64>>) -> Self {
+        self.timestamp = timestamp.into();
+        self
+    }
+
+    /// Set the timestamp.
+    ///
+    /// Represented as a Unix timestamp, or the number of seconds since the Unix epoch.
+    pub fn set_timestamp(&mut self, timestamp: impl Into<Option<u64>>) {
+        self.timestamp = timestamp.into();
+    }
+
+    /// Set the hostname where the event originated from.
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_hostname(mut self, hostname: impl Into<Option<String>>) -> Self {
+        self.hostname = hostname.into();
+        self
+    }
+
+    /// Set the hostname where the event originated from.
+    pub fn set_hostname(&mut self, hostname: impl Into<Option<String>>) {
+        self.hostname = hostname.into();
+    }
+
+    /// Set the aggregation key of the event
+    ///
+    /// Aggregation key is use to group events together in the event stream.
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_aggregation_key(mut self, hostname: impl Into<Option<String>>) -> Self {
+        self.hostname = hostname.into();
+        self
+    }
+
+    /// Set the hostname where the event originated from.
+    ///
+    /// Aggregation key is use to group events together in the event stream.
+    pub fn set_aggregation_key(&mut self, hostname: impl Into<Option<String>>) {
+        self.hostname = hostname.into();
+    }
+
+    /// Set the priority of the event
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_priority(mut self, priority: impl Into<Option<Priority>>) -> Self {
+        self.priority = priority.into();
+        self
+    }
+
+    /// Set the priority of the event
+    pub fn set_priority(&mut self, priority: impl Into<Option<Priority>>) {
+        self.priority = priority.into();
+    }
+
+    /// Set the source type name of the event
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_source_type_name(mut self, source_type_name: impl Into<Option<String>>) -> Self {
+        self.source_type_name = source_type_name.into();
+        self
+    }
+
+    /// Set the source type name of the event
+    pub fn set_source_type_name(&mut self, source_type_name: impl Into<Option<String>>) {
+        self.source_type_name = source_type_name.into();
+    }
+
+    /// Set the alert type of the event
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_alert_type(mut self, alert_type: impl Into<Option<AlertType>>) -> Self {
+        self.alert_type = alert_type.into();
+        self
+    }
+
+    /// Set the alert type name of the event
+    pub fn set_alert_type(&mut self, alert_type: impl Into<Option<AlertType>>) {
+        self.alert_type = alert_type.into();
+    }
+
+    /// Set the tags of the event
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_tags(mut self, tags: impl Into<Option<Vec<String>>>) -> Self {
+        self.tags = tags.into();
+        self
+    }
+
+    /// Set the tags of the event
+    pub fn set_tags(&mut self, tags: impl Into<Option<Vec<String>>>) {
+        self.tags = tags.into();
+    }
+
+    /// Creates an `Eventd` from the given parts.
+    pub fn from_parts(title: &str, text: &str) -> Self {
+        Self {
+            title: title.to_string(),
+            text: text.to_string(),
+            timestamp: None,
+            hostname: None,
+            aggregation_key: None,
+            priority: None,
+            source_type_name: None,
+            alert_type: None,
+            tags: None,
+        }
     }
 }

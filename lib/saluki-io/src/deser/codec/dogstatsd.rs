@@ -16,8 +16,10 @@ use saluki_metrics::static_metrics;
 use snafu::Snafu;
 
 use saluki_core::topology::interconnect::EventBuffer;
-use saluki_event::{metric::*, Event};
+use saluki_event::{eventd::EventD, metric::*, Event};
 
+use crate::deser::codec::message::MessageType;
+use crate::deser::codec::{event, message::parse_metric_type};
 use crate::deser::Decoder;
 
 type NomParserError<'a> = nom::Err<nom::error::Error<&'a [u8]>>;
@@ -122,35 +124,12 @@ impl DogstatsdCodec {
             codec_metrics: self.codec_metrics,
         }
     }
-}
 
-#[derive(Debug, Snafu)]
-#[snafu(context(suffix(false)))]
-pub enum ParseError {
-    #[snafu(display("encountered error '{:?}' while processing message '{}'", kind, data))]
-    Structural { kind: nom::error::ErrorKind, data: String },
-}
-
-impl<'a> From<NomParserError<'a>> for ParseError {
-    fn from(err: NomParserError<'a>) -> Self {
-        match err {
-            nom::Err::Error(e) | nom::Err::Failure(e) => ParseError::Structural {
-                kind: e.code,
-                data: String::from_utf8_lossy(e.input).to_string(),
-            },
-            nom::Err::Incomplete(_) => unreachable!("dogstatsd codec only supports complete payloads"),
-        }
-    }
-}
-
-impl Decoder for DogstatsdCodec {
-    type Error = ParseError;
-
-    fn decode<B: Buf>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error> {
+    fn decode_metric<B: Buf>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, ParseError> {
         let data = buf.chunk();
 
         // Decode the payload and get the representative parts of the metric.
-        let (remaining, (metric_name, tags_iter, values_iter, metadata)) = parse_dogstatsd(data, &self.config)?;
+        let (remaining, (metric_name, tags_iter, values_iter, metadata)) = parse_dogstatsd_metric(data, &self.config)?;
 
         // Try resolving the context first, since we might need to bail if we can't.
         let context_ref = ContextRef::from_name_and_tags(metric_name, tags_iter);
@@ -201,9 +180,51 @@ impl Decoder for DogstatsdCodec {
 
         value_err.unwrap_or(Ok(events_decoded))
     }
+
+    fn decode_event<B: Buf>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, ParseError> {
+        let data = buf.chunk();
+        let (remaining, event) = parse_dogstatsd_event(data, &self.config)?;
+        events.push(saluki_event::Event::EventD(event));
+        buf.advance(data.len() - remaining.len());
+        Ok(1)
+    }
 }
 
-fn parse_dogstatsd<'a>(
+#[derive(Debug, Snafu)]
+#[snafu(context(suffix(false)))]
+pub enum ParseError {
+    #[snafu(display("encountered error '{:?}' while processing message '{}'", kind, data))]
+    Structural { kind: nom::error::ErrorKind, data: String },
+}
+
+impl<'a> From<NomParserError<'a>> for ParseError {
+    fn from(err: NomParserError<'a>) -> Self {
+        match err {
+            nom::Err::Error(e) | nom::Err::Failure(e) => ParseError::Structural {
+                kind: e.code,
+                data: String::from_utf8_lossy(e.input).to_string(),
+            },
+            nom::Err::Incomplete(_) => unreachable!("dogstatsd codec only supports complete payloads"),
+        }
+    }
+}
+
+impl Decoder for DogstatsdCodec {
+    type Error = ParseError;
+
+    fn decode<B: Buf>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error> {
+        let data = buf.chunk();
+        let message_type = parse_metric_type(data);
+
+        match message_type {
+            MessageType::MetricSampleType => self.decode_metric(buf, events),
+            MessageType::EventType => self.decode_event(buf, events),
+            MessageType::ServiceCheckType => todo!(),
+        }
+    }
+}
+
+fn parse_dogstatsd_metric<'a>(
     input: &'a [u8], config: &DogstatsdCodecConfiguration,
 ) -> IResult<&'a [u8], (&'a str, TagSplitter<'a>, ValueIter<'a>, MetricMetadata)> {
     // We always parse the metric name and value(s) first, where value is both the kind (counter, gauge, etc) and the
@@ -285,6 +306,36 @@ fn parse_dogstatsd<'a>(
             metric_metadata,
         ),
     ))
+}
+
+fn parse_dogstatsd_event<'a>(input: &'a [u8], _config: &DogstatsdCodecConfiguration) -> IResult<&'a [u8], EventD> {
+    let event_header_parser = map(take_while1(|c| c != b':'), |bytes: &[u8]| unsafe {
+        std::str::from_utf8_unchecked(bytes)
+    });
+
+    let event_data_parser = map(
+        take_while1(|c: u8| c.is_ascii_alphanumeric() || c == b' ' || c == b'|' || c == b'_' || c == b'-' || c == b'.'),
+        |bytes: &[u8]| unsafe { std::str::from_utf8_unchecked(bytes) },
+    );
+
+    // Get the raw header (everything before the first ':') and the raw event (everything after the first ':')
+    // Split event header and value separated by ':'
+    let (remaining, (raw_event_header, raw_event_data)) =
+        separated_pair(event_header_parser, tag(b":"), event_data_parser)(input)?;
+
+    let (_, header) = event::parse_dogstatsd_event_header(raw_event_header, raw_event_data)?;
+
+    let (title, text) = event::parse_dogstatsd_event_data(&header, raw_event_data);
+
+    let eventd = EventD::from_parts(&title, &text);
+
+    // Check for presence of optional fields
+    let optional_fields = &raw_event_data[title.len() + text.len() + 1..];
+    if !optional_fields.is_empty() {
+        // event::parse_optional_fields(&eventd, Some(optional_fields))?;
+    }
+
+    Ok((remaining, eventd))
 }
 
 #[inline]
@@ -556,9 +607,11 @@ mod tests {
     use nom::IResult;
     use proptest::{collection::vec as arb_vec, prelude::*};
     use saluki_context::{ContextRef, ContextResolver};
-    use saluki_event::{metric::*, Event};
+    use saluki_event::{eventd::EventD, metric::*, Event};
 
-    use super::{parse_dogstatsd, DogstatsdCodecConfiguration};
+    use crate::deser::codec::dogstatsd::parse_dogstatsd_event;
+
+    use super::{parse_dogstatsd_metric, DogstatsdCodecConfiguration};
 
     enum OneOrMany<T> {
         Single(T),
@@ -579,6 +632,10 @@ mod tests {
             value,
             MetricMetadata::default().with_origin(MetricOrigin::dogstatsd()),
         )
+    }
+
+    fn create_eventd(title: &str, text: &str) -> EventD {
+        EventD::from_parts(title, text)
     }
 
     fn counter(name: &str, value: f64) -> Metric {
@@ -606,6 +663,10 @@ mod tests {
         )
     }
 
+    fn eventd(title: &str, text: &str) -> EventD {
+        create_eventd(title, text)
+    }
+
     fn counter_multivalue(name: &str, values: &[f64]) -> Vec<Metric> {
         values.iter().map(|value| counter(name, *value)).collect()
     }
@@ -618,24 +679,46 @@ mod tests {
         values.iter().map(|value| distribution(name, *value)).collect()
     }
 
-    fn parse_dogstatsd_with_default_config(input: &[u8]) -> IResult<&[u8], OneOrMany<Event>> {
+    fn parse_dogstatsd_metric_with_default_config(input: &[u8]) -> IResult<&[u8], OneOrMany<Event>> {
         let default_config = DogstatsdCodecConfiguration::default();
-
-        parse_dogstatsd_with_config(input, &default_config)
+        parse_dogstatsd_metric_with_config(input, &default_config)
     }
 
-    fn parse_dogstatsd_with_config<'input>(
+    #[allow(dead_code)]
+    #[allow(unused)]
+    fn parse_dogstatsd_event_with_default_config(input: &[u8]) -> IResult<&[u8], OneOrMany<Event>> {
+        let default_config = DogstatsdCodecConfiguration::default();
+        parse_dogstatsd_event_with_config(input, &default_config)
+    }
+
+    fn parse_dogstatsd_metric_with_config<'input>(
         input: &'input [u8], config: &DogstatsdCodecConfiguration,
     ) -> IResult<&'input [u8], OneOrMany<Event>> {
         let context_resolver = ContextResolver::with_noop_interner();
-
-        parse_dogstatsd_direct(input, config, &context_resolver)
+        parse_dogstatsd_metric_direct(input, config, &context_resolver)
     }
 
-    fn parse_dogstatsd_direct<'input>(
+    #[allow(dead_code)]
+    #[allow(unused)]
+    fn parse_dogstatsd_event_with_config<'input>(
+        input: &'input [u8], config: &DogstatsdCodecConfiguration,
+    ) -> IResult<&'input [u8], OneOrMany<Event>> {
+        parse_dogstatsd_eventd_direct(input, config)
+    }
+
+    #[allow(dead_code)]
+    #[allow(unused)]
+    fn parse_dogstatsd_eventd_direct<'input>(
+        input: &'input [u8], config: &DogstatsdCodecConfiguration,
+    ) -> IResult<&'input [u8], OneOrMany<Event>> {
+        let (reamining, event) = parse_dogstatsd_event(input, config)?;
+        return Ok((b"", OneOrMany::Single(saluki_event::Event::EventD(event))));
+    }
+
+    fn parse_dogstatsd_metric_direct<'input>(
         input: &'input [u8], config: &DogstatsdCodecConfiguration, context_resolver: &ContextResolver,
     ) -> IResult<&'input [u8], OneOrMany<Event>> {
-        let (remaining, (name, tags_iter, values_iter, metadata)) = parse_dogstatsd(input, config)?;
+        let (remaining, (name, tags_iter, values_iter, metadata)) = parse_dogstatsd_metric(input, config)?;
 
         let context_ref = ContextRef::from_name_and_tags(name, tags_iter);
         let context = match context_resolver.resolve(context_ref) {
@@ -656,6 +739,20 @@ mod tests {
             Ok((remaining, OneOrMany::Single(events.remove(0))))
         } else {
             Ok((remaining, OneOrMany::Multiple(events)))
+        }
+    }
+
+    #[track_caller]
+    fn check_basic_eventd_eq(expected: EventD, actual: OneOrMany<Event>) -> EventD {
+        match actual {
+            OneOrMany::Single(Event::EventD(actual)) => {
+                assert_eq!(expected.title(), actual.title());
+                assert_eq!(expected.text(), actual.text());
+                actual
+            }
+            OneOrMany::Single(Event::Metric(_)) => unreachable!("should never be called for metric type"),
+            OneOrMany::Single(Event::ServiceCheck(_)) => unreachable!("should never be called for service check type"),
+            OneOrMany::Multiple(_) => unreachable!("should never be called for multi-value metric assertions"),
         }
     }
 
@@ -698,7 +795,7 @@ mod tests {
         let counter_value = 1.0;
         let counter_raw = format!("{}:{}|c", counter_name, counter_value);
         let counter_expected = counter(counter_name, counter_value);
-        let (remaining, counter_actual) = parse_dogstatsd_with_default_config(counter_raw.as_bytes()).unwrap();
+        let (remaining, counter_actual) = parse_dogstatsd_metric_with_default_config(counter_raw.as_bytes()).unwrap();
         check_basic_metric_eq(counter_expected, counter_actual);
         assert!(remaining.is_empty());
 
@@ -706,7 +803,7 @@ mod tests {
         let gauge_value = 2.0;
         let gauge_raw = format!("{}:{}|g", gauge_name, gauge_value);
         let gauge_expected = gauge(gauge_name, gauge_value);
-        let (remaining, gauge_actual) = parse_dogstatsd_with_default_config(gauge_raw.as_bytes()).unwrap();
+        let (remaining, gauge_actual) = parse_dogstatsd_metric_with_default_config(gauge_raw.as_bytes()).unwrap();
         check_basic_metric_eq(gauge_expected, gauge_actual);
         assert!(remaining.is_empty());
 
@@ -718,7 +815,7 @@ mod tests {
             let distribution_raw = format!("{}:{}|{}", distribution_name, distribution_value, kind);
             let distribution_expected = distribution(distribution_name, distribution_value);
             let (remaining, distribution_actual) =
-                parse_dogstatsd_with_default_config(distribution_raw.as_bytes()).unwrap();
+                parse_dogstatsd_metric_with_default_config(distribution_raw.as_bytes()).unwrap();
             check_basic_metric_eq(distribution_expected, distribution_actual);
             assert!(remaining.is_empty());
         }
@@ -727,9 +824,26 @@ mod tests {
         let set_value = "value";
         let set_raw = format!("{}:{}|s", set_name, set_value);
         let set_expected = set(set_name, set_value);
-        let (remaining, set_actual) = parse_dogstatsd_with_default_config(set_raw.as_bytes()).unwrap();
+        let (remaining, set_actual) = parse_dogstatsd_metric_with_default_config(set_raw.as_bytes()).unwrap();
         check_basic_metric_eq(set_expected, set_actual);
         assert!(remaining.is_empty());
+    }
+
+    #[test]
+    #[allow(unused)]
+    fn basic_eventds() {
+        let event_title = "my event";
+        let event_text = "text";
+        let event_raw = format!(
+            "_e{{{},{}}}:{}|{}",
+            event_title.len(),
+            event_text.len(),
+            event_title,
+            event_text
+        );
+        let (remaining, event_actual) = parse_dogstatsd_event_with_default_config(event_raw.as_bytes()).unwrap();
+        let event_expected = eventd(event_title, event_text);
+        check_basic_eventd_eq(event_expected, event_actual);
     }
 
     #[test]
@@ -740,7 +854,7 @@ mod tests {
         let counter_raw = format!("{}:{}|c|#{}", counter_name, counter_value, counter_tags.join(","));
         let counter_expected = counter_with_tags(counter_name, counter_tags, counter_value);
 
-        let (remaining, counter_actual) = parse_dogstatsd_with_default_config(counter_raw.as_bytes()).unwrap();
+        let (remaining, counter_actual) = parse_dogstatsd_metric_with_default_config(counter_raw.as_bytes()).unwrap();
         check_basic_metric_eq(counter_expected, counter_actual);
         assert!(remaining.is_empty());
     }
@@ -754,7 +868,7 @@ mod tests {
         let mut counter_expected = counter(counter_name, counter_value);
         counter_expected.metadata_mut().set_sample_rate(counter_sample_rate);
 
-        let (remaining, counter_actual) = parse_dogstatsd_with_default_config(counter_raw.as_bytes()).unwrap();
+        let (remaining, counter_actual) = parse_dogstatsd_metric_with_default_config(counter_raw.as_bytes()).unwrap();
         check_basic_metric_eq(counter_expected, counter_actual);
         assert!(remaining.is_empty());
     }
@@ -770,7 +884,7 @@ mod tests {
             .metadata_mut()
             .set_origin_entity(OriginEntity::container_id(container_id));
 
-        let (remaining, counter_actual) = parse_dogstatsd_with_default_config(counter_raw.as_bytes()).unwrap();
+        let (remaining, counter_actual) = parse_dogstatsd_metric_with_default_config(counter_raw.as_bytes()).unwrap();
         check_basic_metric_eq(counter_expected, counter_actual);
         assert!(remaining.is_empty());
     }
@@ -784,7 +898,7 @@ mod tests {
         let mut counter_expected = counter(counter_name, counter_value);
         counter_expected.metadata_mut().set_timestamp(timestamp);
 
-        let (remaining, counter_actual) = parse_dogstatsd_with_default_config(counter_raw.as_bytes()).unwrap();
+        let (remaining, counter_actual) = parse_dogstatsd_metric_with_default_config(counter_raw.as_bytes()).unwrap();
         check_basic_metric_eq(counter_expected, counter_actual);
         assert!(remaining.is_empty());
     }
@@ -813,7 +927,7 @@ mod tests {
             .set_origin_entity(OriginEntity::container_id(container_id));
         counter_expected.metadata_mut().set_timestamp(timestamp);
 
-        let (remaining, counter_actual) = parse_dogstatsd_with_default_config(counter_raw.as_bytes()).unwrap();
+        let (remaining, counter_actual) = parse_dogstatsd_metric_with_default_config(counter_raw.as_bytes()).unwrap();
         let counter_actual = check_basic_metric_eq(counter_expected, counter_actual);
         assert_eq!(
             counter_actual.metadata().origin_entity(),
@@ -830,7 +944,7 @@ mod tests {
         let counter_values_stringified = counter_values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
         let counter_raw = format!("{}:{}|c", counter_name, counter_values_stringified.join(":"));
         let counters_expected = counter_multivalue(counter_name, &counter_values);
-        let (remaining, counters_actual) = parse_dogstatsd_with_default_config(counter_raw.as_bytes()).unwrap();
+        let (remaining, counters_actual) = parse_dogstatsd_metric_with_default_config(counter_raw.as_bytes()).unwrap();
         check_basic_metric_multivalue_eq(counters_expected, counters_actual);
         assert!(remaining.is_empty());
 
@@ -839,7 +953,7 @@ mod tests {
         let gauge_values_stringified = gauge_values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
         let gauge_raw = format!("{}:{}|g", gauge_name, gauge_values_stringified.join(":"));
         let gauges_expected = gauge_multivalue(gauge_name, &gauge_values);
-        let (remaining, gauges_actual) = parse_dogstatsd_with_default_config(gauge_raw.as_bytes()).unwrap();
+        let (remaining, gauges_actual) = parse_dogstatsd_metric_with_default_config(gauge_raw.as_bytes()).unwrap();
         check_basic_metric_multivalue_eq(gauges_expected, gauges_actual);
         assert!(remaining.is_empty());
 
@@ -857,7 +971,7 @@ mod tests {
             );
             let distributions_expected = distribution_multivalue(distribution_name, &distribution_values);
             let (remaining, distributions_actual) =
-                parse_dogstatsd_with_default_config(distribution_raw.as_bytes()).unwrap();
+                parse_dogstatsd_metric_with_default_config(distribution_raw.as_bytes()).unwrap();
             check_basic_metric_multivalue_eq(distributions_expected, distributions_actual);
             assert!(remaining.is_empty());
         }
@@ -875,7 +989,7 @@ mod tests {
             };
 
             let (remaining, result) =
-                parse_dogstatsd_with_config(input.as_bytes(), &config).expect("should not fail to parse");
+                parse_dogstatsd_metric_with_config(input.as_bytes(), &config).expect("should not fail to parse");
 
             assert!(remaining.is_empty());
             match result {
@@ -899,7 +1013,7 @@ mod tests {
             };
 
             let (remaining, result) =
-                parse_dogstatsd_with_config(input.as_bytes(), &config).expect("should not fail to parse");
+                parse_dogstatsd_metric_with_config(input.as_bytes(), &config).expect("should not fail to parse");
 
             assert!(remaining.is_empty());
             match result {
@@ -919,7 +1033,7 @@ mod tests {
 
         let no_read_timestamps_config = DogstatsdCodecConfiguration::default().with_timestamps(false);
 
-        let (remaining, result) = parse_dogstatsd_with_config(input.as_bytes(), &no_read_timestamps_config)
+        let (remaining, result) = parse_dogstatsd_metric_with_config(input.as_bytes(), &no_read_timestamps_config)
             .expect("should not fail to parse");
 
         assert!(remaining.is_empty());
@@ -945,7 +1059,7 @@ mod tests {
 
         let input = "big_metric_name_that_cant_possibly_be_inlined:1|c|#tag1:value1,tag2:value2,tag3:value3";
 
-        let (remaining, result) = parse_dogstatsd_direct(input.as_bytes(), &default_config, &context_resolver)
+        let (remaining, result) = parse_dogstatsd_metric_direct(input.as_bytes(), &default_config, &context_resolver)
             .expect("should not fail to parse");
 
         assert!(remaining.is_empty());
@@ -969,7 +1083,7 @@ mod tests {
             // all tests are run, in the hopes of potentially catching an issue that might have been missed.
             //
             // TODO: True exhaustive-style testing a la afl/honggfuzz.
-            let _ = parse_dogstatsd_with_default_config(&input);
+            let _ = parse_dogstatsd_metric_with_default_config(&input);
         }
     }
 }
