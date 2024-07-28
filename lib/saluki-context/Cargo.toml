@@ -1,19 +1,16 @@
 [package]
 name = "saluki-context"
 version = "0.1.0"
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
 
 [dependencies]
-# Internal dependencies.
-saluki-metrics = { workspace = true }
-stringtheory = { workspace = true }
-
-# External dependencies.
 ahash = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
 metrics = { workspace = true }
+saluki-metrics = { workspace = true }
+stringtheory = { workspace = true }
 
 [dev-dependencies]
 metrics-util = { workspace = true, features = ["debugging"] }

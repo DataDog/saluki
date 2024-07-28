@@ -21,7 +21,8 @@ use saluki_event::{eventd::EventD, metric::*, Event};
 
 mod event;
 mod message;
-use crate::deser::codec::dogstatsd::message::*;
+use crate::buf::ReadIoBuffer;
+use crate::deser::codec::dogstatsd::message::parse_message_type;
 use crate::deser::Decoder;
 
 type NomParserError<'a> = nom::Err<nom::error::Error<&'a [u8]>>;
@@ -99,22 +100,26 @@ impl Default for DogstatsdCodecConfiguration {
 ///
 /// [dsd]: https://docs.datadoghq.com/developers/dogstatsd/
 #[derive(Clone, Debug)]
-pub struct DogstatsdCodec {
+pub struct DogstatsdCodec<TMI = ()> {
     config: DogstatsdCodecConfiguration,
     context_resolver: ContextResolver,
+    tag_metadata_interceptor: TMI,
     codec_metrics: CodecMetrics,
 }
 
-impl DogstatsdCodec {
+impl DogstatsdCodec<()> {
     /// Creates a new `DogstatsdCodec` with the given context resolver, using a default configuration.
     pub fn from_context_resolver(context_resolver: ContextResolver) -> Self {
         Self {
             config: DogstatsdCodecConfiguration::default(),
             context_resolver,
+            tag_metadata_interceptor: (),
             codec_metrics: CodecMetrics::new(),
         }
     }
+}
 
+impl<TMI> DogstatsdCodec<TMI> {
     /// Sets the given configuration for the codec.
     ///
     /// Different aspects of the codec's behavior (such as tag length, tag count, and timestamp parsing) can be
@@ -123,18 +128,79 @@ impl DogstatsdCodec {
         Self {
             config,
             context_resolver: self.context_resolver,
+            tag_metadata_interceptor: self.tag_metadata_interceptor,
             codec_metrics: self.codec_metrics,
         }
     }
 
-    fn decode_metric<B: Buf>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, ParseError> {
+    /// Sets the given tag metadata interceptor to use.
+    ///
+    /// The tag metadata interceptor is used to evaluate and potentially intercept raw tags on a metric prior to context
+    /// resolving. This can be used to generically drop tags as metrics enter the system, but is generally used to
+    /// filter out specific tags that are only used to set metadata on the metric, and aren't inherently present as a
+    /// way to facet the metric itself.
+    ///
+    /// Defaults to a no-op interceptor, which retains all tags.
+    pub fn with_tag_metadata_interceptor<TMI2>(self, tag_metadata_interceptor: TMI2) -> DogstatsdCodec<TMI2> {
+        DogstatsdCodec {
+            config: self.config,
+            context_resolver: self.context_resolver,
+            tag_metadata_interceptor,
+            codec_metrics: self.codec_metrics,
+        }
+    }
+
+    fn decode_event<B: ReadIoBuffer>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, ParseError> {
+        let data = buf.chunk();
+        let (remaining, event) = parse_dogstatsd_event(data, &self.config)?;
+        events.push(saluki_event::Event::EventD(event));
+        buf.advance(data.len() - remaining.len());
+        Ok(1)
+    }
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(context(suffix(false)))]
+pub enum ParseError {
+    #[snafu(display("encountered error '{:?}' while processing message '{}'", kind, data))]
+    Structural { kind: nom::error::ErrorKind, data: String },
+}
+
+impl<'a> From<NomParserError<'a>> for ParseError {
+    fn from(err: NomParserError<'a>) -> Self {
+        match err {
+            nom::Err::Error(e) | nom::Err::Failure(e) => ParseError::Structural {
+                kind: e.code,
+                data: String::from_utf8_lossy(e.input).to_string(),
+            },
+            nom::Err::Incomplete(_) => unreachable!("dogstatsd codec only supports complete payloads"),
+        }
+    }
+}
+
+impl<TMI> Decoder for DogstatsdCodec<TMI>
+where
+    TMI: TagMetadataInterceptor,
+{
+    type Error = ParseError;
+
+    fn decode<B: ReadIoBuffer>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error> {
         let data = buf.chunk();
 
+        let message_type = parse_message_type(data);
+        if message_type == MessageType::Event {
+            return self.decode_event(buf, events);
+        }
+
         // Decode the payload and get the representative parts of the metric.
-        let (remaining, (metric_name, tags_iter, values_iter, metadata)) = parse_dogstatsd_metric(data, &self.config)?;
+        let (remaining, (metric_name, tags_iter, values_iter, mut metadata)) =
+            parse_dogstatsd_metric(data, &self.config)?;
+
+        // Build our filtered tag iterator, which we'll use to skip intercepted/dropped tags when building the context.
+        let filtered_tags_iter = TagFilterer::new(tags_iter.clone(), &self.tag_metadata_interceptor);
 
         // Try resolving the context first, since we might need to bail if we can't.
-        let context_ref = ContextRef::from_name_and_tags(metric_name, tags_iter);
+        let context_ref = ContextRef::from_name_and_tags(metric_name, filtered_tags_iter);
         let context = match self.context_resolver.resolve(context_ref) {
             Some(context) => context,
             None => {
@@ -143,6 +209,9 @@ impl DogstatsdCodec {
                 return Ok(0);
             }
         };
+
+        // Update our metric metadata based on any tags we're configured to intercept.
+        update_metadata_from_tags(tags_iter.into_iter(), &self.tag_metadata_interceptor, &mut metadata);
 
         // For each value we parsed, create a metric from it and add it to the events buffer.
         //
@@ -181,48 +250,6 @@ impl DogstatsdCodec {
         buf.advance(data.len() - remaining.len());
 
         value_err.unwrap_or(Ok(events_decoded))
-    }
-
-    fn decode_event<B: Buf>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, ParseError> {
-        let data = buf.chunk();
-        let (remaining, event) = parse_dogstatsd_event(data, &self.config)?;
-        events.push(saluki_event::Event::EventD(event));
-        buf.advance(data.len() - remaining.len());
-        Ok(1)
-    }
-}
-
-#[derive(Debug, Snafu)]
-#[snafu(context(suffix(false)))]
-pub enum ParseError {
-    #[snafu(display("encountered error '{:?}' while processing message '{}'", kind, data))]
-    Structural { kind: nom::error::ErrorKind, data: String },
-}
-
-impl<'a> From<NomParserError<'a>> for ParseError {
-    fn from(err: NomParserError<'a>) -> Self {
-        match err {
-            nom::Err::Error(e) | nom::Err::Failure(e) => ParseError::Structural {
-                kind: e.code,
-                data: String::from_utf8_lossy(e.input).to_string(),
-            },
-            nom::Err::Incomplete(_) => unreachable!("dogstatsd codec only supports complete payloads"),
-        }
-    }
-}
-
-impl Decoder for DogstatsdCodec {
-    type Error = ParseError;
-
-    fn decode<B: Buf>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error> {
-        let data = buf.chunk();
-        let message_type = parse_message_type(data);
-
-        match message_type {
-            MessageType::MetricSample => self.decode_metric(buf, events),
-            MessageType::Event => self.decode_event(buf, events),
-            MessageType::ServiceCheck => todo!(),
-        }
     }
 }
 
@@ -705,20 +732,157 @@ impl<'a> Iterator for ValueIter<'a> {
     }
 }
 
+/// Action to take for a given tag.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum InterceptAction {
+    /// The tag should be passed through as-is.
+    Pass,
+
+    /// The tag should be intercepted for metadata purposes.
+    Intercept,
+
+    /// The tag should be dropped entirely.
+    Drop,
+}
+
+/// Evaluator for deciding how to handle a given tag prior to context resolving.
+pub trait TagMetadataInterceptor: std::fmt::Debug {
+    /// Evaluate the given tag.
+    fn evaluate(&self, tag: &str) -> InterceptAction;
+
+    /// Intercept the given tag, updating the metric metadata based on it.
+    fn intercept(&self, tag: &str, metadata: &mut MetricMetadata);
+}
+
+impl TagMetadataInterceptor for () {
+    fn evaluate(&self, _tag: &str) -> InterceptAction {
+        InterceptAction::Pass
+    }
+
+    fn intercept(&self, _tag: &str, _metadata: &mut MetricMetadata) {}
+}
+
+impl<'a, T> TagMetadataInterceptor for &'a T
+where
+    T: TagMetadataInterceptor,
+{
+    fn evaluate(&self, tag: &str) -> InterceptAction {
+        (**self).evaluate(tag)
+    }
+
+    fn intercept(&self, tag: &str, metadata: &mut MetricMetadata) {
+        (**self).intercept(tag, metadata)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TagFilterer<I, TMI> {
+    iter: I,
+    interceptor: TMI,
+}
+
+impl<I, TMI> TagFilterer<I, TMI> {
+    fn new(iter: I, interceptor: TMI) -> Self {
+        Self { iter, interceptor }
+    }
+}
+
+impl<'a, I, TMI> IntoIterator for TagFilterer<I, TMI>
+where
+    I: IntoIterator<Item = &'a str> + Clone,
+    TMI: TagMetadataInterceptor,
+{
+    type Item = I::Item;
+    type IntoIter = TagFiltererIter<I::IntoIter, TMI>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        TagFiltererIter {
+            iter: self.iter.into_iter(),
+            interceptor: self.interceptor,
+        }
+    }
+}
+
+struct TagFiltererIter<I, TMI> {
+    iter: I,
+    interceptor: TMI,
+}
+
+impl<'a, I, TMI> Iterator for TagFiltererIter<I, TMI>
+where
+    I: Iterator<Item = &'a str>,
+    TMI: TagMetadataInterceptor,
+{
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.iter.next() {
+                Some(tag) => match self.interceptor.evaluate(tag) {
+                    InterceptAction::Pass => return Some(tag),
+                    InterceptAction::Intercept | InterceptAction::Drop => continue,
+                },
+                None => return None,
+            }
+        }
+    }
+}
+
+fn update_metadata_from_tags<'a, I, TMI>(tags_iter: I, interceptor: &TMI, metadata: &mut MetricMetadata)
+where
+    I: Iterator<Item = &'a str>,
+    TMI: TagMetadataInterceptor,
+{
+    for tag in tags_iter {
+        if let InterceptAction::Intercept = interceptor.evaluate(tag) {
+            interceptor.intercept(tag, metadata)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use nom::IResult;
     use proptest::{collection::vec as arb_vec, prelude::*};
     use saluki_context::{ContextRef, ContextResolver};
+    use saluki_core::{pooling::helpers::get_pooled_object_via_default, topology::interconnect::EventBuffer};
     use saluki_event::{eventd::EventD, metric::*, Event};
 
     use crate::deser::codec::dogstatsd::parse_dogstatsd_event;
 
     use super::{parse_dogstatsd_metric, DogstatsdCodecConfiguration};
+    use crate::deser::{codec::DogstatsdCodec, Decoder};
+
+    use super::{InterceptAction, TagMetadataInterceptor};
 
     enum OneOrMany<T> {
         Single(T),
         Multiple(Vec<T>),
+    }
+
+    #[derive(Debug)]
+    struct StaticInterceptor;
+
+    impl TagMetadataInterceptor for StaticInterceptor {
+        fn evaluate(&self, tag: &str) -> InterceptAction {
+            if tag.starts_with("host") {
+                InterceptAction::Intercept
+            } else if tag.starts_with("deprecated") {
+                InterceptAction::Drop
+            } else {
+                InterceptAction::Pass
+            }
+        }
+
+        fn intercept(&self, tag: &str, metadata: &mut MetricMetadata) {
+            if let Some((key, value)) = tag.split_once(':') {
+                if key == "host" {
+                    metadata.set_hostname(Arc::from(value));
+                }
+            }
+        }
     }
 
     fn create_metric(name: &str, value: MetricValue) -> Metric {
@@ -1269,6 +1433,31 @@ mod tests {
             .with_timestamp(event_timestamp);
         check_basic_eventd_eq(event_expected, event_actual);
         assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn tag_interceptor() {
+        let mut codec = DogstatsdCodec::from_context_resolver(ContextResolver::with_noop_interner())
+            .with_configuration(DogstatsdCodecConfiguration::default())
+            .with_tag_metadata_interceptor(StaticInterceptor);
+
+        let input = b"some_metric:1|c|#tag_a:should_pass,deprecated_tag_b:should_drop,host:should_intercept";
+        let mut event_buffer = get_pooled_object_via_default::<EventBuffer>();
+        let events_decoded = codec
+            .decode(&mut &input[..], &mut event_buffer)
+            .expect("should not fail to decode");
+        assert_eq!(events_decoded, 1);
+
+        let event = event_buffer.into_iter().next().expect("should have an event");
+        match event {
+            Event::Metric(metric) => {
+                let tags = metric.context().tags().into_iter().collect::<Vec<_>>();
+                assert_eq!(tags.len(), 1);
+                assert_eq!(tags[0], "tag_a:should_pass");
+                assert_eq!(metric.metadata().hostname(), Some("should_intercept"));
+            }
+            _ => unreachable!("should only have a single metric"),
+        }
     }
 
     proptest! {

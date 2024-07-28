@@ -24,7 +24,6 @@ license = "Apache-2.0"
 repository = "https://github.com/DataDog/saluki"
 
 [workspace.dependencies]
-# Internal dependencies.
 datadog-protos = { path = "lib/datadog-protos" }
 ddsketch-agent = { path = "lib/ddsketch-agent" }
 memory-accounting = { path = "lib/memory-accounting" }
@@ -39,8 +38,6 @@ saluki-event = { path = "lib/saluki-event" }
 saluki-io = { path = "lib/saluki-io" }
 saluki-metrics = { path = "lib/saluki-metrics" }
 stringtheory = { path = "lib/stringtheory" }
-
-# External dependencies.
 async-trait = { version = "0.1", default-features = false }
 bytes = { version = "1", default-features = false }
 protobuf = { version = "3.3.0", default-features = false, features = ["with-bytes"] }

@@ -26,6 +26,14 @@ export GO_APP_IMAGE ?= debian:bullseye-slim
 export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
 export GIT_COMMIT ?= $(shell git rev-parse --short HEAD)
 
+# Specific versions of various Rust tools we use.
+export CARGO_TOOL_VERSION_dd-rust-license_tool ?= 1.0.3
+export CARGO_TOOL_VERSION_cargo-deny ?= 0.15.0
+export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
+export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.72
+export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
+export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
+
 FMT_YELLOW = \033[0;33m
 FMT_BLUE = \033[0;36m
 FMT_SALUKI_LOGO = \033[1m\033[38;5;55m
@@ -281,10 +289,12 @@ check-deny: ## Check all crate dependencies for outstanding advisories or usage 
 	@cargo deny check --hide-inclusion-graph --show-stats
 
 .PHONY: check-fmt
-check-fmt: check-rust-build-tools
+check-fmt: check-rust-build-tools cargo-install-cargo-sort
 check-fmt: ## Check that all Rust source files are formatted properly
 	@echo "[*] Checking Rust source code formatting..."
 	@cargo fmt -- --check
+	@echo "[*] Checking Cargo.toml formatting..."
+	@cargo sort --workspace --check >/dev/null
 
 .PHONY: check-licenses
 check-licenses: check-rust-build-tools cargo-install-dd-rust-license-tool
@@ -405,10 +415,14 @@ clean-docker: ## Cleans up Docker build cache
 	@docker builder prune --filter type=exec.cachemount --force
 
 .PHONY: fmt
-fmt: check-rust-build-tools
+fmt: check-rust-build-tools cargo-install-cargo-autoinherit cargo-install-cargo-sort
 fmt: ## Format Rust source code
 	@echo "[*] Formatting Rust source code..."
 	@cargo fmt
+	@echo "[*] Ensuring workspace dependencies are autoinherited..."
+	@cargo autoinherit 2>/dev/null
+	@echo "[*] Formatting Cargo.toml files..."
+	@cargo sort --workspace >/dev/null
 
 .PHONY: sync-licenses
 sync-licenses: check-rust-build-tools cargo-install-dd-rust-license-tool
@@ -418,5 +432,6 @@ sync-licenses: ## Synchronizes the third-party license file with the current cra
 
 .PHONY: cargo-install-%
 cargo-install-%: override TOOL = $(@:cargo-install-%=%)
+cargo-install-%: override VERSIONED_TOOL = ${TOOL}@$(CARGO_TOOL_VERSION_$(TOOL))
 cargo-install-%: check-rust-build-tools
-	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${TOOL}..." && cargo install ${TOOL} --quiet),)
+	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo install ${VERSIONED_TOOL} --quiet),)
