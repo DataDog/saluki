@@ -850,9 +850,8 @@ mod tests {
     use saluki_core::{pooling::helpers::get_pooled_object_via_default, topology::interconnect::EventBuffer};
     use saluki_event::{eventd::EventD, metric::*, Event};
 
-    use crate::deser::codec::dogstatsd::parse_dogstatsd_event;
 
-    use super::{parse_dogstatsd_metric, DogstatsdCodecConfiguration};
+    use super::{parse_dogstatsd_metric, DogstatsdCodecConfiguration, parse_dogstatsd_event};
     use crate::deser::{codec::DogstatsdCodec, Decoder};
 
     use super::{InterceptAction, TagMetadataInterceptor};
@@ -1409,9 +1408,9 @@ mod tests {
         let event_source_type = "testsource".to_string();
         let event_alert_type = saluki_event::eventd::AlertType::Success;
         let event_timestamp = 1234567890;
-        // assert_eq!(expected.tags(), actual.tags());
+        let event_tags = vec!["tag1".to_string(), "tag2".to_string()];
         let event_raw = format!(
-            "_e{{{},{}}}:{}|{}|h:{}|k:{}|p:{}|s:{}|t:{}|d:{}",
+            "_e{{{},{}}}:{}|{}|h:{}|k:{}|p:{}|s:{}|t:{}|d:{}|#:{}",
             event_title.len(),
             event_text.len(),
             event_title,
@@ -1421,7 +1420,8 @@ mod tests {
             event_priority,
             event_source_type,
             event_alert_type,
-            event_timestamp
+            event_timestamp,
+            event_tags.join(","),
         );
         let (remaining, event_actual) = parse_dogstatsd_event_with_default_config(event_raw.as_bytes()).unwrap();
         let event_expected = eventd(event_title, event_text)
@@ -1430,7 +1430,8 @@ mod tests {
             .with_priority(event_priority)
             .with_source_type_name(event_source_type)
             .with_alert_type(event_alert_type)
-            .with_timestamp(event_timestamp);
+            .with_timestamp(event_timestamp)
+            .with_tags(event_tags);
         check_basic_eventd_eq(event_expected, event_actual);
         assert!(remaining.is_empty());
     }
