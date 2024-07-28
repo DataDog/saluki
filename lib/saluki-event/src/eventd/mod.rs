@@ -3,8 +3,10 @@
 // TODO: Switch usages of `String` to `MetaString` since we should generally be able to intern these strings as they
 // originate in in the DogStatsD codec, where interning is already taking place.
 
+use std::fmt;
+
 /// Alert type.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AlertType {
     /// Indicates an informational event.
     Info,
@@ -19,8 +21,20 @@ pub enum AlertType {
     Success,
 }
 
+impl fmt::Display for AlertType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            AlertType::Info => "info",
+            AlertType::Error => "error",
+            AlertType::Warning => "warning",
+            AlertType::Success => "success",
+        };
+        write!(f, "{}", s)
+    }
+}
+
 /// Event priority.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Priority {
     /// The event has normal priority.
     Normal,
@@ -29,6 +43,15 @@ pub enum Priority {
     Low,
 }
 
+impl fmt::Display for Priority {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Priority::Normal => "normal",
+            Priority::Low => "low",
+        };
+        write!(f, "{}", s)
+    }
+}
 /// EventD is an object that can be posted to the DataDog event stream.
 #[derive(Clone, Debug)]
 pub struct EventD {
@@ -55,7 +78,7 @@ impl EventD {
     }
 
     /// Returns the host where the event originated from.
-    pub fn host(&self) -> Option<&str> {
+    pub fn hostname(&self) -> Option<&str> {
         self.hostname.as_deref()
     }
 
@@ -198,9 +221,9 @@ impl EventD {
             timestamp: None,
             hostname: None,
             aggregation_key: None,
-            priority: None,
+            priority: Some(Priority::Normal),
             source_type_name: None,
-            alert_type: None,
+            alert_type: Some(AlertType::Info),
             tags: None,
         }
     }

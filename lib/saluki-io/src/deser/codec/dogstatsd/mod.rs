@@ -4,12 +4,12 @@ use bytes::Buf;
 use message::MessageType;
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take_while1},
-    character::complete::u64 as parse_u64,
+    bytes::complete::{tag, take, take_while1},
+    character::complete::{u32 as parse_u32, u64 as parse_u64},
     combinator::{all_consuming, map},
     error::{Error, ErrorKind},
     number::complete::double,
-    sequence::{preceded, separated_pair, terminated},
+    sequence::{delimited, preceded, separated_pair, terminated},
     IResult,
 };
 use saluki_context::{ContextRef, ContextResolver};
@@ -21,7 +21,7 @@ use saluki_event::{eventd::EventD, metric::*, Event};
 
 mod event;
 mod message;
-use crate::deser::codec::dogstatsd::message::parse_metric_type;
+use crate::deser::codec::dogstatsd::message::*;
 use crate::deser::Decoder;
 
 type NomParserError<'a> = nom::Err<nom::error::Error<&'a [u8]>>;
@@ -216,7 +216,7 @@ impl Decoder for DogstatsdCodec {
 
     fn decode<B: Buf>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error> {
         let data = buf.chunk();
-        let message_type = parse_metric_type(data);
+        let message_type = parse_message_type(data);
 
         match message_type {
             MessageType::MetricSample => self.decode_metric(buf, events),
@@ -310,32 +310,123 @@ fn parse_dogstatsd_metric<'a>(
     ))
 }
 
-fn parse_dogstatsd_event<'a>(input: &'a [u8], _config: &DogstatsdCodecConfiguration) -> IResult<&'a [u8], EventD> {
-    let event_header_parser = map(take_while1(|c| c != b':'), |bytes: &[u8]| unsafe {
-        std::str::from_utf8_unchecked(bytes)
-    });
+fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfiguration) -> IResult<&'a [u8], EventD> {
+    // We parse the title length and text length from ``` _e{<TITLE_UTF8_LENGTH>,<TEXT_UTF8_LENGTH>}: ```
+    let (remaining, (title_len, text_len)) = delimited(
+        tag(message::EVENT_PREFIX),
+        separated_pair(parse_u32, tag(b","), parse_u32),
+        tag(b"}:"),
+    )(input)?;
 
-    let event_data_parser = map(
-        take_while1(|c: u8| c.is_ascii_alphanumeric() || c == b' ' || c == b'|' || c == b'_' || c == b'-' || c == b'.'),
-        |bytes: &[u8]| unsafe { std::str::from_utf8_unchecked(bytes) },
-    );
-
-    // Get the raw header (everything before the first ':') and the raw event (everything after the first ':')
-    // Split event header and value separated by ':'
-    let (remaining, (raw_event_header, raw_event_data)) =
-        separated_pair(event_header_parser, tag(b":"), event_data_parser)(input)?;
-
-    let (_, header) = event::parse_dogstatsd_event_header(raw_event_header, raw_event_data)?;
-
-    let (title, text) = event::parse_dogstatsd_event_data(&header, raw_event_data);
-
-    let eventd = EventD::from_parts(&title, &text);
-
-    // Check for presence of optional fields
-    let optional_fields = &raw_event_data[title.len() + text.len() + 1..];
-    if !optional_fields.is_empty() {
-        // event::parse_optional_fields(&eventd, Some(optional_fields))?;
+    // Title and Text are the required fields of an event.
+    if title_len == 0 || text_len == 0 {
+        return Err(nom::Err::Error(Error::new(input, ErrorKind::Verify)));
     }
+
+    let (remaining, (raw_title, raw_text)) = separated_pair(take(title_len), tag(b"|"), take(text_len))(remaining)?;
+
+    if simdutf8::basic::from_utf8(raw_title).is_err() {
+        return Err(nom::Err::Error(Error::new(raw_title, ErrorKind::Verify)));
+    }
+
+    if simdutf8::basic::from_utf8(raw_text).is_err() {
+        return Err(nom::Err::Error(Error::new(raw_text, ErrorKind::Verify)));
+    }
+
+    let title = event::clean_data(unsafe { std::str::from_utf8_unchecked(raw_title) });
+    let text = event::clean_data(unsafe { std::str::from_utf8_unchecked(raw_text) });
+
+    // At this point, we may have some of this additional data, and if so, we also then would have a pipe separator at
+    // the very front, which we'd want to consume before going further.
+    //
+    // After that, we simply split the remaining bytes by the pipe separator, and then try and parse each chunk to see
+    // if it's any of the protocol extensions we know of.
+    //
+    // Priority and Alert Type have default values
+    let mut maybe_priority = Some(saluki_event::eventd::Priority::Normal);
+    let mut maybe_alert_type = Some(saluki_event::eventd::AlertType::Info);
+    let mut maybe_timestamp = None;
+    let mut maybe_hostname = None;
+    let mut maybe_aggregation_key = None;
+    let mut maybe_source_type = None;
+    let mut maybe_tags = None;
+
+    let remaining = if !remaining.is_empty() {
+        let (mut remaining, _) = tag("|")(remaining)?;
+        while let Some((chunk, tail)) = split_at_delimiter(remaining, b'|') {
+            if chunk.len() < 2 {
+                break;
+            }
+            match &chunk[..2] {
+                // Timestamp: client-provided timestamp for the event, relative to the Unix epoch, in seconds.
+                event::TIMESTAMP_PREFIX => {
+                    let (_, timestamp) = all_consuming(preceded(tag(event::TIMESTAMP_PREFIX), unix_timestamp))(chunk)?;
+                    maybe_timestamp = Some(timestamp);
+                }
+                // Hostname: client-provided hostname for the host that this event originated from.
+                event::HOSTNAME_PREFIX => {
+                    let (_, hostname) =
+                        all_consuming(preceded(tag(event::HOSTNAME_PREFIX), event_option_value))(chunk)?;
+                    maybe_hostname = Some(hostname.to_string());
+                }
+                // Aggregation key: key to be used to group this event with others that have the same key.
+                event::AGGREGATION_KEY_PREFIX => {
+                    let (_, aggregation_key) =
+                        all_consuming(preceded(tag(event::AGGREGATION_KEY_PREFIX), event_option_value))(chunk)?;
+                    maybe_aggregation_key = Some(aggregation_key.to_string());
+                }
+                // Priority: client-provided priority of the event.
+                event::PRIORITY_PREFIX => {
+                    let (_, priority) =
+                        all_consuming(preceded(tag(event::PRIORITY_PREFIX), event_option_value))(chunk)?;
+                    match priority {
+                        event::PRIORITY_LOW => maybe_priority = Some(saluki_event::eventd::Priority::Low),
+                        _ => maybe_priority = Some(saluki_event::eventd::Priority::Normal),
+                    }
+                }
+                // Source type name: client-provided source type name of the event.
+                event::SOURCE_TYPE_PREFIX => {
+                    let (_, source_type) =
+                        all_consuming(preceded(tag(event::SOURCE_TYPE_PREFIX), event_option_value))(chunk)?;
+                    maybe_source_type = Some(source_type.to_string());
+                }
+                // Alert type: client-provided alert type of the event.
+                event::ALERT_TYPE_PREFIX => {
+                    let (_, alert_type) =
+                        all_consuming(preceded(tag(event::ALERT_TYPE_PREFIX), event_option_value))(chunk)?;
+                    match alert_type {
+                        event::ALERT_TYPE_ERROR => maybe_alert_type = Some(saluki_event::eventd::AlertType::Error),
+                        event::ALERT_TYPE_WARNING => maybe_alert_type = Some(saluki_event::eventd::AlertType::Warning),
+                        event::ALERT_TYPE_SUCCESS => maybe_alert_type = Some(saluki_event::eventd::AlertType::Success),
+                        _ => maybe_alert_type = Some(saluki_event::eventd::AlertType::Info),
+                    }
+                }
+                // Tags: additional tags to be added to the metric.
+                event::TAGS_PREFIX => {
+                    let (_, tags) = all_consuming(preceded(tag(event::TAGS_PREFIX), metric_tags(config)))(chunk)?;
+                    maybe_tags = Some(tags.into_iter().map(String::from).collect());
+                }
+                _ => {
+                    // We don't know what this is, so we just skip it.
+                    //
+                    // TODO: Should we throw an error, warn, or be silently permissive?
+                }
+            }
+            remaining = tail;
+        }
+        remaining
+    } else {
+        remaining
+    };
+
+    let eventd = EventD::from_parts(&title, &text)
+        .with_timestamp(maybe_timestamp)
+        .with_hostname(maybe_hostname)
+        .with_aggregation_key(maybe_aggregation_key)
+        .with_priority(maybe_priority)
+        .with_source_type_name(maybe_source_type)
+        .with_alert_type(maybe_alert_type)
+        .with_tags(maybe_tags);
 
     Ok((remaining, eventd))
 }
@@ -352,6 +443,16 @@ fn split_at_delimiter(input: &[u8], delimiter: u8) -> Option<(&[u8], &[u8])> {
             }
         }
     }
+}
+
+#[inline]
+fn event_option_value(input: &[u8]) -> IResult<&[u8], &str> {
+    let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.';
+    map(take_while1(valid_char), |b| {
+        // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
+        // interpret the bytes directly as UTF-8.
+        unsafe { std::str::from_utf8_unchecked(b) }
+    })(input)
 }
 
 #[inline]
@@ -686,35 +787,11 @@ mod tests {
         parse_dogstatsd_metric_with_config(input, &default_config)
     }
 
-    #[allow(dead_code)]
-    #[allow(unused)]
-    fn parse_dogstatsd_event_with_default_config(input: &[u8]) -> IResult<&[u8], OneOrMany<Event>> {
-        let default_config = DogstatsdCodecConfiguration::default();
-        parse_dogstatsd_event_with_config(input, &default_config)
-    }
-
     fn parse_dogstatsd_metric_with_config<'input>(
         input: &'input [u8], config: &DogstatsdCodecConfiguration,
     ) -> IResult<&'input [u8], OneOrMany<Event>> {
         let context_resolver = ContextResolver::with_noop_interner();
         parse_dogstatsd_metric_direct(input, config, &context_resolver)
-    }
-
-    #[allow(dead_code)]
-    #[allow(unused)]
-    fn parse_dogstatsd_event_with_config<'input>(
-        input: &'input [u8], config: &DogstatsdCodecConfiguration,
-    ) -> IResult<&'input [u8], OneOrMany<Event>> {
-        parse_dogstatsd_eventd_direct(input, config)
-    }
-
-    #[allow(dead_code)]
-    #[allow(unused)]
-    fn parse_dogstatsd_eventd_direct<'input>(
-        input: &'input [u8], config: &DogstatsdCodecConfiguration,
-    ) -> IResult<&'input [u8], OneOrMany<Event>> {
-        let (reamining, event) = parse_dogstatsd_event(input, config)?;
-        Ok((b"", OneOrMany::Single(saluki_event::Event::EventD(event))))
     }
 
     fn parse_dogstatsd_metric_direct<'input>(
@@ -744,18 +821,22 @@ mod tests {
         }
     }
 
-    #[track_caller]
-    fn check_basic_eventd_eq(expected: EventD, actual: OneOrMany<Event>) -> EventD {
-        match actual {
-            OneOrMany::Single(Event::EventD(actual)) => {
-                assert_eq!(expected.title(), actual.title());
-                assert_eq!(expected.text(), actual.text());
-                actual
-            }
-            OneOrMany::Single(Event::Metric(_)) => unreachable!("should never be called for metric type"),
-            OneOrMany::Single(Event::ServiceCheck(_)) => unreachable!("should never be called for service check type"),
-            OneOrMany::Multiple(_) => unreachable!("should never be called for multi-value metric assertions"),
-        }
+    fn parse_dogstatsd_event_with_default_config(input: &[u8]) -> IResult<&[u8], OneOrMany<Event>> {
+        let default_config = DogstatsdCodecConfiguration::default();
+        parse_dogstatsd_event_with_config(input, &default_config)
+    }
+
+    fn parse_dogstatsd_event_with_config<'input>(
+        input: &'input [u8], config: &DogstatsdCodecConfiguration,
+    ) -> IResult<&'input [u8], OneOrMany<Event>> {
+        parse_dogstatsd_eventd_direct(input, config)
+    }
+
+    fn parse_dogstatsd_eventd_direct<'input>(
+        input: &'input [u8], config: &DogstatsdCodecConfiguration,
+    ) -> IResult<&'input [u8], OneOrMany<Event>> {
+        let (remaining, event) = parse_dogstatsd_event(input, config)?;
+        Ok((remaining, OneOrMany::Single(saluki_event::Event::EventD(event))))
     }
 
     #[track_caller]
@@ -832,24 +913,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(unused)]
-    fn basic_eventds() {
-        let event_title = "my event";
-        let event_text = "text";
-        let event_raw = format!(
-            "_e{{{},{}}}:{}|{}",
-            event_title.len(),
-            event_text.len(),
-            event_title,
-            event_text
-        );
-        let (remaining, event_actual) = parse_dogstatsd_event_with_default_config(event_raw.as_bytes()).unwrap();
-        let event_expected = eventd(event_title, event_text);
-        check_basic_eventd_eq(event_expected, event_actual);
-    }
-
-    #[test]
-    fn tags() {
+    fn metric_tags() {
         let counter_name = "my.counter";
         let counter_value = 1.0;
         let counter_tags = &["tag1", "tag2"];
@@ -862,7 +926,7 @@ mod tests {
     }
 
     #[test]
-    fn sample_rate() {
+    fn metric_sample_rate() {
         let counter_name = "my.counter";
         let counter_value = 1.0;
         let counter_sample_rate = 0.5;
@@ -876,7 +940,7 @@ mod tests {
     }
 
     #[test]
-    fn container_id() {
+    fn metric_container_id() {
         let counter_name = "my.counter";
         let counter_value = 1.0;
         let container_id = "abcdef123456";
@@ -892,7 +956,7 @@ mod tests {
     }
 
     #[test]
-    fn unix_timestamp() {
+    fn metric_unix_timestamp() {
         let counter_name = "my.counter";
         let counter_value = 1.0;
         let timestamp = 1234567890;
@@ -906,7 +970,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_extensions() {
+    fn metric_multiple_extensions() {
         let counter_name = "my.counter";
         let counter_value = 1.0;
         let counter_sample_rate = 0.5;
@@ -1071,6 +1135,140 @@ mod tests {
             }
             _ => unreachable!("should be Multiple variant"),
         }
+    }
+
+    #[track_caller]
+    fn check_basic_eventd_eq(expected: EventD, actual: OneOrMany<Event>) -> EventD {
+        match actual {
+            OneOrMany::Single(Event::EventD(actual)) => {
+                assert_eq!(expected.title(), actual.title());
+                assert_eq!(expected.text(), actual.text());
+                assert_eq!(expected.timestamp(), actual.timestamp());
+                assert_eq!(expected.hostname(), actual.hostname());
+                assert_eq!(expected.aggregation_key(), actual.aggregation_key());
+                assert_eq!(expected.priority(), actual.priority());
+                assert_eq!(expected.source_type_name(), actual.source_type_name());
+                assert_eq!(expected.alert_type(), actual.alert_type());
+                assert_eq!(expected.tags(), actual.tags());
+                actual
+            }
+            OneOrMany::Single(Event::Metric(_)) => unreachable!("should never be called for metric type"),
+            OneOrMany::Single(Event::ServiceCheck(_)) => unreachable!("should never be called for service check type"),
+            OneOrMany::Multiple(_) => unreachable!("should never be called for multi-value metric assertions"),
+        }
+    }
+
+    #[test]
+    fn basic_eventds() {
+        let event_title = "my event";
+        let event_text = "text";
+        let event_raw = format!(
+            "_e{{{},{}}}:{}|{}",
+            event_title.len(),
+            event_text.len(),
+            event_title,
+            event_text
+        );
+        let (remaining, event_actual) = parse_dogstatsd_event_with_default_config(event_raw.as_bytes()).unwrap();
+        let event_expected = eventd(event_title, event_text);
+        check_basic_eventd_eq(event_expected, event_actual);
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn eventd_tags() {
+        let event_title = "my event";
+        let event_text = "text";
+        let event_tags = vec!["tag1".to_string(), "tag2".to_string()];
+
+        let event_raw = format!(
+            "_e{{{},{}}}:{}|{}|#:{}",
+            event_title.len(),
+            event_text.len(),
+            event_title,
+            event_text,
+            event_tags.join(","),
+        );
+        let event_expected = eventd(event_title, event_text).with_tags(event_tags);
+        let (remaining, event_actual) = parse_dogstatsd_event_with_default_config(event_raw.as_bytes()).unwrap();
+        check_basic_eventd_eq(event_expected, event_actual);
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn eventd_priority() {
+        let event_title = "my event";
+        let event_text = "text";
+        let event_priority = saluki_event::eventd::Priority::Low;
+
+        let event_raw = format!(
+            "_e{{{},{}}}:{}|{}|p:{}",
+            event_title.len(),
+            event_text.len(),
+            event_title,
+            event_text,
+            event_priority
+        );
+        let event_expected = eventd(event_title, event_text).with_priority(event_priority);
+        let (remaining, event_actual) = parse_dogstatsd_event_with_default_config(event_raw.as_bytes()).unwrap();
+        check_basic_eventd_eq(event_expected, event_actual);
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn eventd_alert_type() {
+        let event_title = "my event";
+        let event_text = "text";
+        let event_alert_type = saluki_event::eventd::AlertType::Warning;
+
+        let event_raw = format!(
+            "_e{{{},{}}}:{}|{}|t:{}",
+            event_title.len(),
+            event_text.len(),
+            event_title,
+            event_text,
+            event_alert_type
+        );
+        let event_expected = eventd(event_title, event_text).with_alert_type(event_alert_type);
+        let (remaining, event_actual) = parse_dogstatsd_event_with_default_config(event_raw.as_bytes()).unwrap();
+        check_basic_eventd_eq(event_expected, event_actual);
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn eventd_multiple_extensions() {
+        let event_title = "my event";
+        let event_text = "text";
+        let event_hostname = "testhost".to_string();
+        let event_aggregation_key = "testkey".to_string();
+        let event_priority = saluki_event::eventd::Priority::Low;
+        let event_source_type = "testsource".to_string();
+        let event_alert_type = saluki_event::eventd::AlertType::Success;
+        let event_timestamp = 1234567890;
+        // assert_eq!(expected.tags(), actual.tags());
+        let event_raw = format!(
+            "_e{{{},{}}}:{}|{}|h:{}|k:{}|p:{}|s:{}|t:{}|d:{}",
+            event_title.len(),
+            event_text.len(),
+            event_title,
+            event_text,
+            event_hostname,
+            event_aggregation_key,
+            event_priority,
+            event_source_type,
+            event_alert_type,
+            event_timestamp
+        );
+        let (remaining, event_actual) = parse_dogstatsd_event_with_default_config(event_raw.as_bytes()).unwrap();
+        let event_expected = eventd(event_title, event_text)
+            .with_hostname(event_hostname)
+            .with_aggregation_key(event_aggregation_key)
+            .with_priority(event_priority)
+            .with_source_type_name(event_source_type)
+            .with_alert_type(event_alert_type)
+            .with_timestamp(event_timestamp);
+        check_basic_eventd_eq(event_expected, event_actual);
+        assert!(remaining.is_empty());
     }
 
     proptest! {

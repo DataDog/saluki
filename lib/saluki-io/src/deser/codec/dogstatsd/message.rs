@@ -4,10 +4,10 @@ pub enum MessageType {
     ServiceCheck,
 }
 
-const EVENT_PREFIX: &[u8] = b"_e{";
-const SERVICE_CHECK_PREFIX: &[u8] = b"_sc";
+pub const EVENT_PREFIX: &[u8] = b"_e{";
+pub const SERVICE_CHECK_PREFIX: &[u8] = b"_sc";
 
-pub fn parse_metric_type(data: &[u8]) -> MessageType {
+pub fn parse_message_type(data: &[u8]) -> MessageType {
     if data.starts_with(EVENT_PREFIX) {
         return MessageType::Event;
     } else if data.starts_with(SERVICE_CHECK_PREFIX) {
