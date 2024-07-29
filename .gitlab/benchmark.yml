@@ -221,7 +221,7 @@ run-benchmarks-dsd:
 
 comment-smp-result-links:
   stage: benchmark
-  needs:
+  dependencies:
     - run-benchmarks-adp
     - run-benchmarks-dsd
   image: "${SALUKI_SMP_CI_IMAGE}"
