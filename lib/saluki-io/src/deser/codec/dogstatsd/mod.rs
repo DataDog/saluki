@@ -850,8 +850,7 @@ mod tests {
     use saluki_core::{pooling::helpers::get_pooled_object_via_default, topology::interconnect::EventBuffer};
     use saluki_event::{eventd::EventD, metric::*, Event};
 
-
-    use super::{parse_dogstatsd_metric, DogstatsdCodecConfiguration, parse_dogstatsd_event};
+    use super::{parse_dogstatsd_event, parse_dogstatsd_metric, DogstatsdCodecConfiguration};
     use crate::deser::{codec::DogstatsdCodec, Decoder};
 
     use super::{InterceptAction, TagMetadataInterceptor};
