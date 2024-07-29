@@ -258,7 +258,8 @@ fn parse_dogstatsd_metric<'a>(
 ) -> IResult<&'a [u8], (&'a str, TagSplitter<'a>, ValueIter<'a>, MetricMetadata)> {
     // We always parse the metric name and value(s) first, where value is both the kind (counter, gauge, etc) and the
     // actual value itself.
-    let (remaining, (metric_name, values_iter)) = separated_pair(metric_name, tag(":"), metric_value)(input)?;
+    let (remaining, (metric_name, values_iter)) =
+        separated_pair(ascii_alphanum_and_seps, tag(":"), metric_value)(input)?;
 
     // At this point, we may have some of this additional data, and if so, we also then would have a pipe separator at
     // the very front, which we'd want to consume before going further.
@@ -338,7 +339,7 @@ fn parse_dogstatsd_metric<'a>(
 }
 
 fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfiguration) -> IResult<&'a [u8], EventD> {
-    // We parse the title length and text length from ``` _e{<TITLE_UTF8_LENGTH>,<TEXT_UTF8_LENGTH>}: ```
+    // We parse the title length and text length from `_e{<TITLE_UTF8_LENGTH>,<TEXT_UTF8_LENGTH>}:`
     let (remaining, (title_len, text_len)) = delimited(
         tag(message::EVENT_PREFIX),
         separated_pair(parse_u32, tag(b","), parse_u32),
@@ -352,16 +353,15 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
 
     let (remaining, (raw_title, raw_text)) = separated_pair(take(title_len), tag(b"|"), take(text_len))(remaining)?;
 
-    if simdutf8::basic::from_utf8(raw_title).is_err() {
-        return Err(nom::Err::Error(Error::new(raw_title, ErrorKind::Verify)));
-    }
+    let title = match simdutf8::basic::from_utf8(raw_title) {
+        Ok(title) => event::clean_data(title),
+        Err(_) => return Err(nom::Err::Error(Error::new(raw_title, ErrorKind::Verify))),
+    };
 
-    if simdutf8::basic::from_utf8(raw_text).is_err() {
-        return Err(nom::Err::Error(Error::new(raw_text, ErrorKind::Verify)));
-    }
-
-    let title = event::clean_data(unsafe { std::str::from_utf8_unchecked(raw_title) });
-    let text = event::clean_data(unsafe { std::str::from_utf8_unchecked(raw_text) });
+    let text = match simdutf8::basic::from_utf8(raw_text) {
+        Ok(text) => event::clean_data(text),
+        Err(_) => return Err(nom::Err::Error(Error::new(raw_text, ErrorKind::Verify))),
+    };
 
     // At this point, we may have some of this additional data, and if so, we also then would have a pipe separator at
     // the very front, which we'd want to consume before going further.
@@ -393,19 +393,19 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
                 // Hostname: client-provided hostname for the host that this event originated from.
                 event::HOSTNAME_PREFIX => {
                     let (_, hostname) =
-                        all_consuming(preceded(tag(event::HOSTNAME_PREFIX), event_option_value))(chunk)?;
+                        all_consuming(preceded(tag(event::HOSTNAME_PREFIX), ascii_alphanum_and_seps))(chunk)?;
                     maybe_hostname = Some(hostname.to_string());
                 }
                 // Aggregation key: key to be used to group this event with others that have the same key.
                 event::AGGREGATION_KEY_PREFIX => {
                     let (_, aggregation_key) =
-                        all_consuming(preceded(tag(event::AGGREGATION_KEY_PREFIX), event_option_value))(chunk)?;
+                        all_consuming(preceded(tag(event::AGGREGATION_KEY_PREFIX), ascii_alphanum_and_seps))(chunk)?;
                     maybe_aggregation_key = Some(aggregation_key.to_string());
                 }
                 // Priority: client-provided priority of the event.
                 event::PRIORITY_PREFIX => {
                     let (_, priority) =
-                        all_consuming(preceded(tag(event::PRIORITY_PREFIX), event_option_value))(chunk)?;
+                        all_consuming(preceded(tag(event::PRIORITY_PREFIX), ascii_alphanum_and_seps))(chunk)?;
                     match priority {
                         event::PRIORITY_LOW => maybe_priority = Some(saluki_event::eventd::Priority::Low),
                         _ => maybe_priority = Some(saluki_event::eventd::Priority::Normal),
@@ -414,13 +414,13 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
                 // Source type name: client-provided source type name of the event.
                 event::SOURCE_TYPE_PREFIX => {
                     let (_, source_type) =
-                        all_consuming(preceded(tag(event::SOURCE_TYPE_PREFIX), event_option_value))(chunk)?;
+                        all_consuming(preceded(tag(event::SOURCE_TYPE_PREFIX), ascii_alphanum_and_seps))(chunk)?;
                     maybe_source_type = Some(source_type.to_string());
                 }
                 // Alert type: client-provided alert type of the event.
                 event::ALERT_TYPE_PREFIX => {
                     let (_, alert_type) =
-                        all_consuming(preceded(tag(event::ALERT_TYPE_PREFIX), event_option_value))(chunk)?;
+                        all_consuming(preceded(tag(event::ALERT_TYPE_PREFIX), ascii_alphanum_and_seps))(chunk)?;
                     match alert_type {
                         event::ALERT_TYPE_ERROR => maybe_alert_type = Some(saluki_event::eventd::AlertType::Error),
                         event::ALERT_TYPE_WARNING => maybe_alert_type = Some(saluki_event::eventd::AlertType::Warning),
@@ -446,7 +446,7 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
         remaining
     };
 
-    let eventd = EventD::from_parts(&title, &text)
+    let eventd = EventD::new(&title, &text)
         .with_timestamp(maybe_timestamp)
         .with_hostname(maybe_hostname)
         .with_aggregation_key(maybe_aggregation_key)
@@ -473,17 +473,7 @@ fn split_at_delimiter(input: &[u8], delimiter: u8) -> Option<(&[u8], &[u8])> {
 }
 
 #[inline]
-fn event_option_value(input: &[u8]) -> IResult<&[u8], &str> {
-    let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.';
-    map(take_while1(valid_char), |b| {
-        // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
-        // interpret the bytes directly as UTF-8.
-        unsafe { std::str::from_utf8_unchecked(b) }
-    })(input)
-}
-
-#[inline]
-fn metric_name(input: &[u8]) -> IResult<&[u8], &str> {
+fn ascii_alphanum_and_seps(input: &[u8]) -> IResult<&[u8], &str> {
     let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.';
     map(take_while1(valid_char), |b| {
         // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
@@ -900,7 +890,7 @@ mod tests {
     }
 
     fn create_eventd(title: &str, text: &str) -> EventD {
-        EventD::from_parts(title, text)
+        EventD::new(title, text)
     }
 
     fn counter(name: &str, value: f64) -> Metric {

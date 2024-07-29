@@ -213,8 +213,10 @@ impl EventD {
         self.tags = tags.into();
     }
 
-    /// Creates an `Eventd` from the given parts.
-    pub fn from_parts(title: &str, text: &str) -> Self {
+    /// Creates an `EventD` from the given title and text.
+    ///
+    /// Defaults to an informational alert with normal priority.
+    pub fn new(title: &str, text: &str) -> Self {
         Self {
             title: title.to_string(),
             text: text.to_string(),
