@@ -55,14 +55,17 @@ dsd_end_time=$(cat dsd_job_end_time)
 # SMP does some shifting of timestamps for the metrics it captures/submits, so we need to port some of that logic here
 # so that the timestamps we generated for the dashboard time range is consistent.
 #
-# Essentially, we backtrack from the earliest start time (by the duration of our experiment, 10 minutes) to get our
-# start time, and then use the _latest_ start time to get our end time.
-if [ "$adp_start_time" -lt "$dsd_start_time" ]; then
-    common_start_time=$(echo "${adp_start_time} - 600" | bc)
-    common_end_time=$dsd_start_time
+# Essentially, we take the earliest "end" time between the two jobs and go back 30 minutes, which is where the metrics
+# for that job will be aligned to, and then we take the other "end" time, and go back 30 minutes _minus_ 10 minutes (our
+# experiment duration) which is the end of the window for both jobs overall.
+smp_negative_time_offset_secs=$((30*60))
+experiment_duration_secs=600
+if [ "$adp_end_time" -lt "$dsd_end_time" ]; then
+    common_start_time=$(echo "${adp_end_time} - ${smp_negative_time_offset_secs}" | bc)
+    common_end_time=$(echo "${dsd_end_time} - ${smp_negative_time_offset_secs} + ${experiment_duration_secs}" | bc)
 else
-    common_start_time=$(echo "${dsd_start_time} - 600" | bc)
-    common_end_time=$adp_start_time
+    common_start_time=$(echo "${dsd_end_time} - ${smp_negative_time_offset_secs}" | bc)
+    common_end_time=$(echo "${adp_end_time} - ${smp_negative_time_offset_secs} + ${experiment_duration_secs}" | bc)
 fi
 
 # Grab the experiments for both DSD and ADP, which may or may not overlap.

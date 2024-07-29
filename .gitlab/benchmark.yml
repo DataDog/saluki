@@ -134,6 +134,8 @@ run-benchmarks-adp:
             --wait
             --wait-delay-seconds 60
             --submission-metadata submission_metadata
+    # And populate some more data that we'll need later for generating links to experiment dashboards.
+    - date +%s > adp_job_end_time
     # Pull the analysis report and output it to stdout.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
             job sync
@@ -146,8 +148,6 @@ run-benchmarks-adp:
     - cat outputs/report.md | sed "s/^\$/$(echo -ne '\uFEFF\u00A0\u200B')/g"
     # Post the HTML report to the PR.
     - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Saluki)"
-    # And populate some more data that we'll need later for generating links to experiment dashboards.
-    - date +%s > adp_job_end_time
     # Finally, exit 1 if the job signals a regression else 0.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
             job result
@@ -200,6 +200,8 @@ run-benchmarks-dsd:
             --wait
             --wait-delay-seconds 60
             --submission-metadata submission_metadata
+    # And populate some more data that we'll need later for generating links to experiment dashboards.
+    - date +%s > dsd_job_end_time
     # Pull the analysis report and output it to stdout.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
             job sync
@@ -212,8 +214,6 @@ run-benchmarks-dsd:
     - cat outputs/report.md | sed "s/^\$/$(echo -ne '\uFEFF\u00A0\u200B')/g"
     # Post the HTML report to the PR.
     - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (DogStatsD)"
-    # And populate some more data that we'll need later for generating links to experiment dashboards.
-    - date +%s > dsd_job_end_time
     # Finally, exit 1 if the job signals a regression else 0.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
             job result
