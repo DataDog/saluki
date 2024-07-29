@@ -180,7 +180,7 @@ impl MetricMetadata {
     /// hostname where this process is running.
     ///
     /// This variant is specifically for use in builder-style APIs.
-    pub fn with_hostnam(mut self, hostname: impl Into<Option<Arc<str>>>) -> Self {
+    pub fn with_hostname(mut self, hostname: impl Into<Option<Arc<str>>>) -> Self {
         self.hostname = hostname.into();
         self
     }
