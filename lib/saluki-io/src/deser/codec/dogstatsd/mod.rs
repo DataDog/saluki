@@ -17,7 +17,11 @@ use saluki_metrics::static_metrics;
 use snafu::Snafu;
 
 use saluki_core::topology::interconnect::EventBuffer;
-use saluki_event::{eventd::EventD, metric::*, Event};
+use saluki_event::{
+    eventd::{AlertType, EventD, Priority},
+    metric::*,
+    Event,
+};
 
 mod event;
 mod message;
@@ -406,10 +410,7 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
                 event::PRIORITY_PREFIX => {
                     let (_, priority) =
                         all_consuming(preceded(tag(event::PRIORITY_PREFIX), ascii_alphanum_and_seps))(chunk)?;
-                    match priority {
-                        event::PRIORITY_LOW => maybe_priority = Some(saluki_event::eventd::Priority::Low),
-                        _ => maybe_priority = Some(saluki_event::eventd::Priority::Normal),
-                    }
+                    maybe_priority = Priority::try_from_string(priority);
                 }
                 // Source type name: client-provided source type name of the event.
                 event::SOURCE_TYPE_PREFIX => {
@@ -421,14 +422,9 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
                 event::ALERT_TYPE_PREFIX => {
                     let (_, alert_type) =
                         all_consuming(preceded(tag(event::ALERT_TYPE_PREFIX), ascii_alphanum_and_seps))(chunk)?;
-                    match alert_type {
-                        event::ALERT_TYPE_ERROR => maybe_alert_type = Some(saluki_event::eventd::AlertType::Error),
-                        event::ALERT_TYPE_WARNING => maybe_alert_type = Some(saluki_event::eventd::AlertType::Warning),
-                        event::ALERT_TYPE_SUCCESS => maybe_alert_type = Some(saluki_event::eventd::AlertType::Success),
-                        _ => maybe_alert_type = Some(saluki_event::eventd::AlertType::Info),
-                    }
+                    maybe_alert_type = AlertType::try_from_string(alert_type);
                 }
-                // Tags: additional tags to be added to the metric.
+                // Tags: additional tags to be added to the event.
                 event::TAGS_PREFIX => {
                     let (_, tags) = all_consuming(preceded(tag(event::TAGS_PREFIX), metric_tags(config)))(chunk)?;
                     maybe_tags = Some(tags.into_iter().map(String::from).collect());
