@@ -38,23 +38,31 @@ get_adp_smp_dashboard_url() {
 # of them are required to properly generate our output.
 ensure_file_exists "adp_run_id"
 ensure_file_exists "adp_job_start_time"
+ensure_file_exists "adp_job_end_time"
 ensure_file_exists "dsd_run_id"
 ensure_file_exists "dsd_job_start_time"
+ensure_file_exists "dsd_job_end_time"
 
 adp_run_id=$(cat adp_run_id)
-adp_job_start_time=$(cat adp_job_start_time)
+adp_start_time=$(cat adp_job_start_time)
+adp_end_time=$(cat adp_job_end_time)
 dsd_run_id=$(cat dsd_run_id)
-dsd_job_start_time=$(cat dsd_job_start_time)
+dsd_start_time=$(cat dsd_job_start_time)
+dsd_end_time=$(cat dsd_job_end_time)
 
-# Load the job start times and figure out which job started first, which we'll use at the start anchor for the time
-# range in dashboards.
-if [ "$adp_job_start_time" -lt "$dsd_job_start_time" ]; then
-    start_time=$adp_job_start_time
+# Load the job start/end times and figure out which job started first and which job ended last, which we'll use as the
+# start/end time for our dashboard, which shows both sides -- ADP and DSD -- in the same pane of glass.
+if [ "$adp_start_time" -lt "$dsd_start_time" ]; then
+    common_start_time=$adp_start_time
 else
-    start_time=$dsd_job_start_time
+    common_start_time=$dsd_start_time
 fi
 
-end_time=$(cat report_end_time)
+if [ "$adp_end_time" -lt "$dsd_end_time" ]; then
+    common_end_time=$dsd_end_time
+else
+    common_end_time=$adp_end_time
+fi
 
 # Grab the experiments for both DSD and ADP, which may or may not overlap.
 find test/smp/regression/saluki/cases -mindepth 1 -maxdepth 1 -type d | sed s#test/smp/regression/saluki/cases/##g | sort | uniq > adp-experiments
@@ -67,27 +75,27 @@ common_experiments=$(comm -12 adp-experiments dsd-experiments)
 # Write out our table of links, doing common experiments first, then ADP-only, then DSD-only.
 echo "## Experiment Result Links"
 echo ""
-echo "| experiment | links |"
+echo "| experiment | link(s) |"
 echo "|------------|-------|"
 
 for experiment in $common_experiments; do
-    adp_continuous_profiler_url=$(get_continuous_profiler_url "$adp_run_id" "$start_time" "$end_time" "$experiment")
-    dsd_continuous_profiler_url=$(get_continuous_profiler_url "$dsd_run_id" "$start_time" "$end_time" "$experiment")
-    adp_smp_dashboard_url=$(get_adp_smp_dashboard_url "$adp_run_id" "$dsd_run_id" "$start_time" "$end_time" "$experiment")
+    adp_continuous_profiler_url=$(get_continuous_profiler_url "$adp_run_id" "$adp_start_time" "$adp_end_time" "$experiment")
+    dsd_continuous_profiler_url=$(get_continuous_profiler_url "$dsd_run_id" "$dsd_start_time" "$dsd_end_time" "$experiment")
+    adp_smp_dashboard_url=$(get_adp_smp_dashboard_url "$adp_run_id" "$dsd_run_id" "$common_start_time" "$common_end_time" "$experiment")
 
-    echo "| $experiment | \\[[Continuous Profiler (ADP)]($adp_continuous_profiler_url)\\] \\[[Continuous Profiler (DSD)]($dsd_continuous_profiler_url)\\] \\[[SMP Dashboard]($adp_smp_dashboard_url)\\] |"
+    echo "| $experiment | \\[[Profiling (ADP)]($adp_continuous_profiler_url)\\] \\[[Profiling (DSD)]($dsd_continuous_profiler_url)\\] \\[[SMP Dashboard]($adp_smp_dashboard_url)\\] |"
 done
 
 for experiment in $adp_only_experiments; do
-    adp_continuous_profiler_url=$(get_continuous_profiler_url "$adp_run_id" "$start_time" "$end_time" "$experiment")
-    adp_smp_dashboard_url=$(get_adp_smp_dashboard_url "$adp_run_id" "$dsd_run_id" "$start_time" "$end_time" "$experiment")
+    adp_continuous_profiler_url=$(get_continuous_profiler_url "$adp_run_id" "$adp_start_time" "$adp_end_time" "$experiment")
+    adp_smp_dashboard_url=$(get_adp_smp_dashboard_url "$adp_run_id" "$dsd_run_id" "$adp_start_time" "$adp_end_time" "$experiment")
 
-    echo "| $experiment (ADP only) | \\[[Continuous Profiler (ADP)]($adp_continuous_profiler_url)\\] \\[[SMP Dashboard]($adp_smp_dashboard_url)\\] |"
+    echo "| $experiment (ADP only) | \\[[Profiling (ADP)]($adp_continuous_profiler_url)\\] \\[[SMP Dashboard]($adp_smp_dashboard_url)\\] |"
 done
 
 for experiment in $dsd_only_experiments; do
-    dsd_continuous_profiler_url=$(get_continuous_profiler_url "$dsd_run_id" "$start_time" "$end_time" "$experiment")
-    adp_smp_dashboard_url=$(get_adp_smp_dashboard_url "$adp_run_id" "$dsd_run_id" "$start_time" "$end_time" "$experiment")
+    dsd_continuous_profiler_url=$(get_continuous_profiler_url "$dsd_run_id" "$dsd_start_time" "$dsd_end_time" "$experiment")
+    adp_smp_dashboard_url=$(get_adp_smp_dashboard_url "$adp_run_id" "$dsd_run_id" "$dsd_start_time" "$dsd_end_time" "$experiment")
 
-    echo "| $experiment (DSD only) | \\[[Continuous Profiler (DSD)]($dsd_continuous_profiler_url)\\] \\[[SMP Dashboard]($adp_smp_dashboard_url)\\] |"
+    echo "| $experiment (DSD only) | \\[[Profiling (DSD)]($dsd_continuous_profiler_url)\\] \\[[SMP Dashboard]($adp_smp_dashboard_url)\\] |"
 done
