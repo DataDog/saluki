@@ -5,6 +5,18 @@
 
 use std::fmt;
 
+/// Value supplied used to specify a low priority event
+pub const PRIORITY_LOW: &str = "low";
+
+/// Value used to specify an error alert.
+pub const ALERT_TYPE_ERROR: &str = "error";
+
+/// Value used to specify a warning alert.
+pub const ALERT_TYPE_WARNING: &str = "warning";
+
+/// Value used to specify a success alert.
+pub const ALERT_TYPE_SUCCESS: &str = "success";
+
 /// Alert type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AlertType {
@@ -33,6 +45,20 @@ impl fmt::Display for AlertType {
     }
 }
 
+impl AlertType {
+    /// Creates an AlertType from a string.
+    ///
+    /// Defaults to an informational alert.
+    pub fn try_from_string(alert_type: &str) -> Option<Self> {
+        match alert_type {
+            ALERT_TYPE_ERROR => Some(AlertType::Error),
+            ALERT_TYPE_WARNING => Some(AlertType::Warning),
+            ALERT_TYPE_SUCCESS => Some(AlertType::Success),
+            _ => Some(AlertType::Info),
+        }
+    }
+}
+
 /// Event priority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Priority {
@@ -52,6 +78,19 @@ impl fmt::Display for Priority {
         write!(f, "{}", s)
     }
 }
+
+impl Priority {
+    /// Creates an event Priority from a string.
+    ///
+    /// Defaults to  normal priority.
+    pub fn try_from_string(priority: &str) -> Option<Self> {
+        match priority {
+            PRIORITY_LOW => Some(Priority::Low),
+            _ => Some(Priority::Normal),
+        }
+    }
+}
+
 /// EventD is an object that can be posted to the DataDog event stream.
 #[derive(Clone, Debug)]
 pub struct EventD {
@@ -213,8 +252,10 @@ impl EventD {
         self.tags = tags.into();
     }
 
-    /// Creates an `Eventd` from the given parts.
-    pub fn from_parts(title: &str, text: &str) -> Self {
+    /// Creates an `EventD` from the given title and text.
+    ///
+    /// Defaults to an informational alert with normal priority.
+    pub fn new(title: &str, text: &str) -> Self {
         Self {
             title: title.to_string(),
             text: text.to_string(),

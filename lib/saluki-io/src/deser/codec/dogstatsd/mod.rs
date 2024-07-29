@@ -17,7 +17,11 @@ use saluki_metrics::static_metrics;
 use snafu::Snafu;
 
 use saluki_core::topology::interconnect::EventBuffer;
-use saluki_event::{eventd::EventD, metric::*, Event};
+use saluki_event::{
+    eventd::{AlertType, EventD, Priority},
+    metric::*,
+    Event,
+};
 
 mod event;
 mod message;
@@ -258,7 +262,8 @@ fn parse_dogstatsd_metric<'a>(
 ) -> IResult<&'a [u8], (&'a str, TagSplitter<'a>, ValueIter<'a>, MetricMetadata)> {
     // We always parse the metric name and value(s) first, where value is both the kind (counter, gauge, etc) and the
     // actual value itself.
-    let (remaining, (metric_name, values_iter)) = separated_pair(metric_name, tag(":"), metric_value)(input)?;
+    let (remaining, (metric_name, values_iter)) =
+        separated_pair(ascii_alphanum_and_seps, tag(":"), metric_value)(input)?;
 
     // At this point, we may have some of this additional data, and if so, we also then would have a pipe separator at
     // the very front, which we'd want to consume before going further.
@@ -320,11 +325,14 @@ fn parse_dogstatsd_metric<'a>(
         remaining
     };
 
-    let metric_metadata = MetricMetadata::default()
+    let mut metric_metadata = MetricMetadata::default()
         .with_timestamp(maybe_timestamp)
         .with_sample_rate(maybe_sample_rate)
-        .with_origin_entity(maybe_container_id.map(OriginEntity::container_id))
         .with_origin(MetricOrigin::dogstatsd());
+
+    if let Some(container_id) = maybe_container_id {
+        metric_metadata.origin_entity_mut().set_container_id(container_id);
+    }
 
     Ok((
         remaining,
@@ -338,7 +346,7 @@ fn parse_dogstatsd_metric<'a>(
 }
 
 fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfiguration) -> IResult<&'a [u8], EventD> {
-    // We parse the title length and text length from ``` _e{<TITLE_UTF8_LENGTH>,<TEXT_UTF8_LENGTH>}: ```
+    // We parse the title length and text length from `_e{<TITLE_UTF8_LENGTH>,<TEXT_UTF8_LENGTH>}:`
     let (remaining, (title_len, text_len)) = delimited(
         tag(message::EVENT_PREFIX),
         separated_pair(parse_u32, tag(b","), parse_u32),
@@ -352,16 +360,15 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
 
     let (remaining, (raw_title, raw_text)) = separated_pair(take(title_len), tag(b"|"), take(text_len))(remaining)?;
 
-    if simdutf8::basic::from_utf8(raw_title).is_err() {
-        return Err(nom::Err::Error(Error::new(raw_title, ErrorKind::Verify)));
-    }
+    let title = match simdutf8::basic::from_utf8(raw_title) {
+        Ok(title) => event::clean_data(title),
+        Err(_) => return Err(nom::Err::Error(Error::new(raw_title, ErrorKind::Verify))),
+    };
 
-    if simdutf8::basic::from_utf8(raw_text).is_err() {
-        return Err(nom::Err::Error(Error::new(raw_text, ErrorKind::Verify)));
-    }
-
-    let title = event::clean_data(unsafe { std::str::from_utf8_unchecked(raw_title) });
-    let text = event::clean_data(unsafe { std::str::from_utf8_unchecked(raw_text) });
+    let text = match simdutf8::basic::from_utf8(raw_text) {
+        Ok(text) => event::clean_data(text),
+        Err(_) => return Err(nom::Err::Error(Error::new(raw_text, ErrorKind::Verify))),
+    };
 
     // At this point, we may have some of this additional data, and if so, we also then would have a pipe separator at
     // the very front, which we'd want to consume before going further.
@@ -393,42 +400,34 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
                 // Hostname: client-provided hostname for the host that this event originated from.
                 event::HOSTNAME_PREFIX => {
                     let (_, hostname) =
-                        all_consuming(preceded(tag(event::HOSTNAME_PREFIX), event_option_value))(chunk)?;
+                        all_consuming(preceded(tag(event::HOSTNAME_PREFIX), ascii_alphanum_and_seps))(chunk)?;
                     maybe_hostname = Some(hostname.to_string());
                 }
                 // Aggregation key: key to be used to group this event with others that have the same key.
                 event::AGGREGATION_KEY_PREFIX => {
                     let (_, aggregation_key) =
-                        all_consuming(preceded(tag(event::AGGREGATION_KEY_PREFIX), event_option_value))(chunk)?;
+                        all_consuming(preceded(tag(event::AGGREGATION_KEY_PREFIX), ascii_alphanum_and_seps))(chunk)?;
                     maybe_aggregation_key = Some(aggregation_key.to_string());
                 }
                 // Priority: client-provided priority of the event.
                 event::PRIORITY_PREFIX => {
                     let (_, priority) =
-                        all_consuming(preceded(tag(event::PRIORITY_PREFIX), event_option_value))(chunk)?;
-                    match priority {
-                        event::PRIORITY_LOW => maybe_priority = Some(saluki_event::eventd::Priority::Low),
-                        _ => maybe_priority = Some(saluki_event::eventd::Priority::Normal),
-                    }
+                        all_consuming(preceded(tag(event::PRIORITY_PREFIX), ascii_alphanum_and_seps))(chunk)?;
+                    maybe_priority = Priority::try_from_string(priority);
                 }
                 // Source type name: client-provided source type name of the event.
                 event::SOURCE_TYPE_PREFIX => {
                     let (_, source_type) =
-                        all_consuming(preceded(tag(event::SOURCE_TYPE_PREFIX), event_option_value))(chunk)?;
+                        all_consuming(preceded(tag(event::SOURCE_TYPE_PREFIX), ascii_alphanum_and_seps))(chunk)?;
                     maybe_source_type = Some(source_type.to_string());
                 }
                 // Alert type: client-provided alert type of the event.
                 event::ALERT_TYPE_PREFIX => {
                     let (_, alert_type) =
-                        all_consuming(preceded(tag(event::ALERT_TYPE_PREFIX), event_option_value))(chunk)?;
-                    match alert_type {
-                        event::ALERT_TYPE_ERROR => maybe_alert_type = Some(saluki_event::eventd::AlertType::Error),
-                        event::ALERT_TYPE_WARNING => maybe_alert_type = Some(saluki_event::eventd::AlertType::Warning),
-                        event::ALERT_TYPE_SUCCESS => maybe_alert_type = Some(saluki_event::eventd::AlertType::Success),
-                        _ => maybe_alert_type = Some(saluki_event::eventd::AlertType::Info),
-                    }
+                        all_consuming(preceded(tag(event::ALERT_TYPE_PREFIX), ascii_alphanum_and_seps))(chunk)?;
+                    maybe_alert_type = AlertType::try_from_string(alert_type);
                 }
-                // Tags: additional tags to be added to the metric.
+                // Tags: additional tags to be added to the event.
                 event::TAGS_PREFIX => {
                     let (_, tags) = all_consuming(preceded(tag(event::TAGS_PREFIX), metric_tags(config)))(chunk)?;
                     maybe_tags = Some(tags.into_iter().map(String::from).collect());
@@ -446,7 +445,7 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
         remaining
     };
 
-    let eventd = EventD::from_parts(&title, &text)
+    let eventd = EventD::new(&title, &text)
         .with_timestamp(maybe_timestamp)
         .with_hostname(maybe_hostname)
         .with_aggregation_key(maybe_aggregation_key)
@@ -473,17 +472,7 @@ fn split_at_delimiter(input: &[u8], delimiter: u8) -> Option<(&[u8], &[u8])> {
 }
 
 #[inline]
-fn event_option_value(input: &[u8]) -> IResult<&[u8], &str> {
-    let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.';
-    map(take_while1(valid_char), |b| {
-        // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
-        // interpret the bytes directly as UTF-8.
-        unsafe { std::str::from_utf8_unchecked(b) }
-    })(input)
-}
-
-#[inline]
-fn metric_name(input: &[u8]) -> IResult<&[u8], &str> {
+fn ascii_alphanum_and_seps(input: &[u8]) -> IResult<&[u8], &str> {
     let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.';
     map(take_while1(valid_char), |b| {
         // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
@@ -850,9 +839,7 @@ mod tests {
     use saluki_core::{pooling::helpers::get_pooled_object_via_default, topology::interconnect::EventBuffer};
     use saluki_event::{eventd::EventD, metric::*, Event};
 
-    use crate::deser::codec::dogstatsd::parse_dogstatsd_event;
-
-    use super::{parse_dogstatsd_metric, DogstatsdCodecConfiguration};
+    use super::{parse_dogstatsd_event, parse_dogstatsd_metric, DogstatsdCodecConfiguration};
     use crate::deser::{codec::DogstatsdCodec, Decoder};
 
     use super::{InterceptAction, TagMetadataInterceptor};
@@ -902,7 +889,7 @@ mod tests {
     }
 
     fn create_eventd(title: &str, text: &str) -> EventD {
-        EventD::from_parts(title, text)
+        EventD::new(title, text)
     }
 
     fn counter(name: &str, value: f64) -> Metric {
@@ -1112,7 +1099,8 @@ mod tests {
         let mut counter_expected = counter(counter_name, counter_value);
         counter_expected
             .metadata_mut()
-            .set_origin_entity(OriginEntity::container_id(container_id));
+            .origin_entity_mut()
+            .set_container_id(container_id);
 
         let (remaining, counter_actual) = parse_dogstatsd_metric_with_default_config(counter_raw.as_bytes()).unwrap();
         check_basic_metric_eq(counter_expected, counter_actual);
@@ -1154,14 +1142,15 @@ mod tests {
         counter_expected.metadata_mut().set_sample_rate(counter_sample_rate);
         counter_expected
             .metadata_mut()
-            .set_origin_entity(OriginEntity::container_id(container_id));
+            .origin_entity_mut()
+            .set_container_id(container_id);
         counter_expected.metadata_mut().set_timestamp(timestamp);
 
         let (remaining, counter_actual) = parse_dogstatsd_metric_with_default_config(counter_raw.as_bytes()).unwrap();
         let counter_actual = check_basic_metric_eq(counter_expected, counter_actual);
         assert_eq!(
-            counter_actual.metadata().origin_entity(),
-            Some(&OriginEntity::container_id(container_id))
+            counter_actual.metadata().origin_entity().container_id(),
+            Some(container_id)
         );
         assert_eq!(counter_actual.metadata().timestamp(), Some(timestamp));
         assert!(remaining.is_empty());

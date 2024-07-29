@@ -44,6 +44,8 @@ impl EntityId {
     /// This handles the special case where the "container ID" is actually the inode of the cgroups controller for the
     /// container, and so should be used in scenarios where a raw container "ID" is received that can either be the true
     /// ID or the inode value.
+    ///
+    /// If the raw container ID value starts with "in-", but the remainder is not a valid integer, this will return `None`.
     pub fn from_raw_container_id<S>(raw_container_id: S) -> Option<Self>
     where
         S: AsRef<str> + Into<MetaString>,
@@ -58,6 +60,19 @@ impl EntityId {
         } else {
             Some(Self::Container(raw_container_id.into()))
         }
+    }
+
+    /// Creates an `EntityId` from a Kubernetes pod UID.
+    ///
+    /// If the pod UID value is "none", this will return `None`.
+    pub fn from_pod_uid<S>(pod_uid: S) -> Option<Self>
+    where
+        S: AsRef<str> + Into<MetaString>,
+    {
+        if pod_uid.as_ref() == "none" {
+            return None;
+        }
+        Some(Self::PodUid(pod_uid.into()))
     }
 }
 
