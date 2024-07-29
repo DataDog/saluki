@@ -325,11 +325,14 @@ fn parse_dogstatsd_metric<'a>(
         remaining
     };
 
-    let metric_metadata = MetricMetadata::default()
+    let mut metric_metadata = MetricMetadata::default()
         .with_timestamp(maybe_timestamp)
         .with_sample_rate(maybe_sample_rate)
-        .with_origin_entity(maybe_container_id.map(OriginEntity::container_id))
         .with_origin(MetricOrigin::dogstatsd());
+
+    if let Some(container_id) = maybe_container_id {
+        metric_metadata.origin_entity_mut().set_container_id(container_id);
+    }
 
     Ok((
         remaining,
@@ -1096,7 +1099,8 @@ mod tests {
         let mut counter_expected = counter(counter_name, counter_value);
         counter_expected
             .metadata_mut()
-            .set_origin_entity(OriginEntity::container_id(container_id));
+            .origin_entity_mut()
+            .set_container_id(container_id);
 
         let (remaining, counter_actual) = parse_dogstatsd_metric_with_default_config(counter_raw.as_bytes()).unwrap();
         check_basic_metric_eq(counter_expected, counter_actual);
@@ -1138,14 +1142,15 @@ mod tests {
         counter_expected.metadata_mut().set_sample_rate(counter_sample_rate);
         counter_expected
             .metadata_mut()
-            .set_origin_entity(OriginEntity::container_id(container_id));
+            .origin_entity_mut()
+            .set_container_id(container_id);
         counter_expected.metadata_mut().set_timestamp(timestamp);
 
         let (remaining, counter_actual) = parse_dogstatsd_metric_with_default_config(counter_raw.as_bytes()).unwrap();
         let counter_actual = check_basic_metric_eq(counter_expected, counter_actual);
         assert_eq!(
-            counter_actual.metadata().origin_entity(),
-            Some(&OriginEntity::container_id(container_id))
+            counter_actual.metadata().origin_entity().container_id(),
+            Some(container_id)
         );
         assert_eq!(counter_actual.metadata().timestamp(), Some(timestamp));
         assert!(remaining.is_empty());

@@ -1,4 +1,4 @@
-use std::{fmt, sync::Arc};
+use std::{fmt, num::NonZeroU32, sync::Arc};
 
 use stringtheory::MetaString;
 
@@ -16,41 +16,78 @@ const ORIGIN_PRODUCT_DETAIL_NONE: u32 = 0;
 /// The origin entity will generally be the process ID of the metric sender, or the container ID, both of which are then
 /// generally mapped to the relevant information for the metric, such as the orchestrator-level tags for the
 /// container/pod/deployment.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum OriginEntity {
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct OriginEntity {
     /// Process ID of the sender.
-    ProcessId(u32),
+    process_id: Option<NonZeroU32>,
 
     /// Container ID of the sender.
     ///
     /// This will generally be the typical long hexadecimal string that is used by container runtimes like `containerd`,
     /// but may sometimes also be a different form, such as the container's cgroups inode.
-    ContainerId(MetaString),
+    container_id: Option<MetaString>,
+
+    /// Pod UID of the sender.
+    ///
+    /// This is generally only used in Kubernetes environments to uniquely identify the pod. UIDs are equivalent to UUIDs.
+    pod_uid: Option<MetaString>,
+
+    /// Desired cardinality of any tags associated with the entity.
+    ///
+    /// This controls the cardinality of the tags added to this metric when enriching based on the available entity IDs.
+    cardinality: Option<MetaString>,
 }
 
 impl OriginEntity {
-    /// Creates a new `OriginEntity` with the given container ID.
-    pub fn container_id<S>(container_id: S) -> Self
+    /// Sets the process ID of the sender.
+    ///
+    /// Must be a non-zero value. If the value is zero, it is silently ignored.
+    pub fn set_process_id(&mut self, process_id: u32) {
+        self.process_id = NonZeroU32::new(process_id);
+    }
+
+    /// Sets the container ID of the sender.
+    pub fn set_container_id<S>(&mut self, container_id: S)
     where
         S: Into<MetaString>,
     {
-        Self::ContainerId(container_id.into())
+        self.container_id = Some(container_id.into());
     }
 
-    /// Consumes the `OriginEntity` and returns the process ID, if it is one.
-    pub fn into_process_id(self) -> Option<u32> {
-        match self {
-            Self::ProcessId(pid) => Some(pid),
-            _ => None,
-        }
+    /// Sets the pod UID of the sender.
+    pub fn set_pod_uid<S>(&mut self, pod_uid: S)
+    where
+        S: Into<MetaString>,
+    {
+        self.pod_uid = Some(pod_uid.into());
     }
 
-    /// Consumes the `OriginEntity` and returns the container ID, if it is one.
-    pub fn into_container_id(self) -> Option<MetaString> {
-        match self {
-            Self::ContainerId(container_id) => Some(container_id),
-            _ => None,
-        }
+    /// Sets the desired cardinality of any tags associated with the entity.
+    pub fn set_cardinality<S>(&mut self, cardinality: S)
+    where
+        S: Into<MetaString>,
+    {
+        self.cardinality = Some(cardinality.into());
+    }
+
+    /// Gets the process ID of the sender.
+    pub fn process_id(&self) -> Option<u32> {
+        self.process_id.map(NonZeroU32::get)
+    }
+
+    /// Gets the container ID of the sender.
+    pub fn container_id(&self) -> Option<&str> {
+        self.container_id.as_deref()
+    }
+
+    /// Gets the pod UID of the sender.
+    pub fn pod_uid(&self) -> Option<&str> {
+        self.pod_uid.as_deref()
+    }
+
+    /// Gets the desired cardinality of any tags associated with the entity.
+    pub fn cardinality(&self) -> Option<&str> {
+        self.cardinality.as_deref()
     }
 }
 
@@ -64,7 +101,7 @@ pub struct MetricMetadata {
     sample_rate: Option<f64>,
     timestamp: Option<u64>,
     hostname: Option<Arc<str>>,
-    origin_entity: Option<OriginEntity>,
+    origin_entity: OriginEntity,
     origin: Option<MetricOrigin>,
 }
 
@@ -87,13 +124,18 @@ impl MetricMetadata {
     }
 
     /// Gets the origin entity.
-    pub fn origin_entity(&self) -> Option<&OriginEntity> {
-        self.origin_entity.as_ref()
+    pub fn origin_entity(&self) -> &OriginEntity {
+        &self.origin_entity
     }
 
     /// Gets the metric origin.
     pub fn origin(&self) -> Option<&MetricOrigin> {
         self.origin.as_ref()
+    }
+
+    /// Gets a mutable reference to the origin entity.
+    pub fn origin_entity_mut(&mut self) -> &mut OriginEntity {
+        &mut self.origin_entity
     }
 
     /// Set the sample rate.
@@ -149,25 +191,6 @@ impl MetricMetadata {
     /// hostname where this process is running.
     pub fn set_hostname(&mut self, hostname: impl Into<Option<Arc<str>>>) {
         self.hostname = hostname.into();
-    }
-
-    /// Set the origin entity of the metric.
-    ///
-    /// Origin entity relates to the actual sender of the metric, such as the specific process/container, rather than
-    /// just where the metric originated from categorically (i.e. the source type or `MetricOrigin`).
-    ///
-    /// This variant is specifically for use in builder-style APIs.
-    pub fn with_origin_entity(mut self, origin_entity: impl Into<Option<OriginEntity>>) -> Self {
-        self.origin_entity = origin_entity.into();
-        self
-    }
-
-    /// Set the origin entity of the metric.
-    ///
-    /// Origin entity relates to the actual sender of the metric, such as the specific process/container, rather than
-    /// just where the metric originated from categorically (i.e. the source type or `MetricOrigin`).
-    pub fn set_origin_entity(&mut self, origin_entity: impl Into<Option<OriginEntity>>) {
-        self.origin_entity = origin_entity.into();
     }
 
     /// Set the metric origin to the given source type.
