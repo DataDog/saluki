@@ -52,16 +52,17 @@ dsd_end_time=$(cat dsd_job_end_time)
 
 # Load the job start/end times and figure out which job started first and which job ended last, which we'll use as the
 # start/end time for our dashboard, which shows both sides -- ADP and DSD -- in the same pane of glass.
+# SMP does some shifting of timestamps for the metrics it captures/submits, so we need to port some of that logic here
+# so that the timestamps we generated for the dashboard time range is consistent.
+#
+# Essentially, we backtrack from the earliest start time (by the duration of our experiment, 10 minutes) to get our
+# start time, and then use the _latest_ start time to get our end time.
 if [ "$adp_start_time" -lt "$dsd_start_time" ]; then
-    common_start_time=$adp_start_time
+    common_start_time=$(echo "${adp_start_time} - 600" | bc)
+    common_end_time=$dsd_start_time
 else
-    common_start_time=$dsd_start_time
-fi
-
-if [ "$adp_end_time" -lt "$dsd_end_time" ]; then
-    common_end_time=$dsd_end_time
-else
-    common_end_time=$adp_end_time
+    common_start_time=$(echo "${dsd_start_time} - 600" | bc)
+    common_end_time=$adp_start_time
 fi
 
 # Grab the experiments for both DSD and ADP, which may or may not overlap.
