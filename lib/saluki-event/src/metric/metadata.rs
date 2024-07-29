@@ -96,10 +96,10 @@ impl OriginEntity {
 /// Metadata includes all information that is not specifically related to the context or value of the metric itself,
 /// such as sample rate and timestamp.
 #[must_use]
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct MetricMetadata {
-    sample_rate: Option<f64>,
-    timestamp: Option<u64>,
+    sample_rate: f64,
+    timestamp: u64,
     hostname: Option<Arc<str>>,
     origin_entity: OriginEntity,
     origin: Option<MetricOrigin>,
@@ -109,13 +109,17 @@ impl MetricMetadata {
     /// Gets the sample rate.
     ///
     /// This value is between 0 and 1, inclusive.
-    pub fn sample_rate(&self) -> Option<f64> {
+    pub fn sample_rate(&self) -> f64 {
         self.sample_rate
     }
 
     /// Gets the timestamp.
     pub fn timestamp(&self) -> Option<u64> {
-        self.timestamp
+        if self.timestamp == 0 {
+            None
+        } else {
+            Some(self.timestamp)
+        }
     }
 
     /// Gets the hostname.
@@ -144,7 +148,7 @@ impl MetricMetadata {
     ///
     /// This variant is specifically for use in builder-style APIs.
     pub fn with_sample_rate(mut self, sample_rate: impl Into<Option<f64>>) -> Self {
-        self.sample_rate = sample_rate.into().map(|sr| sr.clamp(0.0, 1.0));
+        self.set_sample_rate(sample_rate);
         self
     }
 
@@ -152,7 +156,9 @@ impl MetricMetadata {
     ///
     /// This value must be between 0 and 1, inclusive. If the value is outside of this range, it will be clamped to fit.
     pub fn set_sample_rate(&mut self, sample_rate: impl Into<Option<f64>>) {
-        self.sample_rate = sample_rate.into().map(|sr| sr.clamp(0.0, 1.0));
+        if let Some(sample_rate) = sample_rate.into().map(|sr| sr.clamp(0.0, 1.0)) {
+            self.sample_rate = sample_rate;
+        }
     }
 
     /// Set the timestamp.
@@ -162,7 +168,7 @@ impl MetricMetadata {
     ///
     /// This variant is specifically for use in builder-style APIs.
     pub fn with_timestamp(mut self, timestamp: impl Into<Option<u64>>) -> Self {
-        self.timestamp = timestamp.into();
+        self.set_timestamp(timestamp);
         self
     }
 
@@ -171,7 +177,11 @@ impl MetricMetadata {
     /// Represented as a Unix timestamp, or the number of seconds since the Unix epoch. Generally based on the time the
     /// metric was received, but not always.
     pub fn set_timestamp(&mut self, timestamp: impl Into<Option<u64>>) {
-        self.timestamp = timestamp.into();
+        if let Some(timestamp) = timestamp.into() {
+            self.timestamp = timestamp;
+        } else {
+            self.timestamp = 0;
+        }
     }
 
     /// Set the hostname where the metric originated from.
@@ -199,7 +209,7 @@ impl MetricMetadata {
     /// itself that emitted it.
     ///
     /// This variant is specifically for use in builder-style APIs.
-    pub fn with_source_type(mut self, source_type: impl Into<Option<String>>) -> Self {
+    pub fn with_source_type(mut self, source_type: impl Into<Option<Arc<str>>>) -> Self {
         self.origin = source_type.into().map(MetricOrigin::SourceType);
         self
     }
@@ -208,7 +218,7 @@ impl MetricMetadata {
     ///
     /// Indicates the source of the metric, such as the product or service that emitted it, or the source component
     /// itself that emitted it.
-    pub fn set_source_type(&mut self, source_type: impl Into<Option<String>>) {
+    pub fn set_source_type(&mut self, source_type: impl Into<Option<Arc<str>>>) {
         self.origin = source_type.into().map(MetricOrigin::SourceType);
     }
 
@@ -232,17 +242,21 @@ impl MetricMetadata {
     }
 }
 
+impl Default for MetricMetadata {
+    fn default() -> Self {
+        Self {
+            sample_rate: 1.0,
+            timestamp: 0,
+            hostname: None,
+            origin_entity: OriginEntity::default(),
+            origin: None,
+        }
+    }
+}
+
 impl fmt::Display for MetricMetadata {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(timestamp) = self.timestamp {
-            write!(f, "ts={}", timestamp)?;
-        } else {
-            write!(f, "ts=none")?;
-        }
-
-        if let Some(sample_rate) = self.sample_rate {
-            write!(f, " sample_rate={}", sample_rate)?;
-        }
+        write!(f, "ts={} sample_rate={}", self.timestamp, self.sample_rate)?;
 
         if let Some(origin) = &self.origin {
             write!(f, " origin={}", origin)?;
@@ -269,7 +283,7 @@ pub enum MetricOrigin {
     ///
     /// This is used to set the origin of a metric as the source component type itself, such as `dogstatsd` or `otel`,
     /// when richer origin metadata is not available.
-    SourceType(String),
+    SourceType(Arc<str>),
 
     /// Originated from a specific product, category, and/or service.
     OriginMetadata {

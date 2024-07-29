@@ -17,16 +17,8 @@ enum Inner {
     /// An owned string.
     Owned(String),
 
-    /// A shared string.
-    ///
-    /// Validation that the bytes are UTF-8 happens during conversion to `MetaString`.
-    Shared(bytes::Bytes),
-
-    /// A shared string from `protobuf::Chars`.
-    ///
-    /// This is currently a hack, as `Chars` itself is simply a newtype around `Bytes`, but has no way to extract the
-    /// inner `Bytes`. In the future, hopefully we can upstream support to do so, but for now, we'll do it this way.
-    ProtoShared(protobuf::Chars),
+    /// A static string reference.
+    Static(&'static str),
 
     /// An interned string.
     Interned(InternedString),
@@ -43,16 +35,14 @@ enum Inner {
 /// normal string types can be complex.
 ///
 /// `MetaString` is an opinionated string type that abstracts over the normal string types like `String` and `&str`
-/// while also supporting alternative storage, such as string data backed by `bytes::Bytes`, or interned using
-/// `FixedSizeInterner`.
+/// while also supporting alternative storage, such as interned strings from `FixedSizeInterner`.
 ///
 /// ## Supported types
 ///
 /// `MetaString` supports the following "modes":
 ///
 /// - owned (`String`)
-/// - shared (`bytes::Bytes`)
-/// - `protobuf`-specific shared (`protobuf::Chars`)
+/// - static (`&'static str`)
 /// - interned (`InternedString`)
 /// - inlined (up to 31 bytes)
 ///
@@ -62,14 +52,10 @@ enum Inner {
 /// simply wrapped. For borrowed strings, they are copied into a newly-allocated storage buffer, after which the
 /// resulting `MetaString` can be cheaply cloned and shared.
 ///
-/// ### Shared strings
+/// ### Static strings
 ///
-/// `MetaString` can be created from `bytes::Bytes` or `protobuf::Chars`, which are both shared byte buffers that use
-/// atomics -- similar to `Arc<T>` -- to allow for cheaply cloning references to the same piece of data.
-///
-/// We handle the `protobuf`-specific `Chars` type as an optimization: while it is based on `bytes::Bytes`, it cannot be
-/// trivially converted back-and-forth as the underlying bytes must be checked for UTF-8 validity. By handling
-/// `protobuf::Chars` separately, we can avoid this revalidation of the string data.
+/// `MetaString` can be created from `&'static str` directly. This is useful for string literals and other static
+/// strings that are too large to be inlined.
 ///
 /// ### Interned strings
 ///
@@ -111,7 +97,7 @@ impl MetaString {
     /// This does not allocate.
     pub const fn empty() -> Self {
         Self {
-            inner: Inner::Shared(bytes::Bytes::new()),
+            inner: Inner::Owned(String::new()),
         }
     }
 
@@ -119,9 +105,9 @@ impl MetaString {
     ///
     /// This does not allocate.
     pub fn from_static(s: &'static str) -> Self {
-        Self::try_inline(s).unwrap_or_else(|| Self {
-            inner: Inner::Shared(bytes::Bytes::from_static(s.as_bytes())),
-        })
+        Self {
+            inner: Inner::Static(s),
+        }
     }
 
     /// Attempts to create a new `MetaString` from the given string if it can be inlined.
@@ -138,11 +124,7 @@ impl MetaString {
     pub fn into_owned(self) -> String {
         match self.inner {
             Inner::Owned(s) => s,
-            Inner::Shared(b) => {
-                // SAFETY: We always ensure that the bytes are valid UTF-8 when converting `Bytes` to `MetaString`.
-                unsafe { String::from_utf8_unchecked(b.to_vec()) }
-            }
-            Inner::ProtoShared(b) => b.into(),
+            Inner::Static(s) => s.to_owned(),
             Inner::Interned(i) => (*i).to_owned(),
             Inner::Inlined(i) => i.deref().to_owned(),
         }
@@ -206,20 +188,9 @@ impl From<&str> for MetaString {
                 inner: Inner::Inlined(i),
             },
             None => Self {
-                inner: Inner::Shared(bytes::Bytes::copy_from_slice(s.as_bytes())),
+                inner: Inner::Owned(s.to_owned()),
             },
         }
-    }
-}
-
-impl TryFrom<bytes::Bytes> for MetaString {
-    type Error = std::str::Utf8Error;
-
-    fn try_from(value: bytes::Bytes) -> Result<Self, Self::Error> {
-        let _ = std::str::from_utf8(&value)?;
-        Ok(Self {
-            inner: Inner::Shared(value),
-        })
     }
 }
 
@@ -231,20 +202,11 @@ impl From<InternedString> for MetaString {
     }
 }
 
-impl From<protobuf::Chars> for MetaString {
-    fn from(value: protobuf::Chars) -> Self {
-        Self {
-            inner: Inner::ProtoShared(value),
-        }
-    }
-}
-
 impl From<MetaString> for protobuf::Chars {
     fn from(value: MetaString) -> Self {
         match value.inner {
             Inner::Owned(s) => s.into(),
-            Inner::Shared(b) => protobuf::Chars::from_bytes(b).expect("already validated as UTF-8"),
-            Inner::ProtoShared(b) => b,
+            Inner::Static(s) => s.into(),
             Inner::Interned(i) => i.deref().into(),
             Inner::Inlined(i) => i.deref().into(),
         }
@@ -255,8 +217,8 @@ impl<'a> From<&'a MetaString> for protobuf::Chars {
     fn from(value: &'a MetaString) -> Self {
         match &value.inner {
             Inner::Owned(s) => s.as_str().into(),
-            Inner::Shared(b) => protobuf::Chars::from_bytes(b.clone()).expect("already validated as UTF-8"),
-            Inner::ProtoShared(b) => b.clone(),
+            Inner::Static(s) => protobuf::Chars::from_bytes(bytes::Bytes::from_static(s.as_bytes()))
+                .expect("should never fail to convert existing string"),
             Inner::Interned(i) => i.deref().into(),
             Inner::Inlined(i) => i.deref().into(),
         }
@@ -269,9 +231,7 @@ impl Deref for MetaString {
     fn deref(&self) -> &str {
         match &self.inner {
             Inner::Owned(s) => s,
-            // SAFETY: We always ensure that the bytes are valid UTF-8 when converting `Bytes` to `MetaString`.
-            Inner::Shared(b) => unsafe { std::str::from_utf8_unchecked(b) },
-            Inner::ProtoShared(b) => b,
+            Inner::Static(s) => s,
             Inner::Interned(i) => i,
             Inner::Inlined(i) => i.deref(),
         }
@@ -290,23 +250,23 @@ impl fmt::Display for MetaString {
     }
 }
 
-/// A string that can be inlined up to 31 bytes.
+/// A string that can be inlined up to 23 bytes.
 #[derive(Clone)]
 struct InlinedString {
-    data: [u8; 32],
+    data: [u8; 24],
 }
 
 impl InlinedString {
     fn new(s: &str) -> Option<Self> {
         let s_len = s.len();
-        if s_len > 31 {
+        if s_len > 23 {
             return None;
         }
 
-        // SAFETY: We know it fits because we just checked that the string length is 31 or less.
+        // SAFETY: We know it fits because we just checked that the string length is 23 or less.
         let s_len_b = s_len as u8;
 
-        let mut data = [0; 32];
+        let mut data = [0; 24];
         data[0] = s_len_b;
 
         let s_buf = s.as_bytes();
@@ -334,7 +294,7 @@ mod tests {
 
     #[test]
     fn struct_layout() {
-        assert_eq!(std::mem::size_of::<MetaString>(), 40);
+        assert_eq!(std::mem::size_of::<MetaString>(), 32);
     }
 
     #[test]
@@ -342,7 +302,10 @@ mod tests {
         // We expect this to hold because we need `InlinedString` to be one word less (usize, 8 bytes on 64-bit
         // platforms) than `MetaString` to ensure it isn't causing `MetaString` to be larger than it should be, but also
         // that it's maximizing the potential inlining capacity.
-        assert_eq!(std::mem::size_of::<InlinedString>(), 32);
+        assert_eq!(
+            std::mem::size_of::<InlinedString>(),
+            std::mem::size_of::<MetaString>() - std::mem::size_of::<usize>()
+        );
     }
 
     #[test]
