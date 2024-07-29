@@ -7,7 +7,9 @@ use saluki_io::{
     net::ListenAddress,
 };
 
-multi_framing!(name => DogStatsD, codec => DogstatsdCodec, {
+use super::interceptor::AgentLikeTagMetadataInterceptor;
+
+multi_framing!(name => DogStatsD, codec => DogstatsdCodec<AgentLikeTagMetadataInterceptor>, {
     Newline => NewlineFramer,
     LengthDelimited => LengthDelimitedFramer,
 });

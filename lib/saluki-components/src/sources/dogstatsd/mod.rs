@@ -14,7 +14,7 @@ use saluki_core::{
     },
 };
 use saluki_error::{generic_error, GenericError};
-use saluki_event::{metric::OriginEntity, DataType};
+use saluki_event::DataType;
 use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, BytesBuffer},
     deser::{
@@ -35,6 +35,9 @@ use ubyte::ByteUnit;
 
 mod framer;
 use self::framer::{get_framer, DogStatsDMultiFraming};
+
+mod interceptor;
+use self::interceptor::AgentLikeTagMetadataInterceptor;
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -241,7 +244,9 @@ impl SourceBuilder for DogStatsDConfiguration {
             .with_heap_allocations(self.allow_context_heap_allocations);
 
         let codec_config = DogstatsdCodecConfiguration::default().with_timestamps(self.no_aggregation_pipeline_support);
-        let codec = DogstatsdCodec::from_context_resolver(context_resolver).with_configuration(codec_config);
+        let codec = DogstatsdCodec::from_context_resolver(context_resolver)
+            .with_configuration(codec_config)
+            .with_tag_metadata_interceptor(AgentLikeTagMetadataInterceptor);
 
         Ok(Box::new(DogStatsD {
             listeners,
@@ -281,14 +286,14 @@ struct ListenerContext {
     shutdown_handle: DynamicShutdownHandle,
     listener: Listener,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
-    codec: DogstatsdCodec,
+    codec: DogstatsdCodec<AgentLikeTagMetadataInterceptor>,
     origin_detection: bool,
 }
 
 pub struct DogStatsD {
     listeners: Vec<Listener>,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
-    codec: DogstatsdCodec,
+    codec: DogstatsdCodec<AgentLikeTagMetadataInterceptor>,
     origin_detection: bool,
 }
 
@@ -418,11 +423,10 @@ async fn drive_stream(
                     if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
                         for event in &mut event_buffer {
                             if let Some(metric) = event.try_as_metric_mut() {
-                                if metric.metadata().origin_entity().is_none() {
-                                    metric
-                                        .metadata_mut()
-                                        .set_origin_entity(OriginEntity::ProcessId(creds.pid as u32));
-                                }
+                                metric
+                                    .metadata_mut()
+                                    .origin_entity_mut()
+                                    .set_process_id(creds.pid as u32);
                             }
                         }
                     }
