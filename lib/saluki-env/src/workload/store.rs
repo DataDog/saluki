@@ -1,5 +1,6 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
+use ahash::AHashMap;
 use saluki_context::TagSet;
 use tracing::debug;
 
@@ -25,13 +26,13 @@ use super::{
 /// entity itself and its ancestors.
 #[derive(Default)]
 pub struct TagStore {
-    entity_hierarchy_mappings: HashMap<EntityId, EntityId>,
+    entity_hierarchy_mappings: AHashMap<EntityId, EntityId>,
 
-    low_cardinality_entity_tags: HashMap<EntityId, TagSet>,
-    high_cardinality_entity_tags: HashMap<EntityId, TagSet>,
+    low_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
+    high_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
 
-    unified_low_cardinality_entity_tags: HashMap<EntityId, TagSet>,
-    unified_high_cardinality_entity_tags: HashMap<EntityId, TagSet>,
+    unified_low_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
+    unified_high_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
 }
 
 impl TagStore {
@@ -250,8 +251,8 @@ impl TagStore {
 /// A point-in-time snapshot of the unified
 #[derive(Debug, Default)]
 pub struct TagSnapshot {
-    low_cardinality_entity_tags: HashMap<EntityId, TagSet>,
-    high_cardinality_entity_tags: HashMap<EntityId, TagSet>,
+    low_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
+    high_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
 }
 
 impl TagSnapshot {

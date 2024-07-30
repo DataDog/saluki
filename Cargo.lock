@@ -2455,6 +2455,7 @@ dependencies = [
 name = "saluki-env"
 version = "0.1.0"
 dependencies = [
+ "ahash",
  "arc-swap",
  "async-stream",
  "async-trait",
@@ -2468,6 +2469,7 @@ dependencies = [
  "hyper-util",
  "k8s-openapi",
  "kube",
+ "memory-accounting",
  "prost",
  "prost-types",
  "regex",

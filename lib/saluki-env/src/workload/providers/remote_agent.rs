@@ -1,10 +1,11 @@
-use std::sync::Arc;
+use std::{num::NonZeroUsize, sync::Arc};
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use saluki_config::GenericConfiguration;
 use saluki_context::TagSet;
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
+use stringtheory::interning::FixedSizeInterner;
 
 use crate::{
     features::{Feature, FeatureDetector},
@@ -17,6 +18,9 @@ use crate::{
     },
     WorkloadProvider,
 };
+
+// SAFETY: We know the value is not zero.
+const DEFAULT_TAG_INTERNER_SIZE_BYTES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(512 * 1024) }; // 512KB.
 
 /// Datadog Agent-based workload provider.
 ///
@@ -33,18 +37,27 @@ pub struct RemoteAgentWorkloadProvider {
 impl RemoteAgentWorkloadProvider {
     /// Create a new `RemoteAgentWorkloadProvider` based on the given configuration.
     pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        let tag_interner_size_bytes = config.try_get_typed::<usize>("remote_agent_tag_interner_size_bytes")
+            .map_err(Into::into)
+            .and_then(|v| match v {
+                None => Ok(None),
+                Some(v) => NonZeroUsize::new(v).ok_or_else(|| generic_error!("remote_agent_tag_interner_size_bytes cannot be zero")).map(Some),
+            })?
+            .unwrap_or(DEFAULT_TAG_INTERNER_SIZE_BYTES);
+        let tag_interner = FixedSizeInterner::new(tag_interner_size_bytes);
+
         let feature_detector = FeatureDetector::automatic(config);
 
         // Construct our aggregator, and add any collectors based on the detected features we've been given.
         let mut aggregator = MetadataAggregator::new();
 
-        let ra_collector = RemoteAgentMetadataCollector::from_configuration(config).await?;
-        aggregator.add_collector(ra_collector);
-
         if feature_detector.is_feature_available(Feature::Containerd) {
-            let cri_collector = ContainerdMetadataCollector::from_configuration(config).await?;
+            let cri_collector = ContainerdMetadataCollector::from_configuration(config, tag_interner.clone()).await?;
             aggregator.add_collector(cri_collector);
         }
+
+        let ra_collector = RemoteAgentMetadataCollector::from_configuration(config, tag_interner).await?;
+        aggregator.add_collector(ra_collector);
 
         // Attach the aggregator's tag store to the provider, and spawn the aggregator.
         let shared_tags = aggregator.tags();
