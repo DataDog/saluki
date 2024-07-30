@@ -232,5 +232,6 @@ comment-smp-result-links:
   script:
     # Grab the current start time of this job, which will be our end anchor for the time range in dashboards.
     - date +%s > report_end_time
+    - mkdir outputs
     - .ci/templates/generate-result-links-markdown.sh > outputs/result-links.md
     - cat outputs/result-links.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector Links"
