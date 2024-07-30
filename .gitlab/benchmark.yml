@@ -91,6 +91,7 @@ run-benchmarks-adp:
   needs:
     - build-adp-baseline-image
     - build-adp-comparison-image
+  allow_failure: true
   image: "${SALUKI_SMP_CI_IMAGE}"
   before_script:
     - *setup-smp-env
@@ -158,6 +159,7 @@ run-benchmarks-dsd:
   timeout: 2h
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
+  allow_failure: true
   before_script:
     - *setup-smp-env
   artifacts:
@@ -221,7 +223,7 @@ run-benchmarks-dsd:
 
 comment-smp-result-links:
   stage: benchmark
-  dependencies:
+  needs:
     - run-benchmarks-adp
     - run-benchmarks-dsd
   image: "${SALUKI_SMP_CI_IMAGE}"
@@ -232,6 +234,5 @@ comment-smp-result-links:
   script:
     # Grab the current start time of this job, which will be our end anchor for the time range in dashboards.
     - date +%s > report_end_time
-    - mkdir outputs
-    - .ci/templates/generate-result-links-markdown.sh > outputs/result-links.md
-    - cat outputs/result-links.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector Links"
+    - .ci/templates/generate-result-links-markdown.sh > result-links.md
+    - cat result-links.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector Links"

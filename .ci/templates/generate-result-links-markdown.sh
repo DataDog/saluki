@@ -80,7 +80,7 @@ common_experiments=$(comm -12 adp-experiments dsd-experiments)
 echo "## Experiment Result Links"
 echo ""
 echo "| experiment | link(s) |"
-echo "|------------|-------|"
+echo "|------------|---------|"
 
 for experiment in $common_experiments; do
     adp_continuous_profiler_url=$(get_continuous_profiler_url "$adp_run_id" "$adp_start_time" "$adp_end_time" "$experiment")
