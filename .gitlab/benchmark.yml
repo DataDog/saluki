@@ -87,9 +87,11 @@ build-adp-comparison-image:
 
 run-benchmarks-adp:
   stage: benchmark
+  timeout: 2h
   needs:
     - build-adp-baseline-image
     - build-adp-comparison-image
+  allow_failure: true
   image: "${SALUKI_SMP_CI_IMAGE}"
   before_script:
     - *setup-smp-env
@@ -97,6 +99,9 @@ run-benchmarks-adp:
     expire_in: 1 weeks
     paths:
       - submission_metadata  # for provenance, debugging
+      - adp_job_start_time   # for generating PR comments
+      - adp_job_end_time     # for generating PR comments
+      - adp_run_id           # for generating PR comments
       - outputs/report.md    # for debugging, also on S3
       - outputs/report.html  # for debugging, also on S3
     when: always
@@ -109,7 +114,6 @@ run-benchmarks-adp:
     # credentials, and so on.
     - mkdir outputs && touch outputs/report.md outputs/report.html
     - ./test/smp/configure-smp-aws-credentials.sh
-
     # Download the SMP binary.
     - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-gnu/smp smp && chmod +x smp
     # Run SMP against our converged Agent image.
@@ -121,6 +125,9 @@ run-benchmarks-adp:
             --comparison-sha ${COMPARISON_SALUKI_SHA}
             --target-config-dir ./test/smp/regression/saluki/
             --submission-metadata submission_metadata
+    # Populate some data that we'll need later for generating links to experiment dashboards.
+    - date +%s > adp_job_start_time
+    - cat submission_metadata | jq -r '.jobId' > adp_run_id
     # Wait for job to complete.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
             job status
@@ -128,6 +135,8 @@ run-benchmarks-adp:
             --wait
             --wait-delay-seconds 60
             --submission-metadata submission_metadata
+    # And populate some more data that we'll need later for generating links to experiment dashboards.
+    - date +%s > adp_job_end_time
     # Pull the analysis report and output it to stdout.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
             job sync
@@ -147,14 +156,19 @@ run-benchmarks-adp:
 
 run-benchmarks-dsd:
   stage: benchmark
+  timeout: 2h
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
+  allow_failure: true
   before_script:
     - *setup-smp-env
   artifacts:
     expire_in: 1 weeks
     paths:
       - submission_metadata  # for provenance, debugging
+      - dsd_job_start_time   # for generating PR comments
+      - dsd_job_end_time     # for generating PR comments
+      - dsd_run_id           # for generating PR comments
       - outputs/report.md    # for debugging, also on S3
       - outputs/report.html  # for debugging, also on S3
     when: always
@@ -167,7 +181,6 @@ run-benchmarks-dsd:
     # credentials, and so on.
     - mkdir outputs && touch outputs/report.md outputs/report.html
     - ./test/smp/configure-smp-aws-credentials.sh
-
     # Download the SMP binary.
     - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-gnu/smp smp && chmod +x smp
     # Run SMP against our converged Agent image.
@@ -179,6 +192,9 @@ run-benchmarks-dsd:
             --comparison-sha ${COMPARISON_DSD_VERSION}
             --target-config-dir ./test/smp/regression/dogstatsd/
             --submission-metadata submission_metadata
+    # Populate some data that we'll need later for generating links to experiment dashboards.
+    - date +%s > dsd_job_start_time
+    - cat submission_metadata | jq -r '.jobId' > dsd_run_id
     # Wait for job to complete.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
             job status
@@ -186,6 +202,8 @@ run-benchmarks-dsd:
             --wait
             --wait-delay-seconds 60
             --submission-metadata submission_metadata
+    # And populate some more data that we'll need later for generating links to experiment dashboards.
+    - date +%s > dsd_job_end_time
     # Pull the analysis report and output it to stdout.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
             job sync
@@ -202,3 +220,19 @@ run-benchmarks-dsd:
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
             job result
             --submission-metadata submission_metadata
+
+comment-smp-result-links:
+  stage: benchmark
+  needs:
+    - run-benchmarks-adp
+    - run-benchmarks-dsd
+  image: "${SALUKI_SMP_CI_IMAGE}"
+  before_script:
+    - *setup-smp-env
+  variables:
+    AWS_NAMED_PROFILE: single-machine-performance
+  script:
+    # Grab the current start time of this job, which will be our end anchor for the time range in dashboards.
+    - date +%s > report_end_time
+    - .ci/templates/generate-result-links-markdown.sh > result-links.md
+    - cat result-links.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector Links"

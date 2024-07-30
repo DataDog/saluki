@@ -2,6 +2,7 @@ generate-build-ci-image:
   stage: internal
   tags: ["arch:amd64"]
   image: ${DOCKER_BUILD_IMAGE}
+  needs: []
   rules:
     - when: manual
       allow_failure: true
@@ -23,6 +24,7 @@ generate-general-ci-image:
   stage: internal
   tags: ["arch:amd64"]
   image: ${DOCKER_BUILD_IMAGE}
+  needs: []
   rules:
     - when: manual
       allow_failure: true
@@ -44,6 +46,7 @@ generate-smp-ci-image:
   stage: internal
   tags: ["arch:amd64"]
   image: ${DOCKER_BUILD_IMAGE}
+  needs: []
   rules:
     - when: manual
       allow_failure: true
