@@ -81,6 +81,18 @@ impl MetricValue {
         Self::Distribution { sketch }
     }
 
+    /// Creates a distribution from values in an iterator.
+    pub fn distribution_from_iter<I, E>(iter: I) -> Result<Self, E>
+    where
+        I: Iterator<Item = Result<f64, E>>,
+    {
+        let mut sketch = DDSketch::default();
+        for value in iter {
+            sketch.insert(value?);
+        }
+        Ok(Self::Distribution { sketch })
+    }
+
     /// Merges another metric value into this one.
     ///
     /// If both `self` and `other` are the same metric type, their values will be merged appropriately. If the metric

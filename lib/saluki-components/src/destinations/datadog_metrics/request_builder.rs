@@ -375,7 +375,7 @@ fn encode_series_metric(metric: &Metric) -> proto::MetricSeries {
     if let Some(origin) = metric.metadata().origin() {
         match origin {
             MetricOrigin::SourceType(source_type) => {
-                series.set_source_type_name(source_type.clone().into());
+                series.set_source_type_name(source_type.as_ref().into());
             }
             MetricOrigin::OriginMetadata {
                 product,
