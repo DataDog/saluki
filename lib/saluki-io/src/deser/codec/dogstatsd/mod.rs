@@ -5,7 +5,7 @@ use message::MessageType;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take, take_while1},
-    character::complete::{u32 as parse_u32, u64 as parse_u64},
+    character::complete::{u32 as parse_u32, u64 as parse_u64, u8 as parse_u8},
     combinator::{all_consuming, map},
     error::{Error, ErrorKind},
     number::complete::double,
@@ -20,10 +20,10 @@ use saluki_core::topology::interconnect::EventBuffer;
 use saluki_event::{
     eventd::{AlertType, EventD, Priority},
     metric::*,
+    service_check::ServiceCheck,
     Event,
 };
 
-mod event;
 mod message;
 use crate::buf::ReadIoBuffer;
 use crate::deser::codec::dogstatsd::message::parse_message_type;
@@ -161,6 +161,16 @@ impl<TMI> DogstatsdCodec<TMI> {
         buf.advance(data.len() - remaining.len());
         Ok(1)
     }
+
+    fn decode_service_check<B: ReadIoBuffer>(
+        &mut self, buf: &mut B, events: &mut EventBuffer,
+    ) -> Result<usize, ParseError> {
+        let data = buf.chunk();
+        let (remaining, service_check) = parse_dogstatsd_service_check(data, &self.config)?;
+        events.push(saluki_event::Event::ServiceCheck(service_check));
+        buf.advance(data.len() - remaining.len());
+        Ok(1)
+    }
 }
 
 #[derive(Debug, Snafu)]
@@ -194,7 +204,11 @@ where
         let message_type = parse_message_type(data);
         if message_type == MessageType::Event {
             return self.decode_event(buf, events);
+        } else if message_type == MessageType::ServiceCheck {
+            return self.decode_service_check(buf, events);
         }
+
+        // TODO: move metric parsing to its own method
 
         // Decode the payload and get the representative parts of the metric.
         let (remaining, (metric_name, tags_iter, values_iter, mut metadata)) =
@@ -361,12 +375,12 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
     let (remaining, (raw_title, raw_text)) = separated_pair(take(title_len), tag(b"|"), take(text_len))(remaining)?;
 
     let title = match simdutf8::basic::from_utf8(raw_title) {
-        Ok(title) => event::clean_data(title),
+        Ok(title) => message::clean_data(title),
         Err(_) => return Err(nom::Err::Error(Error::new(raw_title, ErrorKind::Verify))),
     };
 
     let text = match simdutf8::basic::from_utf8(raw_text) {
-        Ok(text) => event::clean_data(text),
+        Ok(text) => message::clean_data(text),
         Err(_) => return Err(nom::Err::Error(Error::new(raw_text, ErrorKind::Verify))),
     };
 
@@ -393,43 +407,44 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
             }
             match &chunk[..2] {
                 // Timestamp: client-provided timestamp for the event, relative to the Unix epoch, in seconds.
-                event::TIMESTAMP_PREFIX => {
-                    let (_, timestamp) = all_consuming(preceded(tag(event::TIMESTAMP_PREFIX), unix_timestamp))(chunk)?;
+                message::TIMESTAMP_PREFIX => {
+                    let (_, timestamp) =
+                        all_consuming(preceded(tag(message::TIMESTAMP_PREFIX), unix_timestamp))(chunk)?;
                     maybe_timestamp = Some(timestamp);
                 }
                 // Hostname: client-provided hostname for the host that this event originated from.
-                event::HOSTNAME_PREFIX => {
+                message::HOSTNAME_PREFIX => {
                     let (_, hostname) =
-                        all_consuming(preceded(tag(event::HOSTNAME_PREFIX), ascii_alphanum_and_seps))(chunk)?;
+                        all_consuming(preceded(tag(message::HOSTNAME_PREFIX), ascii_alphanum_and_seps))(chunk)?;
                     maybe_hostname = Some(hostname.to_string());
                 }
                 // Aggregation key: key to be used to group this event with others that have the same key.
-                event::AGGREGATION_KEY_PREFIX => {
+                message::AGGREGATION_KEY_PREFIX => {
                     let (_, aggregation_key) =
-                        all_consuming(preceded(tag(event::AGGREGATION_KEY_PREFIX), ascii_alphanum_and_seps))(chunk)?;
+                        all_consuming(preceded(tag(message::AGGREGATION_KEY_PREFIX), ascii_alphanum_and_seps))(chunk)?;
                     maybe_aggregation_key = Some(aggregation_key.to_string());
                 }
                 // Priority: client-provided priority of the event.
-                event::PRIORITY_PREFIX => {
+                message::PRIORITY_PREFIX => {
                     let (_, priority) =
-                        all_consuming(preceded(tag(event::PRIORITY_PREFIX), ascii_alphanum_and_seps))(chunk)?;
+                        all_consuming(preceded(tag(message::PRIORITY_PREFIX), ascii_alphanum_and_seps))(chunk)?;
                     maybe_priority = Priority::try_from_string(priority);
                 }
                 // Source type name: client-provided source type name of the event.
-                event::SOURCE_TYPE_PREFIX => {
+                message::SOURCE_TYPE_PREFIX => {
                     let (_, source_type) =
-                        all_consuming(preceded(tag(event::SOURCE_TYPE_PREFIX), ascii_alphanum_and_seps))(chunk)?;
+                        all_consuming(preceded(tag(message::SOURCE_TYPE_PREFIX), ascii_alphanum_and_seps))(chunk)?;
                     maybe_source_type = Some(source_type.to_string());
                 }
                 // Alert type: client-provided alert type of the event.
-                event::ALERT_TYPE_PREFIX => {
+                message::ALERT_TYPE_PREFIX => {
                     let (_, alert_type) =
-                        all_consuming(preceded(tag(event::ALERT_TYPE_PREFIX), ascii_alphanum_and_seps))(chunk)?;
+                        all_consuming(preceded(tag(message::ALERT_TYPE_PREFIX), ascii_alphanum_and_seps))(chunk)?;
                     maybe_alert_type = AlertType::try_from_string(alert_type);
                 }
                 // Tags: additional tags to be added to the event.
-                event::TAGS_PREFIX => {
-                    let (_, tags) = all_consuming(preceded(tag(event::TAGS_PREFIX), metric_tags(config)))(chunk)?;
+                message::TAGS_PREFIX => {
+                    let (_, tags) = all_consuming(preceded(tag(message::TAGS_PREFIX), metric_tags(config)))(chunk)?;
                     maybe_tags = Some(tags.into_iter().map(String::from).collect());
                 }
                 _ => {
@@ -457,6 +472,82 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
     Ok((remaining, eventd))
 }
 
+fn parse_dogstatsd_service_check<'a>(
+    input: &'a [u8], config: &DogstatsdCodecConfiguration,
+) -> IResult<&'a [u8], ServiceCheck> {
+    let (remaining, (name, raw_check_status)) = preceded(
+        tag(message::SERVICE_CHECK_PREFIX),
+        separated_pair(ascii_alphanum_and_seps, tag(b"|"), parse_u8),
+    )(input)?;
+
+    let check_status = saluki_event::service_check::CheckStatus::try_from(raw_check_status)
+        .or_else(|_| Err(nom::Err::Error(Error::new(input, ErrorKind::Verify))))?;
+
+    let mut maybe_timestamp = None;
+    let mut maybe_hostname = None;
+    let mut maybe_tags = None;
+    let mut maybe_message = None;
+    let mut seen_message = false;
+
+    let remaining = if !remaining.is_empty() {
+        let (mut remaining, _) = tag("|")(remaining)?;
+        while let Some((chunk, tail)) = split_at_delimiter(remaining, b'|') {
+            if chunk.len() < 2 {
+                break;
+            }
+
+            // Message field must be positioned last among the metadata fields but it was already seen
+            if seen_message {
+                break;
+            }
+            match &chunk[..2] {
+                // Timestamp: client-provided timestamp for the event, relative to the Unix epoch, in seconds.
+                message::TIMESTAMP_PREFIX => {
+                    let (_, timestamp) =
+                        all_consuming(preceded(tag(message::TIMESTAMP_PREFIX), unix_timestamp))(chunk)?;
+                    maybe_timestamp = Some(timestamp);
+                }
+                // Hostname: client-provided hostname for the host that this service check originated from.
+                message::HOSTNAME_PREFIX => {
+                    let (_, hostname) =
+                        all_consuming(preceded(tag(message::HOSTNAME_PREFIX), ascii_alphanum_and_seps))(chunk)?;
+                    maybe_hostname = Some(hostname.to_string());
+                }
+                // Tags: additional tags to be added to the service check.
+                message::TAGS_PREFIX => {
+                    let (_, tags) = all_consuming(preceded(tag(message::TAGS_PREFIX), metric_tags(config)))(chunk)?;
+                    maybe_tags = Some(tags.into_iter().map(String::from).collect());
+                }
+                // Message: A message describing the current state of the service check.
+                message::SERVICE_CHECK_MESSAGE_PREFIX => {
+                    let (_, message) = all_consuming(preceded(
+                        tag(message::SERVICE_CHECK_MESSAGE_PREFIX),
+                        ascii_alphanum_and_seps,
+                    ))(chunk)?;
+                    maybe_message = Some(message.to_string());
+                    // This field must be positioned last among the metadata fields
+                    seen_message = true;
+                }
+                _ => {
+                    // We don't know what this is, so we just skip it.
+                    //
+                    // TODO: Should we throw an error, warn, or be silently permissive?
+                }
+            }
+            remaining = tail;
+        }
+        remaining
+    } else {
+        remaining
+    };
+    let service_check = saluki_event::service_check::ServiceCheck::new(name, check_status)
+        .with_timestamp(maybe_timestamp)
+        .with_hostname(maybe_hostname)
+        .with_tags(maybe_tags)
+        .with_message(maybe_message);
+    Ok((remaining, service_check))
+}
+
 #[inline]
 fn split_at_delimiter(input: &[u8], delimiter: u8) -> Option<(&[u8], &[u8])> {
     match memchr::memchr(delimiter, input) {
@@ -473,7 +564,7 @@ fn split_at_delimiter(input: &[u8], delimiter: u8) -> Option<(&[u8], &[u8])> {
 
 #[inline]
 fn ascii_alphanum_and_seps(input: &[u8]) -> IResult<&[u8], &str> {
-    let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'.';
+    let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b' ' || c == b'_' || c == b'-' || c == b'.';
     map(take_while1(valid_char), |b| {
         // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
         // interpret the bytes directly as UTF-8.
@@ -837,9 +928,16 @@ mod tests {
     use proptest::{collection::vec as arb_vec, prelude::*};
     use saluki_context::{ContextRef, ContextResolver};
     use saluki_core::{pooling::helpers::get_pooled_object_via_default, topology::interconnect::EventBuffer};
-    use saluki_event::{eventd::EventD, metric::*, Event};
+    use saluki_event::{
+        eventd::EventD,
+        metric::*,
+        service_check::{CheckStatus, ServiceCheck},
+        Event,
+    };
 
-    use super::{parse_dogstatsd_event, parse_dogstatsd_metric, DogstatsdCodecConfiguration};
+    use super::{
+        parse_dogstatsd_event, parse_dogstatsd_metric, parse_dogstatsd_service_check, DogstatsdCodecConfiguration,
+    };
     use crate::deser::{codec::DogstatsdCodec, Decoder};
 
     use super::{InterceptAction, TagMetadataInterceptor};
@@ -892,6 +990,10 @@ mod tests {
         EventD::new(title, text)
     }
 
+    fn create_service_check(name: &str, status: CheckStatus) -> ServiceCheck {
+        ServiceCheck::new(name, status)
+    }
+
     fn counter(name: &str, value: f64) -> Metric {
         create_metric(name, MetricValue::Counter { value })
     }
@@ -919,6 +1021,10 @@ mod tests {
 
     fn eventd(title: &str, text: &str) -> EventD {
         create_eventd(title, text)
+    }
+
+    fn service_check(name: &str, status: CheckStatus) -> ServiceCheck {
+        create_service_check(name, status)
     }
 
     fn counter_multivalue(name: &str, values: &[f64]) -> Vec<Metric> {
@@ -988,6 +1094,27 @@ mod tests {
     ) -> IResult<&'input [u8], OneOrMany<Event>> {
         let (remaining, event) = parse_dogstatsd_event(input, config)?;
         Ok((remaining, OneOrMany::Single(saluki_event::Event::EventD(event))))
+    }
+
+    fn parse_dogstatsd_service_check_with_default_config(input: &[u8]) -> IResult<&[u8], OneOrMany<Event>> {
+        let default_config = DogstatsdCodecConfiguration::default();
+        parse_dogstatsd_service_check_with_config(input, &default_config)
+    }
+
+    fn parse_dogstatsd_service_check_with_config<'input>(
+        input: &'input [u8], config: &DogstatsdCodecConfiguration,
+    ) -> IResult<&'input [u8], OneOrMany<Event>> {
+        parse_dogstatsd_service_check_direct(input, config)
+    }
+
+    fn parse_dogstatsd_service_check_direct<'input>(
+        input: &'input [u8], config: &DogstatsdCodecConfiguration,
+    ) -> IResult<&'input [u8], OneOrMany<Event>> {
+        let (remaining, service_check) = parse_dogstatsd_service_check(input, config)?;
+        Ok((
+            remaining,
+            OneOrMany::Single(saluki_event::Event::ServiceCheck(service_check)),
+        ))
     }
 
     #[track_caller]
@@ -1388,6 +1515,23 @@ mod tests {
         assert!(remaining.is_empty());
     }
 
+    #[track_caller]
+    fn check_basic_service_check_eq(expected: ServiceCheck, actual: OneOrMany<Event>) -> ServiceCheck {
+        match actual {
+            OneOrMany::Single(Event::ServiceCheck(actual)) => {
+                assert_eq!(expected.name(), actual.name());
+                assert_eq!(expected.status(), actual.status());
+                assert_eq!(expected.timestamp(), actual.timestamp());
+                assert_eq!(expected.hostname(), actual.hostname());
+                assert_eq!(expected.tags(), actual.tags());
+                actual
+            }
+            OneOrMany::Single(Event::EventD(_)) => unreachable!("should never be called for eventd type"),
+            OneOrMany::Single(Event::Metric(_)) => unreachable!("should never be called for metric type"),
+            OneOrMany::Multiple(_) => unreachable!("should never be called for multi-value metric assertions"),
+        }
+    }
+
     #[test]
     fn eventd_multiple_extensions() {
         let event_title = "my event";
@@ -1423,6 +1567,103 @@ mod tests {
             .with_timestamp(event_timestamp)
             .with_tags(event_tags);
         check_basic_eventd_eq(event_expected, event_actual);
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn basic_service_checks() {
+        let service_check_name = "testsvc";
+        let service_check_status = CheckStatus::Warning;
+        let service_check_raw = format!("_sc|{}|{}", service_check_name, service_check_status.as_u8());
+        let (remaining, service_check_actual) =
+            parse_dogstatsd_service_check_with_default_config(service_check_raw.as_bytes()).unwrap();
+        let service_check_expected = service_check(&service_check_name, service_check_status);
+        check_basic_service_check_eq(service_check_expected, service_check_actual);
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn service_check_timestamp() {
+        let service_check_name = "testsvc";
+        let service_check_status = CheckStatus::Warning;
+        let service_check_timestamp = 1234567890;
+        let service_check_raw = format!(
+            "_sc|{}|{}|d:{}",
+            service_check_name,
+            service_check_status.as_u8(),
+            service_check_timestamp
+        );
+        let (remaining, service_check_actual) =
+            parse_dogstatsd_service_check_with_default_config(service_check_raw.as_bytes()).unwrap();
+        let service_check_expected =
+            service_check(&service_check_name, service_check_status).with_timestamp(service_check_timestamp);
+        check_basic_service_check_eq(service_check_expected, service_check_actual);
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn service_check_tags() {
+        let service_check_name = "testsvc";
+        let service_check_status = CheckStatus::Warning;
+        let service_check_tags = vec!["tag1".to_string(), "tag2".to_string()];
+        let service_check_raw = format!(
+            "_sc|{}|{}|#:{}",
+            service_check_name,
+            service_check_status.as_u8(),
+            service_check_tags.join(",")
+        );
+        let (remaining, service_check_actual) =
+            parse_dogstatsd_service_check_with_default_config(service_check_raw.as_bytes()).unwrap();
+        let service_check_expected =
+            service_check(&service_check_name, service_check_status).with_tags(service_check_tags);
+        check_basic_service_check_eq(service_check_expected, service_check_actual);
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn service_check_message() {
+        let service_check_name = "testsvc";
+        let service_check_status = CheckStatus::Ok;
+        let service_check_message = "service running properly".to_string();
+        let service_check_raw = format!(
+            "_sc|{}|{}|m:{}",
+            service_check_name,
+            service_check_status.as_u8(),
+            service_check_message
+        );
+        let (remaining, service_check_actual) =
+            parse_dogstatsd_service_check_with_default_config(service_check_raw.as_bytes()).unwrap();
+        let service_check_expected =
+            service_check(&service_check_name, service_check_status).with_message(service_check_message);
+        check_basic_service_check_eq(service_check_expected, service_check_actual);
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn service_check_multiple_extensions() {
+        let service_check_name = "testsvc";
+        let service_check_status = CheckStatus::Unknown;
+        let service_check_timestamp = 1234567890;
+        let service_check_hostname = "myhost".to_string();
+        let service_check_tags = vec!["tag1".to_string(), "tag2".to_string()];
+        let service_check_message = "service status unknown".to_string();
+        let service_check_raw = format!(
+            "_sc|{}|{}|d:{}|h:{}|#:{}|m:{}",
+            service_check_name,
+            service_check_status.as_u8(),
+            service_check_timestamp,
+            service_check_hostname,
+            service_check_tags.join(","),
+            service_check_message
+        );
+        let (remaining, service_check_actual) =
+            parse_dogstatsd_service_check_with_default_config(service_check_raw.as_bytes()).unwrap();
+        let service_check_expected = service_check(&service_check_name, service_check_status)
+            .with_timestamp(service_check_timestamp)
+            .with_hostname(service_check_hostname)
+            .with_tags(service_check_tags)
+            .with_message(service_check_message);
+        check_basic_service_check_eq(service_check_expected, service_check_actual);
         assert!(remaining.is_empty());
     }
 
