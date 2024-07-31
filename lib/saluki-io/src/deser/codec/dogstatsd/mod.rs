@@ -1369,7 +1369,7 @@ mod tests {
             let distributions_expected = distribution_multivalue(distribution_name, &distribution_values);
             let (remaining, distributions_actual) =
                 parse_dogstatsd_metric_with_default_config(distribution_raw.as_bytes()).unwrap();
-            (distributions_expected, distributions_actual);
+            check_basic_metric_eq(distributions_expected, distributions_actual);
             assert!(remaining.is_empty());
         }
     }
@@ -1628,7 +1628,7 @@ mod tests {
         let service_check_raw = format!("_sc|{}|{}", service_check_name, service_check_status.as_u8());
         let (remaining, service_check_actual) =
             parse_dogstatsd_service_check_with_default_config(service_check_raw.as_bytes()).unwrap();
-        let service_check_expected = service_check(&service_check_name, service_check_status);
+        let service_check_expected = service_check(service_check_name, service_check_status);
         check_basic_service_check_eq(service_check_expected, service_check_actual);
         assert!(remaining.is_empty());
     }
@@ -1647,7 +1647,7 @@ mod tests {
         let (remaining, service_check_actual) =
             parse_dogstatsd_service_check_with_default_config(service_check_raw.as_bytes()).unwrap();
         let service_check_expected =
-            service_check(&service_check_name, service_check_status).with_timestamp(service_check_timestamp);
+            service_check(service_check_name, service_check_status).with_timestamp(service_check_timestamp);
         check_basic_service_check_eq(service_check_expected, service_check_actual);
         assert!(remaining.is_empty());
     }
@@ -1666,7 +1666,7 @@ mod tests {
         let (remaining, service_check_actual) =
             parse_dogstatsd_service_check_with_default_config(service_check_raw.as_bytes()).unwrap();
         let service_check_expected =
-            service_check(&service_check_name, service_check_status).with_tags(service_check_tags);
+            service_check(service_check_name, service_check_status).with_tags(service_check_tags);
         check_basic_service_check_eq(service_check_expected, service_check_actual);
         assert!(remaining.is_empty());
     }
@@ -1685,7 +1685,7 @@ mod tests {
         let (remaining, service_check_actual) =
             parse_dogstatsd_service_check_with_default_config(service_check_raw.as_bytes()).unwrap();
         let service_check_expected =
-            service_check(&service_check_name, service_check_status).with_message(service_check_message);
+            service_check(service_check_name, service_check_status).with_message(service_check_message);
         check_basic_service_check_eq(service_check_expected, service_check_actual);
         assert!(remaining.is_empty());
     }
@@ -1709,7 +1709,7 @@ mod tests {
         );
         let (remaining, service_check_actual) =
             parse_dogstatsd_service_check_with_default_config(service_check_raw.as_bytes()).unwrap();
-        let service_check_expected = service_check(&service_check_name, service_check_status)
+        let service_check_expected = service_check(service_check_name, service_check_status)
             .with_timestamp(service_check_timestamp)
             .with_hostname(service_check_hostname)
             .with_tags(service_check_tags)
