@@ -481,7 +481,7 @@ fn parse_dogstatsd_service_check<'a>(
     )(input)?;
 
     let check_status = saluki_event::service_check::CheckStatus::try_from(raw_check_status)
-        .or_else(|_| Err(nom::Err::Error(Error::new(input, ErrorKind::Verify))))?;
+        .map_err(|_| nom::Err::Error(Error::new(input, ErrorKind::Verify)))?;
 
     let mut maybe_timestamp = None;
     let mut maybe_hostname = None;
