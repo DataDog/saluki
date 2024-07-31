@@ -6,10 +6,10 @@ license = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
-memory-stats = { workspace = true }
 metrics = { workspace = true }
 ordered-float = { workspace = true }
 pin-project = { workspace = true }
+process-memory = { workspace = true }
 snafu = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing = { workspace = true }
