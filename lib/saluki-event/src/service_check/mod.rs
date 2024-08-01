@@ -4,13 +4,13 @@
 // originate in in the DogStatsD codec, where interning is already taking place.
 
 /// Service status.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CheckStatus {
     /// The service is operating normally.
     Ok,
 
     /// The service is in a warning state.
-    Warn,
+    Warning,
 
     /// The service is in a critical state.
     Critical,
@@ -27,10 +27,10 @@ pub enum CheckStatus {
 pub struct ServiceCheck {
     name: String,
     status: CheckStatus,
-    timestamp: u64,
-    host: String,
-    message: String,
-    tags: Vec<String>,
+    timestamp: Option<u64>,
+    hostname: Option<String>,
+    message: Option<String>,
+    tags: Option<Vec<String>>,
 }
 
 impl ServiceCheck {
@@ -47,22 +47,104 @@ impl ServiceCheck {
     /// Returns the timestamp of the check.
     ///
     /// This is a Unix timestamp, or the number of seconds since the Unix epoch.
-    pub fn timestamp(&self) -> u64 {
+    pub fn timestamp(&self) -> Option<u64> {
         self.timestamp
     }
 
     /// Returns the host where the check originated from.
-    pub fn host(&self) -> &str {
-        &self.host
+    pub fn hostname(&self) -> Option<&str> {
+        self.hostname.as_deref()
     }
 
     /// Returns the message associated with the check.
-    pub fn message(&self) -> &str {
-        &self.message
+    pub fn message(&self) -> Option<&str> {
+        self.message.as_deref()
     }
 
     /// Returns the tags associated with the check.
-    pub fn tags(&self) -> &[String] {
-        &self.tags
+    pub fn tags(&self) -> Option<&[String]> {
+        self.tags.as_deref()
+    }
+
+    /// Creates a `ServiceCheck` from the given name and status
+    pub fn new(name: &str, status: CheckStatus) -> Self {
+        Self {
+            name: name.to_string(),
+            status,
+            timestamp: None,
+            hostname: None,
+            message: None,
+            tags: None,
+        }
+    }
+
+    /// Set the timestamp.
+    ///
+    /// Represented as a Unix timestamp, or the number of seconds since the Unix epoch.
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_timestamp(mut self, timestamp: impl Into<Option<u64>>) -> Self {
+        self.timestamp = timestamp.into();
+        self
+    }
+
+    /// Set the hostname where the service check originated from.
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_hostname(mut self, hostname: impl Into<Option<String>>) -> Self {
+        self.hostname = hostname.into();
+        self
+    }
+
+    /// Set the tags of the service check
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_tags(mut self, tags: impl Into<Option<Vec<String>>>) -> Self {
+        self.tags = tags.into();
+        self
+    }
+
+    /// Set the message of the service check
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_message(mut self, message: impl Into<Option<String>>) -> Self {
+        self.message = message.into();
+        self
+    }
+}
+
+impl CheckStatus {
+    /// Convert Check Status to u8 representation.
+    pub fn as_u8(&self) -> u8 {
+        match self {
+            Self::Ok => 0,
+            Self::Warning => 1,
+            Self::Critical => 2,
+            Self::Unknown => 3,
+        }
+    }
+}
+/// Error type for parsing CheckStatus.
+#[derive(Debug, Clone)]
+pub struct ParseCheckStatusError;
+
+impl std::fmt::Display for ParseCheckStatusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid check status")
+    }
+}
+
+impl std::error::Error for ParseCheckStatusError {}
+impl TryFrom<u8> for CheckStatus {
+    type Error = ParseCheckStatusError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Ok),
+            1 => Ok(Self::Warning),
+            2 => Ok(Self::Critical),
+            3 => Ok(Self::Unknown),
+            _ => Err(ParseCheckStatusError),
+        }
     }
 }
