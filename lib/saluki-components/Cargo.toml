@@ -18,7 +18,7 @@ http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["client"] }
-hyper-rustls = { workspace = true, features = ["http2", "rustls-native-certs"] }
+hyper-rustls = { workspace = true }
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "tokio"] }
 indexmap = { workspace = true, features = ["std"] }
 memchr = { workspace = true, features = ["std"] }
@@ -30,7 +30,7 @@ paste = { workspace = true }
 pin-project = { workspace = true }
 protobuf = { workspace = true }
 quanta = { workspace = true }
-rustls = { workspace = true, features = ["aws_lc_rs", "logging", "tls12"] }
+rustls = { workspace = true }
 saluki-config = { workspace = true }
 saluki-context = { workspace = true }
 saluki-core = { workspace = true }

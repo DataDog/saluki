@@ -2336,6 +2336,7 @@ dependencies = [
  "memory-accounting",
  "metrics",
  "metrics-util",
+ "rustls",
  "saluki-config",
  "saluki-core",
  "saluki-error",
