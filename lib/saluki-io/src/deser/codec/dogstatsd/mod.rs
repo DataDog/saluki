@@ -20,7 +20,7 @@ use saluki_core::topology::interconnect::EventBuffer;
 use saluki_event::{
     eventd::{AlertType, EventD, Priority},
     metric::*,
-    service_check::ServiceCheck,
+    service_check::{CheckStatus, ServiceCheck},
     Event,
 };
 
@@ -157,7 +157,7 @@ impl<TMI> DogstatsdCodec<TMI> {
     fn decode_event<B: ReadIoBuffer>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, ParseError> {
         let data = buf.chunk();
         let (remaining, event) = parse_dogstatsd_event(data, &self.config)?;
-        events.push(saluki_event::Event::EventD(event));
+        events.push(Event::EventD(event));
         buf.advance(data.len() - remaining.len());
         Ok(1)
     }
@@ -167,7 +167,7 @@ impl<TMI> DogstatsdCodec<TMI> {
     ) -> Result<usize, ParseError> {
         let data = buf.chunk();
         let (remaining, service_check) = parse_dogstatsd_service_check(data, &self.config)?;
-        events.push(saluki_event::Event::ServiceCheck(service_check));
+        events.push(Event::ServiceCheck(service_check));
         buf.advance(data.len() - remaining.len());
         Ok(1)
     }
@@ -480,8 +480,8 @@ fn parse_dogstatsd_service_check<'a>(
         separated_pair(ascii_alphanum_and_seps, tag(b"|"), parse_u8),
     )(input)?;
 
-    let check_status = saluki_event::service_check::CheckStatus::try_from(raw_check_status)
-        .map_err(|_| nom::Err::Error(Error::new(input, ErrorKind::Verify)))?;
+    let check_status =
+        CheckStatus::try_from(raw_check_status).map_err(|_| nom::Err::Error(Error::new(input, ErrorKind::Verify)))?;
 
     let mut maybe_timestamp = None;
     let mut maybe_hostname = None;
@@ -498,7 +498,7 @@ fn parse_dogstatsd_service_check<'a>(
 
             // Message field must be positioned last among the metadata fields but it was already seen
             if seen_message {
-                break;
+                return Err(nom::Err::Error(Error::new(input, ErrorKind::Verify)));
             }
             match &chunk[..2] {
                 // Timestamp: client-provided timestamp for the event, relative to the Unix epoch, in seconds.
