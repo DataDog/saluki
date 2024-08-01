@@ -1,6 +1,7 @@
 use std::num::NonZeroUsize;
 
 use async_trait::async_trait;
+use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::ContextResolver;
@@ -31,7 +32,6 @@ use snafu::{ResultExt as _, Snafu};
 use stringtheory::interning::FixedSizeInterner;
 use tokio::select;
 use tracing::{debug, error, info, trace};
-use bytesize::ByteSize;
 
 mod framer;
 use self::framer::{get_framer, DogStatsDMultiFraming};

@@ -8,7 +8,6 @@
 pub mod logging;
 pub mod memory;
 pub mod metrics;
-pub mod tls;
 
 /// Common imports.
 pub mod prelude {
@@ -16,6 +15,5 @@ pub mod prelude {
         logging::{fatal_and_exit, initialize_logging},
         memory::{initialize_allocator_telemetry, initialize_memory_bounds, MemoryBoundsConfiguration},
         metrics::initialize_metrics,
-        tls::initialize_tls,
     };
 }

@@ -17,7 +17,7 @@ ddsketch-agent = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 hyper = { workspace = true, features = ["client", "server"] }
-hyper-rustls = { workspace = true }
+hyper-rustls = { workspace = true, features = ["http2", "rustls-native-certs"] }
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "http2", "server", "tokio"] }
 indexmap = { workspace = true, features = ["std"] }
 libc = { workspace = true }
@@ -30,7 +30,7 @@ paste = { workspace = true }
 pin-project = { workspace = true }
 protobuf = { workspace = true }
 quanta = { workspace = true }
-rustls = { workspace = true }
+rustls = { workspace = true, features = ["aws_lc_rs", "logging", "tls12"] }
 saluki-context = { workspace = true }
 saluki-core = { workspace = true }
 saluki-error = { workspace = true }
