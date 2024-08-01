@@ -12,7 +12,7 @@ const RSS_LINE_PREFIX: &[u8] = b"Rss: ";
 enum StatSource {
     SmapsRollup(Scanner<File>),
     Smaps(Scanner<File>),
-    Statm(usize),
+    Statm(Option<usize>),
 }
 
 /// A memory usage querier.
@@ -61,7 +61,9 @@ impl Querier {
                     None
                 }
             }
-            StatSource::Statm(page_size) => {
+            StatSource::Statm(maybe_page_size) => {
+                let page_size = maybe_page_size.as_ref().copied()?;
+
                 // Unlike smaps/smaps_rollup, statm is a drastically simpler format that is written as a single line with
                 // space-delimited fields. Since we have no lines to scan, it's much simpler to just read the entire file into a
                 // stack-allocated buffer.
@@ -81,7 +83,7 @@ impl Querier {
 
                 // We need to parse the field as an integer, and then multiply it by the page size to get the value in bytes.
                 let rss_pages = std::str::from_utf8(raw_rss_field).ok()?.parse::<usize>().ok()?;
-                Some(rss_pages * *page_size)
+                Some(rss_pages * page_size)
             }
         }
     }
@@ -105,12 +107,12 @@ fn determine_stat_source() -> StatSource {
     }
 }
 
-fn page_size() -> usize {
+fn page_size() -> Option<usize> {
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     if page_size <= 0 {
-        0
+        None
     } else {
-        page_size as usize
+        Some(page_size as usize)
     }
 }
 
@@ -227,16 +229,8 @@ where
                 if let Some(newline_idx) = maybe_newline_idx {
                     self.pending_consume = Some(newline_idx + 1);
                 } else {
-                    // We couldn't find a newline character. If we're at EOF, then there's no more data for us to
-                    // potentially read in that might contain a newline character... so we're done. Just clear the
-                    // buffer and return `None`.
-                    //
-                    // Otherwise, we continue looping in order to read more data and skip through until we find the next
-                    // line.
-                    if self.eof {
-                        self.buf.clear();
-                        return Ok(None);
-                    }
+                    // We couldn't find a newline character, so we need to clear the entire buffer and just keep reading.
+                    self.buf.clear();
                 }
             }
         }
@@ -262,13 +256,101 @@ fn skip_to_line_value(raw_line: &[u8]) -> Option<&[u8]> {
         .map(|idx| &raw_line[idx..])
 }
 
-#[cfg(all(test, target_os = "linux"))]
-mod linux_tests {
+#[cfg(test)]
+mod tests {
     use super::Querier;
 
     #[test]
     fn basic() {
         let mut querier = Querier::default();
         assert!(querier.resident_set_size().is_some());
+    }
+
+    #[test]
+    fn skip_to_line_value() {
+        let passing_lines = [
+            "1234 kB".as_bytes(),
+            "    1234 kB".as_bytes(),
+            "\t1234 kB".as_bytes(),
+            "Rss:1234 kB".as_bytes(),
+            "Rss:   1234 kB".as_bytes(),
+        ];
+        for line in &passing_lines {
+            assert_eq!(super::skip_to_line_value(line), Some("1234 kB".as_bytes()));
+        }
+
+        let failing_lines = [
+            "Rss: ".as_bytes(),
+            "Rss: \n".as_bytes(),
+            "Rss:  kB".as_bytes(),
+            "Rss: kB\n".as_bytes(),
+        ];
+        for line in &failing_lines {
+            assert_eq!(super::skip_to_line_value(line), None);
+        }
+    }
+
+    #[test]
+    fn scanner_basic() {
+        let prefix = "Rss: ".as_bytes();
+
+        let mut scanner = super::Scanner::new();
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"Rss: 1234 kB\nRss: 5678 kB\nRss: 91011 kB\n");
+        scanner.reset(buf.as_slice());
+
+        assert_eq!(
+            scanner.next_matching_line(prefix).unwrap(),
+            Some(b"Rss: 1234 kB".as_ref())
+        );
+        assert_eq!(
+            scanner.next_matching_line(prefix).unwrap(),
+            Some(b"Rss: 5678 kB".as_ref())
+        );
+        assert_eq!(
+            scanner.next_matching_line(prefix).unwrap(),
+            Some(b"Rss: 91011 kB".as_ref())
+        );
+        assert_eq!(scanner.next_matching_line(prefix).unwrap(), None);
+    }
+
+    #[test]
+    fn scanner_skip_non_matching_lines() {
+        let prefix = "Rss: ".as_bytes();
+
+        let mut scanner = super::Scanner::new();
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"Rss: 1234 kB\nPss: 5678 kB\nHugepages:    42069 kB\nRss: 91011 kB\n");
+        scanner.reset(buf.as_slice());
+
+        assert_eq!(
+            scanner.next_matching_line(prefix).unwrap(),
+            Some(b"Rss: 1234 kB".as_ref())
+        );
+        assert_eq!(
+            scanner.next_matching_line(prefix).unwrap(),
+            Some(b"Rss: 91011 kB".as_ref())
+        );
+        assert_eq!(scanner.next_matching_line(prefix).unwrap(), None);
+    }
+
+    #[test]
+    fn scanner_skips_lines_larger_than_buffer() {
+        let prefix = "Rss: ".as_bytes();
+
+        let mut scanner = super::Scanner::new();
+
+        // We construct a non-matching line that's longer than our internal buffer (8192 bytes) to ensure that we can
+        // still skip over it and find the next matching line without losing data.
+        let mut buf = Vec::new();
+        buf.resize(9000, b'@');
+        buf.extend_from_slice(b"\nRss: 1234 kB\n");
+        scanner.reset(buf.as_slice());
+
+        assert_eq!(
+            scanner.next_matching_line(prefix).unwrap(),
+            Some(b"Rss: 1234 kB".as_ref())
+        );
+        assert_eq!(scanner.next_matching_line(prefix).unwrap(), None);
     }
 }

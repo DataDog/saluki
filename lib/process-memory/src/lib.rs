@@ -22,7 +22,9 @@
 //!
 //! ## Windows
 //!
-//! No support yet.
+//! On Windows, we query the kernel directly for process memory counters.
+//!
+//! Available since Windows XP/Server 2003.
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -34,9 +36,13 @@ pub use linux::Querier;
 mod darwin;
 
 #[cfg(target_os = "macos")]
-pub use darwin::resident_set_size;
+pub use darwin::Querier;
 
-#[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
-pub fn resident_set_size() -> Option<usize> {
-    None
-}
+#[cfg(target_os = "windows")]
+mod windows;
+
+#[cfg(target_os = "windows")]
+pub use windows::Querier;
+
+#[cfg(all(not(target_os = "linux"), not(target_os = "macos"), not(target_os = "windows")))]
+compile_error!("This crate only supports Linux, macOS, and Windows at the moment.");
