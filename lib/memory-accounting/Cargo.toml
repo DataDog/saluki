@@ -13,7 +13,7 @@ pin-project = { workspace = true }
 snafu = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing = { workspace = true }
-ubyte = { workspace = true }
+bytesize = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true, features = ["std"] }

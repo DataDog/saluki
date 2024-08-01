@@ -5,6 +5,7 @@ use datadog_protos::agent::{
     AgentSecureClient, EntityId as RemoteEntityId, EventType, FetchEntityRequest, StreamTagsRequest,
     TagCardinality as RemoteTagCardinality,
 };
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{Tag, TagSet};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -42,7 +43,9 @@ impl RemoteAgentMetadataCollector {
     ///
     /// If the Agent gRPC client cannot be created (invalid API endpoint, missing authentication token, etc), or if the
     /// authentication token is invalid, an error will be returned.
-    pub async fn from_configuration(config: &GenericConfiguration, tag_interner: FixedSizeInterner<1>) -> Result<Self, GenericError> {
+    pub async fn from_configuration(
+        config: &GenericConfiguration, tag_interner: FixedSizeInterner<1>,
+    ) -> Result<Self, GenericError> {
         let raw_ipc_endpoint = config
             .try_get_typed::<String>("agent_ipc_endpoint")?
             .unwrap_or_else(|| DEFAULT_AGENT_IPC_ENDPOINT.to_string());
@@ -196,6 +199,14 @@ impl MetadataCollector for RemoteAgentMetadataCollector {
         }
 
         Ok(())
+    }
+}
+
+impl MemoryBounds for RemoteAgentMetadataCollector {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // TODO: Kind of a throwaway calculation because nothing about the gRPC client can really be bounded at the
+        // moment.
+        builder.firm().with_fixed_amount(std::mem::size_of::<Self>());
     }
 }
 

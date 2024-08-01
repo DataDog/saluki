@@ -4,6 +4,7 @@ use async_stream::stream;
 use async_trait::async_trait;
 use containerd_client::services::v1::Namespace;
 use futures::{stream::select_all, Stream, StreamExt as _};
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use stringtheory::interning::FixedSizeInterner;
@@ -37,7 +38,9 @@ impl ContainerdMetadataCollector {
     ///
     /// If the containerd gRPC client cannot be created, or listing the namespaces in the containerd runtime fails, an
     /// error will be returned.
-    pub async fn from_configuration(config: &GenericConfiguration, tag_interner: FixedSizeInterner<1>) -> Result<Self, GenericError> {
+    pub async fn from_configuration(
+        config: &GenericConfiguration, tag_interner: FixedSizeInterner<1>,
+    ) -> Result<Self, GenericError> {
         let client = ContainerdClient::from_configuration(config).await?;
         let watched_namespaces = client.list_namespaces().await?;
 
@@ -75,6 +78,14 @@ impl MetadataCollector for ContainerdMetadataCollector {
     }
 }
 
+impl MemoryBounds for ContainerdMetadataCollector {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // TODO: Kind of a throwaway calculation because nothing about the gRPC client can really be bounded at the
+        // moment, and we also don't have any way to know the number of namespaces we'll be monitoring a priori.
+        builder.firm().with_fixed_amount(std::mem::size_of::<Self>());
+    }
+}
+
 struct NamespaceWatcher {
     namespace: Namespace,
     client: ContainerdClient,
@@ -83,7 +94,11 @@ struct NamespaceWatcher {
 
 impl NamespaceWatcher {
     fn new(client: ContainerdClient, namespace: Namespace, tag_interner: FixedSizeInterner<1>) -> Self {
-        Self { client, namespace, tag_interner }
+        Self {
+            client,
+            namespace,
+            tag_interner,
+        }
     }
 
     async fn process_event(&self, event: ContainerdEvent) -> Option<MetadataOperation> {
@@ -137,9 +152,14 @@ impl NamespaceWatcher {
                     Some(container_id) => {
                         let container_entity_id = EntityId::Container(container_id.into());
                         operations.push(MetadataOperation::link_ancestor(pid_entity_id, container_entity_id));
-                    },
+                    }
                     None => {
-                        warn!(namespace = self.namespace.name, container_id = container.id, container_task_pid = pid, "Failed to intern container ID. Container ID/task PID link will not be created.");
+                        warn!(
+                            namespace = self.namespace.name,
+                            container_id = container.id,
+                            container_task_pid = pid,
+                            "Failed to intern container ID. Container ID/task PID link will not be created."
+                        );
                     }
                 }
             }

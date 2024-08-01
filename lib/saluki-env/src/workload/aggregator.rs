@@ -1,6 +1,7 @@
-use std::sync::Arc;
+use std::{num::NonZeroUsize, sync::Arc};
 
 use arc_swap::ArcSwap;
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use tokio::sync::mpsc;
 use tracing::debug;
 
@@ -9,6 +10,11 @@ use super::{
     metadata::MetadataOperation,
     store::{TagSnapshot, TagStore},
 };
+
+// TODO: Make this configurable.
+// SAFETY: The value is demonstrably not zero.
+const DEFAULT_ENTITY_LIMIT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(2000) };
+const OPERATIONS_CHANNEL_SIZE: usize = 128;
 
 /// Aggregates the metadata from multiple collectors.
 ///
@@ -30,9 +36,9 @@ pub struct MetadataAggregator {
 impl MetadataAggregator {
     /// Create a new `MetadataAggregator`.
     pub fn new() -> Self {
-        let (operations_tx, operations_rx) = mpsc::channel(128);
+        let (operations_tx, operations_rx) = mpsc::channel(OPERATIONS_CHANNEL_SIZE);
         Self {
-            tag_store: TagStore::default(),
+            tag_store: TagStore::with_entity_limit(DEFAULT_ENTITY_LIMIT),
             shared_tags: Arc::new(ArcSwap::new(Arc::new(TagSnapshot::default()))),
             operations_tx,
             operations_rx,
@@ -72,5 +78,16 @@ impl MetadataAggregator {
             let tags = self.tag_store.snapshot();
             self.shared_tags.store(Arc::new(tags));
         }
+    }
+}
+
+impl MemoryBounds for MetadataAggregator {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        builder
+            .firm()
+            // Operations channel.
+            .with_array::<MetadataOperation>(OPERATIONS_CHANNEL_SIZE);
+
+        builder.bounded_component("tag_store", &self.tag_store);
     }
 }

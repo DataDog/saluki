@@ -9,7 +9,6 @@ mod env_provider;
 
 use std::time::Instant;
 
-use memory_accounting::MemoryBounds as _;
 use saluki_components::{
     destinations::{DatadogMetricsConfiguration, PrometheusConfiguration},
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
@@ -112,11 +111,11 @@ async fn run(started: Instant) -> Result<(), GenericError> {
             .connect_component("internal_metrics_out", ["internal_metrics_in"])?;
     }
 
-    // Handle verification of memory bounds.
+    // Handle verification of memory bounds.make
     let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;
     let verify_result = initialize_memory_bounds(bounds_configuration, |builder| {
-        let mut topology_builder = builder.component("topology");
-        blueprint.specify_bounds(&mut topology_builder);
+        builder.bounded_component("env_provider", &env_provider);
+        builder.bounded_component("topology", &blueprint);
     });
 
     let memory_limiter = verify_result.error_context("Failed to initialize memory bounds.")?;
