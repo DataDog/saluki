@@ -21,11 +21,7 @@ use saluki_config::ConfigurationLoader;
 use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{error, info};
 
-use saluki_app::{
-    logging::{fatal_and_exit, initialize_logging},
-    memory::{initialize_allocator_telemetry, initialize_memory_bounds, MemoryBoundsConfiguration},
-    metrics::initialize_metrics,
-};
+use saluki_app::prelude::*;
 use saluki_core::topology::TopologyBlueprint;
 
 use crate::env_provider::ADPEnvironmentProvider;
@@ -51,6 +47,10 @@ async fn main() {
 
     if let Err(e) = initialize_allocator_telemetry().await {
         fatal_and_exit(format!("failed to initialize allocator telemetry: {}", e));
+    }
+
+    if let Err(e) = initialize_tls() {
+        fatal_and_exit(format!("failed to initialize TLS: {}", e));
     }
 
     match run(started).await {
