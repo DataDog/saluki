@@ -71,8 +71,9 @@ use std::collections::HashMap;
 pub mod test_util;
 
 pub mod allocator;
-mod builder;
-pub use self::builder::MemoryBoundsBuilder;
+//mod builder;
+mod registry;
+pub use self::registry::{ComponentRegistry, MemoryBoundsBuilder};
 
 mod grant;
 pub use self::grant::MemoryGrant;

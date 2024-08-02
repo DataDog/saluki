@@ -8,8 +8,8 @@ use std::{
 
 use bytesize::ByteSize;
 use memory_accounting::{
-    allocator::{AllocationStats, AllocationStatsDelta, ComponentRegistry},
-    BoundsVerifier, MemoryBoundsBuilder, MemoryGrant, MemoryLimiter, VerifiedBounds,
+    allocator::{AllocationStats, AllocationStatsDelta},
+    ComponentRegistry, MemoryGrant, MemoryLimiter, VerifiedBounds,
 };
 use metrics::{counter, gauge, Counter, Gauge};
 use saluki_config::GenericConfiguration;
@@ -68,16 +68,29 @@ impl MemoryBoundsConfiguration {
     ///
     /// If an error occurs during deserialization, an error will be returned.
     pub fn try_from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        config
+        let config = config
             .as_typed::<Self>()
-            .error_context("Failed to parse memory bounds configuration.")
+            .error_context("Failed to parse memory bounds configuration.")?;
+
+        // Try constructing the initial grant based on the configuration as a smoke test to validate the values.
+        if let Some(limit) = config.memory_limit {
+            let _ = MemoryGrant::with_slop_factor(limit.as_u64() as usize, config.memory_slop_factor)
+                .error_context("Given memory limit and/or slop factor invalid.")?;
+        }
+
+        Ok(config)
+    }
+
+    /// Gets the initial memory grant based on the configuration.
+    pub fn get_initial_grant(&self) -> Option<MemoryGrant> {
+        self.memory_limit.map(|limit| {
+            MemoryGrant::with_slop_factor(limit.as_u64() as usize, self.memory_slop_factor)
+                .expect("memory limit should be valid")
+        })
     }
 }
 
 /// Initializes the memory bounds system and verifies any configured bounds.
-///
-/// This function takes a closure that is responsible for populating the memory bounds for all components within the
-/// application that should be enforced. This allows the caller to build up the memory bounds in a structured way.
 ///
 /// If no memory limit is configured, or if the populated memory bounds fit within the configured memory limit,
 /// `Ok(MemoryLimiter)` is returned. The memory limiter can be used as a global limiter for the process, allowing
@@ -88,12 +101,9 @@ impl MemoryBoundsConfiguration {
 /// ## Errors
 ///
 /// If the bounds could not be validated, an error is returned.
-pub fn initialize_memory_bounds<F>(
-    configuration: MemoryBoundsConfiguration, populate_bounds: F,
-) -> Result<MemoryLimiter, GenericError>
-where
-    F: FnOnce(&mut MemoryBoundsBuilder),
-{
+pub fn initialize_memory_bounds(
+    configuration: MemoryBoundsConfiguration, mut component_registry: ComponentRegistry,
+) -> Result<MemoryLimiter, GenericError> {
     let initial_grant = match configuration.memory_limit {
         Some(limit) => MemoryGrant::with_slop_factor(limit.as_u64() as usize, configuration.memory_slop_factor)?,
         None => {
@@ -102,14 +112,7 @@ where
         }
     };
 
-    // Run the provided closure to populate the memory bounds that we want to verify.
-    let mut bounds_builder = MemoryBoundsBuilder::new();
-    populate_bounds(&mut bounds_builder);
-    let component_bounds = bounds_builder.finalize();
-
-    // Now verify the bounds.
-    let bounds_verifier = BoundsVerifier::new(initial_grant, component_bounds);
-    let verified_bounds = bounds_verifier.verify()?;
+    let verified_bounds = component_registry.verify_bounds(initial_grant)?;
 
     let limiter = configuration
         .enable_global_limiter
@@ -238,7 +241,7 @@ pub async fn initialize_allocator_telemetry() -> Result<(), GenericError> {
         loop {
             sleep(Duration::from_secs(1)).await;
 
-            ComponentRegistry::global().visit_components(|component_name, stats| {
+            memory_accounting::allocator::ComponentRegistry::global().visit_components(|component_name, stats| {
                 let component_metrics = match metrics.get_mut(component_name) {
                     Some(component_metrics) => component_metrics,
                     None => metrics

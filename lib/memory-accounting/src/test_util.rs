@@ -26,9 +26,9 @@ pub fn get_component_bounds<C>(component: &C) -> ComponentBounds
 where
     C: MemoryBounds,
 {
-    let mut builder = MemoryBoundsBuilder::new();
+    let mut builder = MemoryBoundsBuilder::for_test();
     {
         builder.bounded_component("component", component);
     }
-    builder.finalize()
+    builder.as_bounds()
 }
