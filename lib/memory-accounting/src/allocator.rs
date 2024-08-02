@@ -177,6 +177,7 @@ impl AllocationStatsDelta {
 }
 
 /// A token that allows tracking allocations and deallocations for a specific component.
+#[derive(Clone, Copy)]
 pub struct TrackingToken {
     component_ptr: NonNull<AllocationStats>,
 }
@@ -193,7 +194,8 @@ impl TrackingToken {
         })
     }
 
-    fn root() -> Self {
+    /// Gets the token for the root component.
+    pub fn root() -> Self {
         Self::new(NonNull::from(&ROOT_COMPONENT))
     }
 
