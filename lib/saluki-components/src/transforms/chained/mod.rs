@@ -33,7 +33,8 @@ impl ChainedConfiguration {
 impl MemoryBounds for ChainedConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         for (i, transform_builder) in self.transform_builders.iter().enumerate() {
-            builder.bounded_component(format!("subtransform #{}", i), transform_builder);
+            let mut subtransform_builder = builder.component(format!("subtransform_{}", i));
+            transform_builder.specify_bounds(&mut subtransform_builder);
         }
     }
 }
