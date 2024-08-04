@@ -9,11 +9,91 @@ use crate::{allocator::TrackingToken, BoundsVerifier, ComponentBounds, MemoryGra
 struct ComponentMetadata {
     full_name: Option<String>,
     bounds: ComponentBounds,
-    token: TrackingToken,
+    token: Option<TrackingToken>,
     subcomponents: HashMap<String, Arc<Mutex<ComponentMetadata>>>,
 }
 
 impl ComponentMetadata {
+    fn from_full_name(full_name: Option<String>) -> Self {
+        Self {
+            full_name,
+            bounds: ComponentBounds::default(),
+            token: None,
+            subcomponents: HashMap::new(),
+        }
+    }
+
+    fn get_or_create<S>(&mut self, name: S) -> Arc<Mutex<Self>>
+    where
+        S: AsRef<str>,
+    {
+        // Split the name into the current level name and the remaining name.
+        //
+        // This lets us handle names which refer to a target nested component instead of having to
+        // chain a ton of calls together.
+        let name = name.as_ref();
+        let (current_level_name, remaining_name) = match name.split_once('/') {
+            Some((current_level_name, remaining_name)) => (current_level_name, Some(remaining_name)),
+            None => (name, None),
+        };
+
+        // Now we need to see if we have an existing component here or if we need to create a new one.
+        match self.subcomponents.get(current_level_name) {
+            Some(existing) => match remaining_name {
+                Some(remaining_name) => {
+                    // We found an intermediate subcomponent, so keep recursing.
+                    existing.lock().unwrap().get_or_create(remaining_name)
+                }
+                None => {
+                    // We've found the leaf subcomponent.
+                    Arc::clone(existing)
+                }
+            },
+            None => {
+                // We couldn't find the component at this level, so we need to create it.
+                //
+                // We do all of our name calculation and so on, but we also leave the token empty
+                // for now. We do this to avoid registering intermediate components that aren't
+                // actually used by the code, but are simply a consequence of wanting to having a
+                // nicely nested structure.
+                //
+                // We'll register a token for the component the first time it's requested.
+                let full_name = match self.full_name.as_ref() {
+                    Some(parent_full_name) => format!("{}.{}", parent_full_name, current_level_name),
+                    None => current_level_name.to_string(),
+                };
+
+                let inner = self
+                    .subcomponents
+                    .entry(current_level_name.to_string())
+                    .or_insert_with(|| Arc::new(Mutex::new(Self::from_full_name(Some(full_name)))));
+
+                // If we still need to recurse further, do so here.. otherwise, return the subcomponent
+                // we just created as-is.
+                match remaining_name {
+                    Some(remaining_name) => inner.lock().unwrap().get_or_create(remaining_name),
+                    None => Arc::clone(inner),
+                }
+            }
+        }
+    }
+
+    fn token(&mut self) -> TrackingToken {
+        match self.token {
+            Some(token) => token,
+            None => match self.full_name.as_deref() {
+                Some(full_name) => {
+                    let allocator_component_registry = crate::allocator::ComponentRegistry::global();
+                    let token = allocator_component_registry.register_component(full_name);
+                    self.token = Some(token);
+
+                    token
+                }
+                None => TrackingToken::root(),
+            },
+        }
+    }
+
     fn as_bounds(&self) -> ComponentBounds {
         let mut bounds = ComponentBounds::default();
         bounds.self_firm_limit_bytes = self.bounds.self_firm_limit_bytes;
@@ -41,69 +121,34 @@ impl ComponentRegistry {
     /// nested form is given, each component in the path will be created if it doesn't exist.
     ///
     /// Returns a `ComponentRegistry` scoped to the component.
-    pub fn get_or_create<S>(&mut self, name: S) -> ComponentRegistry
+    pub fn get_or_create<S>(&mut self, name: S) -> Self
     where
         S: AsRef<str>,
     {
         let mut inner = self.inner.lock().unwrap();
-
-        // Split the name into the current level name and the remaining name.
-        //
-        // This lets us handle names which refer to a target nested component instead of having to chain a ton of calls together.
-        let name = name.as_ref();
-        let (current_level_name, remaining_name) = match name.split_once('/') {
-            Some((current_level_name, remaining_name)) => (current_level_name, Some(remaining_name)),
-            None => (name, None),
-        };
-
-        // Calculate the full name of the component by combining the current component's full name with the new
-        // component name.
-        //
-        // Full name is only really relevant to generating a globally unique name for registering a component with the
-        // tracking allocator registry.
-        let full_name = match inner.full_name.as_ref() {
-            Some(parent_full_name) => format!("{}.{}", parent_full_name, current_level_name),
-            None => current_level_name.to_string(),
-        };
-
-        // Create the current level component if it doesn't exist yet.
-        let inner = inner
-            .subcomponents
-            .entry(current_level_name.to_string())
-            .or_insert_with(|| {
-                let allocator_component_registry = crate::allocator::ComponentRegistry::global();
-                let token = allocator_component_registry.register_component(full_name.clone());
-
-                Arc::new(Mutex::new(ComponentMetadata {
-                    full_name: Some(full_name),
-                    bounds: ComponentBounds::default(),
-                    token,
-                    subcomponents: HashMap::new(),
-                }))
-            });
-
-        let mut current_level_registry = ComponentRegistry {
-            inner: Arc::clone(inner),
-        };
-        match remaining_name {
-            Some(remaining_name) => current_level_registry.get_or_create(remaining_name),
-            None => current_level_registry,
+        Self {
+            inner: inner.get_or_create(name),
         }
     }
 
     /// Gets a bounds builder attached to the root component.
     pub fn bounds_builder(&mut self) -> MemoryBoundsBuilder<'_> {
         MemoryBoundsBuilder {
-            inner: ComponentRegistry {
+            inner: Self {
                 inner: Arc::clone(&self.inner),
             },
             _lt: PhantomData,
         }
     }
 
-    /// Gets the tracking token for the root component of this registry.
-    pub fn token(&self) -> TrackingToken {
-        self.inner.lock().unwrap().token
+    /// Gets the tracking token for the component scoped to this registry.
+    ///
+    /// If the component is the root component (has no name), the root allocation token is returned.
+    /// Otherwise, the component is registered (using its full name) if it hasn't already been, and
+    /// that token is returned.
+    pub fn token(&mut self) -> TrackingToken {
+        let mut inner = self.inner.lock().unwrap();
+        inner.token()
     }
 
     /// Validates that all components are able to respect the calculated effective limit.
@@ -126,13 +171,7 @@ impl ComponentRegistry {
 impl Default for ComponentRegistry {
     fn default() -> Self {
         Self {
-            // Root component has no name, and when we query it later, we'll return "root" when `full_name` is `None`.
-            inner: Arc::new(Mutex::new(ComponentMetadata {
-                full_name: None,
-                bounds: ComponentBounds::default(),
-                token: TrackingToken::root(),
-                subcomponents: HashMap::new(),
-            })),
+            inner: Arc::new(Mutex::new(ComponentMetadata::from_full_name(None))),
         }
     }
 }

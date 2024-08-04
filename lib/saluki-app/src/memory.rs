@@ -250,7 +250,7 @@ pub async fn initialize_allocator_telemetry() -> Result<(), GenericError> {
                 };
 
                 component_metrics.update(stats);
-            })
+            });
         }
     });
 
