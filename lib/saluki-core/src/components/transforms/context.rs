@@ -1,4 +1,4 @@
-use memory_accounting::MemoryLimiter;
+use memory_accounting::{ComponentRegistry, MemoryLimiter};
 
 use crate::{
     components::ComponentContext,
@@ -13,6 +13,7 @@ pub struct TransformContext {
     event_stream: EventStream,
     event_buffer_pool: FixedSizeObjectPool<EventBuffer>,
     memory_limiter: MemoryLimiter,
+    component_registry: ComponentRegistry,
 }
 
 impl TransformContext {
@@ -20,6 +21,7 @@ impl TransformContext {
     pub fn new(
         component_context: ComponentContext, forwarder: Forwarder, event_stream: EventStream,
         event_buffer_pool: FixedSizeObjectPool<EventBuffer>, memory_limiter: MemoryLimiter,
+        component_registry: ComponentRegistry,
     ) -> Self {
         Self {
             component_context,
@@ -27,6 +29,7 @@ impl TransformContext {
             event_stream,
             event_buffer_pool,
             memory_limiter,
+            component_registry,
         }
     }
 
@@ -53,5 +56,10 @@ impl TransformContext {
     /// Gets a reference to the memory limiter.
     pub fn memory_limiter(&self) -> &MemoryLimiter {
         &self.memory_limiter
+    }
+
+    /// Gets a mutable reference to the component registry.
+    pub fn component_registry_mut(&mut self) -> &mut ComponentRegistry {
+        &mut self.component_registry
     }
 }

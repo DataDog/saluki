@@ -1,9 +1,6 @@
 use std::collections::HashMap;
 
-use memory_accounting::{
-    allocator::{Track as _, Tracked},
-    ComponentRegistry,
-};
+use memory_accounting::{allocator::Track as _, ComponentRegistry};
 use saluki_error::GenericError;
 use snafu::{ResultExt as _, Snafu};
 
@@ -13,7 +10,7 @@ use super::{
     built::BuiltTopology,
     graph::{Graph, GraphError},
     interconnect::EventBuffer,
-    ComponentId,
+    ComponentId, ComponentOutputId, RegisteredComponent,
 };
 
 /// A topology blueprint error.
@@ -41,9 +38,9 @@ pub enum BlueprintError {
 /// A topology blueprint represents a directed graph of components.
 pub struct TopologyBlueprint {
     graph: Graph,
-    sources: HashMap<ComponentId, Tracked<Box<dyn SourceBuilder>>>,
-    transforms: HashMap<ComponentId, Tracked<Box<dyn TransformBuilder>>>,
-    destinations: HashMap<ComponentId, Tracked<Box<dyn DestinationBuilder>>>,
+    sources: HashMap<ComponentId, RegisteredComponent<Box<dyn SourceBuilder>>>,
+    transforms: HashMap<ComponentId, RegisteredComponent<Box<dyn TransformBuilder>>>,
+    destinations: HashMap<ComponentId, RegisteredComponent<Box<dyn DestinationBuilder>>>,
     component_registry: ComponentRegistry,
 }
 
@@ -99,7 +96,7 @@ impl TopologyBlueprint {
         let builder: Box<dyn SourceBuilder> = Box::new(builder);
         let _ = self
             .sources
-            .insert(component_id, builder.track_allocations(source_registry.token()));
+            .insert(component_id, RegisteredComponent::new(builder, source_registry));
 
         Ok(self)
     }
@@ -130,7 +127,7 @@ impl TopologyBlueprint {
         let builder: Box<dyn TransformBuilder> = Box::new(builder);
         let _ = self
             .transforms
-            .insert(component_id, builder.track_allocations(transform_registry.token()));
+            .insert(component_id, RegisteredComponent::new(builder, transform_registry));
 
         Ok(self)
     }
@@ -161,7 +158,7 @@ impl TopologyBlueprint {
         let builder: Box<dyn DestinationBuilder> = Box::new(builder);
         let _ = self
             .destinations
-            .insert(component_id, builder.track_allocations(destination_registry.token()));
+            .insert(component_id, RegisteredComponent::new(builder, destination_registry));
 
         Ok(self)
     }
@@ -194,15 +191,20 @@ impl TopologyBlueprint {
     /// ## Errors
     ///
     /// If any of the components could not be built, an error is returned.
-    pub async fn build(self) -> Result<BuiltTopology, BlueprintError> {
+    pub async fn build(mut self) -> Result<BuiltTopology, BlueprintError> {
         self.graph.validate().context(InvalidGraph)?;
 
         let mut sources = HashMap::new();
         for (id, builder) in self.sources {
-            let _guard = builder.enter();
-            match builder.inner_ref().build().await {
+            let (builder, mut component_registry) = builder.into_parts();
+            let component_token = component_registry.token();
+            let _guard = component_token.enter();
+            match builder.build().await {
                 Ok(source) => {
-                    sources.insert(id, source.in_current_component());
+                    sources.insert(
+                        id,
+                        RegisteredComponent::new(source.in_current_component(), component_registry),
+                    );
                 }
                 Err(e) => return Err(BlueprintError::FailedToBuildComponent { id, source: e }),
             }
@@ -210,10 +212,15 @@ impl TopologyBlueprint {
 
         let mut transforms = HashMap::new();
         for (id, builder) in self.transforms {
-            let _guard = builder.enter();
-            match builder.inner_ref().build().await {
+            let (builder, mut component_registry) = builder.into_parts();
+            let component_token = component_registry.token();
+            let _guard = component_token.enter();
+            match builder.build().await {
                 Ok(transform) => {
-                    transforms.insert(id, transform.in_current_component());
+                    transforms.insert(
+                        id,
+                        RegisteredComponent::new(transform.in_current_component(), component_registry),
+                    );
                 }
                 Err(e) => return Err(BlueprintError::FailedToBuildComponent { id, source: e }),
             }
@@ -221,15 +228,26 @@ impl TopologyBlueprint {
 
         let mut destinations = HashMap::new();
         for (id, builder) in self.destinations {
-            let _guard = builder.enter();
-            match builder.inner_ref().build().await {
+            let (builder, mut component_registry) = builder.into_parts();
+            let component_token = component_registry.token();
+            let _guard = component_token.enter();
+            match builder.build().await {
                 Ok(destination) => {
-                    destinations.insert(id, destination.in_current_component());
+                    destinations.insert(
+                        id,
+                        RegisteredComponent::new(destination.in_current_component(), component_registry),
+                    );
                 }
                 Err(e) => return Err(BlueprintError::FailedToBuildComponent { id, source: e }),
             }
         }
 
-        Ok(BuiltTopology::from_parts(self.graph, sources, transforms, destinations))
+        Ok(BuiltTopology::from_parts(
+            self.graph,
+            sources,
+            transforms,
+            destinations,
+            self.component_registry.token(),
+        ))
     }
 }
