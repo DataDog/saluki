@@ -55,6 +55,32 @@ impl EventBuffer {
     pub fn reserve(&mut self, additional: usize) {
         self.data_mut().events.reserve(additional);
     }
+
+    /// Extract events from the event buffer given a predicate function.
+    pub fn extract<F>(&mut self, predicate: F) -> VecDeque<Event>
+    where
+        F: Fn(&Event) -> bool,
+    {
+        let events = &mut self.data_mut().events;
+
+        let mut indices_to_remove = Vec::new();
+        let mut removed_events = VecDeque::new();
+
+        for (pos, event) in events.iter_mut().enumerate() {
+            if predicate(event) {
+                indices_to_remove.push(pos);
+            }
+        }
+
+        // Remove elements from back to front to avoid index shifting issues
+        for &pos in indices_to_remove.iter().rev() {
+            if pos < events.len() {
+                removed_events.push_back(events.swap_remove_back(pos).unwrap());
+            }
+        }
+
+        removed_events
+    }
 }
 
 impl fmt::Debug for EventBuffer {
@@ -115,6 +141,22 @@ impl Iterator for IntoIter {
     }
 }
 
+#[allow(unused)]
+/// Predicate function for extracting metric events.
+pub fn is_metric(event: &Event) -> bool {
+    matches!(event.data_type(), DataType::Metric)
+}
+
+/// Predicate function for extracting eventd events.
+pub fn is_eventd(event: &Event) -> bool {
+    matches!(event.data_type(), DataType::EventD)
+}
+
+/// Predicate function for extracting service check events.
+pub fn is_service_check(event: &Event) -> bool {
+    matches!(event.data_type(), DataType::ServiceCheck)
+}
+
 #[cfg(test)]
 mod tests {
     use super::EventBuffer;
@@ -123,10 +165,14 @@ mod tests {
     use saluki_event::{
         eventd::EventD,
         metric::{Metric, MetricMetadata, MetricValue},
+        service_check::{CheckStatus, ServiceCheck},
         DataType, Event,
     };
 
-    use crate::pooling::{helpers::get_pooled_object_via_default, Clearable as _};
+    use crate::{
+        pooling::{helpers::get_pooled_object_via_default, Clearable as _},
+        topology::interconnect::{event_buffer::is_metric, is_eventd, is_service_check},
+    };
 
     #[test]
     fn clear() {
@@ -177,5 +223,40 @@ mod tests {
         assert!(buffer.has_data_type(DataType::Metric));
         assert!(buffer.has_data_type(DataType::EventD));
         assert!(!buffer.has_data_type(DataType::ServiceCheck));
+    }
+
+    #[test]
+    fn extract() {
+        let mut buffer = get_pooled_object_via_default::<EventBuffer>();
+        buffer.push(Event::Metric(Metric::from_parts(
+            Context::from_static_parts("foo", &[]),
+            MetricValue::Counter { value: 42.0 },
+            MetricMetadata::default(),
+        )));
+        buffer.push(Event::Metric(Metric::from_parts(
+            Context::from_static_parts("baz", &[]),
+            MetricValue::Counter { value: 43.0 },
+            MetricMetadata::default(),
+        )));
+
+        buffer.push(Event::EventD(EventD::new("foo1", "bar1")));
+        buffer.push(Event::EventD(EventD::new("foo2", "bar2")));
+        buffer.push(Event::EventD(EventD::new("foo3", "bar3")));
+        buffer.push(Event::ServiceCheck(ServiceCheck::new("foo4", CheckStatus::Ok)));
+        buffer.push(Event::ServiceCheck(ServiceCheck::new("foo5", CheckStatus::Ok)));
+
+        assert_eq!(buffer.len(), 7);
+
+        let eventd_event_buffer = buffer.extract(is_eventd);
+        assert_eq!(buffer.len(), 4);
+        assert_eq!(eventd_event_buffer.len(), 3);
+
+        let service_checks_event_buffer = buffer.extract(is_service_check);
+        assert_eq!(buffer.len(), 2);
+        assert_eq!(service_checks_event_buffer.len(), 2);
+
+        let new_buffer = buffer.extract(is_metric);
+        assert_eq!(buffer.len(), 0);
+        assert_eq!(new_buffer.len(), 2);
     }
 }

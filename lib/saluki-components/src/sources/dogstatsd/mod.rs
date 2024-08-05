@@ -10,13 +10,14 @@ use saluki_core::{
     pooling::{FixedSizeObjectPool, ObjectPool as _},
     spawn_traced,
     topology::{
+        interconnect::{is_eventd, is_service_check},
         shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
         OutputDefinition,
     },
 };
 
 use saluki_error::{generic_error, GenericError};
-use saluki_event::{DataType, Event};
+use saluki_event::DataType;
 use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, BytesBuffer},
     deser::{
@@ -440,37 +441,50 @@ async fn drive_stream(
                     }
                 }
 
-                let mut eventd_event_buffer = source_context.event_buffer_pool().acquire().await;
-                let mut service_checks_event_buffer = source_context.event_buffer_pool().acquire().await;
-
-                // Filter each event type into their event buffers.
-                // Leave the original event buffer dedicated to metrics.
-                for event in &event_buffer {
-                    match event {
-                        Event::EventD(_) => eventd_event_buffer.push(event.to_owned()),
-                        Event::ServiceCheck(_) => service_checks_event_buffer.push(event.to_owned()),
-                        _ => {}
+                // Extract eventd events only if at least one is present in the event buffer.
+                let maybe_eventd_event_buffer = match event_buffer.has_data_type(DataType::EventD) {
+                    true => {
+                        let mut eventd_event_buffer = source_context.event_buffer_pool().acquire().await;
+                        eventd_event_buffer.extend(event_buffer.extract(is_eventd));
+                        Some(eventd_event_buffer)
                     }
-                }
+                    false => None,
+                };
+
+                // Extract service check events only if at least one is present in the event buffer.
+                let maybe_service_checks_event_buffer = match event_buffer.has_data_type(DataType::EventD) {
+                    true => {
+                        let mut eventd_event_buffer = source_context.event_buffer_pool().acquire().await;
+                        eventd_event_buffer.extend(event_buffer.extract(is_service_check));
+                        Some(eventd_event_buffer)
+                    }
+                    false => None,
+                };
 
                 trace!(%listen_addr, %peer_addr, events_len = n, "Forwarding events.");
 
                 if let Err(e) = source_context.forwarder().forward_named("metrics", event_buffer).await {
                     error!(%listen_addr, %peer_addr, error = %e, "Failed to forward metric events.");
                 }
-                if let Err(e) = source_context
-                    .forwarder()
-                    .forward_named("events", eventd_event_buffer)
-                    .await
-                {
-                    error!(%listen_addr, %peer_addr, error = %e, "Failed to forward eventd events.");
+
+                if let Some(eventd_event_buffer) = maybe_eventd_event_buffer {
+                    if let Err(e) = source_context
+                        .forwarder()
+                        .forward_named("events", eventd_event_buffer)
+                        .await
+                    {
+                        error!(%listen_addr, %peer_addr, error = %e, "Failed to forward eventd events.");
+                    }
                 }
-                if let Err(e) = source_context
-                    .forwarder()
-                    .forward_named("service_checks", service_checks_event_buffer)
-                    .await
-                {
-                    error!(%listen_addr, %peer_addr, error = %e, "Failed to forward service check events.");
+
+                if let Some(service_checks_event_buffer) = maybe_service_checks_event_buffer {
+                    if let Err(e) = source_context
+                        .forwarder()
+                        .forward_named("service_checks", service_checks_event_buffer)
+                        .await
+                    {
+                        error!(%listen_addr, %peer_addr, error = %e, "Failed to forward service checks events.");
+                    }
                 }
             }
             Err(e) => match e {
