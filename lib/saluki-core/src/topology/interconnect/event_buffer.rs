@@ -149,7 +149,7 @@ mod tests {
         assert!(!buffer.has_data_type(DataType::ServiceCheck));
 
         // Finally, clear the inner data -- this simulates what happens when an object is returned to the pool -- and
-        // assert that's once again empty and has no seen data types:
+        // assert that the buffer is once again empty and has no seen data types:
         buffer.data_mut().clear();
         assert!(buffer.is_empty());
         assert!(!buffer.has_data_type(DataType::Metric));
