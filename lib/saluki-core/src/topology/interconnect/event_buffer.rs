@@ -1,6 +1,6 @@
 use std::{collections::VecDeque, fmt};
 
-use saluki_event::Event;
+use saluki_event::{DataType, Event};
 
 use crate::pooling::helpers::pooled;
 
@@ -12,9 +12,10 @@ pooled! {
     /// allocations to hold a large number of events can itself grow large.
     struct EventBuffer {
         events: VecDeque<Event>,
+        seen_data_types: DataType,
     }
 
-    clear => |this| this.events.clear()
+    clear => |this| { this.events.clear(); this.seen_data_types = DataType::none(); }
 }
 
 impl EventBuffer {
@@ -33,8 +34,14 @@ impl EventBuffer {
         self.data().events.len()
     }
 
+    /// Returns `true` if this event buffer contains one or more events of the given data type.
+    pub fn has_data_type(&self, data_type: DataType) -> bool {
+        self.data().seen_data_types.contains(data_type)
+    }
+
     /// Appends an event to the back of the event buffer.
     pub fn push(&mut self, event: Event) {
+        self.data_mut().seen_data_types |= event.data_type();
         self.data_mut().events.push_back(event);
     }
 
@@ -63,7 +70,9 @@ impl Extend<Event> for EventBuffer {
     where
         T: IntoIterator<Item = Event>,
     {
-        self.data_mut().events.extend(iter);
+        for event in iter {
+            self.push(event);
+        }
     }
 }
 
@@ -103,5 +112,70 @@ impl Iterator for IntoIter {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.data_mut().events.pop_front()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EventBuffer;
+
+    use saluki_context::Context;
+    use saluki_event::{
+        eventd::EventD,
+        metric::{Metric, MetricMetadata, MetricValue},
+        DataType, Event,
+    };
+
+    use crate::pooling::{helpers::get_pooled_object_via_default, Clearable as _};
+
+    #[test]
+    fn clear() {
+        // Create an empty event buffer and assert that it's empty and has no seen data types:
+        let mut buffer = get_pooled_object_via_default::<EventBuffer>();
+        assert!(buffer.is_empty());
+        assert!(!buffer.has_data_type(DataType::Metric));
+        assert!(!buffer.has_data_type(DataType::EventD));
+        assert!(!buffer.has_data_type(DataType::ServiceCheck));
+
+        // Now write a metric, and make sure that's reflected:
+        buffer.push(Event::Metric(Metric::from_parts(
+            Context::from_static_parts("foo", &[]),
+            MetricValue::Counter { value: 42.0 },
+            MetricMetadata::default(),
+        )));
+        assert!(!buffer.is_empty());
+        assert!(buffer.has_data_type(DataType::Metric));
+        assert!(!buffer.has_data_type(DataType::EventD));
+        assert!(!buffer.has_data_type(DataType::ServiceCheck));
+
+        // Finally, clear the inner data -- this simulates what happens when an object is returned to the pool -- and
+        // assert that the buffer is once again empty and has no seen data types:
+        buffer.data_mut().clear();
+        assert!(buffer.is_empty());
+        assert!(!buffer.has_data_type(DataType::Metric));
+        assert!(!buffer.has_data_type(DataType::EventD));
+        assert!(!buffer.has_data_type(DataType::ServiceCheck));
+    }
+
+    #[test]
+    fn has_data_type() {
+        let mut buffer = get_pooled_object_via_default::<EventBuffer>();
+        assert!(!buffer.has_data_type(DataType::Metric));
+        assert!(!buffer.has_data_type(DataType::EventD));
+        assert!(!buffer.has_data_type(DataType::ServiceCheck));
+
+        buffer.push(Event::Metric(Metric::from_parts(
+            Context::from_static_parts("foo", &[]),
+            MetricValue::Counter { value: 42.0 },
+            MetricMetadata::default(),
+        )));
+        assert!(buffer.has_data_type(DataType::Metric));
+        assert!(!buffer.has_data_type(DataType::EventD));
+        assert!(!buffer.has_data_type(DataType::ServiceCheck));
+
+        buffer.push(Event::EventD(EventD::new("title", "text")));
+        assert!(buffer.has_data_type(DataType::Metric));
+        assert!(buffer.has_data_type(DataType::EventD));
+        assert!(!buffer.has_data_type(DataType::ServiceCheck));
     }
 }
