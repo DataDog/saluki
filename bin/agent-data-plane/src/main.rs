@@ -107,7 +107,7 @@ async fn run(started: Instant) -> Result<(), GenericError> {
             .connect_component("internal_metrics_out", ["internal_metrics_in"])?;
     }
 
-    // Handle verification of memory bounds.make
+    // Handle verification of memory bounds.
     let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;
     let verify_result = initialize_memory_bounds(bounds_configuration, |builder| {
         builder.bounded_component("env_provider", &env_provider);
