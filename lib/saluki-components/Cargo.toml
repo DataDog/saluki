@@ -11,6 +11,7 @@ async-compression = { workspace = true, features = ["tokio", "zlib"] }
 async-trait = { workspace = true }
 bitmask-enum = { workspace = true }
 bytes = { workspace = true }
+bytesize = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
 futures = { workspace = true }
@@ -46,5 +47,4 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-mu
 tokio-util = { workspace = true }
 tower = { workspace = true }
 tracing = { workspace = true }
-bytesize = { workspace = true }
 url = { workspace = true }
