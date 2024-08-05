@@ -261,7 +261,6 @@ impl SourceBuilder for DogStatsDConfiguration {
     fn outputs(&self) -> &[OutputDefinition] {
         static OUTPUTS: Lazy<Vec<OutputDefinition>> = Lazy::new(|| {
             vec![
-                OutputDefinition::default_output(DataType::Metric),
                 OutputDefinition::named_output("metrics", DataType::Metric),
                 OutputDefinition::named_output("events", DataType::EventD),
                 OutputDefinition::named_output("service_checks", DataType::ServiceCheck),
@@ -444,6 +443,8 @@ async fn drive_stream(
                 let mut eventd_event_buffer = source_context.event_buffer_pool().acquire().await;
                 let mut service_checks_event_buffer = source_context.event_buffer_pool().acquire().await;
 
+                // Filter each event type into their event buffers.
+                // Leave the original event buffer dedicated to metrics.
                 for event in &event_buffer {
                     match event {
                         Event::EventD(_) => eventd_event_buffer.push(event.to_owned()),
