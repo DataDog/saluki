@@ -13,7 +13,7 @@ use super::{
     built::BuiltTopology,
     graph::{Graph, GraphError},
     interconnect::EventBuffer,
-    ComponentId, ComponentOutputId,
+    ComponentId,
 };
 
 /// A topology blueprint error.
@@ -53,17 +53,12 @@ impl TopologyBlueprint {
     /// ## Errors
     ///
     /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
-    pub fn add_source<I, B>(&mut self, maybe_raw_component_id: I, builder: B) -> Result<&mut Self, BlueprintError>
+    pub fn add_source<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, BlueprintError>
     where
-        I: Into<String> + Clone,
-        ComponentId: TryFrom<I>,
-        <ComponentId as TryFrom<I>>::Error: Into<String>,
+        I: AsRef<str>,
         B: SourceBuilder + 'static,
     {
-        let component_id = self
-            .graph
-            .add_source(maybe_raw_component_id, &builder)
-            .context(InvalidGraph)?;
+        let component_id = self.graph.add_source(component_id, &builder).context(InvalidGraph)?;
         let component_token = ComponentRegistry::global().register_component(component_id.to_string());
 
         let builder: Box<dyn SourceBuilder> = Box::new(builder);
@@ -79,17 +74,12 @@ impl TopologyBlueprint {
     /// ## Errors
     ///
     /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
-    pub fn add_transform<I, B>(&mut self, maybe_raw_component_id: I, builder: B) -> Result<&mut Self, BlueprintError>
+    pub fn add_transform<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, BlueprintError>
     where
-        I: Into<String> + Clone,
-        ComponentId: TryFrom<I>,
-        <ComponentId as TryFrom<I>>::Error: Into<String>,
+        I: AsRef<str>,
         B: TransformBuilder + 'static,
     {
-        let component_id = self
-            .graph
-            .add_transform(maybe_raw_component_id, &builder)
-            .context(InvalidGraph)?;
+        let component_id = self.graph.add_transform(component_id, &builder).context(InvalidGraph)?;
         let component_token = ComponentRegistry::global().register_component(component_id.to_string());
 
         let builder: Box<dyn TransformBuilder> = Box::new(builder);
@@ -105,16 +95,14 @@ impl TopologyBlueprint {
     /// ## Errors
     ///
     /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
-    pub fn add_destination<I, B>(&mut self, maybe_raw_component_id: I, builder: B) -> Result<&mut Self, BlueprintError>
+    pub fn add_destination<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, BlueprintError>
     where
-        I: Into<String> + Clone,
-        ComponentId: TryFrom<I>,
-        <ComponentId as TryFrom<I>>::Error: Into<String>,
+        I: AsRef<str>,
         B: DestinationBuilder + 'static,
     {
         let component_id = self
             .graph
-            .add_destination(maybe_raw_component_id, &builder)
+            .add_destination(component_id, &builder)
             .context(InvalidGraph)?;
         let component_token = ComponentRegistry::global().register_component(component_id.to_string());
 
@@ -126,27 +114,23 @@ impl TopologyBlueprint {
         Ok(self)
     }
 
-    /// Connects one or more source components to a destination commponent.
+    /// Connects one or more source component outputs to a destination component.
     ///
     /// ## Errors
     ///
     /// If the destination component ID, or any of the source component IDs, are invalid or do not exist, or if the data
     /// types between one of the source/destination component pairs is incompatible, an error is returned.
-    pub fn connect_component<I, I2, I2T>(
-        &mut self, maybe_raw_component_id: I, inputs: I2,
+    pub fn connect_component<DI, SI, T>(
+        &mut self, destination_component_id: DI, source_output_component_ids: SI,
     ) -> Result<&mut Self, BlueprintError>
     where
-        I: Into<String> + Clone,
-        ComponentId: TryFrom<I>,
-        <ComponentId as TryFrom<I>>::Error: Into<String>,
-        I2: IntoIterator<Item = I2T>,
-        I2T: Into<String> + Clone,
-        ComponentOutputId: TryFrom<I2T>,
-        <ComponentOutputId as TryFrom<I2T>>::Error: Into<String>,
+        DI: AsRef<str>,
+        SI: IntoIterator<Item = T>,
+        T: AsRef<str>,
     {
-        for maybe_raw_output_id in inputs.into_iter() {
+        for source_output_component_id in source_output_component_ids.into_iter() {
             self.graph
-                .add_edge(maybe_raw_output_id, maybe_raw_component_id.clone())
+                .add_edge(source_output_component_id, destination_component_id.as_ref())
                 .context(InvalidGraph)?;
         }
 
@@ -230,7 +214,7 @@ impl MemoryBounds for TopologyBlueprint {
         // TODO: These values are semi-useless because the real memory usage is in the actual `Vec<Event>` that
         // underpins the buffer pool-capable `EventBuffer` wrapper type. Realistically, what we _want_ is have those
         // underlying vectors somehow be fixed-size, and then we would be able to actually say something here like our
-        // fized-size buffer pool for `EventBuffer` is worth <buffer pool max size> * <size_of::<Event>() * max events
+        // fixed-size buffer pool for `EventBuffer` is worth <buffer pool max size> * <size_of::<Event>() * max events
         // per buffer> bytes... and so on.
         builder
             .component("interconnects")
