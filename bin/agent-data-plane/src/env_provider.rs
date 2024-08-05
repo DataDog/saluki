@@ -1,3 +1,4 @@
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_env::{
     host::providers::AgentLikeHostProvider, workload::providers::RemoteAgentWorkloadProvider, EnvironmentProvider,
@@ -51,5 +52,15 @@ impl EnvironmentProvider for ADPEnvironmentProvider {
 
     fn workload(&self) -> &Self::Workload {
         &self.workload_provider
+    }
+}
+
+impl MemoryBounds for ADPEnvironmentProvider {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        builder.bounded_component("host", &self.host_provider);
+
+        if let Some(workload_provider) = self.workload_provider.as_ref() {
+            builder.bounded_component("workload", workload_provider);
+        }
     }
 }

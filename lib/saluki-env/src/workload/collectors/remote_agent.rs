@@ -5,8 +5,11 @@ use datadog_protos::agent::{
     AgentSecureClient, EntityId as RemoteEntityId, EventType, FetchEntityRequest, StreamTagsRequest,
     TagCardinality as RemoteTagCardinality,
 };
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
+use saluki_context::{Tag, TagSet};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use stringtheory::interning::FixedSizeInterner;
 use tokio::sync::mpsc;
 use tonic::{
     service::interceptor::InterceptedService,
@@ -30,6 +33,7 @@ const DEFAULT_AGENT_AUTH_TOKEN_FILE_PATH: &str = "/etc/datadog-agent/auth/token"
 /// Agent, to provide workload information.
 pub struct RemoteAgentMetadataCollector {
     agent_client: AgentSecureClient<InterceptedService<Channel, BearerAuthInterceptor>>,
+    tag_interner: FixedSizeInterner<1>,
 }
 
 impl RemoteAgentMetadataCollector {
@@ -39,7 +43,9 @@ impl RemoteAgentMetadataCollector {
     ///
     /// If the Agent gRPC client cannot be created (invalid API endpoint, missing authentication token, etc), or if the
     /// authentication token is invalid, an error will be returned.
-    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+    pub async fn from_configuration(
+        config: &GenericConfiguration, tag_interner: FixedSizeInterner<1>,
+    ) -> Result<Self, GenericError> {
         let raw_ipc_endpoint = config
             .try_get_typed::<String>("agent_ipc_endpoint")?
             .unwrap_or_else(|| DEFAULT_AGENT_IPC_ENDPOINT.to_string());
@@ -79,7 +85,20 @@ impl RemoteAgentMetadataCollector {
         // Try and do a basic healthcheck to make sure we can connect and that our authentication token is valid.
         try_query_agent_api(&mut agent_client).await?;
 
-        Ok(Self { agent_client })
+        Ok(Self {
+            agent_client,
+            tag_interner,
+        })
+    }
+
+    fn get_interned_tagset(&self, tags: Vec<String>) -> Option<TagSet> {
+        let mut interned_tags = Vec::with_capacity(tags.len());
+        for tag in tags {
+            let interned_tag = self.tag_interner.try_intern(tag.as_str())?;
+            interned_tags.push(Tag::from(interned_tag));
+        }
+
+        Some(TagSet::from_iter(interned_tags))
     }
 }
 
@@ -128,33 +147,49 @@ impl MetadataCollector for RemoteAgentMetadataCollector {
                             }
                         };
 
-                        let operation = match event_type {
+                        let maybe_operation = match event_type {
                             EventType::Added | EventType::Modified => {
                                 let mut actions = Vec::new();
                                 if !entity.low_cardinality_tags.is_empty() {
-                                    actions.push(MetadataAction::SetTags {
-                                        cardinality: TagCardinality::Low,
-                                        tags: entity.low_cardinality_tags.into_iter().map(Into::into).collect(),
-                                    });
+                                    match self.get_interned_tagset(entity.low_cardinality_tags) {
+                                        Some(tags) => actions.push(MetadataAction::SetTags {
+                                            cardinality: TagCardinality::Low,
+                                            tags,
+                                        }),
+                                        None => {
+                                            warn!(%entity_id, "Failed to intern low cardinality tags for entity. Tags will not be present.");
+                                        }
+                                    }
                                 }
 
                                 if !entity.high_cardinality_tags.is_empty() {
-                                    actions.push(MetadataAction::SetTags {
-                                        cardinality: TagCardinality::High,
-                                        tags: entity.high_cardinality_tags.into_iter().map(Into::into).collect(),
-                                    });
+                                    match self.get_interned_tagset(entity.high_cardinality_tags) {
+                                        Some(tags) => actions.push(MetadataAction::SetTags {
+                                            cardinality: TagCardinality::High,
+                                            tags,
+                                        }),
+                                        None => {
+                                            warn!(%entity_id, "Failed to intern high cardinality tags for entity. Tags will not be present.");
+                                        }
+                                    }
                                 }
 
-                                MetadataOperation {
-                                    entity_id,
-                                    actions: actions.into(),
+                                if actions.is_empty() {
+                                    None
+                                } else {
+                                    Some(MetadataOperation {
+                                        entity_id,
+                                        actions: actions.into(),
+                                    })
                                 }
                             }
-                            EventType::Deleted => MetadataOperation::delete(entity_id),
+                            EventType::Deleted => Some(MetadataOperation::delete(entity_id)),
                         };
 
-                        if let Err(e) = operations_tx.send(operation).await {
-                            debug!(error = %e, "Failed to send metadata operation.");
+                        if let Some(operation) = maybe_operation {
+                            if let Err(e) = operations_tx.send(operation).await {
+                                debug!(error = %e, "Failed to send metadata operation.");
+                            }
                         }
                     }
                 }
@@ -164,6 +199,14 @@ impl MetadataCollector for RemoteAgentMetadataCollector {
         }
 
         Ok(())
+    }
+}
+
+impl MemoryBounds for RemoteAgentMetadataCollector {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // TODO: Kind of a throwaway calculation because nothing about the gRPC client can really be bounded at the
+        // moment.
+        builder.firm().with_fixed_amount(std::mem::size_of::<Self>());
     }
 }
 

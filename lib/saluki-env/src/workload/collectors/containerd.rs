@@ -4,10 +4,12 @@ use async_stream::stream;
 use async_trait::async_trait;
 use containerd_client::services::v1::Namespace;
 use futures::{stream::select_all, Stream, StreamExt as _};
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
+use stringtheory::interning::FixedSizeInterner;
 use tokio::{sync::mpsc, time::sleep};
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::workload::{
     entity::EntityId,
@@ -26,6 +28,7 @@ static CONTAINERD_WATCH_EVENTS: &[ContainerdTopic] = &[ContainerdTopic::TaskStar
 pub struct ContainerdMetadataCollector {
     client: ContainerdClient,
     watched_namespaces: Vec<Namespace>,
+    tag_interner: FixedSizeInterner<1>,
 }
 
 impl ContainerdMetadataCollector {
@@ -35,13 +38,16 @@ impl ContainerdMetadataCollector {
     ///
     /// If the containerd gRPC client cannot be created, or listing the namespaces in the containerd runtime fails, an
     /// error will be returned.
-    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+    pub async fn from_configuration(
+        config: &GenericConfiguration, tag_interner: FixedSizeInterner<1>,
+    ) -> Result<Self, GenericError> {
         let client = ContainerdClient::from_configuration(config).await?;
         let watched_namespaces = client.list_namespaces().await?;
 
         Ok(Self {
             client,
             watched_namespaces,
+            tag_interner,
         })
     }
 }
@@ -60,7 +66,7 @@ impl MetadataCollector for ContainerdMetadataCollector {
         let watchers = self
             .watched_namespaces
             .iter()
-            .map(|ns| NamespaceWatcher::new(self.client.clone(), ns.clone()).watch());
+            .map(|ns| NamespaceWatcher::new(self.client.clone(), ns.clone(), self.tag_interner.clone()).watch());
 
         let mut operations_stream = select_all(watchers);
 
@@ -72,21 +78,34 @@ impl MetadataCollector for ContainerdMetadataCollector {
     }
 }
 
+impl MemoryBounds for ContainerdMetadataCollector {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // TODO: Kind of a throwaway calculation because nothing about the gRPC client can really be bounded at the
+        // moment, and we also don't have any way to know the number of namespaces we'll be monitoring a priori.
+        builder.firm().with_fixed_amount(std::mem::size_of::<Self>());
+    }
+}
+
 struct NamespaceWatcher {
     namespace: Namespace,
     client: ContainerdClient,
+    tag_interner: FixedSizeInterner<1>,
 }
 
 impl NamespaceWatcher {
-    fn new(client: ContainerdClient, namespace: Namespace) -> Self {
-        Self { client, namespace }
+    fn new(client: ContainerdClient, namespace: Namespace, tag_interner: FixedSizeInterner<1>) -> Self {
+        Self {
+            client,
+            namespace,
+            tag_interner,
+        }
     }
 
     async fn process_event(&self, event: ContainerdEvent) -> Option<MetadataOperation> {
         match event {
             ContainerdEvent::TaskStarted { id, pid } => {
                 let pid_entity_id = EntityId::ContainerPid(pid);
-                let container_entity_id = EntityId::Container(id.into());
+                let container_entity_id = EntityId::Container(id);
                 Some(MetadataOperation::link_ancestor(pid_entity_id, container_entity_id))
             }
             ContainerdEvent::TaskDeleted { pid, .. } => Some(MetadataOperation::delete(EntityId::ContainerPid(pid))),
@@ -128,8 +147,21 @@ impl NamespaceWatcher {
 
             for pid in pids {
                 let pid_entity_id = EntityId::ContainerPid(pid);
-                let container_entity_id = EntityId::Container(container.id.clone().into());
-                operations.push(MetadataOperation::link_ancestor(pid_entity_id, container_entity_id));
+
+                match self.tag_interner.try_intern(container.id.as_str()) {
+                    Some(container_id) => {
+                        let container_entity_id = EntityId::Container(container_id.into());
+                        operations.push(MetadataOperation::link_ancestor(pid_entity_id, container_entity_id));
+                    }
+                    None => {
+                        warn!(
+                            namespace = self.namespace.name,
+                            container_id = container.id,
+                            container_task_pid = pid,
+                            "Failed to intern container ID. Container ID/task PID link will not be created."
+                        );
+                    }
+                }
             }
         }
 
