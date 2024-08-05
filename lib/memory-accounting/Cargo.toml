@@ -6,7 +6,6 @@ license = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
-bytesize = { workspace = true }
 memory-stats = { workspace = true }
 metrics = { workspace = true }
 ordered-float = { workspace = true }
@@ -14,6 +13,7 @@ pin-project = { workspace = true }
 snafu = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing = { workspace = true }
+bytesize = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true, features = ["std"] }

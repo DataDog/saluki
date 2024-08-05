@@ -6,7 +6,6 @@ license = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
-bytesize = { workspace = true }
 memory-accounting = { workspace = true }
 saluki-app = { workspace = true }
 saluki-components = { workspace = true }
@@ -18,6 +17,7 @@ saluki-io = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "signal"] }
 tracing = { workspace = true }
+bytesize = { workspace = true }
 
 [build-dependencies]
 chrono = { workspace = true }

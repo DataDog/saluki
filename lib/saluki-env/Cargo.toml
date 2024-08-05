@@ -16,7 +16,7 @@ datadog-protos = { workspace = true }
 futures = { workspace = true }
 hostname = { workspace = true }
 hyper = { workspace = true, features = ["client", "http2"] }
-hyper-rustls = { workspace = true, features = ["http2"] }
+hyper-rustls = { workspace = true }
 hyper-util = { workspace = true }
 k8s-openapi = { workspace = true, features = ["v1_24"] }
 kube = { workspace = true, features = ["client", "rustls-tls"] }
@@ -34,7 +34,7 @@ snafu = { workspace = true }
 socket2 = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["fs", "macros", "sync"] }
-tokio-rustls = { workspace = true, features = ["ring"] }
+tokio-rustls = { workspace = true }
 tokio-util = { workspace = true, features = ["time"] }
 tonic = { workspace = true, features = ["transport"] }
 tower = { workspace = true, features = ["util"] }

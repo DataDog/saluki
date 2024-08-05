@@ -48,6 +48,10 @@ async fn main() {
         fatal_and_exit(format!("failed to initialize allocator telemetry: {}", e));
     }
 
+    if let Err(e) = initialize_tls() {
+        fatal_and_exit(format!("failed to initialize TLS: {}", e));
+    }
+
     match run(started).await {
         Ok(()) => info!("Agent Data Plane stopped."),
         Err(e) => {

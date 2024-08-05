@@ -6,7 +6,6 @@ use std::{
     time::Duration,
 };
 
-use bytesize::ByteSize;
 use memory_accounting::{
     allocator::{AllocationStats, AllocationStatsDelta, ComponentRegistry},
     BoundsVerifier, MemoryBoundsBuilder, MemoryGrant, MemoryLimiter, VerifiedBounds,
@@ -17,6 +16,7 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tokio::time::sleep;
 use tracing::{info, warn};
+use bytesize::ByteSize;
 
 const fn default_memory_slop_factor() -> f64 {
     0.25
