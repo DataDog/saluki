@@ -6,9 +6,8 @@ use libc::{
 };
 
 /// A memory usage querier.
-pub struct Querier {
-    source: StatSource,
-}
+#[derive(Default)]
+pub struct Querier;
 
 impl Querier {
     /// Gets the resident set size of this process, in bytes.
@@ -21,20 +20,28 @@ impl Querier {
         // This represents a set of integers, each relating to a specific task value, and `task_info` expects a pointer to
         // this struct and the number of integers it is able to write into it, which is already derived for us in
         // `MACH_TASK_BASIC_INFO_COUNT`.
-        let mut task_info = MaybeUninit::<mach_task_basic_info_data_t>::uninit();
-        let mut task_info_len = MACH_TASK_BASIC_INFO_COUNT;
+        let mut basic_task_info = MaybeUninit::<mach_task_basic_info_data_t>::uninit();
+        let mut basic_task_info_len = MACH_TASK_BASIC_INFO_COUNT;
 
-        let result = task_info(
-            mach_task_self(),
-            MACH_TASK_BASIC_INFO,
-            task_info.as_mut_ptr() as task_info_t,
-            &mut task_info_len as *mut mach_msg_type_number_t,
-        );
+        // SAFETY: We're passing a valid pointer, and struct length, for the task info output.
+        let result = unsafe {
+            task_info(
+                mach_task_self(),
+                MACH_TASK_BASIC_INFO,
+                basic_task_info.as_mut_ptr() as task_info_t,
+                &mut basic_task_info_len as *mut mach_msg_type_number_t,
+            )
+        };
         match result {
             KERN_SUCCESS => {
                 // SAFETY: We know the structure has been populated by `task_info` at this point.
-                let task_info = unsafe { task_info.assume_init() };
-                Some(task_info.resident_size as usize * vm_page_size)
+                let basic_task_info = unsafe { basic_task_info.assume_init() };
+
+                // SAFETY: `vm_page_size` is initialized at process start by `mach_init`/`libSystem_initializer`, and
+                // left alone after that.
+                let page_size = unsafe { vm_page_size };
+
+                Some(basic_task_info.resident_size as usize * page_size)
             }
 
             // Failed to get the task info.
