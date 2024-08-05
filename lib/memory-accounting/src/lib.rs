@@ -15,7 +15,7 @@
 //!
 //! One major problem with resource planning is predicting memory usage. For many applications,
 //! there are a number of factors that can influence memory usage, such as:
-//! 
+//!
 //! - the workload itself (amount of data coming in)
 //! - application configuration (buffer sizes)
 //! - application changes (new features, bug fixes)
