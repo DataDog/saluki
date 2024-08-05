@@ -8,12 +8,11 @@ doing so in a performant, reliable, and efficient way.
 
 ### Topologies
 
-In Saluki, users construct **topologies**, which are a collection of uniquely identified
-**components** connected together in a directed, acyclic graph. While that may be the correct
-technical term, the simpler explanation is that it just means that components send data to each
-other in a single direction, like a pipeline of Unix commands (e.g., `cat messages | grep error | wc
--l`), and that there can be no cycles between components (e.g., componentA -> component B ->
-component A).
+In Saluki, users construct a **topology**, which is a collection of uniquely identified
+**components** connected together in a directed, acyclic graph. This just means that components send
+data to each other in a single direction, like a pipeline of Unix commands (e.g., `cat messages |
+grep error | wc -l`), and that there can be no cycles between components (e.g., componentA ->
+component B -> component A).
 
 OK, so why does this matter? This structure allows components to be easily composed together, and it
 allow for a component to send data to multiple downstream components _or_ for a component to receive
@@ -228,9 +227,10 @@ can validate that each component in the topology as being both configured and co
 then finally spawn the topology to begin accepting, processing, and forwarding data.
 
 When a topology is spawned, we do so by using an asynchronous runtime, where each component is
-treated as an individual "task." Saluki uses [Tokio](https://docs.rs/tokio) as the underlying
-runtime implementation, as it provides a high-performance, work-stealing runtime that is well-suited
-for running data-intensive pipelines such as the ones built with Saluki.
+treated as an individual "task," and individual components can spawn their own tasks. Saluki uses
+[Tokio](https://docs.rs/tokio) as the underlying runtime implementation, as it provides a
+high-performance, work-stealing runtime that is well-suited for running data-intensive pipelines
+such as the ones built with Saluki.
 
 #### Concurrency and parallelism
 
