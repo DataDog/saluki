@@ -70,7 +70,9 @@ impl Extend<Event> for EventBuffer {
     where
         T: IntoIterator<Item = Event>,
     {
-        self.data_mut().events.extend(iter);
+        for event in iter {
+            self.push(event);
+        }
     }
 }
 
