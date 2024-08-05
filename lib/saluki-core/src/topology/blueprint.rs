@@ -189,20 +189,17 @@ impl MemoryBounds for TopologyBlueprint {
         // Account for sources, transforms, and destinations.
         let mut source_builder = component_builder.component("sources");
         for (name, source) in &self.sources {
-            let mut source_builder = source_builder.component(name.to_string());
-            source.inner_ref().specify_bounds(&mut source_builder);
+            source_builder.bounded_component(name.to_string(), source.inner_ref());
         }
 
         let mut transform_builder = component_builder.component("transforms");
         for (name, transform) in &self.transforms {
-            let mut transform_builder = transform_builder.component(name.to_string());
-            transform.inner_ref().specify_bounds(&mut transform_builder);
+            transform_builder.bounded_component(name.to_string(), transform.inner_ref());
         }
 
         let mut destination_builder = component_builder.component("destinations");
         for (name, destination) in &self.destinations {
-            let mut destination_builder = destination_builder.component(name.to_string());
-            destination.inner_ref().specify_bounds(&mut destination_builder);
+            destination_builder.bounded_component(name.to_string(), destination.inner_ref());
         }
 
         // Now account for all of the things that we provide components by default, like the global event buffer pool,
@@ -219,7 +216,7 @@ impl MemoryBounds for TopologyBlueprint {
         builder
             .component("interconnects")
             .minimum()
-            .with_array::<EventBuffer>(self.transforms.len() + self.destinations.len());
+            .with_array::<EventBuffer>((self.transforms.len() + self.destinations.len()) * 128);
 
         // We also have our global event buffer pool that all components have shared access to.
         builder

@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use crate::ComponentBounds;
+use crate::{ComponentBounds, MemoryBounds};
 
 pub struct Minimum;
 pub struct Firm;
@@ -64,8 +64,6 @@ impl MemoryBoundsBuilder<'static> {
     /// Returns the calculated component bounds.
     pub fn finalize(self) -> ComponentBounds {
         match self.inner {
-            // TODO: This should be unreachable if we're 'static, since we only have an owned version for 'static... but
-            // I'm trying to think through if the compiler is going to infer 'static for the calls to `component`. :think:
             MutablePointer::Borrowed(_) => unreachable!(),
             MutablePointer::Owned(inner) => inner,
         }
@@ -101,6 +99,38 @@ impl<'a> MemoryBoundsBuilder<'a> {
             inner: MutablePointer::Borrowed(inner),
         }
     }
+
+    /// Creates a nested subcomponent based on the given component.
+    ///
+    /// This allows for defining a subcomponent whose bounds come from an object that implements `MemoryBounds` directly.
+    pub fn bounded_component<S, C>(&mut self, name: S, component: &C) -> &mut Self
+    where
+        S: Into<String>,
+        C: MemoryBounds,
+    {
+        let mut builder = self.component(name);
+        component.specify_bounds(&mut builder);
+
+        self
+    }
+
+    /// Merges a set of existing `ComponentBounds` into the current builder.
+    pub fn merge_existing(&mut self, existing: &ComponentBounds) -> &mut Self {
+        let inner = self.inner.as_mut();
+        inner.self_minimum_required_bytes += existing.self_minimum_required_bytes;
+        inner.self_firm_limit_bytes += existing.self_firm_limit_bytes;
+
+        for (name, existing_subcomponent) in &existing.subcomponents {
+            let subcomponent = inner.subcomponents.entry(name.clone()).or_default();
+            let mut builder = MemoryBoundsBuilder {
+                inner: MutablePointer::Borrowed(subcomponent),
+            };
+
+            builder.merge_existing(existing_subcomponent);
+        }
+
+        self
+    }
 }
 
 impl Default for MemoryBoundsBuilder<'static> {
@@ -109,6 +139,13 @@ impl Default for MemoryBoundsBuilder<'static> {
     }
 }
 
+/// A bounds builder.
+///
+/// `BoundsBuilder` provides helper methods for more directly describing the memory usage of a component by matching
+/// common types and usages. For example, methods are provided for accounting for the memory used by an array (e.g.
+/// `Vec<T>`) or a map (e.g. `HashMap<K, V>`). While the caller is able to do this math themselves, the builder provides
+/// these methods to make it as easy as reasonably possible and to allow for implementations of `MemoryBounds` to be as
+/// self-describing, in terms of the code, as possible.
 pub struct BoundsBuilder<'a, S> {
     bounds: &'a mut ComponentBounds,
     _state: PhantomData<S>,
@@ -142,7 +179,7 @@ impl<'a, S: BoundsMutator> BoundsBuilder<'a, S> {
     /// Accounts for a map container of the given length.
     ///
     /// This can be used to track the expected memory usage of generalized maps like `HashMap<K, V>`, where keys and
-    /// values are
+    /// values are typically allocated contiguously.
     pub fn with_map<K, V>(&mut self, len: usize) -> &mut Self {
         S::add_usage(self.bounds, len * (std::mem::size_of::<K>() + std::mem::size_of::<V>()));
         self
