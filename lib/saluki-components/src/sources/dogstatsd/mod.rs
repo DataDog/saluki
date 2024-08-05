@@ -2,6 +2,7 @@ use std::num::NonZeroUsize;
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use once_cell::sync::Lazy;
 use saluki_config::GenericConfiguration;
 use saluki_context::ContextResolver;
 use saluki_core::{
@@ -13,8 +14,9 @@ use saluki_core::{
         OutputDefinition,
     },
 };
+
 use saluki_error::{generic_error, GenericError};
-use saluki_event::DataType;
+use saluki_event::{DataType, Event};
 use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, BytesBuffer},
     deser::{
@@ -257,9 +259,16 @@ impl SourceBuilder for DogStatsDConfiguration {
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(DataType::Metric)];
+        static OUTPUTS: Lazy<Vec<OutputDefinition>> = Lazy::new(|| {
+            vec![
+                OutputDefinition::default_output(DataType::Metric),
+                OutputDefinition::named_output("metrics", DataType::Metric),
+                OutputDefinition::named_output("events", DataType::EventD),
+                OutputDefinition::named_output("service_checks", DataType::ServiceCheck),
+            ]
+        });
 
-        OUTPUTS
+        &OUTPUTS
     }
 }
 
@@ -432,10 +441,35 @@ async fn drive_stream(
                     }
                 }
 
+                let mut eventd_event_buffer = source_context.event_buffer_pool().acquire().await;
+                let mut service_checks_event_buffer = source_context.event_buffer_pool().acquire().await;
+
+                for event in &event_buffer {
+                    match event {
+                        Event::EventD(_) => eventd_event_buffer.push(event.to_owned()),
+                        Event::ServiceCheck(_) => service_checks_event_buffer.push(event.to_owned()),
+                        _ => {}
+                    }
+                }
+
                 trace!(%listen_addr, %peer_addr, events_len = n, "Forwarding events.");
 
-                if let Err(e) = source_context.forwarder().forward(event_buffer).await {
-                    error!(%listen_addr, %peer_addr, error = %e, "Failed to forward events.");
+                if let Err(e) = source_context.forwarder().forward_named("metrics", event_buffer).await {
+                    error!(%listen_addr, %peer_addr, error = %e, "Failed to forward metric events.");
+                }
+                if let Err(e) = source_context
+                    .forwarder()
+                    .forward_named("events", eventd_event_buffer)
+                    .await
+                {
+                    error!(%listen_addr, %peer_addr, error = %e, "Failed to forward eventd events.");
+                }
+                if let Err(e) = source_context
+                    .forwarder()
+                    .forward_named("service_checks", service_checks_event_buffer)
+                    .await
+                {
+                    error!(%listen_addr, %peer_addr, error = %e, "Failed to forward service check events.");
                 }
             }
             Err(e) => match e {

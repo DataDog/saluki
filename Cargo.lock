@@ -2363,6 +2363,7 @@ dependencies = [
  "metrics",
  "metrics-util",
  "nom",
+ "once_cell",
  "paste",
  "pin-project",
  "protobuf",
