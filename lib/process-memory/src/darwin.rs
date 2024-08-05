@@ -1,7 +1,7 @@
 use std::mem::MaybeUninit;
 
 use libc::{
-    mach_msg_type_number_t, mach_task_basic_info_data_t, mach_task_self, task_info, task_info_t, vm_page_size,
+    mach_msg_type_number_t, mach_task_basic_info_data_t, mach_task_self, task_info, task_info_t,
     KERN_SUCCESS, MACH_TASK_BASIC_INFO, MACH_TASK_BASIC_INFO_COUNT,
 };
 
@@ -36,12 +36,7 @@ impl Querier {
             KERN_SUCCESS => {
                 // SAFETY: We know the structure has been populated by `task_info` at this point.
                 let basic_task_info = unsafe { basic_task_info.assume_init() };
-
-                // SAFETY: `vm_page_size` is initialized at process start by `mach_init`/`libSystem_initializer`, and
-                // left alone after that.
-                let page_size = unsafe { vm_page_size };
-
-                Some(basic_task_info.resident_size as usize * page_size)
+                Some(basic_task_info.resident_size as usize)
             }
 
             // Failed to get the task info.
