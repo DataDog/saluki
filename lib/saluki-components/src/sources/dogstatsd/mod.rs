@@ -1,6 +1,7 @@
 use std::num::NonZeroUsize;
 
 use async_trait::async_trait;
+use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use once_cell::sync::Lazy;
 use saluki_config::GenericConfiguration;
@@ -34,7 +35,6 @@ use snafu::{ResultExt as _, Snafu};
 use stringtheory::interning::FixedSizeInterner;
 use tokio::select;
 use tracing::{debug, error, info, trace};
-use ubyte::ByteUnit;
 
 mod framer;
 use self::framer::{get_framer, DogStatsDMultiFraming};
@@ -75,8 +75,8 @@ const fn default_no_aggregation_pipeline_support() -> bool {
     true
 }
 
-const fn default_context_string_interner_size() -> ByteUnit {
-    ByteUnit::Mebibyte(2)
+const fn default_context_string_interner_size() -> ByteSize {
+    ByteSize::mib(2)
 }
 
 /// DogStatsD source.
@@ -183,7 +183,7 @@ pub struct DogStatsDConfiguration {
         rename = "dogstatsd_string_interner_size",
         default = "default_context_string_interner_size"
     )]
-    context_string_interner_bytes: ByteUnit,
+    context_string_interner_bytes: ByteSize,
 }
 
 impl DogStatsDConfiguration {

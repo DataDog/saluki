@@ -353,7 +353,7 @@ endif
 .PHONY: profile-run-adp-ddprof
 profile-run-adp-ddprof: ensure-ddprof build-adp
 profile-run-adp-ddprof: ## Runs ADP under ddprof locally
-ifeq ($(shell test -f /var/run/datadog/apm.socket || echo not-found), not-found)
+ifeq ($(shell test -S /var/run/datadog/apm.socket || echo not-found), not-found)
 	$(error "APM socket at /var/run/datadog/apm.socket not found. Is the Datadog Agent running?")
 endif
 	@echo "[*] Running ADP under ddprof (service: adp, environment: local, version: $(GIT_COMMIT))..."

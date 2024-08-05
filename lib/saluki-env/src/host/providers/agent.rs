@@ -1,6 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, GenericError};
 
@@ -117,4 +118,24 @@ impl HostProvider for AgentLikeHostProvider {
 
         current_hostname.ok_or_else(|| generic_error!("Unable to reliably determine the host name."))
     }
+}
+
+impl MemoryBounds for AgentLikeHostProvider {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // TODO: Doesn't account for the actual size of any the static values -- like hostname, or path to hostname file
+        // -- nor does it account for the strings allocated by any of these providers.
+        builder
+            .firm()
+            // Providers.
+            .with_array::<ChainedProvider>(self.providers.len())
+            // Size of the known providers being utilized.
+            .with_fixed_amount(size_in_arc::<MaybeStaticHostnameProvider>())
+            .with_fixed_amount(size_in_arc::<MaybeFileHostnameProvider>())
+            .with_fixed_amount(size_in_arc::<KubernetesHostnameProvider>())
+            .with_fixed_amount(size_in_arc::<OperatingSystemHostnameProvider>());
+    }
+}
+
+const fn size_in_arc<T>() -> usize {
+    std::mem::size_of::<T>() + (2 * std::mem::size_of::<usize>())
 }

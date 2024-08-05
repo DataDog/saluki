@@ -1,5 +1,7 @@
-use std::collections::{HashMap, VecDeque};
+use std::{collections::VecDeque, num::NonZeroUsize};
 
+use ahash::{AHashMap, AHashSet};
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_context::TagSet;
 use tracing::debug;
 
@@ -23,18 +25,54 @@ use super::{
 /// related to other entities, such as a container belong to a specific pod, and so on. [`TagStore`] is designed to hold
 /// all of the information necessary to compute the "unified" tag set of an entity based on combining the tags of the
 /// entity itself and its ancestors.
-#[derive(Default)]
 pub struct TagStore {
-    entity_hierarchy_mappings: HashMap<EntityId, EntityId>,
+    entity_limit: NonZeroUsize,
+    active_entities: AHashSet<EntityId>,
 
-    low_cardinality_entity_tags: HashMap<EntityId, TagSet>,
-    high_cardinality_entity_tags: HashMap<EntityId, TagSet>,
+    entity_hierarchy_mappings: AHashMap<EntityId, EntityId>,
 
-    unified_low_cardinality_entity_tags: HashMap<EntityId, TagSet>,
-    unified_high_cardinality_entity_tags: HashMap<EntityId, TagSet>,
+    low_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
+    high_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
+
+    unified_low_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
+    unified_high_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
 }
 
 impl TagStore {
+    /// Creates a new `TagStore` with the given entity limit.
+    ///
+    /// The entity limit is the maximum number of entities that can be stored in the tag store. Once the limit is
+    /// reached, new entities will not be added to the store.
+    pub fn with_entity_limit(entity_limit: NonZeroUsize) -> Self {
+        Self {
+            entity_limit,
+            active_entities: AHashSet::new(),
+            entity_hierarchy_mappings: AHashMap::new(),
+            low_cardinality_entity_tags: AHashMap::new(),
+            high_cardinality_entity_tags: AHashMap::new(),
+            unified_low_cardinality_entity_tags: AHashMap::new(),
+            unified_high_cardinality_entity_tags: AHashMap::new(),
+        }
+    }
+
+    /// Gets the entity limit of the tag store.
+    pub fn entity_limit(&self) -> usize {
+        self.entity_limit.get()
+    }
+
+    fn track_entity(&mut self, entity_id: &EntityId) -> bool {
+        if self.active_entities.contains(entity_id) {
+            return true;
+        }
+
+        if self.active_entities.len() >= self.entity_limit.get() {
+            return false;
+        }
+
+        let _ = self.active_entities.insert(entity_id.clone());
+        true
+    }
+
     /// Processes a metadata operation.
     ///
     /// When necessary, the unified tag set of the given entity will be updated, along with any other entities who are
@@ -66,6 +104,8 @@ impl TagStore {
     }
 
     fn delete_entity(&mut self, entity_id: EntityId) {
+        self.active_entities.remove(&entity_id);
+
         // Delete all of the tags for the entity, both raw and unified.
         self.low_cardinality_entity_tags.remove(&entity_id);
         self.high_cardinality_entity_tags.remove(&entity_id);
@@ -99,6 +139,11 @@ impl TagStore {
     }
 
     fn add_entity_tags(&mut self, entity_id: EntityId, tags: TagSet, cardinality: TagCardinality) {
+        if !self.track_entity(&entity_id) {
+            // TODO: Emit a warning log and/or a metric here.
+            return;
+        }
+
         let existing_tags = match cardinality {
             TagCardinality::Low => self.low_cardinality_entity_tags.entry(entity_id.clone()).or_default(),
             TagCardinality::High => self.high_cardinality_entity_tags.entry(entity_id.clone()).or_default(),
@@ -109,6 +154,11 @@ impl TagStore {
     }
 
     fn set_entity_tags(&mut self, entity_id: EntityId, tags: TagSet, cardinality: TagCardinality) {
+        if !self.track_entity(&entity_id) {
+            // TODO: Emit a warning log and/or a metric here.
+            return;
+        }
+
         let existing_tags = match cardinality {
             TagCardinality::Low => self.low_cardinality_entity_tags.entry(entity_id.clone()).or_default(),
             TagCardinality::High => self.high_cardinality_entity_tags.entry(entity_id.clone()).or_default(),
@@ -247,11 +297,45 @@ impl TagStore {
     }
 }
 
+impl MemoryBounds for TagStore {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // TODO: We don't properly consider the hierarchy mappings here.
+        //
+        // The problem with entity hierarchy mappings is that they're essentially unbounded. Since we don't require
+        // actually having tags present for a linked ancestor, you could just have however many ancestry links as you
+        // want, and thus the unbounded aspect.
+        //
+        // Conceptually, every ancestry link ought to represent two entities that both have tags, otherwise it's kind of
+        // useless to link them... but I'll need to think about how we scope down the flexibility so that we can
+        // calculate a proper bound.
+        //
+        // For now, we'll use a reasonable guess of 1x the entity limit: since we generally only link container PIDs to
+        // container IDs, we would expect to have no more links than entities with tags, and thus 1x the entity limit.
+
+        builder
+            .firm()
+            // Active entities.
+            .with_array::<EntityId>(self.entity_limit())
+            // Entity hierarchy mappings.
+            //
+            // See TODO note about why this is an estimate.
+            .with_map::<EntityId, EntityId>(self.entity_limit())
+            // Low cardinality entity tags.
+            .with_map::<EntityId, TagSet>(self.entity_limit())
+            // High cardinality entity tags.
+            .with_map::<EntityId, TagSet>(self.entity_limit())
+            // Unified low cardinality entity tags.
+            .with_map::<EntityId, TagSet>(self.entity_limit())
+            // Unified high cardinality entity tags.
+            .with_map::<EntityId, TagSet>(self.entity_limit());
+    }
+}
+
 /// A point-in-time snapshot of the unified
 #[derive(Debug, Default)]
 pub struct TagSnapshot {
-    low_cardinality_entity_tags: HashMap<EntityId, TagSet>,
-    high_cardinality_entity_tags: HashMap<EntityId, TagSet>,
+    low_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
+    high_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
 }
 
 impl TagSnapshot {
@@ -271,6 +355,8 @@ impl TagSnapshot {
 // aggregates the values of existing tags.
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+
     use saluki_context::TagSet;
 
     use crate::workload::{
@@ -279,6 +365,8 @@ mod tests {
         metadata::{MetadataAction, MetadataOperation, TagCardinality},
         store::TagStore,
     };
+
+    const DEFAULT_ENTITY_LIMIT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(10) };
 
     fn link_ancestor(child: &EntityId, ancestor: &EntityId) -> MetadataOperation {
         MetadataOperation::link_ancestor(child.clone(), ancestor.clone())
@@ -323,7 +411,7 @@ mod tests {
         let entity_id = EntityId::Container("container-id".into());
         let (expected_tags, operations) = low_cardinality!(&entity_id, tags => ["service" => "foo"]);
 
-        let mut store = TagStore::default();
+        let mut store = TagStore::with_entity_limit(DEFAULT_ENTITY_LIMIT);
         for operation in operations {
             store.process_operation(operation);
         }
@@ -344,7 +432,7 @@ mod tests {
         // Make sure to make our expected high cardinality tags a superset.
         high_card_expected_tags.extend(low_card_expected_tags.clone());
 
-        let mut store = TagStore::default();
+        let mut store = TagStore::with_entity_limit(DEFAULT_ENTITY_LIMIT);
         for operation in low_card_operations {
             store.process_operation(operation);
         }
@@ -372,7 +460,7 @@ mod tests {
 
         expected_tags.extend(global_expected_tags.clone());
 
-        let mut store = TagStore::default();
+        let mut store = TagStore::with_entity_limit(DEFAULT_ENTITY_LIMIT);
         for operation in global_operations {
             store.process_operation(operation);
         }
@@ -412,7 +500,7 @@ mod tests {
 
         container_pid_expected_tags.extend(container_expected_tags.clone());
 
-        let mut store = TagStore::default();
+        let mut store = TagStore::with_entity_limit(DEFAULT_ENTITY_LIMIT);
         for operation in pod_operations {
             store.process_operation(operation);
         }
@@ -451,7 +539,7 @@ mod tests {
         let entity_id = EntityId::Container("container-id".into());
         let (expected_tags, operations) = low_cardinality!(&entity_id, tags => ["service" => "foo"]);
 
-        let mut store = TagStore::default();
+        let mut store = TagStore::with_entity_limit(DEFAULT_ENTITY_LIMIT);
         for operation in operations {
             store.process_operation(operation);
         }
@@ -488,7 +576,7 @@ mod tests {
 
         container_expected_tags.extend(pod_expected_tags.clone());
 
-        let mut store = TagStore::default();
+        let mut store = TagStore::with_entity_limit(DEFAULT_ENTITY_LIMIT);
         for operation in pod_operations {
             store.process_operation(operation);
         }
@@ -531,5 +619,60 @@ mod tests {
             .get_entity_tags(&container_entity_id, TagCardinality::Low)
             .unwrap();
         assert_eq!(container_unified_tags.as_sorted(), container_expected_tags.as_sorted());
+    }
+
+    #[test]
+    fn obeys_entity_limit() {
+        // We create three entities that we'll try to process with an entity limit of two.
+        let pod_entity_id = EntityId::PodUid("datadog-agent-pod-uid".into());
+        let (_, pod_operations) = low_cardinality!(&pod_entity_id, tags => ["kube_pod_name" => "datadog-agent-z1ha3"]);
+
+        let container1_entity_id = EntityId::Container("process-agent-container-id".into());
+        let (_, container1_operations) = low_cardinality!(&container1_entity_id, tags => ["service" => "foo"]);
+
+        let container2_entity_id = EntityId::Container("trace-agent-container-id".into());
+        let (_, container2_operations) = low_cardinality!(&container2_entity_id, tags => ["service" => "foo"]);
+
+        let entity_limit = NonZeroUsize::new(2).unwrap();
+        let mut store = TagStore::with_entity_limit(entity_limit);
+        for operation in pod_operations {
+            store.process_operation(operation);
+        }
+        for operation in container1_operations {
+            store.process_operation(operation);
+        }
+        for operation in container2_operations {
+            store.process_operation(operation);
+        }
+
+        // At this point, we should have tags for the pod, and container #1, but not container #2.
+        let snapshot = store.snapshot();
+
+        assert!(snapshot.get_entity_tags(&pod_entity_id, TagCardinality::Low).is_some());
+        assert!(snapshot
+            .get_entity_tags(&container1_entity_id, TagCardinality::Low)
+            .is_some());
+        assert!(snapshot
+            .get_entity_tags(&container2_entity_id, TagCardinality::Low)
+            .is_none());
+
+        // If we delete container #1, and then process the container #2 operations again, we should then have tags for
+        // container #2 but not container #1.
+        store.process_operation(MetadataOperation::delete(container1_entity_id.clone()));
+
+        let (_, container2_operations) = low_cardinality!(&container2_entity_id, tags => ["service" => "foo"]);
+        for operation in container2_operations {
+            store.process_operation(operation);
+        }
+
+        let snapshot = store.snapshot();
+
+        assert!(snapshot.get_entity_tags(&pod_entity_id, TagCardinality::Low).is_some());
+        assert!(snapshot
+            .get_entity_tags(&container1_entity_id, TagCardinality::Low)
+            .is_none());
+        assert!(snapshot
+            .get_entity_tags(&container2_entity_id, TagCardinality::Low)
+            .is_some());
     }
 }

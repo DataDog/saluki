@@ -35,8 +35,26 @@ pub trait MemoryBounds {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder);
 }
 
+impl<'a, T> MemoryBounds for &'a T
+where
+    T: MemoryBounds,
+{
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        T::specify_bounds(self, builder);
+    }
+}
+
+impl<T> MemoryBounds for Box<T>
+where
+    T: MemoryBounds + ?Sized,
+{
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        T::specify_bounds(self, builder);
+    }
+}
+
 /// Memory bounds for a component.
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ComponentBounds {
     self_minimum_required_bytes: usize,
     self_firm_limit_bytes: usize,

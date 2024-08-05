@@ -21,6 +21,7 @@ checksum = "f26201604c87b1e01bd3d98f8d5d9a8fcbb815e8cedb41ffccbeb4bf593a35fe"
 name = "agent-data-plane"
 version = "0.1.0"
 dependencies = [
+ "bytesize",
  "chrono",
  "memory-accounting",
  "saluki-app",
@@ -33,7 +34,6 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
- "ubyte",
 ]
 
 [[package]]
@@ -352,6 +352,15 @@ name = "bytes"
 version = "1.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8318a53db07bb3f8dca91a600466bdb3f2eaadeedfdbcf02e1accbad9271ba50"
+
+[[package]]
+name = "bytesize"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3e368af43e418a04d52505cf3dbc23dda4e3407ae2fa99fd0e4f308ce546acc"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "cast"
@@ -1438,6 +1447,7 @@ checksum = "78ca9ab1a0babb1e7d5695e3530886289c18cf2f87ec19a575a0abdce112e3a3"
 name = "memory-accounting"
 version = "0.1.0"
 dependencies = [
+ "bytesize",
  "memory-stats",
  "metrics",
  "ordered-float 4.2.2",
@@ -1446,7 +1456,6 @@ dependencies = [
  "snafu",
  "tokio",
  "tracing",
- "ubyte",
 ]
 
 [[package]]
@@ -2325,6 +2334,7 @@ checksum = "f3cb5ba0dc43242ce17de99c180e96db90b235b8a9fdc9543c96d2209116bd9f"
 name = "saluki-app"
 version = "0.1.0"
 dependencies = [
+ "bytesize",
  "memory-accounting",
  "metrics",
  "metrics-util",
@@ -2336,7 +2346,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "ubyte",
 ]
 
 [[package]]
@@ -2348,6 +2357,7 @@ dependencies = [
  "async-trait",
  "bitmask-enum",
  "bytes",
+ "bytesize",
  "datadog-protos",
  "ddsketch-agent",
  "futures",
@@ -2384,7 +2394,6 @@ dependencies = [
  "tokio-util",
  "tower",
  "tracing",
- "ubyte",
  "url",
 ]
 
@@ -2418,6 +2427,7 @@ dependencies = [
  "ahash",
  "async-trait",
  "bytes",
+ "bytesize",
  "datadog-protos",
  "ddsketch-agent",
  "indexmap 2.3.0",
@@ -2441,13 +2451,13 @@ dependencies = [
  "tokio-util",
  "tower",
  "tracing",
- "ubyte",
 ]
 
 [[package]]
 name = "saluki-env"
 version = "0.1.0"
 dependencies = [
+ "ahash",
  "arc-swap",
  "async-stream",
  "async-trait",
@@ -2461,6 +2471,7 @@ dependencies = [
  "hyper-util",
  "k8s-openapi",
  "kube",
+ "memory-accounting",
  "prost",
  "prost-types",
  "regex",
@@ -3256,15 +3267,6 @@ name = "typenum"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42ff0bf0c66b8238c6f3b578df37d0b7848e55df8577b3f74f92a69acceeb825"
-
-[[package]]
-name = "ubyte"
-version = "0.10.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f720def6ce1ee2fc44d40ac9ed6d3a59c361c80a75a7aa8e75bb9baed31cf2ea"
-dependencies = [
- "serde",
-]
 
 [[package]]
 name = "ucd-trie"

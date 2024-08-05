@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use bytesize::ByteSize;
 use memory_accounting::{
     allocator::{AllocationStats, AllocationStatsDelta, ComponentRegistry},
     BoundsVerifier, MemoryBoundsBuilder, MemoryGrant, MemoryLimiter, VerifiedBounds,
@@ -16,7 +17,6 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tokio::time::sleep;
 use tracing::{info, warn};
-use ubyte::{ByteUnit, ToByteUnit as _};
 
 const fn default_memory_slop_factor() -> f64 {
     0.25
@@ -36,7 +36,7 @@ pub struct MemoryBoundsConfiguration {
     ///
     /// If not specified, no memory bounds verification will be performed.
     #[serde(default)]
-    memory_limit: Option<ByteUnit>,
+    memory_limit: Option<ByteSize>,
 
     /// The slop factor to apply to the given memory limit.
     ///
@@ -121,10 +121,10 @@ where
 
     info!(
 		"Verified memory bounds. Minimum memory requirement of {}, with a calculated firm memory bound of {} out of {} available, from an initial {} grant.",
-		verified_bounds.total_minimum_required_bytes().bytes(),
-		verified_bounds.total_firm_limit_bytes().bytes(),
-		verified_bounds.total_available_bytes().bytes(),
-		initial_grant.initial_limit_bytes().bytes(),
+		bytesize::to_string(verified_bounds.total_minimum_required_bytes() as u64, true),
+		bytesize::to_string(verified_bounds.total_firm_limit_bytes() as u64, true),
+		bytesize::to_string(verified_bounds.total_available_bytes() as u64, true),
+		bytesize::to_string(initial_grant.initial_limit_bytes() as u64, true),
 	);
 
     print_verified_bounds(verified_bounds);
@@ -136,8 +136,8 @@ fn print_verified_bounds(bounds: VerifiedBounds) {
     info!("Breakdown of verified bounds:");
     info!(
         "- (root): {} minimum, {} firm",
-        bounds.bounds().total_minimum_required_bytes().bytes(),
-        bounds.bounds().total_firm_limit_bytes().bytes(),
+        bytesize::to_string(bounds.bounds().total_minimum_required_bytes() as u64, true),
+        bytesize::to_string(bounds.bounds().total_firm_limit_bytes() as u64, true),
     );
 
     let mut to_visit = VecDeque::new();
@@ -154,8 +154,8 @@ fn print_verified_bounds(bounds: VerifiedBounds) {
             "{:indent$}- {}: {} minimum, {} firm",
             "",
             component_name,
-            component_bounds.total_minimum_required_bytes().bytes(),
-            component_bounds.total_firm_limit_bytes().bytes(),
+            bytesize::to_string(component_bounds.total_minimum_required_bytes() as u64, true),
+            bytesize::to_string(component_bounds.total_firm_limit_bytes() as u64, true),
             indent = depth * 2
         );
 
