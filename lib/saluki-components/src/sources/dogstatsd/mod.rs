@@ -452,11 +452,11 @@ async fn drive_stream(
                 };
 
                 // Extract service check events only if at least one is present in the event buffer.
-                let maybe_service_checks_event_buffer = match event_buffer.has_data_type(DataType::EventD) {
+                let maybe_service_checks_event_buffer = match event_buffer.has_data_type(DataType::ServiceCheck) {
                     true => {
-                        let mut eventd_event_buffer = source_context.event_buffer_pool().acquire().await;
-                        eventd_event_buffer.extend(event_buffer.extract(is_service_check));
-                        Some(eventd_event_buffer)
+                        let mut service_check_event_buffer = source_context.event_buffer_pool().acquire().await;
+                        service_check_event_buffer.extend(event_buffer.extract(is_service_check));
+                        Some(service_check_event_buffer)
                     }
                     false => None,
                 };
