@@ -1,5 +1,3 @@
-use std::num::NonZeroUsize;
-
 use async_trait::async_trait;
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -14,8 +12,11 @@ use saluki_core::{
         OutputDefinition,
     },
 };
+use std::num::NonZeroUsize;
+use std::sync::LazyLock;
+
 use saluki_error::{generic_error, GenericError};
-use saluki_event::DataType;
+use saluki_event::{DataType, Event};
 use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, BytesBuffer},
     deser::{
@@ -257,9 +258,15 @@ impl SourceBuilder for DogStatsDConfiguration {
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(DataType::Metric)];
+        static OUTPUTS: LazyLock<Vec<OutputDefinition>> = LazyLock::new(|| {
+            vec![
+                OutputDefinition::named_output("metrics", DataType::Metric),
+                OutputDefinition::named_output("events", DataType::EventD),
+                OutputDefinition::named_output("service_checks", DataType::ServiceCheck),
+            ]
+        });
 
-        OUTPUTS
+        &OUTPUTS
     }
 }
 
@@ -432,10 +439,50 @@ async fn drive_stream(
                     }
                 }
 
+                // Extract eventd events only if at least one is present in the event buffer.
+                let maybe_eventd_event_buffer = match event_buffer.has_data_type(DataType::EventD) {
+                    true => {
+                        let mut eventd_event_buffer = source_context.event_buffer_pool().acquire().await;
+                        eventd_event_buffer.extend(event_buffer.extract(Event::is_eventd));
+                        Some(eventd_event_buffer)
+                    }
+                    false => None,
+                };
+
+                // Extract service check events only if at least one is present in the event buffer.
+                let maybe_service_checks_event_buffer = match event_buffer.has_data_type(DataType::ServiceCheck) {
+                    true => {
+                        let mut service_check_event_buffer = source_context.event_buffer_pool().acquire().await;
+                        service_check_event_buffer.extend(event_buffer.extract(Event::is_eventd));
+                        Some(service_check_event_buffer)
+                    }
+                    false => None,
+                };
+
                 trace!(%listen_addr, %peer_addr, events_len = n, "Forwarding events.");
 
-                if let Err(e) = source_context.forwarder().forward(event_buffer).await {
-                    error!(%listen_addr, %peer_addr, error = %e, "Failed to forward events.");
+                if let Err(e) = source_context.forwarder().forward_named("metrics", event_buffer).await {
+                    error!(%listen_addr, %peer_addr, error = %e, "Failed to forward metric events.");
+                }
+
+                if let Some(eventd_event_buffer) = maybe_eventd_event_buffer {
+                    if let Err(e) = source_context
+                        .forwarder()
+                        .forward_named("events", eventd_event_buffer)
+                        .await
+                    {
+                        error!(%listen_addr, %peer_addr, error = %e, "Failed to forward eventd events.");
+                    }
+                }
+
+                if let Some(service_checks_event_buffer) = maybe_service_checks_event_buffer {
+                    if let Err(e) = source_context
+                        .forwarder()
+                        .forward_named("service_checks", service_checks_event_buffer)
+                        .await
+                    {
+                        error!(%listen_addr, %peer_addr, error = %e, "Failed to forward service checks events.");
+                    }
                 }
             }
             Err(e) => match e {

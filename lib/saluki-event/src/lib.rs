@@ -120,4 +120,20 @@ impl Event {
             _ => None,
         }
     }
+
+    #[allow(unused)]
+    /// Returns `true` if the event is a metric.
+    pub fn is_metric(&self) -> bool {
+        matches!(self, Event::Metric(_))
+    }
+
+    /// Returns `true` if the event is a eventd.
+    pub fn is_eventd(&self) -> bool {
+        matches!(self, Event::EventD(_))
+    }
+
+    /// Returns `true` if the event is a service check.
+    pub fn is_service_check(&self) -> bool {
+        matches!(self, Event::ServiceCheck(_))
+    }
 }
