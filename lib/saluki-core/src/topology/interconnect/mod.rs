@@ -1,7 +1,7 @@
 //! Component interconnects.
 
 mod event_buffer;
-pub use self::event_buffer::{is_eventd, is_service_check, EventBuffer};
+pub use self::event_buffer::EventBuffer;
 
 mod event_stream;
 pub use self::event_stream::EventStream;

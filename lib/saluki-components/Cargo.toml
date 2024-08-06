@@ -27,7 +27,6 @@ memory-accounting = { workspace = true }
 metrics = { workspace = true }
 metrics-util = { workspace = true, features = ["handles", "recency", "registry"] }
 nom = { workspace = true }
-once_cell = "1.19.0"
 paste = { workspace = true }
 pin-project = { workspace = true }
 protobuf = { workspace = true }

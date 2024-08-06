@@ -57,7 +57,7 @@ impl EventBuffer {
     }
 
     /// Extract events from the event buffer given a predicate function.
-    pub fn extract<F>(&mut self, predicate: F) -> VecDeque<Event>
+    pub fn extract<F>(&mut self, predicate: F) -> impl Iterator<Item = Event>
     where
         F: Fn(&Event) -> bool,
     {
@@ -79,7 +79,7 @@ impl EventBuffer {
             }
         }
 
-        removed_events
+        removed_events.into_iter()
     }
 }
 
@@ -141,24 +141,10 @@ impl Iterator for IntoIter {
     }
 }
 
-#[allow(unused)]
-/// Predicate function for extracting metric events.
-pub fn is_metric(event: &Event) -> bool {
-    matches!(event.data_type(), DataType::Metric)
-}
-
-/// Predicate function for extracting eventd events.
-pub fn is_eventd(event: &Event) -> bool {
-    matches!(event.data_type(), DataType::EventD)
-}
-
-/// Predicate function for extracting service check events.
-pub fn is_service_check(event: &Event) -> bool {
-    matches!(event.data_type(), DataType::ServiceCheck)
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+
     use super::EventBuffer;
 
     use saluki_context::Context;
@@ -169,10 +155,7 @@ mod tests {
         DataType, Event,
     };
 
-    use crate::{
-        pooling::{helpers::get_pooled_object_via_default, Clearable as _},
-        topology::interconnect::{event_buffer::is_metric, is_eventd, is_service_check},
-    };
+    use crate::pooling::{helpers::get_pooled_object_via_default, Clearable as _};
 
     #[test]
     fn clear() {
@@ -247,15 +230,15 @@ mod tests {
 
         assert_eq!(buffer.len(), 7);
 
-        let eventd_event_buffer = buffer.extract(is_eventd);
+        let eventd_event_buffer: VecDeque<Event> = buffer.extract(Event::is_eventd).collect();
         assert_eq!(buffer.len(), 4);
         assert_eq!(eventd_event_buffer.len(), 3);
 
-        let service_checks_event_buffer = buffer.extract(is_service_check);
+        let service_checks_event_buffer: VecDeque<Event> = buffer.extract(Event::is_service_check).collect();
         assert_eq!(buffer.len(), 2);
         assert_eq!(service_checks_event_buffer.len(), 2);
 
-        let new_buffer = buffer.extract(is_metric);
+        let new_buffer: VecDeque<Event> = buffer.extract(Event::is_metric).collect();
         assert_eq!(buffer.len(), 0);
         assert_eq!(new_buffer.len(), 2);
     }

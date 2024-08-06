@@ -1,9 +1,6 @@
-use std::num::NonZeroUsize;
-
 use async_trait::async_trait;
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use once_cell::sync::Lazy;
 use saluki_config::GenericConfiguration;
 use saluki_context::ContextResolver;
 use saluki_core::{
@@ -11,14 +8,15 @@ use saluki_core::{
     pooling::{FixedSizeObjectPool, ObjectPool as _},
     spawn_traced,
     topology::{
-        interconnect::{is_eventd, is_service_check},
         shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
         OutputDefinition,
     },
 };
+use std::num::NonZeroUsize;
+use std::sync::LazyLock;
 
 use saluki_error::{generic_error, GenericError};
-use saluki_event::DataType;
+use saluki_event::{DataType, Event};
 use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, BytesBuffer},
     deser::{
@@ -260,7 +258,7 @@ impl SourceBuilder for DogStatsDConfiguration {
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: Lazy<Vec<OutputDefinition>> = Lazy::new(|| {
+        static OUTPUTS: LazyLock<Vec<OutputDefinition>> = LazyLock::new(|| {
             vec![
                 OutputDefinition::named_output("metrics", DataType::Metric),
                 OutputDefinition::named_output("events", DataType::EventD),
@@ -445,7 +443,7 @@ async fn drive_stream(
                 let maybe_eventd_event_buffer = match event_buffer.has_data_type(DataType::EventD) {
                     true => {
                         let mut eventd_event_buffer = source_context.event_buffer_pool().acquire().await;
-                        eventd_event_buffer.extend(event_buffer.extract(is_eventd));
+                        eventd_event_buffer.extend(event_buffer.extract(Event::is_eventd));
                         Some(eventd_event_buffer)
                     }
                     false => None,
@@ -455,7 +453,7 @@ async fn drive_stream(
                 let maybe_service_checks_event_buffer = match event_buffer.has_data_type(DataType::ServiceCheck) {
                     true => {
                         let mut service_check_event_buffer = source_context.event_buffer_pool().acquire().await;
-                        service_check_event_buffer.extend(event_buffer.extract(is_service_check));
+                        service_check_event_buffer.extend(event_buffer.extract(Event::is_eventd));
                         Some(service_check_event_buffer)
                     }
                     false => None,
