@@ -73,15 +73,11 @@ pub struct Graph {
 }
 
 impl Graph {
-    pub fn add_source<I>(
-        &mut self, maybe_component_id: I, builder: &dyn SourceBuilder,
-    ) -> Result<ComponentId, GraphError>
+    pub fn add_source<I>(&mut self, component_id: I, builder: &dyn SourceBuilder) -> Result<ComponentId, GraphError>
     where
-        I: Into<String> + Clone,
-        ComponentId: TryFrom<I>,
-        <ComponentId as TryFrom<I>>::Error: Into<String>,
+        I: AsRef<str>,
     {
-        let component_id = try_into_component_id(maybe_component_id.clone())?;
+        let component_id = try_into_component_id(component_id)?;
         if self.nodes.contains_key(&component_id) {
             return Err(GraphError::DuplicateComponentId { component_id });
         }
@@ -93,14 +89,12 @@ impl Graph {
     }
 
     pub fn add_transform<I>(
-        &mut self, maybe_component_id: I, builder: &dyn TransformBuilder,
+        &mut self, component_id: I, builder: &dyn TransformBuilder,
     ) -> Result<ComponentId, GraphError>
     where
-        I: Into<String> + Clone,
-        ComponentId: TryFrom<I>,
-        <ComponentId as TryFrom<I>>::Error: Into<String>,
+        I: AsRef<str>,
     {
-        let component_id = try_into_component_id(maybe_component_id.clone())?;
+        let component_id = try_into_component_id(component_id)?;
         if self.nodes.contains_key(&component_id) {
             return Err(GraphError::DuplicateComponentId { component_id });
         }
@@ -118,14 +112,12 @@ impl Graph {
     }
 
     pub fn add_destination<I>(
-        &mut self, maybe_component_id: I, builder: &dyn DestinationBuilder,
+        &mut self, component_id: I, builder: &dyn DestinationBuilder,
     ) -> Result<ComponentId, GraphError>
     where
-        I: Into<String> + Clone,
-        ComponentId: TryFrom<I>,
-        <ComponentId as TryFrom<I>>::Error: Into<String>,
+        I: AsRef<str>,
     {
-        let component_id = try_into_component_id(maybe_component_id.clone())?;
+        let component_id = try_into_component_id(component_id)?;
         if self.nodes.contains_key(&component_id) {
             return Err(GraphError::DuplicateComponentId { component_id });
         }
@@ -140,17 +132,13 @@ impl Graph {
         Ok(component_id)
     }
 
-    pub fn add_edge<F, T>(&mut self, maybe_from: F, maybe_to: T) -> Result<(), GraphError>
+    pub fn add_edge<F, T>(&mut self, from: F, to: T) -> Result<(), GraphError>
     where
-        F: Into<String> + Clone,
-        ComponentOutputId: TryFrom<F>,
-        <ComponentOutputId as TryFrom<F>>::Error: Into<String>,
-        T: Into<String> + Clone,
-        ComponentId: TryFrom<T>,
-        <ComponentId as TryFrom<T>>::Error: Into<String>,
+        F: AsRef<str>,
+        T: AsRef<str>,
     {
-        let component_id = try_into_component_id(maybe_to)?;
-        let component_output_id = try_into_component_output_id(maybe_from)?;
+        let component_id = try_into_component_id(to)?;
+        let component_output_id = try_into_component_output_id(from)?;
 
         if !self.nodes.contains_key(&component_id) {
             return Err(GraphError::NonexistentComponentId { component_id });
@@ -314,26 +302,22 @@ impl Graph {
     }
 }
 
-fn try_into_component_id<I>(maybe_component_id: I) -> Result<ComponentId, GraphError>
+fn try_into_component_id<I>(component_id: I) -> Result<ComponentId, GraphError>
 where
-    I: Into<String> + Clone,
-    ComponentId: TryFrom<I>,
-    <ComponentId as TryFrom<I>>::Error: Into<String>,
+    I: AsRef<str>,
 {
-    ComponentId::try_from(maybe_component_id.clone()).map_err(|e| GraphError::InvalidComponentId {
-        input: maybe_component_id.into(),
+    ComponentId::try_from(component_id.as_ref()).map_err(|e| GraphError::InvalidComponentId {
+        input: component_id.as_ref().to_string(),
         reason: e.into(),
     })
 }
 
-fn try_into_component_output_id<I>(maybe_component_output_id: I) -> Result<ComponentOutputId, GraphError>
+fn try_into_component_output_id<I>(component_output_id: I) -> Result<ComponentOutputId, GraphError>
 where
-    I: Into<String> + Clone,
-    ComponentOutputId: TryFrom<I>,
-    <ComponentOutputId as TryFrom<I>>::Error: Into<String>,
+    I: AsRef<str>,
 {
-    ComponentOutputId::try_from(maybe_component_output_id.clone()).map_err(|e| GraphError::InvalidComponentOutputId {
-        input: maybe_component_output_id.into(),
+    ComponentOutputId::try_from(component_output_id.as_ref()).map_err(|e| GraphError::InvalidComponentOutputId {
+        input: component_output_id.as_ref().into(),
         reason: e.into(),
     })
 }

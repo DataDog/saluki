@@ -1,5 +1,6 @@
 use containerd_client::services::v1::Envelope;
 use prost::{DecodeError, Name};
+use stringtheory::MetaString;
 
 mod containerd_events {
     pub use containerd_client::events::*;
@@ -46,7 +47,7 @@ impl ContainerdTopic {
 #[derive(Debug)]
 pub enum ContainerdEvent {
     /// A task was started.
-    TaskStarted { id: String, pid: u32 },
+    TaskStarted { id: MetaString, pid: u32 },
 
     /// A task was deleted.
     TaskDeleted { pid: u32 },
@@ -98,7 +99,10 @@ where
 impl From<containerd_events::TaskStart> for ContainerdEvent {
     fn from(event: containerd_events::TaskStart) -> Self {
         ContainerdEvent::TaskStarted {
-            id: event.container_id,
+            // TODO: Thread the tag interner used by `ContainerdCollector` through to this point, so in the future when
+            // we can take advantage of a zero-copy protobuf definition, we can actually intern in the most efficient
+            // way.
+            id: event.container_id.into(),
             pid: event.pid,
         }
     }

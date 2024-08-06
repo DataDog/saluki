@@ -34,7 +34,7 @@ pub enum DataType {
 
 impl Default for DataType {
     fn default() -> Self {
-        Self::all_bits()
+        Self::none()
     }
 }
 
@@ -72,6 +72,15 @@ pub enum Event {
 }
 
 impl Event {
+    /// Gets the data type of this event.
+    pub fn data_type(&self) -> DataType {
+        match self {
+            Event::Metric(_) => DataType::Metric,
+            Event::EventD(_) => DataType::EventD,
+            Event::ServiceCheck(_) => DataType::ServiceCheck,
+        }
+    }
+
     /// Returns the inner event value, if this event is a `Metric`.
     ///
     /// Otherwise, `None` is returned and the original event is consumed.

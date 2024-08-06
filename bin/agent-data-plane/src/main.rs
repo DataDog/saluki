@@ -9,7 +9,6 @@ mod env_provider;
 
 use std::time::Instant;
 
-use memory_accounting::MemoryBounds as _;
 use saluki_components::{
     destinations::{DatadogMetricsConfiguration, PrometheusConfiguration},
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
@@ -21,11 +20,7 @@ use saluki_config::ConfigurationLoader;
 use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{error, info};
 
-use saluki_app::{
-    logging::{fatal_and_exit, initialize_logging},
-    memory::{initialize_allocator_telemetry, initialize_memory_bounds, MemoryBoundsConfiguration},
-    metrics::initialize_metrics,
-};
+use saluki_app::prelude::*;
 use saluki_core::topology::TopologyBlueprint;
 
 use crate::env_provider::ADPEnvironmentProvider;
@@ -51,6 +46,10 @@ async fn main() {
 
     if let Err(e) = initialize_allocator_telemetry().await {
         fatal_and_exit(format!("failed to initialize allocator telemetry: {}", e));
+    }
+
+    if let Err(e) = initialize_tls() {
+        fatal_and_exit(format!("failed to initialize TLS: {}", e));
     }
 
     match run(started).await {
@@ -115,8 +114,8 @@ async fn run(started: Instant) -> Result<(), GenericError> {
     // Handle verification of memory bounds.
     let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;
     let verify_result = initialize_memory_bounds(bounds_configuration, |builder| {
-        let mut topology_builder = builder.component("topology");
-        blueprint.specify_bounds(&mut topology_builder);
+        builder.bounded_component("env_provider", &env_provider);
+        builder.bounded_component("topology", &blueprint);
     });
 
     let memory_limiter = verify_result.error_context("Failed to initialize memory bounds.")?;
