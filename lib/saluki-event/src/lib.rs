@@ -122,17 +122,17 @@ impl Event {
     }
 
     #[allow(unused)]
-    /// Predicate function for extracting metric events.
+    /// Returns `true` if the event is a metric.
     pub fn is_metric(&self) -> bool {
         matches!(self, Event::Metric(_))
     }
 
-    /// Predicate function for extracting eventd events.
+    /// Returns `true` if the event is a eventd.
     pub fn is_eventd(&self) -> bool {
         matches!(self, Event::EventD(_))
     }
 
-    /// Predicate function for extracting service check events.
+    /// Returns `true` if the event is a service check.
     pub fn is_service_check(&self) -> bool {
         matches!(self, Event::ServiceCheck(_))
     }
