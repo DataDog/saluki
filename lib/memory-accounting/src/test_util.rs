@@ -28,7 +28,8 @@ where
 {
     let mut builder = MemoryBoundsBuilder::for_test();
     {
-        builder.bounded_component("component", component);
+        let mut component_builder = builder.subcomponent("component");
+        component.specify_bounds(&mut component_builder);
     }
     builder.as_bounds()
 }

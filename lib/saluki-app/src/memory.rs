@@ -8,7 +8,7 @@ use std::{
 
 use bytesize::ByteSize;
 use memory_accounting::{
-    allocator::{AllocationStats, AllocationStatsDelta},
+    allocator::{AllocationGroupRegistry, AllocationStats, AllocationStatsDelta},
     ComponentRegistry, MemoryGrant, MemoryLimiter, VerifiedBounds,
 };
 use metrics::{counter, gauge, Counter, Gauge};
@@ -171,7 +171,7 @@ fn print_verified_bounds(bounds: VerifiedBounds) {
     info!("");
 }
 
-struct ComponentAllocationMetrics {
+struct AllocationGroupMetrics {
     totals: AllocationStatsDelta,
     allocated_bytes_total: Counter,
     allocated_bytes_live: Gauge,
@@ -181,16 +181,16 @@ struct ComponentAllocationMetrics {
     deallocated_objects_total: Counter,
 }
 
-impl ComponentAllocationMetrics {
-    fn new(component_name: &str) -> Self {
+impl AllocationGroupMetrics {
+    fn new(group_name: &str) -> Self {
         Self {
             totals: AllocationStatsDelta::empty(),
-            allocated_bytes_total: counter!("component_allocated_bytes_total", "component_id" => component_name.to_string()),
-            allocated_bytes_live: gauge!("component_allocated_bytes_live", "component_id" => component_name.to_string()),
-            allocated_objects_total: counter!("component_allocated_objects_total", "component_id" => component_name.to_string()),
-            allocated_objects_live: gauge!("component_allocated_objects_live", "component_id" => component_name.to_string()),
-            deallocated_bytes_total: counter!("component_deallocated_bytes_total", "component_id" => component_name.to_string()),
-            deallocated_objects_total: counter!("component_deallocated_objects_total", "component_id" => component_name.to_string()),
+            allocated_bytes_total: counter!("group_allocated_bytes_total", "group_id" => group_name.to_string()),
+            allocated_bytes_live: gauge!("group_allocated_bytes_live", "group_id" => group_name.to_string()),
+            allocated_objects_total: counter!("group_allocated_objects_total", "group_id" => group_name.to_string()),
+            allocated_objects_live: gauge!("group_allocated_objects_live", "group_id" => group_name.to_string()),
+            deallocated_bytes_total: counter!("group_deallocated_bytes_total", "group_id" => group_name.to_string()),
+            deallocated_objects_total: counter!("group_deallocated_objects_total", "group_id" => group_name.to_string()),
         }
     }
 
@@ -219,6 +219,7 @@ impl ComponentAllocationMetrics {
 ///
 /// If the memory allocator subsystem has already been initialized, an error will be returned.
 pub async fn initialize_allocator_telemetry() -> Result<(), GenericError> {
+    // Simple initialization guard to prevent multiple calls to this function.
     static INIT: AtomicBool = AtomicBool::new(false);
     if INIT.swap(true, Relaxed) {
         return Err(generic_error!("Memory allocator subsystem already initialized."));
@@ -226,12 +227,9 @@ pub async fn initialize_allocator_telemetry() -> Result<(), GenericError> {
 
     // We can't enforce, at compile-time, that the tracking allocator must be installed if a caller is trying to
     // initialize the allocator's reporting infrastructure... but we can at least warn them if we detect it's not
-    // installed.
-    //
-    // (Our logic here is that since a custom global allocator is used for _everything_ by default, the root component
-    // _has_ to have handled some allocations by the point we get here if it's actually installed.)
-    if !AllocationStats::root().has_allocated() {
-        warn!("Tracking allocator not detected. Memory telemetry will not be available.");
+    // installed here at runtime.
+    if AllocationGroupRegistry::allocator_installed() {
+        warn!("Tracking allocator not installed. Memory telemetry will not be available.");
     }
 
     // Spawn the background task that will periodically collect memory usage statistics.
@@ -241,15 +239,15 @@ pub async fn initialize_allocator_telemetry() -> Result<(), GenericError> {
         loop {
             sleep(Duration::from_secs(1)).await;
 
-            memory_accounting::allocator::ComponentRegistry::global().visit_components(|component_name, stats| {
-                let component_metrics = match metrics.get_mut(component_name) {
-                    Some(component_metrics) => component_metrics,
+            AllocationGroupRegistry::global().visit_allocation_groups(|group_name, stats| {
+                let group_metrics = match metrics.get_mut(group_name) {
+                    Some(group_metrics) => group_metrics,
                     None => metrics
-                        .entry(component_name.to_string())
-                        .or_insert_with(|| ComponentAllocationMetrics::new(component_name)),
+                        .entry(group_name.to_string())
+                        .or_insert_with(|| AllocationGroupMetrics::new(group_name)),
                 };
 
-                component_metrics.update(stats);
+                group_metrics.update(stats);
             });
         }
     });
