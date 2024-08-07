@@ -7,6 +7,7 @@ use std::{
 };
 
 use metrics::gauge;
+use process_memory::Querier;
 use tracing::debug;
 
 use crate::MemoryGrant;
@@ -40,7 +41,7 @@ impl MemoryLimiter {
     /// a maximum backoff duration of 25ms. The effective limit of the grant is used as the memory limit.
     pub fn new(grant: MemoryGrant) -> Option<Self> {
         // Smoke test to see if we can even collect memory stats on this system.
-        memory_stats::memory_stats()?;
+        Querier::default().resident_set_size()?;
 
         let rss_limit = grant.effective_limit_bytes();
         let backoff_threshold = 0.95;
@@ -93,9 +94,12 @@ fn check_memory_usage(
 ) {
     debug!("Memory limiter checker started.");
 
+    let mut querier = Querier::default();
+
     loop {
-        let mem_stats = memory_stats::memory_stats().expect("memory statistics should be available");
-        let actual_rss = mem_stats.physical_mem;
+        let actual_rss = querier
+            .resident_set_size()
+            .expect("memory statistics should be available");
 
         let maybe_backoff_duration =
             calculate_backoff(rss_limit, actual_rss, backoff_threshold, backoff_min, backoff_max);

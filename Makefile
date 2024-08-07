@@ -27,7 +27,7 @@ export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
 export GIT_COMMIT ?= $(shell git rev-parse --short HEAD)
 
 # Specific versions of various Rust tools we use.
-export CARGO_TOOL_VERSION_dd-rust-license_tool ?= 1.0.3
+export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.3
 export CARGO_TOOL_VERSION_cargo-deny ?= 0.15.0
 export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
 export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.72

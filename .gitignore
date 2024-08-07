@@ -5,5 +5,5 @@ test/k8s/charts/
 test/build/
 test/ddprof
 test/lading
-lib/ddsketch-agent/dhat-heap.json
+dhat-heap.json
 .DS_Store
