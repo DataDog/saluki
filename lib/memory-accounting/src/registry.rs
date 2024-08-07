@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     allocator::{AllocationGroupRegistry, AllocationGroupToken},
-    BoundsVerifier, ComponentBounds, MemoryGrant, VerifiedBounds, VerifierError,
+    BoundsVerifier, ComponentBounds, MemoryBounds, MemoryGrant, VerifiedBounds, VerifierError,
 };
 
 struct ComponentMetadata {
@@ -256,10 +256,26 @@ impl<'a> MemoryBoundsBuilder<'a> {
         }
     }
 
-     /// Merges a set of existing `ComponentBounds` into the current builder.
-     pub fn merge_existing(&mut self, existing: &ComponentBounds) -> &mut Self {
+    /// Creates a nested subcomponent based on the given component.
+    ///
+    /// This allows for defining a subcomponent whose bounds come from an object that implements `MemoryBounds` directly.
+    pub fn with_subcomponent<S, C>(&mut self, name: S, component: &C) -> &mut Self
+    where
+        S: AsRef<str>,
+        C: MemoryBounds,
+    {
+        let mut builder = self.subcomponent(name);
+        component.specify_bounds(&mut builder);
+
+        self
+    }
+
+    /// Merges a set of existing `ComponentBounds` into the current builder.
+    pub fn merge_existing(&mut self, existing: &ComponentBounds) -> &mut Self {
         let mut bounds_builder = self.inner.bounds_builder();
-        bounds_builder.minimum().with_fixed_amount(existing.self_minimum_required_bytes);
+        bounds_builder
+            .minimum()
+            .with_fixed_amount(existing.self_minimum_required_bytes);
         bounds_builder.firm().with_fixed_amount(existing.self_firm_limit_bytes);
 
         for (name, existing_subcomponent) in &existing.subcomponents {

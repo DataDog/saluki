@@ -82,10 +82,7 @@ impl TopologyBlueprint {
         I: AsRef<str>,
         B: SourceBuilder + 'static,
     {
-        let component_id = self
-            .graph
-            .add_source(component_id, &builder)
-            .context(InvalidGraph)?;
+        let component_id = self.graph.add_source(component_id, &builder).context(InvalidGraph)?;
 
         let mut source_registry = self
             .component_registry
@@ -111,10 +108,7 @@ impl TopologyBlueprint {
         I: AsRef<str>,
         B: TransformBuilder + 'static,
     {
-        let component_id = self
-            .graph
-            .add_transform(component_id, &builder)
-            .context(InvalidGraph)?;
+        let component_id = self.graph.add_transform(component_id, &builder).context(InvalidGraph)?;
 
         self.update_bounds_for_interconnect();
 
