@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     allocator::{AllocationGroupRegistry, AllocationGroupToken},
-    BoundsVerifier, ComponentBounds, MemoryGrant, VerifiedBounds, VerifierError,
+    BoundsVerifier, ComponentBounds, MemoryBounds, MemoryGrant, VerifiedBounds, VerifierError,
 };
 
 struct ComponentMetadata {
@@ -254,6 +254,20 @@ impl<'a> MemoryBoundsBuilder<'a> {
             inner: component,
             _lt: PhantomData,
         }
+    }
+
+    /// Creates a nested subcomponent based on the given component.
+    ///
+    /// This allows for defining a subcomponent whose bounds come from an object that implements `MemoryBounds` directly.
+    pub fn with_subcomponent<S, C>(&mut self, name: S, component: &C) -> &mut Self
+    where
+        S: AsRef<str>,
+        C: MemoryBounds,
+    {
+        let mut builder = self.subcomponent(name);
+        component.specify_bounds(&mut builder);
+
+        self
     }
 
     /// Merges a set of existing `ComponentBounds` into the current builder.

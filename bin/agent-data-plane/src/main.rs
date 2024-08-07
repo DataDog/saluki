@@ -76,8 +76,8 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         .into_generic()?;
 
     let env_provider = ADPEnvironmentProvider::from_configuration(&configuration).await?;
-    let mut env_provider_bounds_builder = component_registry.get_or_create("env_provider").bounds_builder();
-    env_provider.specify_bounds(&mut env_provider_bounds_builder);
+    let mut bounds_builder = component_registry.bounds_builder();
+    bounds_builder.with_subcomponent("env_provider", &env_provider);
 
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
