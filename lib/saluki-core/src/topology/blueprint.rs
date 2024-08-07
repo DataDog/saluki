@@ -8,7 +8,7 @@ use super::{
     built::BuiltTopology,
     graph::{Graph, GraphError},
     interconnect::EventBuffer,
-    ComponentId, ComponentOutputId, RegisteredComponent,
+    ComponentId, RegisteredComponent,
 };
 use crate::components::{destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder};
 
