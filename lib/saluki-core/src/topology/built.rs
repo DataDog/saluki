@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use memory_accounting::{
-    allocator::{Tracked, TrackingToken},
+    allocator::{AllocationGroupToken, Tracked},
     MemoryLimiter,
 };
 use saluki_error::{generic_error, GenericError};
@@ -37,7 +37,7 @@ pub struct BuiltTopology {
     sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
     transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
     destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
-    component_token: TrackingToken,
+    component_token: AllocationGroupToken,
 }
 
 impl BuiltTopology {
@@ -45,7 +45,7 @@ impl BuiltTopology {
         graph: Graph, sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
         transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
         destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
-        component_token: TrackingToken,
+        component_token: AllocationGroupToken,
     ) -> Self {
         Self {
             graph,
