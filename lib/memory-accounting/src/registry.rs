@@ -4,12 +4,14 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use crate::{allocator::TrackingToken, BoundsVerifier, ComponentBounds, MemoryGrant, VerifiedBounds, VerifierError};
+use crate::{
+    allocator::AllocationGroupToken, BoundsVerifier, ComponentBounds, MemoryGrant, VerifiedBounds, VerifierError,
+};
 
 struct ComponentMetadata {
     full_name: Option<String>,
     bounds: ComponentBounds,
-    token: Option<TrackingToken>,
+    token: Option<AllocationGroupToken>,
     subcomponents: HashMap<String, Arc<Mutex<ComponentMetadata>>>,
 }
 
@@ -78,7 +80,7 @@ impl ComponentMetadata {
         }
     }
 
-    fn token(&mut self) -> TrackingToken {
+    fn token(&mut self) -> AllocationGroupToken {
         match self.token {
             Some(token) => token,
             None => match self.full_name.as_deref() {
@@ -89,7 +91,7 @@ impl ComponentMetadata {
 
                     token
                 }
-                None => TrackingToken::root(),
+                None => AllocationGroupToken::root(),
             },
         }
     }
@@ -146,7 +148,7 @@ impl ComponentRegistry {
     /// If the component is the root component (has no name), the root allocation token is returned.
     /// Otherwise, the component is registered (using its full name) if it hasn't already been, and
     /// that token is returned.
-    pub fn token(&mut self) -> TrackingToken {
+    pub fn token(&mut self) -> AllocationGroupToken {
         let mut inner = self.inner.lock().unwrap();
         inner.token()
     }
