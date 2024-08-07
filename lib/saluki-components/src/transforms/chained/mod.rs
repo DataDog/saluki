@@ -35,7 +35,7 @@ impl ChainedConfiguration {
 impl MemoryBounds for ChainedConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         for (subtransform_id, subtransform_builder) in self.subtransform_builders.iter() {
-            let mut subtransform_bounds_builder = builder.component(subtransform_id);
+            let mut subtransform_bounds_builder = builder.subcomponent(subtransform_id);
             subtransform_builder.specify_bounds(&mut subtransform_bounds_builder);
         }
     }
@@ -76,8 +76,8 @@ impl Transform for Chained {
             self.subtransforms.len()
         );
 
-        // We have to reassociate each subtransform with their tracking token here, as we don't have
-        // access to it when the bounds are initially defined.
+        // We have to reassociate each subtransform with their allocation group token here, as we don't have access to
+        // it when the bounds are initially defined.
         let subtransforms = self
             .subtransforms
             .into_iter()
@@ -90,8 +90,8 @@ impl Transform for Chained {
             .collect::<Vec<_>>();
 
         while let Some(mut event_buffer) = context.event_stream().next().await {
-            for (component_token, transform) in &subtransforms {
-                let _guard = component_token.enter();
+            for (allocation_token, transform) in &subtransforms {
+                let _guard = allocation_token.enter();
                 transform.transform_buffer(&mut event_buffer);
             }
 

@@ -5,7 +5,8 @@ use std::{
 };
 
 use crate::{
-    allocator::AllocationGroupToken, BoundsVerifier, ComponentBounds, MemoryGrant, VerifiedBounds, VerifierError,
+    allocator::{AllocationGroupRegistry, AllocationGroupToken},
+    BoundsVerifier, ComponentBounds, MemoryGrant, VerifiedBounds, VerifierError,
 };
 
 struct ComponentMetadata {
@@ -31,8 +32,8 @@ impl ComponentMetadata {
     {
         // Split the name into the current level name and the remaining name.
         //
-        // This lets us handle names which refer to a target nested component instead of having to
-        // chain a ton of calls together.
+        // This lets us handle names which refer to a target nested component instead of having to chain a ton of calls
+        // together.
         let name = name.as_ref();
         let (current_level_name, remaining_name) = match name.split_once('/') {
             Some((current_level_name, remaining_name)) => (current_level_name, Some(remaining_name)),
@@ -54,10 +55,9 @@ impl ComponentMetadata {
             None => {
                 // We couldn't find the component at this level, so we need to create it.
                 //
-                // We do all of our name calculation and so on, but we also leave the token empty
-                // for now. We do this to avoid registering intermediate components that aren't
-                // actually used by the code, but are simply a consequence of wanting to having a
-                // nicely nested structure.
+                // We do all of our name calculation and so on, but we also leave the token empty for now. We do this to
+                // avoid registering intermediate components that aren't actually used by the code, but are simply a
+                // consequence of wanting to having a nicely nested structure.
                 //
                 // We'll register a token for the component the first time it's requested.
                 let full_name = match self.full_name.as_ref() {
@@ -70,8 +70,8 @@ impl ComponentMetadata {
                     .entry(current_level_name.to_string())
                     .or_insert_with(|| Arc::new(Mutex::new(Self::from_full_name(Some(full_name)))));
 
-                // If we still need to recurse further, do so here.. otherwise, return the subcomponent
-                // we just created as-is.
+                // If we still need to recurse further, do so here.. otherwise, return the subcomponent we just created
+                // as-is.
                 match remaining_name {
                     Some(remaining_name) => inner.lock().unwrap().get_or_create(remaining_name),
                     None => Arc::clone(inner),
@@ -85,8 +85,8 @@ impl ComponentMetadata {
             Some(token) => token,
             None => match self.full_name.as_deref() {
                 Some(full_name) => {
-                    let allocator_component_registry = crate::allocator::ComponentRegistry::global();
-                    let token = allocator_component_registry.register_component(full_name);
+                    let allocator_component_registry = AllocationGroupRegistry::global();
+                    let token = allocator_component_registry.register_allocation_group(full_name);
                     self.token = Some(token);
 
                     token
@@ -119,7 +119,7 @@ pub struct ComponentRegistry {
 impl ComponentRegistry {
     /// Gets a component by name, or creates it if it doesn't exist.
     ///
-    /// The name provided can be given in a direct (component_name) or nested (path/to/component_name) form. If the
+    /// The name provided can be given in a direct (`component_name``) or nested (`path/to/component_name`) form. If the
     /// nested form is given, each component in the path will be created if it doesn't exist.
     ///
     /// Returns a `ComponentRegistry` scoped to the component.
@@ -145,9 +145,8 @@ impl ComponentRegistry {
 
     /// Gets the tracking token for the component scoped to this registry.
     ///
-    /// If the component is the root component (has no name), the root allocation token is returned.
-    /// Otherwise, the component is registered (using its full name) if it hasn't already been, and
-    /// that token is returned.
+    /// If the component is the root component (has no name), the root allocation token is returned.  Otherwise, the
+    /// component is registered (using its full name) if it hasn't already been, and that token is returned.
     pub fn token(&mut self) -> AllocationGroupToken {
         let mut inner = self.inner.lock().unwrap();
         inner.token()
@@ -246,7 +245,7 @@ impl<'a> MemoryBoundsBuilder<'a> {
     ///
     /// This allows for defining the bounds of various subcomponents within a larger component, which are then rolled up
     /// into the calculated bounds for the parent component.
-    pub fn component<S>(&mut self, name: S) -> MemoryBoundsBuilder<'_>
+    pub fn subcomponent<S>(&mut self, name: S) -> MemoryBoundsBuilder<'_>
     where
         S: AsRef<str>,
     {
@@ -284,6 +283,9 @@ impl<'a> MemoryBoundsBuilder<'a> {
     }
 }
 
+/// Bounds builder.
+///
+/// Helper type for defining the bounds of a component in a field-driven manner.
 pub struct BoundsBuilder<'a, S> {
     inner: MutexGuard<'a, ComponentMetadata>,
     _state: PhantomData<S>,

@@ -49,7 +49,7 @@ impl TopologyBlueprint {
         // Update our bounds for some basic stuff that we know about upfront.
         let mut bounds_builder = component_registry.bounds_builder();
         bounds_builder
-            .component("buffer_pools/event_buffer")
+            .subcomponent("buffer_pools/event_buffer")
             .minimum()
             .with_array::<EventBuffer>(1024);
 
@@ -190,13 +190,14 @@ impl TopologyBlueprint {
         let mut sources = HashMap::new();
         for (id, builder) in self.sources {
             let (builder, mut component_registry) = builder.into_parts();
-            let component_token = component_registry.token();
-            let _guard = component_token.enter();
+            let allocation_token = component_registry.token();
+
+            let _guard = allocation_token.enter();
             match builder.build().await {
                 Ok(source) => {
                     sources.insert(
                         id,
-                        RegisteredComponent::new(source.in_current_component(), component_registry),
+                        RegisteredComponent::new(source.in_current_allocation_group(), component_registry),
                     );
                 }
                 Err(e) => return Err(BlueprintError::FailedToBuildComponent { id, source: e }),
@@ -206,13 +207,14 @@ impl TopologyBlueprint {
         let mut transforms = HashMap::new();
         for (id, builder) in self.transforms {
             let (builder, mut component_registry) = builder.into_parts();
-            let component_token = component_registry.token();
-            let _guard = component_token.enter();
+            let allocation_token = component_registry.token();
+
+            let _guard = allocation_token.enter();
             match builder.build().await {
                 Ok(transform) => {
                     transforms.insert(
                         id,
-                        RegisteredComponent::new(transform.in_current_component(), component_registry),
+                        RegisteredComponent::new(transform.in_current_allocation_group(), component_registry),
                     );
                 }
                 Err(e) => return Err(BlueprintError::FailedToBuildComponent { id, source: e }),
@@ -222,13 +224,14 @@ impl TopologyBlueprint {
         let mut destinations = HashMap::new();
         for (id, builder) in self.destinations {
             let (builder, mut component_registry) = builder.into_parts();
-            let component_token = component_registry.token();
-            let _guard = component_token.enter();
+            let allocation_token = component_registry.token();
+
+            let _guard = allocation_token.enter();
             match builder.build().await {
                 Ok(destination) => {
                     destinations.insert(
                         id,
-                        RegisteredComponent::new(destination.in_current_component(), component_registry),
+                        RegisteredComponent::new(destination.in_current_allocation_group(), component_registry),
                     );
                 }
                 Err(e) => return Err(BlueprintError::FailedToBuildComponent { id, source: e }),

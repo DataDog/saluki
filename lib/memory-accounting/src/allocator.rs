@@ -1,3 +1,5 @@
+//! Global allocator implementation that allows tracking allocations on a per-group basis.
+
 // TODO: The current design does not allow for deregistering groups, which is currently fine and
 // likely will be for a while, but would be a limitation in a world where we dynamically launched
 // data pipelines and wanted to clean up removed components, and so on.
@@ -21,7 +23,7 @@ use pin_project::pin_project;
 
 const STATS_LAYOUT: Layout = Layout::new::<*const AllocationStats>();
 
-static REGISTRY: OnceLock<GroupRegistry> = OnceLock::new();
+static REGISTRY: OnceLock<AllocationGroupRegistry> = OnceLock::new();
 static ROOT_GROUP: AllocationStats = AllocationStats::new();
 
 thread_local! {
@@ -30,44 +32,42 @@ thread_local! {
 
 /// A global allocator that tracks allocations on a per-group basis.
 ///
-/// This allocator provides the ability to track the allocations and deallocations, both in bytes
-/// and objects, of different allocation "groups." This allows for the tracking of memory usage
-/// (over time and live) of different components in a system, where the grouping is user-defined.
+/// This allocator provides the ability to track the allocations/deallocations, both in bytes and objects, for
+/// different, user-defined allocation groups.
 ///
 /// ## Allocation groups
 ///
-/// Allocation statistics are tracked by "group." Groups are registered by callers and
-/// `AllocationGroupToken` is provided so that the caller may enter and exit the group in order to
-/// track allocations.
-///
-/// All allocations are associated with an allocation group. If a user-defined allocation group
-/// isn't being used at the time, allocations are associated to the "root" allocation group, which
-/// is meant to capture all allocations that aren't explicitly attributed to a user-defined group,
-/// along with any allocations that are made in order to store information about allocation groups
-/// themselves.
+/// Allocation (and deallocations) are tracked by **allocation group**. When this allocator is used, every allocation is
+/// associated with an allocation group. Allocation groups are user-defined, except for the default "root" allocation
+/// group which acts as a catch-all for allocations when a user-defined group is not entered.
 ///
 /// ## Token guard
 ///
-/// When an allocation is registered, `AllocationGroupToken` is returned. This token can be used to
-/// "enter" the group, and attribute all allocations on the current thread to that group for as long
-/// as the token is entered.
+/// When an allocation group is registered, an `AllocationGroupToken` is returned. This token can be used to "enter" the
+/// group, which attribute all allocations on the current thread to that group. Entering the group returns a drop guard
+/// that restores the previously entered allocation when it is dropped.
 ///
-/// When the guard is dropped, the previously entered group is restored. This allows for arbitrary
-/// nesting depth of allocation groups.
+/// This allows for arbitrarily nested allocation groups.
 ///
 /// ## Changes to memory layout
 ///
-/// In order to associate an allocation with the current allocation group, a small trailer is added
-/// to the requested allocation, in the form of a pointer to the statistics for the allocation
-/// group. This allows updating the statistics directly when an allocation is deallocated, without
-/// having to externally keep track of what group a given allocation belongs to. These statistics
-/// are updated directly when the allocation is initially made, and when it is deallocated.
+/// In order to associate an allocation with the current allocation group, a small trailer is added to the requested
+/// allocation layout, in the form of a pointer to the statistics for the allocation group. This allows updating the
+/// statistics directly when an allocation is deallocated, without having to externally keep track of what group a given
+/// allocation belongs to. These statistics are updated directly when the allocation is initially made, and when it is
+/// deallocated.
+///
+/// This means that all requested allocations end up being one machine word larger: 4 bytes on 32-bit systems, and 8
+/// bytes on 64-bit systems.
 pub struct TrackingAllocator<A> {
     allocator: A,
 }
 
 impl<A> TrackingAllocator<A> {
-    /// Creates a new `TrackingAllocator` that wraps the given allocator.
+    /// Creates a new `TrackingAllocator` that wraps another allocator.
+    ///
+    /// The wrapped allocator is used to actually allocate and deallocate memory, while this allocator is responsible
+    /// purely for tracking the allocations and deallocations themselves.
     pub const fn new(allocator: A) -> Self {
         Self { allocator }
     }
@@ -134,7 +134,7 @@ impl AllocationStats {
     }
 
     /// Gets a reference to the statistics of the root allocation group.
-    pub fn root() -> &'static Self {
+    fn root() -> &'static Self {
         &ROOT_GROUP
     }
 
@@ -229,8 +229,13 @@ impl AllocationGroupToken {
         })
     }
 
+    #[cfg(test)]
+    fn ptr_eq(&self, other: &Self) -> bool {
+        self.group_ptr == other.group_ptr
+    }
+
     /// Returns the token for the root allocation group.
-    pub fn root() -> Self {
+    pub(crate) fn root() -> Self {
         Self::new(NonNull::from(&ROOT_GROUP))
     }
 
@@ -324,8 +329,7 @@ pub trait Track: Sized {
     /// # Examples
     ///
     /// ```rust
-    /// # use memory_accounting::allocator::AllocationGroupToken;
-    /// use memory_accounting::allocator::{AllocationGroupToken, Track};
+    /// use memory_accounting::allocator::{AllocationGroupRegistry, AllocationGroupToken, Track as _};
     ///
     /// # async fn doc() {
     /// let future = async {
@@ -333,8 +337,9 @@ pub trait Track: Sized {
     ///     // represented by `token`...
     /// };
     ///
+    /// let token = AllocationGroupRegistry::global().register_allocation_group("my-group");
     /// future
-    ///     .track_allocations(AllocationGroupToken::root())
+    ///     .track_allocations(token)
     ///     .await
     /// # }
     fn track_allocations(self, token: AllocationGroupToken) -> Tracked<Self> {
@@ -350,13 +355,13 @@ pub trait Track: Sized {
     /// # Examples
     ///
     /// ```rust
-    /// use memory_accounting::allocator::{AllocationGroupToken, Track};
+    /// use memory_accounting::allocator::{AllocationGroupRegistry, AllocationGroupToken, Track as _};
     ///
     /// # mod tokio {
     /// #     pub(super) fn spawn(_: impl std::future::Future) {}
     /// # }
     /// # async fn doc() {
-    /// let token = AllocationGroupToken::root();
+    /// let token = AllocationGroupRegistry::global().register_allocation_group("my-group");
     /// let _enter = token.enter();
     ///
     /// // ...
@@ -379,14 +384,14 @@ pub trait Track: Sized {
 impl<T: Sized> Track for T {}
 
 /// A registry of allocation groups and the statistics for each of them.
-pub struct GroupRegistry {
+pub struct AllocationGroupRegistry {
     allocation_groups: Mutex<HashMap<String, Box<AllocationStats>>>,
 }
 
-impl GroupRegistry {
+impl AllocationGroupRegistry {
     fn new() -> Self {
         in_root_allocation_group(|| Self {
-            allocation_groups: Mutex::new(HashMap::new()),
+            allocation_groups: Mutex::new(HashMap::with_capacity(4)),
         })
     }
 
@@ -395,24 +400,37 @@ impl GroupRegistry {
         REGISTRY.get_or_init(Self::new)
     }
 
+    /// Returns `true` if `TrackingAllocator` is installed as the global allocator.
+    pub fn allocator_installed() -> bool {
+        // Essentially, when we load the group registry, and it gets created for the first time, it will specifically
+        // allocate its internal data structures while entered into the root allocation group.
+        //
+        // This means that if the allocator is installed, we should always have some allocations in the root group by
+        // the time we call `AllocationStats::has_allocated`.
+        AllocationStats::root().has_allocated()
+    }
+
     /// Registers a new allocation group with the given name.
     ///
-    /// Returns a `AllocationGroupToken` that can be used to attribute allocations and deallocations to the
+    /// Returns an `AllocationGroupToken` that can be used to attribute allocations and deallocations to the
     /// newly-created allocation group.
     pub fn register_allocation_group<S>(&self, name: S) -> AllocationGroupToken
     where
-        S: Into<String>,
+        S: AsRef<str>,
     {
         in_root_allocation_group(|| {
-            let allocation_group_stats = Box::new(AllocationStats::new());
-            let token = AllocationGroupToken::new(NonNull::from(&*allocation_group_stats));
+            let mut allocation_groups = self.allocation_groups.lock().unwrap();
+            match allocation_groups.get(name.as_ref()) {
+                Some(stats) => AllocationGroupToken::new(NonNull::from(&**stats)),
+                None => {
+                    let allocation_group_stats = Box::new(AllocationStats::new());
+                    let token = AllocationGroupToken::new(NonNull::from(&*allocation_group_stats));
 
-            self.allocation_groups
-                .lock()
-                .unwrap()
-                .insert(name.into(), allocation_group_stats);
+                    allocation_groups.insert(name.as_ref().to_string(), allocation_group_stats);
 
-            token
+                    token
+                }
+            }
         })
     }
 
@@ -439,4 +457,35 @@ where
     let token = AllocationGroupToken::root();
     let _enter = token.enter();
     f()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AllocationGroupRegistry;
+
+    #[test]
+    fn existing_group() {
+        let registry = AllocationGroupRegistry::new();
+        let token = registry.register_allocation_group("test");
+        let token2 = registry.register_allocation_group("test");
+        let token3 = registry.register_allocation_group("test2");
+
+        assert!(token.ptr_eq(&token2));
+        assert!(!token.ptr_eq(&token3));
+    }
+
+    #[test]
+    fn visit_allocation_groups() {
+        let registry = AllocationGroupRegistry::new();
+        let _token = registry.register_allocation_group("my-group");
+
+        let mut visited = Vec::new();
+        registry.visit_allocation_groups(|name, _stats| {
+            visited.push(name.to_string());
+        });
+
+        assert_eq!(visited.len(), 2);
+        assert_eq!(visited[0], "root");
+        assert_eq!(visited[1], "my-group");
+    }
 }
