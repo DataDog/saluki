@@ -9,8 +9,8 @@ mod env_provider;
 
 use std::time::Instant;
 
-use memory_accounting::{ComponentRegistry, MemoryBounds as _};
 use saluki_app::prelude::*;
+use memory_accounting::ComponentRegistry;
 use saluki_components::{
     destinations::{BlackholeConfiguration, DatadogMetricsConfiguration, PrometheusConfiguration},
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
@@ -75,9 +75,9 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         .from_environment("DD")?
         .into_generic()?;
 
-    let env_provider = ADPEnvironmentProvider::from_configuration(&configuration).await?;
-    let mut bounds_builder = component_registry.bounds_builder();
-    bounds_builder.with_subcomponent("env_provider", &env_provider);
+    let env_provider =
+        ADPEnvironmentProvider::from_configuration(&configuration, component_registry.get_or_create("env_provider"))
+            .await?;
 
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
@@ -121,11 +121,6 @@ async fn run(started: Instant) -> Result<(), GenericError> {
 
     // With our environment provider and topology blueprint established, go through bounds validation.
     let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;
-    let verify_result = initialize_memory_bounds(bounds_configuration, |builder| {
-        builder.bounded_component("env_provider", &env_provider);
-        builder.bounded_component("topology", &blueprint);
-    });
-
     let memory_limiter = initialize_memory_bounds(bounds_configuration, component_registry)?;
 
     // Time to run the topology!
