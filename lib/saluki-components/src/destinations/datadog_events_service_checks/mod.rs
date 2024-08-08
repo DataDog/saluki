@@ -39,7 +39,7 @@ pub struct DatadogEventsServiceChecksConfiguration {
     /// The API key to use.
     api_key: String,
 
-    /// The site to send metrics to.
+    /// The site to send events / service checks to.
     ///
     /// This is the base domain for the Datadog site in which the API key originates from. This will generally be a
     /// portion of the domain used to access the Datadog UI, such as `datadoghq.com` or `us5.datadoghq.com`.
@@ -48,7 +48,7 @@ pub struct DatadogEventsServiceChecksConfiguration {
     #[serde(default = "default_site")]
     site: String,
 
-    /// The full URL base to send metrics to.
+    /// The full URL base to send events / service checks to.
     ///
     /// This takes precedence over `site`, and is not altered in any way. This can be useful to specifying the exact
     /// endpoint used, such as when looking to change the scheme (e.g. `http` vs `https`) or specifying a custom port,
@@ -204,7 +204,7 @@ impl Destination for DatadogEventsServiceChecks {
         drop(requests_tx);
         let _ = io_shutdown_rx.await;
 
-        debug!("Datadog Metrics destination stopped.");
+        debug!("Datadog Events Service Checks destination stopped.");
         Ok(())
     }
 }
