@@ -1799,6 +1799,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "otel-protos"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "prost",
+ "protobuf",
+ "protobuf-codegen",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
 name = "overload"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2497,6 +2509,7 @@ dependencies = [
  "metrics",
  "metrics-util",
  "nom",
+ "otel-protos",
  "paste",
  "pin-project",
  "protobuf",

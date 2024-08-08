@@ -77,7 +77,7 @@ impl<'a> TryFrom<&'a str> for ListenAddress {
                 if socket_addresses.is_empty() {
                     Err("listen address must resolve to at least one valid IP address/port pair".to_string())
                 } else {
-                    Ok(Self::Tcp(socket_addresses.swap_remove(0)))
+                    Ok(Self::Tcp(socket_addresses.remove(0)))
                 }
             }
             "udp" => {
@@ -85,7 +85,7 @@ impl<'a> TryFrom<&'a str> for ListenAddress {
                 if socket_addresses.is_empty() {
                     Err("listen address must resolve to at least one valid IP address/port pair".to_string())
                 } else {
-                    Ok(Self::Udp(socket_addresses.swap_remove(0)))
+                    Ok(Self::Udp(socket_addresses.remove(0)))
                 }
             }
             #[cfg(unix)]
@@ -117,6 +117,82 @@ impl<'a> TryFrom<&'a str> for ListenAddress {
                 Ok(Self::Unix(path_buf))
             }
             scheme => Err(format!("unknown/unsupported address scheme '{}'", scheme)),
+        }
+    }
+}
+
+/// A gRPC listen address.
+///
+/// Listen addresses are used to bind listeners to specific local addresses and ports. While [`ListenAddress`] is most
+/// commonly used, `GrpcListenAddress` is specifically used for gRPC listeners, and supports specific URL schemes to
+/// indicate what type of gRPC endpoint to expose: pure binary gRPC or gRPC-web.
+///
+///
+/// ## Examples
+///
+/// - `grpc://127.0.0.1:4317` (listen on IPv4 loopback, TCP port 4713, binary gRPC)
+/// - `grpc://[::1]:4317` (listen on IPv6 loopback, TCP port 4713, binary gRPC)
+/// - `grpc:///tmp/otlp.socket` (listen on a Unix stream socket at `/tmp/otlp.socket`, binary gRPC)
+/// - `http://127.0.0.1` (listen on IPv4 loopback, TCP port 80, gRPC-web)
+/// - `http://[::1]:5428` (listen on IPv6 loopback, TCP port 5428, gRPC-web)
+/// - `http:///tmp/otlp.socket` (listen on a Unix stream socket at `/tmp/otlp.socket`, gRPC-web)
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "String")]
+pub enum GrpcListenAddress {
+    /// A pure binary gRPC endpoint.
+    Binary(ListenAddress),
+
+    /// A gRPC-web endpoint.
+    Web(ListenAddress),
+}
+
+impl fmt::Display for GrpcListenAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Binary(addr) => write!(f, "grpc://{}", addr),
+            Self::Web(addr) => write!(f, "http://{}", addr),
+        }
+    }
+}
+
+impl TryFrom<String> for GrpcListenAddress {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_from(value.as_str())
+    }
+}
+
+impl<'a> TryFrom<&'a str> for GrpcListenAddress {
+    type Error = String;
+
+    fn try_from(value: &'a str) -> Result<Self, Self::Error> {
+        let mut url = Url::parse(value).map_err(|e| e.to_string())?;
+
+        // Figure out if this is a binary gRPC or gRPC-web address.
+        let is_binary = match url.scheme() {
+            "grpc" => true,
+            "http" => false,
+            scheme => {
+                return Err(format!(
+                    "unknown/unsupported gRPC address scheme '{}'; must be either 'grpc' or 'http'/'https'",
+                    scheme
+                ))
+            }
+        };
+
+        // Overwrite the scheme to something that we can get `ListenAddress` from.
+        //
+        // If we have a host[:port], we use TCP. Otherwise, we use Unix domain sockets in stream mode.
+        let new_scheme = if url.host().is_some() { "tcp" } else { "unix" };
+        url.set_scheme(new_scheme).map_err(|_| format!("failed to set new scheme '{}'", new_scheme))?;
+
+        let listen_address = ListenAddress::try_from(url.as_str())?;
+
+        if is_binary {
+            Ok(Self::Binary(listen_address))
+        } else {
+            Ok(Self::Web(listen_address))
         }
     }
 }
