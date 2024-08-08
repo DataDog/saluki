@@ -58,7 +58,7 @@ impl EventsServiceChecksEndpoint {
     /// Gets the path for this endpoint.
     pub const fn endpoint_path(&self) -> &'static str {
         match self {
-            Self::Events => "/api/v2/events",
+            Self::Events => "/api/v1/events",
             Self::ServiceChecks => "/api/v1/check_run",
         }
     }
