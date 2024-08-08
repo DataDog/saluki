@@ -112,6 +112,37 @@ impl ComponentMetadata {
 }
 
 /// A registry for components for tracking memory bounds and runtime memory usage.
+///
+/// This registry provides a unified interface for declaring the memory bounds of a "component", as well as registering
+/// that component for runtime memory usage tracking when using the tracking allocator implementation in `memory-accounting`.   
+///
+/// ## Components
+///
+/// **Components** are any logical grouping of memory usage within a program, and they can be arbitrarily nested.
+///
+/// For example, a data plane will generally have a topology that defines the components used to accept, process, and
+/// forward data. The topology itself could be considered a component, and each individual source, transform, and
+/// destination within it could be subcomponents of the topology.
+///
+/// Components are generally meant to be tied to something that has its own memory bounds and is somewhat "standalone",
+/// but this is not an absolute requirement and components can be nested more granularly for organizational/aesthetic
+/// purposes. Again, for example, one might opt to create a component in their topology for each component type --
+/// sources, transforms, and destinations -- and then add the actual instances of those components as subcomponents to
+/// each grouping, leading to a nested structure such as `topology/sources/source1`, `topology/transforms/transform1`,
+/// and so on.
+///
+/// ## Bounds
+///
+/// Every component is able to define memory bounds for itself and its subcomponents. A builder-style API is exposed to
+/// allow for ergonomically defining these bounds -- both minimum and firm -- for components, as well as extending the
+/// nestable aspect of the registry itself to the bounds builder, allowing for flexibility in where components are
+/// defined from and how they are nested.
+///
+/// ## Allocation tracking
+///
+/// Every component is also able to be registered with its own allocation group when using the tracking allocator
+/// implementation. This is done on demand when the component's token is requested, which avoids polluting the tracking
+/// allocator with components that are never actually used, such as those used for organizational/aesthetic purposes.
 pub struct ComponentRegistry {
     inner: Arc<Mutex<ComponentMetadata>>,
 }
@@ -119,7 +150,7 @@ pub struct ComponentRegistry {
 impl ComponentRegistry {
     /// Gets a component by name, or creates it if it doesn't exist.
     ///
-    /// The name provided can be given in a direct (`component_name``) or nested (`path/to/component_name`) form. If the
+    /// The name provided can be given in a direct (`component_name`) or nested (`path/to/component_name`) form. If the
     /// nested form is given, each component in the path will be created if it doesn't exist.
     ///
     /// Returns a `ComponentRegistry` scoped to the component.
@@ -154,7 +185,7 @@ impl ComponentRegistry {
 
     /// Validates that all components are able to respect the calculated effective limit.
     ///
-    /// If validation succeeds, `VerifiedBounds`` is returned, which provides information about the effective limit that
+    /// If validation succeeds, `VerifiedBounds` is returned, which provides information about the effective limit that
     /// can be used for allocating memory.
     ///
     /// ## Errors

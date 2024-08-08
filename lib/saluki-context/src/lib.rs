@@ -592,7 +592,7 @@ impl TagSet {
 
     /// Retains only the tags specified by the predicate.
     ///
-    /// In other words, remove all tags `t` for which `f(&t)`` returns `false``. This method operates in place, visiting
+    /// In other words, remove all tags `t` for which `f(&t)` returns `false`. This method operates in place, visiting
     /// each element exactly once in the original order, and preserves the order of the retained tags.
     pub fn retain<F>(&mut self, mut f: F)
     where
