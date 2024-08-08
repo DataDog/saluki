@@ -2386,6 +2386,7 @@ dependencies = [
  "saluki-event",
  "saluki-io",
  "serde",
+ "serde_json",
  "slab",
  "snafu",
  "stringtheory",
@@ -2507,6 +2508,8 @@ dependencies = [
  "float_eq",
  "proptest",
  "saluki-context",
+ "serde",
+ "serde_json",
  "stringtheory",
 ]
 
