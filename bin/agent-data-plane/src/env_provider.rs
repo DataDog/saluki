@@ -1,4 +1,4 @@
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use memory_accounting::ComponentRegistry;
 use saluki_config::GenericConfiguration;
 use saluki_env::{
     host::providers::AgentLikeHostProvider, workload::providers::RemoteAgentWorkloadProvider, EnvironmentProvider,
@@ -17,7 +17,20 @@ pub struct ADPEnvironmentProvider {
 }
 
 impl ADPEnvironmentProvider {
-    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+    pub async fn from_configuration(
+        config: &GenericConfiguration, mut component_registry: ComponentRegistry,
+    ) -> Result<Self, GenericError> {
+        let host_provider = AgentLikeHostProvider::new(
+            config,
+            HOSTNAME_CONFIG_KEY,
+            HOSTNAME_FILE_CONFIG_KEY,
+            TRUST_OS_HOSTNAME_CONFIG_KEY,
+        )?;
+
+        component_registry
+            .bounds_builder()
+            .with_subcomponent("host", &host_provider);
+
         // We allow disabling the normal workload provider via configuration, since in some cases we don't actually care
         // about having a real workload provider since we know we won't be in a containerized environment, or running
         // alongside the Datadog Agent.
@@ -27,16 +40,14 @@ impl ADPEnvironmentProvider {
             debug!("Using no-op workload provider as instructed by configuration.");
             None
         } else {
-            Some(RemoteAgentWorkloadProvider::from_configuration(config).await?)
+            Some(
+                RemoteAgentWorkloadProvider::from_configuration(config, component_registry.get_or_create("workload"))
+                    .await?,
+            )
         };
 
         Ok(Self {
-            host_provider: AgentLikeHostProvider::new(
-                config,
-                HOSTNAME_CONFIG_KEY,
-                HOSTNAME_FILE_CONFIG_KEY,
-                TRUST_OS_HOSTNAME_CONFIG_KEY,
-            )?,
+            host_provider,
             workload_provider,
         })
     }
@@ -52,15 +63,5 @@ impl EnvironmentProvider for ADPEnvironmentProvider {
 
     fn workload(&self) -> &Self::Workload {
         &self.workload_provider
-    }
-}
-
-impl MemoryBounds for ADPEnvironmentProvider {
-    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        builder.bounded_component("host", &self.host_provider);
-
-        if let Some(workload_provider) = self.workload_provider.as_ref() {
-            builder.bounded_component("workload", workload_provider);
-        }
     }
 }

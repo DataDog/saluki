@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use memory_accounting::MemoryLimiter;
+use memory_accounting::{ComponentRegistry, MemoryLimiter};
 
 use crate::{
     components::ComponentContext,
@@ -16,6 +16,7 @@ struct SourceContextInner {
     forwarder: Forwarder,
     event_buffer_pool: FixedSizeObjectPool<EventBuffer>,
     memory_limiter: MemoryLimiter,
+    component_registry: ComponentRegistry,
 }
 
 /// Source context.
@@ -29,6 +30,7 @@ impl SourceContext {
     pub fn new(
         component_context: ComponentContext, shutdown_handle: ComponentShutdownHandle, forwarder: Forwarder,
         event_buffer_pool: FixedSizeObjectPool<EventBuffer>, memory_limiter: MemoryLimiter,
+        component_registry: ComponentRegistry,
     ) -> Self {
         Self {
             shutdown_handle: Some(shutdown_handle),
@@ -37,6 +39,7 @@ impl SourceContext {
                 forwarder,
                 event_buffer_pool,
                 memory_limiter,
+                component_registry,
             }),
         }
     }
@@ -66,6 +69,11 @@ impl SourceContext {
     /// Gets a reference to the memory limiter.
     pub fn memory_limiter(&self) -> &MemoryLimiter {
         &self.inner.memory_limiter
+    }
+
+    /// Gets a mutable reference to the component registry.
+    pub fn component_registry_mut(&mut self) -> &ComponentRegistry {
+        &self.inner.component_registry
     }
 }
 

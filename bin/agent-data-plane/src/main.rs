@@ -9,6 +9,7 @@ mod env_provider;
 
 use std::time::Instant;
 
+use memory_accounting::ComponentRegistry;
 use saluki_components::{
     destinations::{BlackholeConfiguration, DatadogMetricsConfiguration, PrometheusConfiguration},
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
@@ -17,7 +18,7 @@ use saluki_components::{
     },
 };
 use saluki_config::ConfigurationLoader;
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::GenericError;
 use tracing::{error, info};
 
 use saluki_app::prelude::*;
@@ -68,12 +69,16 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         "Agent Data Plane starting..."
     );
 
+    let mut component_registry = ComponentRegistry::default();
+
     let configuration = ConfigurationLoader::default()
         .try_from_yaml("/etc/datadog-agent/datadog.yaml")
         .from_environment("DD")?
         .into_generic()?;
 
-    let env_provider = ADPEnvironmentProvider::from_configuration(&configuration).await?;
+    let env_provider =
+        ADPEnvironmentProvider::from_configuration(&configuration, component_registry.get_or_create("env_provider"))
+            .await?;
 
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
@@ -91,7 +96,8 @@ async fn run(started: Instant) -> Result<(), GenericError> {
     let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(&configuration)?;
     let blackhole_config = BlackholeConfiguration;
 
-    let mut blueprint = TopologyBlueprint::default();
+    let topology_registry = component_registry.get_or_create("topology");
+    let mut blueprint = TopologyBlueprint::from_component_registry(topology_registry);
     blueprint
         .add_source("dsd_in", dsd_config)?
         .add_source("internal_metrics_in", int_metrics_config)?
@@ -114,14 +120,9 @@ async fn run(started: Instant) -> Result<(), GenericError> {
             .connect_component("internal_metrics_out", ["internal_metrics_in"])?;
     }
 
-    // Handle verification of memory bounds.
+    // With our environment provider and topology blueprint established, go through bounds validation.
     let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;
-    let verify_result = initialize_memory_bounds(bounds_configuration, |builder| {
-        builder.bounded_component("env_provider", &env_provider);
-        builder.bounded_component("topology", &blueprint);
-    });
-
-    let memory_limiter = verify_result.error_context("Failed to initialize memory bounds.")?;
+    let memory_limiter = initialize_memory_bounds(bounds_configuration, component_registry)?;
 
     // Time to run the topology!
     let built_topology = blueprint.build().await?;

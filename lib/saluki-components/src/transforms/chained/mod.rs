@@ -16,24 +16,27 @@ use tracing::{debug, error};
 /// added to the topology normally.
 #[derive(Default)]
 pub struct ChainedConfiguration {
-    transform_builders: Vec<Box<dyn SynchronousTransformBuilder + Send + Sync>>,
+    subtransform_builders: Vec<(String, Box<dyn SynchronousTransformBuilder + Send + Sync>)>,
 }
 
 impl ChainedConfiguration {
     /// Adds a new synchronous transform to the chain.
-    pub fn with_transform_builder<TB>(mut self, transform_builder: TB) -> Self
+    pub fn with_transform_builder<TB>(mut self, subtransform_builder: TB) -> Self
     where
         TB: SynchronousTransformBuilder + Send + Sync + 'static,
     {
-        self.transform_builders.push(Box::new(transform_builder));
+        let subtransform_id = format!("subtransform_{}", self.subtransform_builders.len());
+        self.subtransform_builders
+            .push((subtransform_id, Box::new(subtransform_builder)));
         self
     }
 }
 
 impl MemoryBounds for ChainedConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        for (i, transform_builder) in self.transform_builders.iter().enumerate() {
-            builder.bounded_component(format!("subtransform #{}", i), transform_builder);
+        for (subtransform_id, subtransform_builder) in self.subtransform_builders.iter() {
+            let mut subtransform_bounds_builder = builder.subcomponent(subtransform_id);
+            subtransform_builder.specify_bounds(&mut subtransform_bounds_builder);
         }
     }
 }
@@ -41,12 +44,13 @@ impl MemoryBounds for ChainedConfiguration {
 #[async_trait]
 impl TransformBuilder for ChainedConfiguration {
     async fn build(&self) -> Result<Box<dyn Transform + Send>, GenericError> {
-        let mut transforms = Vec::new();
-        for transform_builder in &self.transform_builders {
-            transforms.push(transform_builder.build().await?);
+        let mut subtransforms = Vec::new();
+        for (subtransform_id, subtransform_builder) in &self.subtransform_builders {
+            let subtransform = subtransform_builder.build().await?;
+            subtransforms.push((subtransform_id.clone(), subtransform));
         }
 
-        Ok(Box::new(Chained { transforms }))
+        Ok(Box::new(Chained { subtransforms }))
     }
 
     fn input_data_type(&self) -> DataType {
@@ -61,19 +65,33 @@ impl TransformBuilder for ChainedConfiguration {
 }
 
 pub struct Chained {
-    transforms: Vec<Box<dyn SynchronousTransform + Send>>,
+    subtransforms: Vec<(String, Box<dyn SynchronousTransform + Send>)>,
 }
 
 #[async_trait]
 impl Transform for Chained {
     async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), ()> {
         debug!(
-            "Chained transform started {} synchronous tranform(s) present.",
-            self.transforms.len()
+            "Chained transform started with {} synchronous subtranform(s) present.",
+            self.subtransforms.len()
         );
 
+        // We have to reassociate each subtransform with their allocation group token here, as we don't have access to
+        // it when the bounds are initially defined.
+        let subtransforms = self
+            .subtransforms
+            .into_iter()
+            .map(|(subtransform_id, subtransform)| {
+                (
+                    context.component_registry_mut().get_or_create(subtransform_id).token(),
+                    subtransform,
+                )
+            })
+            .collect::<Vec<_>>();
+
         while let Some(mut event_buffer) = context.event_stream().next().await {
-            for transform in &self.transforms {
+            for (allocation_token, transform) in &subtransforms {
+                let _guard = allocation_token.enter();
                 transform.transform_buffer(&mut event_buffer);
             }
 
