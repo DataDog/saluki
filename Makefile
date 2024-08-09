@@ -24,7 +24,7 @@ export ADP_APP_IMAGE ?= debian:buster-slim
 export GO_BUILD_IMAGE ?= golang:1.22-bullseye
 export GO_APP_IMAGE ?= debian:bullseye-slim
 export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
-export GIT_COMMIT ?= $(shell git rev-parse --short HEAD)
+export GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
 
 # Specific versions of various Rust tools we use.
 export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.3
