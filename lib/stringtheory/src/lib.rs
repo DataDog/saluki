@@ -10,6 +10,8 @@
 use std::{borrow::Borrow, fmt, hash, ops::Deref};
 
 pub mod interning;
+use serde::Serialize;
+
 use self::interning::InternedString;
 
 #[derive(Clone)]
@@ -172,6 +174,15 @@ impl Ord for MetaString {
 impl Borrow<str> for MetaString {
     fn borrow(&self) -> &str {
         self.deref()
+    }
+}
+
+impl Serialize for MetaString {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.deref())
     }
 }
 
