@@ -1,8 +1,7 @@
 //! Service checks.
 
-use stringtheory::MetaString;
-
 use serde::{Serialize, Serializer};
+use stringtheory::MetaString;
 /// Service status.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CheckStatus {

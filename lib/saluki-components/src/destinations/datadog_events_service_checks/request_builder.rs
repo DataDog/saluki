@@ -1,6 +1,7 @@
+use std::io;
+
 use http::{Method, Request, Uri};
 use snafu::{ResultExt, Snafu};
-use std::io;
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
