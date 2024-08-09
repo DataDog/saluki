@@ -13,9 +13,6 @@ use nom::{
     IResult,
 };
 use saluki_context::{ContextRef, ContextResolver};
-use saluki_metrics::static_metrics;
-use snafu::Snafu;
-
 use saluki_core::topology::interconnect::EventBuffer;
 use saluki_event::{
     eventd::{AlertType, EventD, Priority},
@@ -23,6 +20,8 @@ use saluki_event::{
     service_check::{CheckStatus, ServiceCheck},
     Event,
 };
+use saluki_metrics::static_metrics;
+use snafu::Snafu;
 
 mod message;
 use crate::buf::ReadIoBuffer;
@@ -986,9 +985,8 @@ mod tests {
     use super::{
         parse_dogstatsd_event, parse_dogstatsd_metric, parse_dogstatsd_service_check, DogstatsdCodecConfiguration,
     };
-    use crate::deser::{codec::DogstatsdCodec, Decoder};
-
     use super::{InterceptAction, TagMetadataInterceptor};
+    use crate::deser::{codec::DogstatsdCodec, Decoder};
 
     enum OneOrMany<T> {
         Single(T),
