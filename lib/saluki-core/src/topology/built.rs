@@ -13,7 +13,7 @@ use super::{
     interconnect::{EventBuffer, EventStream, Forwarder},
     running::RunningTopology,
     shutdown::ComponentShutdownCoordinator,
-    ComponentId,
+    ComponentId, RegisteredComponent,
 };
 use crate::{
     components::{
