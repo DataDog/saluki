@@ -19,10 +19,10 @@ pub use self::metadata::{MetadataAction, MetadataOperation, TagCardinality};
 pub mod providers;
 
 mod store;
-pub use self::store::{TagSnapshot, TagStore};
-
 use async_trait::async_trait;
 use saluki_context::TagSet;
+
+pub use self::store::{TagSnapshot, TagStore};
 
 /// Provides information about workloads running on the process host.
 #[async_trait]
