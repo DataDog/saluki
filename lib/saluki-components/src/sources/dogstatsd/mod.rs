@@ -453,7 +453,7 @@ async fn drive_stream(
                 let maybe_service_checks_event_buffer = match event_buffer.has_data_type(DataType::ServiceCheck) {
                     true => {
                         let mut service_check_event_buffer = source_context.event_buffer_pool().acquire().await;
-                        service_check_event_buffer.extend(event_buffer.extract(Event::is_eventd));
+                        service_check_event_buffer.extend(event_buffer.extract(Event::is_service_check));
                         Some(service_check_event_buffer)
                     }
                     false => None,

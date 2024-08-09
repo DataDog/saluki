@@ -5,6 +5,8 @@
 
 use std::fmt;
 
+use serde::{Serialize, Serializer};
+
 /// Value supplied used to specify a low priority event
 pub const PRIORITY_LOW: &str = "low";
 
@@ -45,6 +47,15 @@ impl fmt::Display for AlertType {
     }
 }
 
+impl Serialize for AlertType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
 impl AlertType {
     /// Creates an AlertType from a string.
     ///
@@ -55,6 +66,15 @@ impl AlertType {
             ALERT_TYPE_WARNING => Some(AlertType::Warning),
             ALERT_TYPE_SUCCESS => Some(AlertType::Success),
             _ => Some(AlertType::Info),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            AlertType::Info => "info",
+            AlertType::Error => "error",
+            AlertType::Warning => "warning",
+            AlertType::Success => "success",
         }
     }
 }
@@ -79,6 +99,15 @@ impl fmt::Display for Priority {
     }
 }
 
+impl Serialize for Priority {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
 impl Priority {
     /// Creates an event Priority from a string.
     ///
@@ -89,10 +118,17 @@ impl Priority {
             _ => Some(Priority::Normal),
         }
     }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Priority::Normal => "normal",
+            Priority::Low => "low",
+        }
+    }
 }
 
 /// EventD is an object that can be posted to the DataDog event stream.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct EventD {
     title: String,
     text: String,
