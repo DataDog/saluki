@@ -2509,7 +2509,6 @@ dependencies = [
  "proptest",
  "saluki-context",
  "serde",
- "serde_json",
  "stringtheory",
 ]
 

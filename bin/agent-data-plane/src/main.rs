@@ -89,7 +89,7 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         .with_transform_builder(host_enrichment_config)
         .with_transform_builder(origin_enrichment_config);
     let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(&configuration)?;
-    let events_servicechecks_config = DatadogEventsServiceChecksConfiguration::from_configuration(&configuration)?;
+    let events_service_checks_config = DatadogEventsServiceChecksConfiguration::from_configuration(&configuration)?;
 
     let mut blueprint = TopologyBlueprint::default();
     blueprint
@@ -99,7 +99,7 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         .add_transform("internal_metrics_agg", int_metrics_agg_config)?
         .add_transform("enrich", enrich_config)?
         .add_destination("dd_metrics_out", dd_metrics_config)?
-        .add_destination("dd_events_service_checks_out", events_servicechecks_config)?
+        .add_destination("dd_events_service_checks_out", events_service_checks_config)?
         .connect_component("dsd_agg", ["dsd_in.metrics"])?
         .connect_component("internal_metrics_agg", ["internal_metrics_in"])?
         .connect_component("enrich", ["dsd_agg", "internal_metrics_agg"])?

@@ -26,7 +26,8 @@ pub enum CheckStatus {
 /// message, status enum (OK vs warning vs critical, etc), timestamp, and tags.
 #[derive(Clone, Debug, Serialize)]
 pub struct ServiceCheck {
-    check: String,
+    #[serde(rename = "check")]
+    name: String,
     status: CheckStatus,
     timestamp: Option<u64>,
     hostname: Option<String>,
@@ -37,7 +38,7 @@ pub struct ServiceCheck {
 impl ServiceCheck {
     /// Returns the name of the check.
     pub fn name(&self) -> &str {
-        &self.check
+        &self.name
     }
 
     /// Returns the status of the check.
@@ -70,7 +71,7 @@ impl ServiceCheck {
     /// Creates a `ServiceCheck` from the given name and status
     pub fn new(name: &str, status: CheckStatus) -> Self {
         Self {
-            check: name.to_string(),
+            name: name.to_string(),
             status,
             timestamp: None,
             hostname: None,

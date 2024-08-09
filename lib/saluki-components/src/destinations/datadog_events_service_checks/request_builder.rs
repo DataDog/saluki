@@ -19,7 +19,7 @@ pub struct RequestBuilder {
 
 impl RequestBuilder {
     /// Creates a new `RequestBuilder` for the given endpoint, using the specified API key and base URI.
-    pub async fn new(
+    pub fn new(
         api_key: String, api_base_uri: Uri, endpoint: EventsServiceChecksEndpoint,
     ) -> Result<Self, RequestBuilderError> {
         let api_uri = build_uri_for_endpoint(api_base_uri, endpoint)?;
