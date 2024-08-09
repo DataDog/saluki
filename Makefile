@@ -24,7 +24,7 @@ export ADP_APP_IMAGE ?= debian:buster-slim
 export GO_BUILD_IMAGE ?= golang:1.22-bullseye
 export GO_APP_IMAGE ?= debian:bullseye-slim
 export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
-export GIT_COMMIT ?= $(shell git rev-parse --short HEAD)
+export GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
 
 # Specific versions of various Rust tools we use.
 export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.3
@@ -292,7 +292,7 @@ check-deny: ## Check all crate dependencies for outstanding advisories or usage 
 check-fmt: check-rust-build-tools cargo-install-cargo-sort
 check-fmt: ## Check that all Rust source files are formatted properly
 	@echo "[*] Checking Rust source code formatting..."
-	@cargo fmt -- --check
+	@cargo +nightly fmt -- --check
 	@echo "[*] Checking Cargo.toml formatting..."
 	@cargo sort --workspace --check >/dev/null
 
@@ -418,7 +418,7 @@ clean-docker: ## Cleans up Docker build cache
 fmt: check-rust-build-tools cargo-install-cargo-autoinherit cargo-install-cargo-sort
 fmt: ## Format Rust source code
 	@echo "[*] Formatting Rust source code..."
-	@cargo fmt
+	@cargo +nightly fmt
 	@echo "[*] Ensuring workspace dependencies are autoinherited..."
 	@cargo autoinherit 2>/dev/null
 	@echo "[*] Formatting Cargo.toml files..."
@@ -429,6 +429,12 @@ sync-licenses: check-rust-build-tools cargo-install-dd-rust-license-tool
 sync-licenses: ## Synchronizes the third-party license file with the current crate dependencies
 	@echo "[*] Synchronizing third-party license file to current dependencies..."
 	@$(HOME)/.cargo/bin/dd-rust-license-tool write
+
+.PHONY: cargo-preinstall
+cargo-preinstall: cargo-install-dd-rust-license-tool cargo-install-cargo-deny cargo-install-cargo-hack 
+cargo-preinstall: cargo-install-cargo-nextest cargo-install-cargo-autoinherit cargo-install-cargo-sort
+cargo-preinstall: ## Pre-installs all necessary Cargo tools (used for CI)
+	@echo "[*] Pre-installed all necessary Cargo tools!"
 
 .PHONY: cargo-install-%
 cargo-install-%: override TOOL = $(@:cargo-install-%=%)

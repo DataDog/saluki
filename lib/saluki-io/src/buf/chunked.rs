@@ -10,10 +10,9 @@ use std::{
 
 use bytes::{Buf as _, BufMut as _};
 use http_body::{Body, Frame};
+use saluki_core::pooling::ObjectPool;
 use tokio::io::AsyncWrite;
 use tokio_util::sync::ReusableBoxFuture;
-
-use saluki_core::pooling::ObjectPool;
 
 use super::ReadWriteIoBuffer;
 
@@ -244,9 +243,8 @@ mod tests {
     use tokio::io::AsyncWriteExt as _;
     use tokio_test::{assert_pending, assert_ready, task::spawn as test_spawn};
 
-    use crate::buf::{BytesBuffer, FixedSizeVec};
-
     use super::*;
+    use crate::buf::{BytesBuffer, FixedSizeVec};
 
     const TEST_CHUNK_SIZE: usize = 16;
     const TEST_BUF_CHUNK_SIZED: &[u8] = b"hello world!!!!!";

@@ -2,19 +2,16 @@ use std::{fmt::Debug, io};
 
 use bytes::{Buf, BufMut};
 use metrics::{Counter, Histogram};
+use saluki_core::{components::MetricsBuilder, pooling::ObjectPool, topology::interconnect::EventBuffer};
 use snafu::{ResultExt as _, Snafu};
 use tracing::{debug, trace};
 
-use saluki_core::{components::MetricsBuilder, pooling::ObjectPool, topology::interconnect::EventBuffer};
-
-use crate::buf::{ClearableIoBuffer, ReadWriteIoBuffer};
-
 use self::framing::Framer;
-
 use super::{
     buf::ReadIoBuffer,
     net::{ConnectionAddress, Stream},
 };
+use crate::buf::{ClearableIoBuffer, ReadWriteIoBuffer};
 
 pub mod codec;
 pub mod framing;

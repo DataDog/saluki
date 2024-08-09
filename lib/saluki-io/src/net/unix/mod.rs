@@ -26,7 +26,6 @@ mod non_linux;
 pub use self::non_linux::enable_uds_socket_credentials;
 #[cfg(not(target_os = "linux"))]
 use self::non_linux::uds_recvmsg;
-
 use super::addr::ConnectionAddress;
 
 /// Ensures that the given path is read for use as a UNIX socket.

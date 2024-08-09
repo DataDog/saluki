@@ -6,6 +6,8 @@
 // to the buffer, and then we waste space doing so when we could have potentially had a more optimal usage if the
 // available capacity was simply larger.
 
+#[cfg(not(feature = "loom"))]
+use std::sync::{atomic::AtomicUsize, Arc, Mutex};
 use std::{
     alloc::Layout,
     collections::BTreeSet,
@@ -18,9 +20,6 @@ use std::{
 
 #[cfg(feature = "loom")]
 use loom::sync::{atomic::AtomicUsize, Arc, Mutex};
-
-#[cfg(not(feature = "loom"))]
-use std::sync::{atomic::AtomicUsize, Arc, Mutex};
 
 const HEADER_LEN: usize = std::mem::size_of::<EntryHeader>();
 const HEADER_ALIGN: usize = std::mem::align_of::<EntryHeader>();
@@ -848,12 +847,13 @@ fn intern_with_shard_and_hash(shard: &Arc<Mutex<InternerShardState>>, hash: u64,
 mod tests {
     use std::{collections::HashSet, ops::RangeInclusive};
 
-    use super::*;
     use prop::sample::Index;
     use proptest::{
         collection::{hash_set, vec as arb_vec},
         prelude::*,
     };
+
+    use super::*;
 
     fn create_shard(capacity: NonZeroUsize) -> Arc<Mutex<InternerShardState>> {
         Arc::new(Mutex::new(InternerShardState::with_capacity(capacity)))

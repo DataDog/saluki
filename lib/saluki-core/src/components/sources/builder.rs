@@ -2,9 +2,8 @@ use async_trait::async_trait;
 use memory_accounting::MemoryBounds;
 use saluki_error::GenericError;
 
-use crate::topology::OutputDefinition;
-
 use super::Source;
+use crate::topology::OutputDefinition;
 
 /// A source builder.
 ///

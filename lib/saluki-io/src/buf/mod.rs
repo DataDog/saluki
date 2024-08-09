@@ -1,5 +1,4 @@
 use bytes::{Buf, BufMut};
-
 use saluki_core::pooling::FixedSizeObjectPool;
 
 mod chunked;

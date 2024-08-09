@@ -5,13 +5,12 @@ use metrics::{Counter, Histogram, SharedString};
 use saluki_error::{generic_error, GenericError};
 use tokio::sync::mpsc;
 
+use super::event_buffer::EventBuffer;
 use crate::{
     components::{ComponentContext, MetricsBuilder},
     pooling::{FixedSizeObjectPool, ObjectPool as _},
     topology::OutputName,
 };
-
-use super::event_buffer::EventBuffer;
 
 struct ForwarderMetrics {
     events_sent: Counter,
@@ -164,12 +163,10 @@ mod tests {
         metric::{Metric, MetricMetadata, MetricValue},
         Event,
     };
-
     use tokio_test::{task::spawn as test_spawn, *};
 
-    use crate::topology::ComponentId;
-
     use super::*;
+    use crate::topology::ComponentId;
 
     fn basic_metric() -> Metric {
         Metric::from_parts(

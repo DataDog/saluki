@@ -1,3 +1,6 @@
+use std::num::NonZeroUsize;
+use std::sync::LazyLock;
+
 use async_trait::async_trait;
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -12,9 +15,6 @@ use saluki_core::{
         OutputDefinition,
     },
 };
-use std::num::NonZeroUsize;
-use std::sync::LazyLock;
-
 use saluki_error::{generic_error, GenericError};
 use saluki_event::{DataType, Event};
 use saluki_io::{

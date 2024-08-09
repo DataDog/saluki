@@ -1,12 +1,10 @@
 use async_trait::async_trait;
-
 use memory_accounting::MemoryBounds;
 use saluki_error::GenericError;
 use saluki_event::DataType;
 
-use crate::topology::OutputDefinition;
-
 use super::{SynchronousTransform, Transform};
+use crate::topology::OutputDefinition;
 
 /// A transform builder.
 ///

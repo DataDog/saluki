@@ -1,13 +1,11 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use indexmap::IndexSet;
+use saluki_event::DataType;
 use snafu::Snafu;
 
-use saluki_event::DataType;
-
-use crate::components::{destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder};
-
 use super::{ComponentId, ComponentOutputId, OutputDefinition, OutputName, TypedComponentOutputId};
+use crate::components::{destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder};
 
 #[derive(Debug, Snafu, Eq, PartialEq)]
 #[snafu(context(suffix(false)))]
@@ -339,9 +337,8 @@ fn construct_typed_output_ids(
 mod test {
     use similar_asserts::assert_eq;
 
-    use crate::topology::test_util::{TestDestinationBuilder, TestSourceBuilder, TestTransformBuilder};
-
     use super::*;
+    use crate::topology::test_util::{TestDestinationBuilder, TestSourceBuilder, TestTransformBuilder};
 
     impl Graph {
         pub fn with_source_fallible(&mut self, id: &str, output_data_ty: DataType) -> Result<&mut Self, GraphError> {

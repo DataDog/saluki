@@ -1,6 +1,6 @@
 FROM registry.ddbuild.io/images/mirror/ubuntu:14.04
 
-ARG RUST_VERSION=1.77.2
+ARG RUST_VERSION=1.80.0
 
 # Install basic utilities and an updated compiler/binutils toolchain, which is necessary for compiling.
 RUN apt-get update && \
@@ -23,12 +23,13 @@ RUN chmod +x /install-awscli.sh && /install-awscli.sh
 # Install Rust and common Cargo tooling that we depend on.
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain ${RUST_VERSION}
 ENV PATH="/root/.cargo/bin:${PATH}"
-RUN rustup component add clippy && \
-    cargo install cargo-nextest --version 0.9.68 && \
-    cargo install cargo-hack --version 0.6.27 && \
-    cargo install cargo-deny --version 0.14.20 && \
-    cargo install dd-rust-license-tool --version 1.0.3
+RUN rustup toolchain add nightly && \
+    rustup component add clippy
 
+# Pre-install the relevant Cargo tools we use in the build process.
+COPY ./Makefile /
+RUN make cargo-preinstall
+    
 COPY .ci/images/build/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT [ "/entrypoint.sh" ]

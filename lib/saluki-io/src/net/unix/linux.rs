@@ -3,9 +3,8 @@ use std::{io, mem};
 use bytes::BufMut;
 use socket2::{SockAddr, SockRef};
 
-use crate::net::addr::{ConnectionAddress, ProcessCredentials};
-
 use super::ancillary::{ControlMessage, SocketCredentialsAncillaryData};
+use crate::net::addr::{ConnectionAddress, ProcessCredentials};
 
 /// Enables the `SO_PASSCRED` option on the given socket.
 ///

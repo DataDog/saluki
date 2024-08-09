@@ -1,12 +1,10 @@
 use bytes::Buf;
+use saluki_core::topology::interconnect::EventBuffer;
 use snafu::ResultExt as _;
 use tracing::trace;
 
-use saluki_core::topology::interconnect::EventBuffer;
-
-use crate::{buf::ReadIoBuffer, deser::Decoder};
-
 use super::{FailedToDecode, Framer, FramingError};
+use crate::{buf::ReadIoBuffer, deser::Decoder};
 
 /// Frames incoming data by splitting data based on a fixed-size length delimiter.
 ///

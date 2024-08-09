@@ -8,6 +8,13 @@ use saluki_error::{generic_error, GenericError};
 use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::{debug, error_span};
 
+use super::{
+    graph::Graph,
+    interconnect::{EventBuffer, EventStream, Forwarder},
+    running::RunningTopology,
+    shutdown::ComponentShutdownCoordinator,
+    ComponentId,
+};
 use crate::{
     components::{
         destinations::{Destination, DestinationContext},
@@ -17,14 +24,6 @@ use crate::{
     },
     pooling::FixedSizeObjectPool,
     spawn_traced,
-};
-
-use super::{
-    graph::Graph,
-    interconnect::{EventBuffer, EventStream, Forwarder},
-    running::RunningTopology,
-    shutdown::ComponentShutdownCoordinator,
-    ComponentId,
 };
 
 /// A built topology.

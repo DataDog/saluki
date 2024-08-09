@@ -1,16 +1,14 @@
 use async_trait::async_trait;
-
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_error::GenericError;
 use saluki_event::DataType;
 
+use super::OutputDefinition;
 use crate::components::{
     destinations::{Destination, DestinationBuilder, DestinationContext},
     sources::{Source, SourceBuilder, SourceContext},
     transforms::{Transform, TransformBuilder, TransformContext},
 };
-
-use super::OutputDefinition;
 
 struct TestSource;
 

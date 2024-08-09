@@ -3,9 +3,8 @@ use std::{future::poll_fn, num::NonZeroUsize};
 use metrics::{Counter, Histogram};
 use tokio::sync::mpsc;
 
-use crate::components::{ComponentContext, MetricsBuilder};
-
 use super::EventBuffer;
+use crate::components::{ComponentContext, MetricsBuilder};
 
 // Since we're dealing with event _buffers_, this becomes a multiplicative factor, so we might be receiving 128 (or
 // whatever the number is) event buffers of 128 events each. This is good for batching/efficiency but we don't want
@@ -82,9 +81,8 @@ impl EventStream {
 mod tests {
     // TODO: Tests asserting we emit metrics, and the right metrics.
 
-    use crate::{pooling::helpers::get_pooled_object_via_default, topology::ComponentId};
-
     use super::*;
+    use crate::{pooling::helpers::get_pooled_object_via_default, topology::ComponentId};
 
     fn create_event_stream(channel_size: usize) -> (EventStream, mpsc::Sender<EventBuffer>) {
         let component_context = ComponentId::try_from("event_stream_test")

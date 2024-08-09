@@ -9,6 +9,7 @@ mod env_provider;
 
 use std::time::Instant;
 
+use saluki_app::prelude::*;
 use saluki_components::{
     destinations::{BlackholeConfiguration, DatadogMetricsConfiguration, PrometheusConfiguration},
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
@@ -17,11 +18,9 @@ use saluki_components::{
     },
 };
 use saluki_config::ConfigurationLoader;
+use saluki_core::topology::TopologyBlueprint;
 use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{error, info};
-
-use saluki_app::prelude::*;
-use saluki_core::topology::TopologyBlueprint;
 
 use crate::env_provider::ADPEnvironmentProvider;
 

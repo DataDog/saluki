@@ -4,9 +4,8 @@
 
 use std::{borrow::Cow, collections::HashSet};
 
-use figment::{error::Kind, providers::Env, value::Value, Figment};
-
 pub use figment::value;
+use figment::{error::Kind, providers::Env, value::Value, Figment};
 use saluki_error::GenericError;
 use serde::Deserialize;
 use snafu::Snafu;

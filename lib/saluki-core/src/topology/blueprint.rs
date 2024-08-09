@@ -7,14 +7,13 @@ use memory_accounting::{
 use saluki_error::GenericError;
 use snafu::{ResultExt as _, Snafu};
 
-use crate::components::{destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder};
-
 use super::{
     built::BuiltTopology,
     graph::{Graph, GraphError},
     interconnect::EventBuffer,
     ComponentId,
 };
+use crate::components::{destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder};
 
 /// A topology blueprint error.
 #[derive(Debug, Snafu)]
