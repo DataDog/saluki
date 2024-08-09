@@ -442,7 +442,7 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
                     maybe_alert_type = AlertType::try_from_string(alert_type);
                 }
                 // Tags: additional tags to be added to the event.
-                message::TAGS_PREFIX => {
+                _ if chunk.starts_with(message::TAGS_PREFIX) => {
                     let (_, tags) = all_consuming(preceded(tag(message::TAGS_PREFIX), metric_tags(config)))(chunk)?;
                     maybe_tags = Some(tags.into_iter().map(String::from).collect());
                 }
@@ -513,7 +513,7 @@ fn parse_dogstatsd_service_check<'a>(
                     maybe_hostname = Some(hostname.to_string());
                 }
                 // Tags: additional tags to be added to the service check.
-                message::TAGS_PREFIX => {
+                _ if chunk.starts_with(message::TAGS_PREFIX) => {
                     let (_, tags) = all_consuming(preceded(tag(message::TAGS_PREFIX), metric_tags(config)))(chunk)?;
                     maybe_tags = Some(tags.into_iter().map(String::from).collect());
                 }
@@ -1511,7 +1511,7 @@ mod tests {
         let event_tags = vec!["tag1".to_string(), "tag2".to_string()];
 
         let event_raw = format!(
-            "_e{{{},{}}}:{}|{}|#:{}",
+            "_e{{{},{}}}:{}|{}|#{}",
             event_title.len(),
             event_text.len(),
             event_title,
@@ -1593,7 +1593,7 @@ mod tests {
         let event_timestamp = 1234567890;
         let event_tags = vec!["tag1".to_string(), "tag2".to_string()];
         let event_raw = format!(
-            "_e{{{},{}}}:{}|{}|h:{}|k:{}|p:{}|s:{}|t:{}|d:{}|#:{}",
+            "_e{{{},{}}}:{}|{}|h:{}|k:{}|p:{}|s:{}|t:{}|d:{}|#{}",
             event_title.len(),
             event_text.len(),
             event_title,
@@ -1656,7 +1656,7 @@ mod tests {
         let service_check_status = CheckStatus::Warning;
         let service_check_tags = vec!["tag1".to_string(), "tag2".to_string()];
         let service_check_raw = format!(
-            "_sc|{}|{}|#:{}",
+            "_sc|{}|{}|#{}",
             service_check_name,
             service_check_status.as_u8(),
             service_check_tags.join(",")
@@ -1697,7 +1697,7 @@ mod tests {
         let service_check_tags = vec!["tag1".to_string(), "tag2".to_string()];
         let service_check_message = "service status unknown".to_string();
         let service_check_raw = format!(
-            "_sc|{}|{}|d:{}|h:{}|#:{}|m:{}",
+            "_sc|{}|{}|d:{}|h:{}|#{}|m:{}",
             service_check_name,
             service_check_status.as_u8(),
             service_check_timestamp,
