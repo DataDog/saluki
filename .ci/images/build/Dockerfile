@@ -27,7 +27,7 @@ RUN rustup toolchain add nightly && \
     rustup component add clippy
 
 # Pre-install the relevant Cargo tools we use in the build process.
-COPY Makefile /
+COPY ./Makefile /
 RUN make cargo-preinstall
     
 COPY .ci/images/build/entrypoint.sh /
