@@ -29,7 +29,6 @@ impl RequestBuilder {
 
     /// Creates the request to be sent by the Http Client.
     pub fn create_request(&self, data: String) -> Result<Request<String>, RequestBuilderError> {
-        // let write_buffer = self.buffer_pool.acquire().await;
         Request::builder()
             .method(Method::POST)
             .uri(self.api_uri.clone())

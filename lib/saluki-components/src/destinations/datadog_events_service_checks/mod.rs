@@ -132,7 +132,6 @@ impl Destination for DatadogEventsServiceChecks {
         // Spawn our IO task to handle sending requests.
         let (io_shutdown_tx, io_shutdown_rx) = oneshot::channel();
         let (requests_tx, requests_rx) = mpsc::channel(32);
-        // let events_service_checks = Metrics::from_component_context(context.component_context());
         spawn_traced(run_io_loop(requests_rx, io_shutdown_tx, http_client));
 
         debug!("Datadog Events and Service Checks destination started.");

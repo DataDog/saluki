@@ -52,7 +52,7 @@ impl Serialize for AlertType {
     where
         S: Serializer,
     {
-        serializer.serialize_str(self.stringify())
+        serializer.serialize_str(self.as_str())
     }
 }
 
@@ -69,8 +69,7 @@ impl AlertType {
         }
     }
 
-    /// Returns stringified name of the AlertType variant.
-    pub fn stringify(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             AlertType::Info => "info",
             AlertType::Error => "error",
@@ -105,7 +104,7 @@ impl Serialize for Priority {
     where
         S: Serializer,
     {
-        serializer.serialize_str(self.stringify())
+        serializer.serialize_str(self.as_str())
     }
 }
 
@@ -120,8 +119,7 @@ impl Priority {
         }
     }
 
-    /// Returns stringified name of the Priority variant.
-    pub fn stringify(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             Priority::Normal => "normal",
             Priority::Low => "low",
