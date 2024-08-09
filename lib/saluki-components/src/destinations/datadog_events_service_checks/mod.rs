@@ -5,7 +5,7 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
-use saluki_event::DataType;
+use saluki_event::{DataType, Event};
 use saluki_io::net::client::http::HttpClient;
 
 use http::{Request, Uri};
@@ -28,12 +28,6 @@ fn default_site() -> String {
 /// Datadog Events and Service Checks destination.
 ///
 /// Forwards events and service checks to the Datadog platform.
-///
-/// ## Missing
-///
-/// - ability to configure either the basic site _or_ a specific endpoint (requires a full URI at the moment, even if
-///   it's just something like `https`)
-/// - retries, timeouts, rate limiting (no Tower middleware stack yet)
 #[derive(Deserialize)]
 pub struct DatadogEventsServiceChecksConfiguration {
     /// The API key to use.
@@ -102,14 +96,12 @@ impl DestinationBuilder for DatadogEventsServiceChecksConfiguration {
             self.api_key.clone(),
             api_base.clone(),
             EventsServiceChecksEndpoint::Events,
-        )
-        .await?;
+        )?;
         let service_checks_request_builder = RequestBuilder::new(
             self.api_key.clone(),
             api_base,
             EventsServiceChecksEndpoint::ServiceChecks,
-        )
-        .await?;
+        )?;
         Ok(Box::new(DatadogEventsServiceChecks {
             http_client,
             events_request_builder,
@@ -152,46 +144,43 @@ impl Destination for DatadogEventsServiceChecks {
                 debug!(events_len = event_buffer.len(), "Processing event buffer.");
 
                 for event in event_buffer {
-                    match event.data_type() {
-                        DataType::EventD => {
+                    match event {
+                        Event::EventD(eventd) => {
                             let request_builder = &mut events_request_builder;
+                            let json = serde_json::to_string(&eventd).unwrap();
 
-                            if let Some(eventd) = event.try_into_eventd() {
-                                let json = serde_json::to_string(&eventd).unwrap();
-
-                                match request_builder.create_request(json) {
-                                    Ok(request) => {
-                                        if requests_tx.send((1, request)).await.is_err() {
-                                            error!("Failed to send request to IO task: receiver dropped.");
-                                            return Err(());
-                                        }
+                            match request_builder.create_request(json) {
+                                Ok(request) => {
+                                    if requests_tx.send((1, request)).await.is_err() {
+                                        error!("Failed to send request to IO task: receiver dropped.");
+                                        return Err(());
                                     }
-                                    Err(e) => {
-                                        error!(error = %e, "Failed to create request for event.");
-                                        continue;
-                                    }
+                                }
+                                Err(e) => {
+                                    error!(error = %e, "Failed to create request for event.");
+                                    continue;
                                 }
                             }
                         }
-                        DataType::ServiceCheck => {
+                        Event::ServiceCheck(service_check) => {
                             let request_builder = &mut service_checks_request_builder;
-                            if let Some(service_check) = event.try_into_service_check() {
-                                let json = serde_json::to_string(&service_check).unwrap();
-                                match request_builder.create_request(json) {
-                                    Ok(request) => {
-                                        if requests_tx.send((1, request)).await.is_err() {
-                                            error!("Failed to send request to IO task: receiver dropped.");
-                                            return Err(());
-                                        }
+                            let json = serde_json::to_string(&service_check).unwrap();
+                            match request_builder.create_request(json) {
+                                Ok(request) => {
+                                    if requests_tx.send((1, request)).await.is_err() {
+                                        error!("Failed to send request to IO task: receiver dropped.");
+                                        return Err(());
                                     }
-                                    Err(e) => {
-                                        error!(error = %e, "Failed to create request for service check.");
-                                        continue;
-                                    }
+                                }
+                                Err(e) => {
+                                    error!(error = %e, "Failed to create request for service check.");
+                                    continue;
                                 }
                             }
                         }
-                        _ => {}
+                        _ => {
+                            error!("Received non eventd/service checks event type.")
+                        }
                     }
                 }
             }
@@ -215,10 +204,7 @@ async fn run_io_loop(
 ) {
     // Loop and process all incoming requests.
     while let Some((_events_count, request)) = requests_rx.recv().await {
-        // TODO: This doesn't include the actual headers, or the HTTP framing, or anything... so it's a darn good
-        // approximation, but still only an approximation.
-        let _request_length = request.body().len();
-
+        // TODO: We currently are not emitting any metrics.
         match http_client.send(request).await {
             Ok(response) => {
                 let status = response.status();
