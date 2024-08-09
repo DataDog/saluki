@@ -120,7 +120,7 @@ impl Priority {
         }
     }
 
-    /// Returns stringified name of the AlertType variant.
+    /// Returns stringified name of the Priority variant.
     pub fn stringify(self) -> &'static str {
         match self {
             Priority::Normal => "normal",
