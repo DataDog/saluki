@@ -3,6 +3,7 @@
 // TODO: Switch usages of `String` to `MetaString` since we should generally be able to intern these strings as they
 // originate in in the DogStatsD codec, where interning is already taking place.
 
+use serde::{Serialize, Serializer};
 /// Service status.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CheckStatus {
@@ -23,8 +24,9 @@ pub enum CheckStatus {
 ///
 /// Service checks represent the status of a service at a particular point in time. Checks are simplistic, with a basic
 /// message, status enum (OK vs warning vs critical, etc), timestamp, and tags.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ServiceCheck {
+    #[serde(rename = "check")]
     name: String,
     status: CheckStatus,
     timestamp: Option<u64>,
@@ -122,6 +124,15 @@ impl CheckStatus {
             Self::Critical => 2,
             Self::Unknown => 3,
         }
+    }
+}
+
+impl Serialize for CheckStatus {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u8(self.as_u8())
     }
 }
 /// Error type for parsing CheckStatus.

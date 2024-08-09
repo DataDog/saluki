@@ -10,7 +10,7 @@ bitmask-enum = { workspace = true }
 ddsketch-agent = { workspace = true }
 float_eq = { workspace = true }
 saluki-context = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 stringtheory = { workspace = true }
-
 [dev-dependencies]
 proptest = { workspace = true, features = ["std"] }
