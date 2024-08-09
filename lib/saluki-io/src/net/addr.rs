@@ -185,7 +185,8 @@ impl<'a> TryFrom<&'a str> for GrpcListenAddress {
         //
         // If we have a host[:port], we use TCP. Otherwise, we use Unix domain sockets in stream mode.
         let new_scheme = if url.host().is_some() { "tcp" } else { "unix" };
-        url.set_scheme(new_scheme).map_err(|_| format!("failed to set new scheme '{}'", new_scheme))?;
+        url.set_scheme(new_scheme)
+            .map_err(|_| format!("failed to set new scheme '{}'", new_scheme))?;
 
         let listen_address = ListenAddress::try_from(url.as_str())?;
 
