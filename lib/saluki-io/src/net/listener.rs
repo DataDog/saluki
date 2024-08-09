@@ -1,5 +1,10 @@
 //! Network listeners.
-use std::{future::pending, io};
+use std::{
+    future::pending,
+    io,
+    pin::Pin,
+    task::{ready, Context, Poll},
+};
 
 use snafu::{ResultExt as _, Snafu};
 use tokio::net::{TcpListener, UdpSocket};
@@ -327,6 +332,33 @@ impl ConnectionOrientedListener {
                     })?;
                     Ok(Connection::Unix(socket))
                 }),
+        }
+    }
+}
+
+impl futures::stream::Stream for ConnectionOrientedListener {
+    type Item = Result<Connection, ListenerError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        match &mut this.inner {
+            ConnectionOrientedListenerInner::Tcp(tcp) => {
+                let (stream, addr) = ready!(tcp.poll_accept(cx)).context(FailedToAccept {
+                    address: this.listen_address.clone(),
+                })?;
+                Poll::Ready(Some(Ok(Connection::Tcp(stream, addr))))
+            }
+            #[cfg(unix)]
+            ConnectionOrientedListenerInner::Unix(unix) => {
+                let (socket, _) = ready!(unix.poll_accept(cx)).context(FailedToAccept {
+                    address: this.listen_address.clone(),
+                })?;
+                enable_uds_socket_credentials(&socket).context(FailedToConfigureStream {
+                    setting: "SO_PASSCRED",
+                    stream_type: "UDS (stream)",
+                })?;
+                Poll::Ready(Some(Ok(Connection::Unix(socket))))
+            }
         }
     }
 }

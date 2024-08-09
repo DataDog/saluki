@@ -320,7 +320,7 @@ test: ## Runs all unit tests
 test-docs: check-rust-build-tools
 test-docs: ## Runs all doctests
 	@echo "[*] Running doctests..."
-	cargo test --workspace --exclude datadog-protos --doc
+	cargo test --workspace --exclude datadog-protos --exclude otel-protos --doc
 
 .PHONY: test-miri
 test-miri: check-rust-build-tools ensure-rust-miri
