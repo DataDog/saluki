@@ -1,5 +1,6 @@
-use serde::Deserialize;
 use std::{fmt, net::SocketAddr, path::PathBuf};
+
+use serde::Deserialize;
 use url::Url;
 
 /// A listen address.

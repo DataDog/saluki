@@ -145,8 +145,6 @@ impl Iterator for IntoIter {
 mod tests {
     use std::collections::VecDeque;
 
-    use super::EventBuffer;
-
     use saluki_context::Context;
     use saluki_event::{
         eventd::EventD,
@@ -155,6 +153,7 @@ mod tests {
         DataType, Event,
     };
 
+    use super::EventBuffer;
     use crate::pooling::{helpers::get_pooled_object_via_default, Clearable as _};
 
     #[test]

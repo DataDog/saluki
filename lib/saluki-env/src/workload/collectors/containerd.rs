@@ -11,6 +11,7 @@ use stringtheory::interning::FixedSizeInterner;
 use tokio::{sync::mpsc, time::sleep};
 use tracing::{error, warn};
 
+use super::MetadataCollector;
 use crate::workload::{
     entity::EntityId,
     helpers::containerd::{
@@ -19,8 +20,6 @@ use crate::workload::{
     },
     metadata::MetadataOperation,
 };
-
-use super::MetadataCollector;
 
 static CONTAINERD_WATCH_EVENTS: &[ContainerdTopic] = &[ContainerdTopic::TaskStarted, ContainerdTopic::TaskDeleted];
 

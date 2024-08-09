@@ -18,13 +18,12 @@ use tonic::{
 };
 use tracing::{debug, warn};
 
+use super::MetadataCollector;
 use crate::workload::{
     helpers::tonic::{build_self_signed_https_connector, BearerAuthInterceptor},
     metadata::{MetadataAction, MetadataOperation, TagCardinality},
     EntityId,
 };
-
-use super::MetadataCollector;
 
 const DEFAULT_AGENT_IPC_ENDPOINT: &str = "https://127.0.0.1:5001";
 const DEFAULT_AGENT_AUTH_TOKEN_FILE_PATH: &str = "/etc/datadog-agent/auth/token";
