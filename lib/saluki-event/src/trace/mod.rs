@@ -2,5 +2,4 @@
 
 /// A trace.
 #[derive(Clone, Debug)]
-pub struct Trace {
-}
+pub struct Trace {}
