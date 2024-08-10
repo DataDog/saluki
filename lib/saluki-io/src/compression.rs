@@ -183,10 +183,10 @@ impl CompressionEstimator {
         // estimate that writing `len` more bytes would put our compressed length into the "red zone", then it's too
         // risky to write those bytes.
         //
-        // This is a bit of a fudge factor, but we arrived at 0.5% through empirical testing with the regression
+        // This is a bit of a fudge factor, but we arrived at 1% through empirical testing with the regression
         // detector benchmarks. Small enough to not have a major impact on payload size efficiency, but large enough to
         // entirely get rid of compressed payload size limit violations.
-        const THRESHOLD_RED_ZONE: f64 = 0.995;
+        const THRESHOLD_RED_ZONE: f64 = 0.99;
 
         let adjusted_threshold = (threshold as f64 * THRESHOLD_RED_ZONE) as usize;
         self.estimated_len() + len > adjusted_threshold
