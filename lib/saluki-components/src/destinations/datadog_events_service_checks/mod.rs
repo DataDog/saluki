@@ -1,20 +1,18 @@
+use std::error::Error as _;
+
 use async_trait::async_trait;
+use http::{Request, Uri};
 use http_body_util::BodyExt;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
+use saluki_core::{components::destinations::*, spawn_traced};
 use saluki_error::GenericError;
 use saluki_event::{DataType, Event};
 use saluki_io::net::client::http::HttpClient;
-
-use http::{Request, Uri};
-use std::error::Error as _;
-
-use saluki_core::{components::destinations::*, spawn_traced};
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
-
 use tracing::{debug, error};
 mod request_builder;
 use request_builder::{EventsServiceChecksEndpoint, RequestBuilder};

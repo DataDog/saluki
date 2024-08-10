@@ -2552,6 +2552,7 @@ dependencies = [
  "slab",
  "snafu",
  "socket2",
+ "stringtheory",
  "tokio",
  "tokio-test",
  "tokio-util",
@@ -2828,6 +2829,7 @@ dependencies = [
  "loom",
  "proptest",
  "protobuf",
+ "serde",
 ]
 
 [[package]]
