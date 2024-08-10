@@ -1,11 +1,9 @@
 //! Events.
 
-// TODO: Switch usages of `String` to `MetaString` since we should generally be able to intern these strings as they
-// originate in in the DogStatsD codec, where interning is already taking place.
-
 use std::fmt;
 
 use serde::{Serialize, Serializer};
+use stringtheory::MetaString;
 
 /// Value supplied used to specify a low priority event
 pub const PRIORITY_LOW: &str = "low";
@@ -130,15 +128,15 @@ impl Priority {
 /// EventD is an object that can be posted to the DataDog event stream.
 #[derive(Clone, Debug, Serialize)]
 pub struct EventD {
-    title: String,
-    text: String,
+    title: MetaString,
+    text: MetaString,
     timestamp: Option<u64>,
-    hostname: Option<String>,
-    aggregation_key: Option<String>,
+    hostname: Option<MetaString>,
+    aggregation_key: Option<MetaString>,
     priority: Option<Priority>,
-    source_type_name: Option<String>,
+    source_type_name: Option<MetaString>,
     alert_type: Option<AlertType>,
-    tags: Option<Vec<String>>,
+    tags: Option<Vec<MetaString>>,
 }
 
 impl EventD {
@@ -185,7 +183,7 @@ impl EventD {
     }
 
     /// Returns the tags associated with the event.
-    pub fn tags(&self) -> Option<&[String]> {
+    pub fn tags(&self) -> Option<&[MetaString]> {
         self.tags.as_deref()
     }
 
@@ -209,13 +207,13 @@ impl EventD {
     /// Set the hostname where the event originated from.
     ///
     /// This variant is specifically for use in builder-style APIs.
-    pub fn with_hostname(mut self, hostname: impl Into<Option<String>>) -> Self {
+    pub fn with_hostname(mut self, hostname: impl Into<Option<MetaString>>) -> Self {
         self.hostname = hostname.into();
         self
     }
 
     /// Set the hostname where the event originated from.
-    pub fn set_hostname(&mut self, hostname: impl Into<Option<String>>) {
+    pub fn set_hostname(&mut self, hostname: impl Into<Option<MetaString>>) {
         self.hostname = hostname.into();
     }
 
@@ -224,7 +222,7 @@ impl EventD {
     /// Aggregation key is use to group events together in the event stream.
     ///
     /// This variant is specifically for use in builder-style APIs.
-    pub fn with_aggregation_key(mut self, hostname: impl Into<Option<String>>) -> Self {
+    pub fn with_aggregation_key(mut self, hostname: impl Into<Option<MetaString>>) -> Self {
         self.hostname = hostname.into();
         self
     }
@@ -232,7 +230,7 @@ impl EventD {
     /// Set the hostname where the event originated from.
     ///
     /// Aggregation key is use to group events together in the event stream.
-    pub fn set_aggregation_key(&mut self, hostname: impl Into<Option<String>>) {
+    pub fn set_aggregation_key(&mut self, hostname: impl Into<Option<MetaString>>) {
         self.hostname = hostname.into();
     }
 
@@ -252,13 +250,13 @@ impl EventD {
     /// Set the source type name of the event
     ///
     /// This variant is specifically for use in builder-style APIs.
-    pub fn with_source_type_name(mut self, source_type_name: impl Into<Option<String>>) -> Self {
+    pub fn with_source_type_name(mut self, source_type_name: impl Into<Option<MetaString>>) -> Self {
         self.source_type_name = source_type_name.into();
         self
     }
 
     /// Set the source type name of the event
-    pub fn set_source_type_name(&mut self, source_type_name: impl Into<Option<String>>) {
+    pub fn set_source_type_name(&mut self, source_type_name: impl Into<Option<MetaString>>) {
         self.source_type_name = source_type_name.into();
     }
 
@@ -278,13 +276,13 @@ impl EventD {
     /// Set the tags of the event
     ///
     /// This variant is specifically for use in builder-style APIs.
-    pub fn with_tags(mut self, tags: impl Into<Option<Vec<String>>>) -> Self {
+    pub fn with_tags(mut self, tags: impl Into<Option<Vec<MetaString>>>) -> Self {
         self.tags = tags.into();
         self
     }
 
     /// Set the tags of the event
-    pub fn set_tags(&mut self, tags: impl Into<Option<Vec<String>>>) {
+    pub fn set_tags(&mut self, tags: impl Into<Option<Vec<MetaString>>>) {
         self.tags = tags.into();
     }
 
@@ -293,8 +291,8 @@ impl EventD {
     /// Defaults to an informational alert with normal priority.
     pub fn new(title: &str, text: &str) -> Self {
         Self {
-            title: title.to_string(),
-            text: text.to_string(),
+            title: title.into(),
+            text: text.into(),
             timestamp: None,
             hostname: None,
             aggregation_key: None,

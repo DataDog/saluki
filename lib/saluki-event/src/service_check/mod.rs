@@ -1,9 +1,7 @@
 //! Service checks.
 
-// TODO: Switch usages of `String` to `MetaString` since we should generally be able to intern these strings as they
-// originate in in the DogStatsD codec, where interning is already taking place.
-
 use serde::{Serialize, Serializer};
+use stringtheory::MetaString;
 /// Service status.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CheckStatus {
@@ -27,12 +25,12 @@ pub enum CheckStatus {
 #[derive(Clone, Debug, Serialize)]
 pub struct ServiceCheck {
     #[serde(rename = "check")]
-    name: String,
+    name: MetaString,
     status: CheckStatus,
     timestamp: Option<u64>,
-    hostname: Option<String>,
-    message: Option<String>,
-    tags: Option<Vec<String>>,
+    hostname: Option<MetaString>,
+    message: Option<MetaString>,
+    tags: Option<Vec<MetaString>>,
 }
 
 impl ServiceCheck {
@@ -64,14 +62,14 @@ impl ServiceCheck {
     }
 
     /// Returns the tags associated with the check.
-    pub fn tags(&self) -> Option<&[String]> {
+    pub fn tags(&self) -> Option<&[MetaString]> {
         self.tags.as_deref()
     }
 
     /// Creates a `ServiceCheck` from the given name and status
     pub fn new(name: &str, status: CheckStatus) -> Self {
         Self {
-            name: name.to_string(),
+            name: name.into(),
             status,
             timestamp: None,
             hostname: None,
@@ -93,7 +91,7 @@ impl ServiceCheck {
     /// Set the hostname where the service check originated from.
     ///
     /// This variant is specifically for use in builder-style APIs.
-    pub fn with_hostname(mut self, hostname: impl Into<Option<String>>) -> Self {
+    pub fn with_hostname(mut self, hostname: impl Into<Option<MetaString>>) -> Self {
         self.hostname = hostname.into();
         self
     }
@@ -101,7 +99,7 @@ impl ServiceCheck {
     /// Set the tags of the service check
     ///
     /// This variant is specifically for use in builder-style APIs.
-    pub fn with_tags(mut self, tags: impl Into<Option<Vec<String>>>) -> Self {
+    pub fn with_tags(mut self, tags: impl Into<Option<Vec<MetaString>>>) -> Self {
         self.tags = tags.into();
         self
     }
@@ -109,7 +107,7 @@ impl ServiceCheck {
     /// Set the message of the service check
     ///
     /// This variant is specifically for use in builder-style APIs.
-    pub fn with_message(mut self, message: impl Into<Option<String>>) -> Self {
+    pub fn with_message(mut self, message: impl Into<Option<MetaString>>) -> Self {
         self.message = message.into();
         self
     }

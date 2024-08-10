@@ -415,13 +415,13 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
                 message::HOSTNAME_PREFIX => {
                     let (_, hostname) =
                         all_consuming(preceded(tag(message::HOSTNAME_PREFIX), ascii_alphanum_and_seps))(chunk)?;
-                    maybe_hostname = Some(hostname.to_string());
+                    maybe_hostname = Some(hostname.into());
                 }
                 // Aggregation key: key to be used to group this event with others that have the same key.
                 message::AGGREGATION_KEY_PREFIX => {
                     let (_, aggregation_key) =
                         all_consuming(preceded(tag(message::AGGREGATION_KEY_PREFIX), ascii_alphanum_and_seps))(chunk)?;
-                    maybe_aggregation_key = Some(aggregation_key.to_string());
+                    maybe_aggregation_key = Some(aggregation_key.into());
                 }
                 // Priority: client-provided priority of the event.
                 message::PRIORITY_PREFIX => {
@@ -433,7 +433,7 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
                 message::SOURCE_TYPE_PREFIX => {
                     let (_, source_type) =
                         all_consuming(preceded(tag(message::SOURCE_TYPE_PREFIX), ascii_alphanum_and_seps))(chunk)?;
-                    maybe_source_type = Some(source_type.to_string());
+                    maybe_source_type = Some(source_type.into());
                 }
                 // Alert type: client-provided alert type of the event.
                 message::ALERT_TYPE_PREFIX => {
@@ -444,7 +444,7 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
                 // Tags: additional tags to be added to the event.
                 _ if chunk.starts_with(message::TAGS_PREFIX) => {
                     let (_, tags) = all_consuming(preceded(tag(message::TAGS_PREFIX), metric_tags(config)))(chunk)?;
-                    maybe_tags = Some(tags.into_iter().map(String::from).collect());
+                    maybe_tags = Some(tags.into_iter().map(Into::into).collect());
                 }
                 _ => {
                     // We don't know what this is, so we just skip it.
@@ -510,12 +510,12 @@ fn parse_dogstatsd_service_check<'a>(
                 message::HOSTNAME_PREFIX => {
                     let (_, hostname) =
                         all_consuming(preceded(tag(message::HOSTNAME_PREFIX), ascii_alphanum_and_seps))(chunk)?;
-                    maybe_hostname = Some(hostname.to_string());
+                    maybe_hostname = Some(hostname.into());
                 }
                 // Tags: additional tags to be added to the service check.
                 _ if chunk.starts_with(message::TAGS_PREFIX) => {
                     let (_, tags) = all_consuming(preceded(tag(message::TAGS_PREFIX), metric_tags(config)))(chunk)?;
-                    maybe_tags = Some(tags.into_iter().map(String::from).collect());
+                    maybe_tags = Some(tags.into_iter().map(Into::into).collect());
                 }
                 // Message: A message describing the current state of the service check.
                 message::SERVICE_CHECK_MESSAGE_PREFIX => {
@@ -523,7 +523,8 @@ fn parse_dogstatsd_service_check<'a>(
                         tag(message::SERVICE_CHECK_MESSAGE_PREFIX),
                         ascii_alphanum_and_seps,
                     ))(chunk)?;
-                    maybe_message = Some(message.to_string());
+                    maybe_message = Some(message.into());
+
                     // This field must be positioned last among the metadata fields
                     seen_message = true;
                 }
@@ -981,6 +982,7 @@ mod tests {
         service_check::{CheckStatus, ServiceCheck},
         Event,
     };
+    use stringtheory::MetaString;
 
     use super::{
         parse_dogstatsd_event, parse_dogstatsd_metric, parse_dogstatsd_service_check, DogstatsdCodecConfiguration,
@@ -1508,7 +1510,7 @@ mod tests {
     fn eventd_tags() {
         let event_title = "my event";
         let event_text = "text";
-        let event_tags = vec!["tag1".to_string(), "tag2".to_string()];
+        let event_tags = vec!["tag1".into(), "tag2".into()];
 
         let event_raw = format!(
             "_e{{{},{}}}:{}|{}|#{}",
@@ -1585,13 +1587,13 @@ mod tests {
     fn eventd_multiple_extensions() {
         let event_title = "my event";
         let event_text = "text";
-        let event_hostname = "testhost".to_string();
-        let event_aggregation_key = "testkey".to_string();
+        let event_hostname = MetaString::from("testhost");
+        let event_aggregation_key = MetaString::from("testkey");
         let event_priority = saluki_event::eventd::Priority::Low;
-        let event_source_type = "testsource".to_string();
+        let event_source_type = MetaString::from("testsource");
         let event_alert_type = saluki_event::eventd::AlertType::Success;
         let event_timestamp = 1234567890;
-        let event_tags = vec!["tag1".to_string(), "tag2".to_string()];
+        let event_tags = vec!["tag1".into(), "tag2".into()];
         let event_raw = format!(
             "_e{{{},{}}}:{}|{}|h:{}|k:{}|p:{}|s:{}|t:{}|d:{}|#{}",
             event_title.len(),
@@ -1654,7 +1656,7 @@ mod tests {
     fn service_check_tags() {
         let service_check_name = "testsvc";
         let service_check_status = CheckStatus::Warning;
-        let service_check_tags = vec!["tag1".to_string(), "tag2".to_string()];
+        let service_check_tags = vec!["tag1".into(), "tag2".into()];
         let service_check_raw = format!(
             "_sc|{}|{}|#{}",
             service_check_name,
@@ -1673,7 +1675,7 @@ mod tests {
     fn service_check_message() {
         let service_check_name = "testsvc";
         let service_check_status = CheckStatus::Ok;
-        let service_check_message = "service running properly".to_string();
+        let service_check_message = MetaString::from("service running properly");
         let service_check_raw = format!(
             "_sc|{}|{}|m:{}",
             service_check_name,
@@ -1693,9 +1695,9 @@ mod tests {
         let service_check_name = "testsvc";
         let service_check_status = CheckStatus::Unknown;
         let service_check_timestamp = 1234567890;
-        let service_check_hostname = "myhost".to_string();
-        let service_check_tags = vec!["tag1".to_string(), "tag2".to_string()];
-        let service_check_message = "service status unknown".to_string();
+        let service_check_hostname = MetaString::from("myhost");
+        let service_check_tags = vec!["tag1".into(), "tag2".into()];
+        let service_check_message = MetaString::from("service status unknown");
         let service_check_raw = format!(
             "_sc|{}|{}|d:{}|h:{}|#{}|m:{}",
             service_check_name,
