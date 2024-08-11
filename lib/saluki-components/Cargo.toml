@@ -40,7 +40,7 @@ saluki-error = { workspace = true }
 saluki-event = { workspace = true }
 saluki-io = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true, features = ["std"] }
+serde_json = { workspace = true }
 slab = { workspace = true }
 snafu = { workspace = true }
 stringtheory = { workspace = true }

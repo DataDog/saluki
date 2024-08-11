@@ -10,6 +10,7 @@ use tracing::Instrument as _;
 
 pub mod components;
 pub mod constants;
+mod health;
 pub mod observability;
 pub mod pooling;
 pub mod topology;
