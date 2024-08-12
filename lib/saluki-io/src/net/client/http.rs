@@ -8,11 +8,12 @@ use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::{
     client::legacy::{
         connect::{Connect, HttpConnector},
-        Client, Error,
+        Client, Error, ResponseFuture,
     },
     rt::TokioExecutor,
 };
 use rustls::crypto::aws_lc_rs::default_provider as aws_lc_rs_default_provider;
+use tower::Service;
 
 use crate::buf::ChunkedBuffer;
 
@@ -51,5 +52,9 @@ where
 
     pub async fn send(&self, req: Request<B>) -> Result<Response<Incoming>, Error> {
         self.inner.request(req).await
+    }
+
+    pub fn call(&mut self, req: Request<B>) -> ResponseFuture {
+        self.inner.call(req)
     }
 }

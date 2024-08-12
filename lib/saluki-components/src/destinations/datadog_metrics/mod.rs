@@ -1,8 +1,10 @@
-use std::error::Error as _;
+use std::{task::Poll, time::Duration};
 
 use async_trait::async_trait;
 use http::{Request, Uri};
 use http_body_util::BodyExt as _;
+use hyper::body::Incoming;
+use hyper_util::client::legacy::{Error, ResponseFuture};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::Counter;
 use saluki_config::GenericConfiguration;
@@ -19,6 +21,7 @@ use saluki_io::{
 };
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
+use tower::{Service, ServiceBuilder};
 use tracing::{debug, error, trace};
 
 mod request_builder;
@@ -115,6 +118,14 @@ pub struct DatadogMetricsConfiguration {
     /// Defaults to unset.
     #[serde(default)]
     dd_url: Option<String>,
+
+    /// Forwarder timeout in seconds
+    #[serde(default = "default_timeout", rename = "forwarder_timeout")]
+    timeout: u64,
+}
+
+fn default_timeout() -> u64 {
+    20
 }
 
 impl DatadogMetricsConfiguration {
@@ -154,6 +165,10 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
     async fn build(&self) -> Result<Box<dyn Destination + Send>, GenericError> {
         let http_client = HttpClient::https()?;
 
+        let service = ServiceBuilder::new()
+            .timeout(Duration::from_secs(self.timeout))
+            .service(DatadogMetricsService { http_client });
+
         let api_base = self.api_base()?;
 
         let rb_buffer_pool = create_request_builder_buffer_pool();
@@ -173,7 +188,7 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         .await?;
 
         Ok(Box::new(DatadogMetrics {
-            http_client,
+            service,
             series_request_builder,
             sketches_request_builder,
         }))
@@ -201,34 +216,38 @@ impl MemoryBounds for DatadogMetricsConfiguration {
     }
 }
 
-pub struct DatadogMetrics<O>
+pub struct DatadogMetrics<O, S>
 where
     O: ObjectPool + 'static,
     O::Item: ReadWriteIoBuffer,
+    S: Service<Request<ChunkedBuffer<O>>> + 'static,
 {
-    http_client: ChunkedHttpsClient<O>,
+    service: S,
     series_request_builder: RequestBuilder<O>,
     sketches_request_builder: RequestBuilder<O>,
 }
 
 #[async_trait]
-impl<O> Destination for DatadogMetrics<O>
+impl<O, S> Destination for DatadogMetrics<O, S>
 where
     O: ObjectPool + 'static,
     O::Item: ReadWriteIoBuffer,
+    S: Service<Request<ChunkedBuffer<O>>, Response = hyper::Response<Incoming>> + Send + 'static,
+    S::Future: Send,
+    S::Error: Send,
 {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), ()> {
         let Self {
-            http_client,
             mut series_request_builder,
             mut sketches_request_builder,
+            service,
         } = *self;
 
         // Spawn our IO task to handle sending requests.
         let (io_shutdown_tx, io_shutdown_rx) = oneshot::channel();
         let (requests_tx, requests_rx) = mpsc::channel(32);
         let metrics = Metrics::from_component_context(context.component_context());
-        spawn_traced(run_io_loop(requests_rx, io_shutdown_tx, http_client, metrics.clone()));
+        spawn_traced(run_io_loop(requests_rx, io_shutdown_tx, service, metrics.clone()));
 
         debug!("Datadog Metrics destination started.");
 
@@ -345,20 +364,22 @@ where
     }
 }
 
-async fn run_io_loop<O>(
+async fn run_io_loop<O, S>(
     mut requests_rx: mpsc::Receiver<(usize, Request<ChunkedBuffer<O>>)>, io_shutdown_tx: oneshot::Sender<()>,
-    http_client: ChunkedHttpsClient<O>, metrics: Metrics,
+    mut service: S, metrics: Metrics,
 ) where
     O: ObjectPool + 'static,
     O::Item: ReadWriteIoBuffer,
+    S: Service<Request<ChunkedBuffer<O>>, Response = hyper::Response<Incoming>> + Send + 'static,
+    S::Future: Send,
+    S::Error: Send,
 {
     // Loop and process all incoming requests.
     while let Some((metrics_count, request)) = requests_rx.recv().await {
         // TODO: This doesn't include the actual headers, or the HTTP framing, or anything... so it's a darn good
         // approximation, but still only an approximation.
         let request_length = request.body().len();
-
-        match http_client.send(request).await {
+        match service.call(request).await {
             Ok(response) => {
                 let status = response.status();
                 if status.is_success() {
@@ -382,8 +403,8 @@ async fn run_io_loop<O>(
                     }
                 }
             }
-            Err(e) => {
-                error!(error = %e, error_source = ?e.source(), "Failed to send request.");
+            Err(_e) => {
+                // error!(error = %e, error_source = ?e.source(), "Failed to send request.");
             }
         }
     }
@@ -400,4 +421,31 @@ fn create_request_builder_buffer_pool() -> FixedSizeObjectPool<BytesBuffer> {
     //
     // We chunk it up into 32KB segments mostly to allow for balancing fragmentation vs acquisition overhead.
     get_fixed_bytes_buffer_pool(RB_BUFFER_POOL_COUNT, RB_BUFFER_POOL_BUF_SIZE)
+}
+
+/// Service used as a wrapper around an http client that implements the Tower Service trait.
+struct DatadogMetricsService<O>
+where
+    O: ObjectPool + 'static,
+    O::Item: ReadWriteIoBuffer,
+{
+    http_client: ChunkedHttpsClient<O>,
+}
+
+impl<O> Service<Request<ChunkedBuffer<O>>> for DatadogMetricsService<O>
+where
+    O: ObjectPool + 'static,
+    O::Item: ReadWriteIoBuffer,
+{
+    type Response = hyper::Response<Incoming>;
+    type Error = Error;
+    type Future = ResponseFuture;
+
+    fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: Request<ChunkedBuffer<O>>) -> Self::Future {
+        self.http_client.call(req)
+    }
 }
