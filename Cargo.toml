@@ -5,6 +5,7 @@ members = [
   "lib/ddsketch-agent",
   "lib/memory-accounting",
   "lib/process-memory",
+  "lib/saluki-api",
   "lib/saluki-app",
   "lib/saluki-components",
   "lib/saluki-config",
@@ -13,6 +14,7 @@ members = [
   "lib/saluki-env",
   "lib/saluki-error",
   "lib/saluki-event",
+  "lib/saluki-health",
   "lib/saluki-io",
   "lib/saluki-metrics",
   "lib/stringtheory",
@@ -29,6 +31,7 @@ datadog-protos = { path = "lib/datadog-protos" }
 ddsketch-agent = { path = "lib/ddsketch-agent" }
 memory-accounting = { path = "lib/memory-accounting" }
 process-memory = { path = "lib/process-memory" }
+saluki-api = { path = "lib/saluki-api" }
 saluki-app = { path = "lib/saluki-app" }
 saluki-components = { path = "lib/saluki-components" }
 saluki-config = { path = "lib/saluki-config" }
@@ -37,10 +40,12 @@ saluki-core = { path = "lib/saluki-core" }
 saluki-env = { path = "lib/saluki-env" }
 saluki-error = { path = "lib/saluki-error" }
 saluki-event = { path = "lib/saluki-event" }
+saluki-health = { path = "lib/saluki-health" }
 saluki-io = { path = "lib/saluki-io" }
 saluki-metrics = { path = "lib/saluki-metrics" }
 stringtheory = { path = "lib/stringtheory" }
 async-trait = { version = "0.1", default-features = false }
+axum = { version = "0.7", default-features = false }
 bytes = { version = "1", default-features = false }
 protobuf = { version = "3.3.0", default-features = false, features = ["with-bytes"] }
 protobuf-codegen = { version = "3.3.0", default-features = false }
@@ -126,3 +131,6 @@ containerd-client = { git = "https://github.com/tobz/rust-extensions", branch = 
 lto = "thin"
 codegen-units = 4
 debug = true
+
+[workspace.lints.clippy]
+new_without_default = "allow"

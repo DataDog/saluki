@@ -30,6 +30,7 @@ dependencies = [
  "saluki-core",
  "saluki-env",
  "saluki-error",
+ "saluki-health",
  "saluki-io",
  "serde",
  "tokio",
@@ -215,6 +216,8 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "itoa",
  "matchit",
  "memchr",
@@ -224,6 +227,7 @@ dependencies = [
  "rustversion",
  "serde",
  "sync_wrapper 1.0.1",
+ "tokio",
  "tower",
  "tower-layer",
  "tower-service",
@@ -2330,19 +2334,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f3cb5ba0dc43242ce17de99c180e96db90b235b8a9fdc9543c96d2209116bd9f"
 
 [[package]]
+name = "saluki-api"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "http",
+]
+
+[[package]]
 name = "saluki-app"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "bytesize",
+ "hyper-util",
  "memory-accounting",
  "metrics",
  "metrics-util",
  "rustls",
+ "saluki-api",
  "saluki-config",
  "saluki-core",
  "saluki-error",
+ "saluki-io",
  "serde",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2439,6 +2456,7 @@ dependencies = [
  "pin-project",
  "protobuf",
  "quanta",
+ "saluki-api",
  "saluki-context",
  "saluki-error",
  "saluki-event",
@@ -2515,6 +2533,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "saluki-health"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "saluki-api",
+ "serde",
+ "serde_json",
+ "stringtheory",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "saluki-io"
 version = "0.1.0"
 dependencies = [
@@ -2522,6 +2553,7 @@ dependencies = [
  "async-compression",
  "async-trait",
  "average",
+ "axum",
  "bitmask-enum",
  "bytes",
  "datadog-protos",

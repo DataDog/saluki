@@ -22,6 +22,7 @@ paste = { workspace = true }
 pin-project = { workspace = true }
 protobuf = { workspace = true }
 quanta = { workspace = true }
+saluki-api = { workspace = true }
 saluki-context = { workspace = true }
 saluki-error = { workspace = true }
 saluki-event = { workspace = true }
@@ -30,7 +31,7 @@ serde_json = { workspace = true }
 slab = { workspace = true }
 snafu = { workspace = true }
 stringtheory = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-util = { workspace = true, features = ["time"] }
 tower = { workspace = true }
 tracing = { workspace = true, features = ["std"] }

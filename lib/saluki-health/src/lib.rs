@@ -8,7 +8,7 @@ use std::{
 };
 
 use futures::StreamExt as _;
-use serde::{ser::SerializeMap as _, Serialize};
+use serde::Serialize;
 use stringtheory::MetaString;
 use tokio::{
     select,
@@ -18,8 +18,18 @@ use tokio::{
 };
 use tokio_util::time::DelayQueue;
 
+use self::api::HealthAPIHandler;
+
+mod api;
+
 const DEFAULT_PROBE_TIMEOUT_DUR: Duration = Duration::from_secs(5);
 const DEFAULT_PROBE_BACKOFF_DUR: Duration = Duration::from_secs(1);
+
+#[derive(Default, Serialize)]
+struct ComponentHealth {
+    ready: bool,
+    live: bool,
+}
 
 /// A handle for updating the health of a component.
 pub struct Health {
@@ -42,8 +52,9 @@ impl Health {
     ///
     /// This should generally be polled as part of a `select!` block to ensure it is checked alongside other
     /// asynchronous operations.
-    pub async fn alive(&mut self) {
-        // Simply wait for the health registry to send us a liveness probe, and if we receive one, we respond back to it immediately.
+    pub async fn live(&mut self) {
+        // Simply wait for the health registry to send us a liveness probe, and if we receive one, we respond back to it
+        // immediately.
         if let Some((send_time, tx)) = self.liveness_rx.recv().await {
             let receive_time = Instant::now();
             let _ = tx.send((send_time, receive_time));
@@ -53,7 +64,7 @@ impl Health {
 
 #[derive(Eq, PartialEq)]
 enum HealthState {
-    Alive,
+    Live,
     Unknown,
     Dead,
 }
@@ -76,13 +87,13 @@ impl ComponentState {
         self.ready.load(Relaxed) && self.health != HealthState::Dead
     }
 
-    fn is_alive(&self) -> bool {
-        self.health == HealthState::Alive
+    fn is_live(&self) -> bool {
+        self.health == HealthState::Live
     }
 
     fn update_state(&mut self, result: LivenessResult) {
         match result {
-            // If we timed out waiting for a response to a liveness probe, then the component could still be alive but
+            // If we timed out waiting for a response to a liveness probe, then the component could still be live but
             // just responding slowly, so we mark it as unknown. This still manifests as a failing liveness probe, but
             // it lets us differentiate between the component being dead -- like the task panicked and is never coming
             // back -- versus being deadlocked or otherwise unresponsive.
@@ -90,13 +101,13 @@ impl ComponentState {
                 self.health = HealthState::Unknown;
             }
 
-            // The component is alive.
+            // The component is live.
             LivenessResult::Success {
                 response_sent,
                 response_latency,
                 ..
             } => {
-                self.health = HealthState::Alive;
+                self.health = HealthState::Live;
                 self.last_response = response_sent;
                 self.last_response_latency = response_latency;
             }
@@ -135,75 +146,6 @@ impl LivenessResult {
     }
 }
 
-#[derive(Default)]
-struct DurationAsSeconds(Duration);
-
-impl Serialize for DurationAsSeconds {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_f64(self.0.as_secs_f64())
-    }
-}
-
-#[derive(Default, Serialize)]
-struct ComponentHealth {
-    ready: bool,
-    alive: bool,
-    response_latency_secs: DurationAsSeconds,
-}
-
-/// A view over the health of all registered components.
-pub struct ComponentHealthView {
-    inner: Arc<Mutex<HashMap<MetaString, ComponentHealth>>>,
-}
-
-impl ComponentHealthView {
-    /// Return `true` if all components are ready.
-    pub fn all_ready(&self) -> bool {
-        let inner = self.inner.lock().unwrap();
-        inner.values().all(|health| health.ready)
-    }
-
-    /// Return `true` if all components are alive.
-    pub fn all_alive(&self) -> bool {
-        let inner = self.inner.lock().unwrap();
-        inner.values().all(|health| health.alive)
-    }
-
-    /// Renders a map of components, and their health, as JSON.
-    ///
-    /// The output is written to the given writer.
-    ///
-    /// ## Errors
-    ///
-    /// If serialization fails for any reason, an error is returned.
-    pub fn render_json<W>(&self, writer: &mut W) -> Result<(), serde_json::Error>
-    where
-        W: std::io::Write,
-    {
-        let inner = self.inner.lock().unwrap();
-        serde_json::to_writer(writer, &*inner)
-    }
-}
-
-impl Serialize for ComponentHealthView {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let inner = self.inner.lock().unwrap();
-
-        let mut map = serializer.serialize_map(Some(inner.len()))?;
-        for (name, health) in inner.iter() {
-            map.serialize_entry(name, health)?;
-        }
-
-        map.end()
-    }
-}
-
 /// A registry of components and their health.
 ///
 /// `HealthRegistry` is responsible for tracking the health of all registered components, by storing both their
@@ -236,7 +178,7 @@ impl HealthRegistry {
     /// Registers a component with the registry.
     ///
     /// A handle is returned that must be used by the component to set its readiness as well as respond to liveness
-    /// probes. See [`Health::mark_ready`], [`Health::mark_not_ready`], and [`Health::alive`] for more information.
+    /// probes. See [`Health::mark_ready`], [`Health::mark_not_ready`], and [`Health::live`] for more information.
     pub fn register_component<S: Into<MetaString>>(&mut self, name: S) -> Option<Health> {
         let name = name.into();
 
@@ -268,14 +210,12 @@ impl HealthRegistry {
         Some(Health { ready, liveness_rx })
     }
 
-    /// Gets a view handle of the health of all registered components.
+    /// Gets an API handler for reporting the health of all components.
     ///
-    /// This can be used to programmatically query the health of all components, as well as render the health in a
-    /// suitable format for monitoring systems.
-    pub fn view(&self) -> ComponentHealthView {
-        ComponentHealthView {
-            inner: Arc::clone(&self.health_view),
-        }
+    /// This handler can be used to register routes on an [`APIBuilder`][saluki_api::APIBuilder] to expose the health of
+    /// all registered components. See [`HealthAPIHandler`] for more information about routes and responses.
+    pub fn api_handler(&self) -> HealthAPIHandler {
+        HealthAPIHandler::from_state(Arc::clone(&self.health_view))
     }
 
     async fn spawn_liveness_probe(&mut self, id: usize) {
@@ -308,8 +248,7 @@ impl HealthRegistry {
         };
 
         component_health.ready = component.is_ready();
-        component_health.alive = component.is_alive();
-        component_health.response_latency_secs = DurationAsSeconds(component.last_response_latency);
+        component_health.live = component.is_live();
     }
 
     /// Runs the health registry, probing components for liveness and maintaining a complete view of the health of all

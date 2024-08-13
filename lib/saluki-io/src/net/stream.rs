@@ -39,6 +39,14 @@ impl Connection {
             Self::Unix(inner) => unix_recvmsg(inner, buf).await,
         }
     }
+
+    pub(super) fn remote_addr(&self) -> ConnectionAddress {
+        match self {
+            Self::Tcp(_, addr) => ConnectionAddress::SocketLike(*addr),
+            #[cfg(unix)]
+            Self::Unix(_) => ConnectionAddress::ProcessLike(None),
+        }
+    }
 }
 
 impl AsyncRead for Connection {
