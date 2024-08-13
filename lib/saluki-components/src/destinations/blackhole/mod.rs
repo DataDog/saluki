@@ -10,7 +10,7 @@ use tracing::{debug, info};
 /// Blackhole destination.
 ///
 /// Does nothing with the events it receives. It's useful for testing, providing both a valid destination implementation
-/// while also periodicially emitting the number of events it has received.
+/// while also periodically emitting the number of events it has received.
 #[derive(Default)]
 pub struct BlackholeConfiguration;
 
@@ -26,7 +26,10 @@ impl DestinationBuilder for BlackholeConfiguration {
 }
 
 impl MemoryBounds for BlackholeConfiguration {
-    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // Capture the size of the heap allocation when the component is built.
+        builder.minimum().with_single_value::<Blackhole>();
+    }
 }
 
 struct Blackhole;

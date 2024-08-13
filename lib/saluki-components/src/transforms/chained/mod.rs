@@ -10,7 +10,7 @@ use tracing::{debug, error};
 /// Allows chaining multiple transforms together in a single component, which can avoid the overhead of receiving and
 /// sending events multiple times when concurrency is not required for processing.
 ///
-/// ## Synchronous tranforms
+/// ## Synchronous transforms
 ///
 /// This component works with synchronous transforms only. If you need to chain asynchronous transforms, they must be
 /// added to the topology normally.
@@ -34,6 +34,9 @@ impl ChainedConfiguration {
 
 impl MemoryBounds for ChainedConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // Capture the size of the heap allocation when the component is built.
+        builder.minimum().with_single_value::<Chained>();
+
         for (subtransform_id, subtransform_builder) in self.subtransform_builders.iter() {
             let mut subtransform_bounds_builder = builder.subcomponent(subtransform_id);
             subtransform_builder.specify_bounds(&mut subtransform_bounds_builder);
