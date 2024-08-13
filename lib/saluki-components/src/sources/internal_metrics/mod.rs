@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
@@ -58,7 +60,7 @@ impl Source for InternalMetrics {
                     debug!(metrics_len = metrics.len(), "Received internal metrics.");
 
                     let mut event_buffer = context.event_buffer_pool().acquire().await;
-                    event_buffer.extend(metrics.iter().cloned());
+                    event_buffer.extend(Arc::unwrap_or_clone(metrics));
 
                     if let Err(e) = context.forwarder().forward(event_buffer).await {
                         error!(error = %e, "Failed to forward events.");

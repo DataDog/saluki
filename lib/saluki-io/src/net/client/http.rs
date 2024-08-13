@@ -12,7 +12,6 @@ use hyper_util::{
     },
     rt::TokioExecutor,
 };
-use rustls::crypto::aws_lc_rs::default_provider as aws_lc_rs_default_provider;
 
 use crate::buf::ChunkedBuffer;
 
@@ -30,7 +29,7 @@ impl HttpClient<(), ()> {
         B::Error: std::error::Error + Send + Sync,
     {
         HttpsConnectorBuilder::new()
-            .with_provider_and_native_roots(aws_lc_rs_default_provider())
+            .with_native_roots()
             .map(|builder| builder.https_or_http().enable_all_versions().build())
             .map(HttpClient::from_connector)
     }

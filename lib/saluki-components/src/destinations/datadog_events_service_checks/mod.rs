@@ -110,8 +110,13 @@ impl DestinationBuilder for DatadogEventsServiceChecksConfiguration {
 
 impl MemoryBounds for DatadogEventsServiceChecksConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        // Capture the size of the heap allocation when the component is built.
-        builder.minimum().with_single_value::<DatadogEventsServiceChecks>();
+        builder.minimum()
+            // Capture the size of the heap allocation when the component is built.
+            .with_single_value::<DatadogEventsServiceChecks>()
+            // Capture the size of the requests channel.
+            //
+            // TODO: This type signature is _ugly_, and it would be nice to improve it somehow.
+            .with_array::<(usize, Request<String>)>(32);
     }
 }
 
