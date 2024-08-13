@@ -180,6 +180,10 @@ impl MemoryBounds for AggregateConfiguration {
         let event_buffer_pool_size = EVENT_BUFFER_POOL_SIZE * self.context_limit * std::mem::size_of::<Event>();
 
         builder
+            .minimum()
+            // Capture the size of the heap allocation when the component is built.
+            .with_single_value::<Aggregate>();
+        builder
             .firm()
             .with_fixed_amount(event_buffer_pool_size)
             // Account for our context limiter map, which is just a `HashSet`.

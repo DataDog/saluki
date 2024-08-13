@@ -37,7 +37,16 @@ where
 }
 
 impl<E> MemoryBounds for HostEnrichmentConfiguration<E> {
-    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // TODO: We don't account for the size of the hostname since we only query it when we go to actually build the
+        // transform. We could move the querying to the point where we create `HostEnrichmentConfiguration` itself but
+        // that would mean it couldn't be updated dynamically.
+        //
+        // Not a relevant problem _right now_, but a _potential_ problem in the future. :shrug:
+
+        // Capture the size of the heap allocation when the component is built.
+        builder.minimum().with_single_value::<HostEnrichment>();
+    }
 }
 
 pub struct HostEnrichment {

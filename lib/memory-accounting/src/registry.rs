@@ -344,6 +344,16 @@ impl<'a, S: BoundsMutator> BoundsBuilder<'a, S> {
         }
     }
 
+    /// Accounts for the in-memory size of a single value.
+    ///
+    /// This is useful for tracking the expected memory usage of a single instance of a type if that type is heap
+    /// allocated. For example, components that are spawned by a topology generally end up being boxed, which means a
+    /// heap allocation exists that is the size of the component type.
+    pub fn with_single_value<T>(&mut self) -> &mut Self {
+        S::add_usage(&mut self.inner.bounds, std::mem::size_of::<T>());
+        self
+    }
+
     /// Accounts for a fixed amount of memory usage.
     ///
     /// This is a catch-all for directly accounting for a specific number of bytes.

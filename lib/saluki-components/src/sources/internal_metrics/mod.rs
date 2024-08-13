@@ -17,7 +17,7 @@ pub struct InternalMetricsConfiguration;
 #[async_trait]
 impl SourceBuilder for InternalMetricsConfiguration {
     async fn build(&self) -> Result<Box<dyn Source + Send>, GenericError> {
-        Ok(Box::new(InternalMetrics {}))
+        Ok(Box::new(InternalMetrics))
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
@@ -28,7 +28,10 @@ impl SourceBuilder for InternalMetricsConfiguration {
 }
 
 impl MemoryBounds for InternalMetricsConfiguration {
-    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // Capture the size of the heap allocation when the component is built.
+        builder.minimum().with_single_value::<InternalMetrics>();
+    }
 }
 
 pub struct InternalMetrics;
