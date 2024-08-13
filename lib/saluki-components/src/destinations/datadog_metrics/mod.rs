@@ -20,7 +20,7 @@ use saluki_io::{
 };
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
-use tower::{util::BoxService, Service, ServiceBuilder};
+use tower::{util::BoxService, BoxError, Service, ServiceBuilder};
 use tracing::{debug, error, trace};
 
 mod request_builder;
@@ -118,9 +118,11 @@ pub struct DatadogMetricsConfiguration {
     #[serde(default)]
     dd_url: Option<String>,
 
-    /// Forwarder timeout in seconds
+    /// The request timeout for forwarding metrics, in seconds.
+    ///
+    /// Defaults to 20 seconds.
     #[serde(default = "default_timeout", rename = "forwarder_timeout")]
-    timeout: u64,
+    request_timeout_secs: u64,
 }
 
 fn default_timeout() -> u64 {
@@ -166,7 +168,7 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
 
         let service = BoxService::new(
             ServiceBuilder::new()
-                .timeout(Duration::from_secs(self.timeout))
+                .timeout(Duration::from_secs(self.request_timeout_secs))
                 .service(http_client),
         );
 
@@ -235,7 +237,7 @@ where
     O::Item: ReadWriteIoBuffer,
     S: Service<Request<ChunkedBuffer<O>>, Response = hyper::Response<Incoming>> + Send + 'static,
     S::Future: Send,
-    S::Error: Send,
+    S::Error: Send + Into<BoxError>,
 {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), ()> {
         let Self {
@@ -373,7 +375,7 @@ async fn run_io_loop<O, S>(
     O::Item: ReadWriteIoBuffer,
     S: Service<Request<ChunkedBuffer<O>>, Response = hyper::Response<Incoming>> + Send + 'static,
     S::Future: Send,
-    S::Error: Send,
+    S::Error: Send + Into<BoxError>,
 {
     // Loop and process all incoming requests.
     while let Some((metrics_count, request)) = requests_rx.recv().await {
@@ -404,9 +406,9 @@ async fn run_io_loop<O, S>(
                     }
                 }
             }
-            Err(_e) => {
-                error!("Failed to send request");
-                // error!(error = %e, error_source = ?e.source(), "Failed to send request.");
+            Err(e) => {
+                let e: tower::BoxError = e.into();
+                error!(error = %e, error_source = ?e.source(), "Failed to send request.");
             }
         }
     }

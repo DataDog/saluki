@@ -13,7 +13,7 @@ use hyper_util::{
     rt::TokioExecutor,
 };
 use rustls::crypto::aws_lc_rs::default_provider as aws_lc_rs_default_provider;
-use tower::Service;
+use tower::{BoxError, Service};
 
 use crate::buf::ChunkedBuffer;
 
@@ -40,7 +40,7 @@ impl HttpClient<(), ()> {
 impl<C, B> HttpClient<C, B>
 where
     C: Connect + Clone + Send + Sync + 'static,
-    B: Body + Send + 'static + Unpin,
+    B: Body + Send + Unpin + 'static,
     B::Data: Send,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
@@ -58,9 +58,9 @@ where
 impl<C, B> Service<Request<B>> for HttpClient<C, B>
 where
     C: Connect + Clone + Send + Sync + 'static,
-    B: Body + Send + 'static + Unpin,
+    B: Body + Send + Unpin + 'static,
     B::Data: Send,
-    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    B::Error: Into<BoxError>,
 {
     type Response = hyper::Response<Incoming>;
     type Error = Error;
