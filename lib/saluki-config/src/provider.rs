@@ -12,7 +12,6 @@ pub struct ResolvedProvider {
 }
 
 impl ResolvedProvider {
-    #[cfg(feature = "yaml")]
     pub fn from_yaml<P>(path: P) -> Result<Self, Error>
     where
         P: AsRef<Path>,
@@ -28,7 +27,6 @@ impl ResolvedProvider {
         })
     }
 
-    #[cfg(feature = "json")]
     pub fn from_json<P>(path: P) -> Result<Self, Error>
     where
         P: AsRef<Path>,

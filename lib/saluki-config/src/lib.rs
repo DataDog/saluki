@@ -10,10 +10,7 @@ use saluki_error::GenericError;
 use serde::Deserialize;
 use snafu::Snafu;
 
-#[cfg(any(feature = "json", feature = "yaml"))]
 mod provider;
-
-#[cfg(any(feature = "json", feature = "yaml"))]
 use self::provider::ResolvedProvider;
 
 /// A configuration error.
@@ -105,8 +102,8 @@ impl LookupSource {
 ///
 /// ## Supported sources
 ///
-/// - YAML file (requires the `yaml` feature)
-/// - JSON file (requires the `json` feature)
+/// - YAML file
+/// - JSON file
 /// - environment variables (must be prefixed; see [`from_environment`][Self::from_environment])
 #[derive(Default)]
 pub struct ConfigurationLoader {
@@ -120,7 +117,6 @@ impl ConfigurationLoader {
     /// ## Errors
     ///
     /// If the file could not be read, or if the file is not valid YAML, an error will be returned.
-    #[cfg(feature = "yaml")]
     pub fn from_yaml<P>(mut self, path: P) -> Result<Self, ConfigurationError>
     where
         P: AsRef<std::path::Path>,
@@ -133,7 +129,6 @@ impl ConfigurationLoader {
     /// Attempts to load the given YAML configuration file, ignoring any errors.
     ///
     /// Errors include the file not existing, not being readable/accessible, and not being valid YAML.
-    #[cfg(feature = "yaml")]
     pub fn try_from_yaml<P>(mut self, path: P) -> Self
     where
         P: AsRef<std::path::Path>,
@@ -154,7 +149,6 @@ impl ConfigurationLoader {
     /// ## Errors
     ///
     /// If the file could not be read, or if the file is not valid JSON, an error will be returned.
-    #[cfg(feature = "json")]
     pub fn from_json<P>(mut self, path: P) -> Result<Self, ConfigurationError>
     where
         P: AsRef<std::path::Path>,
@@ -167,7 +161,6 @@ impl ConfigurationLoader {
     /// Attempts to load the given JSON configuration file, ignoring any errors.
     ///
     /// Errors include the file not existing, not being readable/accessible, and not being valid JSON.
-    #[cfg(feature = "json")]
     pub fn try_from_json<P>(mut self, path: P) -> Self
     where
         P: AsRef<std::path::Path>,
