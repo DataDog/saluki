@@ -1,6 +1,6 @@
 //! Basic HTTP client.
 
-use std::io;
+use std::{io, task::Poll};
 
 use http::{Request, Response};
 use hyper::body::{Body, Incoming};
@@ -53,8 +53,24 @@ where
     pub async fn send(&self, req: Request<B>) -> Result<Response<Incoming>, Error> {
         self.inner.request(req).await
     }
+}
 
-    pub fn call(&mut self, req: Request<B>) -> ResponseFuture {
+impl<C, B> Service<Request<B>> for HttpClient<C, B>
+where
+    C: Connect + Clone + Send + Sync + 'static,
+    B: Body + Send + 'static + Unpin,
+    B::Data: Send,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    type Response = hyper::Response<Incoming>;
+    type Error = Error;
+    type Future = ResponseFuture;
+
+    fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: Request<B>) -> Self::Future {
         self.inner.call(req)
     }
 }

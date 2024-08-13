@@ -1,10 +1,9 @@
-use std::{task::Poll, time::Duration};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use http::{Request, Uri};
 use http_body_util::BodyExt as _;
 use hyper::body::Incoming;
-use hyper_util::client::legacy::{Error, ResponseFuture};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::Counter;
 use saluki_config::GenericConfiguration;
@@ -17,11 +16,11 @@ use saluki_error::GenericError;
 use saluki_event::DataType;
 use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, BytesBuffer, ChunkedBuffer, ReadWriteIoBuffer},
-    net::client::http::{ChunkedHttpsClient, HttpClient},
+    net::client::http::HttpClient,
 };
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
-use tower::{Service, ServiceBuilder};
+use tower::{util::BoxService, Service, ServiceBuilder};
 use tracing::{debug, error, trace};
 
 mod request_builder;
@@ -165,9 +164,11 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
     async fn build(&self) -> Result<Box<dyn Destination + Send>, GenericError> {
         let http_client = HttpClient::https()?;
 
-        let service = ServiceBuilder::new()
-            .timeout(Duration::from_secs(self.timeout))
-            .service(DatadogMetricsService { http_client });
+        let service = BoxService::new(
+            ServiceBuilder::new()
+                .timeout(Duration::from_secs(self.timeout))
+                .service(http_client),
+        );
 
         let api_base = self.api_base()?;
 
@@ -404,6 +405,7 @@ async fn run_io_loop<O, S>(
                 }
             }
             Err(_e) => {
+                error!("Failed to send request");
                 // error!(error = %e, error_source = ?e.source(), "Failed to send request.");
             }
         }
@@ -421,31 +423,4 @@ fn create_request_builder_buffer_pool() -> FixedSizeObjectPool<BytesBuffer> {
     //
     // We chunk it up into 32KB segments mostly to allow for balancing fragmentation vs acquisition overhead.
     get_fixed_bytes_buffer_pool(RB_BUFFER_POOL_COUNT, RB_BUFFER_POOL_BUF_SIZE)
-}
-
-/// Service used as a wrapper around an http client that implements the Tower Service trait.
-struct DatadogMetricsService<O>
-where
-    O: ObjectPool + 'static,
-    O::Item: ReadWriteIoBuffer,
-{
-    http_client: ChunkedHttpsClient<O>,
-}
-
-impl<O> Service<Request<ChunkedBuffer<O>>> for DatadogMetricsService<O>
-where
-    O: ObjectPool + 'static,
-    O::Item: ReadWriteIoBuffer,
-{
-    type Response = hyper::Response<Incoming>;
-    type Error = Error;
-    type Future = ResponseFuture;
-
-    fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn call(&mut self, req: Request<ChunkedBuffer<O>>) -> Self::Future {
-        self.http_client.call(req)
-    }
 }
