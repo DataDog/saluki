@@ -88,6 +88,6 @@ impl MemoryBounds for MetadataAggregator {
             // Operations channel.
             .with_array::<MetadataOperation>(OPERATIONS_CHANNEL_SIZE);
 
-        builder.bounded_component("tag_store", &self.tag_store);
+        builder.with_subcomponent("tag_store", &self.tag_store);
     }
 }

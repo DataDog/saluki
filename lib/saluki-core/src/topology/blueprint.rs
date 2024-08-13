@@ -1,9 +1,6 @@
 use std::collections::HashMap;
 
-use memory_accounting::{
-    allocator::{ComponentRegistry, Track as _, Tracked},
-    MemoryBounds, MemoryBoundsBuilder,
-};
+use memory_accounting::{allocator::Track as _, ComponentRegistry};
 use saluki_error::GenericError;
 use snafu::{ResultExt as _, Snafu};
 
@@ -11,7 +8,7 @@ use super::{
     built::BuiltTopology,
     graph::{Graph, GraphError},
     interconnect::EventBuffer,
-    ComponentId,
+    ComponentId, RegisteredComponent,
 };
 use crate::components::{destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder};
 
@@ -38,15 +35,42 @@ pub enum BlueprintError {
 }
 
 /// A topology blueprint represents a directed graph of components.
-#[derive(Default)]
 pub struct TopologyBlueprint {
     graph: Graph,
-    sources: HashMap<ComponentId, Tracked<Box<dyn SourceBuilder>>>,
-    transforms: HashMap<ComponentId, Tracked<Box<dyn TransformBuilder>>>,
-    destinations: HashMap<ComponentId, Tracked<Box<dyn DestinationBuilder>>>,
+    sources: HashMap<ComponentId, RegisteredComponent<Box<dyn SourceBuilder>>>,
+    transforms: HashMap<ComponentId, RegisteredComponent<Box<dyn TransformBuilder>>>,
+    destinations: HashMap<ComponentId, RegisteredComponent<Box<dyn DestinationBuilder>>>,
+    component_registry: ComponentRegistry,
 }
 
 impl TopologyBlueprint {
+    /// Creates an empty `TopologyBlueprint` attached to the given `ComponentRegistry`.
+    pub fn from_component_registry(mut component_registry: ComponentRegistry) -> Self {
+        // Update our bounds for some basic stuff that we know about upfront.
+        let mut bounds_builder = component_registry.bounds_builder();
+        bounds_builder
+            .subcomponent("buffer_pools/event_buffer")
+            .minimum()
+            .with_array::<EventBuffer>(1024);
+
+        Self {
+            graph: Graph::default(),
+            sources: HashMap::new(),
+            transforms: HashMap::new(),
+            destinations: HashMap::new(),
+            component_registry,
+        }
+    }
+
+    fn update_bounds_for_interconnect(&mut self) {
+        // Increment the size of our interconnects-related bounds to account for a newly-added transform or destination.
+        self.component_registry
+            .get_or_create("interconnects")
+            .bounds_builder()
+            .minimum()
+            .with_array::<EventBuffer>(128);
+    }
+
     /// Adds a source component to the blueprint.
     ///
     /// ## Errors
@@ -58,12 +82,17 @@ impl TopologyBlueprint {
         B: SourceBuilder + 'static,
     {
         let component_id = self.graph.add_source(component_id, &builder).context(InvalidGraph)?;
-        let component_token = ComponentRegistry::global().register_component(component_id.to_string());
+
+        let mut source_registry = self
+            .component_registry
+            .get_or_create(format!("components/sources/{}", component_id));
+        let mut bounds_builder = source_registry.bounds_builder();
+        builder.specify_bounds(&mut bounds_builder);
 
         let builder: Box<dyn SourceBuilder> = Box::new(builder);
         let _ = self
             .sources
-            .insert(component_id, builder.track_allocations(component_token));
+            .insert(component_id, RegisteredComponent::new(builder, source_registry));
 
         Ok(self)
     }
@@ -79,12 +108,19 @@ impl TopologyBlueprint {
         B: TransformBuilder + 'static,
     {
         let component_id = self.graph.add_transform(component_id, &builder).context(InvalidGraph)?;
-        let component_token = ComponentRegistry::global().register_component(component_id.to_string());
+
+        self.update_bounds_for_interconnect();
+
+        let mut transform_registry = self
+            .component_registry
+            .get_or_create(format!("components/transforms/{}", component_id));
+        let mut bounds_builder = transform_registry.bounds_builder();
+        builder.specify_bounds(&mut bounds_builder);
 
         let builder: Box<dyn TransformBuilder> = Box::new(builder);
         let _ = self
             .transforms
-            .insert(component_id, builder.track_allocations(component_token));
+            .insert(component_id, RegisteredComponent::new(builder, transform_registry));
 
         Ok(self)
     }
@@ -103,12 +139,19 @@ impl TopologyBlueprint {
             .graph
             .add_destination(component_id, &builder)
             .context(InvalidGraph)?;
-        let component_token = ComponentRegistry::global().register_component(component_id.to_string());
+
+        self.update_bounds_for_interconnect();
+
+        let mut destination_registry = self
+            .component_registry
+            .get_or_create(format!("components/destinations/{}", component_id));
+        let mut bounds_builder = destination_registry.bounds_builder();
+        builder.specify_bounds(&mut bounds_builder);
 
         let builder: Box<dyn DestinationBuilder> = Box::new(builder);
         let _ = self
             .destinations
-            .insert(component_id, builder.track_allocations(component_token));
+            .insert(component_id, RegisteredComponent::new(builder, destination_registry));
 
         Ok(self)
     }
@@ -141,15 +184,21 @@ impl TopologyBlueprint {
     /// ## Errors
     ///
     /// If any of the components could not be built, an error is returned.
-    pub async fn build(self) -> Result<BuiltTopology, BlueprintError> {
+    pub async fn build(mut self) -> Result<BuiltTopology, BlueprintError> {
         self.graph.validate().context(InvalidGraph)?;
 
         let mut sources = HashMap::new();
         for (id, builder) in self.sources {
-            let _guard = builder.enter();
-            match builder.inner_ref().build().await {
+            let (builder, mut component_registry) = builder.into_parts();
+            let allocation_token = component_registry.token();
+
+            let _guard = allocation_token.enter();
+            match builder.build().await {
                 Ok(source) => {
-                    sources.insert(id, source.in_current_component());
+                    sources.insert(
+                        id,
+                        RegisteredComponent::new(source.in_current_allocation_group(), component_registry),
+                    );
                 }
                 Err(e) => return Err(BlueprintError::FailedToBuildComponent { id, source: e }),
             }
@@ -157,10 +206,16 @@ impl TopologyBlueprint {
 
         let mut transforms = HashMap::new();
         for (id, builder) in self.transforms {
-            let _guard = builder.enter();
-            match builder.inner_ref().build().await {
+            let (builder, mut component_registry) = builder.into_parts();
+            let allocation_token = component_registry.token();
+
+            let _guard = allocation_token.enter();
+            match builder.build().await {
                 Ok(transform) => {
-                    transforms.insert(id, transform.in_current_component());
+                    transforms.insert(
+                        id,
+                        RegisteredComponent::new(transform.in_current_allocation_group(), component_registry),
+                    );
                 }
                 Err(e) => return Err(BlueprintError::FailedToBuildComponent { id, source: e }),
             }
@@ -168,60 +223,27 @@ impl TopologyBlueprint {
 
         let mut destinations = HashMap::new();
         for (id, builder) in self.destinations {
-            let _guard = builder.enter();
-            match builder.inner_ref().build().await {
+            let (builder, mut component_registry) = builder.into_parts();
+            let allocation_token = component_registry.token();
+
+            let _guard = allocation_token.enter();
+            match builder.build().await {
                 Ok(destination) => {
-                    destinations.insert(id, destination.in_current_component());
+                    destinations.insert(
+                        id,
+                        RegisteredComponent::new(destination.in_current_allocation_group(), component_registry),
+                    );
                 }
                 Err(e) => return Err(BlueprintError::FailedToBuildComponent { id, source: e }),
             }
         }
 
-        Ok(BuiltTopology::from_parts(self.graph, sources, transforms, destinations))
-    }
-}
-
-impl MemoryBounds for TopologyBlueprint {
-    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        let mut component_builder = builder.component("components");
-
-        // Account for sources, transforms, and destinations.
-        let mut source_builder = component_builder.component("sources");
-        for (name, source) in &self.sources {
-            source_builder.bounded_component(name.to_string(), source.inner_ref());
-        }
-
-        let mut transform_builder = component_builder.component("transforms");
-        for (name, transform) in &self.transforms {
-            transform_builder.bounded_component(name.to_string(), transform.inner_ref());
-        }
-
-        let mut destination_builder = component_builder.component("destinations");
-        for (name, destination) in &self.destinations {
-            destination_builder.bounded_component(name.to_string(), destination.inner_ref());
-        }
-
-        // Now account for all of the things that we provide components by default, like the global event buffer pool,
-        // interconnect channels, and so on.
-
-        // Every component that receives events gets an interconnect channel, which means all transforms and
-        // destinations. These are fixed-sized channels, so we can account for them here.
-        //
-        // TODO: These values are semi-useless because the real memory usage is in the actual `Vec<Event>` that
-        // underpins the buffer pool-capable `EventBuffer` wrapper type. Realistically, what we _want_ is have those
-        // underlying vectors somehow be fixed-size, and then we would be able to actually say something here like our
-        // fixed-size buffer pool for `EventBuffer` is worth <buffer pool max size> * <size_of::<Event>() * max events
-        // per buffer> bytes... and so on.
-        builder
-            .component("interconnects")
-            .minimum()
-            .with_array::<EventBuffer>((self.transforms.len() + self.destinations.len()) * 128);
-
-        // We also have our global event buffer pool that all components have shared access to.
-        builder
-            .component("buffer_pools")
-            .component("event_buffer")
-            .minimum()
-            .with_array::<EventBuffer>(1024);
+        Ok(BuiltTopology::from_parts(
+            self.graph,
+            sources,
+            transforms,
+            destinations,
+            self.component_registry.token(),
+        ))
     }
 }

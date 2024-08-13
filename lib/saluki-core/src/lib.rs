@@ -23,5 +23,5 @@ where
     F: Future<Output = R> + Send + 'static,
     R: Send + 'static,
 {
-    tokio::spawn(f.in_current_span().in_current_component())
+    tokio::spawn(f.in_current_span().in_current_allocation_group())
 }
