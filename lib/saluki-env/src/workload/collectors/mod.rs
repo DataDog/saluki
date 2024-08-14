@@ -4,6 +4,8 @@ use tracing::{debug, error};
 
 use super::metadata::MetadataOperation;
 
+mod cgroupsv2;
+
 mod containerd;
 pub use self::containerd::ContainerdMetadataCollector;
 
