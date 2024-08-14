@@ -7,6 +7,8 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
+mod meta2;
+
 use std::{borrow::Borrow, fmt, hash, ops::Deref};
 
 pub mod interning;
