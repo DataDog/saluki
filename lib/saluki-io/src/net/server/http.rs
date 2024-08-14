@@ -20,11 +20,6 @@ use tracing::{debug, error, info};
 
 use crate::net::listener::ConnectionOrientedListener;
 
-/// A basic HTTP server that listens for incoming connections and serves them using a given service.
-///
-/// ## Missing
-///
-/// - Graceful shutdown (shutdown of the server itself can be triggered, but not individual connections)
 pub struct HttpServer<S> {
     listener: ConnectionOrientedListener,
     conn_builder: Builder<TokioExecutor>,
@@ -32,35 +27,12 @@ pub struct HttpServer<S> {
 }
 
 impl<S> HttpServer<S> {
-    /// Create a new `HttpServer` from the given listener and service.
-    ///
-    /// The service must be able to be cloned, as a copy is given to each incoming connection.
     pub fn from_listener(listener: ConnectionOrientedListener, service: S) -> Self {
         Self {
             listener,
             conn_builder: Builder::new(TokioExecutor::new()),
             service,
         }
-    }
-
-    /// Configures the HTTP/1 settings used for each connection.
-    pub fn configure_http1_settings<F>(&mut self, f: F) -> &mut Self
-    where
-        F: FnOnce(&mut hyper_util::server::conn::auto::Http1Builder<'_, TokioExecutor>),
-    {
-        let mut http1_settings = self.conn_builder.http1();
-        f(&mut http1_settings);
-        self
-    }
-
-    /// Configures the HTTP/2 settings used for each connection.
-    pub fn configure_http2_settings<F>(&mut self, f: F) -> &mut Self
-    where
-        F: FnOnce(&mut hyper_util::server::conn::auto::Http2Builder<'_, TokioExecutor>),
-    {
-        let mut http2_settings = self.conn_builder.http2();
-        f(&mut http2_settings);
-        self
     }
 }
 
