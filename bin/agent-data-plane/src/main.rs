@@ -7,10 +7,10 @@
 #![deny(missing_docs)]
 mod env_provider;
 
-use std::time::Instant;
+use std::{future::pending, time::Instant};
 
 use memory_accounting::ComponentRegistry;
-use saluki_app::prelude::*;
+use saluki_app::{api::APIBuilder, prelude::*};
 use saluki_components::{
     destinations::{DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration, PrometheusConfiguration},
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
@@ -20,7 +20,9 @@ use saluki_components::{
 };
 use saluki_config::ConfigurationLoader;
 use saluki_core::topology::TopologyBlueprint;
-use saluki_error::GenericError;
+use saluki_error::{ErrorContext as _, GenericError};
+use saluki_health::HealthRegistry;
+use saluki_io::net::ListenAddress;
 use tracing::{error, info};
 
 use crate::env_provider::ADPEnvironmentProvider;
@@ -75,6 +77,7 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         .from_environment("DD")?
         .into_generic()?;
 
+    let health_registry = HealthRegistry::new();
     let env_provider =
         ADPEnvironmentProvider::from_configuration(&configuration, component_registry.get_or_create("env_provider"))
             .await?;
@@ -122,6 +125,8 @@ async fn run(started: Instant) -> Result<(), GenericError> {
             .connect_component("internal_metrics_out", ["internal_metrics_in"])?;
     }
 
+    let primary_api = APIBuilder::new().with_handler(health_registry.api_handler());
+
     // With our environment provider and topology blueprint established, go through bounds validation.
     let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;
     let memory_limiter = initialize_memory_bounds(bounds_configuration, component_registry)?;
@@ -129,6 +134,14 @@ async fn run(started: Instant) -> Result<(), GenericError> {
     // Time to run the topology!
     let built_topology = blueprint.build().await?;
     let running_topology = built_topology.spawn(memory_limiter).await?;
+
+    // TODO: We should/could wire up a more coordinated/ordered shutdown mechanism but for the moment, we'll just use a
+    // pending future so that it never shuts down until, well, we forcefully shutdown the process... which is fine!
+    let primary_api_listen_address = configuration
+        .try_get_typed("api_listen_address")
+        .error_context("Failed to get API listen address.")?
+        .unwrap_or_else(|| ListenAddress::Tcp(([127, 0, 0, 1], 5400).into()));
+    primary_api.serve(primary_api_listen_address, pending()).await?;
 
     let startup_time = started.elapsed();
 

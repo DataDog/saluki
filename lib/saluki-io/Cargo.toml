@@ -10,6 +10,7 @@ ahash = { workspace = true }
 async-compression = { workspace = true, features = ["tokio", "zlib"] }
 async-trait = { workspace = true }
 average = { workspace = true, features = ["std"] }
+axum = { workspace = true, features = ["tokio"] }
 bitmask-enum = { workspace = true }
 bytes = { workspace = true }
 datadog-protos = { workspace = true }

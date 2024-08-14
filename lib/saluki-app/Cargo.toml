@@ -6,15 +6,20 @@ license = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
+axum = { workspace = true }
 bytesize = { workspace = true }
+hyper-util = { workspace = true, features = ["service"] }
 memory-accounting = { workspace = true }
 metrics = { workspace = true }
 metrics-util = { workspace = true, features = ["handles", "recency", "registry"] }
 rustls = { workspace = true }
+saluki-api = { workspace = true }
 saluki-config = { workspace = true }
 saluki-core = { workspace = true }
 saluki-error = { workspace = true }
+saluki-io = { workspace = true }
 serde = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["macros", "sync"] }
+tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["std", "env-filter", "fmt", "ansi", "registry", "local-time", "tracing-log"] }

@@ -1,7 +1,10 @@
 use std::{fmt, net::SocketAddr, path::PathBuf};
 
+use axum::extract::connect_info::Connected;
 use serde::Deserialize;
 use url::Url;
+
+use super::Connection;
 
 /// A listen address.
 ///
@@ -176,5 +179,11 @@ impl From<SocketAddr> for ConnectionAddress {
 impl From<ProcessCredentials> for ConnectionAddress {
     fn from(creds: ProcessCredentials) -> Self {
         Self::ProcessLike(Some(creds))
+    }
+}
+
+impl<'a> Connected<&'a Connection> for ConnectionAddress {
+    fn connect_info(target: &'a Connection) -> Self {
+        target.remote_addr()
     }
 }
