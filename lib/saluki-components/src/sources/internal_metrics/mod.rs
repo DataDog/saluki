@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
@@ -17,7 +19,7 @@ pub struct InternalMetricsConfiguration;
 #[async_trait]
 impl SourceBuilder for InternalMetricsConfiguration {
     async fn build(&self) -> Result<Box<dyn Source + Send>, GenericError> {
-        Ok(Box::new(InternalMetrics {}))
+        Ok(Box::new(InternalMetrics))
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
@@ -28,7 +30,10 @@ impl SourceBuilder for InternalMetricsConfiguration {
 }
 
 impl MemoryBounds for InternalMetricsConfiguration {
-    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // Capture the size of the heap allocation when the component is built.
+        builder.minimum().with_single_value::<InternalMetrics>();
+    }
 }
 
 pub struct InternalMetrics;
@@ -55,7 +60,7 @@ impl Source for InternalMetrics {
                     debug!(metrics_len = metrics.len(), "Received internal metrics.");
 
                     let mut event_buffer = context.event_buffer_pool().acquire().await;
-                    event_buffer.extend(metrics.iter().cloned());
+                    event_buffer.extend(Arc::unwrap_or_clone(metrics));
 
                     if let Err(e) = context.forwarder().forward(event_buffer).await {
                         error!(error = %e, "Failed to forward events.");

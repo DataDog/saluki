@@ -214,8 +214,15 @@ impl MemoryBounds for DatadogMetricsConfiguration {
 
         builder
             .minimum()
+            // Capture the size of the heap allocation when the component is built.
+            .with_single_value::<DatadogMetrics<FixedSizeObjectPool<BytesBuffer>>>()
+            // Capture the size of our buffer pool and scratch buffer.
             .with_fixed_amount(rb_buffer_pool_size)
-            .with_fixed_amount(scratch_buffer_size);
+            .with_fixed_amount(scratch_buffer_size)
+            // Capture the size of the requests channel.
+            //
+            // TODO: This type signature is _ugly_, and it would be nice to improve it somehow.
+            .with_array::<(usize, Request<ChunkedBuffer<FixedSizeObjectPool<BytesBuffer>>>)>(32);
     }
 }
 

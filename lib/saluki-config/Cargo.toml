@@ -5,14 +5,9 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
-[features]
-default = ["yaml"]
-json = ["figment/json", "dep:tracing"]
-yaml = ["figment/yaml", "dep:tracing"]
-
 [dependencies]
-figment = { workspace = true, features = ["env"] }
+figment = { workspace = true, features = ["env", "json", "yaml"] }
 saluki-error = { workspace = true }
 serde = { workspace = true }
 snafu = { workspace = true }
-tracing = { workspace = true, optional = true }
+tracing = { workspace = true }

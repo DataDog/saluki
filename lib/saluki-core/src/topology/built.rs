@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use memory_accounting::{
-    allocator::{Tracked, TrackingToken},
+    allocator::{AllocationGroupToken, Tracked},
     MemoryLimiter,
 };
 use saluki_error::{generic_error, GenericError};
@@ -13,7 +13,7 @@ use super::{
     interconnect::{EventBuffer, EventStream, Forwarder},
     running::RunningTopology,
     shutdown::ComponentShutdownCoordinator,
-    ComponentId,
+    ComponentId, RegisteredComponent,
 };
 use crate::{
     components::{
@@ -34,22 +34,25 @@ use crate::{
 /// A built topology must be spawned via [`spawn`][Self::spawn].
 pub struct BuiltTopology {
     graph: Graph,
-    sources: HashMap<ComponentId, Tracked<Box<dyn Source + Send>>>,
-    transforms: HashMap<ComponentId, Tracked<Box<dyn Transform + Send>>>,
-    destinations: HashMap<ComponentId, Tracked<Box<dyn Destination + Send>>>,
+    sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
+    transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
+    destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
+    component_token: AllocationGroupToken,
 }
 
 impl BuiltTopology {
     pub(crate) fn from_parts(
-        graph: Graph, sources: HashMap<ComponentId, Tracked<Box<dyn Source + Send>>>,
-        transforms: HashMap<ComponentId, Tracked<Box<dyn Transform + Send>>>,
-        destinations: HashMap<ComponentId, Tracked<Box<dyn Destination + Send>>>,
+        graph: Graph, sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
+        transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
+        destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
+        component_token: AllocationGroupToken,
     ) -> Self {
         Self {
             graph,
             sources,
             transforms,
             destinations,
+            component_token,
         }
     }
 
@@ -112,6 +115,8 @@ impl BuiltTopology {
     ///
     /// If an error occurs while spawning the topology, an error is returned.
     pub async fn spawn(self, memory_limiter: MemoryLimiter) -> Result<RunningTopology, GenericError> {
+        let _guard = self.component_token.enter();
+
         // Build our interconnects, which we'll grab from piecemeal as we spawn our components.
         let event_buffer_pool = FixedSizeObjectPool::with_capacity(1024);
         let (mut forwarders, mut event_streams) = self.create_component_interconnects(event_buffer_pool.clone());
@@ -122,7 +127,7 @@ impl BuiltTopology {
         let mut source_handles = Vec::new();
 
         for (component_id, source) in self.sources {
-            let (component_token, source) = source.into_parts();
+            let (source, component_registry) = source.into_parts();
 
             let forwarder = forwarders
                 .remove(&component_id)
@@ -137,16 +142,17 @@ impl BuiltTopology {
                 forwarder,
                 event_buffer_pool.clone(),
                 memory_limiter.clone(),
+                component_registry,
             );
 
-            source_handles.push(spawn_source(source, component_token, context));
+            source_handles.push(spawn_source(source, context));
         }
 
         // Spawn our transforms.
         let mut transform_handles = Vec::new();
 
         for (component_id, transform) in self.transforms {
-            let (component_token, transform) = transform.into_parts();
+            let (transform, component_registry) = transform.into_parts();
 
             let forwarder = forwarders
                 .remove(&component_id)
@@ -163,25 +169,31 @@ impl BuiltTopology {
                 event_stream,
                 event_buffer_pool.clone(),
                 memory_limiter.clone(),
+                component_registry,
             );
 
-            transform_handles.push(spawn_transform(transform, component_token, context));
+            transform_handles.push(spawn_transform(transform, context));
         }
 
         // Spawn our destinations.
         let mut destination_handles = Vec::new();
 
         for (component_id, destination) in self.destinations {
-            let (component_token, destination) = destination.into_parts();
+            let (destination, component_registry) = destination.into_parts();
 
             let event_stream = event_streams
                 .remove(&component_id)
                 .ok_or_else(|| generic_error!("No event stream found for component '{}'", component_id))?;
 
             let component_context = ComponentContext::destination(component_id);
-            let context = DestinationContext::new(component_context, event_stream, memory_limiter.clone());
+            let context = DestinationContext::new(
+                component_context,
+                event_stream,
+                memory_limiter.clone(),
+                component_registry,
+            );
 
-            destination_handles.push(spawn_destination(destination, component_token, context));
+            destination_handles.push(spawn_destination(destination, context));
         }
 
         Ok(RunningTopology::from_parts(
@@ -193,14 +205,14 @@ impl BuiltTopology {
     }
 }
 
-fn spawn_source(
-    source: Box<dyn Source + Send>, component_token: TrackingToken, context: SourceContext,
-) -> JoinHandle<Result<(), ()>> {
+fn spawn_source(source: Tracked<Box<dyn Source + Send>>, context: SourceContext) -> JoinHandle<Result<(), ()>> {
     let component_span = error_span!(
         "component",
         "type" = context.component_context().component_type(),
         id = %context.component_context().component_id(),
     );
+
+    let (component_token, source) = source.into_parts();
 
     let _span = component_span.enter();
     let _guard = component_token.enter();
@@ -209,13 +221,15 @@ fn spawn_source(
 }
 
 fn spawn_transform(
-    transform: Box<dyn Transform + Send>, component_token: TrackingToken, context: TransformContext,
+    transform: Tracked<Box<dyn Transform + Send>>, context: TransformContext,
 ) -> JoinHandle<Result<(), ()>> {
     let component_span = error_span!(
         "component",
         "type" = context.component_context().component_type(),
         id = %context.component_context().component_id(),
     );
+
+    let (component_token, transform) = transform.into_parts();
 
     let _span = component_span.enter();
     let _guard = component_token.enter();
@@ -224,13 +238,15 @@ fn spawn_transform(
 }
 
 fn spawn_destination(
-    destination: Box<dyn Destination + Send>, component_token: TrackingToken, context: DestinationContext,
+    destination: Tracked<Box<dyn Destination + Send>>, context: DestinationContext,
 ) -> JoinHandle<Result<(), ()>> {
     let component_span = error_span!(
         "component",
         "type" = context.component_context().component_type(),
         id = %context.component_context().component_id(),
     );
+
+    let (component_token, destination) = destination.into_parts();
 
     let _span = component_span.enter();
     let _guard = component_token.enter();

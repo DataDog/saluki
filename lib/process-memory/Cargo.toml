@@ -8,10 +8,10 @@ repository = { workspace = true }
 [dependencies]
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
-libc = { version = "0.2", default-features = false }
+libc = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
 
 [dev-dependencies]
 dhat = { workspace = true }

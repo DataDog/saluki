@@ -274,6 +274,8 @@ impl MemoryBounds for DogStatsDConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder
             .minimum()
+            // Capture the size of the heap allocation when the component is built.
+            .with_single_value::<DogStatsD>()
             // We allocate our I/O buffers entirely up front.
             .with_fixed_amount(self.buffer_count * self.buffer_size)
             // We also allocate the backing storage for the string interner up front, which is used by our context

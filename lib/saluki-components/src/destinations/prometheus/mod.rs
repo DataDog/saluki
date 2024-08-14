@@ -76,6 +76,10 @@ impl DestinationBuilder for PrometheusConfiguration {
 impl MemoryBounds for PrometheusConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder
+            .minimum()
+            // Capture the size of the heap allocation when the component is built.
+            .with_single_value::<Prometheus>();
+        builder
             .firm()
             // Even though our context map is really the Prometheus contest to a map of context/value pairs, we're just
             // simplifying things here because the ratio of true "contexts" to Prometheus contexts should be very high,

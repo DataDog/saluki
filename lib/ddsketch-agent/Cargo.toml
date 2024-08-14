@@ -9,7 +9,7 @@ repository = { workspace = true }
 ddsketch_extended = []
 
 [dependencies]
-datadog-protos = { path = "../datadog-protos" }
+datadog-protos = { workspace = true }
 float_eq = { workspace = true }
 ordered-float = { workspace = true }
 smallvec = { workspace = true, features = ["union"] }

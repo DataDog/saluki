@@ -1,6 +1,8 @@
 //! Topology building.
 
 mod blueprint;
+use memory_accounting::ComponentRegistry;
+
 pub use self::blueprint::{BlueprintError, TopologyBlueprint};
 
 mod built;
@@ -19,3 +21,20 @@ pub mod shutdown;
 pub(super) mod test_util;
 
 pub use self::ids::*;
+
+pub(super) struct RegisteredComponent<T> {
+    component: T,
+    component_registry: ComponentRegistry,
+}
+
+impl<T> RegisteredComponent<T> {
+    fn new(component: T, component_registry: ComponentRegistry) -> Self {
+        Self {
+            component,
+            component_registry,
+        }
+    }
+    fn into_parts(self) -> (T, ComponentRegistry) {
+        (self.component, self.component_registry)
+    }
+}
