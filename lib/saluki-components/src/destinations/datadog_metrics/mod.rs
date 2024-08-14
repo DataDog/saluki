@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use http::{Request, Uri};
 use http_body_util::BodyExt as _;
 use hyper::body::Incoming;
+use hyper_util::client::legacy::{Error, ResponseFuture};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::Counter;
 use saluki_config::GenericConfiguration;
@@ -20,7 +21,7 @@ use saluki_io::{
 };
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
-use tower::{util::BoxService, BoxError, Service, ServiceBuilder};
+use tower::{BoxError, Service, ServiceBuilder};
 use tracing::{debug, error, trace};
 
 mod request_builder;
@@ -166,7 +167,7 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
     async fn build(&self) -> Result<Box<dyn Destination + Send>, GenericError> {
         let http_client = HttpClient::https()?;
 
-        let service = BoxService::new(
+        let service = Box::new(
             ServiceBuilder::new()
                 .timeout(Duration::from_secs(self.request_timeout_secs))
                 .service(http_client),
@@ -215,7 +216,17 @@ impl MemoryBounds for DatadogMetricsConfiguration {
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
-            .with_single_value::<DatadogMetrics<FixedSizeObjectPool<BytesBuffer>>>()
+            .with_single_value::<DatadogMetrics<
+                FixedSizeObjectPool<BytesBuffer>,
+                Box<
+                    dyn Service<
+                        Request<ChunkedBuffer<FixedSizeObjectPool<BytesBuffer>>>,
+                        Response = hyper::Response<Incoming>,
+                        Error = Error,
+                        Future = ResponseFuture,
+                    >,
+                >,
+            >>()
             // Capture the size of our buffer pool and scratch buffer.
             .with_fixed_amount(rb_buffer_pool_size)
             .with_fixed_amount(scratch_buffer_size)
@@ -232,7 +243,7 @@ where
     O::Item: ReadWriteIoBuffer,
     S: Service<Request<ChunkedBuffer<O>>> + 'static,
 {
-    service: S,
+    service: Box<S>,
     series_request_builder: RequestBuilder<O>,
     sketches_request_builder: RequestBuilder<O>,
 }
