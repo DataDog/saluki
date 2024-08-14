@@ -1,8 +1,10 @@
-use std::error::Error as _;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use http::{Request, Uri};
 use http_body_util::BodyExt as _;
+use hyper::body::Incoming;
+use hyper_util::client::legacy::{Error, ResponseFuture};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::Counter;
 use saluki_config::GenericConfiguration;
@@ -15,10 +17,11 @@ use saluki_error::GenericError;
 use saluki_event::DataType;
 use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, BytesBuffer, ChunkedBuffer, ReadWriteIoBuffer},
-    net::client::http::{ChunkedHttpsClient, HttpClient},
+    net::client::http::HttpClient,
 };
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
+use tower::{BoxError, Service, ServiceBuilder};
 use tracing::{debug, error, trace};
 
 mod request_builder;
@@ -115,6 +118,16 @@ pub struct DatadogMetricsConfiguration {
     /// Defaults to unset.
     #[serde(default)]
     dd_url: Option<String>,
+
+    /// The request timeout for forwarding metrics, in seconds.
+    ///
+    /// Defaults to 20 seconds.
+    #[serde(default = "default_timeout", rename = "forwarder_timeout")]
+    request_timeout_secs: u64,
+}
+
+fn default_timeout() -> u64 {
+    20
 }
 
 impl DatadogMetricsConfiguration {
@@ -154,6 +167,12 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
     async fn build(&self) -> Result<Box<dyn Destination + Send>, GenericError> {
         let http_client = HttpClient::https()?;
 
+        let service = Box::new(
+            ServiceBuilder::new()
+                .timeout(Duration::from_secs(self.request_timeout_secs))
+                .service(http_client),
+        );
+
         let api_base = self.api_base()?;
 
         let rb_buffer_pool = create_request_builder_buffer_pool();
@@ -173,7 +192,7 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         .await?;
 
         Ok(Box::new(DatadogMetrics {
-            http_client,
+            service,
             series_request_builder,
             sketches_request_builder,
         }))
@@ -197,7 +216,17 @@ impl MemoryBounds for DatadogMetricsConfiguration {
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
-            .with_single_value::<DatadogMetrics<FixedSizeObjectPool<BytesBuffer>>>()
+            .with_single_value::<DatadogMetrics<
+                FixedSizeObjectPool<BytesBuffer>,
+                Box<
+                    dyn Service<
+                        Request<ChunkedBuffer<FixedSizeObjectPool<BytesBuffer>>>,
+                        Response = hyper::Response<Incoming>,
+                        Error = Error,
+                        Future = ResponseFuture,
+                    >,
+                >,
+            >>()
             // Capture the size of our buffer pool and scratch buffer.
             .with_fixed_amount(rb_buffer_pool_size)
             .with_fixed_amount(scratch_buffer_size)
@@ -208,34 +237,38 @@ impl MemoryBounds for DatadogMetricsConfiguration {
     }
 }
 
-pub struct DatadogMetrics<O>
+pub struct DatadogMetrics<O, S>
 where
     O: ObjectPool + 'static,
     O::Item: ReadWriteIoBuffer,
+    S: Service<Request<ChunkedBuffer<O>>> + 'static,
 {
-    http_client: ChunkedHttpsClient<O>,
+    service: Box<S>,
     series_request_builder: RequestBuilder<O>,
     sketches_request_builder: RequestBuilder<O>,
 }
 
 #[async_trait]
-impl<O> Destination for DatadogMetrics<O>
+impl<O, S> Destination for DatadogMetrics<O, S>
 where
     O: ObjectPool + 'static,
     O::Item: ReadWriteIoBuffer,
+    S: Service<Request<ChunkedBuffer<O>>, Response = hyper::Response<Incoming>> + Send + 'static,
+    S::Future: Send,
+    S::Error: Send + Into<BoxError>,
 {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), ()> {
         let Self {
-            http_client,
             mut series_request_builder,
             mut sketches_request_builder,
+            service,
         } = *self;
 
         // Spawn our IO task to handle sending requests.
         let (io_shutdown_tx, io_shutdown_rx) = oneshot::channel();
         let (requests_tx, requests_rx) = mpsc::channel(32);
         let metrics = Metrics::from_component_context(context.component_context());
-        spawn_traced(run_io_loop(requests_rx, io_shutdown_tx, http_client, metrics.clone()));
+        spawn_traced(run_io_loop(requests_rx, io_shutdown_tx, service, metrics.clone()));
 
         debug!("Datadog Metrics destination started.");
 
@@ -352,20 +385,22 @@ where
     }
 }
 
-async fn run_io_loop<O>(
+async fn run_io_loop<O, S>(
     mut requests_rx: mpsc::Receiver<(usize, Request<ChunkedBuffer<O>>)>, io_shutdown_tx: oneshot::Sender<()>,
-    http_client: ChunkedHttpsClient<O>, metrics: Metrics,
+    mut service: S, metrics: Metrics,
 ) where
     O: ObjectPool + 'static,
     O::Item: ReadWriteIoBuffer,
+    S: Service<Request<ChunkedBuffer<O>>, Response = hyper::Response<Incoming>> + Send + 'static,
+    S::Future: Send,
+    S::Error: Send + Into<BoxError>,
 {
     // Loop and process all incoming requests.
     while let Some((metrics_count, request)) = requests_rx.recv().await {
         // TODO: This doesn't include the actual headers, or the HTTP framing, or anything... so it's a darn good
         // approximation, but still only an approximation.
         let request_length = request.body().len();
-
-        match http_client.send(request).await {
+        match service.call(request).await {
             Ok(response) => {
                 let status = response.status();
                 if status.is_success() {
@@ -390,6 +425,7 @@ async fn run_io_loop<O>(
                 }
             }
             Err(e) => {
+                let e: tower::BoxError = e.into();
                 error!(error = %e, error_source = ?e.source(), "Failed to send request.");
             }
         }
