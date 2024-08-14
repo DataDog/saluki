@@ -1,6 +1,6 @@
 //! Basic HTTP client.
 
-use std::io;
+use std::{io, task::Poll};
 
 use http::{Request, Response};
 use hyper::body::{Body, Incoming};
@@ -8,10 +8,11 @@ use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::{
     client::legacy::{
         connect::{Connect, HttpConnector},
-        Client, Error,
+        Client, Error, ResponseFuture,
     },
     rt::TokioExecutor,
 };
+use tower::{BoxError, Service};
 
 use crate::buf::ChunkedBuffer;
 
@@ -38,7 +39,7 @@ impl HttpClient<(), ()> {
 impl<C, B> HttpClient<C, B>
 where
     C: Connect + Clone + Send + Sync + 'static,
-    B: Body + Send + 'static + Unpin,
+    B: Body + Send + Unpin + 'static,
     B::Data: Send,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
@@ -50,5 +51,25 @@ where
 
     pub async fn send(&self, req: Request<B>) -> Result<Response<Incoming>, Error> {
         self.inner.request(req).await
+    }
+}
+
+impl<C, B> Service<Request<B>> for HttpClient<C, B>
+where
+    C: Connect + Clone + Send + Sync + 'static,
+    B: Body + Send + Unpin + 'static,
+    B::Data: Send,
+    B::Error: Into<BoxError>,
+{
+    type Response = hyper::Response<Incoming>;
+    type Error = Error;
+    type Future = ResponseFuture;
+
+    fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: Request<B>) -> Self::Future {
+        self.inner.call(req)
     }
 }
