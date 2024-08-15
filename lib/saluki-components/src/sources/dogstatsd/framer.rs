@@ -1,26 +1,31 @@
 use saluki_io::{
-    deser::{
-        codec::DogstatsdCodec,
-        framing::{LengthDelimitedFramer, NewlineFramer},
-    },
-    multi_framing,
+    deser::framing::{Framer, LengthDelimitedFramer, NewlineFramer},
     net::ListenAddress,
 };
 
-use super::interceptor::AgentLikeTagMetadataInterceptor;
+pub enum DsdFramer {
+    Newline(NewlineFramer),
+    LengthDelimited(LengthDelimitedFramer),
+}
 
-multi_framing!(name => DogStatsD, codec => DogstatsdCodec<AgentLikeTagMetadataInterceptor>, {
-    Newline => NewlineFramer,
-    LengthDelimited => LengthDelimitedFramer,
-});
+impl Framer for DsdFramer {
+    fn next_frame<'a, 'b, B: saluki_io::buf::ReadIoBuffer>(
+        &'a mut self, buf: &'b B, is_eof: bool,
+    ) -> Result<Option<(&'b [u8], usize)>, saluki_io::deser::framing::FramingError> {
+        match self {
+            DsdFramer::Newline(inner) => inner.next_frame(buf, is_eof),
+            DsdFramer::LengthDelimited(inner) => inner.next_frame(buf, is_eof),
+        }
+    }
+}
 
-pub fn get_framer(listen_address: &ListenAddress) -> DogStatsDMultiFramer {
+pub fn get_framer(listen_address: &ListenAddress) -> DsdFramer {
     match listen_address {
         ListenAddress::Tcp(_) => unreachable!("TCP mode not support for Dogstatsd source"),
-        ListenAddress::Udp(_) => DogStatsDMultiFramer::Newline(NewlineFramer::default().required_on_eof(false)),
+        ListenAddress::Udp(_) => DsdFramer::Newline(NewlineFramer::default().required_on_eof(false)),
         #[cfg(unix)]
-        ListenAddress::Unixgram(_) => DogStatsDMultiFramer::Newline(NewlineFramer::default().required_on_eof(false)),
+        ListenAddress::Unixgram(_) => DsdFramer::Newline(NewlineFramer::default().required_on_eof(false)),
         #[cfg(unix)]
-        ListenAddress::Unix(_) => DogStatsDMultiFramer::LengthDelimited(LengthDelimitedFramer),
+        ListenAddress::Unix(_) => DsdFramer::LengthDelimited(LengthDelimitedFramer),
     }
 }
