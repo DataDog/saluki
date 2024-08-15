@@ -16,6 +16,8 @@ enum Zero {
 enum Unused {
     // NOTE: We use the clippy allow above because otherwise, Clippy falsely warns that our `usize::MAX` is too big for
     // this usize-sized enum on 32-bit platforms... which is obviously wrong on its face.
+    //
+    // https://github.com/rust-lang/rust-clippy/issues/8043
     Unused = usize::MAX,
 }
 
