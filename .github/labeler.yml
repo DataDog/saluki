@@ -77,6 +77,10 @@
   - changed-files:
     - any-glob-to-any-file: ["lib/saluki-components/src/destinations/datadog_metrics/**/*"]
 
+"destination/datadog-events-service-checks":
+  - changed-files:
+    - any-glob-to-any-file: ["lib/saluki-components/src/destinations/datadog_events_service_checks/**/*"]
+
 "destination/prometheus":
   - changed-files:
     - any-glob-to-any-file: ["lib/saluki-components/src/destinations/prometheus/**/*"]
