@@ -4,6 +4,29 @@ use crate::interning::InternedString;
 
 const OWNED_PTR_TAG: usize = 0xFF00_0000_0000_0000;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+enum Zero {
+    Zero = 0,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+#[allow(clippy::enum_clike_unportable_variant)]
+enum Unused {
+    // NOTE: We use the clippy allow above because otherwise, Clippy falsely warns that our `usize::MAX` is too big for
+    // this usize-sized enum on 32-bit platforms... which is obviously wrong on its face.
+    Unused = usize::MAX,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct EmptyUnion {
+    cap: Zero, // Field one.
+    len: Zero, // Field two.
+    ptr: Zero, // Field three.
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct OwnedUnion {
@@ -15,15 +38,15 @@ struct OwnedUnion {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct StaticUnion {
-    _padding1: usize, // Field one.
-    len: usize,       // Field two.
-    ptr: *mut u8,     // Field three.
+    _padding1: Unused, // Field one.
+    len: usize,        // Field two.
+    ptr: *mut u8,      // Field three.
 }
 
 #[repr(C)]
 struct InternedUnion {
-    _padding1: usize,      // Field one.
-    _padding2: usize,      // Field two.
+    _padding1: Unused,     // Field one.
+    _padding2: Unused,     // Field two.
     state: InternedString, // Field three.
 }
 
@@ -40,16 +63,6 @@ struct DiscriminantUnion {
     maybe_cap: usize,
     maybe_len: usize,
     maybe_ptr: usize,
-}
-
-impl DiscriminantUnion {
-    const fn empty() -> Self {
-        Self {
-            maybe_cap: 0,
-            maybe_len: 0,
-            maybe_ptr: 0,
-        }
-    }
 }
 
 enum UnionType {
@@ -100,9 +113,9 @@ impl DiscriminantUnion {
 /// variant, allowing the string variant to be authoritatively determined.
 ///
 /// ## Invariants
-/// 
+///
 /// This code depends on a number of invariants in order to work correctly:
-/// 
+///
 /// 1. Only used on 64-bit platforms.
 /// 2. The pointers for `String` (pointer to the byte allocation) and `&'static str` (pointer to the byte slice) cannot
 ///    ever be null when the strings are non-empty.
@@ -114,6 +127,7 @@ impl DiscriminantUnion {
 /// 6. An inlined string can only hold up to 23 bytes of data, meaning that the length field for that string can never
 ///    have a value greater than 23.
 union Inner {
+    empty: EmptyUnion,
     owned: OwnedUnion,
     _static: StaticUnion,
     interned: ManuallyDrop<InternedUnion>,
@@ -124,7 +138,11 @@ union Inner {
 impl Inner {
     fn empty() -> Self {
         Self {
-            discriminant: DiscriminantUnion::empty(),
+            empty: EmptyUnion {
+                cap: Zero::Zero,
+                len: Zero::Zero,
+                ptr: Zero::Zero,
+            },
         }
     }
 
@@ -155,19 +173,19 @@ impl Inner {
             0 => Self::empty(),
             len => Self {
                 _static: StaticUnion {
-                    _padding1: usize::MAX,
+                    _padding1: Unused::Unused,
                     len,
                     ptr: value.as_bytes().as_ptr() as *mut _,
                 },
-            }
+            },
         }
     }
 
     fn interned(value: InternedString) -> Self {
         Self {
             interned: ManuallyDrop::new(InternedUnion {
-                _padding1: usize::MAX,
-                _padding2: usize::MAX,
+                _padding1: Unused::Unused,
+                _padding2: Unused::Unused,
                 state: value,
             }),
         }
@@ -206,24 +224,24 @@ impl Inner {
                 // SAFETY: The pointer can't be null if we have a non-zero capacity, as that implies having to have
                 // allocated memory, which can't come via a null pointer.
                 unsafe { from_utf8_unchecked(from_raw_parts(ptr, owned.len)) }
-            },
+            }
             UnionType::Static => {
                 let _static = unsafe { &self._static };
 
                 // SAFETY: The pointer can't be null if it's from a valid reference.
                 unsafe { from_utf8_unchecked(from_raw_parts(_static.ptr as *const _, _static.len)) }
-            },
+            }
             UnionType::Interned => {
                 let interned = unsafe { &self.interned };
                 &interned.state
-            },
+            }
             UnionType::Inlined => {
                 let inlined = unsafe { &self.inlined };
                 let len = inlined.data[23] as usize;
 
                 // SAFETY: We know the length is valid because we just read it from the inlined data.
                 unsafe { from_utf8_unchecked(&inlined.data[0..len]) }
-            },
+            }
         }
     }
 }
@@ -244,7 +262,7 @@ impl Drop for Inner {
                 // allocated memory, which can't come via a null pointer.
                 let data = unsafe { Vec::<u8>::from_raw_parts(ptr, len, cap) };
                 drop(data);
-            },
+            }
             UnionType::Interned => {
                 let interned = unsafe { &mut self.interned };
 
@@ -252,8 +270,8 @@ impl Drop for Inner {
                 // consume it here.
                 let data = unsafe { ManuallyDrop::take(interned) };
                 drop(data);
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
 }
@@ -307,9 +325,8 @@ impl From<InternedString> for MetaString2 {
 mod tests {
     use std::num::NonZeroUsize;
 
-    use crate::interning::FixedSizeInterner;
-
     use super::*;
+    use crate::interning::FixedSizeInterner;
 
     #[test]
     fn static_str() {
