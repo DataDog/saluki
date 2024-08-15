@@ -1,42 +1,390 @@
 //! Sharing-optimized strings and string interning utilities.
 //!
 //! `stringtheory` provides two main components: a sharing-optimized string type, `MetaString`, and a string interning
-//! implementation, `FixedSizeInterner`. These compponents are meant to work in concert, allowing for using a single
+//! implementation, `FixedSizeInterner`. These components are meant to work in concert, allowing for using a single
 //! string type that can handle owned, shared, and interned strings, and providing a way to efficiently intern strings
 //! strings when possible.
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-mod meta2;
-
-use std::{borrow::Borrow, fmt, hash, ops::Deref};
+use std::{borrow::Borrow, fmt, hash, mem::ManuallyDrop, ops::Deref, slice::from_raw_parts, str::from_utf8_unchecked};
 
 pub mod interning;
 use serde::Serialize;
 
 use self::interning::InternedString;
 
-#[derive(Clone)]
-enum Inner {
-    /// An owned string.
-    Owned(String),
+const OWNED_PTR_TAG: usize = 0xFF00_0000_0000_0000;
+const INLINED_STR_DATA_BUF_LEN: usize = 24;
+const INLINED_STR_MAX_LEN: usize = INLINED_STR_DATA_BUF_LEN - 1;
+const INLINED_STR_LEN_BYTE_IDX: usize = INLINED_STR_MAX_LEN;
 
-    /// A static string reference.
-    Static(&'static str),
-
-    /// An interned string.
-    Interned(InternedString),
-
-    /// An inlined string.
-    Inlined(InlinedString),
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+enum Zero {
+    Zero = 0,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+#[allow(clippy::enum_clike_unportable_variant)]
+enum Unused {
+    // NOTE: We use the clippy allow above because otherwise, Clippy falsely warns that our `usize::MAX` is too big for
+    // this usize-sized enum on 32-bit platforms... which is obviously wrong on its face.
+    //
+    // https://github.com/rust-lang/rust-clippy/issues/8043
+    Unused = usize::MAX,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct EmptyUnion {
+    cap: Zero, // Field one.
+    len: Zero, // Field two.
+    ptr: Zero, // Field three.
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct OwnedUnion {
+    cap: usize,   // Field one.
+    len: usize,   // Field two.
+    ptr: *mut u8, // Field three.
+}
+
+impl OwnedUnion {
+    fn as_str(&self) -> &str {
+        // Mask our pointer to remove the top byte discriminant value.
+        let masked_ptr = (self.ptr as usize & !OWNED_PTR_TAG) as *const u8;
+
+        // SAFETY: We know our pointer is valid, and non-null, since it's derived from a valid `String`.
+        // SAFETY: We know our data is valid UTF-8 since it's from a valid `String`.
+        unsafe { from_utf8_unchecked(from_raw_parts(masked_ptr, self.len)) }
+    }
+
+    fn into_owned(self) -> String {
+        // Mask our pointer to remove the top byte discriminant value.
+        let masked_ptr = (self.ptr as usize & !OWNED_PTR_TAG) as *mut u8;
+
+        // SAFETY: We know our pointer is valid, and non-null, since it's derived from a valid `String`.
+        // SAFETY: We know our data is valid UTF-8 since it's from a valid `String`.
+        unsafe { String::from_raw_parts(masked_ptr, self.len, self.cap) }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct StaticUnion {
+    _padding1: Unused, // Field one.
+    len: usize,        // Field two.
+    ptr: *mut u8,      // Field three.
+}
+
+impl StaticUnion {
+    fn as_str(&self) -> &str {
+        // SAFETY: We know our pointer is valid, and non-null, since it's derived from a valid static string reference.
+        // SAFETY: We know our data is valid UTF-8 since it's from a valid static string reference.
+        unsafe { from_utf8_unchecked(from_raw_parts(self.ptr, self.len)) }
+    }
+}
+
+#[repr(C)]
+struct InternedUnion {
+    _padding1: Unused,     // Field one.
+    _padding2: Unused,     // Field two.
+    state: InternedString, // Field three.
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct InlinedUnion {
+    // Data is arranged as 23 bytes of string data, and 1 byte for the string length.
+    data: [u8; INLINED_STR_DATA_BUF_LEN], // Fields one, two, and three.
+}
+
+impl InlinedUnion {
+    fn as_str(&self) -> &str {
+        let len = self.data[INLINED_STR_LEN_BYTE_IDX] as usize;
+
+        // SAFETY: We know our data is valid UTF-8 since we only ever derive inlined strings from valid strings.
+        unsafe { from_utf8_unchecked(&self.data[0..len]) }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct DiscriminantUnion {
+    maybe_cap: usize,
+    maybe_len: usize,
+    maybe_ptr: usize,
+}
+
+enum UnionType {
+    Empty,
+    Owned,
+    Static,
+    Interned,
+    Inlined,
+}
+
+impl DiscriminantUnion {
+    fn get_union_type(&self) -> UnionType {
+        if self.maybe_ptr == 0 {
+            // When `maybe_ptr` is zero, it implies a null pointer for any pointer-based variants, and a zero length for the
+            // inlined variant, which means this has to be representing an empty string.
+            UnionType::Empty
+        } else {
+            // Check the capacity field first to determine if it's an owned string or not.
+            if self.maybe_cap == usize::MAX {
+                // We can't have an owned string if its capacity is `usize::MAX`, so now look at `maybe_len`, which
+                // tells us if we're dealing with a static or interned string.
+                if self.maybe_len == usize::MAX {
+                    // Similarly, we can't have any sort of allocated string with a length of `usize::MAX`, so this has
+                    // to be an interned string.
+                    UnionType::Interned
+                } else {
+                    // We have a valid length, so this has to be a static string.
+                    UnionType::Static
+                }
+            } else {
+                // We know this is either an owned string or an inlined string. Check the lowest byte of `maybe_ptr` to
+                // see if it's greater than the maximum length for an inlined string.
+                if self.maybe_ptr & OWNED_PTR_TAG == OWNED_PTR_TAG {
+                    UnionType::Owned
+                } else {
+                    UnionType::Inlined
+                }
+            }
+        }
+    }
+}
+
+/// The core data structure for holding all different string variants.
+///
+/// This union have four data fields -- one for each possible string variant -- and a discriminant field, used to
+/// determine which string variant is actually present. The discriminant field interrogates the bits in each machine
+/// word field (all variants are three machine words) to determine which bit patterns are valid or not for a given
+/// variant, allowing the string variant to be authoritatively determined.
+///
+/// ## Invariants
+///
+/// This code depends on a number of invariants in order to work correctly:
+///
+/// 1. Only used on 64-bit platforms.
+/// 2. The pointers for `String` (pointer to the byte allocation) and `&'static str` (pointer to the byte slice) cannot
+///    ever be null when the strings are non-empty.
+/// 3. Any valid pointer we acquire to the data for any string variant will not have its top byte set (bits 57-64) in
+///    its original form, and is safe to be masked out.
+/// 4. Allocations can never be larger than `isize::MAX`, meaning that any length/capacity field for a string cannot
+///    ever be larger than `isize::MAX`, implying the 63rd bit (top-most bit) for length/capacity should always be 0.
+/// 5. A valid UTF-8 string can never have a byte that is all ones (0xFF).
+/// 6. An inlined string can only hold up to 23 bytes of data, meaning that the length field for that string can never
+///    have a value greater than 23.
+union Inner {
+    empty: EmptyUnion,
+    owned: OwnedUnion,
+    _static: StaticUnion,
+    interned: ManuallyDrop<InternedUnion>,
+    inlined: InlinedUnion,
+    discriminant: DiscriminantUnion,
+}
+
+impl Inner {
+    const fn empty() -> Self {
+        Self {
+            empty: EmptyUnion {
+                cap: Zero::Zero,
+                len: Zero::Zero,
+                ptr: Zero::Zero,
+            },
+        }
+    }
+
+    fn owned(value: String) -> Self {
+        match value.capacity() {
+            // The string we got is empty.
+            0 => Self::empty(),
+            cap => {
+                let mut value = value.into_bytes();
+                let len = value.len();
+
+                // We take the string data pointer and we set the top byte to a known value to indicate that this is an
+                // owned string, which we look for when discriminating the string during dereferencing.
+                let ptr = (value.as_mut_ptr() as usize | OWNED_PTR_TAG) as *mut _;
+
+                // We're taking ownership of the underlying string allocation so we can't let it drop.
+                std::mem::forget(value);
+
+                Self {
+                    owned: OwnedUnion { cap, len, ptr },
+                }
+            }
+        }
+    }
+
+    fn static_str(value: &'static str) -> Self {
+        match value.len() {
+            0 => Self::empty(),
+            len => Self {
+                _static: StaticUnion {
+                    _padding1: Unused::Unused,
+                    len,
+                    ptr: value.as_bytes().as_ptr() as *mut _,
+                },
+            },
+        }
+    }
+
+    fn interned(value: InternedString) -> Self {
+        Self {
+            interned: ManuallyDrop::new(InternedUnion {
+                _padding1: Unused::Unused,
+                _padding2: Unused::Unused,
+                state: value,
+            }),
+        }
+    }
+
+    fn try_inlined(value: &str) -> Option<Self> {
+        let len = value.len();
+        if len > INLINED_STR_MAX_LEN {
+            return None;
+        }
+
+        // SAFETY: We know it fits because we just checked that the string length is 23 or less.
+        let len_b = len as u8;
+
+        let mut data = [0; INLINED_STR_DATA_BUF_LEN];
+        data[INLINED_STR_LEN_BYTE_IDX] = len_b;
+
+        let buf = value.as_bytes();
+        data[0..len].copy_from_slice(buf);
+
+        Some(Self {
+            inlined: InlinedUnion { data },
+        })
+    }
+
+    fn as_str(&self) -> &str {
+        let union_type = unsafe { self.discriminant.get_union_type() };
+        match union_type {
+            UnionType::Empty => "",
+            UnionType::Owned => {
+                let owned = unsafe { &self.owned };
+                owned.as_str()
+            }
+            UnionType::Static => {
+                let _static = unsafe { &self._static };
+                _static.as_str()
+            }
+            UnionType::Interned => {
+                let interned = unsafe { &self.interned };
+                &interned.state
+            }
+            UnionType::Inlined => {
+                let inlined = unsafe { &self.inlined };
+                inlined.as_str()
+            }
+        }
+    }
+
+    fn into_owned(self) -> String {
+        let union_type = unsafe { self.discriminant.get_union_type() };
+        match union_type {
+            UnionType::Empty => String::new(),
+            UnionType::Owned => {
+                let owned = unsafe { self.owned };
+                owned.into_owned()
+            }
+            UnionType::Static => {
+                let _static = unsafe { self._static };
+                _static.as_str().to_owned()
+            }
+            UnionType::Interned => {
+                let interned = unsafe { &self.interned };
+                (*interned.state).to_owned()
+            }
+            UnionType::Inlined => {
+                let inlined = unsafe { self.inlined };
+                inlined.as_str().to_owned()
+            }
+        }
+    }
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        let union_type = unsafe { self.discriminant.get_union_type() };
+        match union_type {
+            UnionType::Owned => {
+                let owned = unsafe { &mut self.owned };
+                let len = owned.len;
+                let cap = owned.cap;
+
+                // Mask out our top byte discriminant value before dereferencing the pointer.
+                let ptr = (owned.ptr as usize & !OWNED_PTR_TAG) as *mut _;
+
+                // SAFETY: The pointer can't be null if we have a non-zero capacity, as that implies having to have
+                // allocated memory, which can't come via a null pointer.
+                let data = unsafe { Vec::<u8>::from_raw_parts(ptr, len, cap) };
+                drop(data);
+            }
+            UnionType::Interned => {
+                let interned = unsafe { &mut self.interned };
+
+                // SAFETY: We're already dropping `Inner`, so nothing else can use the `InternedString` value after we
+                // consume it here.
+                let data = unsafe { ManuallyDrop::take(interned) };
+                drop(data);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Clone for Inner {
+    fn clone(&self) -> Self {
+        let union_type = unsafe { self.discriminant.get_union_type() };
+        match union_type {
+            UnionType::Empty => Self::empty(),
+            UnionType::Owned => {
+                let owned = unsafe { self.owned };
+                let s = owned.as_str();
+
+                // We specifically try to inline here.
+                //
+                // At a high-level, when we're _given_ an owned string, we avoid inlining because we don't want to
+                // trash the underlying allocation since we may be asked to give it back later (via
+                // `MetaString::into_owned`). However, when we're _cloning_, we'd rather save an allocation if we can
+                // help it.
+                Self::try_inlined(s).unwrap_or_else(|| Self::owned(s.to_owned()))
+            }
+            UnionType::Static => Self {
+                _static: unsafe { self._static },
+            },
+            UnionType::Interned => {
+                let interned = unsafe { &self.interned };
+                Self::interned(interned.state.clone())
+            }
+            UnionType::Inlined => Self {
+                inlined: unsafe { self.inlined },
+            },
+        }
+    }
+}
+
+// SAFETY: None of our union variants are tied to the original thread they were created on.
+unsafe impl Send for Inner {}
+
+// SAFETY: None of our union variants use any form of interior mutability and are thus safe to be shared between threads.
+unsafe impl Sync for Inner {}
 
 /// A string type that abstracts over various forms of string storage.
 ///
 /// Normally, developers will work with either `String` (owned) or `&str` (borrowed) when dealing with strings. In some
 /// cases, though, it can be useful to work with strings that use alternative storage, such as those that are atomically
-/// shared (e.g. `Arc<str>`). While using those string types themselves isn't complex, using them and _also_ supporting
-/// normal string types can be complex.
+/// shared (e.g. `InternedString`). While using those string types themselves isn't complex, using them and _also_
+/// supporting normal string types can be complex.
 ///
 /// `MetaString` is an opinionated string type that abstracts over the normal string types like `String` and `&str`
 /// while also supporting alternative storage, such as interned strings from `FixedSizeInterner`.
@@ -48,13 +396,13 @@ enum Inner {
 /// - owned (`String`)
 /// - static (`&'static str`)
 /// - interned (`InternedString`)
-/// - inlined (up to 31 bytes)
+/// - inlined (up to 23 bytes)
 ///
 /// ### Owned and borrowed strings
 ///
 /// `MetaString` can be created from `String` and `&str` directly. For owned scenarios (`String`), the string value is
-/// simply wrapped. For borrowed strings, they are copied into a newly-allocated storage buffer, after which the
-/// resulting `MetaString` can be cheaply cloned and shared.
+/// simply wrapped. For borrowed strings, we attempt to inline them (see more below) or, if they cannot be inlined, they
+/// are copied into a new `String`.
 ///
 /// ### Static strings
 ///
@@ -73,14 +421,10 @@ enum Inner {
 ///
 /// Finally, `MetaString` can also be created by inlining small strings into `MetaString` itself, avoiding the need for
 /// any backing allocation. "Small string optimization" is a common optimization for string types where small strings
-/// can be stored directly in the string type itself by utilizing a "union"-style layout.
+/// can be stored directly in a string type itself by utilizing a "union"-style layout.
 ///
-/// As `MetaString` is represented by multiple possible storage types, an internal enum is utilized to distinguish these
-/// possible types. Enums are as large as the largest variant they contain, which means that an additional variant can
-/// be added that is as large as the largest variant without increasing the size of the enum further. We do this, and we
-/// simply store the string bytes directly in an inline array.
-///
-/// Essentially, we can store a string that is up to 31 bytes directly in `MetaString`.
+/// As `MetaString` utilizes such a layout, we can provide a small string optimization that allows for strings up to
+/// 23 bytes in length.
 ///
 /// ## Conversion methods
 ///
@@ -100,9 +444,7 @@ impl MetaString {
     ///
     /// This does not allocate.
     pub const fn empty() -> Self {
-        Self {
-            inner: Inner::Owned(String::new()),
-        }
+        Self { inner: Inner::empty() }
     }
 
     /// Creates a new `MetaString` from the given static string.
@@ -110,15 +452,13 @@ impl MetaString {
     /// This does not allocate.
     pub fn from_static(s: &'static str) -> Self {
         Self {
-            inner: Inner::Static(s),
+            inner: Inner::static_str(s),
         }
     }
 
     /// Attempts to create a new `MetaString` from the given string if it can be inlined.
     pub fn try_inline(s: &str) -> Option<Self> {
-        InlinedString::new(s).map(|i| Self {
-            inner: Inner::Inlined(i),
-        })
+        Inner::try_inlined(s).map(|inner| Self { inner })
     }
 
     /// Consumes `self` and returns an owned `String`.
@@ -126,12 +466,7 @@ impl MetaString {
     /// If the `MetaString` is already owned, this will simply return the inner `String` directly. Otherwise, this will
     /// allocate an owned version (`String`) of the string data.
     pub fn into_owned(self) -> String {
-        match self.inner {
-            Inner::Owned(s) => s,
-            Inner::Static(s) => s.to_owned(),
-            Inner::Interned(i) => (*i).to_owned(),
-            Inner::Inlined(i) => i.deref().to_owned(),
-        }
+        self.inner.into_owned()
     }
 }
 
@@ -190,51 +525,38 @@ impl Serialize for MetaString {
 
 impl From<String> for MetaString {
     fn from(s: String) -> Self {
-        MetaString { inner: Inner::Owned(s) }
+        Self { inner: Inner::owned(s) }
     }
 }
 
 impl From<&str> for MetaString {
     fn from(s: &str) -> Self {
-        match InlinedString::new(s) {
-            Some(i) => Self {
-                inner: Inner::Inlined(i),
-            },
-            None => Self {
-                inner: Inner::Owned(s.to_owned()),
-            },
-        }
+        Self::try_inline(s).unwrap_or_else(|| Self::from(s.to_owned()))
     }
 }
 
 impl From<InternedString> for MetaString {
     fn from(s: InternedString) -> Self {
         Self {
-            inner: Inner::Interned(s),
+            inner: Inner::interned(s),
         }
     }
 }
 
 impl From<MetaString> for protobuf::Chars {
     fn from(value: MetaString) -> Self {
-        match value.inner {
-            Inner::Owned(s) => s.into(),
-            Inner::Static(s) => s.into(),
-            Inner::Interned(i) => i.deref().into(),
-            Inner::Inlined(i) => i.deref().into(),
-        }
+        value.into_owned().into()
     }
 }
 
 impl<'a> From<&'a MetaString> for protobuf::Chars {
     fn from(value: &'a MetaString) -> Self {
-        match &value.inner {
-            Inner::Owned(s) => s.as_str().into(),
-            Inner::Static(s) => protobuf::Chars::from_bytes(bytes::Bytes::from_static(s.as_bytes()))
-                .expect("should never fail to convert existing string"),
-            Inner::Interned(i) => i.deref().into(),
-            Inner::Inlined(i) => i.deref().into(),
-        }
+        // TODO: We're foregoing additional code/complexity to recover a static reference, when our string storage is
+        // static, in order to optimize the conversion to `Bytes` and then `Chars`.
+        //
+        // Static strings being written to Protocol Buffers should be decently rare across the codebase, so no biggie
+        // for now.
+        value.deref().into()
     }
 }
 
@@ -242,12 +564,7 @@ impl Deref for MetaString {
     type Target = str;
 
     fn deref(&self) -> &str {
-        match &self.inner {
-            Inner::Owned(s) => s,
-            Inner::Static(s) => s,
-            Inner::Interned(i) => i,
-            Inner::Inlined(i) => i.deref(),
-        }
+        self.inner.as_str()
     }
 }
 
@@ -263,78 +580,56 @@ impl fmt::Display for MetaString {
     }
 }
 
-/// A string that can be inlined up to 23 bytes.
-#[derive(Clone)]
-struct InlinedString {
-    data: [u8; 24],
-}
-
-impl InlinedString {
-    fn new(s: &str) -> Option<Self> {
-        let s_len = s.len();
-        if s_len > 23 {
-            return None;
-        }
-
-        // SAFETY: We know it fits because we just checked that the string length is 23 or less.
-        let s_len_b = s_len as u8;
-
-        let mut data = [0; 24];
-        data[0] = s_len_b;
-
-        let s_buf = s.as_bytes();
-        data[1..s_len + 1].copy_from_slice(s_buf);
-
-        Some(Self { data })
-    }
-}
-
-impl Deref for InlinedString {
-    type Target = str;
-
-    fn deref(&self) -> &str {
-        let len = self.data[0] as usize;
-        let s = &self.data[1..len + 1];
-
-        // SAFETY: We know the data is valid UTF-8 because we only ever write valid UTF-8 data into the buffer.
-        unsafe { std::str::from_utf8_unchecked(s) }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::num::NonZeroUsize;
+
+    use super::{interning::FixedSizeInterner, InlinedUnion, Inner, MetaString};
 
     #[test]
-    fn struct_layout() {
-        assert_eq!(std::mem::size_of::<MetaString>(), 32);
+    fn struct_sizes() {
+        // Overall, we expect `MetaString`, and thus `Inner`, to always be three machine words.
+        assert_eq!(std::mem::size_of::<MetaString>(), std::mem::size_of::<usize>() * 3);
+        assert_eq!(std::mem::size_of::<Inner>(), std::mem::size_of::<usize>() * 3);
+
+        // We also expect all of inlined union variant to be the exact size of `Inner`, which means we're properly
+        // maximizing the available space for inlining.
+        assert_eq!(std::mem::size_of::<InlinedUnion>(), std::mem::size_of::<Inner>());
+    }
+
+    #[test]
+    fn static_str() {
+        let s = "hello";
+        let meta = MetaString::from_static(s);
+
+        assert_eq!(s, &*meta);
+    }
+
+    #[test]
+    fn owned_string() {
+        let s = String::from("hello");
+        let meta = MetaString::from(s);
+
+        assert_eq!("hello", &*meta);
     }
 
     #[test]
     fn inlined_string() {
-        // We expect this to hold because we need `InlinedString` to be one word less (usize, 8 bytes on 64-bit
-        // platforms) than `MetaString` to ensure it isn't causing `MetaString` to be larger than it should be, but also
-        // that it's maximizing the potential inlining capacity.
-        assert_eq!(
-            std::mem::size_of::<InlinedString>(),
-            std::mem::size_of::<MetaString>() - std::mem::size_of::<usize>()
-        );
+        let s = "hello";
+        let meta = MetaString::from(s);
+
+        assert_eq!("hello", &*meta);
     }
 
     #[test]
-    fn try_inline() {
-        // String is < 31 bytes (13 bytes), so it should be inline-able:
-        let s = "hello, world!";
-        assert_eq!(s.len(), 13);
+    fn interned_string() {
+        let intern_str = "hello interned str!";
 
-        let ms = MetaString::try_inline(s).unwrap();
-        assert_eq!(s, ms.deref());
+        let interner = FixedSizeInterner::<1>::new(NonZeroUsize::new(1024).unwrap());
+        let s = interner.try_intern(intern_str).unwrap();
+        assert_eq!(intern_str, &*s);
 
-        // String is < 31 bytes (39 bytes), so it shouldn't be inlined:
-        let s = "hello, world!hello, world!hello, world!";
-        assert_eq!(s.len(), 39);
-
-        let ms = MetaString::try_inline(s);
-        assert!(ms.is_none());
+        let meta = MetaString::from(s);
+        assert_eq!(intern_str, &*meta);
     }
 }
