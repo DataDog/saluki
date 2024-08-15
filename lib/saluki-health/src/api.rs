@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 use saluki_api::{
     extract::State,
@@ -10,14 +7,13 @@ use saluki_api::{
     APIHandler, StatusCode,
 };
 use serde::{ser::SerializeMap as _, Serialize};
-use stringtheory::MetaString;
 
-use crate::ComponentHealth;
+use crate::Inner;
 
 /// State used for the healthy registry API handler.
 #[derive(Clone)]
 pub struct HealthRegistryState {
-    inner: Arc<Mutex<HashMap<MetaString, ComponentHealth>>>,
+    inner: Arc<Mutex<Inner>>,
 }
 
 impl HealthRegistryState {
@@ -29,6 +25,7 @@ impl HealthRegistryState {
         let inner = self.inner.lock().unwrap();
 
         let passing = inner
+            .component_health
             .values()
             .all(|health| if check_ready { health.ready } else { health.live });
         let status = if passing {
@@ -37,7 +34,7 @@ impl HealthRegistryState {
             StatusCode::SERVICE_UNAVAILABLE
         };
 
-        let rendered = serde_json::to_string(&*inner).unwrap();
+        let rendered = serde_json::to_string(&inner.component_health).unwrap();
 
         (status, rendered)
     }
@@ -58,8 +55,8 @@ impl Serialize for HealthRegistryState {
     {
         let inner = self.inner.lock().unwrap();
 
-        let mut map = serializer.serialize_map(Some(inner.len()))?;
-        for (name, health) in inner.iter() {
+        let mut map = serializer.serialize_map(Some(inner.component_health.len()))?;
+        for (name, health) in inner.component_health.iter() {
             map.serialize_entry(name, health)?;
         }
         map.end()
@@ -81,9 +78,9 @@ pub struct HealthAPIHandler {
 }
 
 impl HealthAPIHandler {
-    pub(crate) fn from_state(state: Arc<Mutex<HashMap<MetaString, ComponentHealth>>>) -> Self {
+    pub(crate) fn from_state(inner: Arc<Mutex<Inner>>) -> Self {
         Self {
-            state: HealthRegistryState { inner: state },
+            state: HealthRegistryState { inner },
         }
     }
 

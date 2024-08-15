@@ -208,6 +208,8 @@ pub struct Aggregate {
 #[async_trait]
 impl Transform for Aggregate {
     async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), ()> {
+        let mut health = context.take_health_handle();
+
         let mut state = AggregationState::new(
             self.window_duration,
             self.context_limit,
@@ -230,6 +232,7 @@ impl Transform for Aggregate {
         // high capacity when we only need one every few seconds, etc.
         let event_buffer_pool = FixedSizeObjectPool::<EventBuffer>::with_capacity(EVENT_BUFFER_POOL_SIZE);
 
+        health.mark_ready();
         debug!("Aggregation transform started.");
 
         let mut final_flush = false;
@@ -242,6 +245,7 @@ impl Transform for Aggregate {
             debug!(buf_cap = event_buffer.capacity(), "Acquired event buffer.");
 
             select! {
+                _ = health.live() => continue,
                 _ = &mut flush => {
                     // We've reached the end of the current window. Flush our aggregation state and forward the metrics
                     // onwards. Regardless of whether any metrics were aggregated, we always update the aggregation

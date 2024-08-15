@@ -5,6 +5,7 @@ use memory_accounting::{
     MemoryLimiter,
 };
 use saluki_error::{generic_error, GenericError};
+use saluki_health::HealthRegistry;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::{debug, error_span};
 
@@ -114,7 +115,9 @@ impl BuiltTopology {
     /// ## Errors
     ///
     /// If an error occurs while spawning the topology, an error is returned.
-    pub async fn spawn(self, memory_limiter: MemoryLimiter) -> Result<RunningTopology, GenericError> {
+    pub async fn spawn(
+        self, health_registry: &HealthRegistry, memory_limiter: MemoryLimiter,
+    ) -> Result<RunningTopology, GenericError> {
         let _guard = self.component_token.enter();
 
         // Build our interconnects, which we'll grab from piecemeal as we spawn our components.
@@ -134,6 +137,9 @@ impl BuiltTopology {
                 .ok_or_else(|| generic_error!("No forwarder found for component '{}'", component_id))?;
 
             let shutdown_handle = shutdown_coordinator.register();
+            let health_handle = health_registry
+                .register_component(format!("topology.sources.{}", component_id))
+                .expect("duplicate source component ID in health registry");
 
             let component_context = ComponentContext::source(component_id);
             let context = SourceContext::new(
@@ -143,6 +149,8 @@ impl BuiltTopology {
                 event_buffer_pool.clone(),
                 memory_limiter.clone(),
                 component_registry,
+                health_handle,
+                health_registry.clone(),
             );
 
             source_handles.push(spawn_source(source, context));
@@ -162,6 +170,10 @@ impl BuiltTopology {
                 .remove(&component_id)
                 .ok_or_else(|| generic_error!("No event stream found for component '{}'", component_id))?;
 
+            let health_handle = health_registry
+                .register_component(format!("topology.transforms.{}", component_id))
+                .expect("duplicate transform component ID in health registry");
+
             let component_context = ComponentContext::transform(component_id);
             let context = TransformContext::new(
                 component_context,
@@ -170,6 +182,8 @@ impl BuiltTopology {
                 event_buffer_pool.clone(),
                 memory_limiter.clone(),
                 component_registry,
+                health_handle,
+                health_registry.clone(),
             );
 
             transform_handles.push(spawn_transform(transform, context));
@@ -185,12 +199,18 @@ impl BuiltTopology {
                 .remove(&component_id)
                 .ok_or_else(|| generic_error!("No event stream found for component '{}'", component_id))?;
 
+            let health_handle = health_registry
+                .register_component(format!("topology.destinations.{}", component_id))
+                .expect("duplicate destination component ID in health registry");
+
             let component_context = ComponentContext::destination(component_id);
             let context = DestinationContext::new(
                 component_context,
                 event_stream,
                 memory_limiter.clone(),
                 component_registry,
+                health_handle,
+                health_registry.clone(),
             );
 
             destination_handles.push(spawn_destination(destination, context));

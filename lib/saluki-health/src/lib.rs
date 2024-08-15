@@ -8,15 +8,16 @@ use std::{
 };
 
 use futures::StreamExt as _;
+use saluki_error::{generic_error, GenericError};
 use serde::Serialize;
 use stringtheory::MetaString;
 use tokio::{
     select,
-    sync::{mpsc, oneshot},
-    task::JoinSet,
-    time::timeout,
+    sync::mpsc::{self, error::TrySendError},
+    task::JoinHandle,
 };
-use tokio_util::time::DelayQueue;
+use tokio_util::time::{delay_queue::Key, DelayQueue};
+use tracing::{debug, info};
 
 use self::api::HealthAPIHandler;
 
@@ -34,17 +35,18 @@ struct ComponentHealth {
 /// A handle for updating the health of a component.
 pub struct Health {
     ready: Arc<AtomicBool>,
-    liveness_rx: mpsc::Receiver<(Instant, oneshot::Sender<(Instant, Instant)>)>,
+    request_rx: mpsc::Receiver<LivenessRequest>,
+    response_tx: mpsc::Sender<LivenessResponse>,
 }
 
 impl Health {
     /// Marks the component as ready.
-    pub fn mark_ready(&self) {
+    pub fn mark_ready(&mut self) {
         self.ready.store(true, Relaxed);
     }
 
     /// Marks the component as not ready.
-    pub fn mark_not_ready(&self) {
+    pub fn mark_not_ready(&mut self) {
         self.ready.store(false, Relaxed);
     }
 
@@ -55,9 +57,9 @@ impl Health {
     pub async fn live(&mut self) {
         // Simply wait for the health registry to send us a liveness probe, and if we receive one, we respond back to it
         // immediately.
-        if let Some((send_time, tx)) = self.liveness_rx.recv().await {
-            let receive_time = Instant::now();
-            let _ = tx.send((send_time, receive_time));
+        if let Some(request) = self.request_rx.recv().await {
+            let response = request.into_response();
+            let _ = self.response_tx.send(response).await;
         }
     }
 }
@@ -73,12 +75,34 @@ struct ComponentState {
     name: MetaString,
     health: HealthState,
     ready: Arc<AtomicBool>,
-    liveness_tx: mpsc::Sender<(Instant, oneshot::Sender<(Instant, Instant)>)>,
+    request_tx: mpsc::Sender<LivenessRequest>,
     last_response: Instant,
     last_response_latency: Duration,
 }
 
 impl ComponentState {
+    fn new(name: MetaString, response_tx: mpsc::Sender<LivenessResponse>) -> (Self, Health) {
+        let ready = Arc::new(AtomicBool::new(false));
+        let (request_tx, request_rx) = mpsc::channel(1);
+
+        let state = Self {
+            name,
+            health: HealthState::Unknown,
+            ready: Arc::clone(&ready),
+            request_tx,
+            last_response: Instant::now(),
+            last_response_latency: Duration::from_secs(0),
+        };
+
+        let handle = Health {
+            ready,
+            request_rx,
+            response_tx,
+        };
+
+        (state, handle)
+    }
+
     fn is_ready(&self) -> bool {
         // We consider a component ready if it's marked as ready (duh) and it's not dead.
         //
@@ -91,57 +115,88 @@ impl ComponentState {
         self.health == HealthState::Live
     }
 
-    fn update_state(&mut self, result: LivenessResult) {
-        match result {
-            // If we timed out waiting for a response to a liveness probe, then the component could still be live but
-            // just responding slowly, so we mark it as unknown. This still manifests as a failing liveness probe, but
-            // it lets us differentiate between the component being dead -- like the task panicked and is never coming
-            // back -- versus being deadlocked or otherwise unresponsive.
-            LivenessResult::TimedOut { .. } => {
-                self.health = HealthState::Unknown;
-            }
+    fn mark_live(&mut self, response_sent: Instant, response_latency: Duration) {
+        self.health = HealthState::Live;
+        self.last_response = response_sent;
+        self.last_response_latency = response_latency;
+    }
 
-            // The component is live.
-            LivenessResult::Success {
-                response_sent,
-                response_latency,
-                ..
-            } => {
-                self.health = HealthState::Live;
-                self.last_response = response_sent;
-                self.last_response_latency = response_latency;
-            }
+    fn mark_not_live(&mut self) {
+        self.health = HealthState::Unknown;
+    }
 
-            // The component is dead.
-            //
-            // It's likely that the component's task/thread panicked and is never coming back.
-            LivenessResult::Dead { .. } => {
-                self.health = HealthState::Dead;
-            }
+    fn mark_dead(&mut self) {
+        self.health = HealthState::Dead;
+    }
+}
+
+struct LivenessRequest {
+    component_id: usize,
+    timeout_key: Key,
+    request_sent: Instant,
+}
+
+impl LivenessRequest {
+    fn new(component_id: usize, timeout_key: Key) -> Self {
+        Self {
+            component_id,
+            timeout_key,
+            request_sent: Instant::now(),
+        }
+    }
+
+    fn into_response(self) -> LivenessResponse {
+        LivenessResponse {
+            request: self,
+            response_sent: Instant::now(),
         }
     }
 }
 
-enum LivenessResult {
-    TimedOut {
-        id: usize,
-    },
-    Success {
-        id: usize,
-        response_sent: Instant,
-        response_latency: Duration,
-    },
-    Dead {
-        id: usize,
-    },
+struct LivenessResponse {
+    request: LivenessRequest,
+    response_sent: Instant,
 }
 
-impl LivenessResult {
-    fn id(&self) -> usize {
+enum HealthUpdate {
+    Alive {
+        last_response: Instant,
+        last_response_latency: Duration,
+    },
+    Unknown,
+    Dead,
+}
+
+impl HealthUpdate {
+    fn as_str(&self) -> &'static str {
         match self {
-            LivenessResult::TimedOut { id, .. } => *id,
-            LivenessResult::Success { id, .. } => *id,
-            LivenessResult::Dead { id, .. } => *id,
+            HealthUpdate::Alive { .. } => "alive",
+            HealthUpdate::Unknown => "unknown",
+            HealthUpdate::Dead => "dead",
+        }
+    }
+}
+
+struct Inner {
+    registered_components: HashSet<MetaString>,
+    component_state: Vec<ComponentState>,
+    component_health: HashMap<MetaString, ComponentHealth>,
+    responses_tx: mpsc::Sender<LivenessResponse>,
+    responses_rx: Option<mpsc::Receiver<LivenessResponse>>,
+    waiting_new_components: Option<mpsc::Sender<usize>>,
+}
+
+impl Inner {
+    fn new() -> Self {
+        let (responses_tx, responses_rx) = mpsc::channel(16);
+
+        Self {
+            registered_components: HashSet::new(),
+            component_state: Vec::new(),
+            component_health: HashMap::new(),
+            responses_tx,
+            responses_rx: Some(responses_rx),
+            waiting_new_components: None,
         }
     }
 }
@@ -151,27 +206,16 @@ impl LivenessResult {
 /// `HealthRegistry` is responsible for tracking the health of all registered components, by storing both their
 /// readiness, which indicates whether or not they are initialized and generally ready to process data, as well as
 /// probing their liveness, which indicates if they're currently responding, or able to respond, to requests.
+#[derive(Clone)]
 pub struct HealthRegistry {
-    registered_components: HashSet<MetaString>,
-    components: Vec<ComponentState>,
-    pending_requests: JoinSet<LivenessResult>,
-    probe_scheduler: DelayQueue<usize>,
-    timeout_dur: Duration,
-    probe_backoff_dur: Duration,
-    health_view: Arc<Mutex<HashMap<MetaString, ComponentHealth>>>,
+    inner: Arc<Mutex<Inner>>,
 }
 
 impl HealthRegistry {
     /// Creates an empty registry.
     pub fn new() -> Self {
         Self {
-            registered_components: HashSet::new(),
-            components: Vec::new(),
-            pending_requests: JoinSet::new(),
-            probe_scheduler: DelayQueue::new(),
-            timeout_dur: DEFAULT_PROBE_TIMEOUT_DUR,
-            probe_backoff_dur: DEFAULT_PROBE_BACKOFF_DUR,
-            health_view: Arc::new(Mutex::new(HashMap::new())),
+            inner: Arc::new(Mutex::new(Inner::new())),
         }
     }
 
@@ -179,35 +223,43 @@ impl HealthRegistry {
     ///
     /// A handle is returned that must be used by the component to set its readiness as well as respond to liveness
     /// probes. See [`Health::mark_ready`], [`Health::mark_not_ready`], and [`Health::live`] for more information.
-    pub fn register_component<S: Into<MetaString>>(&mut self, name: S) -> Option<Health> {
-        let name = name.into();
+    pub fn register_component<S: Into<MetaString>>(&self, name: S) -> Option<Health> {
+        let mut inner = self.inner.lock().unwrap();
 
         // Make sure we don't already have this component registered.
-        if self.registered_components.contains(&name) {
+        let name = name.into();
+        if inner.registered_components.contains(&name) {
             return None;
         }
 
-        self.registered_components.insert(name.clone());
+        inner.registered_components.insert(name.clone());
 
         // Create and store the component.
-        let id = self.components.len();
+        let component_id = inner.component_state.len();
 
-        let ready = Arc::new(AtomicBool::new(false));
-        let (liveness_tx, liveness_rx) = mpsc::channel(1);
+        let (state, handle) = ComponentState::new(name, inner.responses_tx.clone());
+        inner.component_state.push(state);
 
-        self.components.push(ComponentState {
-            name,
-            health: HealthState::Unknown,
-            ready: Arc::clone(&ready),
-            liveness_tx,
-            last_response: Instant::now(),
-            last_response_latency: Duration::from_secs(0),
-        });
+        // Figure out if we need to notify the health runner about the new component.
+        //
+        // We do this because a component could be registered after the health runner has already started, and we need
+        // to be able to wake up the runner to schedule a liveness probe as soon as possible. If the runner hasn't
+        // started, we don't have to do anything, since it will schedule a liveness probe immediately at startup for all
+        // components that are registered.
+        if let Some(sender) = inner.waiting_new_components.as_mut() {
+            // We're in a synchronous call here, but if the runner is, well... running, it should be responding very
+            // quickly, so we do a semi-gross thing and do a fallible synchronous send in a loop until it succeeds.
+            //
+            // Practically, this should always work the very first time unless there's some utter flood of components
+            // being registered at the very same moment... in which case, we're probably in a bad place anyway.
+            loop {
+                if sender.is_closed() || sender.try_send(component_id).is_ok() {
+                    break;
+                }
+            }
+        }
 
-        // Immediately schedule a liveness probe for this component.
-        self.probe_scheduler.insert(id, Duration::from_nanos(1));
-
-        Some(Health { ready, liveness_rx })
+        Some(handle)
     }
 
     /// Gets an API handler for reporting the health of all components.
@@ -215,90 +267,194 @@ impl HealthRegistry {
     /// This handler can be used to register routes on an [`APIBuilder`][saluki_api::APIBuilder] to expose the health of
     /// all registered components. See [`HealthAPIHandler`] for more information about routes and responses.
     pub fn api_handler(&self) -> HealthAPIHandler {
-        HealthAPIHandler::from_state(Arc::clone(&self.health_view))
+        HealthAPIHandler::from_state(Arc::clone(&self.inner))
     }
 
-    async fn spawn_liveness_probe(&mut self, id: usize) {
-        let (tx, rx) = oneshot::channel();
-        match self.components[id].liveness_tx.send((Instant::now(), tx)).await {
-            Ok(()) => {
-                // We were able to send the liveness probe request to the component, so spawn our task for waiting for
-                // the response.
-                let _ = self.pending_requests.spawn(check_liveness(id, self.timeout_dur, rx));
-            }
+    /// Spawns the health registry runner, which manages the scheduling and collection of liveness probes.
+    ///
+    /// ## Errors
+    ///
+    /// If the health registry has already been spawned, an error will be returned.
+    pub async fn spawn(self) -> Result<JoinHandle<()>, GenericError> {
+        let mut inner = self.inner.lock().unwrap();
 
-            // If we can't send the liveness probe, then the component is dead or the handle is gone... which are
-            // conceptually identical.
-            Err(_) => {
-                self.components[id].health = HealthState::Dead;
-            }
+        // Make sure the runner hasn't already been spawned.
+        if inner.waiting_new_components.is_some() {
+            return Err(generic_error!("health registry already spawned"));
         }
-    }
 
-    fn update_component_state(&mut self, id: usize, result: LivenessResult) {
-        // Update the component state itself.
-        let component = &mut self.components[id];
-        component.update_state(result);
-
-        // Update the health view.
-        let mut health_view = self.health_view.lock().unwrap();
-        let component_health = match health_view.get_mut(&component.name) {
-            Some(health) => health,
-            None => health_view.entry(component.name.clone()).or_default(),
+        let responses_rx = match inner.responses_rx.take() {
+            Some(rx) => rx,
+            None => return Err(generic_error!("health registry already spawned")),
         };
 
-        component_health.ready = component.is_ready();
-        component_health.live = component.is_live();
-    }
+        // Install the channel for sending new components to the runner, and prime the runner to fire off liveness
+        // probes for all components registered at this point.
+        let (new_components_tx, new_components_rx) = mpsc::channel(1);
+        inner.waiting_new_components = Some(new_components_tx);
 
-    /// Runs the health registry, probing components for liveness and maintaining a complete view of the health of all
-    /// registered components.
-    pub async fn run(mut self) {
-        select! {
-            // A component has been scheduled to have a liveness probe sent to it.
-            Some(entry) = self.probe_scheduler.next() => {
-                let component_id = entry.into_inner();
-                self.spawn_liveness_probe(component_id).await;
-            },
-
-            // A liveness probe has completed.
-            Some(probe_result) = self.pending_requests.join_next() => match probe_result {
-                Ok(result) => {
-                    let component_id = result.id();
-
-                    self.update_component_state(component_id, result);
-                    self.probe_scheduler.insert(component_id, self.probe_backoff_dur);
-                },
-
-                // In this case, we mean very specifically that the future we spawn to check liveness should, itself,
-                // never panic: it does nothing that should lead to a panic. Tokio, likewise, won't indicate that the
-                // task panicked due to its own internals: only the future itself panicking when polled or dropped will
-                // cause us to hit this path. Thus, we should never hit this path.
-                Err(_) => unreachable!("probe task should never panic"),
-            },
+        let mut pending_probes = DelayQueue::new();
+        for id in 0..inner.component_state.len() {
+            pending_probes.insert(id, Duration::from_nanos(1));
         }
+
+        drop(inner);
+
+        // Create the runner which we'll then spawn.
+        let runner = Runner {
+            inner: self.inner,
+            pending_probes,
+            pending_timeouts: DelayQueue::new(),
+            responses_rx,
+            new_components_rx,
+        };
+
+        Ok(tokio::spawn(runner.run()))
     }
 }
 
-async fn check_liveness(id: usize, timeout_dur: Duration, rx: oneshot::Receiver<(Instant, Instant)>) -> LivenessResult {
-    match timeout(timeout_dur, rx).await {
-        Ok(Ok((request_sent, response_sent))) => {
-            // We're just being a little safer than normal here since `Instant::duration_since` has some scary verbiage
-            // about not panicking _now_ but how it _might_ panic in the future... too spooky for me to depend on.
-            let response_latency = response_sent.checked_duration_since(request_sent).unwrap_or_default();
+struct Runner {
+    inner: Arc<Mutex<Inner>>,
+    pending_probes: DelayQueue<usize>,
+    pending_timeouts: DelayQueue<usize>,
+    responses_rx: mpsc::Receiver<LivenessResponse>,
+    new_components_rx: mpsc::Receiver<usize>,
+}
 
-            LivenessResult::Success {
-                id,
-                response_sent,
-                response_latency,
+impl Runner {
+    fn send_component_probe_request(&mut self, component_id: usize) -> Option<HealthUpdate> {
+        let mut inner = self.inner.lock().unwrap();
+        let component_state = &mut inner.component_state[component_id];
+
+        // Check if our component is already dead, in which case we don't need to send a liveness probe.
+        if component_state.request_tx.is_closed() {
+            debug!(component_name = %component_state.name, "Component is dead, skipping liveness probe.");
+            return Some(HealthUpdate::Dead);
+        }
+
+        debug!(component_name = %component_state.name, probe_timeout = ?DEFAULT_PROBE_TIMEOUT_DUR, "Sending liveness probe to component.");
+
+        // Our component _isn't_ dead, so try to send a liveness probe to it.
+        //
+        // We'll register an entry in `pending_timeouts` that automatically marks the component as not live if we don't
+        // receive a response to the liveness probe within the timeout duration.
+        let timeout_key = self.pending_timeouts.insert(component_id, DEFAULT_PROBE_TIMEOUT_DUR);
+
+        let request = LivenessRequest::new(component_id, timeout_key);
+        if let Err(TrySendError::Closed(request)) = component_state.request_tx.try_send(request) {
+            debug!(component_name = %component_state.name, "Component is dead, removing pending timeout.");
+
+            // We failed to send the probe to the component due to the component being dead. We'll drop our pending
+            // timeout as we're going to mark this component dead right now.
+            //
+            // When our send fails due to the channel being full, that's OK: it means it's going to be handled by an
+            // existing timeout and will be probed again later.
+            self.pending_timeouts.remove(&request.timeout_key);
+
+            return Some(HealthUpdate::Dead);
+        }
+
+        None
+    }
+
+    fn handle_component_probe_response(&mut self, response: LivenessResponse) {
+        let component_id = response.request.component_id;
+        let timeout_key = response.request.timeout_key;
+        let request_sent = response.request.request_sent;
+        let response_sent = response.response_sent;
+        let response_latency = response_sent.checked_duration_since(request_sent).unwrap_or_default();
+
+        // Clear any pending timeouts for this component and schedule the next probe.
+        self.pending_timeouts.remove(&timeout_key);
+
+        // Update the component's health to show as alive.
+        let update = HealthUpdate::Alive {
+            last_response: response_sent,
+            last_response_latency: response_latency,
+        };
+        self.process_component_health_update(component_id, update);
+
+        // Schedule the next probe for this component.
+        self.pending_probes.insert(component_id, DEFAULT_PROBE_BACKOFF_DUR);
+    }
+
+    fn handle_component_timeout(&mut self, component_id: usize) {
+        // Update the component's health to show as not alive.
+        self.process_component_health_update(component_id, HealthUpdate::Unknown);
+
+        // Schedule the next probe for this component.
+        self.pending_probes.insert(component_id, DEFAULT_PROBE_BACKOFF_DUR);
+    }
+
+    fn process_component_health_update(&mut self, component_id: usize, update: HealthUpdate) {
+        // Update the component's health state based on the given update.
+        let mut inner = self.inner.lock().unwrap();
+        {
+            let component_state = &mut inner.component_state[component_id];
+            debug!(component_name = %component_state.name, status = update.as_str(), "Updating component health status.");
+
+            match update {
+                HealthUpdate::Alive {
+                    last_response,
+                    last_response_latency,
+                } => component_state.mark_live(last_response, last_response_latency),
+                HealthUpdate::Unknown => component_state.mark_not_live(),
+                HealthUpdate::Dead => component_state.mark_dead(),
             }
         }
 
-        // We got an error when trying to receive, which means the component is dead or the handle is gone... which are
-        // conceptually identical.
-        Ok(Err(_)) => LivenessResult::Dead { id },
+        // Update the shared health map with our component's new health status.
+        let (component_name, component_ready, component_live) = {
+            let component_state = &inner.component_state[component_id];
+            (
+                component_state.name.clone(),
+                component_state.is_ready(),
+                component_state.is_live(),
+            )
+        };
 
-        // We timed out waiting for a response.
-        Err(_) => LivenessResult::TimedOut { id },
+        let component_health = inner.component_health.entry(component_name).or_default();
+        component_health.ready = component_ready;
+        component_health.live = component_live;
+    }
+
+    async fn run(mut self) {
+        info!("Health checker running.");
+
+        // Do an initial component health update for each component to ensure the shared health map is populated.
+        let components_len = self.inner.lock().unwrap().component_state.len();
+        for component_id in 0..components_len {
+            self.process_component_health_update(component_id, HealthUpdate::Unknown);
+        }
+
+        loop {
+            select! {
+                // A component has been scheduled to have a liveness probe sent to it.
+                Some(entry) = self.pending_probes.next() => {
+                    let component_id = entry.into_inner();
+                    if let Some(health_update) = self.send_component_probe_request(component_id) {
+                        // If we got a health update for this component, that means we detected that it's dead, so we need
+                        // to do an out-of-band update to its health.
+                        self.process_component_health_update(component_id, health_update);
+                    }
+                },
+
+                // A component's outstanding liveness probe has expired.
+                Some(entry) = self.pending_timeouts.next() => {
+                    let component_id = entry.into_inner();
+                    self.handle_component_timeout(component_id);
+                },
+
+                // A probe response has been received.
+                Some(response) = self.responses_rx.recv() => {
+                    self.handle_component_probe_response(response);
+                },
+
+                // A new component has been registered.
+                Some(component_id) = self.new_components_rx.recv() => {
+                    self.pending_probes.insert(component_id, Duration::from_nanos(1));
+                },
+            }
+        }
     }
 }

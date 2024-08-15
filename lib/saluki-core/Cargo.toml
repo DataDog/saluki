@@ -26,6 +26,7 @@ saluki-api = { workspace = true }
 saluki-context = { workspace = true }
 saluki-error = { workspace = true }
 saluki-event = { workspace = true }
+saluki-health = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 slab = { workspace = true }

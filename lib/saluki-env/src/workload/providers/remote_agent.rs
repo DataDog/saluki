@@ -38,7 +38,7 @@ pub struct RemoteAgentWorkloadProvider {
 impl RemoteAgentWorkloadProvider {
     /// Create a new `RemoteAgentWorkloadProvider` based on the given configuration.
     pub async fn from_configuration(
-        config: &GenericConfiguration, mut component_registry: ComponentRegistry,
+        config: &GenericConfiguration, component_registry: ComponentRegistry,
     ) -> Result<Self, GenericError> {
         let mut component_registry = component_registry.get_or_create("remote-agent");
         let mut provider_bounds = component_registry.bounds_builder();

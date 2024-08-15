@@ -2460,6 +2460,7 @@ dependencies = [
  "saluki-context",
  "saluki-error",
  "saluki-event",
+ "saluki-health",
  "serde",
  "serde_json",
  "similar-asserts",
@@ -2538,11 +2539,13 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "saluki-api",
+ "saluki-error",
  "serde",
  "serde_json",
  "stringtheory",
  "tokio",
  "tokio-util",
+ "tracing",
 ]
 
 [[package]]
