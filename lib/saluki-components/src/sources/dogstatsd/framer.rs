@@ -9,9 +9,9 @@ pub enum DsdFramer {
 }
 
 impl Framer for DsdFramer {
-    fn next_frame<'a, 'b, B: saluki_io::buf::ReadIoBuffer>(
-        &'a mut self, buf: &'b B, is_eof: bool,
-    ) -> Result<Option<(&'b [u8], usize)>, saluki_io::deser::framing::FramingError> {
+    fn next_frame<'a, B: saluki_io::buf::ReadIoBuffer>(
+        &mut self, buf: &'a B, is_eof: bool,
+    ) -> Result<Option<(&'a [u8], usize)>, saluki_io::deser::framing::FramingError> {
         match self {
             DsdFramer::Newline(inner) => inner.next_frame(buf, is_eof),
             DsdFramer::LengthDelimited(inner) => inner.next_frame(buf, is_eof),

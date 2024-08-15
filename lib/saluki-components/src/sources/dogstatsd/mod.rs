@@ -520,7 +520,7 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
         );
 
         loop {
-            match framer.next_frame(&mut buffer, reached_eof) {
+            match framer.next_frame(&buffer, reached_eof) {
                 Ok(Some((frame, advance_len))) => {
                     debug!(?frame, ?advance_len, "Decoded frame.");
                     if let Err(e) = handle_frame(frame, &codec, &mut event_buffer, origin_detection, &peer_addr) {
