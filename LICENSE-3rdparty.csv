@@ -36,6 +36,7 @@ cast,https://github.com/japaric/cast.rs,MIT OR Apache-2.0,Jorge Aparicio <jorge@
 cc,https://github.com/rust-lang/cc-rs,MIT OR Apache-2.0,Alex Crichton <alex@alexcrichton.com>
 cexpr,https://github.com/jethrogb/rust-cexpr,Apache-2.0 OR MIT,Jethro Beekman <jethro@jbeekman.nl>
 cfg-if,https://github.com/alexcrichton/cfg-if,MIT OR Apache-2.0,Alex Crichton <alex@alexcrichton.com>
+cgroupfs,https://github.com/facebookincubator/below,Apache-2.0,"Daniel Xu <dlxu@fb.com>, Facebook"
 chrono,https://github.com/chronotope/chrono,MIT OR Apache-2.0,The chrono Authors
 ciborium,https://github.com/enarx/ciborium,Apache-2.0,Nathaniel McCallum <npmccallum@profian.com>
 clang-sys,https://github.com/KyleMayes/clang-sys,Apache-2.0,Kyle Mayes <kyle@mayeses.com>
@@ -119,6 +120,7 @@ matchers,https://github.com/hawkw/matchers,MIT,Eliza Weisman <eliza@buoyant.io>
 matchit,https://github.com/ibraheemdev/matchit,MIT AND BSD-3-Clause,Ibraheem Ahmed <ibraheem@ibraheem.ca>
 matrixmultiply,https://github.com/bluss/matrixmultiply,MIT OR Apache-2.0,"bluss, R. Janis Goldschmidt"
 memchr,https://github.com/BurntSushi/memchr,Unlicense OR MIT,"Andrew Gallant <jamslam@gmail.com>, bluss"
+memoffset,https://github.com/Gilnaa/memoffset,MIT,Gilad Naaman <gilad.naaman@gmail.com>
 metrics,https://github.com/metrics-rs/metrics,MIT,Toby Lawrence <toby@nuclearfurnace.com>
 mime,https://github.com/hyperium/mime,MIT OR Apache-2.0,Sean McArthur <sean@seanmonstar.com>
 minimal-lexical,https://github.com/Alexhuszagh/minimal-lexical,MIT OR Apache-2.0,Alex Huszagh <ahuszagh@gmail.com>
@@ -128,6 +130,7 @@ mio,https://github.com/tokio-rs/mio,MIT,"Carl Lerche <me@carllerche.com>, Thomas
 mirai-annotations,https://github.com/facebookexperimental/MIRAI,MIT,Herman Venter <hermanv@fb.com>
 multimap,https://github.com/havarnov/multimap,MIT OR Apache-2.0,Håvar Nøvik <havar.novik@gmail.com>
 ndarray,https://github.com/rust-ndarray/ndarray,MIT OR Apache-2.0,"Ulrik Sverdrup ""bluss"", Jim Turner"
+nix,https://github.com/nix-rust/nix,MIT,The nix-rust Project Developers
 noisy_float,https://github.com/SergiusIW/noisy_float-rs,Apache-2.0,Matthew Michelotti <matthew@matthewmichelotti.com>
 nom,https://github.com/Geal/nom,MIT,contact@geoffroycouprie.com
 nu-ansi-term,https://github.com/nushell/nu-ansi-term,MIT,"ogham@bsago.me, Ryan Scheel (Havvy) <ryan.havvy@gmail.com>, Josh Triplett <josh@joshtriplett.org>, The Nushell Project Developers"
@@ -140,6 +143,7 @@ num_threads,https://github.com/jhpratt/num_threads,MIT OR Apache-2.0,Jacob Pratt
 object,https://github.com/gimli-rs/object,Apache-2.0 OR MIT,The object Authors
 once_cell,https://github.com/matklad/once_cell,MIT OR Apache-2.0,Aleksey Kladov <aleksey.kladov@gmail.com>
 oorandom,https://hg.sr.ht/~icefox/oorandom,MIT,Simon Heath <icefox@dreamquest.io>
+openat,https://github.com/tailhook/openat,MIT OR Apache-2.0,paul@colomiets.name
 openssl-probe,https://github.com/alexcrichton/openssl-probe,MIT OR Apache-2.0,Alex Crichton <alex@alexcrichton.com>
 ordered-float,https://github.com/reem/rust-ordered-float,MIT,"Jonathan Reem <jonathan.reem@gmail.com>, Matt Brubeck <mbrubeck@limpet.net>"
 overload,https://github.com/danaugrs/overload,MIT,Daniel Salvadori <danaugrs@gmail.com>

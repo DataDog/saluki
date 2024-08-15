@@ -12,7 +12,7 @@ use crate::{
     features::{Feature, FeatureDetector},
     workload::{
         aggregator::MetadataAggregator,
-        collectors::{ContainerdMetadataCollector, RemoteAgentMetadataCollector},
+        collectors::{CGroupsV2MetadataCollector, ContainerdMetadataCollector, RemoteAgentMetadataCollector},
         entity::EntityId,
         metadata::TagCardinality,
         store::TagSnapshot,
@@ -25,11 +25,18 @@ const DEFAULT_TAG_INTERNER_SIZE_BYTES: NonZeroUsize = unsafe { NonZeroUsize::new
 
 /// Datadog Agent-based workload provider.
 ///
-/// This provider is based on two major components: `containerd` events and the Tagger Entity API exposed by the Datadog
-/// Agent. The Tagger Entity API exposes computed tags for a given entity -- specific containers, namely -- and is used
-/// here to collect those tags for querying. We also listen for `containerd` events, which get used to map container
-/// task PIDs to their container ID, which allows us to provide end-to-end linking of metrics sent by a specific
-/// container task ID to their container ID, and in turn the tags associated with that container.
+/// This provider is based primarily on the remote tagger API exposed by the Datadog Agent, which handles the bulk of
+/// the work by collecting and aggregating tags for container entities. This remote tagger API operates in a streaming
+/// fashion, which the provider uses to stream update operations to the tag store.
+///
+/// Additionally, two collectors are optionally used: a `containerd` collector and a `cgroups-v2` collector. The
+/// `containerd` collector will, if containerd is running, be used to collect metadata that allows mapping container
+/// PIDs (UDS-based Origin Detection) to container IDs. The `cgroups-v2` collector will collect metadata about the
+/// current set of cgroups v2 controllers, tracking any controllers which appear related to containers and storing a
+/// mapping of controller inodes to container IDs.
+///
+/// These additional collectors are necessary to bridge the gap from container PID and cgroup controller inode, as the
+/// remote tagger API does not stream us these mappings itself and only deals with resolved container IDs.
 #[derive(Clone)]
 pub struct RemoteAgentWorkloadProvider {
     shared_tags: Arc<ArcSwap<TagSnapshot>>,
@@ -66,6 +73,14 @@ impl RemoteAgentWorkloadProvider {
             collector_bounds.with_subcomponent("containerd", &cri_collector);
 
             aggregator.add_collector(cri_collector);
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let cgroups_collector = CGroupsV2MetadataCollector::from_configuration(config).await?;
+            collector_bounds.with_subcomponent("cgroups-v2", &cgroups_collector);
+
+            aggregator.add_collector(cgroups_collector);
         }
 
         let ra_collector = RemoteAgentMetadataCollector::from_configuration(config, tag_interner).await?;

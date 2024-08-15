@@ -11,7 +11,7 @@ arc-swap = { workspace = true }
 async-stream = { workspace = true }
 async-trait = { workspace = true }
 bitmask-enum = { workspace = true }
-cgroupfs = { version = "0.8", default-features = false }
+cgroupfs = { workspace = true }
 containerd-client = { workspace = true }
 datadog-protos = { workspace = true }
 futures = { workspace = true }
