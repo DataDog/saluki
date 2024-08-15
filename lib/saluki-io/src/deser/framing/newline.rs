@@ -29,9 +29,9 @@ impl NewlineFramer {
 }
 
 impl Framer for NewlineFramer {
-    fn next_frame<'a, 'b, B: ReadIoBuffer>(
-        &'a mut self, buf: &'b B, is_eof: bool,
-    ) -> Result<Option<(&'b [u8], usize)>, FramingError> {
+    fn next_frame<'a, B: ReadIoBuffer>(
+        &mut self, buf: &'a B, is_eof: bool,
+    ) -> Result<Option<(&'a [u8], usize)>, FramingError> {
         trace!(buf_len = buf.remaining(), "Received buffer.");
 
         let chunk = buf.chunk();

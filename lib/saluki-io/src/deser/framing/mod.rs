@@ -22,7 +22,7 @@ pub trait Framer {
     /// Attempt to extract the next frame from the buffer.
     ///
     /// On success, returns a byte slice of the frame data and the number of bytes to advance the buffer.
-    fn next_frame<'a, 'b, B: ReadIoBuffer>(
-        &'a mut self, buf: &'b B, is_eof: bool,
-    ) -> Result<Option<(&'b [u8], usize)>, FramingError>;
+    fn next_frame<'a, B: ReadIoBuffer>(
+        &mut self, buf: &'a B, is_eof: bool,
+    ) -> Result<Option<(&'a [u8], usize)>, FramingError>;
 }
