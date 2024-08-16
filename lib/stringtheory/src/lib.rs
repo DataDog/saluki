@@ -44,6 +44,16 @@ struct EmptyUnion {
     ptr: Zero, // Field three.
 }
 
+impl EmptyUnion {
+    fn new() -> Self {
+        Self {
+            cap: Zero::Zero,
+            len: Zero::Zero,
+            ptr: Zero::Zero,
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct OwnedUnion {
@@ -288,12 +298,16 @@ impl Inner {
         }
     }
 
-    fn into_owned(self) -> String {
+    fn into_owned(mut self) -> String {
         let union_type = unsafe { self.discriminant.get_union_type() };
         match union_type {
             UnionType::Empty => String::new(),
             UnionType::Owned => {
+                // We're (`Inner`) being consumed here, but we need to update our internal state to ensure that our drop
+                // logic doesn't try to double free the string allocation.
                 let owned = unsafe { self.owned };
+                self.empty = EmptyUnion::new();
+
                 owned.into_owned()
             }
             UnionType::Static => {
@@ -318,6 +332,7 @@ impl Drop for Inner {
         match union_type {
             UnionType::Owned => {
                 let owned = unsafe { &mut self.owned };
+
                 let len = owned.len;
                 let cap = owned.cap;
 
