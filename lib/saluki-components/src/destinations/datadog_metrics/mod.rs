@@ -1,6 +1,12 @@
-use std::time::Duration;
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use async_trait::async_trait;
+use futures::FutureExt;
 use http::{Request, Uri};
 use http_body_util::BodyExt as _;
 use hyper::body::Incoming;
@@ -20,8 +26,11 @@ use saluki_io::{
     net::client::http::HttpClient,
 };
 use serde::Deserialize;
-use tokio::sync::{mpsc, oneshot};
-use tower::{BoxError, Service, ServiceBuilder};
+use tokio::{
+    sync::{mpsc, oneshot},
+    time::{sleep, Sleep},
+};
+use tower::{retry::Policy, BoxError, Service, ServiceBuilder};
 use tracing::{debug, error, trace};
 
 mod request_builder;
@@ -96,6 +105,7 @@ impl Metrics {
 ///   it's just something like `https`)
 /// - retries, timeouts, rate limiting (no Tower middleware stack yet)
 #[derive(Deserialize)]
+#[allow(dead_code)]
 pub struct DatadogMetricsConfiguration {
     /// The API key to use.
     api_key: String,
@@ -122,12 +132,70 @@ pub struct DatadogMetricsConfiguration {
     /// The request timeout for forwarding metrics, in seconds.
     ///
     /// Defaults to 20 seconds.
-    #[serde(default = "default_timeout", rename = "forwarder_timeout")]
+    #[serde(default = "default_request_timeout_secs", rename = "forwarder_timeout")]
     request_timeout_secs: u64,
+
+    /// This controls the overlap between consecutive retry interval ranges.
+    ///
+    /// When set to `2`, there is a guarantee that there will be no overlap.
+    /// The overlap will asymptotically approach 50% the higher the value is set.
+    ///
+    /// Defaults to 2. Values less then `2` are verboten as there will be range gaps.
+    #[serde(default = "default_request_backoff_factor", rename = "forwarder_backoff_factor")]
+    request_backoff_factor: f64,
+
+    /// The rate of exponential growth, and the first retry interval range.
+    ///
+    ///  Defaults to 2.
+    #[serde(default = "default_request_backoff_base", rename = "forwarder_backoff_base")]
+    request_backoff_base: f64,
+
+    /// The maximum number of seconds to wait for a retry.
+    ///
+    /// Defaults to 64.
+    #[serde(default = "default_request_backoff_max", rename = "forwarder_backoff_max")]
+    request_backoff_max: f64,
+
+    /// The retry interval ranges to step down for an endpoint upon success.
+    ///
+    /// Increasing this should only be considered when max backoff time is particularly high or if our intake team is particularly confident.
+    ///
+    /// Defaults to 2.
+    #[serde(
+        default = "default_request_recovery_interval",
+        rename = "forwarder_recovery_interval"
+    )]
+    request_recovery_interval: u64,
+
+    /// Whether or not a successful request should completely clear an endpoint's error count.
+    ///
+    /// Defaults to false.
+    #[serde(default = "default_request_recovery_reset", rename = "forwarder_recovery_reset")]
+    request_recovery_reset: bool,
 }
 
-fn default_timeout() -> u64 {
+fn default_request_timeout_secs() -> u64 {
     20
+}
+
+fn default_request_backoff_factor() -> f64 {
+    20.0
+}
+
+fn default_request_backoff_base() -> f64 {
+    2.0
+}
+
+fn default_request_backoff_max() -> f64 {
+    64.0
+}
+
+fn default_request_recovery_interval() -> u64 {
+    2
+}
+
+fn default_request_recovery_reset() -> bool {
+    false
 }
 
 impl DatadogMetricsConfiguration {
@@ -167,9 +235,18 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
     async fn build(&self) -> Result<Box<dyn Destination + Send>, GenericError> {
         let http_client = HttpClient::https()?;
 
+        let rpolicy = MetricsRetryPolicy::new(
+            self.request_backoff_factor,
+            self.request_backoff_base,
+            self.request_backoff_max,
+            self.request_recovery_interval,
+            self.request_recovery_reset,
+        );
+
         let service = Box::new(
             ServiceBuilder::new()
                 .timeout(Duration::from_secs(self.request_timeout_secs))
+                .retry(rpolicy)
                 .service(http_client),
         );
 
@@ -443,4 +520,131 @@ fn create_request_builder_buffer_pool() -> FixedSizeObjectPool<BytesBuffer> {
     //
     // We chunk it up into 32KB segments mostly to allow for balancing fragmentation vs acquisition overhead.
     get_fixed_bytes_buffer_pool(RB_BUFFER_POOL_COUNT, RB_BUFFER_POOL_BUF_SIZE)
+}
+
+#[allow(unused)]
+#[derive(Clone)]
+struct MetricsRetryPolicy {
+    min_backoff_factor: f64,
+
+    base_backoff_time: f64,
+
+    max_backoff_time: f64,
+
+    recovery_interval: u64,
+
+    max_errors: u64,
+
+    block: Block,
+}
+
+#[derive(Clone)]
+struct Block {
+    num_errors: u64,
+    until: Duration,
+}
+
+#[allow(unused)]
+impl MetricsRetryPolicy {
+    fn new(
+        min_backoff_factor: f64, base_backoff_time: f64, max_backoff_time: f64, recovery_interval: u64,
+        recovery_reset: bool,
+    ) -> Self {
+        let max_errors = (max_backoff_time / base_backoff_time).log2() as u64 + 1;
+
+        let recovery_interval = if recovery_reset { max_errors } else { recovery_interval };
+
+        Self {
+            min_backoff_factor,
+            base_backoff_time,
+            max_backoff_time,
+            recovery_interval,
+            max_errors,
+            block: Block {
+                num_errors: 0,
+                until: Duration::from_secs(0),
+            },
+        }
+    }
+
+    fn increment_error(&self, num_errors: u64) -> u64 {
+        let mut num_errors = num_errors + 1;
+        if num_errors > self.max_errors {
+            num_errors = self.max_errors
+        }
+        num_errors
+    }
+
+    fn get_backoff_duration(&self, nb_error: u64) -> Duration {
+        let mut backoff_time: f64 = 0.0;
+
+        let num_errors = self.block.num_errors as f64;
+        let exp = 2.0_f64.powf(self.block.num_errors as f64);
+
+        // return time.Duration(backoffTime * secondsFloat)
+        if self.block.num_errors > 0 {
+            backoff_time = self.base_backoff_time * exp;
+        }
+
+        Duration::from_secs(backoff_time as u64)
+    }
+
+    fn advance(&self) -> MetricsRetryPolicy {
+        let num_errors = self.increment_error(self.block.num_errors);
+        let until = self.get_backoff_duration(self.block.num_errors);
+        Self {
+            min_backoff_factor: self.min_backoff_factor,
+            base_backoff_time: self.base_backoff_time,
+            max_backoff_time: self.max_backoff_time,
+            recovery_interval: self.recovery_interval,
+            max_errors: self.max_errors,
+            block: Block { num_errors, until },
+        }
+    }
+
+    fn build_retry(&self) -> MetricsRetryPolicyFuture {
+        let policy = self.advance();
+        let delay = Box::pin(sleep(self.block.until));
+
+        debug!(message = "Retrying request.", delay_ms = %self.block.until.as_millis());
+        MetricsRetryPolicyFuture { delay, policy }
+    }
+}
+
+impl<Req, Res> Policy<Req, Res, Error> for MetricsRetryPolicy
+where
+    Req: Clone,
+{
+    type Future = std::future::Ready<MetricsRetryPolicy>;
+
+    fn retry(&self, _req: &Req, result: Result<&Res, &Error>) -> Option<Self::Future> {
+        match result {
+            Ok(_) => {
+                // TODO: Add check to see if request should be retried even if a response was received.
+                None
+            }
+            Err(_) => {
+                // Need to figure out which endpoint the request is for.
+                todo!()
+            }
+        }
+    }
+
+    fn clone_request(&self, req: &Req) -> Option<Req> {
+        Some(req.clone())
+    }
+}
+
+struct MetricsRetryPolicyFuture {
+    delay: Pin<Box<Sleep>>,
+    policy: MetricsRetryPolicy,
+}
+
+impl Future for MetricsRetryPolicyFuture {
+    type Output = MetricsRetryPolicy;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        std::task::ready!(self.delay.poll_unpin(cx));
+        Poll::Ready(self.policy.clone())
+    }
 }
