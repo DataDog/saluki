@@ -45,7 +45,7 @@ struct EmptyUnion {
 }
 
 impl EmptyUnion {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             cap: Zero::Zero,
             len: Zero::Zero,
@@ -63,6 +63,7 @@ struct OwnedUnion {
 }
 
 impl OwnedUnion {
+    #[inline]
     fn as_str(&self) -> &str {
         // Mask our pointer to remove the top byte discriminant value.
         let masked_ptr = (self.ptr as usize & !OWNED_PTR_TAG) as *const u8;
@@ -91,7 +92,8 @@ struct StaticUnion {
 }
 
 impl StaticUnion {
-    fn as_str(&self) -> &str {
+    #[inline]
+    const fn as_str(&self) -> &str {
         // SAFETY: We know our pointer is valid, and non-null, since it's derived from a valid static string reference.
         // SAFETY: We know our data is valid UTF-8 since it's from a valid static string reference.
         unsafe { from_utf8_unchecked(from_raw_parts(self.ptr, self.len)) }
@@ -113,6 +115,7 @@ struct InlinedUnion {
 }
 
 impl InlinedUnion {
+    #[inline]
     fn as_str(&self) -> &str {
         let len = self.data[INLINED_STR_LEN_BYTE_IDX] as usize;
 
@@ -138,7 +141,8 @@ enum UnionType {
 }
 
 impl DiscriminantUnion {
-    fn get_union_type(&self) -> UnionType {
+    #[inline]
+    const fn get_union_type(&self) -> UnionType {
         if self.maybe_ptr == 0 {
             // When `maybe_ptr` is zero, it implies a null pointer for any pointer-based variants, and a zero length for the
             // inlined variant, which means this has to be representing an empty string.
@@ -202,11 +206,7 @@ union Inner {
 impl Inner {
     const fn empty() -> Self {
         Self {
-            empty: EmptyUnion {
-                cap: Zero::Zero,
-                len: Zero::Zero,
-                ptr: Zero::Zero,
-            },
+            empty: EmptyUnion::new(),
         }
     }
 
@@ -275,6 +275,7 @@ impl Inner {
         })
     }
 
+    #[inline]
     fn as_str(&self) -> &str {
         let union_type = unsafe { self.discriminant.get_union_type() };
         match union_type {
@@ -466,9 +467,9 @@ impl MetaString {
     ///
     /// This does not allocate.
     pub fn from_static(s: &'static str) -> Self {
-        Self {
+        Self::try_inline(s).unwrap_or_else(|| Self {
             inner: Inner::static_str(s),
-        }
+        })
     }
 
     /// Attempts to create a new `MetaString` from the given string if it can be inlined.
