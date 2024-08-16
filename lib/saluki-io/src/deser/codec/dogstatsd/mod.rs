@@ -1705,7 +1705,7 @@ mod tests {
         let input = b"some_metric:1|c|#tag_a:should_pass,deprecated_tag_b:should_drop,host:should_intercept";
         let mut event_buffer = get_pooled_object_via_default::<EventBuffer>();
         let events_decoded = codec
-            .decode_packet(&mut &input[..], &mut event_buffer)
+            .decode_packet(&input[..], &mut event_buffer)
             .expect("should not fail to decode");
         assert_eq!(events_decoded, 1);
 
