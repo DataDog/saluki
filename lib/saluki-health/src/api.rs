@@ -65,10 +65,10 @@ impl Serialize for HealthRegistryState {
 
 /// An API handler for reporting the health of all components.
 ///
-/// This handler exposes two main routes -- `/ready` and `/live` -- which return the overall readiness and liveness of
-/// all registered components, respectively. Each route will return a successful response (200 OK) if all components are
-/// ready/live, or a failure response (503 Service Unavailable) if any (or all) of the components are not ready/live,
-/// respectively.
+/// This handler exposes two main routes -- `/health/ready` and `/health/live` -- which return the overall readiness and
+/// liveness of all registered components, respectively. Each route will return a successful response (200 OK) if all
+/// components are ready/live, or a failure response (503 Service Unavailable) if any (or all) of the components are not
+/// ready/live, respectively.
 ///
 /// In both cases, the response body will be a JSON object with all registered components, each with their individual
 /// readiness and liveness status, as well as the response latency (in seconds) for the component to respond to the

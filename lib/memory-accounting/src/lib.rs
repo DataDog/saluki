@@ -72,6 +72,7 @@ pub mod test_util;
 
 pub mod allocator;
 //mod builder;
+mod api;
 mod registry;
 pub use self::registry::{ComponentRegistry, MemoryBoundsBuilder};
 
