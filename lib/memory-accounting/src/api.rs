@@ -43,7 +43,18 @@ impl MemoryRegistryState {
         // allocation group so then you end up with components that say they have a minimum usage, etc, but show a
         // current usage of zero bytes, etc.
         //
-        // We'll have to think about this a little more.
+        // One option we could try is:
+        // - get the total minimum/firm bounds by rolling up all components
+        // - as we iterate over each allocation group, we subtract the bounds of that component from the totals we
+        //   calculated before
+        // - at the end, we assign the remaining total bounds to the root component
+        //
+        // Essentially, because the memory usage for component with bounds that _don't_ use a token will inherently be
+        // attributed to the root allocation group anyways, this would allow at least capturing those bounds for
+        // comparison against the otherwise-unattributed usage.
+        //
+        // Realistically, we _should_ still have our code set up to track all allocations for components that declare
+        // bounds, but this could be a reasonable stopgap.
         let empty_snapshot = AllocationStatsSnapshot::empty();
 
         let mut component_usage = BTreeMap::new();
