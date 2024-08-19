@@ -309,14 +309,19 @@ pub struct DogStatsD {
 #[async_trait]
 impl Source for DogStatsD {
     async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), ()> {
-        let global_shutdown = context
-            .take_shutdown_handle()
-            .expect("should never fail to take shutdown handle");
+        let mut global_shutdown = context.take_shutdown_handle();
+        let mut health = context.take_health_handle();
 
         let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
         // For each listener, spawn a dedicated task to run it.
         for listener in self.listeners {
+            // TODO: Create a health handle for each listener.
+            //
+            // We need to rework `HealthRegistry` to look a little more like `ComponentRegistry` so that we can have it
+            // already be scoped properly, otherwise all we can do here at present is either have a relative name, like
+            // `uds-stream`, or try and hardcode the full component name, which we will inevitably forget to update if
+            // we tweak the topology configuration, etc.
             let listener_context = ListenerContext {
                 shutdown_handle: listener_shutdown_coordinator.register(),
                 listener,
@@ -328,10 +333,23 @@ impl Source for DogStatsD {
             spawn_traced(process_listener(context.clone(), listener_context));
         }
 
+        health.mark_ready();
         info!("DogStatsD source started.");
 
         // Wait for the global shutdown signal, then notify listeners to shutdown.
-        global_shutdown.await;
+        //
+        // We also handle liveness here, which doesn't really matter for _this_ task, since the real work is happening
+        // in the listeners, but we need to satisfy the health checker.
+        loop {
+            select! {
+                _ = &mut global_shutdown => {
+                    debug!("Received shutdown signal.");
+                    break
+                },
+                _ = health.live() => continue,
+            }
+        }
+
         info!("Stopping DogStatsD source...");
 
         listener_shutdown_coordinator.shutdown().await;

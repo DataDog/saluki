@@ -1,4 +1,5 @@
 use memory_accounting::{ComponentRegistry, MemoryLimiter};
+use saluki_health::{Health, HealthRegistry};
 
 use crate::{
     components::ComponentContext,
@@ -13,6 +14,8 @@ pub struct TransformContext {
     event_stream: EventStream,
     event_buffer_pool: FixedSizeObjectPool<EventBuffer>,
     memory_limiter: MemoryLimiter,
+    health_handle: Option<Health>,
+    health_registry: HealthRegistry,
     component_registry: ComponentRegistry,
 }
 
@@ -21,7 +24,7 @@ impl TransformContext {
     pub fn new(
         component_context: ComponentContext, forwarder: Forwarder, event_stream: EventStream,
         event_buffer_pool: FixedSizeObjectPool<EventBuffer>, memory_limiter: MemoryLimiter,
-        component_registry: ComponentRegistry,
+        component_registry: ComponentRegistry, health_handle: Health, health_registry: HealthRegistry,
     ) -> Self {
         Self {
             component_context,
@@ -29,8 +32,19 @@ impl TransformContext {
             event_stream,
             event_buffer_pool,
             memory_limiter,
+            health_handle: Some(health_handle),
+            health_registry,
             component_registry,
         }
+    }
+
+    /// Consumes the health handle of this transform context.
+    ///
+    /// ## Panics
+    ///
+    /// Panics if the health handle has already been taken.
+    pub fn take_health_handle(&mut self) -> Health {
+        self.health_handle.take().expect("health handle already taken")
     }
 
     /// Returns the component context.
@@ -58,8 +72,13 @@ impl TransformContext {
         &self.memory_limiter
     }
 
+    /// Gets a reference to the health registry.
+    pub fn health_registry(&self) -> &HealthRegistry {
+        &self.health_registry
+    }
+
     /// Gets a mutable reference to the component registry.
-    pub fn component_registry_mut(&mut self) -> &mut ComponentRegistry {
-        &mut self.component_registry
+    pub fn component_registry(&self) -> &ComponentRegistry {
+        &self.component_registry
     }
 }

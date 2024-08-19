@@ -112,12 +112,16 @@ impl Destination for Prometheus {
             mut tags_buffer,
         } = *self;
 
-        debug!("Prometheus destination started.");
+        let mut health = context.take_health_handle();
 
         let (http_shutdown, mut http_error) = spawn_prom_scrape_service(listener, Arc::clone(&payload));
+        health.mark_ready();
+
+        debug!("Prometheus destination started.");
 
         loop {
             select! {
+                _ = health.live() => continue,
                 maybe_events = context.events().next() => match maybe_events {
                     Some(events) => {
                         // Process each metric event in the batch, either merging it with the existing value or
