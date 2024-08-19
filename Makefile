@@ -441,7 +441,3 @@ cargo-install-%: override TOOL = $(@:cargo-install-%=%)
 cargo-install-%: override VERSIONED_TOOL = ${TOOL}@$(CARGO_TOOL_VERSION_$(TOOL))
 cargo-install-%: check-rust-build-tools
 	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo install ${VERSIONED_TOOL} --quiet),)
-
-.PHONY: get-rust-toolchain-version
-get-rust-toolchain-version:
-	@echo $(RUST_VERSION)

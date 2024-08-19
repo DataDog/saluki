@@ -7,7 +7,7 @@ generate-build-ci-image:
     - when: manual
       allow_failure: true
   before_script:
-    - export RUST_VERSION=$(make get-rust-toolchain-version)
+    - export RUST_VERSION=$(grep channel rust-toolchain.toml | cut -d '"' -f 2)
     - echo RUST_VERSION=${RUST_VERSION}
   script:
     - docker buildx build
