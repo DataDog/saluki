@@ -19,9 +19,9 @@ ifeq ($(CONTAINER_TOOL),auto)
 endif
 # Basic settings for base build images. These are varied between local development and CI.
 export RUST_VERSION ?= $(shell grep channel rust-toolchain.toml | cut -d '"' -f 2)
-export ADP_BUILD_IMAGE ?= rust:$(RUST_VERSION)-buster
-export ADP_APP_IMAGE ?= debian:buster-slim
-export GO_BUILD_IMAGE ?= golang:1.22-bullseye
+export ADP_BUILD_IMAGE ?= rust:$(RUST_VERSION)-bullseye
+export ADP_APP_IMAGE ?= debian:bullseye-slim
+export GO_BUILD_IMAGE ?= golang:1.23-bullseye
 export GO_APP_IMAGE ?= debian:bullseye-slim
 export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
 export GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
@@ -441,3 +441,7 @@ cargo-install-%: override TOOL = $(@:cargo-install-%=%)
 cargo-install-%: override VERSIONED_TOOL = ${TOOL}@$(CARGO_TOOL_VERSION_$(TOOL))
 cargo-install-%: check-rust-build-tools
 	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo install ${VERSIONED_TOOL} --quiet),)
+
+.PHONY: get-rust-toolchain-version
+get-rust-toolchain-version:
+	@echo $(RUST_VERSION)

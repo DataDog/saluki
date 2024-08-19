@@ -12,6 +12,12 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 ENV PATH="/usr/lib/binutils-2.26/bin:${PATH}"
 
+# Install Go, which we need to build AWS-LC in FIPS-compliant mode.
+ENV PATH /usr/local/go/bin:$PATH
+RUN wget -q -O /tmp/go-1.23.0.tar.gz https://go.dev/dl/go1.23.0.linux-amd64.tar.gz
+RUN echo "905a297f19ead44780548933e0ff1a1b86e8327bb459e92f9c0012569f76f5e3 /tmp/go-1.23.0.tar.gz" | sha256sum --check
+RUN tar -C /usr/local -xzf /tmp/go-1.23.0.tar.gz
+
 # Install Protocol Buffers compiler by hand, since Ubuntu 14.04 does not have a recent enough version.
 COPY .ci/install-protoc.sh /
 RUN chmod +x /install-protoc.sh && /install-protoc.sh
