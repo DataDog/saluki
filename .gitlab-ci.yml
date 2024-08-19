@@ -15,7 +15,7 @@ variables:
   # Base repository paths for where our CI images go, whether they're helper images or actual
   # output artifacts like ADP itself.
   SALUKI_IMAGE_REPO_BASE: "${IMAGE_REGISTRY}/saluki"
-  SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:v41356899-c44e138b"
+  SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:v42177705-91e82f5e"
   SALUKI_SMP_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:v40512394-da9e8d37"
 
   # ADP-specific variables, controlling how we build ADP images, how we version them, and where we push them.
