@@ -41,13 +41,12 @@ pub struct InternalMetrics;
 #[async_trait]
 impl Source for InternalMetrics {
     async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), ()> {
-        let global_shutdown = context
-            .take_shutdown_handle()
-            .expect("should never fail to take shutdown handle");
-        tokio::pin!(global_shutdown);
+        let mut global_shutdown = context.take_shutdown_handle();
+        let mut health = context.take_health_handle();
 
         let mut receiver = MetricsReceiver::register();
 
+        health.mark_ready();
         debug!("Internal Metrics source started.");
 
         loop {
@@ -55,7 +54,8 @@ impl Source for InternalMetrics {
                 _ = &mut global_shutdown => {
                     debug!("Received shutdown signal.");
                     break;
-                }
+                },
+                _ = health.live() => continue,
                 metrics = receiver.next() => {
                     debug!(metrics_len = metrics.len(), "Received internal metrics.");
 

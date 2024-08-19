@@ -154,7 +154,7 @@ impl ComponentRegistry {
     /// nested form is given, each component in the path will be created if it doesn't exist.
     ///
     /// Returns a `ComponentRegistry` scoped to the component.
-    pub fn get_or_create<S>(&mut self, name: S) -> Self
+    pub fn get_or_create<S>(&self, name: S) -> Self
     where
         S: AsRef<str>,
     {

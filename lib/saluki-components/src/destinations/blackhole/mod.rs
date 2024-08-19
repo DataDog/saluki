@@ -5,6 +5,7 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::components::destinations::*;
 use saluki_error::GenericError;
 use saluki_event::DataType;
+use tokio::select;
 use tracing::{debug, info};
 
 /// Blackhole destination.
@@ -37,18 +38,29 @@ struct Blackhole;
 #[async_trait]
 impl Destination for Blackhole {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), ()> {
+        let mut health = context.take_health_handle();
+
         let mut last_update = Instant::now();
         let mut event_counter = 0;
 
+        health.mark_ready();
         debug!("Blackhole destination started.");
 
-        while let Some(events) = context.events().next().await {
-            event_counter += events.len();
+        loop {
+            select! {
+                _ = health.live() => continue,
+                result = context.events().next() => match result {
+                    Some(events) => {
+                        event_counter += events.len();
 
-            if last_update.elapsed() > Duration::from_secs(1) {
-                info!("Received {} events.", event_counter);
-                last_update = Instant::now();
-                event_counter = 0;
+                        if last_update.elapsed() > Duration::from_secs(1) {
+                            info!("Received {} events.", event_counter);
+                            last_update = Instant::now();
+                            event_counter = 0;
+                        }
+                    },
+                    None => break,
+                },
             }
         }
 

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use memory_accounting::{ComponentRegistry, MemoryLimiter};
+use saluki_health::{Health, HealthRegistry};
 
 use crate::{
     components::ComponentContext,
@@ -16,12 +17,14 @@ struct SourceContextInner {
     forwarder: Forwarder,
     event_buffer_pool: FixedSizeObjectPool<EventBuffer>,
     memory_limiter: MemoryLimiter,
+    health_registry: HealthRegistry,
     component_registry: ComponentRegistry,
 }
 
 /// Source context.
 pub struct SourceContext {
     shutdown_handle: Option<ComponentShutdownHandle>,
+    health_handle: Option<Health>,
     inner: Arc<SourceContextInner>,
 }
 
@@ -30,15 +33,17 @@ impl SourceContext {
     pub fn new(
         component_context: ComponentContext, shutdown_handle: ComponentShutdownHandle, forwarder: Forwarder,
         event_buffer_pool: FixedSizeObjectPool<EventBuffer>, memory_limiter: MemoryLimiter,
-        component_registry: ComponentRegistry,
+        component_registry: ComponentRegistry, health_handle: Health, health_registry: HealthRegistry,
     ) -> Self {
         Self {
             shutdown_handle: Some(shutdown_handle),
+            health_handle: Some(health_handle),
             inner: Arc::new(SourceContextInner {
                 component_context,
                 forwarder,
                 event_buffer_pool,
                 memory_limiter,
+                health_registry,
                 component_registry,
             }),
         }
@@ -46,9 +51,20 @@ impl SourceContext {
 
     /// Consumes the shutdown handle of this source context.
     ///
-    /// If the shutdown handle has already been taken, `None` is returned.
-    pub fn take_shutdown_handle(&mut self) -> Option<ComponentShutdownHandle> {
-        self.shutdown_handle.take()
+    /// ## Panics
+    ///
+    /// Panics if the shutdown handle has already been taken.
+    pub fn take_shutdown_handle(&mut self) -> ComponentShutdownHandle {
+        self.shutdown_handle.take().expect("shutdown handle already taken")
+    }
+
+    /// Consumes the health handle of this source context.
+    ///
+    /// ## Panics
+    ///
+    /// Panics if the health handle has already been taken.
+    pub fn take_health_handle(&mut self) -> Health {
+        self.health_handle.take().expect("health handle already taken")
     }
 
     /// Returns the component context.
@@ -71,8 +87,13 @@ impl SourceContext {
         &self.inner.memory_limiter
     }
 
-    /// Gets a mutable reference to the component registry.
-    pub fn component_registry_mut(&mut self) -> &ComponentRegistry {
+    /// Gets a reference to the health registry.
+    pub fn health_registry(&self) -> &HealthRegistry {
+        &self.inner.health_registry
+    }
+
+    /// Gets a reference to the component registry.
+    pub fn component_registry(&self) -> &ComponentRegistry {
         &self.inner.component_registry
     }
 }
@@ -81,6 +102,7 @@ impl Clone for SourceContext {
     fn clone(&self) -> Self {
         Self {
             shutdown_handle: None,
+            health_handle: None,
             inner: self.inner.clone(),
         }
     }

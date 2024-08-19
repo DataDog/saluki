@@ -11,8 +11,10 @@ workspace = true
 [dependencies]
 futures = { workspace = true }
 saluki-api = { workspace = true }
+saluki-error = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
 tokio-util = { workspace = true, features = ["time"] }
+tracing = { workspace = true }

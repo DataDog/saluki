@@ -12,7 +12,10 @@ use saluki_error::GenericError;
 use saluki_event::{DataType, Event};
 use saluki_io::net::client::http::HttpClient;
 use serde::Deserialize;
-use tokio::sync::{mpsc, oneshot};
+use tokio::{
+    select,
+    sync::{mpsc, oneshot},
+};
 use tracing::{debug, error};
 mod request_builder;
 use request_builder::{EventsServiceChecksEndpoint, RequestBuilder};
@@ -115,8 +118,6 @@ impl MemoryBounds for DatadogEventsServiceChecksConfiguration {
             // Capture the size of the heap allocation when the component is built.
             .with_single_value::<DatadogEventsServiceChecks>()
             // Capture the size of the requests channel.
-            //
-            // TODO: This type signature is _ugly_, and it would be nice to improve it somehow.
             .with_array::<(usize, Request<String>)>(32);
     }
 }
@@ -136,62 +137,73 @@ impl Destination for DatadogEventsServiceChecks {
             mut service_checks_request_builder,
         } = *self;
 
+        let mut health = context.take_health_handle();
+
         // Spawn our IO task to handle sending requests.
         let (io_shutdown_tx, io_shutdown_rx) = oneshot::channel();
         let (requests_tx, requests_rx) = mpsc::channel(32);
         spawn_traced(run_io_loop(requests_rx, io_shutdown_tx, http_client));
 
+        health.mark_ready();
         debug!("Datadog Events and Service Checks destination started.");
 
-        while let Some(event_buffers) = context.events().next_ready().await {
-            debug!(event_buffers_len = event_buffers.len(), "Received event buffers.");
+        loop {
+            select! {
+                _ = health.live() => continue,
+                maybe_events = context.events().next_ready() => match maybe_events {
+                    Some(event_buffers) => {
+                        debug!(event_buffers_len = event_buffers.len(), "Received event buffers.");
 
-            for event_buffer in event_buffers {
-                debug!(events_len = event_buffer.len(), "Processing event buffer.");
+                        for event_buffer in event_buffers {
+                            debug!(events_len = event_buffer.len(), "Processing event buffer.");
 
-                for event in event_buffer {
-                    match event {
-                        Event::EventD(eventd) => {
-                            let request_builder = &mut events_request_builder;
-                            let json = serde_json::to_string(&eventd).unwrap();
+                            for event in event_buffer {
+                                match event {
+                                    Event::EventD(eventd) => {
+                                        let request_builder = &mut events_request_builder;
+                                        let json = serde_json::to_string(&eventd).unwrap();
 
-                            match request_builder.create_request(json) {
-                                Ok(request) => {
-                                    if requests_tx.send((1, request)).await.is_err() {
-                                        error!("Failed to send request to IO task: receiver dropped.");
-                                        return Err(());
+                                        match request_builder.create_request(json) {
+                                            Ok(request) => {
+                                                if requests_tx.send((1, request)).await.is_err() {
+                                                    error!("Failed to send request to IO task: receiver dropped.");
+                                                    return Err(());
+                                                }
+                                            }
+                                            Err(e) => {
+                                                error!(error = %e, "Failed to create request for event.");
+                                                continue;
+                                            }
+                                        }
                                     }
-                                }
-                                Err(e) => {
-                                    error!(error = %e, "Failed to create request for event.");
-                                    continue;
+                                    Event::ServiceCheck(service_check) => {
+                                        let request_builder = &mut service_checks_request_builder;
+                                        let json = serde_json::to_string(&service_check).unwrap();
+                                        match request_builder.create_request(json) {
+                                            Ok(request) => {
+                                                if requests_tx.send((1, request)).await.is_err() {
+                                                    error!("Failed to send request to IO task: receiver dropped.");
+                                                    return Err(());
+                                                }
+                                            }
+                                            Err(e) => {
+                                                error!(error = %e, "Failed to create request for service check.");
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        error!("Received non eventd/service checks event type.")
+                                    }
                                 }
                             }
                         }
-                        Event::ServiceCheck(service_check) => {
-                            let request_builder = &mut service_checks_request_builder;
-                            let json = serde_json::to_string(&service_check).unwrap();
-                            match request_builder.create_request(json) {
-                                Ok(request) => {
-                                    if requests_tx.send((1, request)).await.is_err() {
-                                        error!("Failed to send request to IO task: receiver dropped.");
-                                        return Err(());
-                                    }
-                                }
-                                Err(e) => {
-                                    error!(error = %e, "Failed to create request for service check.");
-                                    continue;
-                                }
-                            }
-                        }
-                        _ => {
-                            error!("Received non eventd/service checks event type.")
-                        }
-                    }
-                }
+
+                        debug!("All event buffers processed.");
+                    },
+                    None => break,
+                },
             }
-
-            debug!("All event buffers processed.");
         }
 
         // Drop the requests channel, which allows the IO task to naturally shut down once it has received and sent all
