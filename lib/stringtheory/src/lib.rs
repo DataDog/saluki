@@ -19,6 +19,12 @@ const INLINED_STR_DATA_BUF_LEN: usize = 24;
 const INLINED_STR_MAX_LEN: usize = INLINED_STR_DATA_BUF_LEN - 1;
 const INLINED_STR_LEN_BYTE_IDX: usize = INLINED_STR_MAX_LEN;
 
+// High-level invariant checks to ensure `stringtheory` isn't being used on an unsupported platform.
+#[cfg(not(all(target_pointer_width = "64", target_endian = "little",)))]
+const _INVARIANTS_CHECK: () = {
+    compile_error!("`stringtheory` is only supported on 64-bit little-endian platforms.");
+};
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(usize)]
 enum Zero {
@@ -184,16 +190,21 @@ impl DiscriminantUnion {
 ///
 /// This code depends on a number of invariants in order to work correctly:
 ///
-/// 1. Only used on 64-bit platforms.
+/// 1. Only used on 64-bit little-endian platforms. (checked at compile-time via _INVARIANTS_CHECK)
 /// 2. The pointers for `String` (pointer to the byte allocation) and `&'static str` (pointer to the byte slice) cannot
 ///    ever be null when the strings are non-empty.
 /// 3. Any valid pointer we acquire to the data for any string variant will not have its top byte set (bits 57-64) in
 ///    its original form, and is safe to be masked out.
-/// 4. Allocations can never be larger than `isize::MAX`, meaning that any length/capacity field for a string cannot
-///    ever be larger than `isize::MAX`, implying the 63rd bit (top-most bit) for length/capacity should always be 0.
-/// 5. A valid UTF-8 string can never have a byte that is all ones (0xFF).
+/// 4. Allocations can never be larger than `isize::MAX` (see [here][rust_isize_alloc_limit]), meaning that any
+///    length/capacity field for a string cannot ever be larger than `isize::MAX`, implying the 63rd bit (top-most bit)
+///    for length/capacity should always be 0.
+/// 5. A valid UTF-8 string can never have a byte that is all ones (0xFF). (This is a general invariant for UTF-8, which
+///    can seen by examining the UTF-8 definition in section 3 of [RFC 3629](rfc3629).)
 /// 6. An inlined string can only hold up to 23 bytes of data, meaning that the length field for that string can never
-///    have a value greater than 23.
+///    have a value greater than 23. (_We_ have to provide this invariant, which is done in `Inner::try_inlined`.)
+///
+/// [rust_isize_alloc_limit]: https://doc.rust-lang.org/stable/std/alloc/struct.Layout.html#method.from_size_align
+/// [rfc3629]: https://datatracker.ietf.org/doc/html/rfc3629#section-3
 union Inner {
     empty: EmptyUnion,
     owned: OwnedUnion,
