@@ -8,6 +8,7 @@ generate-build-ci-image:
       allow_failure: true
   before_script:
     - export RUST_VERSION=$(make get-rust-toolchain-version)
+    - echo RUST_VERSION=${RUST_VERSION}
   script:
     - docker buildx build
       --platform linux/amd64,linux/arm64
