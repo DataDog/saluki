@@ -2,6 +2,11 @@ build-adp-image:
   stage: build
   tags: ["arch:amd64"]
   image: ${DOCKER_BUILD_IMAGE}
+  variables:
+    # Compiling Rust is intensive. ¯\_(ツ)_/¯
+    KUBERNETES_CPU_REQUEST: "16"
+    KUBERNETES_MEMORY_REQUEST: "8Gi"
+    KUBERNETES_MEMORY_LIMIT: "12Gi"
   script:
     - docker buildx build
       --platform linux/amd64,linux/arm64
