@@ -5,8 +5,8 @@ ARG ADP_IMAGE=saluki-images/agent-data-plane:latest
 # Reference the ADP image so we can copy the relevant bits out of it.
 FROM ${ADP_IMAGE} AS adp
 
-LABEL org.opencontainers.image.source "https://github.com/DataDog/saluki"
-LABEL target "staging"
+LABEL org.opencontainers.image.source="https://github.com/DataDog/saluki"
+LABEL target="prod"
 
 # Build off of the official Datadog Agent image.
 FROM ${DD_AGENT_IMAGE}
