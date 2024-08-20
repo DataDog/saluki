@@ -9,6 +9,7 @@ build-adp-image:
       --tag ${ADP_IMAGE_BASE}:${ADP_VERSION}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
+      --build-arg BUILD_PROFILE=optimized-release
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
