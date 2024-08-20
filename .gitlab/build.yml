@@ -32,7 +32,7 @@ build-converged-adp-image:
       --file ./docker/Dockerfile.datadog-agent
       --metadata-file	/tmp/build.metadata
       --build-arg "DD_AGENT_IMAGE=${DD_AGENT_IMAGE}"
-      --build-arg "ADP_IMAGE=${ADP_IMAGE_BASE}:${VERSION}"
+      --build-arg "ADP_IMAGE=${ADP_IMAGE_BASE}:${ADP_VERSION}"
       --tag ${IMAGE_TAG}
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
