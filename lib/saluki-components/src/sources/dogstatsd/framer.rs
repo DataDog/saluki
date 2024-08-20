@@ -1,5 +1,5 @@
 use saluki_io::{
-    deser::framing::{Framer, LengthDelimitedFramer, NewlineFramer},
+    deser::framing::{Framer, FramingError, LengthDelimitedFramer, NewlineFramer},
     net::ListenAddress,
 };
 
@@ -11,7 +11,7 @@ pub enum DsdFramer {
 impl Framer for DsdFramer {
     fn next_frame<'a, B: saluki_io::buf::ReadIoBuffer>(
         &mut self, buf: &'a B, is_eof: bool,
-    ) -> Result<Option<(&'a [u8], usize)>, saluki_io::deser::framing::FramingError> {
+    ) -> Result<Option<(&'a [u8], usize)>, FramingError> {
         match self {
             DsdFramer::Newline(inner) => inner.next_frame(buf, is_eof),
             DsdFramer::LengthDelimited(inner) => inner.next_frame(buf, is_eof),

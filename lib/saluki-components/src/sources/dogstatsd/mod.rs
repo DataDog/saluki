@@ -484,16 +484,21 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
 
         // If our buffer is full, we can't do any reads.
         if !buffer.has_remaining_mut() {
-            // return Err(DeserializerError::BufferFull {
-            //     remaining: buffer.remaining(),
-            // });
             // try to get a new buffer on the next iteration?
+            error!("Newly acquired buffer has no capacity. This should never happen.");
             continue;
         }
 
         // Try filling our buffer from the underlying reader first.
         debug!("About to receive data from the stream.");
-        let (bytes_read, peer_addr) = stream.receive(&mut buffer).await.expect("TODO");
+        let (bytes_read, peer_addr) = match stream.receive(&mut buffer).await {
+            Ok((bytes_read, peer_addr)) => (bytes_read, peer_addr),
+            Err(error) => {
+                error!(%listen_addr, %error, "I/O error while decoding. Stopping stream.");
+                break;
+            }
+        };
+
         if bytes_read == 0 {
             eof = true;
             // eof_addr = Some(peer_addr.clone());
@@ -529,7 +534,7 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                     buffer.advance(advance_len);
                 }
                 Ok(None) => {
-                    debug!("No more frames to decode.");
+                    debug!("Not enough data to decode another frame.");
                     if eof && !stream.is_connectionless() {
                         trace!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
                         return;
