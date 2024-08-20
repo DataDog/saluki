@@ -6,7 +6,7 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use regex::Regex;
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
-use stringtheory::MetaString;
+use stringtheory::{interning::FixedSizeInterner, MetaString};
 use tokio::{sync::mpsc, time::sleep};
 use tracing::{debug, error};
 
@@ -27,6 +27,7 @@ use crate::{
 /// for origin enrichment, so this mapping allows resolving controller inodes to their canonical container ID.
 pub struct CGroupsV2MetadataCollector {
     reader: CgroupReader,
+    interner: FixedSizeInterner<1>,
 }
 
 impl CGroupsV2MetadataCollector {
@@ -36,12 +37,12 @@ impl CGroupsV2MetadataCollector {
     ///
     /// If the cgroups v2 root hierarchy can not be located at the configured path, an error will be returned.
     pub fn from_configuration(
-        config: &GenericConfiguration, feature_detector: FeatureDetector,
+        config: &GenericConfiguration, feature_detector: FeatureDetector, interner: FixedSizeInterner<1>,
     ) -> Result<Self, GenericError> {
         let cgroups_config = CGroupsConfiguration::from_configuration(config, feature_detector)?;
         let cgroup_reader = CgroupReader::new(cgroups_config.cgroupfs_path().to_owned())?;
 
-        Ok(Self { reader: cgroup_reader })
+        Ok(Self { reader: cgroup_reader, interner })
     }
 }
 
@@ -64,7 +65,7 @@ impl MetadataCollector for CGroupsV2MetadataCollector {
         //
         // We batch these metadata operations and then send them all at the end of the loop.
         loop {
-            match traverse_cgroups(&self.reader, &mut operations) {
+            match traverse_cgroups(&self.reader, &self.interner, &mut operations) {
                 Ok(()) => {
                     for operation in operations.drain(..) {
                         operations_tx.send(operation).await?;
@@ -89,12 +90,12 @@ impl MemoryBounds for CGroupsV2MetadataCollector {
     }
 }
 
-fn traverse_cgroups(root: &CgroupReader, operations: &mut Vec<MetadataOperation>) -> Result<(), GenericError> {
+fn traverse_cgroups(root: &CgroupReader, interner: &FixedSizeInterner<1>, operations: &mut Vec<MetadataOperation>) -> Result<(), GenericError> {
     for child_cgroup in root.child_cgroup_iter()? {
         let cgroup_name = child_cgroup.name().as_os_str().to_string_lossy();
 
         // Check if this control group is associated with a container.
-        if let Some(container_id) = extract_container_id(&cgroup_name) {
+        if let Some(container_id) = extract_container_id(&cgroup_name, interner) {
             debug!(container_id = %container_id, %cgroup_name, "Found container control group.");
 
             // Get the inode for this control group.
@@ -109,13 +110,13 @@ fn traverse_cgroups(root: &CgroupReader, operations: &mut Vec<MetadataOperation>
         }
 
         // After that, traverse the children of this control group.
-        traverse_cgroups(&child_cgroup, operations)?;
+        traverse_cgroups(&child_cgroup, interner, operations)?;
     }
 
     Ok(())
 }
 
-fn extract_container_id(cgroup_name: &str) -> Option<MetaString> {
+fn extract_container_id(cgroup_name: &str, interner: &FixedSizeInterner<1>) -> Option<MetaString> {
     // This regular expression is meant to capture:
     // - 64 character hexadecimal strings (standard format for container IDs almost everywhere)
     // - 32 character hexadecimal strings followed by a dash and a number (used by AWS ECS)
@@ -133,7 +134,13 @@ fn extract_container_id(cgroup_name: &str) -> Option<MetaString> {
             if name.as_str().ends_with(".mount") || name.as_str().starts_with("crio-conmon-") {
                 None
             } else {
-                Some(MetaString::from(name.as_str()))
+                match interner.try_intern(name.as_str()) {
+                    Some(interned) => Some(MetaString::from(interned)),
+                    None => {
+                        error!(container_id = %name.as_str(), "Failed to intern container ID.");
+                        None
+                    },
+                }
             }
         }
         None => None,

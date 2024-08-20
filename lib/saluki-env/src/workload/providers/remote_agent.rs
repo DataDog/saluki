@@ -21,7 +21,7 @@ use crate::{
 };
 
 // SAFETY: We know the value is not zero.
-const DEFAULT_TAG_INTERNER_SIZE_BYTES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(512 * 1024) }; // 512KB.
+const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(512 * 1024) }; // 512KB.
 
 /// Datadog Agent-based workload provider.
 ///
@@ -50,16 +50,16 @@ impl RemoteAgentWorkloadProvider {
         let mut component_registry = component_registry.get_or_create("remote-agent");
         let mut provider_bounds = component_registry.bounds_builder();
 
-        // Create our tag interner.
-        let tag_interner_size_bytes = config
-            .try_get_typed::<NonZeroUsize>("remote_agent_tag_interner_size_bytes")?
-            .unwrap_or(DEFAULT_TAG_INTERNER_SIZE_BYTES);
-        let tag_interner = FixedSizeInterner::new(tag_interner_size_bytes);
+        // Create our string interner which will get used primarily for tags, but also for any other long-ish lived strings.
+        let string_interner_size_bytes = config
+            .try_get_typed::<NonZeroUsize>("remote_agent_string_interner_size_bytes")?
+            .unwrap_or(DEFAULT_STRING_INTERNER_SIZE_BYTES);
+        let string_interner = FixedSizeInterner::new(string_interner_size_bytes);
 
         provider_bounds
-            .subcomponent("tag_interner")
+            .subcomponent("string_interner")
             .firm()
-            .with_fixed_amount(tag_interner_size_bytes.get());
+            .with_fixed_amount(string_interner_size_bytes.get());
 
         // Construct our aggregator, and add any collectors based on the detected features we've been given.
         let mut aggregator = MetadataAggregator::new();
@@ -69,7 +69,7 @@ impl RemoteAgentWorkloadProvider {
 
         let feature_detector = FeatureDetector::automatic(config);
         if feature_detector.is_feature_available(Feature::Containerd) {
-            let cri_collector = ContainerdMetadataCollector::from_configuration(config, tag_interner.clone()).await?;
+            let cri_collector = ContainerdMetadataCollector::from_configuration(config, string_interner.clone()).await?;
             collector_bounds.with_subcomponent("containerd", &cri_collector);
 
             aggregator.add_collector(cri_collector);
@@ -77,13 +77,13 @@ impl RemoteAgentWorkloadProvider {
 
         #[cfg(target_os = "linux")]
         {
-            let cgroups_collector = CGroupsV2MetadataCollector::from_configuration(config, feature_detector)?;
+            let cgroups_collector = CGroupsV2MetadataCollector::from_configuration(config, feature_detector, string_interner.clone())?;
             collector_bounds.with_subcomponent("cgroups-v2", &cgroups_collector);
 
             aggregator.add_collector(cgroups_collector);
         }
 
-        let ra_collector = RemoteAgentMetadataCollector::from_configuration(config, tag_interner).await?;
+        let ra_collector = RemoteAgentMetadataCollector::from_configuration(config, string_interner).await?;
         collector_bounds.with_subcomponent("remote-agent", &ra_collector);
 
         aggregator.add_collector(ra_collector);
