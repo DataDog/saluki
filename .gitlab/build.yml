@@ -1,0 +1,47 @@
+build-adp-image:
+  stage: build
+  tags: ["arch:amd64"]
+  image: ${DOCKER_BUILD_IMAGE}
+  script:
+    - docker buildx build
+      --platform linux/amd64,linux/arm64
+      --file ./docker/Dockerfile.agent-data-plane
+      --tag ${ADP_IMAGE_BASE}:${ADP_VERSION}
+      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
+      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --squash
+      --push
+      .
+
+build-converged-adp-image:
+  stage: build
+  tags: ["arch:amd64"]
+  image: ${DOCKER_BUILD_IMAGE}
+  id_tokens:
+    DDSIGN_ID_TOKEN:
+      aud: image-integrity
+  script:
+    - export IMAGE_TAG=${CONVERGED_AGENT_IMAGE_BASE}:${ADP_VERSION}
+    - docker buildx build
+      --platform linux/amd64,linux/arm64
+      --file ./docker/Dockerfile.datadog-agent
+      --metadata-file	/tmp/build.metadata
+      --build-arg "DD_AGENT_IMAGE=${DD_AGENT_IMAGE}"
+      --build-arg "ADP_IMAGE=${ADP_IMAGE_BASE}:${VERSION}"
+      --tag ${IMAGE_TAG}
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --squash
+      --push
+      .
+    - ddsign sign ${IMAGE_TAG} --docker-metadata-file /tmp/build.metadata
+  needs:
+    - build-adp-image
