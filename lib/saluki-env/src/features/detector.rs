@@ -1,9 +1,7 @@
 use saluki_config::GenericConfiguration;
 use tracing::info;
 
-use super::{
-    has_host_mapped_cgroupfs, has_host_mapped_procfs, is_running_inside_container, ContainerdDetector, Feature,
-};
+use super::{has_host_mapped_cgroupfs, has_host_mapped_procfs, ContainerdDetector, Feature};
 
 /// Detects workload features.
 ///
@@ -41,11 +39,6 @@ impl FeatureDetector {
 
     fn detect_features(config: &GenericConfiguration, feature_mask: Feature) -> Feature {
         let mut detected_features = Feature::none();
-
-        if feature_mask.contains(Feature::Containerized) && is_running_inside_container() {
-            info!("Detected presence of containerized workload.");
-            detected_features |= Feature::Containerized;
-        }
 
         if feature_mask.contains(Feature::HostMappedProcfs) && has_host_mapped_procfs() {
             info!("Detected presence of host-mapped procfs.");

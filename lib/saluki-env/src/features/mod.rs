@@ -31,21 +31,16 @@ const SOCKET_CHECK_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 #[bitmask(u16)]
 #[bitmask_config(vec_debug)]
 pub enum Feature {
-    /// Containerized.
-    ///
-    /// This involves determining if the process itself is being run in a container environment.
-    Containerized,
-
     /// Host-mapped procfs.
     ///
-    /// This implies that we're in a containerized environment and the host's procfs (`/proc`) has been mapped into
-    /// the container using a `/host` prefix, resulting in a `/host/proc` path.
+    /// This implies that we're in a containerized environment and the host's procfs (`/proc`) has been mapped into the
+    /// container using a `/host` prefix, resulting in a `/host/proc` path.
     HostMappedProcfs,
 
     /// Host-mapped cgroupfs.
     ///
-    /// This implies that we're in a containerized environment and the host's cgroupfs (`/sys/fs/cgroup`) has been mapped into
-    /// the container using a `/host` prefix, resulting in a `/host/sys/fs/cgroup` path.
+    /// This implies that we're in a containerized environment and the host's cgroupfs (`/sys/fs/cgroup`) has been
+    /// mapped into the container using a `/host` prefix, resulting in a `/host/sys/fs/cgroup` path.
     HostMappedCgroupfs,
 
     /// Containerd.

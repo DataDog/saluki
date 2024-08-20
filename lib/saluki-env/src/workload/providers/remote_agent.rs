@@ -69,7 +69,8 @@ impl RemoteAgentWorkloadProvider {
 
         let feature_detector = FeatureDetector::automatic(config);
         if feature_detector.is_feature_available(Feature::Containerd) {
-            let cri_collector = ContainerdMetadataCollector::from_configuration(config, string_interner.clone()).await?;
+            let cri_collector =
+                ContainerdMetadataCollector::from_configuration(config, string_interner.clone()).await?;
             collector_bounds.with_subcomponent("containerd", &cri_collector);
 
             aggregator.add_collector(cri_collector);
@@ -77,7 +78,8 @@ impl RemoteAgentWorkloadProvider {
 
         #[cfg(target_os = "linux")]
         {
-            let cgroups_collector = CGroupsV2MetadataCollector::from_configuration(config, feature_detector, string_interner.clone())?;
+            let cgroups_collector =
+                CGroupsV2MetadataCollector::from_configuration(config, feature_detector, string_interner.clone())?;
             collector_bounds.with_subcomponent("cgroups-v2", &cgroups_collector);
 
             aggregator.add_collector(cgroups_collector);

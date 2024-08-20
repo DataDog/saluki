@@ -42,7 +42,10 @@ impl CGroupsV2MetadataCollector {
         let cgroups_config = CGroupsConfiguration::from_configuration(config, feature_detector)?;
         let cgroup_reader = CgroupReader::new(cgroups_config.cgroupfs_path().to_owned())?;
 
-        Ok(Self { reader: cgroup_reader, interner })
+        Ok(Self {
+            reader: cgroup_reader,
+            interner,
+        })
     }
 }
 
@@ -90,7 +93,9 @@ impl MemoryBounds for CGroupsV2MetadataCollector {
     }
 }
 
-fn traverse_cgroups(root: &CgroupReader, interner: &FixedSizeInterner<1>, operations: &mut Vec<MetadataOperation>) -> Result<(), GenericError> {
+fn traverse_cgroups(
+    root: &CgroupReader, interner: &FixedSizeInterner<1>, operations: &mut Vec<MetadataOperation>,
+) -> Result<(), GenericError> {
     for child_cgroup in root.child_cgroup_iter()? {
         let cgroup_name = child_cgroup.name().as_os_str().to_string_lossy();
 
@@ -139,7 +144,7 @@ fn extract_container_id(cgroup_name: &str, interner: &FixedSizeInterner<1>) -> O
                     None => {
                         error!(container_id = %name.as_str(), "Failed to intern container ID.");
                         None
-                    },
+                    }
                 }
             }
         }
