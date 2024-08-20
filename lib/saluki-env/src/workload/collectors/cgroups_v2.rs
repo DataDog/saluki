@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::LazyLock, time::Duration};
+use std::{sync::LazyLock, time::Duration};
 
 use async_trait::async_trait;
 use cgroupfs::CgroupReader;
@@ -8,10 +8,13 @@ use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use stringtheory::MetaString;
 use tokio::{sync::mpsc, time::sleep};
-use tracing::error;
+use tracing::{debug, error};
 
 use super::MetadataCollector;
-use crate::workload::{entity::EntityId, metadata::MetadataOperation};
+use crate::{
+    features::FeatureDetector,
+    workload::{entity::EntityId, helpers::cgroups::CGroupsConfiguration, metadata::MetadataOperation},
+};
 
 /// A metadata collector that observes Linux "Control Groups" (cgroups) v2.
 ///
@@ -22,12 +25,8 @@ use crate::workload::{entity::EntityId, metadata::MetadataOperation};
 /// This is specifically used to support client-based Origin Detection in DogStatsD, where clients will either send
 /// their detected container ID _or_ the inode of their cgroup controller. A canonical container ID must always be used
 /// for origin enrichment, so this mapping allows resolving controller inodes to their canonical container ID.
-///
-/// ## Missing
-///
-/// - No support for specifying a custom path prefix when traversing the cgroup hierarchy.
 pub struct CGroupsV2MetadataCollector {
-    cgroup_reader: CgroupReader,
+    reader: CgroupReader,
 }
 
 impl CGroupsV2MetadataCollector {
@@ -36,23 +35,27 @@ impl CGroupsV2MetadataCollector {
     /// ## Errors
     ///
     /// If the cgroups v2 root hierarchy can not be located at the configured path, an error will be returned.
-    pub async fn from_configuration(_config: &GenericConfiguration) -> Result<Self, GenericError> {
-        // TODO: Logic to handle a a `/host`-mapped variant of the cgroupsv2 hierarchy, etc.
-        let cgroup_reader = CgroupReader::new(PathBuf::from("/sys/fs/cgroup"))?;
+    pub fn from_configuration(
+        config: &GenericConfiguration, feature_detector: FeatureDetector,
+    ) -> Result<Self, GenericError> {
+        let cgroups_config = CGroupsConfiguration::from_configuration(config, feature_detector)?;
+        let cgroup_reader = CgroupReader::new(cgroups_config.cgroupfs_path().to_owned())?;
 
-        Ok(Self { cgroup_reader })
+        Ok(Self { reader: cgroup_reader })
     }
 }
 
 #[async_trait]
 impl MetadataCollector for CGroupsV2MetadataCollector {
     fn name(&self) -> &'static str {
-        "cgroupsv2"
+        "cgroups-v2"
     }
 
     async fn watch(
         &self, operations_tx: &mut mpsc::Sender<MetadataOperation>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        debug!("Starting cgroups v2 metadata collector.");
+
         let mut operations = Vec::with_capacity(64);
 
         // Repeatedly traverse the cgroups v2 hierarchy in a loop, generating ancestry links for controller
@@ -61,7 +64,7 @@ impl MetadataCollector for CGroupsV2MetadataCollector {
         //
         // We batch these metadata operations and then send them all at the end of the loop.
         loop {
-            match traverse_cgroups(&self.cgroup_reader, &mut operations) {
+            match traverse_cgroups(&self.reader, &mut operations) {
                 Ok(()) => {
                     for operation in operations.drain(..) {
                         operations_tx.send(operation).await?;
@@ -92,6 +95,8 @@ fn traverse_cgroups(root: &CgroupReader, operations: &mut Vec<MetadataOperation>
 
         // Check if this control group is associated with a container.
         if let Some(container_id) = extract_container_id(&cgroup_name) {
+            debug!(container_id = %container_id, %cgroup_name, "Found container control group.");
+
             // Get the inode for this control group.
             let cgroup_inode = child_cgroup.read_inode_number()?;
 
@@ -111,11 +116,20 @@ fn traverse_cgroups(root: &CgroupReader, operations: &mut Vec<MetadataOperation>
 }
 
 fn extract_container_id(cgroup_name: &str) -> Option<MetaString> {
+    // This regular expression is meant to capture:
+    // - 64 character hexadecimal strings (standard format for container IDs almost everywhere)
+    // - 32 character hexadecimal strings followed by a dash and a number (used by AWS ECS)
+    // - 8 character hexadecimal strings followed by up to four groups of 4 character hexadecimal strings separated by
+    //   dashes (essentially a UUID, used by Pivotal Cloud Foundry's Garden technology)
     static CONTAINER_REGEX: LazyLock<Regex> =
         LazyLock::new(|| Regex::new("([0-9a-f]{64})|([0-9a-f]{32}-\\d+)|([0-9a-f]{8}(-[0-9a-f]{4}){4}$)").unwrap());
 
     match CONTAINER_REGEX.find(cgroup_name) {
         Some(name) => {
+            // NOTE: We've lifted this logic from the Datadog Agent [1] to handle filtering out certain control groups
+            // based on how systemd names them.
+            //
+            // [1]: https://github.com/DataDog/datadog-agent/blob/fe75b815c2f135f0d2ea85d7a57a8fc8cbf56bd9/pkg/util/cgroups/reader.go#L63-L77
             if name.as_str().ends_with(".mount") || name.as_str().starts_with("crio-conmon-") {
                 None
             } else {

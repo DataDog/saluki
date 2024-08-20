@@ -77,7 +77,7 @@ impl RemoteAgentWorkloadProvider {
 
         #[cfg(target_os = "linux")]
         {
-            let cgroups_collector = CGroupsV2MetadataCollector::from_configuration(config).await?;
+            let cgroups_collector = CGroupsV2MetadataCollector::from_configuration(config, feature_detector)?;
             collector_bounds.with_subcomponent("cgroups-v2", &cgroups_collector);
 
             aggregator.add_collector(cgroups_collector);

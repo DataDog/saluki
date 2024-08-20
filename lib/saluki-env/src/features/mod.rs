@@ -1,6 +1,6 @@
 //! Feature detection.
 //!
-//! This module provides helpers for detecting the prescence of various "features" in the environment, such as if
+//! This module provides helpers for detecting the presence of various "features" in the environment, such as if
 //! containerd is running, and so on. Feature detection is useful for knowing what capabilities are available, and what
 //! code should or shouldn't be run.
 use std::{
@@ -31,6 +31,23 @@ const SOCKET_CHECK_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 #[bitmask(u16)]
 #[bitmask_config(vec_debug)]
 pub enum Feature {
+    /// Containerized.
+    ///
+    /// This involves determining if the process itself is being run in a container environment.
+    Containerized,
+
+    /// Host-mapped procfs.
+    ///
+    /// This implies that we're in a containerized environment and the host's procfs (`/proc`) has been mapped into
+    /// the container using a `/host` prefix, resulting in a `/host/proc` path.
+    HostMappedProcfs,
+
+    /// Host-mapped cgroupfs.
+    ///
+    /// This implies that we're in a containerized environment and the host's cgroupfs (`/sys/fs/cgroup`) has been mapped into
+    /// the container using a `/host` prefix, resulting in a `/host/sys/fs/cgroup` path.
+    HostMappedCgroupfs,
+
     /// Containerd.
     Containerd,
 }
@@ -145,7 +162,7 @@ where
     None
 }
 
-fn is_containerized() -> bool {
+fn is_running_inside_container() -> bool {
     // `DOCKER_DD_AGENT` is set by the official Datadog Agent container image.
     let is_containerized = is_env_var_present("DOCKER_DD_AGENT");
     if is_containerized {
@@ -156,7 +173,7 @@ fn is_containerized() -> bool {
     is_containerized
 }
 
-fn is_docker_runtime_present() -> bool {
+fn is_running_inside_docker() -> bool {
     // This file is mounted into a container's filesystem by Docker itself, and implies that we're currently _inside_
     // the Docker runtime. `is_docker_present` detects the presence of the Docker runtime on the host itself, at the OS
     // level.
@@ -177,7 +194,7 @@ where
     // as "/var/run", it ends up as "/host/var/run" in the container, which doesn't shadow the existing "/var/run".
     let root = PathBuf::from("/");
     let host_root = PathBuf::from(CONTAINER_HOST_MOUNT_PATH);
-    let is_containerized = is_containerized();
+    let is_containerized = is_running_inside_container();
 
     for path in paths {
         let path = path.as_ref().trim_start_matches('/');
@@ -190,4 +207,14 @@ where
     }
 
     prefixes
+}
+
+fn has_host_mapped_procfs() -> bool {
+    let path = PathBuf::from(CONTAINER_HOST_MOUNT_PATH).join("proc");
+    is_running_inside_container() && file_exists(&path)
+}
+
+fn has_host_mapped_cgroupfs() -> bool {
+    let path = PathBuf::from(CONTAINER_HOST_MOUNT_PATH).join("sys/fs/cgroup");
+    is_running_inside_container() && file_exists(&path)
 }
