@@ -155,38 +155,41 @@ impl AllocationStats {
         self.deallocated_objects.fetch_add(1, Relaxed);
     }
 
-    /// Consumes the current value of each statistics, resetting them to zero.
+    /// Captures a snapshot of the current statistics based on the delta from a previous snapshot.
     ///
-    /// Deltas represent the total change in each value since the _last_ delta, and the caller must
-    /// keep track of these changes themselves if they wish to track the total values over the life
-    /// of the process.
-    pub fn consume(&self) -> AllocationStatsDelta {
-        AllocationStatsDelta {
-            allocated_bytes: self.allocated_bytes.swap(0, Relaxed),
-            allocated_objects: self.allocated_objects.swap(0, Relaxed),
-            deallocated_bytes: self.deallocated_bytes.swap(0, Relaxed),
-            deallocated_objects: self.deallocated_objects.swap(0, Relaxed),
+    /// This can be used to keep a single local snapshot of the last delta, and then both track the delta since that
+    /// snapshot, as well as update the snapshot to the current statistics.
+    ///
+    /// Callers should generally create their snapshot via [`AllocationStatsSnapshot::empty`] and then use this method
+    /// to get their snapshot delta, utilize those delta values in whatever way is necessary, and then merge the
+    /// snapshot delta into the primary snapshot via [`AllocationStatsSnapshot::merge`] to make it current.
+    pub fn snapshot_delta(&self, previous: &AllocationStatsSnapshot) -> AllocationStatsSnapshot {
+        AllocationStatsSnapshot {
+            allocated_bytes: self.allocated_bytes.load(Relaxed) - previous.allocated_bytes,
+            allocated_objects: self.allocated_objects.load(Relaxed) - previous.allocated_objects,
+            deallocated_bytes: self.deallocated_bytes.load(Relaxed) - previous.deallocated_bytes,
+            deallocated_objects: self.deallocated_objects.load(Relaxed) - previous.deallocated_objects,
         }
     }
 }
 
-/// Delta allocation statistics for a group.
-pub struct AllocationStatsDelta {
-    /// Number of allocated bytes since the last delta.
+/// Snapshot of allocation statistics for a group.
+pub struct AllocationStatsSnapshot {
+    /// Number of allocated bytes since the last snapshot.
     pub allocated_bytes: usize,
 
-    /// Number of allocated objects since the last delta.
+    /// Number of allocated objects since the last snapshot.
     pub allocated_objects: usize,
 
-    /// Number of deallocated bytes since the last delta.
+    /// Number of deallocated bytes since the last snapshot.
     pub deallocated_bytes: usize,
 
-    /// Number of deallocated objects since the last delta.
+    /// Number of deallocated objects since the last snapshot.
     pub deallocated_objects: usize,
 }
 
-impl AllocationStatsDelta {
-    /// Creates an empty `AllocationStatsDelta`.
+impl AllocationStatsSnapshot {
+    /// Creates an empty `AllocationStatsSnapshot`.
     pub const fn empty() -> Self {
         Self {
             allocated_bytes: 0,
@@ -194,6 +197,16 @@ impl AllocationStatsDelta {
             deallocated_bytes: 0,
             deallocated_objects: 0,
         }
+    }
+
+    /// Returns the number of live allocated bytes.
+    pub fn live_bytes(&self) -> usize {
+        self.allocated_bytes - self.deallocated_bytes
+    }
+
+    /// Returns the number of live allocated objects.
+    pub fn live_objects(&self) -> usize {
+        self.allocated_objects - self.deallocated_objects
     }
 
     /// Merges `other` into `self`.

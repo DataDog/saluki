@@ -93,7 +93,9 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         .error_context("Failed to get API listen address.")?
         .unwrap_or_else(|| ListenAddress::Tcp(([127, 0, 0, 1], 5400).into()));
 
-    let primary_api = APIBuilder::new().with_handler(health_registry.api_handler());
+    let primary_api = APIBuilder::new()
+        .with_handler(health_registry.api_handler())
+        .with_handler(component_registry.api_handler());
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
     let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;

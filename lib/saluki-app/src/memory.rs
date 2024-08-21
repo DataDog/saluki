@@ -8,7 +8,7 @@ use std::{
 
 use bytesize::ByteSize;
 use memory_accounting::{
-    allocator::{AllocationGroupRegistry, AllocationStats, AllocationStatsDelta},
+    allocator::{AllocationGroupRegistry, AllocationStats, AllocationStatsSnapshot},
     ComponentRegistry, MemoryGrant, MemoryLimiter, VerifiedBounds,
 };
 use metrics::{counter, gauge, Counter, Gauge};
@@ -172,7 +172,7 @@ fn print_verified_bounds(bounds: VerifiedBounds) {
 }
 
 struct AllocationGroupMetrics {
-    totals: AllocationStatsDelta,
+    totals: AllocationStatsSnapshot,
     allocated_bytes_total: Counter,
     allocated_bytes_live: Gauge,
     allocated_objects_total: Counter,
@@ -184,7 +184,7 @@ struct AllocationGroupMetrics {
 impl AllocationGroupMetrics {
     fn new(group_name: &str) -> Self {
         Self {
-            totals: AllocationStatsDelta::empty(),
+            totals: AllocationStatsSnapshot::empty(),
             allocated_bytes_total: counter!("group_allocated_bytes_total", "group_id" => group_name.to_string()),
             allocated_bytes_live: gauge!("group_allocated_bytes_live", "group_id" => group_name.to_string()),
             allocated_objects_total: counter!("group_allocated_objects_total", "group_id" => group_name.to_string()),
@@ -195,14 +195,15 @@ impl AllocationGroupMetrics {
     }
 
     fn update(&mut self, stats: &AllocationStats) {
-        let delta = stats.consume();
-        self.totals.merge(&delta);
+        let delta = stats.snapshot_delta(&self.totals);
 
         self.allocated_bytes_total.increment(delta.allocated_bytes as u64);
         self.allocated_objects_total.increment(delta.allocated_objects as u64);
         self.deallocated_bytes_total.increment(delta.deallocated_bytes as u64);
         self.deallocated_objects_total
             .increment(delta.deallocated_objects as u64);
+
+        self.totals.merge(&delta);
         self.allocated_bytes_live
             .set((self.totals.allocated_bytes - self.totals.deallocated_bytes) as f64);
         self.allocated_objects_live
