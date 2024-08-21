@@ -1,7 +1,7 @@
 use saluki_config::GenericConfiguration;
 use tracing::info;
 
-use super::{ContainerdDetector, Feature};
+use super::{has_host_mapped_cgroupfs, has_host_mapped_procfs, ContainerdDetector, Feature};
 
 /// Detects workload features.
 ///
@@ -39,6 +39,16 @@ impl FeatureDetector {
 
     fn detect_features(config: &GenericConfiguration, feature_mask: Feature) -> Feature {
         let mut detected_features = Feature::none();
+
+        if feature_mask.contains(Feature::HostMappedProcfs) && has_host_mapped_procfs() {
+            info!("Detected presence of host-mapped procfs.");
+            detected_features |= Feature::HostMappedProcfs;
+        }
+
+        if feature_mask.contains(Feature::HostMappedCgroupfs) && has_host_mapped_cgroupfs() {
+            info!("Detected presence of host-mapped cgroupfs.");
+            detected_features |= Feature::HostMappedCgroupfs;
+        }
 
         if feature_mask.contains(Feature::Containerd) && ContainerdDetector::detect_grpc_socket_path(config).is_some() {
             info!("Detected presence of containerd.");
