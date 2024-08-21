@@ -136,5 +136,11 @@ lto = "thin"
 codegen-units = 4
 debug = true
 
+[profile.optimized-release]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+debug = false
+
 [workspace.lints.clippy]
 new_without_default = "allow"
