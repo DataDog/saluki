@@ -11,6 +11,7 @@ use serde::Deserialize;
 use snafu::Snafu;
 
 mod provider;
+mod remote;
 use self::provider::ResolvedProvider;
 
 /// A configuration error.

@@ -7,7 +7,9 @@ repository = { workspace = true }
 
 [dependencies]
 figment = { workspace = true, features = ["env", "json", "yaml"] }
+reqwest = { version = "0.12", default-features = false, features = ["http2", "rustls-tls-manual-roots-no-provider"] }
 saluki-error = { workspace = true }
+saluki-tls = { workspace = true }
 serde = { workspace = true }
 snafu = { workspace = true }
 tracing = { workspace = true }
