@@ -1,6 +1,7 @@
 FROM registry.ddbuild.io/images/mirror/ubuntu:14.04
 
 ARG RUST_VERSION=1.80.0
+ARG TARGETARCH
 
 # Install basic utilities and an updated compiler/binutils toolchain, which is necessary for compiling.
 RUN apt-get update && \
@@ -11,6 +12,11 @@ RUN apt-get update && \
     update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-8 60 --slave /usr/bin/g++ g++ /usr/bin/g++-8 && \
     rm -rf /var/lib/apt/lists/*
 ENV PATH="/usr/lib/binutils-2.26/bin:${PATH}"
+
+# Install Go, which we need to build AWS-LC in FIPS-compliant mode.
+ENV PATH="/usr/local/go/bin:${PATH}"
+RUN curl -s -L -o /tmp/go-1.23.0.tar.gz https://go.dev/dl/go1.23.0.linux-${TARGETARCH}.tar.gz
+RUN tar -C /usr/local -xzf /tmp/go-1.23.0.tar.gz
 
 # Install Protocol Buffers compiler by hand, since Ubuntu 14.04 does not have a recent enough version.
 COPY .ci/install-protoc.sh /

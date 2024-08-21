@@ -1,6 +1,6 @@
 //! Basic HTTP client.
 
-use std::{io, task::Poll};
+use std::task::Poll;
 
 use http::{Request, Response};
 use hyper::body::{Body, Incoming};
@@ -12,27 +12,44 @@ use hyper_util::{
     },
     rt::TokioExecutor,
 };
+use saluki_error::GenericError;
+use saluki_tls::ClientTLSConfigBuilder;
 use tower::{BoxError, Service};
 
 use crate::buf::ChunkedBuffer;
 
 pub type ChunkedHttpsClient<O> = HttpClient<HttpsConnector<HttpConnector>, ChunkedBuffer<O>>;
 
+/// A batteries-included HTTP client.
+///
+/// ## Features
+///
+/// - TLS support (HTTPS) using the platform's native certificate store
+/// - automatically selects between HTTP/1.1 and HTTP/2 based on ALPN negotiation
 pub struct HttpClient<C = (), B = ()> {
     inner: Client<C, B>,
 }
 
 impl HttpClient<(), ()> {
-    pub fn https<B>() -> io::Result<HttpClient<HttpsConnector<HttpConnector>, B>>
+    /// Creates a new `HttpClient` with default configuration.
+    ///
+    /// ## Errors
+    ///
+    /// If there was an error building the TLS configuration for the client, an error will be returned.
+    pub fn https<B>() -> Result<HttpClient<HttpsConnector<HttpConnector>, B>, GenericError>
     where
         B: Body + Unpin + Send + 'static,
         B::Data: Send,
         B::Error: std::error::Error + Send + Sync,
     {
-        HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .map(|builder| builder.https_or_http().enable_all_versions().build())
-            .map(HttpClient::from_connector)
+        let tls_config = ClientTLSConfigBuilder::new().build()?;
+        let connector = HttpsConnectorBuilder::new()
+            .with_tls_config(tls_config)
+            .https_or_http()
+            .enable_all_versions()
+            .build();
+
+        Ok(HttpClient::from_connector(connector))
     }
 }
 

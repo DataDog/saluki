@@ -6,6 +6,9 @@ generate-build-ci-image:
   rules:
     - when: manual
       allow_failure: true
+  before_script:
+    - export RUST_VERSION=$(grep channel rust-toolchain.toml | cut -d '"' -f 2)
+    - echo RUST_VERSION=${RUST_VERSION}
   script:
     - docker buildx build
       --platform linux/amd64,linux/arm64
@@ -15,6 +18,7 @@ generate-build-ci-image:
       --label git.commit=${CI_COMMIT_SHA}
       --label ci.pipeline_id=${CI_PIPELINE_ID}
       --label ci.job_id=${CI_JOB_ID}
+      --build-arg RUST_VERSION=${RUST_VERSION}
       --squash
       --push
       --file .ci/images/build/Dockerfile

@@ -17,6 +17,7 @@ members = [
   "lib/saluki-health",
   "lib/saluki-io",
   "lib/saluki-metrics",
+  "lib/saluki-tls",
   "lib/stringtheory",
 ]
 resolver = "2"
@@ -43,6 +44,7 @@ saluki-event = { path = "lib/saluki-event" }
 saluki-health = { path = "lib/saluki-health" }
 saluki-io = { path = "lib/saluki-io" }
 saluki-metrics = { path = "lib/saluki-metrics" }
+saluki-tls = { path = "lib/saluki-tls" }
 stringtheory = { path = "lib/stringtheory" }
 async-trait = { version = "0.1", default-features = false }
 axum = { version = "0.7", default-features = false }
@@ -81,7 +83,7 @@ quanta = { version = "0.12", default-features = false }
 rand = { version = "0.8.5", default-features = false }
 rand_distr = { version = "0.4.3", default-features = false }
 regex = { version = "1.10", default-features = false }
-rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "logging", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "fips", "logging", "std", "tls12"] }
 similar-asserts = { version = "1.5", default-features = false }
 slab = { version = "0.4", default-features = false }
 tokio-util = { version = "0.7.10", default-features = false }
@@ -119,6 +121,7 @@ simdutf8 = { version = "0.1.4", default-features = false }
 smallvec = { version = "1.13", default-features = false }
 windows-sys = { version = "0.52", default-features = false }
 cgroupfs = { version = "0.8", default-features = false }
+rustls-native-certs = { version = "0.7", default-features = false }
 
 [patch.crates-io]
 # Git dependency for `containerd-client` to:
