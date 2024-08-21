@@ -8,11 +8,11 @@ use std::{
 use async_trait::async_trait;
 use futures::FutureExt;
 use http::{Request, Uri};
-use http_body_util::BodyExt as _;
 use hyper::body::Incoming;
 use hyper_util::client::legacy::{Error, ResponseFuture};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::Counter;
+use retry::ReplayBody;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{destinations::*, ComponentContext, MetricsBuilder},
@@ -35,6 +35,7 @@ use tracing::{debug, error, trace};
 
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
+mod retry;
 
 const DEFAULT_SITE: &str = "datadoghq.com";
 const RB_BUFFER_POOL_COUNT: usize = 128;
@@ -297,7 +298,7 @@ impl MemoryBounds for DatadogMetricsConfiguration {
                 FixedSizeObjectPool<BytesBuffer>,
                 Box<
                     dyn Service<
-                        Request<ChunkedBuffer<FixedSizeObjectPool<BytesBuffer>>>,
+                        Request<ReplayBody<ChunkedBuffer<FixedSizeObjectPool<BytesBuffer>>>>,
                         Response = hyper::Response<Incoming>,
                         Error = Error,
                         Future = ResponseFuture,
@@ -310,7 +311,10 @@ impl MemoryBounds for DatadogMetricsConfiguration {
             // Capture the size of the requests channel.
             //
             // TODO: This type signature is _ugly_, and it would be nice to improve it somehow.
-            .with_array::<(usize, Request<ChunkedBuffer<FixedSizeObjectPool<BytesBuffer>>>)>(32);
+            .with_array::<(
+                usize,
+                Request<ReplayBody<ChunkedBuffer<FixedSizeObjectPool<BytesBuffer>>>>,
+            )>(32);
     }
 }
 
@@ -318,7 +322,7 @@ pub struct DatadogMetrics<O, S>
 where
     O: ObjectPool + 'static,
     O::Item: ReadWriteIoBuffer,
-    S: Service<Request<ChunkedBuffer<O>>> + 'static,
+    S: Service<Request<ReplayBody<ChunkedBuffer<O>>>> + 'static,
 {
     service: Box<S>,
     series_request_builder: RequestBuilder<O>,
@@ -330,7 +334,7 @@ impl<O, S> Destination for DatadogMetrics<O, S>
 where
     O: ObjectPool + 'static,
     O::Item: ReadWriteIoBuffer,
-    S: Service<Request<ChunkedBuffer<O>>, Response = hyper::Response<Incoming>> + Send + 'static,
+    S: Service<Request<ReplayBody<ChunkedBuffer<O>>>, Response = hyper::Response<Incoming>> + Send + 'static,
     S::Future: Send,
     S::Error: Send + Into<BoxError>,
 {
@@ -463,12 +467,12 @@ where
 }
 
 async fn run_io_loop<O, S>(
-    mut requests_rx: mpsc::Receiver<(usize, Request<ChunkedBuffer<O>>)>, io_shutdown_tx: oneshot::Sender<()>,
-    mut service: S, metrics: Metrics,
+    mut requests_rx: mpsc::Receiver<(usize, Request<ReplayBody<ChunkedBuffer<O>>>)>,
+    io_shutdown_tx: oneshot::Sender<()>, mut service: S, metrics: Metrics,
 ) where
     O: ObjectPool + 'static,
     O::Item: ReadWriteIoBuffer,
-    S: Service<Request<ChunkedBuffer<O>>, Response = hyper::Response<Incoming>> + Send + 'static,
+    S: Service<Request<ReplayBody<ChunkedBuffer<O>>>, Response = hyper::Response<Incoming>> + Send + 'static,
     S::Future: Send,
     S::Error: Send + Into<BoxError>,
 {

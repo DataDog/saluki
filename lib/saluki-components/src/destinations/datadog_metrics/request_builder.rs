@@ -1,8 +1,7 @@
-use std::{io, time::Duration};
-
 use datadog_protos::metrics::{self as proto, Resource};
 use http::{Method, Request, Uri};
 use protobuf::CodedOutputStream;
+use retry::ReplayBody;
 use saluki_core::pooling::ObjectPool;
 use saluki_env::time::get_unix_timestamp;
 use saluki_event::metric::*;
@@ -11,8 +10,11 @@ use saluki_io::{
     compression::*,
 };
 use snafu::{ResultExt, Snafu};
+use std::{io, time::Duration};
 use tokio::io::AsyncWriteExt as _;
 use tracing::{debug, trace};
+
+use super::retry;
 
 pub(super) const SCRATCH_BUF_CAPACITY: usize = 8192;
 
@@ -25,7 +27,9 @@ pub enum RequestBuilderError {
         endpoint: MetricsEndpoint,
     },
     #[snafu(display("failed to encode/write payload: {}", source))]
-    FailedToEncode { source: protobuf::Error },
+    FailedToEncode {
+        source: protobuf::Error,
+    },
     #[snafu(display(
         "request payload was too large after compressing ({} > {})",
         compressed_size_bytes,
@@ -36,9 +40,14 @@ pub enum RequestBuilderError {
         compressed_limit_bytes: usize,
     },
     #[snafu(display("failed to write/compress payload: {}", source))]
-    Io { source: io::Error },
+    Io {
+        source: io::Error,
+    },
     #[snafu(display("error when building API endpoint/request: {}", source))]
-    Http { source: http::Error },
+    Http {
+        source: http::Error,
+    },
+    FailedToCreateReplayBody,
 }
 
 impl RequestBuilderError {
@@ -220,7 +229,9 @@ where
     /// ## Errors
     ///
     /// If an error occurs while finalizing the compressor or creating the request, an error will be returned.
-    pub async fn flush(&mut self) -> Result<Option<(usize, Request<ChunkedBuffer<O>>)>, RequestBuilderError> {
+    pub async fn flush(
+        &mut self,
+    ) -> Result<Option<(usize, Request<ReplayBody<ChunkedBuffer<O>>>)>, RequestBuilderError> {
         if self.uncompressed_len == 0 {
             return Ok(None);
         }
@@ -254,20 +265,27 @@ where
         self.create_request(buffer).map(|req| Some((metrics_written, req)))
     }
 
-    fn create_request(&self, buffer: ChunkedBuffer<O>) -> Result<Request<ChunkedBuffer<O>>, RequestBuilderError> {
-        Request::builder()
-            .method(Method::POST)
-            .uri(self.api_uri.clone())
-            .header("Content-Type", "application/x-protobuf")
-            .header("Content-Encoding", "deflate")
-            .header("DD-API-KEY", self.api_key.clone())
-            // TODO: We can't access the version number of the package being built that _includes_ this library, so
-            // using CARGO_PKG_VERSION or something like that would always be the version of `saluki-components`, which
-            // isn't what we want... maybe we can figure out some way to shove it in a global somewhere or something?
-            .header("DD-Agent-Version", "0.1.0")
-            .header("User-Agent", "agent-data-plane/0.1.0")
-            .body(buffer)
-            .context(Http)
+    fn create_request(
+        &self, buffer: ChunkedBuffer<O>,
+    ) -> Result<Request<ReplayBody<ChunkedBuffer<O>>>, RequestBuilderError> {
+        match ReplayBody::try_new(buffer, self.endpoint.compressed_size_limit()) {
+            Ok(body) => {
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(self.api_uri.clone())
+                    .header("Content-Type", "application/x-protobuf")
+                    .header("Content-Encoding", "deflate")
+                    .header("DD-API-KEY", self.api_key.clone())
+                    // TODO: We can't access the version number of the package being built that _includes_ this library, so
+                    // using CARGO_PKG_VERSION or something like that would always be the version of `saluki-components`, which
+                    // isn't what we want... maybe we can figure out some way to shove it in a global somewhere or something?
+                    .header("DD-Agent-Version", "0.1.0")
+                    .header("User-Agent", "agent-data-plane/0.1.0")
+                    .body(body)
+                    .context(Http)
+            }
+            Err(_e) => Err(RequestBuilderError::FailedToCreateReplayBody),
+        }
     }
 }
 
