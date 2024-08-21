@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 
-use bytes::Buf;
 use message::MessageType;
 use nom::{
     branch::alt,
@@ -24,9 +23,7 @@ use saluki_metrics::static_metrics;
 use snafu::Snafu;
 
 mod message;
-use crate::buf::ReadIoBuffer;
 use crate::deser::codec::dogstatsd::message::parse_message_type;
-use crate::deser::Decoder;
 
 type NomParserError<'a> = nom::Err<nom::error::Error<&'a [u8]>>;
 
@@ -122,7 +119,7 @@ impl DogstatsdCodec<()> {
     }
 }
 
-impl<TMI> DogstatsdCodec<TMI> {
+impl<TMI: TagMetadataInterceptor> DogstatsdCodec<TMI> {
     /// Sets the given configuration for the codec.
     ///
     /// Different aspects of the codec's behavior (such as tag length, tag count, and timestamp parsing) can be
@@ -153,64 +150,17 @@ impl<TMI> DogstatsdCodec<TMI> {
         }
     }
 
-    fn decode_event<B: ReadIoBuffer>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, ParseError> {
-        let data = buf.chunk();
-        let (remaining, event) = parse_dogstatsd_event(data, &self.config)?;
-        events.push(Event::EventD(event));
-        buf.advance(data.len() - remaining.len());
-        Ok(1)
-    }
-
-    fn decode_service_check<B: ReadIoBuffer>(
-        &mut self, buf: &mut B, events: &mut EventBuffer,
-    ) -> Result<usize, ParseError> {
-        let data = buf.chunk();
-        let (remaining, service_check) = parse_dogstatsd_service_check(data, &self.config)?;
-        events.push(Event::ServiceCheck(service_check));
-        buf.advance(data.len() - remaining.len());
-        Ok(1)
-    }
-}
-
-#[derive(Debug, Snafu)]
-#[snafu(context(suffix(false)))]
-pub enum ParseError {
-    #[snafu(display("encountered error '{:?}' while processing message '{}'", kind, data))]
-    Structural { kind: nom::error::ErrorKind, data: String },
-}
-
-impl<'a> From<NomParserError<'a>> for ParseError {
-    fn from(err: NomParserError<'a>) -> Self {
-        match err {
-            nom::Err::Error(e) | nom::Err::Failure(e) => ParseError::Structural {
-                kind: e.code,
-                data: String::from_utf8_lossy(e.input).to_string(),
-            },
-            nom::Err::Incomplete(_) => unreachable!("dogstatsd codec only supports complete payloads"),
+    pub fn decode_packet(&self, data: &[u8], event_buffer: &mut EventBuffer) -> Result<usize, ParseError> {
+        match parse_message_type(data) {
+            MessageType::Event => self.decode_event(data, event_buffer),
+            MessageType::ServiceCheck => self.decode_service_check(data, event_buffer),
+            MessageType::MetricSample => self.decode_metric(data, event_buffer),
         }
     }
-}
 
-impl<TMI> Decoder for DogstatsdCodec<TMI>
-where
-    TMI: TagMetadataInterceptor,
-{
-    type Error = ParseError;
-
-    fn decode<B: ReadIoBuffer>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error> {
-        let data = buf.chunk();
-
-        let message_type = parse_message_type(data);
-        if message_type == MessageType::Event {
-            return self.decode_event(buf, events);
-        } else if message_type == MessageType::ServiceCheck {
-            return self.decode_service_check(buf, events);
-        }
-
-        // TODO: move metric parsing to its own method
-
+    fn decode_metric(&self, data: &[u8], events: &mut EventBuffer) -> Result<usize, ParseError> {
         // Decode the payload and get the representative parts of the metric.
-        let (remaining, (metric_name, tags_iter, values_iter, mut metadata)) =
+        let (_remaining, (metric_name, tags_iter, values_iter, mut metadata)) =
             parse_dogstatsd_metric(data, &self.config)?;
 
         // Build our filtered tag iterator, which we'll use to skip intercepted/dropped tags when building the context.
@@ -263,10 +213,38 @@ where
             events_decoded += 1;
         }
 
-        // Advance the input buffer by the number of bytes we consumed while parsing.
-        buf.advance(data.len() - remaining.len());
-
         value_err.unwrap_or(Ok(events_decoded))
+    }
+
+    fn decode_event(&self, data: &[u8], events: &mut EventBuffer) -> Result<usize, ParseError> {
+        let (_remaining, event) = parse_dogstatsd_event(data, &self.config)?;
+        events.push(Event::EventD(event));
+        Ok(1)
+    }
+
+    fn decode_service_check(&self, data: &[u8], events: &mut EventBuffer) -> Result<usize, ParseError> {
+        let (_remaining, service_check) = parse_dogstatsd_service_check(data, &self.config)?;
+        events.push(Event::ServiceCheck(service_check));
+        Ok(1)
+    }
+}
+
+#[derive(Debug, Snafu)]
+#[snafu(context(suffix(false)))]
+pub enum ParseError {
+    #[snafu(display("encountered error '{:?}' while processing message '{}'", kind, data))]
+    Structural { kind: nom::error::ErrorKind, data: String },
+}
+
+impl<'a> From<NomParserError<'a>> for ParseError {
+    fn from(err: NomParserError<'a>) -> Self {
+        match err {
+            nom::Err::Error(e) | nom::Err::Failure(e) => ParseError::Structural {
+                kind: e.code,
+                data: String::from_utf8_lossy(e.input).to_string(),
+            },
+            nom::Err::Incomplete(_) => unreachable!("dogstatsd codec only supports complete payloads"),
+        }
     }
 }
 
@@ -988,7 +966,7 @@ mod tests {
         parse_dogstatsd_event, parse_dogstatsd_metric, parse_dogstatsd_service_check, DogstatsdCodecConfiguration,
     };
     use super::{InterceptAction, TagMetadataInterceptor};
-    use crate::deser::{codec::DogstatsdCodec, Decoder};
+    use crate::deser::codec::DogstatsdCodec;
 
     enum OneOrMany<T> {
         Single(T),
@@ -1720,14 +1698,14 @@ mod tests {
 
     #[test]
     fn tag_interceptor() {
-        let mut codec = DogstatsdCodec::from_context_resolver(ContextResolver::with_noop_interner())
+        let codec = DogstatsdCodec::from_context_resolver(ContextResolver::with_noop_interner())
             .with_configuration(DogstatsdCodecConfiguration::default())
             .with_tag_metadata_interceptor(StaticInterceptor);
 
         let input = b"some_metric:1|c|#tag_a:should_pass,deprecated_tag_b:should_drop,host:should_intercept";
         let mut event_buffer = get_pooled_object_via_default::<EventBuffer>();
         let events_decoded = codec
-            .decode(&mut &input[..], &mut event_buffer)
+            .decode_packet(&input[..], &mut event_buffer)
             .expect("should not fail to decode");
         assert_eq!(events_decoded, 1);
 
