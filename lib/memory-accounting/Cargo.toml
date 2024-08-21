@@ -11,6 +11,9 @@ metrics = { workspace = true }
 ordered-float = { workspace = true }
 pin-project = { workspace = true }
 process-memory = { workspace = true }
+saluki-api = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 snafu = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing = { workspace = true }

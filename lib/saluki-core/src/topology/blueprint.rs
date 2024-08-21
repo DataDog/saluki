@@ -85,7 +85,7 @@ impl TopologyBlueprint {
 
         let mut source_registry = self
             .component_registry
-            .get_or_create(format!("components/sources/{}", component_id));
+            .get_or_create(format!("components.sources.{}", component_id));
         let mut bounds_builder = source_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
 
@@ -113,7 +113,7 @@ impl TopologyBlueprint {
 
         let mut transform_registry = self
             .component_registry
-            .get_or_create(format!("components/transforms/{}", component_id));
+            .get_or_create(format!("components.transforms.{}", component_id));
         let mut bounds_builder = transform_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
 
@@ -144,7 +144,7 @@ impl TopologyBlueprint {
 
         let mut destination_registry = self
             .component_registry
-            .get_or_create(format!("components/destinations/{}", component_id));
+            .get_or_create(format!("components.destinations.{}", component_id));
         let mut bounds_builder = destination_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
 
