@@ -192,7 +192,7 @@ impl DiscriminantUnion {
             //
             // As such, the length byte of an inlined string overlaps with the capacity field of an owned string.
             // Additionally, due to the integer fields being written in little-endian order, the "upper" byte of the
-            // capacity field -- the eight highest bits -- as actually written in the same location as the length byte
+            // capacity field -- the eight highest bits -- is actually written in the same location as the length byte
             // of an inlined string.
             //
             // Given that we know an inlined string cannot be any longer than 23 bytes, we know that the top-most bit in
@@ -238,7 +238,7 @@ impl DiscriminantUnion {
 union Inner {
     empty: EmptyUnion,
     owned: OwnedUnion,
-    _static: StaticUnion,
+    static_: StaticUnion,
     interned: ManuallyDrop<InternedUnion>,
     inlined: InlinedUnion,
     discriminant: DiscriminantUnion,
@@ -279,7 +279,7 @@ impl Inner {
         match value.len() {
             0 => Self::empty(),
             len => Self {
-                _static: StaticUnion {
+                static_: StaticUnion {
                     ptr: value.as_bytes().as_ptr() as *mut _,
                     len,
                     _cap: Zero::Zero,
@@ -334,8 +334,8 @@ impl Inner {
                 owned.as_str()
             }
             UnionType::Static => {
-                let _static = unsafe { &self._static };
-                _static.as_str()
+                let static_ = unsafe { &self.static_ };
+                static_.as_str()
             }
             UnionType::Interned => {
                 let interned = unsafe { &self.interned };
@@ -366,8 +366,8 @@ impl Inner {
                 owned.into_owned()
             }
             UnionType::Static => {
-                let _static = unsafe { self._static };
-                _static.as_str().to_owned()
+                let static_ = unsafe { self.static_ };
+                static_.as_str().to_owned()
             }
             UnionType::Interned => {
                 let interned = unsafe { &self.interned };
@@ -428,7 +428,7 @@ impl Clone for Inner {
                 Self::try_inlined(s).unwrap_or_else(|| Self::owned(s.to_owned()))
             }
             UnionType::Static => Self {
-                _static: unsafe { self._static },
+                static_: unsafe { self.static_ },
             },
             UnionType::Interned => {
                 let interned = unsafe { &self.interned };
@@ -676,6 +676,7 @@ mod tests {
 
         assert_eq!(s, &*meta);
         assert_eq!(meta.inner.get_union_type(), UnionType::Inlined);
+        assert_eq!(s, meta.into_owned());
     }
 
     #[test]
@@ -685,15 +686,18 @@ mod tests {
 
         assert_eq!(s, &*meta);
         assert_eq!(meta.inner.get_union_type(), UnionType::Static);
+        assert_eq!(s, meta.into_owned());
     }
 
     #[test]
     fn owned_string() {
-        let s = String::from("hello");
+        let s_orig = "hello";
+        let s = String::from(s_orig);
         let meta = MetaString::from(s);
 
-        assert_eq!("hello", &*meta);
+        assert_eq!(s_orig, &*meta);
         assert_eq!(meta.inner.get_union_type(), UnionType::Owned);
+        assert_eq!(s_orig, meta.into_owned());
     }
 
     #[test]
@@ -701,8 +705,9 @@ mod tests {
         let s = "hello";
         let meta = MetaString::from(s);
 
-        assert_eq!("hello", &*meta);
+        assert_eq!(s, &*meta);
         assert_eq!(meta.inner.get_union_type(), UnionType::Inlined);
+        assert_eq!(s, meta.into_owned());
     }
 
     #[test]
@@ -716,6 +721,7 @@ mod tests {
         let meta = MetaString::from(s);
         assert_eq!(intern_str, &*meta);
         assert_eq!(meta.inner.get_union_type(), UnionType::Interned);
+        assert_eq!(intern_str, meta.into_owned());
     }
 
     #[test]
@@ -729,6 +735,7 @@ mod tests {
         let meta = MetaString::from(s);
         assert_eq!(intern_str, &*meta);
         assert_eq!(meta.inner.get_union_type(), UnionType::Empty);
+        assert_eq!(intern_str, meta.into_owned());
     }
 
     #[test]
@@ -738,6 +745,7 @@ mod tests {
         let meta = MetaString::from_static(s);
         assert_eq!(s, &*meta);
         assert_eq!(meta.inner.get_union_type(), UnionType::Empty);
+        assert_eq!(s, meta.into_owned());
     }
 
     #[test]
@@ -747,17 +755,23 @@ mod tests {
         let meta = MetaString::try_inline(s).expect("empty string definitely 'fits'");
         assert_eq!(s, &*meta);
         assert_eq!(meta.inner.get_union_type(), UnionType::Empty);
+        assert_eq!(s, meta.into_owned());
     }
 
     #[test]
     fn empty_string_owned() {
         // When a string has capacity, we don't care if it's actually empty or not, because we want to preserve the
         // allocation... so our string here is empty but _does_ have capacity.
-        let s = String::with_capacity(4);
+        let s = String::with_capacity(32);
+        let actual_cap = s.capacity();
 
         let meta = MetaString::from(s);
         assert_eq!("", &*meta);
         assert_eq!(meta.inner.get_union_type(), UnionType::Owned);
+
+        let owned = meta.into_owned();
+        assert_eq!(owned.capacity(), actual_cap);
+        assert_eq!("", owned);
     }
 
     #[test]
@@ -768,6 +782,7 @@ mod tests {
         let meta = MetaString::from(s);
         assert_eq!("", &*meta);
         assert_eq!(meta.inner.get_union_type(), UnionType::Empty);
+        assert_eq!("", meta.into_owned());
     }
 
     fn arb_unicode_str_max_len(max_len: usize) -> impl Strategy<Value = String> {
