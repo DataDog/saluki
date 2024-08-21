@@ -1,0 +1,51 @@
+build-adp-image:
+  stage: build
+  tags: ["arch:amd64"]
+  image: ${DOCKER_BUILD_IMAGE}
+  variables:
+    # Compiling Rust is intensive. ¯\_(ツ)_/¯
+    KUBERNETES_CPU_REQUEST: "16"
+    KUBERNETES_MEMORY_REQUEST: "8Gi"
+    KUBERNETES_MEMORY_LIMIT: "12Gi"
+  script:
+    - docker buildx build
+      --platform linux/amd64,linux/arm64
+      --file ./docker/Dockerfile.agent-data-plane
+      --tag ${ADP_IMAGE_BASE}:${ADP_VERSION}
+      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
+      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
+      --build-arg BUILD_PROFILE=optimized-release
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --push
+      .
+
+build-converged-adp-image:
+  stage: build
+  tags: ["arch:amd64"]
+  image: ${DOCKER_BUILD_IMAGE}
+  id_tokens:
+    DDSIGN_ID_TOKEN:
+      aud: image-integrity
+  script:
+    - export IMAGE_TAG=${CONVERGED_AGENT_IMAGE_BASE}:${ADP_VERSION}
+    - docker buildx build
+      --platform linux/amd64,linux/arm64
+      --file ./docker/Dockerfile.datadog-agent
+      --metadata-file	/tmp/build.metadata
+      --build-arg "DD_AGENT_IMAGE=${DD_AGENT_IMAGE}"
+      --build-arg "ADP_IMAGE=${ADP_IMAGE_BASE}:${ADP_VERSION}"
+      --tag ${IMAGE_TAG}
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --push
+      .
+    - ddsign sign ${IMAGE_TAG} --docker-metadata-file /tmp/build.metadata
+  needs:
+    - build-adp-image
