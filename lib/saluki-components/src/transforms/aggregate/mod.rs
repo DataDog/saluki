@@ -20,7 +20,7 @@ use tracing::{debug, error, trace};
 const EVENT_BUFFER_POOL_SIZE: usize = 8;
 
 const fn default_window_duration() -> Duration {
-    Duration::from_secs(10)
+    Duration::from_secs(15)
 }
 
 const fn default_context_limit() -> usize {
