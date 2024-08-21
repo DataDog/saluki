@@ -130,24 +130,17 @@ fn extract_container_id(cgroup_name: &str, interner: &FixedSizeInterner<1>) -> O
     static CONTAINER_REGEX: LazyLock<Regex> =
         LazyLock::new(|| Regex::new("([0-9a-f]{64})|([0-9a-f]{32}-\\d+)|([0-9a-f]{8}(-[0-9a-f]{4}){4}$)").unwrap());
 
-    match CONTAINER_REGEX.find(cgroup_name) {
-        Some(name) => {
-            // NOTE: We've lifted this logic from the Datadog Agent [1] to handle filtering out certain control groups
-            // based on how systemd names them.
-            //
-            // [1]: https://github.com/DataDog/datadog-agent/blob/fe75b815c2f135f0d2ea85d7a57a8fc8cbf56bd9/pkg/util/cgroups/reader.go#L63-L77
-            if name.as_str().ends_with(".mount") || name.as_str().starts_with("crio-conmon-") {
+    CONTAINER_REGEX
+        .find(cgroup_name)
+        .filter(|name| {
+            // Filter out any systemd-managed cgroups, as well as CRI-O conmon cgroups, as they don't represent containers.
+            !name.as_str().ends_with(".mount") && !name.as_str().starts_with("crio-conmon-")
+        })
+        .and_then(|name| match interner.try_intern(name.as_str()) {
+            Some(interned) => Some(MetaString::from(interned)),
+            None => {
+                error!(container_id = %name.as_str(), "Failed to intern container ID.");
                 None
-            } else {
-                match interner.try_intern(name.as_str()) {
-                    Some(interned) => Some(MetaString::from(interned)),
-                    None => {
-                        error!(container_id = %name.as_str(), "Failed to intern container ID.");
-                        None
-                    }
-                }
             }
-        }
-        None => None,
-    }
+        })
 }
