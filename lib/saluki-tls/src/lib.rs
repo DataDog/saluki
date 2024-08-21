@@ -9,7 +9,7 @@ use tracing::debug;
 /// Tracks if the default cryptography provider for `rustls` has been set.
 static DEFAULT_CRYPTO_PROVIDER_SET: OnceLock<()> = OnceLock::new();
 
-/// Defaults root certificate store to use for TLS when one isn't explicitly provided.
+/// Default root certificate store to use for TLS when one isn't explicitly provided.
 static DEFAULT_ROOT_CERT_STORE_MUTEX: Mutex<()> = Mutex::new(());
 static DEFAULT_ROOT_CERT_STORE: OnceLock<Arc<RootCertStore>> = OnceLock::new();
 
@@ -21,11 +21,10 @@ const DEFAULT_MAX_TLS12_RESUMPTION_SESSIONS: usize = 8;
 /// Exposes various options for configuring a client's TLS configuration that would otherwise be cumbersome to
 /// configure, and provides sane defaults for many common options.
 ///
-/// ## Caveats
+/// ## Missing
 ///
-/// This builder currently _enforces_ that the configuration is FIPS compliant, which requires that the cryptography
-/// provider, and certain client options, are set to FIPS-compliant values. If the configuration as-built is not FIPS
-/// compliant, an error will be thrown when building the configuration.
+/// - ability to disable FIPS mode (i.e. FIPS mode is always enforced)
+/// - ability to configure client authentication
 pub struct ClientTLSConfigBuilder {
     max_tls12_resumption_sessions: Option<usize>,
     root_cert_store: Option<RootCertStore>,
@@ -55,6 +54,13 @@ impl ClientTLSConfigBuilder {
         self
     }
 
+    /// Builds the client TLS configuration.
+    ///
+    /// ## Errors
+    ///
+    /// If the default root cert store (see [`load_platform_root_certificates`]) has not been initialized, and a root
+    /// cert store has not been provided, or if the resulting configuration is not FIPS compliant, an error will be
+    /// returned.
     pub fn build(self) -> Result<ClientConfig, GenericError> {
         let max_tls12_resumption_sessions = self
             .max_tls12_resumption_sessions
@@ -71,7 +77,7 @@ impl ClientTLSConfigBuilder {
             .with_root_certificates(root_cert_store)
             .with_no_client_auth();
 
-        // One unfortunate thing is that by creating `config` above, it assign the default value for `Resumption` before
+        // One unfortunate thing is that by creating `config` above, it assigns the default value for `Resumption` before
         // we reset it down here... which means the big, beefy default one gets allocated and then immediately thrown
         // away.
         config.resumption = Resumption::in_memory_sessions(max_tls12_resumption_sessions);
@@ -105,7 +111,7 @@ pub fn initialize_default_crypto_provider() -> Result<(), GenericError> {
     // Set the process-wide default `CryptoProvider` to AWS-LC.
     //
     // This locks in AWS-LC as the default provider for all future TLS configurations, regardless of whether they use
-    // the configuration builders here or not. (The main caveat is that it's only relevant is `rustls` is being used.)
+    // the configuration builders here or not. (The main caveat is that it's only relevant if `rustls` is being used.)
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .map_err(|_| generic_error!("Failed to install AWS-LC as default cryptography provider. This is likely due to a conflicting provider already being installed."))?;

@@ -16,7 +16,8 @@ members = [
   "lib/saluki-event",
   "lib/saluki-health",
   "lib/saluki-io",
-  "lib/saluki-metrics", "lib/saluki-tls",
+  "lib/saluki-metrics",
+  "lib/saluki-tls",
   "lib/stringtheory",
 ]
 resolver = "2"
