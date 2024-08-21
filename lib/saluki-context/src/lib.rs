@@ -950,4 +950,43 @@ mod tests {
             get_context_arc_pointer_value(&context1_redo)
         );
     }
+
+    #[test]
+    fn duplicate_tags() {
+        let mut resolver: ContextResolver = ContextResolver::with_noop_interner();
+
+        // Two contexts with the same name, but each with a different set of duplicate tags:
+        let name = "metric_name";
+        let tags1 = ["tag1"];
+        let tags1_duplicated = ["tag1", "tag1"];
+        let tags2 = ["tag2"];
+        let tags2_duplicated = ["tag2", "tag2"];
+
+        let ref1 = resolver.create_context_ref(name, &tags1);
+        let ref1_duplicated = resolver.create_context_ref(name, &tags1_duplicated);
+        let ref2 = resolver.create_context_ref(name, &tags2);
+        let ref2_duplicated = resolver.create_context_ref(name, &tags2_duplicated);
+
+        let context1 = resolver.resolve(ref1).expect("should not fail to resolve");
+        let context1_duplicated = resolver.resolve(ref1_duplicated).expect("should not fail to resolve");
+        let context2 = resolver.resolve(ref2).expect("should not fail to resolve");
+        let context2_duplicated = resolver.resolve(ref2_duplicated).expect("should not fail to resolve");
+
+        // Each non-duplicated/duplicated context pair should be equal to one another:
+        assert_eq!(context1, context1_duplicated);
+        assert_eq!(context2, context2_duplicated);
+
+        // Each pair should not be equal to the other pair, however.
+        //
+        // What we're asserting here is that, if we didn't handle duplicate tags correctly, the XOR hashing of [tag1,
+        // tag1] and [tag2, tag2] would result in the same hash value, since the second duplicate hash of tag1/tag2
+        // would cancel out the first... and thus all that would be left is the hash of the name itself, which is the
+        // same in this test. This would lead to the contexts being equal, which is obviously wrong.
+        //
+        // If we're handling duplicates properly, then the resulting context hashes _shouldn't_ be equal.
+        assert_ne!(context1, context2);
+        assert_ne!(context1_duplicated, context2_duplicated);
+        assert_ne!(context1, context2_duplicated);
+        assert_ne!(context2, context1_duplicated);
+    }
 }
