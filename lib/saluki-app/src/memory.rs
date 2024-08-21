@@ -228,7 +228,7 @@ pub async fn initialize_allocator_telemetry() -> Result<(), GenericError> {
     // We can't enforce, at compile-time, that the tracking allocator must be installed if a caller is trying to
     // initialize the allocator's reporting infrastructure... but we can at least warn them if we detect it's not
     // installed here at runtime.
-    if AllocationGroupRegistry::allocator_installed() {
+    if !AllocationGroupRegistry::allocator_installed() {
         warn!("Tracking allocator not installed. Memory telemetry will not be available.");
     }
 
