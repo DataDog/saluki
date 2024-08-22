@@ -98,7 +98,10 @@ impl MetricValue {
     /// The value will be divided by the interval, in seconds, to create a normalized per-second rate.
     pub fn rate_seconds(value: f64, interval: Duration) -> Self {
         let rate_value = value / interval.as_secs_f64();
-        Self::Rate { value: rate_value, interval }
+        Self::Rate {
+            value: rate_value,
+            interval,
+        }
     }
 
     /// Merges another metric value into this one.

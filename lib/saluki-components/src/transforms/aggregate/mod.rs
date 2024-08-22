@@ -426,7 +426,11 @@ impl AggregationState {
 
     fn get_or_create_bucket(&mut self, timestamp: u64) -> &mut Bucket {
         let bucket_start = align_to_bucket_start(timestamp, self.bucket_width);
-        match self.buckets.iter_mut().position(|bucket| bucket.start() == bucket_start) {
+        match self
+            .buckets
+            .iter_mut()
+            .position(|bucket| bucket.start() == bucket_start)
+        {
             Some(idx) => &mut self.buckets[idx],
             None => {
                 self.buckets.push(Bucket::new(bucket_start, self.bucket_width));
@@ -456,7 +460,6 @@ impl AggregationState {
     fn flush(&mut self, current_time: u64, flush_open_buckets: bool, event_buffer: &mut EventBuffer) {
         let zero_value = MetricValue::rate_seconds(0.0, self.bucket_width);
         let counter_expiry_secs = self.counter_expiry_duration.as_secs();
-        let mut zero_value_counters_flushed = 0;
 
         debug!(
             buckets_len = self.buckets.len(),
@@ -464,81 +467,84 @@ impl AggregationState {
             "Flushing buckets."
         );
 
-        // Before iterating over our buckets, sort them from oldest to newest. This provides us the ability to more
-        // efficiently handle zero-value counter updates since we can just track last seen timestamps against the bucket
-        // start.
-        self.buckets.sort_unstable_by_key(|bucket| bucket.start());
-
-        // Create a list of all possible buckets that could exist between the last flush and now, which will let us
-        // figure out which buckets we need to emit zero-value counters for when there's no activity.
-        let mut possible_buckets = Vec::new();
-
+        // Collect a list of all closed buckets between the last flush and now. This includes buckets that never had any
+        // points inserted into them, which we track in order to emit zero-value counters for.
+        let mut buckets_to_flush = Vec::new();
         let mut i = 0;
         while i < self.buckets.len() {
             if self.buckets[i].is_closed(current_time, flush_open_buckets) {
-                // Consume the bucket since it's closed and needs to be flushed.
-                let bucket = self.buckets.remove(i);
-                let (bucket_start, bucket_end, contexts) = bucket.into_parts();
-
-                debug!(bucket_start, bucket_len = contexts.len(), "Flushing bucket.");
-
-                for (context, (value, metadata)) in contexts {
-                    // If this is a counter metric, handle tracking it for the purpose of zero-value counters.
-                    if let MetricValue::Counter { .. } = &value {
-                        // We use the bucket end as the last seen timestamp because we don't know if the counter was
-                        // added at the very beginning of the bucket, or the end of it, so by using the bucket end, we
-                        // ensure that we don't premature expire zero-value counters... even if it means we keep them
-                        // around a little longer than necessary.
-                        if let Some((last_seen, _)) = self.zero_value_counters.get_mut(&context) {
-                            *last_seen = bucket_end;
-                        } else {
-                            self.zero_value_counters
-                                .insert(context.clone(), (bucket_end, metadata.clone()));
-                        }
-                    } else {
-                        // Remove the context from our tracked contexts since it's now going away. We'll handle removing
-                        // contexts from expired zero-value counters further down.
-                        //
-                        // TODO: This isn't necessarily correct since a subsequent bucket that isn't closed yet could
-                        // still contain this context. We need more of a reference counting mechanism.
-                        self.contexts.remove(&context);
-                    }
-
-                    // Convert any counters to rates, so that we can properly account for their aggregated status.
-                    let value = match value {
-                        MetricValue::Counter { value } => MetricValue::rate_seconds(value, self.bucket_width),
-                        _ => value,
-                    };
-                    let metric = Metric::from_parts(context, value, metadata);
-                    event_buffer.push(Event::Metric(metric));
-                }
-
-                // For any zero-value counters we're tracking, that weren't seen in this bucket, emit a zero-value data
-                // point for them.
-                for (context, (last_seen, metadata)) in &self.zero_value_counters {
-                    // The counter's last seen should be equal to the current bucket's end if we actually observed it in
-                    // this bucket, especially since we iterate over the buckets from oldest to newest.
-                    if *last_seen != bucket_end {
-                        // Update our timestamp to coincide with the start of the bucket.
-                        let metadata = metadata.clone().with_timestamp(bucket_start);
-                        let metric = Metric::from_parts(context.clone(), zero_value.clone(), metadata);
-    
-                        event_buffer.push(Event::Metric(metric));
-    
-                        zero_value_counters_flushed += 1;
-                    }
-                }
-            } else {
+                buckets_to_flush.push(self.buckets.remove(i));
                 i += 1;
             }
         }
 
-        if zero_value_counters_flushed > 0 {
-            debug!(num_flushed = zero_value_counters_flushed, "Flushed zero-value counters.");
+        if self.last_flush != 0 {
+            // We only add in missing empty buckets if we've flushed before, since otherwise we'd be emitting buckets
+            // since the beginning of time... and more practically, we won't have any zero-value counters to emit unless
+            // we've actually flushed at least once.
+            let start = align_to_bucket_start(self.last_flush, self.bucket_width);
+            let bucket_width = self.bucket_width.as_secs() as usize;
+
+            for bucket_start in (start..current_time).step_by(bucket_width) {
+                buckets_to_flush.push(Bucket::new(bucket_start, self.bucket_width));
+            }
+        };
+
+        buckets_to_flush.sort_unstable_by_key(|bucket| bucket.start());
+
+        // Iterate over each bucket that we need to flush.
+        for bucket in buckets_to_flush {
+            let (bucket_start, bucket_end, contexts) = bucket.into_parts();
+            debug!(bucket_start, bucket_len = contexts.len(), "Flushing bucket.");
+
+            for (context, (value, metadata)) in contexts {
+                // If this is a counter metric, handle tracking it for the purpose of zero-value counters.
+                //
+                // We set the "last seen" value to match the end of the bucket, since we don't know _when_ exactly we
+                // saw it, and we want to be maximally conservative here.
+                if let MetricValue::Counter { .. } = &value {
+                    if let Some((last_seen, existing_metadata)) = self.zero_value_counters.get_mut(&context) {
+                        *last_seen = bucket_end;
+                        *existing_metadata = metadata.clone();
+                    } else {
+                        self.zero_value_counters
+                            .insert(context.clone(), (bucket_end, metadata.clone()));
+                    }
+                } else {
+                    // Remove the context from our tracked contexts since it's now going away. We'll handle removing
+                    // contexts from expired zero-value counters further down.
+                    //
+                    // TODO: This isn't necessarily correct since a subsequent bucket that isn't closed yet could
+                    // still contain this context. We need more of a reference counting mechanism.
+                    self.contexts.remove(&context);
+                }
+
+                // Emit the metric to our event buffer, converting it to a rate first if it's a counter.
+                let value = match value {
+                    MetricValue::Counter { value } => MetricValue::rate_seconds(value, self.bucket_width),
+                    _ => value,
+                };
+                let metric = Metric::from_parts(context, value, metadata);
+                event_buffer.push(Event::Metric(metric));
+            }
+
+            // For any zero-value counters we're tracking that weren't updated in this bucket, and aren't yet expired as
+            // of this bucket, emit them here.
+            for (context, (last_seen, metadata)) in &self.zero_value_counters {
+                if *last_seen == bucket_end || *last_seen + counter_expiry_secs < bucket_start {
+                    continue;
+                }
+
+                // Update our timestamp to coincide with the start of the bucket.
+                let metadata = metadata.clone().with_timestamp(bucket_start);
+                let metric = Metric::from_parts(context.clone(), zero_value.clone(), metadata);
+
+                event_buffer.push(Event::Metric(metric));
+            }
         }
 
-        // Now we take a final pass over all tracked zero-value counters to see if any of them have completely expired,
-        // and if so, we'll remove them.
+        // Now that we've flushed all buckets, empty or not, figure out which zero-value counters have expired, and
+        // remove them.
         let mut counters_to_remove = Vec::new();
 
         for (context, (last_seen, _)) in &self.zero_value_counters {
@@ -546,8 +552,10 @@ impl AggregationState {
                 counters_to_remove.push(context.clone());
             }
         }
+
         if !counters_to_remove.is_empty() {
             let num_removed = counters_to_remove.len();
+
             for context in counters_to_remove {
                 self.zero_value_counters.remove(&context);
                 self.contexts.remove(&context);
@@ -555,6 +563,8 @@ impl AggregationState {
 
             debug!(num_removed, "Removed expired zero-value counters.");
         }
+
+        self.last_flush = current_time;
     }
 }
 
@@ -574,12 +584,45 @@ mod tests {
 
     const BUCKET_WIDTH_SECS: u64 = 10;
     const BUCKET_WIDTH: Duration = Duration::from_secs(BUCKET_WIDTH_SECS);
-    const FIRST_INSERT_TS: u64 = BUCKET_WIDTH_SECS - 1;
-    const FIRST_FLUSH_TS: u64 = BUCKET_WIDTH_SECS;
-    const SECOND_INSERT_TS: u64 = (BUCKET_WIDTH_SECS * 2) - 1;
-    const SECOND_FLUSH_TS: u64 = BUCKET_WIDTH_SECS * 2;
-    const THIRD_INSERT_TS: u64 = (BUCKET_WIDTH_SECS * 3) - 1;
-    const THIRD_FLUSH_TS: u64 = BUCKET_WIDTH_SECS * 3;
+    const ZVC_EXPIRE_SECS: u64 = 20;
+    const ZVC_EXPIRE: Duration = Duration::from_secs(ZVC_EXPIRE_SECS);
+
+    const fn bucket_start_ts(step: u64) -> u64 {
+        align_to_bucket_start(insert_ts(step), BUCKET_WIDTH)
+    }
+
+    const fn insert_ts(step: u64) -> u64 {
+        (BUCKET_WIDTH_SECS * (step + 1)) - 1
+    }
+
+    const fn flush_ts(step: u64) -> u64 {
+        BUCKET_WIDTH_SECS * (step + 1)
+    }
+
+    #[track_caller]
+    fn assert_inserted_counter(step: u64, original: &Metric, emitted: &Metric) {
+        assert_eq!(original.context(), emitted.context());
+
+        let original_value = match original.value() {
+            MetricValue::Counter { value } => *value,
+            _ => panic!("expected counter metric"),
+        };
+
+        let expected_value = MetricValue::rate_seconds(original_value, BUCKET_WIDTH);
+        assert_eq!(emitted.value(), &expected_value);
+
+        assert_eq!(emitted.metadata().timestamp(), Some(bucket_start_ts(step)));
+    }
+
+    #[track_caller]
+    fn assert_zero_value_counter(step: u64, original: &Metric, emitted: &Metric) {
+        assert_eq!(original.context(), emitted.context());
+
+        let expected_value = MetricValue::rate_seconds(0.0, BUCKET_WIDTH);
+        assert_eq!(emitted.value(), &expected_value);
+
+        assert_eq!(emitted.metadata().timestamp(), Some(bucket_start_ts(step)));
+    }
 
     fn get_event_buffer() -> EventBuffer {
         get_pooled_object_via_default::<EventBuffer>()
@@ -593,7 +636,10 @@ mod tests {
             .into_iter()
             .filter_map(|event| event.try_into_metric())
             .collect::<Vec<_>>();
-        metrics.sort_by(|a, b| a.context().name().cmp(b.context().name()));
+        metrics.sort_by(|a, b| match a.metadata().timestamp().cmp(&b.metadata().timestamp()) {
+            std::cmp::Ordering::Equal => a.context().name().cmp(b.context().name()),
+            other => other,
+        });
         metrics
     }
 
@@ -616,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn is_bucket_closed_with_and_without_flush_open_buckets() {
+    fn bucket_is_closed() {
         // Cases are defined as:
         // (current time, bucket start, bucket width, flush open buckets, expected result)
         let cases = [
@@ -665,23 +711,23 @@ mod tests {
         let metric3 = create_gauge("metric3", 3.0);
         let metric4 = create_gauge("metric4", 4.0);
 
-        assert!(state.insert(FIRST_INSERT_TS, metric1.clone()));
-        assert!(state.insert(FIRST_INSERT_TS, metric2.clone()));
-        assert!(!state.insert(FIRST_INSERT_TS, metric3.clone()));
-        assert!(!state.insert(FIRST_INSERT_TS, metric4.clone()));
+        assert!(state.insert(insert_ts(1), metric1.clone()));
+        assert!(state.insert(insert_ts(1), metric2.clone()));
+        assert!(!state.insert(insert_ts(1), metric3.clone()));
+        assert!(!state.insert(insert_ts(1), metric4.clone()));
 
         // We should only see the first two gauges after flushing.
-        let metrics = get_flushed_metrics(FIRST_FLUSH_TS, &mut state);
+        let metrics = get_flushed_metrics(flush_ts(1), &mut state);
         assert_eq!(metrics.len(), 2);
         assert_eq!(metrics[0].context(), metric1.context());
         assert_eq!(metrics[1].context(), metric2.context());
 
         // We should be able to insert the third and fourth gauges now as the first two have been flushed, and along
         // with them, their contexts should no longer be tracked in the aggregation state:
-        assert!(state.insert(SECOND_INSERT_TS, metric3.clone()));
-        assert!(state.insert(SECOND_INSERT_TS, metric4.clone()));
+        assert!(state.insert(insert_ts(2), metric3.clone()));
+        assert!(state.insert(insert_ts(2), metric4.clone()));
 
-        let metrics = get_flushed_metrics(SECOND_FLUSH_TS, &mut state);
+        let metrics = get_flushed_metrics(flush_ts(2), &mut state);
         assert_eq!(metrics.len(), 2);
         assert_eq!(metrics[0].context(), metric3.context());
         assert_eq!(metrics[1].context(), metric4.context());
@@ -696,53 +742,75 @@ mod tests {
         let metric1 = create_counter("metric1", 1.0);
         let metric2 = create_counter("metric2", 2.0);
 
-        assert!(state.insert(FIRST_INSERT_TS, metric1.clone()));
-        assert!(state.insert(FIRST_INSERT_TS, metric2.clone()));
+        assert!(state.insert(insert_ts(1), metric1.clone()));
+        assert!(state.insert(insert_ts(1), metric2.clone()));
 
         // Flush the aggregation state, and observe they're both present.
-        let metrics = get_flushed_metrics(FIRST_FLUSH_TS, &mut state);
+        let metrics = get_flushed_metrics(flush_ts(1), &mut state);
         assert_eq!(metrics.len(), 2);
-        assert_eq!(metrics[0].context(), metric1.context());
-        assert_eq!(
-            metrics[0].value(),
-            &MetricValue::rate_seconds(1.0, BUCKET_WIDTH),
-        );
-        assert_eq!(metrics[1].context(), metric2.context());
-        assert_eq!(
-            metrics[1].value(),
-            &MetricValue::rate_seconds(2.0, BUCKET_WIDTH),
-        );
+        assert_inserted_counter(1, &metric1, &metrics[0]);
+        assert_inserted_counter(1, &metric2, &metrics[1]);
 
         // Flush _again_ to ensure that we then emit zero-value variants for both counters.
-        let metrics = get_flushed_metrics(SECOND_FLUSH_TS, &mut state);
-        assert_eq!(metrics.len(), 2);
-        assert_eq!(metrics[0].context(), metric1.context());
-        assert_eq!(
-            metrics[0].value(),
-            &MetricValue::rate_seconds(0.0, BUCKET_WIDTH),
-        );
-        assert_eq!(metrics[1].context(), metric2.context());
-        assert_eq!(
-            metrics[1].value(),
-            &MetricValue::rate_seconds(0.0, BUCKET_WIDTH),
-        );
+        let metrics = get_flushed_metrics(flush_ts(2), &mut state);
+        assert_zero_value_counter(2, &metric1, &metrics[0]);
+        assert_zero_value_counter(2, &metric2, &metrics[1]);
 
         // Now try to insert a third counter, which should fail because we've reached the context limit.
         let metric3 = create_counter("metric3", 3.0);
-        assert!(!state.insert(THIRD_INSERT_TS, metric3.clone()));
+        assert!(!state.insert(insert_ts(3), metric3.clone()));
 
         // Flush the aggregation state, and observe that we only see the two original counters.
-        let metrics = get_flushed_metrics(THIRD_FLUSH_TS, &mut state);
+        let metrics = get_flushed_metrics(flush_ts(3), &mut state);
+        assert_zero_value_counter(3, &metric1, &metrics[0]);
+        assert_zero_value_counter(3, &metric2, &metrics[1]);
+    }
+
+    #[test]
+    fn zero_value_counters() {
+        // We're testing that we properly emit and expire zero-value counters in all relevant scenarios.
+        let mut state = AggregationState::new(BUCKET_WIDTH, 10, ZVC_EXPIRE);
+
+        // Create two unique counters, and insert both of them.
+        let metric1 = create_counter("metric1", 1.0);
+        let metric2 = create_counter("metric2", 2.0);
+
+        assert!(state.insert(insert_ts(1), metric1.clone()));
+        assert!(state.insert(insert_ts(1), metric2.clone()));
+
+        // Flush the aggregation state, and observe they're both present.
+        let metrics = get_flushed_metrics(flush_ts(1), &mut state);
         assert_eq!(metrics.len(), 2);
-        assert_eq!(metrics[0].context(), metric1.context());
-        assert_eq!(
-            metrics[0].value(),
-            &MetricValue::rate_seconds(0.0, BUCKET_WIDTH),
-        );
-        assert_eq!(metrics[1].context(), metric2.context());
-        assert_eq!(
-            metrics[1].value(),
-            &MetricValue::rate_seconds(0.0, BUCKET_WIDTH),
-        );
+        assert_inserted_counter(1, &metric1, &metrics[0]);
+        assert_inserted_counter(1, &metric2, &metrics[1]);
+
+        // Perform our second flush, which should have them as zero-value counters.
+        let metrics = get_flushed_metrics(flush_ts(2), &mut state);
+        assert_eq!(metrics.len(), 2);
+        assert_zero_value_counter(2, &metric1, &metrics[0]);
+        assert_zero_value_counter(2, &metric2, &metrics[1]);
+
+        // Now, we'll pretend to skip a flush period and add updates to them again after that.
+        assert!(state.insert(insert_ts(4), metric1.clone()));
+        assert!(state.insert(insert_ts(4), metric2.clone()));
+
+        // Flush the aggregation state, and observe that we have two zero-value counters for the flush period we
+        // skipped, but that we see them appear again in the fourth flush period.
+        let metrics = get_flushed_metrics(flush_ts(4), &mut state);
+        assert_eq!(metrics.len(), 4);
+        assert_zero_value_counter(3, &metric1, &metrics[0]);
+        assert_zero_value_counter(3, &metric2, &metrics[1]);
+        assert_inserted_counter(4, &metric1, &metrics[2]);
+        assert_inserted_counter(4, &metric2, &metrics[3]);
+
+        // Now we'll skip multiple flush periods and ensure that we emit zero-value counters up until the point they
+        // expire. As our zero-value counter expiration is 20 seconds, this is two flush periods, so we skip by three
+        // flush periods, and we should only see the counters emitted for the first two.
+        let metrics = get_flushed_metrics(flush_ts(7), &mut state);
+        assert_eq!(metrics.len(), 4);
+        assert_zero_value_counter(5, &metric1, &metrics[0]);
+        assert_zero_value_counter(5, &metric2, &metrics[1]);
+        assert_zero_value_counter(6, &metric1, &metrics[2]);
+        assert_zero_value_counter(6, &metric2, &metrics[3]);
     }
 }
