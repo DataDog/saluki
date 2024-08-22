@@ -1,6 +1,6 @@
 //! Basic HTTP client.
 
-use std::task::Poll;
+use std::{task::Poll, time::Duration};
 
 use http::{Request, Response};
 use hyper::body::{Body, Incoming};
@@ -42,12 +42,15 @@ impl HttpClient<(), ()> {
         B::Data: Send,
         B::Error: std::error::Error + Send + Sync,
     {
+        let mut http_connector = HttpConnector::new();
+        http_connector.set_connect_timeout(Some(Duration::from_secs(30)));
+
         let tls_config = ClientTLSConfigBuilder::new().build()?;
         let connector = HttpsConnectorBuilder::new()
             .with_tls_config(tls_config)
             .https_or_http()
             .enable_all_versions()
-            .build();
+            .wrap_connector(http_connector);
 
         Ok(HttpClient::from_connector(connector))
     }
