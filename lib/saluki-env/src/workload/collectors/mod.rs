@@ -4,7 +4,9 @@ use tracing::{debug, error};
 
 use super::metadata::MetadataOperation;
 
+#[cfg(target_os = "linux")]
 mod cgroups_v2;
+#[cfg(target_os = "linux")]
 pub use self::cgroups_v2::CGroupsV2MetadataCollector;
 
 mod containerd;

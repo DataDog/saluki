@@ -1,5 +1,6 @@
 use std::{fmt, slice, vec};
 
+#[cfg(target_os = "linux")]
 pub mod cgroups;
 pub mod containerd;
 pub mod tonic;
