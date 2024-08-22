@@ -63,7 +63,7 @@ where
     pub fn from_connector(connector: C) -> Self {
         HttpClient {
             inner: Client::builder(TokioExecutor::new())
-                .pool_max_idle_per_host(100)
+                .pool_max_idle_per_host(5)
                 .build(connector),
         }
     }
