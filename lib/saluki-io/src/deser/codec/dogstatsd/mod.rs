@@ -11,7 +11,7 @@ use nom::{
     sequence::{delimited, preceded, separated_pair, terminated},
     IResult,
 };
-use saluki_context::{ContextRef, ContextResolver};
+use saluki_context::ContextResolver;
 use saluki_core::topology::interconnect::EventBuffer;
 use saluki_event::{
     eventd::{AlertType, EventD, Priority},
@@ -167,7 +167,9 @@ impl<TMI: TagMetadataInterceptor> DogstatsdCodec<TMI> {
         let filtered_tags_iter = TagFilterer::new(tags_iter.clone(), &self.tag_metadata_interceptor);
 
         // Try resolving the context first, since we might need to bail if we can't.
-        let context_ref = ContextRef::from_name_and_tags(metric_name, filtered_tags_iter);
+        let context_ref = self
+            .context_resolver
+            .create_context_ref(metric_name, filtered_tags_iter);
         let context = match self.context_resolver.resolve(context_ref) {
             Some(context) => context,
             None => {
@@ -952,7 +954,7 @@ mod tests {
 
     use nom::IResult;
     use proptest::{collection::vec as arb_vec, prelude::*};
-    use saluki_context::{ContextRef, ContextResolver};
+    use saluki_context::ContextResolver;
     use saluki_core::{pooling::helpers::get_pooled_object_via_default, topology::interconnect::EventBuffer};
     use saluki_event::{
         eventd::EventD,
@@ -1001,8 +1003,8 @@ mod tests {
     }
 
     fn create_metric_with_tags(name: &str, tags: &[&str], value: MetricValue) -> Metric {
-        let context_resolver: ContextResolver = ContextResolver::with_noop_interner();
-        let context_ref = ContextRef::from_name_and_tags(name, tags);
+        let mut context_resolver: ContextResolver = ContextResolver::with_noop_interner();
+        let context_ref = context_resolver.create_context_ref(name, tags);
         let context = context_resolver.resolve(context_ref).unwrap();
 
         Metric::from_parts(
@@ -1073,16 +1075,16 @@ mod tests {
     fn parse_dogstatsd_metric_with_config<'input>(
         input: &'input [u8], config: &DogstatsdCodecConfiguration,
     ) -> IResult<&'input [u8], OneOrMany<Event>> {
-        let context_resolver = ContextResolver::with_noop_interner();
-        parse_dogstatsd_metric_direct(input, config, &context_resolver)
+        let mut context_resolver = ContextResolver::with_noop_interner();
+        parse_dogstatsd_metric_direct(input, config, &mut context_resolver)
     }
 
     fn parse_dogstatsd_metric_direct<'input>(
-        input: &'input [u8], config: &DogstatsdCodecConfiguration, context_resolver: &ContextResolver,
+        input: &'input [u8], config: &DogstatsdCodecConfiguration, context_resolver: &mut ContextResolver,
     ) -> IResult<&'input [u8], OneOrMany<Event>> {
         let (remaining, (name, tags_iter, values_iter, metadata)) = parse_dogstatsd_metric(input, config)?;
 
-        let context_ref = ContextRef::from_name_and_tags(name, tags_iter);
+        let context_ref = context_resolver.create_context_ref(name, tags_iter);
         let context = match context_resolver.resolve(context_ref) {
             Some(context) => context,
             None => return Ok((remaining, OneOrMany::Multiple(Vec::new()))),
@@ -1430,12 +1432,13 @@ mod tests {
         // We set our metric name to be longer than 31 bytes (the inlining limit) to ensure this.
 
         let default_config = DogstatsdCodecConfiguration::default();
-        let context_resolver = ContextResolver::with_noop_interner().with_heap_allocations(false);
+        let mut context_resolver = ContextResolver::with_noop_interner().with_heap_allocations(false);
 
         let input = "big_metric_name_that_cant_possibly_be_inlined:1|c|#tag1:value1,tag2:value2,tag3:value3";
 
-        let (remaining, result) = parse_dogstatsd_metric_direct(input.as_bytes(), &default_config, &context_resolver)
-            .expect("should not fail to parse");
+        let (remaining, result) =
+            parse_dogstatsd_metric_direct(input.as_bytes(), &default_config, &mut context_resolver)
+                .expect("should not fail to parse");
 
         assert!(remaining.is_empty());
         match result {
