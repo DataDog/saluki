@@ -14,12 +14,16 @@ use saluki_env::time::get_unix_timestamp;
 use saluki_error::GenericError;
 use saluki_event::{metric::*, DataType, Event};
 use serde::Deserialize;
-use tokio::{pin, select, time::sleep_until};
+use tokio::{select, time::interval_at};
 use tracing::{debug, error, trace};
 
 const EVENT_BUFFER_POOL_SIZE: usize = 8;
 
 const fn default_window_duration() -> Duration {
+    Duration::from_secs(10)
+}
+
+const fn default_flush_interval() -> Duration {
     Duration::from_secs(15)
 }
 
@@ -59,13 +63,21 @@ pub struct AggregateConfiguration {
     /// Size of the aggregation window.
     ///
     /// Metrics are aggregated into fixed-size windows, such that all updates to the same metric within a window are
-    /// aggregated into a single metric. The window size controls how efficiently metrics are aggregated, but also how
-    /// often they're flushed downstream. This represents a trade-off between the savings in network bandwidth (sending
-    /// fewer requests to downstream systems, etc) and the frequency of updates (how often updates to a metric are emitted).
+    /// aggregated into a single metric. The window size controls how efficiently metrics are aggregated, and in turn,
+    /// how many data points are emitted downstream.
     ///
     /// Defaults to 10 seconds.
     #[serde(rename = "aggregate_window_duration", default = "default_window_duration")]
     window_duration: Duration,
+
+    /// How often to flush buckets.
+    ///
+    /// This represents a trade-off between the savings in network bandwidth (sending fewer requests to downstream
+    /// systems, etc) and the frequency of updates (how often updates to a metric are emitted).
+    ///
+    /// Defaults to 15 seconds.
+    #[serde(rename = "aggregate_flush_interval", default = "default_flush_interval")]
+    flush_interval: Duration,
 
     /// Maximum number of contexts to aggregate per window.
     ///
@@ -132,6 +144,7 @@ impl AggregateConfiguration {
     pub fn with_defaults() -> Self {
         Self {
             window_duration: default_window_duration(),
+            flush_interval: default_flush_interval(),
             context_limit: default_context_limit(),
             flush_open_windows: false,
             counter_expiry_seconds: default_counter_expiry_seconds(),
@@ -145,6 +158,7 @@ impl TransformBuilder for AggregateConfiguration {
     async fn build(&self) -> Result<Box<dyn Transform + Send>, GenericError> {
         Ok(Box::new(Aggregate {
             window_duration: self.window_duration,
+            flush_interval: self.flush_interval,
             context_limit: self.context_limit,
             flush_open_windows: self.flush_open_windows,
             counter_expiry_seconds: self.counter_expiry_seconds,
@@ -165,18 +179,16 @@ impl TransformBuilder for AggregateConfiguration {
 
 impl MemoryBounds for AggregateConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // TODO: We should be able to better account for multiple buckets based on figuring out the maximum number of
+        // buckets based on the window duration and flush interval, and whether or not we're configured to forward
+        // timestamped metrics. Essentially, if we're not aggregating metrics with timestamps, then they can only be
+        // inserted into the current bucket... which then means our upper bound on the bucket count is simply a factor
+        // of the window duration and flush interval.
+
         // Since we use our own event buffer pool, we account for that directly here, and we use our knowledge of the
         // context limit to determine how large we'd expect those event buffers to grow to in the worst case. With a
         // context limit of N, we would only aggregate N metrics at any given time, and thus we should flush a maximum
         // of N metrics per flush interval.
-        //
-        // TODO: This does _not_ account for the fact that we could have multiple buckets in flight, each with the
-        // maximum number of contexts, which would increase the amount of memory we need to account for. This should be
-        // an exceedingly rare case, but we might want to consider it in the future.
-        //
-        // Another way of utilizing the "context" limit might be that we limit the number of aggregated contexts, rather
-        // than the number of unique contexts. This would result in being able to aggregate fewer total metrics at any
-        // given moment, but would allow for a more precise accounting of how large the event buffers would grow to become.
         let event_buffer_pool_size = EVENT_BUFFER_POOL_SIZE * self.context_limit * std::mem::size_of::<Event>();
 
         builder
@@ -199,6 +211,7 @@ impl MemoryBounds for AggregateConfiguration {
 
 pub struct Aggregate {
     window_duration: Duration,
+    flush_interval: Duration,
     context_limit: usize,
     flush_open_windows: bool,
     counter_expiry_seconds: u64,
@@ -215,10 +228,8 @@ impl Transform for Aggregate {
             self.context_limit,
             Duration::from_secs(self.counter_expiry_seconds),
         );
-        let next_flush = state.get_next_flush_instant();
 
-        let flush = sleep_until(next_flush);
-        pin!(flush);
+        let mut flush = interval_at(tokio::time::Instant::now() + self.flush_interval, self.flush_interval);
 
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let events_dropped =
@@ -246,7 +257,7 @@ impl Transform for Aggregate {
 
             select! {
                 _ = health.live() => continue,
-                _ = &mut flush => {
+                _ = flush.tick() => {
                     // We've reached the end of the current window. Flush our aggregation state and forward the metrics
                     // onwards. Regardless of whether any metrics were aggregated, we always update the aggregation
                     // state to track the start time of the current aggregation window.
@@ -266,8 +277,6 @@ impl Transform for Aggregate {
                         debug!("All aggregation complete.");
                         break
                     }
-
-                    flush.as_mut().reset(state.get_next_flush_instant());
                 },
                 maybe_events = context.event_stream().next(), if !final_flush => match maybe_events {
                     Some(events) => {
@@ -293,7 +302,7 @@ impl Transform for Aggregate {
                         // interval so it ticks immediately on the next loop iteration.
                         final_flush = true;
 
-                        flush.as_mut().reset(tokio::time::Instant::now());
+                        flush.reset_immediately();
 
                         debug!("Aggregation transform stopping...");
                     }
@@ -338,18 +347,6 @@ impl AggregationState {
             zero_value_counters: AHashMap::default(),
             counter_expiry_duration,
         }
-    }
-
-    fn get_next_flush_instant(&self) -> tokio::time::Instant {
-        // We align our flushes to the middle of the next bucket, so that we don't flush the current bucket too early
-        // when there's outstanding metrics that haven't been aggregated yet.
-        let bucket_width = self.bucket_width.as_secs();
-        let current_time = get_unix_timestamp();
-        let next_bucket_midpoint =
-            align_to_bucket_start(current_time, bucket_width) + bucket_width + (bucket_width / 2);
-        let flush_delta = next_bucket_midpoint - current_time;
-
-        tokio::time::Instant::now() + Duration::from_secs(flush_delta)
     }
 
     fn is_empty(&self) -> bool {
@@ -411,6 +408,10 @@ impl AggregationState {
                     // to emit a zero-value version of it _during_ this flush.
                     if let MetricValue::Counter { .. } = &value {
                         if let Some((last_seen, _)) = self.zero_value_counters.get_mut(&context) {
+                            // TODO: Should this actually be the end of the current bucket? We could be flushing the
+                            // first of multiple buckets for this flush operation, which might conceptually represent
+                            // metrics from 10, 20, 30 seconds ago, etc.... so our seen times could be a bit skewed by
+                            // just using the current time.
                             *last_seen = get_unix_timestamp();
                         } else {
                             self.zero_value_counters
@@ -444,6 +445,10 @@ impl AggregationState {
 
         // Go through all zero-value counters and for any that we didn't flush from the closed buckets, emit a zero
         // value... unless they've expired, in which case we simply remove them.
+        //
+        // TODO: We probably also need to update this to account for flushing multiple buckets in a single flush
+        // operation, since we'd need to properly consider the time range covered by each bucket and if a zero-value
+        // counter should be written into all of them or just some.
         let mut counters_to_remove = Vec::new();
         let mut num_flushed = 0;
         let zero_value_timestamp = latest_closed_bucket_start(current_time, self.bucket_width);
@@ -503,7 +508,20 @@ fn latest_closed_bucket_start(current_time: u64, bucket_width: Duration) -> u64 
 }
 
 fn is_bucket_closed(current_time: u64, bucket_start: u64, bucket_width: Duration, flush_open_buckets: bool) -> bool {
-    // Either the bucket end (start + width) is less than than the current time (closed), or we're allowed to flush open buckets.
+    // Either the bucket end (start + width) is less than or equal to the current time (closed), or we're allowed to
+    // flush open buckets.
+    //
+    // A more visual way of thinking about this is that buckets are represented by a start and end time, where the end
+    // time is inclusive, like so:
+    //
+    // <--------- bucket 1 ----------> <--------- bucket 2 ----------> <--------- bucket 3 ---------->
+    // [10 11 12 13 14 15 16 17 18 19] [20 21 22 23 24 25 26 27 28 29] [30 31 32 33 34 35 36 37 38 39]
+    //
+    // Each bucket has a width of 10 seconds, so we need the current time to be _greater_ than the end of the bucket,
+    // which means we can't possibly insert into that bucket any longer. For example, if the current time 27, then
+    // bucket 1 would be considered closed ((10 + 10) < 27), but bucket 2 would be open ((20 + 10) > 27). If we advanced
+    // to a current time of 29, bucket 2 would still be open ((20 + 10) < 29), but finally at a current time of 30,
+    // bucket 2 would be considered closed ((20 + 10) < 30).
     ((bucket_start + bucket_width.as_secs()) <= current_time) || flush_open_buckets
 }
 
