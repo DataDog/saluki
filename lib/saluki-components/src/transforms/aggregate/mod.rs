@@ -516,7 +516,7 @@ const fn align_to_bucket_start(timestamp: u64, bucket_width: u64) -> u64 {
 // about flushing out our idea to create a time provider in `saluki-env` so that time can be mocked out in tests.
 #[cfg(test)]
 mod tests {
-    use saluki_context::{ContextRef, ContextResolver};
+    use saluki_context::ContextResolver;
     use saluki_core::pooling::helpers::get_pooled_object_via_default;
 
     use super::*;
@@ -540,8 +540,8 @@ mod tests {
     fn create_metric(name: &str, value: MetricValue) -> Metric {
         const EMPTY_TAGS: &[&str] = &[];
 
-        let resolver: ContextResolver = ContextResolver::with_noop_interner();
-        let context_ref = ContextRef::from_name_and_tags(name, EMPTY_TAGS);
+        let mut resolver: ContextResolver = ContextResolver::with_noop_interner();
+        let context_ref = resolver.create_context_ref(name, EMPTY_TAGS);
         let context = resolver.resolve(context_ref).unwrap();
 
         Metric::from_parts(context, value, MetricMetadata::default())
