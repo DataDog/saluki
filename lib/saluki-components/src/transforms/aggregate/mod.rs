@@ -1,4 +1,7 @@
-use std::{collections::hash_map::Entry, time::Duration};
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    time::Duration,
+};
 
 use ahash::{AHashMap, AHashSet};
 use async_trait::async_trait;
@@ -461,19 +464,15 @@ impl AggregationState {
         let zero_value = MetricValue::rate_seconds(0.0, self.bucket_width);
         let counter_expiry_secs = self.counter_expiry_duration.as_secs();
 
-        debug!(
-            buckets_len = self.buckets.len(),
-            timestamp = current_time,
-            "Flushing buckets."
-        );
-
         // Collect a list of all closed buckets between the last flush and now. This includes buckets that never had any
         // points inserted into them, which we track in order to emit zero-value counters for.
-        let mut buckets_to_flush = Vec::new();
+        let mut buckets_to_flush = HashMap::new();
         let mut i = 0;
         while i < self.buckets.len() {
             if self.buckets[i].is_closed(current_time, flush_open_buckets) {
-                buckets_to_flush.push(self.buckets.remove(i));
+                let bucket = self.buckets.remove(i);
+                buckets_to_flush.insert(bucket.start(), bucket);
+            } else {
                 i += 1;
             }
         }
@@ -486,13 +485,26 @@ impl AggregationState {
             let bucket_width = self.bucket_width.as_secs() as usize;
 
             for bucket_start in (start..current_time).step_by(bucket_width) {
-                buckets_to_flush.push(Bucket::new(bucket_start, self.bucket_width));
+                let bucket = Bucket::new(bucket_start, self.bucket_width);
+                if !bucket.is_closed(current_time, flush_open_buckets) || buckets_to_flush.contains_key(&bucket.start())
+                {
+                    continue;
+                }
+
+                buckets_to_flush.insert(bucket_start, bucket);
             }
         };
 
+        let mut buckets_to_flush = buckets_to_flush.into_values().collect::<Vec<_>>();
         buckets_to_flush.sort_unstable_by_key(|bucket| bucket.start());
 
         // Iterate over each bucket that we need to flush.
+        debug!(
+            buckets_len = buckets_to_flush.len(),
+            timestamp = current_time,
+            "Flushing buckets."
+        );
+
         for bucket in buckets_to_flush {
             let (bucket_start, bucket_end, contexts) = bucket.into_parts();
             debug!(bucket_start, bucket_len = contexts.len(), "Flushing bucket.");
@@ -572,9 +584,10 @@ const fn align_to_bucket_start(timestamp: u64, bucket_width: Duration) -> u64 {
     timestamp - (timestamp % bucket_width.as_secs())
 }
 
-// TODO: Some of these tests have the potential, I believe, to spuriously fail if they're executed when the current
-// timestamp happens to align with the end of a bucket... even if it's extremely unlikely. We should _probably_ think
-// about flushing out our idea to create a time provider in `saluki-env` so that time can be mocked out in tests.
+// TODO: We should/could potentially do time through the environment provider here, but one thing we ought to also just
+// consider is a property test, specifically a state machine property test, where we generate a randomized offset to
+// start time from, a bucket width, flush interval, and operations, and so on... and then we run it to make sure that we
+// are always generating sequential timestamps for data points, and so on and so forth.
 #[cfg(test)]
 mod tests {
     use saluki_context::{ContextRef, ContextResolver};
