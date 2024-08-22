@@ -10,7 +10,7 @@ use hyper_util::{
         connect::{Connect, HttpConnector},
         Client, Error, ResponseFuture,
     },
-    rt::TokioExecutor,
+    rt::{TokioExecutor, TokioTimer},
 };
 use saluki_error::GenericError;
 use saluki_tls::ClientTLSConfigBuilder;
@@ -67,6 +67,8 @@ where
         HttpClient {
             inner: Client::builder(TokioExecutor::new())
                 .pool_max_idle_per_host(5)
+                .pool_idle_timeout(Duration::from_secs(45))
+                .pool_timer(TokioTimer::new())
                 .build(connector),
         }
     }
