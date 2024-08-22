@@ -1,6 +1,6 @@
 //! Basic HTTP client.
 
-use std::task::Poll;
+use std::{task::Poll, time::Duration};
 
 use http::{Request, Response};
 use hyper::body::{Body, Incoming};
@@ -64,6 +64,7 @@ where
         HttpClient {
             inner: Client::builder(TokioExecutor::new())
                 .pool_max_idle_per_host(5)
+                .pool_idle_timeout(Duration::from_secs(45))
                 .build(connector),
         }
     }
