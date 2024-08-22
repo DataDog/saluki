@@ -8,11 +8,13 @@ use saluki_context::TagSet;
 use saluki_error::GenericError;
 use stringtheory::interning::FixedSizeInterner;
 
+#[cfg(target_os = "linux")]
+use crate::workload::collectors::CGroupsV2MetadataCollector;
 use crate::{
     features::{Feature, FeatureDetector},
     workload::{
         aggregator::MetadataAggregator,
-        collectors::{CGroupsV2MetadataCollector, ContainerdMetadataCollector, RemoteAgentMetadataCollector},
+        collectors::{ContainerdMetadataCollector, RemoteAgentMetadataCollector},
         entity::EntityId,
         metadata::TagCardinality,
         store::TagSnapshot,
