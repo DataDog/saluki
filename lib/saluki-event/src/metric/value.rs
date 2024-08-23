@@ -93,6 +93,17 @@ impl MetricValue {
         Ok(Self::Distribution { sketch })
     }
 
+    /// Creates a rate from the total value and interval.
+    ///
+    /// The value will be divided by the interval, in seconds, to create a normalized per-second rate.
+    pub fn rate_seconds(value: f64, interval: Duration) -> Self {
+        let rate_value = value / interval.as_secs_f64();
+        Self::Rate {
+            value: rate_value,
+            interval,
+        }
+    }
+
     /// Merges another metric value into this one.
     ///
     /// If both `self` and `other` are the same metric type, their values will be merged appropriately. If the metric
