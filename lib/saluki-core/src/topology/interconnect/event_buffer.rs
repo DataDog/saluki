@@ -148,7 +148,7 @@ mod tests {
     use saluki_context::Context;
     use saluki_event::{
         eventd::EventD,
-        metric::{Metric, MetricMetadata, MetricValue},
+        metric::{Metric, MetricValue},
         service_check::{CheckStatus, ServiceCheck},
         DataType, Event,
     };
@@ -166,10 +166,9 @@ mod tests {
         assert!(!buffer.has_data_type(DataType::ServiceCheck));
 
         // Now write a metric, and make sure that's reflected:
-        buffer.push(Event::Metric(Metric::from_parts(
+        buffer.push(Event::Metric(Metric::from_context_and_value(
             Context::from_static_parts("foo", &[]),
-            MetricValue::Counter { value: 42.0 },
-            MetricMetadata::default(),
+            MetricValue::counter(42.0),
         )));
         assert!(!buffer.is_empty());
         assert!(buffer.has_data_type(DataType::Metric));
@@ -192,10 +191,9 @@ mod tests {
         assert!(!buffer.has_data_type(DataType::EventD));
         assert!(!buffer.has_data_type(DataType::ServiceCheck));
 
-        buffer.push(Event::Metric(Metric::from_parts(
+        buffer.push(Event::Metric(Metric::from_context_and_value(
             Context::from_static_parts("foo", &[]),
-            MetricValue::Counter { value: 42.0 },
-            MetricMetadata::default(),
+            MetricValue::counter(42.0),
         )));
         assert!(buffer.has_data_type(DataType::Metric));
         assert!(!buffer.has_data_type(DataType::EventD));
@@ -210,15 +208,13 @@ mod tests {
     #[test]
     fn extract() {
         let mut buffer = get_pooled_object_via_default::<EventBuffer>();
-        buffer.push(Event::Metric(Metric::from_parts(
+        buffer.push(Event::Metric(Metric::from_context_and_value(
             Context::from_static_parts("foo", &[]),
-            MetricValue::Counter { value: 42.0 },
-            MetricMetadata::default(),
+            MetricValue::counter(42.0),
         )));
-        buffer.push(Event::Metric(Metric::from_parts(
+        buffer.push(Event::Metric(Metric::from_context_and_value(
             Context::from_static_parts("baz", &[]),
-            MetricValue::Counter { value: 43.0 },
-            MetricMetadata::default(),
+            MetricValue::counter(43.0),
         )));
 
         buffer.push(Event::EventD(EventD::new("foo1", "bar1")));

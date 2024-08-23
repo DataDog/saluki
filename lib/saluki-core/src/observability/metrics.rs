@@ -138,22 +138,20 @@ async fn flush_metrics(flush_interval: Duration) {
         let histograms = state.registry.get_histogram_handles();
 
         for (key, counter) in counters {
-            let delta = counter.swap(0, Ordering::Relaxed);
-            metrics.push(Event::Metric(Metric::from_parts(
-                context_from_key(&mut context_resolver, key),
-                MetricValue::Counter { value: delta as f64 },
-                MetricMetadata::default(),
+            let context = context_from_key(&mut context_resolver, key);
+            let value = counter.swap(0, Ordering::Relaxed) as f64;
+            metrics.push(Event::Metric(Metric::from_context_and_value(
+                context,
+                MetricValue::counter(value),
             )));
         }
 
         for (key, gauge) in gauges {
-            let value = gauge.load(Ordering::Relaxed);
-            metrics.push(Event::Metric(Metric::from_parts(
-                context_from_key(&mut context_resolver, key),
-                MetricValue::Gauge {
-                    value: f64::from_bits(value),
-                },
-                MetricMetadata::default(),
+            let context = context_from_key(&mut context_resolver, key);
+            let value = f64::from_bits(gauge.load(Ordering::Relaxed));
+            metrics.push(Event::Metric(Metric::from_context_and_value(
+                context,
+                MetricValue::gauge(value),
             )));
         }
 
@@ -169,10 +167,10 @@ async fn flush_metrics(flush_interval: Duration) {
                 continue;
             }
 
-            metrics.push(Event::Metric(Metric::from_parts(
-                context_from_key(&mut context_resolver, key),
+            let context = context_from_key(&mut context_resolver, key);
+            metrics.push(Event::Metric(Metric::from_context_and_value(
+                context,
                 MetricValue::distribution_from_values(&distribution_samples),
-                MetricMetadata::default(),
             )));
         }
 

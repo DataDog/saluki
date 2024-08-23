@@ -2639,6 +2639,7 @@ dependencies = [
  "proptest",
  "saluki-context",
  "serde",
+ "smallvec",
  "stringtheory",
 ]
 

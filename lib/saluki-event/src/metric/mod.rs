@@ -7,7 +7,7 @@ use saluki_context::Context;
 pub use self::metadata::*;
 
 mod value;
-pub use self::value::MetricValue;
+pub use self::value::{MetricValue, MetricValues};
 
 /// A metric.
 ///
@@ -32,11 +32,20 @@ pub use self::value::MetricValue;
 #[derive(Clone, Debug)]
 pub struct Metric {
     context: Context,
-    value: MetricValue,
+    values: MetricValues,
     metadata: MetricMetadata,
 }
 
 impl Metric {
+    /// Creates a `Metric` from a given context and value.
+    pub fn from_context_and_value(context: Context, value: MetricValue) -> Self {
+        Self {
+            context,
+            values: MetricValues::from_value(value),
+            metadata: MetricMetadata::default(),
+        }
+    }
+
     /// Gets a reference to the context.
     pub fn context(&self) -> &Context {
         &self.context
@@ -47,14 +56,14 @@ impl Metric {
         &mut self.context
     }
 
-    /// Gets a reference to the value.
-    pub fn value(&self) -> &MetricValue {
-        &self.value
+    /// Gets a reference to the values.
+    pub fn values(&self) -> &MetricValues {
+        &self.values
     }
 
-    /// Gets a mutable reference to the value.
-    pub fn value_mut(&mut self) -> &mut MetricValue {
-        &mut self.value
+    /// Gets a mutable reference to the values.
+    pub fn values_mut(&mut self) -> &mut MetricValues {
+        &mut self.values
     }
 
     /// Gets a reference to the metadata.
@@ -68,15 +77,15 @@ impl Metric {
     }
 
     /// Consumes the metric and returns the individual parts.
-    pub fn into_parts(self) -> (Context, MetricValue, MetricMetadata) {
-        (self.context, self.value, self.metadata)
+    pub fn into_parts(self) -> (Context, MetricValues, MetricMetadata) {
+        (self.context, self.values, self.metadata)
     }
 
     /// Creates a `Metric` from the given parts.
-    pub fn from_parts(context: Context, value: MetricValue, metadata: MetricMetadata) -> Self {
+    pub fn from_parts(context: Context, values: MetricValues, metadata: MetricMetadata) -> Self {
         Self {
             context,
-            value,
+            values,
             metadata,
         }
     }
@@ -84,6 +93,6 @@ impl Metric {
 
 impl fmt::Display for Metric {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}[{} {}]", self.context, self.value, self.metadata)
+        write!(f, "{}[{} {}]", self.context, self.values, self.metadata)
     }
 }

@@ -4,7 +4,6 @@ use datadog_protos::metrics::{self as proto, Resource};
 use http::{Method, Request, Uri};
 use protobuf::CodedOutputStream;
 use saluki_core::pooling::ObjectPool;
-use saluki_env::time::get_unix_timestamp;
 use saluki_event::metric::*;
 use saluki_io::{
     buf::{ChunkedBuffer, ChunkedBufferObjectPool, ReadWriteIoBuffer},
@@ -85,7 +84,7 @@ impl MetricsEndpoint {
 
     /// Gets the endpoint for the given metric.
     pub fn from_metric(metric: &Metric) -> Self {
-        match metric.value() {
+        match get_metric_value(metric) {
             MetricValue::Counter { .. }
             | MetricValue::Rate { .. }
             | MetricValue::Gauge { .. }
@@ -159,7 +158,7 @@ where
         let endpoint = MetricsEndpoint::from_metric(&metric);
         if endpoint != self.endpoint {
             return Err(RequestBuilderError::InvalidMetricForEndpoint {
-                metric_type: metric.value().as_str(),
+                metric_type: get_metric_value(&metric).as_str(),
                 endpoint: self.endpoint,
             });
         }
@@ -333,7 +332,7 @@ impl EncodedMetric {
 }
 
 fn encode_single_metric(metric: &Metric) -> EncodedMetric {
-    match metric.value() {
+    match get_metric_value(metric) {
         MetricValue::Counter { .. }
         | MetricValue::Rate { .. }
         | MetricValue::Gauge { .. }
@@ -390,21 +389,31 @@ fn encode_series_metric(metric: &Metric) -> proto::MetricSeries {
         }
     }
 
-    let (metric_type, metric_value, maybe_interval) = match metric.value() {
-        MetricValue::Counter { value } => (proto::MetricType::COUNT, *value, None),
-        MetricValue::Rate { value, interval } => (proto::MetricType::RATE, *value, Some(duration_to_secs(*interval))),
-        MetricValue::Gauge { value } => (proto::MetricType::GAUGE, *value, None),
-        MetricValue::Set { values } => (proto::MetricType::GAUGE, values.len() as f64, None),
+    let (metric_type, maybe_interval) = match get_metric_value(metric) {
+        MetricValue::Counter { .. } => (proto::MetricType::COUNT, None),
+        MetricValue::Rate { interval, .. } => (proto::MetricType::RATE, Some(duration_to_secs(*interval))),
+        MetricValue::Gauge { .. } => (proto::MetricType::GAUGE, None),
+        MetricValue::Set { .. } => (proto::MetricType::GAUGE, None),
         _ => unreachable!(),
     };
 
     series.set_type(metric_type);
 
-    let mut point = proto::MetricPoint::new();
-    point.set_value(metric_value);
-    point.set_timestamp(metric.metadata().timestamp().unwrap_or_else(get_unix_timestamp) as i64);
+    for (timestamp, value) in metric.values() {
+        let value = match value {
+            MetricValue::Counter { value } => *value,
+            MetricValue::Rate { value, .. } => *value,
+            MetricValue::Gauge { value } => *value,
+            MetricValue::Set { values } => values.len() as f64,
+            _ => unreachable!(),
+        };
 
-    series.mut_points().push(point);
+        let mut point = proto::MetricPoint::new();
+        point.set_value(value);
+        point.set_timestamp(*timestamp as i64);
+
+        series.mut_points().push(point);
+    }
 
     if let Some(interval) = maybe_interval {
         series.set_interval(interval);
@@ -448,15 +457,18 @@ fn encode_sketch_metric(metric: &Metric) -> proto::Sketch {
         ));
     }
 
-    let ddsketch = match metric.value() {
-        MetricValue::Distribution { sketch: ddsketch } => ddsketch,
-        _ => unreachable!(),
-    };
+    for (timestamp, value) in metric.values() {
+        let ddsketch = match value {
+            MetricValue::Distribution { sketch: ddsketch } => ddsketch,
+            _ => unreachable!(),
+        };
 
-    let mut dogsketch = proto::Dogsketch::new();
-    dogsketch.set_ts(metric.metadata().timestamp().unwrap_or_else(get_unix_timestamp) as i64);
-    ddsketch.merge_to_dogsketch(&mut dogsketch);
-    sketch.mut_dogsketches().push(dogsketch);
+        let mut dogsketch = proto::Dogsketch::new();
+        dogsketch.set_ts(*timestamp as i64);
+        ddsketch.merge_to_dogsketch(&mut dogsketch);
+
+        sketch.mut_dogsketches().push(dogsketch);
+    }
 
     sketch
 }
@@ -475,4 +487,21 @@ fn origin_metadata_to_proto_metadata(product: u32, subproduct: u32, product_deta
 
 fn duration_to_secs(duration: Duration) -> i64 {
     duration.as_secs_f64() as i64
+}
+
+fn get_metric_value(metric: &Metric) -> &MetricValue {
+    // TODO: Realistically, we should encode this within `MetricValues` itself, which might make some code a little bit
+    // cleaner overall.
+
+    // Pull the first (possibly only) value out of the value set, and examine it to determine the type of metric we're
+    // dealing with.
+    //
+    // We assume that all values in a single metric are of the same type, and so we only look at the first one. This
+    // also extends as far as assuming the interval is identical for all rate values in the set, if there are any.
+    let first_value = metric
+        .values()
+        .into_iter()
+        .next()
+        .expect("must always be at least one value");
+    &first_value.1
 }

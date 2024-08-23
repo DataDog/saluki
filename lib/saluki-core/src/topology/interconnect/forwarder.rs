@@ -160,7 +160,7 @@ mod tests {
 
     use saluki_context::Context;
     use saluki_event::{
-        metric::{Metric, MetricMetadata, MetricValue},
+        metric::{Metric, MetricValue},
         Event,
     };
     use tokio_test::{task::spawn as test_spawn, *};
@@ -169,10 +169,9 @@ mod tests {
     use crate::topology::ComponentId;
 
     fn basic_metric() -> Metric {
-        Metric::from_parts(
+        Metric::from_context_and_value(
             Context::from_static_parts("basic_metric", &["env:dev", "service:foo"]),
-            MetricValue::Counter { value: 42.0 },
-            MetricMetadata::default(),
+            MetricValue::counter(42.0),
         )
     }
 
