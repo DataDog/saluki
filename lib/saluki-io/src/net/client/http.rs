@@ -16,8 +16,11 @@ use tower::{BoxError, Service};
 
 use crate::buf::ChunkedBuffer;
 
-pub type ChunkedHttpsClient<O> = HttpClient<HttpsConnector<HttpConnector>, ChunkedBuffer<O>>;
+use super::replay::ReplayBody;
 
+pub type ChunkedHttpsClient<O> = HttpClient<HttpsConnector<HttpConnector>, ReplayBody<ChunkedBuffer<O>>>;
+
+#[derive(Clone)]
 pub struct HttpClient<C = (), B = ()> {
     inner: Client<C, B>,
 }
@@ -25,7 +28,7 @@ pub struct HttpClient<C = (), B = ()> {
 impl HttpClient<(), ()> {
     pub fn https<B>() -> io::Result<HttpClient<HttpsConnector<HttpConnector>, B>>
     where
-        B: Body + Unpin + Send + 'static,
+        B: Body + Clone + Unpin + Send + 'static,
         B::Data: Send,
         B::Error: std::error::Error + Send + Sync,
     {
@@ -39,7 +42,7 @@ impl HttpClient<(), ()> {
 impl<C, B> HttpClient<C, B>
 where
     C: Connect + Clone + Send + Sync + 'static,
-    B: Body + Send + Unpin + 'static,
+    B: Body + Clone + Send + Unpin + 'static,
     B::Data: Send,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {

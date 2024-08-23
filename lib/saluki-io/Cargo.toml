@@ -15,6 +15,7 @@ bitmask-enum = { workspace = true }
 bytes = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
+futures = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 hyper = { workspace = true, features = ["client", "server"] }

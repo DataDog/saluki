@@ -69,6 +69,7 @@ struct SharedState<B> {
 }
 
 #[derive(Debug)]
+#[allow(unused)]
 struct BodyState<B> {
     buf: BufList,
     trailers: Option<HeaderMap>,

@@ -1,10 +1,10 @@
 use datadog_protos::metrics::{self as proto, Resource};
 use http::{Method, Request, Uri};
 use protobuf::CodedOutputStream;
-use retry::ReplayBody;
 use saluki_core::pooling::ObjectPool;
 use saluki_env::time::get_unix_timestamp;
 use saluki_event::metric::*;
+use saluki_io::net::client::replay::ReplayBody;
 use saluki_io::{
     buf::{ChunkedBuffer, ChunkedBufferObjectPool, ReadWriteIoBuffer},
     compression::*,
@@ -13,8 +13,6 @@ use snafu::{ResultExt, Snafu};
 use std::{io, time::Duration};
 use tokio::io::AsyncWriteExt as _;
 use tracing::{debug, trace};
-
-use super::retry;
 
 pub(super) const SCRATCH_BUF_CAPACITY: usize = 8192;
 

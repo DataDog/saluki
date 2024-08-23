@@ -2558,6 +2558,7 @@ dependencies = [
  "bytes",
  "datadog-protos",
  "ddsketch-agent",
+ "futures",
  "http",
  "http-body",
  "http-body-util",

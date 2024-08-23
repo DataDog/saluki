@@ -8,11 +8,12 @@ use std::{
 use async_trait::async_trait;
 use futures::FutureExt;
 use http::{Request, Uri};
+use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper_util::client::legacy::{Error, ResponseFuture};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::Counter;
-use retry::ReplayBody;
+
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{destinations::*, ComponentContext, MetricsBuilder},
@@ -23,7 +24,7 @@ use saluki_error::GenericError;
 use saluki_event::DataType;
 use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, BytesBuffer, ChunkedBuffer, ReadWriteIoBuffer},
-    net::client::http::HttpClient,
+    net::client::{http::HttpClient, replay::ReplayBody},
 };
 use serde::Deserialize;
 use tokio::{
@@ -35,7 +36,6 @@ use tracing::{debug, error, trace};
 
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
-mod retry;
 
 const DEFAULT_SITE: &str = "datadoghq.com";
 const RB_BUFFER_POOL_COUNT: usize = 128;
@@ -480,7 +480,7 @@ async fn run_io_loop<O, S>(
     while let Some((metrics_count, request)) = requests_rx.recv().await {
         // TODO: This doesn't include the actual headers, or the HTTP framing, or anything... so it's a darn good
         // approximation, but still only an approximation.
-        let request_length = request.body().len();
+        // let request_length = request.body().len();
         match service.call(request).await {
             Ok(response) => {
                 let status = response.status();
@@ -488,7 +488,7 @@ async fn run_io_loop<O, S>(
                     debug!(%status, "Request sent.");
 
                     metrics.events_sent().increment(metrics_count as u64);
-                    metrics.bytes_sent().increment(request_length as u64);
+                    // metrics.bytes_sent().increment(request_length as u64);
                 } else {
                     metrics.http_failed_send().increment(1);
                     metrics.events_dropped_http().increment(metrics_count as u64);
@@ -585,7 +585,6 @@ impl MetricsRetryPolicy {
         let num_errors = self.block.num_errors as f64;
         let exp = 2.0_f64.powf(self.block.num_errors as f64);
 
-        // return time.Duration(backoffTime * secondsFloat)
         if self.block.num_errors > 0 {
             backoff_time = self.base_backoff_time * exp;
         }
