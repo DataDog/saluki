@@ -1,11 +1,56 @@
 use std::{fmt, num::NonZeroU32, sync::Arc};
 
+use serde::Deserialize;
 use stringtheory::MetaString;
 
 const ORIGIN_PRODUCT_AGENT: u32 = 10;
 const ORIGIN_SUBPRODUCT_DOGSTATSD: u32 = 10;
 const ORIGIN_SUBPRODUCT_INTEGRATION: u32 = 11;
 const ORIGIN_PRODUCT_DETAIL_NONE: u32 = 0;
+
+/// The cardinality of tags associated with the origin entity.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(try_from = "String")]
+pub enum OriginTagCardinality {
+    /// Low cardinality.
+    ///
+    /// This generally covers tags which are static, or relatively slow to change, and generally results in a small
+    /// number of unique values for the given tag key.
+    Low,
+
+    /// Orchestrator cardinality.
+    ///
+    /// This generally covers orchestrator-specific tags, such as Kubernetes pod UID, and lands somewhere between low
+    /// and high cardinality.
+    Orchestrator,
+
+    /// High cardinality.
+    ///
+    /// This generally covers tags which frequently change and generally results in a large number of unique values for
+    /// the given tag key.
+    High,
+}
+
+impl<'a> TryFrom<&'a str> for OriginTagCardinality {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "low" => Ok(Self::Low),
+            "high" => Ok(Self::High),
+            "orch" | "orchestrator" => Ok(Self::Orchestrator),
+            other => Err(format!("unknown tag cardinality type '{}'", other)),
+        }
+    }
+}
+
+impl TryFrom<String> for OriginTagCardinality {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_from(value.as_str())
+    }
+}
 
 /// The entity from which a metric originated from.
 ///
@@ -35,7 +80,7 @@ pub struct OriginEntity {
     /// Desired cardinality of any tags associated with the entity.
     ///
     /// This controls the cardinality of the tags added to this metric when enriching based on the available entity IDs.
-    cardinality: Option<MetaString>,
+    cardinality: Option<OriginTagCardinality>,
 }
 
 impl OriginEntity {
@@ -65,9 +110,9 @@ impl OriginEntity {
     /// Sets the desired cardinality of any tags associated with the entity.
     pub fn set_cardinality<S>(&mut self, cardinality: S)
     where
-        S: Into<MetaString>,
+        S: Into<Option<OriginTagCardinality>>,
     {
-        self.cardinality = Some(cardinality.into());
+        self.cardinality = cardinality.into();
     }
 
     /// Gets the process ID of the sender.
@@ -86,8 +131,8 @@ impl OriginEntity {
     }
 
     /// Gets the desired cardinality of any tags associated with the entity.
-    pub fn cardinality(&self) -> Option<&str> {
-        self.cardinality.as_deref()
+    pub fn cardinality(&self) -> Option<OriginTagCardinality> {
+        self.cardinality.as_ref().copied()
     }
 }
 

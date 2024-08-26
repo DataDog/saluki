@@ -9,6 +9,7 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{Tag, TagSet};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_event::metric::OriginTagCardinality;
 use stringtheory::interning::FixedSizeInterner;
 use tokio::sync::mpsc;
 use tonic::{
@@ -21,7 +22,7 @@ use tracing::{debug, warn};
 use super::MetadataCollector;
 use crate::workload::{
     helpers::tonic::{build_self_signed_https_connector, BearerAuthInterceptor},
-    metadata::{MetadataAction, MetadataOperation, TagCardinality},
+    metadata::{MetadataAction, MetadataOperation},
     EntityId,
 };
 
@@ -152,7 +153,7 @@ impl MetadataCollector for RemoteAgentMetadataCollector {
                                 if !entity.low_cardinality_tags.is_empty() {
                                     match self.get_interned_tagset(entity.low_cardinality_tags) {
                                         Some(tags) => actions.push(MetadataAction::SetTags {
-                                            cardinality: TagCardinality::Low,
+                                            cardinality: OriginTagCardinality::Low,
                                             tags,
                                         }),
                                         None => {
@@ -164,7 +165,7 @@ impl MetadataCollector for RemoteAgentMetadataCollector {
                                 if !entity.high_cardinality_tags.is_empty() {
                                     match self.get_interned_tagset(entity.high_cardinality_tags) {
                                         Some(tags) => actions.push(MetadataAction::SetTags {
-                                            cardinality: TagCardinality::High,
+                                            cardinality: OriginTagCardinality::High,
                                             tags,
                                         }),
                                         None => {

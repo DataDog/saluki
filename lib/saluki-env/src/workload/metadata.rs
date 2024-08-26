@@ -1,51 +1,9 @@
 use std::fmt;
 
 use saluki_context::{Tag, TagSet};
-use serde::Deserialize;
+use saluki_event::metric::OriginTagCardinality;
 
 use super::{entity::EntityId, helpers::OneOrMany};
-
-/// Cardinality of entity tags.
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(try_from = "String")]
-pub enum TagCardinality {
-    /// Low cardinality.
-    ///
-    /// This generally covers tags which are static, or relatively slow to change, and generally results in a small
-    /// number of unique values for the given tag key.
-    Low,
-
-    /// High cardinality.
-    ///
-    /// This generally covers tags which frequently change and generally results in a large number of unique values for
-    /// the given tag key.
-    High,
-}
-
-impl TagCardinality {
-    /// Parses a `TagCardinality` from a string.
-    ///
-    /// If the value is not a valid cardinality identifier, `None` is returned.
-    pub fn parse<S>(s: S) -> Option<Self>
-    where
-        S: AsRef<str>,
-    {
-        let cardinality_lower = s.as_ref().to_lowercase();
-        match cardinality_lower.as_str() {
-            "low" => Some(Self::Low),
-            "high" => Some(Self::High),
-            _ => None,
-        }
-    }
-}
-
-impl TryFrom<String> for TagCardinality {
-    type Error = String;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        TagCardinality::parse(&value).ok_or_else(|| format!("invalid/unknown tag cardinality: {}", value))
-    }
-}
 
 /// A metadata operation.
 ///
@@ -78,7 +36,7 @@ impl MetadataOperation {
     }
 
     /// Creates a new `MetadataOperation` that adds a tag to an entity.
-    pub fn tag<T>(entity_id: EntityId, cardinality: TagCardinality, tag: T) -> Self
+    pub fn tag<T>(entity_id: EntityId, cardinality: OriginTagCardinality, tag: T) -> Self
     where
         T: Into<Tag>,
     {
@@ -92,7 +50,7 @@ impl MetadataOperation {
     }
 
     /// Creates a new `MetadataOperation` that adds multiple tags to an entity.
-    pub fn tags<I, T>(entity_id: EntityId, cardinality: TagCardinality, tags: I) -> Self
+    pub fn tags<I, T>(entity_id: EntityId, cardinality: OriginTagCardinality, tags: I) -> Self
     where
         I: IntoIterator<Item = T>,
         T: Into<Tag>,
@@ -137,7 +95,7 @@ pub enum MetadataAction {
     /// Adds a key/value tag to the entity.
     AddTag {
         /// Cardinality to add the tag at.
-        cardinality: TagCardinality,
+        cardinality: OriginTagCardinality,
 
         /// Tag to add.
         tag: Tag,
@@ -146,7 +104,7 @@ pub enum MetadataAction {
     /// Adds multiple key/value tags to the entity.
     AddTags {
         /// Cardinality to add the tags at.
-        cardinality: TagCardinality,
+        cardinality: OriginTagCardinality,
 
         /// Tags to add.
         tags: TagSet,
@@ -157,7 +115,7 @@ pub enum MetadataAction {
     /// This overwrites any existing tags for the entity.
     SetTags {
         /// Cardinality to set the tags at.
-        cardinality: TagCardinality,
+        cardinality: OriginTagCardinality,
 
         /// Tags to set.
         tags: TagSet,
