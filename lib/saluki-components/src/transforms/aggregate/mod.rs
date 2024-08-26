@@ -182,11 +182,13 @@ impl TransformBuilder for AggregateConfiguration {
 
 impl MemoryBounds for AggregateConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        // TODO: We should be able to better account for multiple buckets based on figuring out the maximum number of
-        // buckets based on the window duration and flush interval, and whether or not we're configured to forward
-        // timestamped metrics. Essentially, if we're not aggregating metrics with timestamps, then they can only be
-        // inserted into the current bucket... which then means our upper bound on the bucket count is simply a factor
-        // of the window duration and flush interval.
+        // TODO: While we account for the aggregation state map accurately, what we don't currently account for is the
+        // fact that a metric could have multiple distinct values. For the common pipeline of metrics in via DogStatsD,
+        // this generally shouldn't be a problem because the values don't have a timestamp, so they get aggregated into
+        // the same bucket, leading to two values per `MetricValues` at most, which is already baked into the size of
+        // `MetricValues` due to using `SmallVec`.
+        //
+        // However, there could be many more values in a single metric, and we don't account for that.
 
         // Since we use our own event buffer pool, we account for that directly here, and we use our knowledge of the
         // context limit to determine how large we'd expect those event buffers to grow to in the worst case. With a
@@ -201,14 +203,8 @@ impl MemoryBounds for AggregateConfiguration {
         builder
             .firm()
             .with_fixed_amount(event_buffer_pool_size)
-            // Account for our context limiter map, which is just a `HashSet`.
-            .with_array::<Context>(self.context_limit)
-            // Account for the actual aggregation state map, where we map contexts to the merged metric.
-            //
-            // TODO: Similar to the above TODO, we're not accounting for late buckets here.
-            .with_map::<Context, (MetricValue, MetricMetadata)>(self.context_limit)
-            // Account for our zero-value counter tracking, which could be as large as the context limit.
-            .with_map::<Context, (u64, MetricMetadata)>(self.context_limit);
+            // Account for the aggregation state map, where we map contexts to the merged metric.
+            .with_map::<Context, AggregatedMetric>(self.context_limit);
     }
 }
 
