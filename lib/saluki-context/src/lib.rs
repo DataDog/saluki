@@ -230,6 +230,21 @@ pub struct Context {
 }
 
 impl Context {
+    /// Creates a new `Context` from the given static name.
+    pub fn from_static_name(name: &'static str) -> Self {
+        const EMPTY_TAGS: &[&str] = &[];
+
+        let (hash, _) = hash_context(name, EMPTY_TAGS);
+        Self {
+            inner: Arc::new(ContextInner {
+                name: MetaString::from_static(name),
+                tags: TagSet::default(),
+                hash,
+                active_count: Gauge::noop(),
+            }),
+        }
+    }
+
     /// Creates a new `Context` from the given static name and given static tags.
     pub fn from_static_parts(name: &'static str, tags: &'static [&'static str]) -> Self {
         let mut tag_set = TagSet::with_capacity(tags.len());

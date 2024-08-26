@@ -6,8 +6,8 @@ use saluki_context::Context;
 
 pub use self::metadata::*;
 
-mod value;
-pub use self::value::{MetricValue, MetricValues};
+mod data;
+pub use self::data::{MetricKind, MetricValue, MetricValues};
 
 /// A metric.
 ///
@@ -42,6 +42,15 @@ impl Metric {
         Self {
             context,
             values: MetricValues::from_value(value),
+            metadata: MetricMetadata::default(),
+        }
+    }
+
+    /// Creates a `Metric` from a given context and values.
+    pub fn from_context_and_values(context: Context, values: MetricValues) -> Self {
+        Self {
+            context,
+            values,
             metadata: MetricMetadata::default(),
         }
     }

@@ -158,7 +158,7 @@ where
         let endpoint = MetricsEndpoint::from_metric(&metric);
         if endpoint != self.endpoint {
             return Err(RequestBuilderError::InvalidMetricForEndpoint {
-                metric_type: get_metric_value(&metric).as_str(),
+                metric_type: metric.values().kind().as_str(),
                 endpoint: self.endpoint,
             });
         }

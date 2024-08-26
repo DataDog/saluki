@@ -288,7 +288,7 @@ fn parse_dogstatsd_metric<'a>(
 
     // If we got a timestamp, apply it to all metric values.
     if let Some(timestamp) = maybe_timestamp {
-        metric_values.populate_missing_timestamps(timestamp);
+        metric_values.set_timestamp(timestamp);
     }
 
     let mut metric_metadata = MetricMetadata::default()
@@ -526,7 +526,7 @@ fn ascii_alphanum_and_seps(input: &[u8]) -> IResult<&[u8], &str> {
 
 #[inline]
 fn metric_values(input: &[u8]) -> IResult<&[u8], MetricValues> {
-    let (remaining, mut raw_values) = terminated(take_while1(|b| b != b'|'), tag("|"))(input)?;
+    let (remaining, raw_values) = terminated(take_while1(|b| b != b'|'), tag("|"))(input)?;
     let (remaining, raw_kind) = alt((tag(b"g"), tag(b"c"), tag(b"ms"), tag(b"h"), tag(b"s"), tag(b"d")))(remaining)?;
 
     // Make sure the raw value(s) are valid UTF-8 before we use them later on.
@@ -556,28 +556,25 @@ fn metric_values(input: &[u8]) -> IResult<&[u8], MetricValues> {
         }
         b"g" | b"c" => {
             // For counters and gauges, we just parse the value (or values), and build our corresponding `MetricValues`.
-            let is_counter = raw_kind[0] == b'c';
-            let mut values = MetricValues::empty();
+            let kind = if raw_kind[0] == b'c' {
+                MetricKind::Counter
+            } else {
+                MetricKind::Gauge
+            };
 
-            while let Some((raw_value, tail)) = split_at_delimiter(raw_values, b':') {
-                raw_values = tail;
+            let floats = FloatIter::new(raw_values).map(|x| {
+                x.map(|v| match kind {
+                    MetricKind::Counter => MetricValue::counter(v),
+                    MetricKind::Gauge => MetricValue::gauge(v),
+                    _ => unreachable!(),
+                })
+            });
 
-                // SAFETY: We've already checked above that `raw_values` is valid UTF-8.
-                let value_s = unsafe { std::str::from_utf8_unchecked(raw_value) };
-                let value = match value_s.parse::<f64>() {
-                    Ok(value) => value,
-                    Err(_) => return Err(nom::Err::Error(Error::new(raw_value, ErrorKind::Float))),
-                };
-
-                let value = if is_counter {
-                    MetricValue::counter(value)
-                } else {
-                    MetricValue::gauge(value)
-                };
-                values.push_value(0, value);
-            }
-
-            values
+            MetricValues::from_values_fallible(floats)?.ok_or_else(|| {
+                // We should basically never get here unless the values aren't real floats, since we at least know
+                // `raw_values` isn't empty, and we can't actually generate different metric kinds in the same iterator.
+                nom::Err::Error(Error::new(raw_values, ErrorKind::Verify))
+            })?
         }
         _ => return Err(nom::Err::Error(Error::new(raw_kind, ErrorKind::Char))),
     };
@@ -976,18 +973,22 @@ mod tests {
     }
 
     fn counter_multivalue(name: &str, values: &[f64]) -> Metric {
-        let mut metric_values = MetricValues::empty();
+        let mut metric_values = MetricValues::from_kind(MetricKind::Counter);
         for value in values {
-            metric_values.push_value(0, MetricValue::counter(*value));
+            if metric_values.merge_value(0, MetricValue::counter(*value)).is_some() {
+                panic!("should not fail to push counter into metric values");
+            }
         }
 
         create_metric(name, metric_values)
     }
 
     fn gauge_multivalue(name: &str, values: &[f64]) -> Metric {
-        let mut metric_values = MetricValues::empty();
+        let mut metric_values = MetricValues::from_kind(MetricKind::Gauge);
         for value in values {
-            metric_values.push_value(0, MetricValue::gauge(*value));
+            if metric_values.merge_value(0, MetricValue::gauge(*value)).is_some() {
+                panic!("should not fail to push gauge into metric values");
+            }
         }
 
         create_metric(name, metric_values)
@@ -1165,7 +1166,7 @@ mod tests {
         let timestamp = 1234567890;
         let counter_raw = format!("{}:{}|c|T{}", counter_name, counter_value, timestamp);
         let mut counter_expected = counter(counter_name, counter_value);
-        counter_expected.values_mut().populate_missing_timestamps(timestamp);
+        counter_expected.values_mut().set_timestamp(timestamp);
 
         let (remaining, counter_actual) = parse_dogstatsd_metric_with_default_config(counter_raw.as_bytes()).unwrap();
         check_basic_metric_eq(counter_expected, counter_actual);
@@ -1195,7 +1196,7 @@ mod tests {
             .metadata_mut()
             .origin_entity_mut()
             .set_container_id(container_id);
-        counter_expected.values_mut().populate_missing_timestamps(timestamp);
+        counter_expected.values_mut().set_timestamp(timestamp);
 
         let (remaining, counter_actual) = parse_dogstatsd_metric_with_default_config(counter_raw.as_bytes()).unwrap();
         let counter_actual = check_basic_metric_eq(counter_expected, counter_actual);

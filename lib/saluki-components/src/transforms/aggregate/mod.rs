@@ -1,10 +1,7 @@
-use std::{
-    collections::{hash_map::Entry, HashMap},
-    time::Duration,
-};
+use std::{num::NonZeroU64, time::Duration};
 
-use ahash::{AHashMap, AHashSet};
 use async_trait::async_trait;
+use hashbrown::{hash_map::Entry, HashMap};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::Context;
@@ -17,6 +14,7 @@ use saluki_env::time::get_unix_timestamp;
 use saluki_error::GenericError;
 use saluki_event::{metric::*, DataType, Event};
 use serde::Deserialize;
+use smallvec::SmallVec;
 use tokio::{select, time::interval_at};
 use tracing::{debug, error, trace};
 
@@ -34,8 +32,8 @@ const fn default_context_limit() -> usize {
     1000
 }
 
-const fn default_counter_expiry_seconds() -> u64 {
-    300
+const fn default_counter_expiry_seconds() -> Option<u64> {
+    Some(300)
 }
 
 const fn default_forward_timestamped_metrics() -> bool {
@@ -109,18 +107,20 @@ pub struct AggregateConfiguration {
     #[serde(rename = "aggregate_flush_open_windows", default)]
     flush_open_windows: bool,
 
-    /// How long to keep zero-value counters after they've been flushed, in seconds.
+    /// How long to keep idle counters alive after they've been flushed, in seconds.
     ///
-    /// When a counter is flushed, it's reset to zero. During the next flush, if the counter has not been updated since,
-    /// it will be flushed with a zero value. This is done to provide continuity in the output of counter metrics to
-    /// avoid breaks in the time series when updates are sparse.
+    /// When metrics are flushed, they are removed from the aggregation state. However, if a counter expiration is set,
+    /// counters will be kept alive in an "idle" state. For as long as a counter is idle, but not yet expired, a zero
+    /// value will be emitted for it during each flush. This allows more gracefully handling sparse counters, where
+    /// updates are infrequent but leaving gaps in the time series would be undesirable from a user experience
+    /// perspective.
     ///
-    /// After a counter has been idle (no updates) for the expiry period, though, it will be removed and no longer
-    /// emitted until it is updated again.
+    /// After a counter has been idle (no updates) for longer than the expiry period, it will be completely removed and
+    /// no further zero values will be emitted.
     ///
-    /// Defaults to 300 seconds (5 minutes).
+    /// Defaults to 300 seconds (5 minutes). Setting a value of `0` disables idle counter keep-alive.
     #[serde(alias = "dogstatsd_expiry_seconds", default = "default_counter_expiry_seconds")]
-    counter_expiry_seconds: u64,
+    counter_expiry_seconds: Option<u64>,
 
     /// Whether or not to immediately forward metrics with pre-defined timestamps.
     ///
@@ -217,7 +217,7 @@ pub struct Aggregate {
     flush_interval: Duration,
     context_limit: usize,
     flush_open_windows: bool,
-    counter_expiry_seconds: u64,
+    counter_expiry_seconds: Option<u64>,
     forward_timestamped_metrics: bool,
 }
 
@@ -229,7 +229,7 @@ impl Transform for Aggregate {
         let mut state = AggregationState::new(
             self.window_duration,
             self.context_limit,
-            Duration::from_secs(self.counter_expiry_seconds),
+            self.counter_expiry_seconds.filter(|s| *s != 0).map(Duration::from_secs),
         );
 
         let mut flush = interval_at(tokio::time::Instant::now() + self.flush_interval, self.flush_interval);
@@ -290,9 +290,21 @@ impl Transform for Aggregate {
 
                         for event in events {
                             if let Some(metric) = event.try_into_metric() {
-                                if self.forward_timestamped_metrics && metric.metadata().timestamp().is_some() {
-                                    event_buffer.push(Event::Metric(metric));
-                                } else if !state.insert(current_time, metric) {
+                                let metric = if self.forward_timestamped_metrics {
+                                    // If we're configured to forward timestamped metrics immediately, then we need to
+                                    // try to handle any timestamped values in this metric. If we get back `Some(...)`,
+                                    // it's either the original metric because no values had timestamps _or_ it's a
+                                    // modified version of the metric after all timestamped values were split out and
+                                    // directly forwarded.
+                                    match handle_forward_timestamped_metric(metric, &mut event_buffer) {
+                                        Some(metric) => metric,
+                                        None => continue,
+                                    }
+                                } else {
+                                    metric
+                                };
+
+                                if !state.insert(current_time, metric) {
                                     trace!("Dropping metric due to context limit.");
                                     events_dropped.increment(1);
                                 }
@@ -329,96 +341,49 @@ impl Transform for Aggregate {
     }
 }
 
-struct Bucket {
-    start: u64,
-    width: Duration,
-    contexts: AHashMap<Context, (MetricValue, MetricMetadata)>,
+fn handle_forward_timestamped_metric(mut metric: Metric, event_buffer: &mut EventBuffer) -> Option<Metric> {
+    if metric.values().all_timestamped() {
+        // All the values are timestamped, so take and forward the metric as-is.
+        event_buffer.push(Event::Metric(metric));
+        None
+    } else if metric.values().any_timestamped() {
+        // Only _some_ of the values are timestamped, so split out those timestamped ones, forward them, and then hand
+        // back the now-modified original metric.
+        let new_metric_values = metric.values_mut().split_all();
+        let new_metric = Metric::from_parts(metric.context().clone(), new_metric_values, metric.metadata().clone());
+        event_buffer.push(Event::Metric(new_metric));
+
+        Some(metric)
+    } else {
+        // No timestamped values, so we need to aggregate this metric.
+        Some(metric)
+    }
 }
 
-impl Bucket {
-    fn new(start: u64, width: Duration) -> Self {
-        Self {
-            start,
-            width,
-            contexts: AHashMap::default(),
-        }
-    }
-
-    const fn start(&self) -> u64 {
-        self.start
-    }
-
-    const fn end(&self) -> u64 {
-        self.start + self.width.as_secs() - 1
-    }
-
-    fn is_closed(&self, current_time: u64, flush_open_buckets: bool) -> bool {
-        // A bucket is considered "closed" if the current time is greater than the end of the bucket, or if
-        // `flush_open_buckets` is `true`.
-        //
-        // Buckets represent a half-open interval, where the start is inclusive and the end is exclusive. This means
-        // that for a bucket start of 10, and a width of 10, the bucket is 10 seconds "wide", and its start and end are
-        // 10 and 20, with the 20 excluded, or [10, 20) in interval notation. Simply put, if we have a timestamp of 10,
-        // or anything smaller than 20, we would consider it to fall within the bucket... but 20 or more would be
-        // outside of the bucket.
-        //
-        // We can also represent this visually:
-        //
-        // <--------- bucket 1 ----------> <--------- bucket 2 ----------> <--------- bucket 3 ---------->
-        // [10 11 12 13 14 15 16 17 18 19] [20 21 22 23 24 25 26 27 28 29] [30 31 32 33 34 35 36 37 38 39]
-        //
-        // We can see that each bucket is 10 seconds wide (10 elements, one for each second), and that their ends are
-        // effectively `start + width - 1`. This means that for any of these buckets to be considered "closed", the
-        // current time has to be _greater_ than `start + width - 1`. For example, if the current time is 19, then no
-        // buckets are closed, and if the current time is 29, then bucket 1 is closed but buckets 2 and 3 are still
-        // open, and if the current time is 30, then both buckets 1 and 2 are closed, but bucket 3 is still open.
-        self.end() < current_time || flush_open_buckets
-    }
-
-    fn insert(&mut self, metric: Metric) {
-        let bucket_start = self.start();
-
-        let (metric_context, metric_value, mut metric_metadata) = metric.into_parts();
-        match self.contexts.entry(metric_context) {
-            Entry::Occupied(mut entry) => {
-                let (existing_value, _) = entry.get_mut();
-                existing_value.merge(metric_value);
-            }
-            Entry::Vacant(entry) => {
-                // Set the metric's timestamp to the start of the bucket.
-                metric_metadata.set_timestamp(bucket_start);
-
-                entry.insert((metric_value, metric_metadata));
-            }
-        }
-    }
-
-    fn into_parts(self) -> (u64, u64, AHashMap<Context, (MetricValue, MetricMetadata)>) {
-        (self.start, self.end(), self.contexts)
-    }
+#[derive(Clone)]
+struct AggregatedMetric {
+    values: MetricValues,
+    metadata: MetricMetadata,
+    last_seen: u64,
 }
 
 struct AggregationState {
-    contexts: AHashSet<Context>,
+    contexts: HashMap<Context, AggregatedMetric, ahash::RandomState>,
     context_limit: usize,
-
-    buckets: Vec<Bucket>,
-    bucket_width: Duration,
-
-    zero_value_counters: AHashMap<Context, (u64, MetricMetadata)>,
-    counter_expiry_duration: Duration,
+    bucket_width_secs: u64,
+    counter_expiration_secs: Option<NonZeroU64>,
     last_flush: u64,
 }
 
 impl AggregationState {
-    fn new(bucket_width: Duration, context_limit: usize, counter_expiry_duration: Duration) -> Self {
+    fn new(bucket_width: Duration, context_limit: usize, counter_expiration: Option<Duration>) -> Self {
+        let counter_expiration_secs = counter_expiration.map(|d| d.as_secs()).and_then(NonZeroU64::new);
+
         Self {
-            contexts: AHashSet::default(),
+            contexts: HashMap::default(),
             context_limit,
-            buckets: Vec::with_capacity(2),
-            bucket_width,
-            zero_value_counters: AHashMap::default(),
-            counter_expiry_duration,
+            bucket_width_secs: bucket_width.as_secs(),
+            counter_expiration_secs,
             last_flush: 0,
         }
     }
@@ -427,251 +392,248 @@ impl AggregationState {
         self.contexts.is_empty()
     }
 
-    fn get_or_create_bucket(&mut self, timestamp: u64) -> &mut Bucket {
-        let bucket_start = align_to_bucket_start(timestamp, self.bucket_width);
-        match self
-            .buckets
-            .iter_mut()
-            .position(|bucket| bucket.start() == bucket_start)
-        {
-            Some(idx) => &mut self.buckets[idx],
-            None => {
-                self.buckets.push(Bucket::new(bucket_start, self.bucket_width));
-                self.buckets.last_mut().expect("bucket was just pushed")
-            }
-        }
-    }
-
     fn insert(&mut self, timestamp: u64, metric: Metric) -> bool {
-        // If we haven't seen this context yet, track it.
-        if !self.contexts.contains(metric.context()) {
-            if self.contexts.len() >= self.context_limit {
-                return false;
-            }
-
-            self.contexts.insert(metric.context().clone());
+        // If we haven't seen this context yet, and it would put us over the limit to insert it, then return early.
+        if !self.contexts.contains_key(metric.context()) && self.contexts.len() >= self.context_limit {
+            return false;
         }
 
-        // Find the bucket this metric belongs in, creating it if necessary, and then insert it into that bucket.
-        let metric_timestamp = metric.metadata().timestamp().unwrap_or(timestamp);
-        let bucket = self.get_or_create_bucket(metric_timestamp);
-        bucket.insert(metric);
+        let (context, mut values, metadata) = metric.into_parts();
+
+        // Set the timestamp on all values to the start of the bucket.
+        let current_bucket_start = align_to_bucket_start(timestamp, self.bucket_width_secs);
+        values.set_timestamp(current_bucket_start);
+
+        // If we're already tracking this context, update the last seen time and merge the new values into the existing
+        // values. Otherwise, create a new entry.
+        match self.contexts.entry(context) {
+            Entry::Occupied(mut entry) => {
+                let aggregated = entry.get_mut();
+
+                // We ignore metadata changes within a flush interval to keep things simple.
+                aggregated.last_seen = timestamp;
+                aggregated.values.merge_values(values);
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(AggregatedMetric {
+                    values,
+                    metadata,
+                    last_seen: timestamp,
+                });
+            }
+        }
 
         true
     }
 
     fn flush(&mut self, current_time: u64, flush_open_buckets: bool, event_buffer: &mut EventBuffer) {
-        let zero_value = MetricValue::rate_seconds(0.0, self.bucket_width);
-        let counter_expiry_secs = self.counter_expiry_duration.as_secs();
+        let zero_value = MetricValue::counter(0.0);
+        let bucket_width_secs = self.bucket_width_secs;
+        let counter_expiration_secs = self.counter_expiration_secs;
 
-        // Collect a list of all closed buckets between the last flush and now. This includes buckets that never had any
-        // points inserted into them, which we track in order to emit zero-value counters for.
-        let mut buckets_to_flush = HashMap::new();
-        let mut i = 0;
-        while i < self.buckets.len() {
-            if self.buckets[i].is_closed(current_time, flush_open_buckets) {
-                let bucket = self.buckets.remove(i);
-                buckets_to_flush.insert(bucket.start(), bucket);
-            } else {
-                i += 1;
+        // Calculate the buckets we need to potentially generate zero-value counters for.
+        //
+        // We only need to do this if we've flushed before, since we won't have any knowledge of which counters are idle
+        // or not until that happens.
+        let mut zero_value_buckets = SmallVec::<[u64; 4]>::new();
+        if self.last_flush != 0 {
+            let start = align_to_bucket_start(self.last_flush, bucket_width_secs);
+
+            for bucket_start in (start..current_time).step_by(bucket_width_secs as usize) {
+                if is_bucket_closed(current_time, bucket_start, bucket_width_secs, flush_open_buckets) {
+                    zero_value_buckets.push(bucket_start);
+                }
             }
         }
 
-        if self.last_flush != 0 {
-            // We only add in missing empty buckets if we've flushed before, since otherwise we'd be emitting buckets
-            // since the beginning of time... and more practically, we won't have any zero-value counters to emit unless
-            // we've actually flushed at least once.
-            let start = align_to_bucket_start(self.last_flush, self.bucket_width);
-            let bucket_width = self.bucket_width.as_secs() as usize;
+        // Iterate over each context we're tracking, and flush any values that are in buckets which are now closed.
+        debug!(timestamp = current_time, "Flushing buckets.");
 
-            for bucket_start in (start..current_time).step_by(bucket_width) {
-                let bucket = Bucket::new(bucket_start, self.bucket_width);
-                if !bucket.is_closed(current_time, flush_open_buckets) || buckets_to_flush.contains_key(&bucket.start())
-                {
-                    continue;
+        let mut updated_counters = HashMap::new();
+        let should_remove = |context: &Context, am: &mut AggregatedMetric| {
+            match am.values.kind() {
+                MetricKind::Counter => {
+                    // If counter expiration isn't enabled, then flush the context like normal.
+                    let expires_at = match counter_expiration_secs {
+                        Some(expiration) => am.last_seen + expiration.get(),
+                        None => return true,
+                    };
+
+                    // Counters are slightly different. We still flush them out when there's updates, but we can _also_
+                    // generate synthetic "zero" values for idle counters. This is done to allow keeping the metric
+                    // "alive" in any downstream systems, essentially providing continuity to sparse counters.
+                    //
+                    // This means we actually have inverted logic here: we only want to remove the context when it's
+                    // idle and expired, not when it has updates that need to be flushed. To cope with this, we extract
+                    // any values that have been accumulated for a counter, and store the off to the side. Before doing
+                    // so, we generate zero values for any buckets that have passed since the last flush, and didn't
+                    // have an update (i.e., if four buckets have elapsed since our last flush, but only one of those
+                    // have a real update, we'll generate zero values for the other three to maintain continuity).
+
+                    // Add in all of the potential zero value buckets that we might need to emit based on our last
+                    // flush. This is fine to do even if the metric has existing value buckets because the value is zero
+                    // so it'll be a no-op for existing value buckets.
+                    //
+                    // We don't add value buckets that are outside of the expiration range, though.
+                    for zv_bucket_start in &zero_value_buckets {
+                        if expires_at > *zv_bucket_start {
+                            if am.values.merge_value(*zv_bucket_start, zero_value.clone()).is_some() {
+                                panic!("should not fail to merge zero value for counter values");
+                            }
+                        } else {
+                            // Since zero-value buckets are in order, we can break early if this bucket is past the
+                            // expiration cutoff of the counter. No other bucket will be within the expiration range.
+                            break;
+                        }
+                    }
+
+                    // Finally, figure out if the counter is expired as of this flush. If so, we'll remove the counter
+                    // entirely. Otherwise, we'll leave it in place but store a clone off to the side so we can emit the
+                    // zero values.
+                    let has_expired = expires_at < current_time;
+                    if !has_expired {
+                        let values = am.values.split_all();
+
+                        updated_counters.insert(context.clone(), (values, am.metadata.clone()));
+                    }
+
+                    has_expired
                 }
-
-                buckets_to_flush.insert(bucket_start, bucket);
+                // All other metric types are always fully drained each flush interval.
+                _ => true,
             }
         };
 
-        let mut buckets_to_flush = buckets_to_flush.into_values().collect::<Vec<_>>();
-        buckets_to_flush.sort_unstable_by_key(|bucket| bucket.start());
-
-        // Iterate over each bucket that we need to flush.
-        debug!(
-            buckets_len = buckets_to_flush.len(),
-            timestamp = current_time,
-            "Flushing buckets."
-        );
-
-        for bucket in buckets_to_flush {
-            let (bucket_start, bucket_end, contexts) = bucket.into_parts();
-            debug!(bucket_start, bucket_len = contexts.len(), "Flushing bucket.");
-
-            for (context, (value, metadata)) in contexts {
-                // If this is a counter metric, handle tracking it for the purpose of zero-value counters.
-                //
-                // We set the "last seen" value to match the end of the bucket, since we don't know _when_ exactly we
-                // saw it, and we want to be maximally conservative here.
-                if let MetricValue::Counter { .. } = &value {
-                    if let Some((last_seen, existing_metadata)) = self.zero_value_counters.get_mut(&context) {
-                        *last_seen = bucket_end;
-                        *existing_metadata = metadata.clone();
-                    } else {
-                        self.zero_value_counters
-                            .insert(context.clone(), (bucket_end, metadata.clone()));
-                    }
-                } else {
-                    // Remove the context from our tracked contexts since it's now going away. We'll handle removing
-                    // contexts from expired zero-value counters further down.
-                    //
-                    // TODO: This isn't necessarily correct since a subsequent bucket that isn't closed yet could
-                    // still contain this context. We need more of a reference counting mechanism.
-                    self.contexts.remove(&context);
-                }
-
-                // Emit the metric to our event buffer, converting it to a rate first if it's a counter.
-                let value = match value {
-                    MetricValue::Counter { value } => MetricValue::rate_seconds(value, self.bucket_width),
-                    _ => value,
-                };
-                let metric = Metric::from_parts(context, value, metadata);
-                event_buffer.push(Event::Metric(metric));
-            }
-
-            // For any zero-value counters we're tracking that weren't updated in this bucket, and aren't yet expired as
-            // of this bucket, emit them here.
-            for (context, (last_seen, metadata)) in &self.zero_value_counters {
-                if *last_seen == bucket_end || *last_seen + counter_expiry_secs < bucket_start {
-                    continue;
-                }
-
-                // Update our timestamp to coincide with the start of the bucket.
-                let metadata = metadata.clone().with_timestamp(bucket_start);
-                let metric = Metric::from_parts(context.clone(), zero_value.clone(), metadata);
-
-                event_buffer.push(Event::Metric(metric));
-            }
+        // Flush all the metrics that we explicitly removed.
+        let removed_contexts = self.contexts.extract_if(should_remove);
+        for removed_context in removed_contexts {
+            let (context, AggregatedMetric { values, metadata, .. }) = removed_context;
+            transform_and_push_metric(context, values, metadata, bucket_width_secs, event_buffer);
         }
 
-        // Now that we've flushed all buckets, empty or not, figure out which zero-value counters have expired, and
-        // remove them.
-        let mut counters_to_remove = Vec::new();
-
-        for (context, (last_seen, _)) in &self.zero_value_counters {
-            if *last_seen + counter_expiry_secs < current_time {
-                counters_to_remove.push(context.clone());
-            }
-        }
-
-        if !counters_to_remove.is_empty() {
-            let num_removed = counters_to_remove.len();
-
-            for context in counters_to_remove {
-                self.zero_value_counters.remove(&context);
-                self.contexts.remove(&context);
-            }
-
-            debug!(num_removed, "Removed expired zero-value counters.");
+        // And now flush all of the counters we explicitly stored on the side.
+        //
+        // TODO: Reuse the `updated_counters` bit.
+        for (context, (values, metadata)) in updated_counters {
+            transform_and_push_metric(context, values, metadata, bucket_width_secs, event_buffer);
         }
 
         self.last_flush = current_time;
     }
 }
 
-const fn align_to_bucket_start(timestamp: u64, bucket_width: Duration) -> u64 {
-    timestamp - (timestamp % bucket_width.as_secs())
+fn transform_and_push_metric(
+    context: Context, mut values: MetricValues, metadata: MetricMetadata, bucket_width_secs: u64,
+    event_buffer: &mut EventBuffer,
+) {
+    // For any counters, convert them to rates now that we're emitting them.
+    for (_, value) in &mut values {
+        if let MetricValue::Counter { value: counter_value } = value {
+            *value = MetricValue::rate_seconds(*counter_value, Duration::from_secs(bucket_width_secs));
+        }
+    }
+
+    let metric = Metric::from_parts(context, values, metadata);
+    event_buffer.push(Event::Metric(metric));
 }
 
-// TODO: We should/could potentially do time through the environment provider here, but one thing we ought to also just
-// consider is a property test, specifically a state machine property test, where we generate a randomized offset to
-// start time from, a bucket width, flush interval, and operations, and so on... and then we run it to make sure that we
-// are always generating sequential timestamps for data points, and so on and so forth.
+const fn align_to_bucket_start(timestamp: u64, bucket_width_secs: u64) -> u64 {
+    timestamp - (timestamp % bucket_width_secs)
+}
+
+const fn is_bucket_closed(
+    current_time: u64, bucket_start: u64, bucket_width_secs: u64, flush_open_buckets: bool,
+) -> bool {
+    // A bucket is considered "closed" if the current time is greater than the end of the bucket, or if
+    // `flush_open_buckets` is `true`.
+    //
+    // Buckets represent a half-open interval, where the start is inclusive and the end is exclusive. This means that
+    // for a bucket start of 10, and a width of 10, the bucket is 10 seconds "wide", and its start and end are 10 and
+    // 20, with the 20 excluded, or [10, 20) in interval notation. Simply put, if we have a timestamp of 10, or anything
+    // smaller than 20, we would consider it to fall within the bucket... but 20 or more would be outside of the bucket.
+    //
+    // We can also represent this visually:
+    //
+    // <--------- bucket 1 ----------> <--------- bucket 2 ----------> <--------- bucket 3 ---------->
+    // [10 11 12 13 14 15 16 17 18 19] [20 21 22 23 24 25 26 27 28 29] [30 31 32 33 34 35 36 37 38 39]
+    //
+    // We can see that each bucket is 10 seconds wide (10 elements, one for each second), and that their ends are
+    // effectively `start + width - 1`. This means that for any of these buckets to be considered "closed", the current
+    // time has to be _greater_ than `start + width - 1`. For example, if the current time is 19, then no buckets are
+    // closed, and if the current time is 29, then bucket 1 is closed but buckets 2 and 3 are still open, and if the
+    // current time is 30, then both buckets 1 and 2 are closed, but bucket 3 is still open.
+    (bucket_start + bucket_width_secs - 1) < current_time || flush_open_buckets
+}
+
+// TODO: One thing we ought to consider is a property test, specifically a state machine property test, where we
+// generate a randomized offset to start time from, a bucket width, flush interval, and operations, and so on... and
+// then we run it to make sure that we are always generating sequential timestamps for data points, etc.
 #[cfg(test)]
 mod tests {
-    use saluki_context::ContextResolver;
     use saluki_core::pooling::helpers::get_pooled_object_via_default;
 
     use super::*;
 
     const BUCKET_WIDTH_SECS: u64 = 10;
     const BUCKET_WIDTH: Duration = Duration::from_secs(BUCKET_WIDTH_SECS);
-    const ZVC_EXPIRE_SECS: u64 = 20;
-    const ZVC_EXPIRE: Duration = Duration::from_secs(ZVC_EXPIRE_SECS);
+    const COUNTER_EXPIRE_SECS: u64 = 20;
+    const COUNTER_EXPIRE: Option<Duration> = Some(Duration::from_secs(COUNTER_EXPIRE_SECS));
 
-    const fn bucket_start_ts(step: u64) -> u64 {
-        align_to_bucket_start(insert_ts(step), BUCKET_WIDTH)
+    /// Gets the bucket start timestamp for the given step.
+    const fn bucket_ts(step: u64) -> u64 {
+        align_to_bucket_start(insert_ts(step), BUCKET_WIDTH_SECS)
     }
 
+    /// Gets the insert timestamp for the given step.
     const fn insert_ts(step: u64) -> u64 {
-        (BUCKET_WIDTH_SECS * (step + 1)) - 1
+        (BUCKET_WIDTH_SECS * (step + 1)) - 2
     }
 
+    /// Gets the flush timestamp for the given step.
     const fn flush_ts(step: u64) -> u64 {
         BUCKET_WIDTH_SECS * (step + 1)
     }
 
-    #[track_caller]
-    fn assert_inserted_counter(step: u64, original: &Metric, emitted: &Metric) {
-        assert_eq!(original.context(), emitted.context());
-
-        let original_value = match original.value() {
-            MetricValue::Counter { value } => *value,
-            _ => panic!("expected counter metric"),
-        };
-
-        let expected_value = MetricValue::rate_seconds(original_value, BUCKET_WIDTH);
-        assert_eq!(emitted.value(), &expected_value);
-
-        assert_eq!(emitted.metadata().timestamp(), Some(bucket_start_ts(step)));
+    fn create_counter(name: &'static str, value: f64) -> Metric {
+        Metric::from_context_and_value(Context::from_static_name(name), MetricValue::counter(value))
     }
 
-    #[track_caller]
-    fn assert_zero_value_counter(step: u64, original: &Metric, emitted: &Metric) {
-        assert_eq!(original.context(), emitted.context());
+    fn create_counter_multivalue(name: &'static str, counter_values: &[f64]) -> Metric {
+        let values = MetricValues::from_values(counter_values.iter().copied().map(MetricValue::counter))
+            .expect("should never fail to build metric values");
 
-        let expected_value = MetricValue::rate_seconds(0.0, BUCKET_WIDTH);
-        assert_eq!(emitted.value(), &expected_value);
-
-        assert_eq!(emitted.metadata().timestamp(), Some(bucket_start_ts(step)));
+        Metric::from_context_and_values(Context::from_static_name(name), values)
     }
 
-    fn get_event_buffer() -> EventBuffer {
-        get_pooled_object_via_default::<EventBuffer>()
+    fn create_gauge(name: &'static str, value: f64) -> Metric {
+        Metric::from_context_and_value(Context::from_static_name(name), MetricValue::gauge(value))
     }
 
     fn get_flushed_metrics(timestamp: u64, state: &mut AggregationState) -> Vec<Metric> {
-        let mut event_buffer = get_event_buffer();
+        // Flush the metrics to an event buffer.
+        let mut event_buffer = get_pooled_object_via_default::<EventBuffer>();
         state.flush(timestamp, true, &mut event_buffer);
 
+        // Map all of the metrics from their `Event` representation back to `Metric`, and sort them by name.
         let mut metrics = event_buffer
             .into_iter()
             .filter_map(|event| event.try_into_metric())
             .collect::<Vec<_>>();
-        metrics.sort_by(|a, b| match a.metadata().timestamp().cmp(&b.metadata().timestamp()) {
-            std::cmp::Ordering::Equal => a.context().name().cmp(b.context().name()),
-            other => other,
-        });
+
+        metrics.sort_by(|a, b| a.context().name().cmp(b.context().name()));
         metrics
     }
 
-    fn create_metric(name: &str, value: MetricValue) -> Metric {
-        const EMPTY_TAGS: &[&str] = &[];
+    macro_rules! assert_flushed_counter_metric {
+        ($original:expr, $actual:expr, [$($ts:expr => $value:expr),+]) => {
+            let mut actual_metric = $actual;
 
-        let mut resolver: ContextResolver = ContextResolver::with_noop_interner();
-        let context_ref = resolver.create_context_ref(name, EMPTY_TAGS);
-        let context = resolver.resolve(context_ref).unwrap();
+            assert_eq!($original.context(), actual_metric.context());
 
-        Metric::from_parts(context, value, MetricMetadata::default())
-    }
-
-    fn create_counter(name: &str, value: f64) -> Metric {
-        create_metric(name, MetricValue::Counter { value })
-    }
-
-    fn create_gauge(name: &str, value: f64) -> Metric {
-        create_metric(name, MetricValue::Gauge { value })
+            let actual_ts_value_pairs = actual_metric.values_mut().take_values().collect::<Vec<_>>();
+            let expected_ts_value_pairs = vec![ $(($ts, MetricValue::rate_seconds($value, BUCKET_WIDTH)), )+ ];
+            assert_eq!(expected_ts_value_pairs, actual_ts_value_pairs);
+        };
     }
 
     #[test]
@@ -690,23 +652,21 @@ mod tests {
             (1010, 1000, 10, true, true),
         ];
 
-        for (current_time, bucket_start, bucket_width, flush_open_buckets, expected) in cases {
+        for (current_time, bucket_start, bucket_width_secs, flush_open_buckets, expected) in cases {
             let expected_reason = if expected {
                 "closed, was open"
             } else {
                 "open, was closed"
             };
 
-            let bucket = Bucket::new(bucket_start, Duration::from_secs(bucket_width));
-
             assert_eq!(
-                bucket.is_closed(current_time, flush_open_buckets),
+                is_bucket_closed(current_time, bucket_start, bucket_width_secs, flush_open_buckets),
                 expected,
                 "expected bucket to be {} (current_time={}, bucket_start={}, bucket_width={}, flush_open_buckets={})",
                 expected_reason,
                 current_time,
                 bucket_start,
-                bucket_width,
+                bucket_width_secs,
                 flush_open_buckets
             );
         }
@@ -715,7 +675,7 @@ mod tests {
     #[test]
     fn context_limit() {
         // Create our aggregation state with a context limit of 2.
-        let mut state = AggregationState::new(BUCKET_WIDTH, 2, Duration::from_secs(300));
+        let mut state = AggregationState::new(BUCKET_WIDTH, 2, COUNTER_EXPIRE);
 
         // Create four unique gauges, and insert all of them. The third and fourth should fail because we've reached
         // the context limit.
@@ -749,7 +709,7 @@ mod tests {
     #[test]
     fn context_limit_with_zero_value_counters() {
         // We test here to ensure that zero-value counters contribute to the context limit.
-        let mut state = AggregationState::new(BUCKET_WIDTH, 2, Duration::from_secs(300));
+        let mut state = AggregationState::new(BUCKET_WIDTH, 2, COUNTER_EXPIRE);
 
         // Create two unique counters, and insert both of them.
         let metric1 = create_counter("metric1", 1.0);
@@ -759,30 +719,44 @@ mod tests {
         assert!(state.insert(insert_ts(1), metric2.clone()));
 
         // Flush the aggregation state, and observe they're both present.
-        let metrics = get_flushed_metrics(flush_ts(1), &mut state);
+        let mut metrics = get_flushed_metrics(flush_ts(1), &mut state);
         assert_eq!(metrics.len(), 2);
-        assert_inserted_counter(1, &metric1, &metrics[0]);
-        assert_inserted_counter(1, &metric2, &metrics[1]);
+        assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(1) => 1.0]);
+        assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(1) => 2.0]);
 
         // Flush _again_ to ensure that we then emit zero-value variants for both counters.
-        let metrics = get_flushed_metrics(flush_ts(2), &mut state);
-        assert_zero_value_counter(2, &metric1, &metrics[0]);
-        assert_zero_value_counter(2, &metric2, &metrics[1]);
+        let mut metrics = get_flushed_metrics(flush_ts(2), &mut state);
+        assert_eq!(metrics.len(), 2);
+        assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(2) => 0.0]);
+        assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(2) => 0.0]);
 
         // Now try to insert a third counter, which should fail because we've reached the context limit.
         let metric3 = create_counter("metric3", 3.0);
         assert!(!state.insert(insert_ts(3), metric3.clone()));
 
         // Flush the aggregation state, and observe that we only see the two original counters.
-        let metrics = get_flushed_metrics(flush_ts(3), &mut state);
-        assert_zero_value_counter(3, &metric1, &metrics[0]);
-        assert_zero_value_counter(3, &metric2, &metrics[1]);
+        let mut metrics = get_flushed_metrics(flush_ts(3), &mut state);
+        assert_eq!(metrics.len(), 2);
+        assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(3) => 0.0]);
+        assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(3) => 0.0]);
+
+        // With a fourth flush interval, the two counters should now have expired, and thus be dropped and no longer
+        // contributing to the context limit.
+        let metrics = get_flushed_metrics(flush_ts(4), &mut state);
+        assert_eq!(metrics.len(), 0);
+
+        // Now we should be able to insert the third counter, and it should be the only one present after flushing.
+        assert!(state.insert(insert_ts(5), metric3.clone()));
+
+        let mut metrics = get_flushed_metrics(flush_ts(5), &mut state);
+        assert_eq!(metrics.len(), 1);
+        assert_flushed_counter_metric!(&metric3, metrics.remove(0), [bucket_ts(5) => 3.0]);
     }
 
     #[test]
     fn zero_value_counters() {
         // We're testing that we properly emit and expire zero-value counters in all relevant scenarios.
-        let mut state = AggregationState::new(BUCKET_WIDTH, 10, ZVC_EXPIRE);
+        let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE);
 
         // Create two unique counters, and insert both of them.
         let metric1 = create_counter("metric1", 1.0);
@@ -792,16 +766,16 @@ mod tests {
         assert!(state.insert(insert_ts(1), metric2.clone()));
 
         // Flush the aggregation state, and observe they're both present.
-        let metrics = get_flushed_metrics(flush_ts(1), &mut state);
+        let mut metrics = get_flushed_metrics(flush_ts(1), &mut state);
         assert_eq!(metrics.len(), 2);
-        assert_inserted_counter(1, &metric1, &metrics[0]);
-        assert_inserted_counter(1, &metric2, &metrics[1]);
+        assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(1) => 1.0]);
+        assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(1) => 2.0]);
 
         // Perform our second flush, which should have them as zero-value counters.
-        let metrics = get_flushed_metrics(flush_ts(2), &mut state);
+        let mut metrics = get_flushed_metrics(flush_ts(2), &mut state);
         assert_eq!(metrics.len(), 2);
-        assert_zero_value_counter(2, &metric1, &metrics[0]);
-        assert_zero_value_counter(2, &metric2, &metrics[1]);
+        assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(2) => 0.0]);
+        assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(2) => 0.0]);
 
         // Now, we'll pretend to skip a flush period and add updates to them again after that.
         assert!(state.insert(insert_ts(4), metric1.clone()));
@@ -809,21 +783,34 @@ mod tests {
 
         // Flush the aggregation state, and observe that we have two zero-value counters for the flush period we
         // skipped, but that we see them appear again in the fourth flush period.
-        let metrics = get_flushed_metrics(flush_ts(4), &mut state);
-        assert_eq!(metrics.len(), 4);
-        assert_zero_value_counter(3, &metric1, &metrics[0]);
-        assert_zero_value_counter(3, &metric2, &metrics[1]);
-        assert_inserted_counter(4, &metric1, &metrics[2]);
-        assert_inserted_counter(4, &metric2, &metrics[3]);
+        let mut metrics = get_flushed_metrics(flush_ts(4), &mut state);
+        assert_eq!(metrics.len(), 2);
+        assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(3) => 0.0, bucket_ts(4) => 1.0]);
+        assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(3) => 0.0, bucket_ts(4) => 2.0]);
 
         // Now we'll skip multiple flush periods and ensure that we emit zero-value counters up until the point they
         // expire. As our zero-value counter expiration is 20 seconds, this is two flush periods, so we skip by three
         // flush periods, and we should only see the counters emitted for the first two.
-        let metrics = get_flushed_metrics(flush_ts(7), &mut state);
-        assert_eq!(metrics.len(), 4);
-        assert_zero_value_counter(5, &metric1, &metrics[0]);
-        assert_zero_value_counter(5, &metric2, &metrics[1]);
-        assert_zero_value_counter(6, &metric1, &metrics[2]);
-        assert_zero_value_counter(6, &metric2, &metrics[3]);
+        let mut metrics = get_flushed_metrics(flush_ts(7), &mut state);
+        assert_eq!(metrics.len(), 2);
+        assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(5) => 0.0, bucket_ts(6) => 0.0]);
+        assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(5) => 0.0, bucket_ts(6) => 0.0]);
+    }
+
+    #[test]
+    fn merge_identical_timestamped_values_on_flush() {
+        // We're testing that we properly emit and expire zero-value counters in all relevant scenarios.
+        let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE);
+
+        // Create one multi-value counter, and insert it.
+        let metric1 = create_counter_multivalue("metric1", &[1.0, 2.0, 3.0, 4.0, 5.0]);
+
+        assert!(state.insert(insert_ts(1), metric1.clone()));
+
+        // Flush the aggregation state, and observe the metric is present _and_ that we've properly merged all of the
+        // values within the same timestamp.
+        let mut metrics = get_flushed_metrics(flush_ts(1), &mut state);
+        assert_eq!(metrics.len(), 1);
+        assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(1) => 15.0]);
     }
 }
