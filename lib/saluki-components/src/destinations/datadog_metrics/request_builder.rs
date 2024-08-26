@@ -84,12 +84,12 @@ impl MetricsEndpoint {
 
     /// Gets the endpoint for the given metric.
     pub fn from_metric(metric: &Metric) -> Self {
-        match get_metric_value(metric) {
-            MetricValue::Counter { .. }
-            | MetricValue::Rate { .. }
-            | MetricValue::Gauge { .. }
-            | MetricValue::Set { .. } => Self::Series,
-            MetricValue::Distribution { .. } => Self::Sketches,
+        match metric.values().kind() {
+            MetricKind::Counter { .. }
+            | MetricKind::Rate { .. }
+            | MetricKind::Gauge { .. }
+            | MetricKind::Set { .. } => Self::Series,
+            MetricKind::Distribution { .. } => Self::Sketches,
         }
     }
 
@@ -332,12 +332,11 @@ impl EncodedMetric {
 }
 
 fn encode_single_metric(metric: &Metric) -> EncodedMetric {
-    match get_metric_value(metric) {
-        MetricValue::Counter { .. }
-        | MetricValue::Rate { .. }
-        | MetricValue::Gauge { .. }
-        | MetricValue::Set { .. } => EncodedMetric::Series(encode_series_metric(metric)),
-        MetricValue::Distribution { .. } => EncodedMetric::Sketch(encode_sketch_metric(metric)),
+    match metric.values().kind() {
+        MetricKind::Counter { .. } | MetricKind::Rate { .. } | MetricKind::Gauge { .. } | MetricKind::Set { .. } => {
+            EncodedMetric::Series(encode_series_metric(metric))
+        }
+        MetricKind::Distribution { .. } => EncodedMetric::Sketch(encode_sketch_metric(metric)),
     }
 }
 
@@ -389,11 +388,22 @@ fn encode_series_metric(metric: &Metric) -> proto::MetricSeries {
         }
     }
 
-    let (metric_type, maybe_interval) = match get_metric_value(metric) {
-        MetricValue::Counter { .. } => (proto::MetricType::COUNT, None),
-        MetricValue::Rate { interval, .. } => (proto::MetricType::RATE, Some(duration_to_secs(*interval))),
-        MetricValue::Gauge { .. } => (proto::MetricType::GAUGE, None),
-        MetricValue::Set { .. } => (proto::MetricType::GAUGE, None),
+    // We do a little fib here and extract the interval of the _first_ value if it's a rate, as we expect all values to
+    // have an identical rate.
+    //
+    // TODO: Examine if we should ever actually be carrying multiple values with different intervals in a single metric.
+    let (metric_type, maybe_interval) = match metric.values().kind() {
+        MetricKind::Counter => (proto::MetricType::COUNT, None),
+        MetricKind::Rate => {
+            let interval = match metric.values().into_iter().next() {
+                Some((_, MetricValue::Rate { interval, .. })) => *interval,
+                _ => unreachable!(),
+            };
+
+            (proto::MetricType::RATE, Some(duration_to_secs(interval)))
+        }
+        MetricKind::Gauge => (proto::MetricType::GAUGE, None),
+        MetricKind::Set => (proto::MetricType::GAUGE, None),
         _ => unreachable!(),
     };
 
@@ -487,21 +497,4 @@ fn origin_metadata_to_proto_metadata(product: u32, subproduct: u32, product_deta
 
 fn duration_to_secs(duration: Duration) -> i64 {
     duration.as_secs_f64() as i64
-}
-
-fn get_metric_value(metric: &Metric) -> &MetricValue {
-    // TODO: Realistically, we should encode this within `MetricValues` itself, which might make some code a little bit
-    // cleaner overall.
-
-    // Pull the first (possibly only) value out of the value set, and examine it to determine the type of metric we're
-    // dealing with.
-    //
-    // We assume that all values in a single metric are of the same type, and so we only look at the first one. This
-    // also extends as far as assuming the interval is identical for all rate values in the set, if there are any.
-    let first_value = metric
-        .values()
-        .into_iter()
-        .next()
-        .expect("must always be at least one value");
-    &first_value.1
 }

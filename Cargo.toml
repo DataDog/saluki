@@ -118,7 +118,7 @@ trybuild = { version = "1", default-features = false }
 tokio-test = { version = "0.4.4", default-features = false }
 memory-stats = { version = "1", default-features = false }
 simdutf8 = { version = "0.1.4", default-features = false }
-smallvec = { version = "1.13", default-features = false, features = ["drain_filter"] }
+smallvec = { version = "1.13", default-features = false }
 windows-sys = { version = "0.52", default-features = false }
 cgroupfs = { version = "0.8", default-features = false }
 rustls-native-certs = { version = "0.7", default-features = false }
