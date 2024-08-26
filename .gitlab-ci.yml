@@ -25,9 +25,9 @@ variables:
 
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image
   # used internally for testing.
-  DD_AGENT_VERSION: "7-57-0-rc-3-jmx"
-  DD_AGENT_IMAGE: "${IMAGE_REGISTRY}/datadog-agent:${DD_AGENT_VERSION}"
-  CONVERGED_AGENT_IMAGE_BASE: "${IMAGE_REGISTRY}/converged-datadog-agent"
+  DD_AGENT_VERSION: "7-57-0-rc-4-jmx"
+  DD_AGENT_IMAGE_BASE: "${IMAGE_REGISTRY}/datadog-agent"
+  DD_AGENT_IMAGE: "${DD_AGENT_IMAGE_BASE}:${DD_AGENT_VERSION}"
 
 .setup-env: &setup-env
   - 'export ADP_VERSION="${ADP_VERSION_BASE}"'
