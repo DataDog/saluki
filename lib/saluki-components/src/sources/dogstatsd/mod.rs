@@ -466,7 +466,7 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
         listen_addr,
         origin_detection,
         mut framer,
-        codec,
+        mut codec,
         io_buffer_pool,
         metrics,
         ..
@@ -528,7 +528,7 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
             match framer.next_frame(&buffer, reached_eof) {
                 Ok(Some((frame, advance_len))) => {
                     debug!(?frame, ?advance_len, "Decoded frame.");
-                    if let Err(e) = handle_frame(frame, &codec, &mut event_buffer, origin_detection, &peer_addr) {
+                    if let Err(e) = handle_frame(frame, &mut codec, &mut event_buffer, origin_detection, &peer_addr) {
                         error!(%listen_addr, error = %e, "Failed to parse frame.");
                     }
                     buffer.advance(advance_len);
@@ -555,7 +555,7 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
 }
 
 fn handle_frame(
-    frame: &[u8], codec: &DogstatsdCodec<AgentLikeTagMetadataInterceptor>, event_buffer: &mut EventBuffer,
+    frame: &[u8], codec: &mut DogstatsdCodec<AgentLikeTagMetadataInterceptor>, event_buffer: &mut EventBuffer,
     origin_detection: bool, peer_addr: &ConnectionAddress,
 ) -> Result<(), ParseError> {
     codec.decode_packet(frame, event_buffer)?;
