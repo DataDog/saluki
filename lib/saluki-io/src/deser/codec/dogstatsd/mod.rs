@@ -150,7 +150,7 @@ impl<TMI: TagMetadataInterceptor> DogstatsdCodec<TMI> {
         }
     }
 
-    pub fn decode_packet(&self, data: &[u8], event_buffer: &mut EventBuffer) -> Result<usize, ParseError> {
+    pub fn decode_packet(&mut self, data: &[u8], event_buffer: &mut EventBuffer) -> Result<usize, ParseError> {
         match parse_message_type(data) {
             MessageType::Event => self.decode_event(data, event_buffer),
             MessageType::ServiceCheck => self.decode_service_check(data, event_buffer),
@@ -158,7 +158,7 @@ impl<TMI: TagMetadataInterceptor> DogstatsdCodec<TMI> {
         }
     }
 
-    fn decode_metric(&self, data: &[u8], events: &mut EventBuffer) -> Result<usize, ParseError> {
+    fn decode_metric(&mut self, data: &[u8], events: &mut EventBuffer) -> Result<usize, ParseError> {
         // Decode the payload and get the representative parts of the metric.
         let (_remaining, (metric_name, tags_iter, values_iter, mut metadata)) =
             parse_dogstatsd_metric(data, &self.config)?;
@@ -1701,7 +1701,7 @@ mod tests {
 
     #[test]
     fn tag_interceptor() {
-        let codec = DogstatsdCodec::from_context_resolver(ContextResolver::with_noop_interner())
+        let mut codec = DogstatsdCodec::from_context_resolver(ContextResolver::with_noop_interner())
             .with_configuration(DogstatsdCodecConfiguration::default())
             .with_tag_metadata_interceptor(StaticInterceptor);
 
