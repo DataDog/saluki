@@ -102,7 +102,7 @@ impl APIHandler for HealthAPIHandler {
 
     fn generate_routes(&self) -> Router<Self::State> {
         Router::new()
-            .route("/health/ready", get(Self::ready_handler))
-            .route("/health/live", get(Self::live_handler))
+            .route("/ready", get(Self::ready_handler))
+            .route("/live", get(Self::live_handler))
     }
 }
