@@ -31,7 +31,7 @@ build-converged-adp-image:
     DDSIGN_ID_TOKEN:
       aud: image-integrity
   script:
-    - export IMAGE_TAG=${CONVERGED_AGENT_IMAGE_BASE}:${ADP_VERSION}
+    - export IMAGE_TAG=${DD_AGENT_IMAGE_BASE}:${DD_AGENT_VERSION}-adp-${ADP_VERSION}
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.datadog-agent
