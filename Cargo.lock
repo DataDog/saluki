@@ -2608,6 +2608,7 @@ dependencies = [
  "saluki-config",
  "saluki-context",
  "saluki-error",
+ "saluki-event",
  "serde",
  "serde_json",
  "snafu",

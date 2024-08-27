@@ -6,6 +6,7 @@ use memory_accounting::ComponentRegistry;
 use saluki_config::GenericConfiguration;
 use saluki_context::TagSet;
 use saluki_error::GenericError;
+use saluki_event::metric::OriginTagCardinality;
 use stringtheory::interning::FixedSizeInterner;
 
 #[cfg(target_os = "linux")]
@@ -16,7 +17,6 @@ use crate::{
         aggregator::MetadataAggregator,
         collectors::{ContainerdMetadataCollector, RemoteAgentMetadataCollector},
         entity::EntityId,
-        metadata::TagCardinality,
         store::TagSnapshot,
     },
     WorkloadProvider,
@@ -103,7 +103,7 @@ impl RemoteAgentWorkloadProvider {
 
 #[async_trait]
 impl WorkloadProvider for RemoteAgentWorkloadProvider {
-    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<TagSet> {
+    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<TagSet> {
         self.shared_tags.load().get_entity_tags(entity_id, cardinality)
     }
 }

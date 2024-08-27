@@ -28,6 +28,7 @@ rustls-pemfile = { workspace = true }
 saluki-config = { workspace = true }
 saluki-context = { workspace = true }
 saluki-error = { workspace = true }
+saluki-event = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["std"] }
 snafu = { workspace = true }

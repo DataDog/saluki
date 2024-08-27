@@ -14,13 +14,14 @@ pub use self::entity::EntityId;
 mod helpers;
 
 mod metadata;
-pub use self::metadata::{MetadataAction, MetadataOperation, TagCardinality};
+pub use self::metadata::{MetadataAction, MetadataOperation};
 
 pub mod providers;
 
 mod store;
 use async_trait::async_trait;
 use saluki_context::TagSet;
+use saluki_event::metric::OriginTagCardinality;
 
 pub use self::store::{TagSnapshot, TagStore};
 
@@ -33,14 +34,14 @@ pub trait WorkloadProvider {
     /// tags to get can be controlled via `cardinality`.
     ///
     /// If no tags can be found for the entity, or at the given cardinality, `None` is returned.
-    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<TagSet>;
+    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<TagSet>;
 }
 
 impl<T> WorkloadProvider for Option<T>
 where
     T: WorkloadProvider,
 {
-    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<TagSet> {
+    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<TagSet> {
         match self.as_ref() {
             Some(provider) => provider.get_tags_for_entity(entity_id, cardinality),
             None => None,
