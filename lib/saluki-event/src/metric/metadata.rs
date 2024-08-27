@@ -52,6 +52,16 @@ impl TryFrom<String> for OriginTagCardinality {
     }
 }
 
+impl fmt::Display for OriginTagCardinality {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Low => write!(f, "low"),
+            Self::Orchestrator => write!(f, "orchestrator"),
+            Self::High => write!(f, "high"),
+        }
+    }
+}
+
 /// The entity from which a metric originated from.
 ///
 /// While "source type" and `MetricOrigin` describe the origin of a metric in high-level terms -- "this metric

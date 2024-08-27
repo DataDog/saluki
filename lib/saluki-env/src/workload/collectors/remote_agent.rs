@@ -149,27 +149,20 @@ impl MetadataCollector for RemoteAgentMetadataCollector {
 
                         let maybe_operation = match event_type {
                             EventType::Added | EventType::Modified => {
-                                let mut actions = Vec::new();
-                                if !entity.low_cardinality_tags.is_empty() {
-                                    match self.get_interned_tagset(entity.low_cardinality_tags) {
-                                        Some(tags) => actions.push(MetadataAction::SetTags {
-                                            cardinality: OriginTagCardinality::Low,
-                                            tags,
-                                        }),
-                                        None => {
-                                            warn!(%entity_id, "Failed to intern low cardinality tags for entity. Tags will not be present.");
-                                        }
-                                    }
-                                }
+                                let entity_tags = [
+                                    (OriginTagCardinality::Low, entity.low_cardinality_tags),
+                                    (OriginTagCardinality::Orchestrator, entity.orchestrator_cardinality_tags),
+                                    (OriginTagCardinality::High, entity.high_cardinality_tags),
+                                ];
 
-                                if !entity.high_cardinality_tags.is_empty() {
-                                    match self.get_interned_tagset(entity.high_cardinality_tags) {
-                                        Some(tags) => actions.push(MetadataAction::SetTags {
-                                            cardinality: OriginTagCardinality::High,
-                                            tags,
-                                        }),
-                                        None => {
-                                            warn!(%entity_id, "Failed to intern high cardinality tags for entity. Tags will not be present.");
+                                let mut actions = Vec::new();
+                                for (cardinality, tags) in entity_tags {
+                                    if !tags.is_empty() {
+                                        match self.get_interned_tagset(tags) {
+                                            Some(tags) => actions.push(MetadataAction::SetTags { cardinality, tags }),
+                                            None => {
+                                                warn!(%entity_id, %cardinality, "Failed to intern tags for entity. Tags will not be present.");
+                                            }
                                         }
                                     }
                                 }
