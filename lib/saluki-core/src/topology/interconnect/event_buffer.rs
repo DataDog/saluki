@@ -145,10 +145,9 @@ impl Iterator for IntoIter {
 mod tests {
     use std::collections::VecDeque;
 
-    use saluki_context::Context;
     use saluki_event::{
         eventd::EventD,
-        metric::{Metric, MetricValue},
+        metric::Metric,
         service_check::{CheckStatus, ServiceCheck},
         DataType, Event,
     };
@@ -166,10 +165,7 @@ mod tests {
         assert!(!buffer.has_data_type(DataType::ServiceCheck));
 
         // Now write a metric, and make sure that's reflected:
-        buffer.push(Event::Metric(Metric::from_context_and_value(
-            Context::from_static_parts("foo", &[]),
-            MetricValue::counter(42.0),
-        )));
+        buffer.push(Event::Metric(Metric::counter("foo", 42.0)));
         assert!(!buffer.is_empty());
         assert!(buffer.has_data_type(DataType::Metric));
         assert!(!buffer.has_data_type(DataType::EventD));
@@ -191,10 +187,7 @@ mod tests {
         assert!(!buffer.has_data_type(DataType::EventD));
         assert!(!buffer.has_data_type(DataType::ServiceCheck));
 
-        buffer.push(Event::Metric(Metric::from_context_and_value(
-            Context::from_static_parts("foo", &[]),
-            MetricValue::counter(42.0),
-        )));
+        buffer.push(Event::Metric(Metric::counter("foo", 42.0)));
         assert!(buffer.has_data_type(DataType::Metric));
         assert!(!buffer.has_data_type(DataType::EventD));
         assert!(!buffer.has_data_type(DataType::ServiceCheck));
@@ -208,15 +201,8 @@ mod tests {
     #[test]
     fn extract() {
         let mut buffer = get_pooled_object_via_default::<EventBuffer>();
-        buffer.push(Event::Metric(Metric::from_context_and_value(
-            Context::from_static_parts("foo", &[]),
-            MetricValue::counter(42.0),
-        )));
-        buffer.push(Event::Metric(Metric::from_context_and_value(
-            Context::from_static_parts("baz", &[]),
-            MetricValue::counter(43.0),
-        )));
-
+        buffer.push(Event::Metric(Metric::counter("foo", 42.0)));
+        buffer.push(Event::Metric(Metric::counter("foo", 43.0)));
         buffer.push(Event::EventD(EventD::new("foo1", "bar1")));
         buffer.push(Event::EventD(EventD::new("foo2", "bar2")));
         buffer.push(Event::EventD(EventD::new("foo3", "bar3")));

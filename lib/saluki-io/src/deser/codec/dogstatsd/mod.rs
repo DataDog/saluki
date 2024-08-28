@@ -1,6 +1,3 @@
-use std::collections::HashSet;
-
-use message::MessageType;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take, take_while1},
@@ -23,7 +20,7 @@ use saluki_metrics::static_metrics;
 use snafu::Snafu;
 
 mod message;
-use crate::deser::codec::dogstatsd::message::parse_message_type;
+use self::message::{parse_message_type, MessageType};
 
 type NomParserError<'a> = nom::Err<nom::error::Error<&'a [u8]>>;
 
@@ -534,48 +531,21 @@ fn metric_values(input: &[u8]) -> IResult<&[u8], MetricValues> {
         return Err(nom::Err::Error(Error::new(raw_values, ErrorKind::Verify)));
     }
 
+    let floats = FloatIter::new(raw_values);
     let values = match raw_kind {
         b"s" => {
             // SAFETY: We've already checked above that `raw_values` is valid UTF-8.
             let value = unsafe { std::str::from_utf8_unchecked(raw_values) };
-            MetricValues::from_value(MetricValue::Set {
-                values: HashSet::from([value.to_string()]),
-            })
+            MetricValues::set(value.to_string())
         }
         // TODO: We're handling distributions 100% correctly, but we're taking a shortcut here by also handling
         // timers/histograms directly as distributions.
         //
         // We need to figure out if this is OK or if we need to keep them separate and only convert up at the source
         // level based on configuration or something.
-        b"ms" | b"h" | b"d" => {
-            // For distributions, we try to optimize for when they're multi-value payloads by not generating one for
-            // each payload. Instead, we just create a lightweight iterator over the values here and then create the
-            // distribution in a single go.
-            let floats = FloatIter::new(raw_values);
-            MetricValue::distribution_from_iter(floats).map(MetricValues::from_value)?
-        }
-        b"g" | b"c" => {
-            // For counters and gauges, we just parse the value (or values), and build our corresponding `MetricValues`.
-            let kind = if raw_kind[0] == b'c' {
-                MetricKind::Counter
-            } else {
-                MetricKind::Gauge
-            };
-
-            let floats = FloatIter::new(raw_values).map(|x| {
-                x.map(|v| match kind {
-                    MetricKind::Counter => MetricValue::counter(v),
-                    MetricKind::Gauge => MetricValue::gauge(v),
-                    _ => unreachable!(),
-                })
-            });
-
-            MetricValues::from_values_fallible(floats)?.ok_or_else(|| {
-                // We should basically never get here unless the values aren't real floats, since we at least know
-                // `raw_values` isn't empty, and we can't actually generate different metric kinds in the same iterator.
-                nom::Err::Error(Error::new(raw_values, ErrorKind::Verify))
-            })?
-        }
+        b"ms" | b"h" | b"d" => MetricValues::distribution_fallible(floats)?,
+        b"g" => MetricValues::gauge_fallible(floats)?,
+        b"c" => MetricValues::counter_fallible(floats)?,
         _ => return Err(nom::Err::Error(Error::new(raw_kind, ErrorKind::Char))),
     };
 
@@ -876,7 +846,7 @@ mod tests {
     use saluki_context::ContextResolver;
     use saluki_core::{pooling::helpers::get_pooled_object_via_default, topology::interconnect::EventBuffer};
     use saluki_event::{
-        eventd::EventD,
+        eventd::{AlertType, EventD, Priority},
         metric::*,
         service_check::{CheckStatus, ServiceCheck},
         Event,
@@ -888,6 +858,9 @@ mod tests {
     };
     use super::{InterceptAction, TagMetadataInterceptor};
     use crate::deser::codec::DogstatsdCodec;
+
+    type NomResult<'input, T> = Result<T, nom::Err<nom::error::Error<&'input [u8]>>>;
+    type OptionalNomResult<'input, T> = Result<Option<T>, nom::Err<nom::error::Error<&'input [u8]>>>;
 
     #[derive(Debug)]
     struct StaticInterceptor;
@@ -912,110 +885,24 @@ mod tests {
         }
     }
 
-    fn create_metric(name: &str, values: MetricValues) -> Metric {
-        create_metric_with_tags(name, &[], values)
-    }
-
-    fn create_metric_with_tags(name: &str, tags: &[&str], values: MetricValues) -> Metric {
-        let mut context_resolver: ContextResolver = ContextResolver::with_noop_interner();
-        let context_ref = context_resolver.create_context_ref(name, tags);
-        let context = context_resolver.resolve(context_ref).unwrap();
-
-        Metric::from_parts(
-            context,
-            values,
-            MetricMetadata::default().with_origin(MetricOrigin::dogstatsd()),
-        )
-    }
-
-    fn create_eventd(title: &str, text: &str) -> EventD {
-        EventD::new(title, text)
-    }
-
-    fn create_service_check(name: &str, status: CheckStatus) -> ServiceCheck {
-        ServiceCheck::new(name, status)
-    }
-
-    fn counter(name: &str, value: f64) -> Metric {
-        create_metric(name, MetricValues::from_value(MetricValue::counter(value)))
-    }
-
-    fn counter_with_tags(name: &str, tags: &[&str], value: f64) -> Metric {
-        create_metric_with_tags(name, tags, MetricValues::from_value(MetricValue::counter(value)))
-    }
-
-    fn gauge(name: &str, value: f64) -> Metric {
-        create_metric(name, MetricValues::from_value(MetricValue::gauge(value)))
-    }
-
-    fn distribution(name: &str, value: f64) -> Metric {
-        create_metric(
-            name,
-            MetricValues::from_value(MetricValue::distribution_from_value(value)),
-        )
-    }
-
-    fn set(name: &str, value: &str) -> Metric {
-        create_metric(
-            name,
-            MetricValues::from_value(MetricValue::Set {
-                values: vec![value.to_string()].into_iter().collect(),
-            }),
-        )
-    }
-
-    fn eventd(title: &str, text: &str) -> EventD {
-        create_eventd(title, text)
-    }
-
-    fn service_check(name: &str, status: CheckStatus) -> ServiceCheck {
-        create_service_check(name, status)
-    }
-
-    fn counter_multivalue(name: &str, values: &[f64]) -> Metric {
-        let mut metric_values = MetricValues::from_kind(MetricKind::Counter);
-        for value in values {
-            if metric_values.merge_value(0, MetricValue::counter(*value)).is_some() {
-                panic!("should not fail to push counter into metric values");
-            }
-        }
-
-        create_metric(name, metric_values)
-    }
-
-    fn gauge_multivalue(name: &str, values: &[f64]) -> Metric {
-        let mut metric_values = MetricValues::from_kind(MetricKind::Gauge);
-        for value in values {
-            if metric_values.merge_value(0, MetricValue::gauge(*value)).is_some() {
-                panic!("should not fail to push gauge into metric values");
-            }
-        }
-
-        create_metric(name, metric_values)
-    }
-
-    fn distribution_multivalue(name: &str, values: &[f64]) -> Metric {
-        create_metric(
-            name,
-            MetricValues::from_value(MetricValue::distribution_from_values(values)),
-        )
-    }
-
-    fn parse_dogstatsd_metric_with_default_config(input: &[u8]) -> IResult<&[u8], Option<Event>> {
+    fn parse_dsd_metric(input: &[u8]) -> OptionalNomResult<'_, Metric> {
         let default_config = DogstatsdCodecConfiguration::default();
-        parse_dogstatsd_metric_with_config(input, &default_config)
+        parse_dsd_metric_with_conf(input, &default_config)
     }
 
-    fn parse_dogstatsd_metric_with_config<'input>(
+    fn parse_dsd_metric_with_conf<'input>(
         input: &'input [u8], config: &DogstatsdCodecConfiguration,
-    ) -> IResult<&'input [u8], Option<Event>> {
+    ) -> OptionalNomResult<'input, Metric> {
         let mut context_resolver = ContextResolver::with_noop_interner();
-        parse_dogstatsd_metric_direct(input, config, &mut context_resolver)
+        let (remaining, result) = parse_dsd_metric_direct(input, config, &mut context_resolver)?;
+        assert!(remaining.is_empty());
+
+        Ok(result)
     }
 
-    fn parse_dogstatsd_metric_direct<'input>(
+    fn parse_dsd_metric_direct<'input>(
         input: &'input [u8], config: &DogstatsdCodecConfiguration, context_resolver: &mut ContextResolver,
-    ) -> IResult<&'input [u8], Option<Event>> {
+    ) -> IResult<&'input [u8], Option<Metric>> {
         let (remaining, (name, tags_iter, values, metadata)) = parse_dogstatsd_metric(input, config)?;
 
         let context_ref = context_resolver.create_context_ref(name, tags_iter);
@@ -1024,306 +911,299 @@ mod tests {
             None => return Ok((remaining, None)),
         };
 
-        Ok((
-            remaining,
-            Some(Event::Metric(Metric::from_parts(context, values, metadata))),
-        ))
+        Ok((remaining, Some(Metric::from_parts(context, values, metadata))))
     }
 
-    fn parse_dogstatsd_event_with_default_config(input: &[u8]) -> IResult<&[u8], Option<Event>> {
+    fn parse_dsd_eventd(input: &[u8]) -> NomResult<'_, EventD> {
         let default_config = DogstatsdCodecConfiguration::default();
-        parse_dogstatsd_event_with_config(input, &default_config)
+        parse_dsd_eventd_with_conf(input, &default_config)
     }
 
-    fn parse_dogstatsd_event_with_config<'input>(
+    fn parse_dsd_eventd_with_conf<'input>(
         input: &'input [u8], config: &DogstatsdCodecConfiguration,
-    ) -> IResult<&'input [u8], Option<Event>> {
-        parse_dogstatsd_eventd_direct(input, config)
+    ) -> NomResult<'input, EventD> {
+        let (remaining, eventd) = parse_dsd_eventd_direct(input, config)?;
+        assert!(remaining.is_empty());
+
+        Ok(eventd)
     }
 
-    fn parse_dogstatsd_eventd_direct<'input>(
+    fn parse_dsd_eventd_direct<'input>(
         input: &'input [u8], config: &DogstatsdCodecConfiguration,
-    ) -> IResult<&'input [u8], Option<Event>> {
-        let (remaining, event) = parse_dogstatsd_event(input, config)?;
-        Ok((remaining, Some(Event::EventD(event))))
+    ) -> IResult<&'input [u8], EventD> {
+        parse_dogstatsd_event(input, config)
     }
 
-    fn parse_dogstatsd_service_check_with_default_config(input: &[u8]) -> IResult<&[u8], Option<Event>> {
+    fn parse_dsd_service_check(input: &[u8]) -> NomResult<'_, ServiceCheck> {
         let default_config = DogstatsdCodecConfiguration::default();
-        parse_dogstatsd_service_check_with_config(input, &default_config)
+        parse_dsd_service_check_with_conf(input, &default_config)
     }
 
-    fn parse_dogstatsd_service_check_with_config<'input>(
+    fn parse_dsd_service_check_with_conf<'input>(
         input: &'input [u8], config: &DogstatsdCodecConfiguration,
-    ) -> IResult<&'input [u8], Option<Event>> {
-        parse_dogstatsd_service_check_direct(input, config)
+    ) -> NomResult<'input, ServiceCheck> {
+        let (remaining, service_check) = parse_dsd_service_check_direct(input, config)?;
+        assert!(remaining.is_empty());
+
+        Ok(service_check)
     }
 
-    fn parse_dogstatsd_service_check_direct<'input>(
+    fn parse_dsd_service_check_direct<'input>(
         input: &'input [u8], config: &DogstatsdCodecConfiguration,
-    ) -> IResult<&'input [u8], Option<Event>> {
-        let (remaining, service_check) = parse_dogstatsd_service_check(input, config)?;
-        Ok((remaining, Some(Event::ServiceCheck(service_check))))
+    ) -> IResult<&'input [u8], ServiceCheck> {
+        parse_dogstatsd_service_check(input, config)
     }
 
     #[track_caller]
-    fn check_basic_metric_eq(expected: Metric, actual: Option<Event>) -> Metric {
+    fn check_basic_metric_eq(mut expected: Metric, actual: Option<Metric>) -> Metric {
         let actual = actual.expect("event should not have been None");
-        let actual = actual.try_into_metric().expect("event should have been a Metric");
+
+        // We set this manually because the DSD codec is always going to set this on the actual metric, so we want our
+        // expected metric to also match... without each unit test having to set it as boilerplate.
+        expected.metadata_mut().set_origin(MetricOrigin::dogstatsd());
+
         assert_eq!(expected.context(), actual.context());
         assert_eq!(expected.values(), actual.values());
+        assert_eq!(expected.metadata(), actual.metadata());
         actual
     }
 
-    #[test]
-    fn basic_metrics() {
-        let counter_name = "my.counter";
-        let counter_value = 1.0;
-        let counter_raw = format!("{}:{}|c", counter_name, counter_value);
-        let counter_expected = counter(counter_name, counter_value);
-        let (remaining, counter_actual) = parse_dogstatsd_metric_with_default_config(counter_raw.as_bytes()).unwrap();
-        check_basic_metric_eq(counter_expected, counter_actual);
-        assert!(remaining.is_empty());
+    #[track_caller]
+    fn check_basic_eventd_eq(expected: EventD, actual: EventD) {
+        assert_eq!(expected.title(), actual.title());
+        assert_eq!(expected.text(), actual.text());
+        assert_eq!(expected.timestamp(), actual.timestamp());
+        assert_eq!(expected.hostname(), actual.hostname());
+        assert_eq!(expected.aggregation_key(), actual.aggregation_key());
+        assert_eq!(expected.priority(), actual.priority());
+        assert_eq!(expected.source_type_name(), actual.source_type_name());
+        assert_eq!(expected.alert_type(), actual.alert_type());
+        assert_eq!(expected.tags(), actual.tags());
+    }
 
-        let gauge_name = "my.gauge";
-        let gauge_value = 2.0;
-        let gauge_raw = format!("{}:{}|g", gauge_name, gauge_value);
-        let gauge_expected = gauge(gauge_name, gauge_value);
-        let (remaining, gauge_actual) = parse_dogstatsd_metric_with_default_config(gauge_raw.as_bytes()).unwrap();
-        check_basic_metric_eq(gauge_expected, gauge_actual);
-        assert!(remaining.is_empty());
+    #[track_caller]
+    fn check_basic_service_check_eq(expected: ServiceCheck, actual: ServiceCheck) {
+        assert_eq!(expected.name(), actual.name());
+        assert_eq!(expected.status(), actual.status());
+        assert_eq!(expected.timestamp(), actual.timestamp());
+        assert_eq!(expected.hostname(), actual.hostname());
+        assert_eq!(expected.tags(), actual.tags());
+    }
+
+    #[test]
+    fn basic_metric() {
+        let name = "my.counter";
+        let value = 1.0;
+        let raw = format!("{}:{}|c", name, value);
+        let expected = Metric::counter(name, value);
+        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
+        check_basic_metric_eq(expected, actual);
+
+        let name = "my.gauge";
+        let value = 2.0;
+        let raw = format!("{}:{}|g", name, value);
+        let expected = Metric::gauge(name, value);
+        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
+        check_basic_metric_eq(expected, actual);
 
         // Special case where we check this for all three variants -- timers, histograms, and distributions -- since we
         // treat them all the same when parsing.
-        let distribution_name = "my.distribution";
-        let distribution_value = 3.0;
+        let name = "my.distribution";
+        let value = 3.0;
         for kind in &["ms", "h", "d"] {
-            let distribution_raw = format!("{}:{}|{}", distribution_name, distribution_value, kind);
-            let distribution_expected = distribution(distribution_name, distribution_value);
-            let (remaining, distribution_actual) =
-                parse_dogstatsd_metric_with_default_config(distribution_raw.as_bytes()).unwrap();
-            check_basic_metric_eq(distribution_expected, distribution_actual);
-            assert!(remaining.is_empty());
+            let raw = format!("{}:{}|{}", name, value, kind);
+            let expected = Metric::distribution(name, value);
+            let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
+            check_basic_metric_eq(expected, actual);
         }
 
         let set_name = "my.set";
         let set_value = "value";
         let set_raw = format!("{}:{}|s", set_name, set_value);
-        let set_expected = set(set_name, set_value);
-        let (remaining, set_actual) = parse_dogstatsd_metric_with_default_config(set_raw.as_bytes()).unwrap();
+        let set_expected = Metric::set(set_name, set_value);
+        let set_actual = parse_dsd_metric(set_raw.as_bytes()).expect("should not fail to parse");
         check_basic_metric_eq(set_expected, set_actual);
-        assert!(remaining.is_empty());
     }
 
     #[test]
     fn metric_tags() {
-        let counter_name = "my.counter";
-        let counter_value = 1.0;
-        let counter_tags = &["tag1", "tag2"];
-        let counter_raw = format!("{}:{}|c|#{}", counter_name, counter_value, counter_tags.join(","));
-        let counter_expected = counter_with_tags(counter_name, counter_tags, counter_value);
+        let name = "my.counter";
+        let value = 1.0;
+        let tags = ["tag1", "tag2"];
+        let raw = format!("{}:{}|c|#{}", name, value, tags.join(","));
+        let expected = Metric::counter((name, &tags[..]), value);
 
-        let (remaining, counter_actual) = parse_dogstatsd_metric_with_default_config(counter_raw.as_bytes()).unwrap();
-        check_basic_metric_eq(counter_expected, counter_actual);
-        assert!(remaining.is_empty());
+        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
+        check_basic_metric_eq(expected, actual);
     }
 
     #[test]
     fn metric_sample_rate() {
-        let counter_name = "my.counter";
-        let counter_value = 1.0;
-        let counter_sample_rate = 0.5;
-        let counter_raw = format!("{}:{}|c|@{}", counter_name, counter_value, counter_sample_rate);
-        let mut counter_expected = counter(counter_name, counter_value);
-        counter_expected.metadata_mut().set_sample_rate(counter_sample_rate);
+        let name = "my.counter";
+        let value = 1.0;
+        let sample_rate = 0.5;
+        let raw = format!("{}:{}|c|@{}", name, value, sample_rate);
+        let mut expected = Metric::counter(name, value);
+        expected.metadata_mut().set_sample_rate(sample_rate);
 
-        let (remaining, counter_actual) = parse_dogstatsd_metric_with_default_config(counter_raw.as_bytes()).unwrap();
-        check_basic_metric_eq(counter_expected, counter_actual);
-        assert!(remaining.is_empty());
+        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
+        check_basic_metric_eq(expected, actual);
     }
 
     #[test]
     fn metric_container_id() {
-        let counter_name = "my.counter";
-        let counter_value = 1.0;
+        let name = "my.counter";
+        let value = 1.0;
         let container_id = "abcdef123456";
-        let counter_raw = format!("{}:{}|c|c:{}", counter_name, counter_value, container_id);
-        let mut counter_expected = counter(counter_name, counter_value);
-        counter_expected
+        let raw = format!("{}:{}|c|c:{}", name, value, container_id);
+        let mut expected = Metric::counter(name, value);
+        expected
             .metadata_mut()
             .origin_entity_mut()
             .set_container_id(container_id);
 
-        let (remaining, counter_actual) = parse_dogstatsd_metric_with_default_config(counter_raw.as_bytes()).unwrap();
-        check_basic_metric_eq(counter_expected, counter_actual);
-        assert!(remaining.is_empty());
+        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
+        check_basic_metric_eq(expected, actual);
     }
 
     #[test]
     fn metric_unix_timestamp() {
-        let counter_name = "my.counter";
-        let counter_value = 1.0;
+        let name = "my.counter";
+        let value = 1.0;
         let timestamp = 1234567890;
-        let counter_raw = format!("{}:{}|c|T{}", counter_name, counter_value, timestamp);
-        let mut counter_expected = counter(counter_name, counter_value);
-        counter_expected.values_mut().set_timestamp(timestamp);
+        let raw = format!("{}:{}|c|T{}", name, value, timestamp);
+        let mut expected = Metric::counter(name, value);
+        expected.values_mut().set_timestamp(timestamp);
 
-        let (remaining, counter_actual) = parse_dogstatsd_metric_with_default_config(counter_raw.as_bytes()).unwrap();
-        check_basic_metric_eq(counter_expected, counter_actual);
-        assert!(remaining.is_empty());
+        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
+        check_basic_metric_eq(expected, actual);
     }
 
     #[test]
     fn metric_multiple_extensions() {
-        let counter_name = "my.counter";
-        let counter_value = 1.0;
-        let counter_sample_rate = 0.5;
-        let counter_tags = &["tag1", "tag2"];
+        let name = "my.counter";
+        let value = 1.0;
+        let sample_rate = 0.5;
+        let tags = ["tag1", "tag2"];
         let container_id = "abcdef123456";
         let timestamp = 1234567890;
-        let counter_raw = format!(
+        let raw = format!(
             "{}:{}|c|#{}|@{}|c:{}|T{}",
-            counter_name,
-            counter_value,
-            counter_tags.join(","),
-            counter_sample_rate,
+            name,
+            value,
+            tags.join(","),
+            sample_rate,
             container_id,
             timestamp
         );
-        let mut counter_expected = counter_with_tags(counter_name, counter_tags, counter_value);
-        counter_expected.metadata_mut().set_sample_rate(counter_sample_rate);
-        counter_expected
+        let mut expected = Metric::counter((name, &tags[..]), value);
+        expected.metadata_mut().set_sample_rate(sample_rate);
+        expected
             .metadata_mut()
             .origin_entity_mut()
             .set_container_id(container_id);
-        counter_expected.values_mut().set_timestamp(timestamp);
+        expected.values_mut().set_timestamp(timestamp);
 
-        let (remaining, counter_actual) = parse_dogstatsd_metric_with_default_config(counter_raw.as_bytes()).unwrap();
-        let counter_actual = check_basic_metric_eq(counter_expected, counter_actual);
-        assert_eq!(
-            counter_actual.metadata().origin_entity().container_id(),
-            Some(container_id)
-        );
-        let values = counter_actual
-            .values()
-            .into_iter()
-            .map(|(ts, _)| *ts)
-            .collect::<Vec<_>>();
-        assert_eq!(values.len(), 1);
-        assert_eq!(values[0], timestamp);
-        assert!(remaining.is_empty());
+        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
+        let actual = check_basic_metric_eq(expected, actual);
+        let value_timestamps = match actual.values() {
+            MetricValues::Counter(values) => values
+                .into_iter()
+                .map(|(ts, _)| ts.map(|v| v.get()).unwrap_or(0))
+                .collect::<Vec<_>>(),
+            _ => panic!("expected counter values"),
+        };
+
+        assert_eq!(value_timestamps.len(), 1);
+        assert_eq!(value_timestamps[0], timestamp);
     }
 
     #[test]
     fn multivalue_metrics() {
-        let counter_name = "my.counter";
-        let counter_values = [1.0, 2.0, 3.0];
-        let counter_values_stringified = counter_values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
-        let counter_raw = format!("{}:{}|c", counter_name, counter_values_stringified.join(":"));
-        let counter_expected = counter_multivalue(counter_name, &counter_values);
-        let (remaining, counter_actual) = parse_dogstatsd_metric_with_default_config(counter_raw.as_bytes()).unwrap();
-        check_basic_metric_eq(counter_expected, counter_actual);
-        assert!(remaining.is_empty());
+        let name = "my.counter";
+        let values = [1.0, 2.0, 3.0];
+        let values_stringified = values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+        let raw = format!("{}:{}|c", name, values_stringified.join(":"));
+        let expected = Metric::counter(name, values);
+        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
+        check_basic_metric_eq(expected, actual);
 
-        let gauge_name = "my.gauge";
-        let gauge_values = [42.0, 5.0, -18.0];
-        let gauge_values_stringified = gauge_values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
-        let gauge_raw = format!("{}:{}|g", gauge_name, gauge_values_stringified.join(":"));
-        let gauge_expected = gauge_multivalue(gauge_name, &gauge_values);
-        let (remaining, gauge_actual) = parse_dogstatsd_metric_with_default_config(gauge_raw.as_bytes()).unwrap();
-        check_basic_metric_eq(gauge_expected, gauge_actual);
-        assert!(remaining.is_empty());
+        let name = "my.gauge";
+        let values = [42.0, 5.0, -18.0];
+        let values_stringified = values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+        let raw = format!("{}:{}|g", name, values_stringified.join(":"));
+        let expected = Metric::gauge(name, values);
+        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
+        check_basic_metric_eq(expected, actual);
 
         // Special case where we check this for all three variants -- timers, histograms, and distributions -- since we
         // treat them all the same when parsing.
         //
         // Additionally, we have an optimization to return a single distribution metric from multi-value payloads, so we
         // also check here that only one metric is generated for multi-value timers/histograms/distributions.
-        let distribution_name = "my.distribution";
-        let distribution_values = [27.5, 4.20, 80.085];
-        let distribution_values_stringified = distribution_values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+        let name = "my.distribution";
+        let values = [27.5, 4.20, 80.085];
+        let values_stringified = values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
         for kind in &["ms", "h", "d"] {
-            let distribution_raw = format!(
-                "{}:{}|{}",
-                distribution_name,
-                distribution_values_stringified.join(":"),
-                kind
-            );
-            let distribution_expected = distribution_multivalue(distribution_name, &distribution_values);
-            let (remaining, distribution_actual) =
-                parse_dogstatsd_metric_with_default_config(distribution_raw.as_bytes()).unwrap();
-            check_basic_metric_eq(distribution_expected, distribution_actual);
-            assert!(remaining.is_empty());
+            let raw = format!("{}:{}|{}", name, values_stringified.join(":"), kind);
+            let expected = Metric::distribution(name, values);
+            let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
+            check_basic_metric_eq(expected, actual);
         }
     }
 
     #[test]
     fn respects_maximum_tag_count() {
-        let input = "foo:1|c|#tag1:value1,tag2:value2,tag3:value3";
+        let input = b"foo:1|c|#tag1:value1,tag2:value2,tag3:value3";
 
         let cases = [3, 2, 1];
         for max_tag_count in cases {
-            let config = DogstatsdCodecConfiguration {
-                maximum_tag_count: max_tag_count,
-                ..Default::default()
-            };
+            let config = DogstatsdCodecConfiguration::default().with_maximum_tag_count(max_tag_count);
 
-            let (remaining, result) =
-                parse_dogstatsd_metric_with_config(input.as_bytes(), &config).expect("should not fail to parse");
-
-            assert!(remaining.is_empty());
-            match result {
-                Some(Event::Metric(metric)) => {
-                    assert_eq!(metric.context().tags().len(), max_tag_count);
-                }
-                _ => unreachable!("should not fail to intern"),
-            }
+            let metric = parse_dsd_metric_with_conf(input, &config)
+                .expect("should not fail to parse")
+                .expect("should not fail to intern");
+            assert_eq!(metric.context().tags().len(), max_tag_count);
         }
     }
 
     #[test]
     fn respects_maximum_tag_length() {
-        let input = "foo:1|c|#tag1:short,tag2:medium,tag3:longlong";
+        let input = b"foo:1|c|#tag1:short,tag2:medium,tag3:longlong";
 
         let cases = [6, 5, 4];
         for max_tag_length in cases {
-            let config = DogstatsdCodecConfiguration {
-                maximum_tag_length: max_tag_length,
-                ..Default::default()
-            };
+            let config = DogstatsdCodecConfiguration::default().with_maximum_tag_length(max_tag_length);
 
-            let (remaining, result) =
-                parse_dogstatsd_metric_with_config(input.as_bytes(), &config).expect("should not fail to parse");
-
-            assert!(remaining.is_empty());
-            match result {
-                Some(Event::Metric(metric)) => {
-                    for tag in metric.context().tags().into_iter() {
-                        assert!(tag.len() <= max_tag_length);
-                    }
-                }
-                _ => unreachable!("should not fail to intern"),
+            let metric = parse_dsd_metric_with_conf(input, &config)
+                .expect("should not fail to parse")
+                .expect("should not fail to intern");
+            for tag in metric.context().tags().into_iter() {
+                assert!(tag.len() <= max_tag_length);
             }
         }
     }
 
     #[test]
     fn respects_read_timestamps() {
-        let input = "foo:1|c|T1234567890";
+        let input = b"foo:1|c|T1234567890";
 
-        let no_read_timestamps_config = DogstatsdCodecConfiguration::default().with_timestamps(false);
+        let config = DogstatsdCodecConfiguration::default().with_timestamps(false);
 
-        let (remaining, result) = parse_dogstatsd_metric_with_config(input.as_bytes(), &no_read_timestamps_config)
-            .expect("should not fail to parse");
+        let metric = parse_dsd_metric_with_conf(input, &config)
+            .expect("should not fail to parse")
+            .expect("should not fail to intern");
 
-        assert!(remaining.is_empty());
-        match result {
-            Some(Event::Metric(metric)) => {
-                let ts = metric.values().into_iter().next().expect("must be at least one value");
-                assert_eq!(ts.0, 0);
-            }
-            _ => unreachable!("should not fail to intern"),
-        }
+        let value_timestamps = match metric.values() {
+            MetricValues::Counter(values) => values
+                .into_iter()
+                .map(|(ts, _)| ts.map(|v| v.get()).unwrap_or(0))
+                .collect::<Vec<_>>(),
+            _ => panic!("expected counter values"),
+        };
+
+        assert_eq!(value_timestamps.len(), 1);
+        assert_eq!(value_timestamps[0], 0);
     }
 
     #[test]
@@ -1335,7 +1215,7 @@ mod tests {
         //
         // We set our metric name to be longer than 23 bytes (the inlining limit) to ensure this.
 
-        let default_config = DogstatsdCodecConfiguration::default();
+        let config = DogstatsdCodecConfiguration::default();
         let mut context_resolver = ContextResolver::with_noop_interner().with_heap_allocations(false);
 
         let metric_name = "big_metric_name_that_cant_possibly_be_inlined";
@@ -1343,75 +1223,54 @@ mod tests {
 
         let input = format!("{}:1|c|#tag1:value1,tag2:value2,tag3:value3", metric_name);
 
-        let (remaining, result) =
-            parse_dogstatsd_metric_direct(input.as_bytes(), &default_config, &mut context_resolver)
-                .expect("should not fail to parse");
-
+        let (remaining, result) = parse_dsd_metric_direct(input.as_bytes(), &config, &mut context_resolver)
+            .expect("should not fail to parse");
         assert!(remaining.is_empty());
         assert!(result.is_none());
     }
 
-    #[track_caller]
-    fn check_basic_eventd_eq(expected: EventD, actual: Option<Event>) -> EventD {
-        let actual = actual.expect("event should not have been None");
-        let actual = actual.try_into_eventd().expect("should have been an EventD");
-
-        assert_eq!(expected.title(), actual.title());
-        assert_eq!(expected.text(), actual.text());
-        assert_eq!(expected.timestamp(), actual.timestamp());
-        assert_eq!(expected.hostname(), actual.hostname());
-        assert_eq!(expected.aggregation_key(), actual.aggregation_key());
-        assert_eq!(expected.priority(), actual.priority());
-        assert_eq!(expected.source_type_name(), actual.source_type_name());
-        assert_eq!(expected.alert_type(), actual.alert_type());
-        assert_eq!(expected.tags(), actual.tags());
-        actual
-    }
-
     #[test]
-    fn basic_eventds() {
+    fn basic_eventd() {
         let event_title = "my event";
         let event_text = "text";
-        let event_raw = format!(
+        let raw = format!(
             "_e{{{},{}}}:{}|{}",
             event_title.len(),
             event_text.len(),
             event_title,
             event_text
         );
-        let (remaining, event_actual) = parse_dogstatsd_event_with_default_config(event_raw.as_bytes()).unwrap();
-        let event_expected = eventd(event_title, event_text);
-        check_basic_eventd_eq(event_expected, event_actual);
-        assert!(remaining.is_empty());
+
+        let actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
+        let expected = EventD::new(event_title, event_text);
+        check_basic_eventd_eq(expected, actual);
     }
 
     #[test]
     fn eventd_tags() {
         let event_title = "my event";
         let event_text = "text";
-        let event_tags = vec!["tag1".into(), "tag2".into()];
-
-        let event_raw = format!(
+        let tags = vec!["tag1".into(), "tag2".into()];
+        let raw = format!(
             "_e{{{},{}}}:{}|{}|#{}",
             event_title.len(),
             event_text.len(),
             event_title,
             event_text,
-            event_tags.join(","),
+            tags.join(","),
         );
-        let event_expected = eventd(event_title, event_text).with_tags(event_tags);
-        let (remaining, event_actual) = parse_dogstatsd_event_with_default_config(event_raw.as_bytes()).unwrap();
-        check_basic_eventd_eq(event_expected, event_actual);
-        assert!(remaining.is_empty());
+
+        let expected = EventD::new(event_title, event_text).with_tags(tags);
+        let actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
+        check_basic_eventd_eq(expected, actual);
     }
 
     #[test]
     fn eventd_priority() {
         let event_title = "my event";
         let event_text = "text";
-        let event_priority = saluki_event::eventd::Priority::Low;
-
-        let event_raw = format!(
+        let event_priority = Priority::Low;
+        let raw = format!(
             "_e{{{},{}}}:{}|{}|p:{}",
             event_title.len(),
             event_text.len(),
@@ -1419,19 +1278,18 @@ mod tests {
             event_text,
             event_priority
         );
-        let event_expected = eventd(event_title, event_text).with_priority(event_priority);
-        let (remaining, event_actual) = parse_dogstatsd_event_with_default_config(event_raw.as_bytes()).unwrap();
-        check_basic_eventd_eq(event_expected, event_actual);
-        assert!(remaining.is_empty());
+
+        let expected = EventD::new(event_title, event_text).with_priority(event_priority);
+        let actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
+        check_basic_eventd_eq(expected, actual);
     }
 
     #[test]
     fn eventd_alert_type() {
         let event_title = "my event";
         let event_text = "text";
-        let event_alert_type = saluki_event::eventd::AlertType::Warning;
-
-        let event_raw = format!(
+        let event_alert_type = AlertType::Warning;
+        let raw = format!(
             "_e{{{},{}}}:{}|{}|t:{}",
             event_title.len(),
             event_text.len(),
@@ -1439,25 +1297,10 @@ mod tests {
             event_text,
             event_alert_type
         );
-        let event_expected = eventd(event_title, event_text).with_alert_type(event_alert_type);
-        let (remaining, event_actual) = parse_dogstatsd_event_with_default_config(event_raw.as_bytes()).unwrap();
-        check_basic_eventd_eq(event_expected, event_actual);
-        assert!(remaining.is_empty());
-    }
 
-    #[track_caller]
-    fn check_basic_service_check_eq(expected: ServiceCheck, actual: Option<Event>) -> ServiceCheck {
-        let actual = actual.expect("event should not have been None");
-        let actual = actual
-            .try_into_service_check()
-            .expect("should have been a ServiceCheck");
-
-        assert_eq!(expected.name(), actual.name());
-        assert_eq!(expected.status(), actual.status());
-        assert_eq!(expected.timestamp(), actual.timestamp());
-        assert_eq!(expected.hostname(), actual.hostname());
-        assert_eq!(expected.tags(), actual.tags());
-        actual
+        let expected = EventD::new(event_title, event_text).with_alert_type(event_alert_type);
+        let actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
+        check_basic_eventd_eq(expected, actual);
     }
 
     #[test]
@@ -1466,12 +1309,12 @@ mod tests {
         let event_text = "text";
         let event_hostname = MetaString::from("testhost");
         let event_aggregation_key = MetaString::from("testkey");
-        let event_priority = saluki_event::eventd::Priority::Low;
+        let event_priority = Priority::Low;
         let event_source_type = MetaString::from("testsource");
-        let event_alert_type = saluki_event::eventd::AlertType::Success;
+        let event_alert_type = AlertType::Success;
         let event_timestamp = 1234567890;
-        let event_tags = vec!["tag1".into(), "tag2".into()];
-        let event_raw = format!(
+        let tags = vec!["tag1".into(), "tag2".into()];
+        let raw = format!(
             "_e{{{},{}}}:{}|{}|h:{}|k:{}|p:{}|s:{}|t:{}|d:{}|#{}",
             event_title.len(),
             event_text.len(),
@@ -1483,116 +1326,87 @@ mod tests {
             event_source_type,
             event_alert_type,
             event_timestamp,
-            event_tags.join(","),
+            tags.join(","),
         );
-        let (remaining, event_actual) = parse_dogstatsd_event_with_default_config(event_raw.as_bytes()).unwrap();
-        let event_expected = eventd(event_title, event_text)
+        let actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
+        let expected = EventD::new(event_title, event_text)
             .with_hostname(event_hostname)
             .with_aggregation_key(event_aggregation_key)
             .with_priority(event_priority)
             .with_source_type_name(event_source_type)
             .with_alert_type(event_alert_type)
             .with_timestamp(event_timestamp)
-            .with_tags(event_tags);
-        check_basic_eventd_eq(event_expected, event_actual);
-        assert!(remaining.is_empty());
+            .with_tags(tags);
+        check_basic_eventd_eq(expected, actual);
     }
 
     #[test]
     fn basic_service_checks() {
-        let service_check_name = "testsvc";
-        let service_check_status = CheckStatus::Warning;
-        let service_check_raw = format!("_sc|{}|{}", service_check_name, service_check_status.as_u8());
-        let (remaining, service_check_actual) =
-            parse_dogstatsd_service_check_with_default_config(service_check_raw.as_bytes()).unwrap();
-        let service_check_expected = service_check(service_check_name, service_check_status);
-        check_basic_service_check_eq(service_check_expected, service_check_actual);
-        assert!(remaining.is_empty());
+        let name = "testsvc";
+        let sc_status = CheckStatus::Warning;
+        let raw = format!("_sc|{}|{}", name, sc_status.as_u8());
+        let actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
+        let expected = ServiceCheck::new(name, sc_status);
+        check_basic_service_check_eq(expected, actual);
     }
 
     #[test]
     fn service_check_timestamp() {
-        let service_check_name = "testsvc";
-        let service_check_status = CheckStatus::Warning;
-        let service_check_timestamp = 1234567890;
-        let service_check_raw = format!(
-            "_sc|{}|{}|d:{}",
-            service_check_name,
-            service_check_status.as_u8(),
-            service_check_timestamp
-        );
-        let (remaining, service_check_actual) =
-            parse_dogstatsd_service_check_with_default_config(service_check_raw.as_bytes()).unwrap();
-        let service_check_expected =
-            service_check(service_check_name, service_check_status).with_timestamp(service_check_timestamp);
-        check_basic_service_check_eq(service_check_expected, service_check_actual);
-        assert!(remaining.is_empty());
+        let name = "testsvc";
+        let sc_status = CheckStatus::Warning;
+        let sc_timestamp = 1234567890;
+        let raw = format!("_sc|{}|{}|d:{}", name, sc_status.as_u8(), sc_timestamp);
+        let actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
+        let expected = ServiceCheck::new(name, sc_status).with_timestamp(sc_timestamp);
+        check_basic_service_check_eq(expected, actual);
     }
 
     #[test]
     fn service_check_tags() {
-        let service_check_name = "testsvc";
-        let service_check_status = CheckStatus::Warning;
-        let service_check_tags = vec!["tag1".into(), "tag2".into()];
-        let service_check_raw = format!(
-            "_sc|{}|{}|#{}",
-            service_check_name,
-            service_check_status.as_u8(),
-            service_check_tags.join(",")
-        );
-        let (remaining, service_check_actual) =
-            parse_dogstatsd_service_check_with_default_config(service_check_raw.as_bytes()).unwrap();
-        let service_check_expected =
-            service_check(service_check_name, service_check_status).with_tags(service_check_tags);
-        check_basic_service_check_eq(service_check_expected, service_check_actual);
-        assert!(remaining.is_empty());
+        let name = "testsvc";
+        let sc_status = CheckStatus::Warning;
+        let tags = vec!["tag1".into(), "tag2".into()];
+        let raw = format!("_sc|{}|{}|#{}", name, sc_status.as_u8(), tags.join(","));
+        let actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
+        let expected = ServiceCheck::new(name, sc_status).with_tags(tags);
+        check_basic_service_check_eq(expected, actual);
     }
 
     #[test]
     fn service_check_message() {
-        let service_check_name = "testsvc";
-        let service_check_status = CheckStatus::Ok;
-        let service_check_message = MetaString::from("service running properly");
-        let service_check_raw = format!(
-            "_sc|{}|{}|m:{}",
-            service_check_name,
-            service_check_status.as_u8(),
-            service_check_message
-        );
-        let (remaining, service_check_actual) =
-            parse_dogstatsd_service_check_with_default_config(service_check_raw.as_bytes()).unwrap();
-        let service_check_expected =
-            service_check(service_check_name, service_check_status).with_message(service_check_message);
-        check_basic_service_check_eq(service_check_expected, service_check_actual);
-        assert!(remaining.is_empty());
+        let name = "testsvc";
+        let sc_status = CheckStatus::Ok;
+        let sc_message = MetaString::from("service running properly");
+        let raw = format!("_sc|{}|{}|m:{}", name, sc_status.as_u8(), sc_message);
+        let actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
+        let expected = ServiceCheck::new(name, sc_status).with_message(sc_message);
+        check_basic_service_check_eq(expected, actual);
     }
 
     #[test]
     fn service_check_multiple_extensions() {
-        let service_check_name = "testsvc";
-        let service_check_status = CheckStatus::Unknown;
-        let service_check_timestamp = 1234567890;
-        let service_check_hostname = MetaString::from("myhost");
-        let service_check_tags = vec!["tag1".into(), "tag2".into()];
-        let service_check_message = MetaString::from("service status unknown");
-        let service_check_raw = format!(
+        let name = "testsvc";
+        let sc_status = CheckStatus::Unknown;
+        let sc_timestamp = 1234567890;
+        let sc_hostname = MetaString::from("myhost");
+        let tags = vec!["tag1".into(), "tag2".into()];
+        let sc_message = MetaString::from("service status unknown");
+        let raw = format!(
             "_sc|{}|{}|d:{}|h:{}|#{}|m:{}",
-            service_check_name,
-            service_check_status.as_u8(),
-            service_check_timestamp,
-            service_check_hostname,
-            service_check_tags.join(","),
-            service_check_message
+            name,
+            sc_status.as_u8(),
+            sc_timestamp,
+            sc_hostname,
+            tags.join(","),
+            sc_message
         );
-        let (remaining, service_check_actual) =
-            parse_dogstatsd_service_check_with_default_config(service_check_raw.as_bytes()).unwrap();
-        let service_check_expected = service_check(service_check_name, service_check_status)
-            .with_timestamp(service_check_timestamp)
-            .with_hostname(service_check_hostname)
-            .with_tags(service_check_tags)
-            .with_message(service_check_message);
-        check_basic_service_check_eq(service_check_expected, service_check_actual);
-        assert!(remaining.is_empty());
+        let actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
+        let expected = ServiceCheck::new(name, sc_status)
+            .with_timestamp(sc_timestamp)
+            .with_hostname(sc_hostname)
+            .with_tags(tags)
+            .with_message(sc_message);
+        check_basic_service_check_eq(expected, actual);
     }
 
     #[test]
@@ -1632,7 +1446,7 @@ mod tests {
             // all tests are run, in the hopes of potentially catching an issue that might have been missed.
             //
             // TODO: True exhaustive-style testing a la afl/honggfuzz.
-            let _ = parse_dogstatsd_metric_with_default_config(&input);
+            let _ = parse_dsd_metric(&input);
         }
     }
 }

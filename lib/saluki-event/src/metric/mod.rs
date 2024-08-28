@@ -1,13 +1,14 @@
 //! Metric types.
-use std::fmt;
 
 mod metadata;
+use std::time::Duration;
+
 use saluki_context::Context;
 
 pub use self::metadata::*;
 
-mod data;
-pub use self::data::{MetricKind, MetricValue, MetricValues};
+mod value;
+pub use self::value::{MetricValues, ScalarPoints, SetPoints, SketchPoints};
 
 /// A metric.
 ///
@@ -37,20 +38,77 @@ pub struct Metric {
 }
 
 impl Metric {
-    /// Creates a `Metric` from a given context and value.
-    pub fn from_context_and_value(context: Context, value: MetricValue) -> Self {
+    /// Creates a counter metric from the given context and value(s).
+    ///
+    /// Default metadata will be used.
+    pub fn counter<C, V>(context: C, values: V) -> Self
+    where
+        C: Into<Context>,
+        V: Into<ScalarPoints>,
+    {
         Self {
-            context,
-            values: MetricValues::from_value(value),
+            context: context.into(),
+            values: MetricValues::counter(values),
             metadata: MetricMetadata::default(),
         }
     }
 
-    /// Creates a `Metric` from a given context and values.
-    pub fn from_context_and_values(context: Context, values: MetricValues) -> Self {
+    /// Creates a gauge metric from the given context and value(s).
+    ///
+    /// Default metadata will be used.
+    pub fn gauge<C, V>(context: C, values: V) -> Self
+    where
+        C: Into<Context>,
+        V: Into<ScalarPoints>,
+    {
         Self {
-            context,
-            values,
+            context: context.into(),
+            values: MetricValues::gauge(values),
+            metadata: MetricMetadata::default(),
+        }
+    }
+
+    /// Creates a rate metric from the given context and value(s).
+    ///
+    /// Default metadata will be used.
+    pub fn rate<C, V>(context: C, values: V, interval: Duration) -> Self
+    where
+        C: Into<Context>,
+        V: Into<ScalarPoints>,
+    {
+        Self {
+            context: context.into(),
+            values: MetricValues::rate(values, interval),
+            metadata: MetricMetadata::default(),
+        }
+    }
+
+    /// Creates a set metric from the given context and value(s).
+    ///
+    /// Default metadata will be used.
+    pub fn set<C, V>(context: C, values: V) -> Self
+    where
+        C: Into<Context>,
+        V: Into<SetPoints>,
+    {
+        Self {
+            context: context.into(),
+            values: MetricValues::set(values),
+            metadata: MetricMetadata::default(),
+        }
+    }
+
+    /// Creates a distribution metric from the given context and value(s).
+    ///
+    /// Default metadata will be used.
+    pub fn distribution<C, V>(context: C, values: V) -> Self
+    where
+        C: Into<Context>,
+        V: Into<SketchPoints>,
+    {
+        Self {
+            context: context.into(),
+            values: MetricValues::distribution(values),
             metadata: MetricMetadata::default(),
         }
     }
@@ -97,11 +155,5 @@ impl Metric {
             values,
             metadata,
         }
-    }
-}
-
-impl fmt::Display for Metric {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}[{} {}]", self.context, self.values, self.metadata)
     }
 }

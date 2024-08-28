@@ -246,7 +246,7 @@ impl Context {
     }
 
     /// Creates a new `Context` from the given static name and given static tags.
-    pub fn from_static_parts(name: &'static str, tags: &'static [&'static str]) -> Self {
+    pub fn from_static_parts(name: &'static str, tags: &[&'static str]) -> Self {
         let mut tag_set = TagSet::with_capacity(tags.len());
         for tag in tags {
             tag_set.insert_tag(MetaString::from_static(tag));
@@ -294,6 +294,18 @@ impl Context {
 
         let inner = self.inner_mut();
         &mut inner.tags
+    }
+}
+
+impl From<&'static str> for Context {
+    fn from(name: &'static str) -> Self {
+        Self::from_static_name(name)
+    }
+}
+
+impl<'a> From<(&'static str, &'a [&'static str])> for Context {
+    fn from((name, tags): (&'static str, &'a [&'static str])) -> Self {
+        Self::from_static_parts(name, tags)
     }
 }
 

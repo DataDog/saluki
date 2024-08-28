@@ -140,19 +140,13 @@ async fn flush_metrics(flush_interval: Duration) {
         for (key, counter) in counters {
             let context = context_from_key(&mut context_resolver, key);
             let value = counter.swap(0, Ordering::Relaxed) as f64;
-            metrics.push(Event::Metric(Metric::from_context_and_value(
-                context,
-                MetricValue::counter(value),
-            )));
+            metrics.push(Event::Metric(Metric::counter(context, value)));
         }
 
         for (key, gauge) in gauges {
             let context = context_from_key(&mut context_resolver, key);
             let value = f64::from_bits(gauge.load(Ordering::Relaxed));
-            metrics.push(Event::Metric(Metric::from_context_and_value(
-                context,
-                MetricValue::gauge(value),
-            )));
+            metrics.push(Event::Metric(Metric::gauge(context, value)));
         }
 
         for (key, histogram) in histograms {
@@ -160,7 +154,7 @@ async fn flush_metrics(flush_interval: Duration) {
             //
             // If the histogram was empty, skip emitting a metric for this histogram entirely. Empty sketches don't make
             // sense to send.
-            let mut distribution_samples = Vec::new();
+            let mut distribution_samples = Vec::<f64>::new();
             histogram.clear_with(|samples| distribution_samples.extend(samples));
 
             if distribution_samples.is_empty() {
@@ -168,10 +162,7 @@ async fn flush_metrics(flush_interval: Duration) {
             }
 
             let context = context_from_key(&mut context_resolver, key);
-            metrics.push(Event::Metric(Metric::from_context_and_value(
-                context,
-                MetricValue::distribution_from_values(&distribution_samples),
-            )));
+            metrics.push(Event::Metric(Metric::distribution(context, &distribution_samples[..])));
         }
 
         let shared = Arc::new(metrics);

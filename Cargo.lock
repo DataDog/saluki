@@ -2638,6 +2638,7 @@ dependencies = [
  "bitmask-enum",
  "ddsketch-agent",
  "float_eq",
+ "ordered-float 4.2.2",
  "proptest",
  "saluki-context",
  "serde",
