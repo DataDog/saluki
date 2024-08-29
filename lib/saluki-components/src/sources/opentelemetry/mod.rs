@@ -100,9 +100,7 @@ pub struct OpenTelemetry {
 #[async_trait]
 impl Source for OpenTelemetry {
     async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), ()> {
-        let global_shutdown = context
-            .take_shutdown_handle()
-            .expect("should never fail to take shutdown handle");
+        let global_shutdown = context.take_shutdown_handle();
 
         // For each listener, create a corresponding gRPC server (with the appropriate gRPC-Web support, if enabled) to
         // go with it, which will accept logs, metrics, and traces. Each server gets spawned as a dedicated task.
@@ -241,14 +239,33 @@ fn otel_log_to_event(_log_record: LogRecord) -> Event {
 }
 
 fn otel_metrics_event_iter(resource_metrics: ResourceMetrics) -> impl Iterator<Item = Event> {
+    todo!()
+
     // TODO: We probably need/want to utilize the resource data, as well as the scope data, when generating the final
     // event, but we're mostly just trying to get the basic structure laid out here first.
 
-    resource_metrics
-        .scope_metrics
-        .into_iter()
-        .flat_map(|sm| sm.metrics.into_iter())
-        .flat_map(otel_metric_to_event)
+    // we should use resource attributes only as an additional set of tags, with data point attributes being the primary
+    // set of "tags", and for resource attributes, we should really only handle mapping ones that adhere to semantic
+    // conventions and have well-defined analogues on the DD side
+
+    // res
+    // scope-metric:
+    //   - scope:
+    //       name
+    //       attributes:
+    //         - key
+    //           value
+    //   metrics:
+    //     - name
+    //       description
+    //       unit
+    //       metadata: [key, value]
+    //       data: Gauge | Sum | Histogram | ExponentialHistogram | Summary
+    //         - Gauge:
+    //           data_points:
+    //             - attributes
+    //               time_unix_nano
+    //               value: AsDouble | AsInt
 }
 
 fn otel_metric_to_event(_metric: OtelMetric) -> Vec<Event> {

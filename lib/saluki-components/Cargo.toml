@@ -49,6 +49,8 @@ snafu = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
 tokio-util = { workspace = true }
+tonic = { workspace = true }
+tonic-web = { version = "0.12", default-features = false }
 tower = { workspace = true, features = ["timeout", "util"] }
 tracing = { workspace = true }
 url = { workspace = true }
