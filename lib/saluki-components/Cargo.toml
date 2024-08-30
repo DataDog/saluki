@@ -15,6 +15,7 @@ bytesize = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
 futures = { workspace = true }
+hashbrown = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
@@ -42,6 +43,7 @@ saluki-io = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 slab = { workspace = true }
+smallvec = { workspace = true }
 snafu = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
