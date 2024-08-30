@@ -92,7 +92,7 @@ impl Config {
 
         // SAFETY: `rounded` is intentionally meant to be a whole integer, and additionally, based on our target gamma
         // ln, we expect `log_gamma` to return a value between -2^16 and 2^16, so it will always fit in an i32.
-        let rounded = self.log_gamma(v).round_ties_even() as i32;
+        let rounded = self.log_gamma(v).round() as i32;
         let key = rounded.wrapping_add(self.norm_bias);
 
         // SAFETY: Our upper bound of POS_INF_KEY is i16, and our lower bound is simply one, so there is no risk of
@@ -715,7 +715,7 @@ fn float_eq(l_value: f64, r_value: f64) -> bool {
 
 fn rank(count: u32, q: f64) -> f64 {
     let rank = q * f64::from(count - 1);
-    rank.round_ties_even()
+    rank.round()
 }
 
 #[allow(clippy::cast_possible_truncation)]
