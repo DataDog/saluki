@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use containerd_client::{
     services::v1::{
@@ -9,6 +9,7 @@ use containerd_client::{
 use futures::{Stream, StreamExt as _, TryStreamExt as _};
 use hyper_util::rt::TokioIo;
 use saluki_config::GenericConfiguration;
+use saluki_error::{generic_error, GenericError};
 use snafu::{ResultExt as _, Snafu};
 use tokio::net::UnixStream;
 use tonic::{transport::Endpoint, IntoRequest, Request};
@@ -25,14 +26,6 @@ const CONTAINERD_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 pub enum ClientError {
-    /// Failed to build the client.
-    #[snafu(display("failed to build client: {}", reason))]
-    Build { reason: &'static str },
-
-    /// Failed to create the gRPC transport.
-    #[snafu(display("failed to create gRPC transport: {}", source))]
-    Tonic { source: tonic::transport::Error },
-
     /// Failed to send a gRPC request.
     #[snafu(display("failed to make gRPC request: {}", source))]
     Response { source: tonic::Status },
@@ -65,11 +58,18 @@ impl ContainerdClient {
     ///
     /// If the containerd socket path was not present in the configuration or could not be detected, or if the gRPC
     /// transport to containerd could not be created, an error will be returned.
-    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, ClientError> {
+    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let socket_path = ContainerdDetector::detect_grpc_socket_path(config)
-            .ok_or(ClientError::Build {
-                reason: "failed to detect containerd socket path; not available at default path and not specified in configuration (`cri_socket_path`)"
-            })?;
+            .ok_or(generic_error!(
+                "failed to detect containerd socket path; not available at default path and not specified in configuration (`cri_socket_path`)"
+            ))?;
+
+        if !path_exists(&socket_path).await {
+            return Err(generic_error!(
+                "Detected containerd socket path ({}) but path does not exist, or process lacks permissions.",
+                socket_path.to_string_lossy()
+            ));
+        }
 
         let channel = Endpoint::try_from("https://[::]")
             .unwrap()
@@ -78,8 +78,7 @@ impl ContainerdClient {
                 let socket_path = socket_path.clone();
                 async move { UnixStream::connect(socket_path).await.map(TokioIo::new) }
             }))
-            .await
-            .context(Tonic)?;
+            .await?;
 
         Ok(Self {
             client: Arc::new(Client::from(channel)),
@@ -204,4 +203,8 @@ where
     let md = req.metadata_mut();
     md.insert("containerd-namespace", ns.name.parse().unwrap());
     req
+}
+
+async fn path_exists(path: &Path) -> bool {
+    tokio::fs::metadata(path).await.is_ok()
 }
