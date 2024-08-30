@@ -13,6 +13,7 @@ use snafu::{ResultExt as _, Snafu};
 use tokio::net::UnixStream;
 use tonic::{transport::Endpoint, IntoRequest, Request};
 use tower::service_fn;
+use tracing::debug;
 
 use crate::features::ContainerdDetector;
 
@@ -70,6 +71,8 @@ impl ContainerdClient {
             .ok_or(ClientError::Build {
                 reason: "failed to detect containerd socket path; not available at default path and not specified in configuration (`cri_socket_path`)"
             })?;
+
+        debug!(socket_path = %socket_path.to_string_lossy(), "Detected containerd socket path.");
 
         let channel = Endpoint::try_from("https://[::]")
             .unwrap()
