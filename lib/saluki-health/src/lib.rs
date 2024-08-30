@@ -17,7 +17,7 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio_util::time::{delay_queue::Key, DelayQueue};
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 use self::api::HealthAPIHandler;
 
@@ -332,7 +332,7 @@ impl Runner {
             return Some(HealthUpdate::Dead);
         }
 
-        debug!(component_name = %component_state.name, probe_timeout = ?DEFAULT_PROBE_TIMEOUT_DUR, "Sending liveness probe to component.");
+        trace!(component_name = %component_state.name, probe_timeout = ?DEFAULT_PROBE_TIMEOUT_DUR, "Sending liveness probe to component.");
 
         // Our component _isn't_ dead, so try to send a liveness probe to it.
         //
@@ -365,7 +365,12 @@ impl Runner {
         let response_latency = response_sent.checked_duration_since(request_sent).unwrap_or_default();
 
         // Clear any pending timeouts for this component and schedule the next probe.
-        self.pending_timeouts.remove(&timeout_key);
+        if self.pending_timeouts.try_remove(&timeout_key).is_none() {
+            let mut inner = self.inner.lock().unwrap();
+            let component_state = &mut inner.component_state[component_id];
+
+            debug!(component_name = %component_state.name, "Received probe response for component that already timed out.");
+        }
 
         // Update the component's health to show as alive.
         let update = HealthUpdate::Alive {
@@ -391,7 +396,7 @@ impl Runner {
         let mut inner = self.inner.lock().unwrap();
         {
             let component_state = &mut inner.component_state[component_id];
-            debug!(component_name = %component_state.name, status = update.as_str(), "Updating component health status.");
+            trace!(component_name = %component_state.name, status = update.as_str(), "Updating component health status.");
 
             match update {
                 HealthUpdate::Alive {
