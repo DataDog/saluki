@@ -138,23 +138,15 @@ async fn flush_metrics(flush_interval: Duration) {
         let histograms = state.registry.get_histogram_handles();
 
         for (key, counter) in counters {
-            let delta = counter.swap(0, Ordering::Relaxed);
-            metrics.push(Event::Metric(Metric::from_parts(
-                context_from_key(&mut context_resolver, key),
-                MetricValue::Counter { value: delta as f64 },
-                MetricMetadata::default(),
-            )));
+            let context = context_from_key(&mut context_resolver, key);
+            let value = counter.swap(0, Ordering::Relaxed) as f64;
+            metrics.push(Event::Metric(Metric::counter(context, value)));
         }
 
         for (key, gauge) in gauges {
-            let value = gauge.load(Ordering::Relaxed);
-            metrics.push(Event::Metric(Metric::from_parts(
-                context_from_key(&mut context_resolver, key),
-                MetricValue::Gauge {
-                    value: f64::from_bits(value),
-                },
-                MetricMetadata::default(),
-            )));
+            let context = context_from_key(&mut context_resolver, key);
+            let value = f64::from_bits(gauge.load(Ordering::Relaxed));
+            metrics.push(Event::Metric(Metric::gauge(context, value)));
         }
 
         for (key, histogram) in histograms {
@@ -162,18 +154,15 @@ async fn flush_metrics(flush_interval: Duration) {
             //
             // If the histogram was empty, skip emitting a metric for this histogram entirely. Empty sketches don't make
             // sense to send.
-            let mut distribution_samples = Vec::new();
+            let mut distribution_samples = Vec::<f64>::new();
             histogram.clear_with(|samples| distribution_samples.extend(samples));
 
             if distribution_samples.is_empty() {
                 continue;
             }
 
-            metrics.push(Event::Metric(Metric::from_parts(
-                context_from_key(&mut context_resolver, key),
-                MetricValue::distribution_from_values(&distribution_samples),
-                MetricMetadata::default(),
-            )));
+            let context = context_from_key(&mut context_resolver, key);
+            metrics.push(Event::Metric(Metric::distribution(context, &distribution_samples[..])));
         }
 
         let shared = Arc::new(metrics);
