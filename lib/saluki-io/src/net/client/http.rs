@@ -43,6 +43,7 @@ impl HttpClient<(), ()> {
         B::Error: std::error::Error + Send + Sync,
     {
         let mut http_connector = HttpConnector::new();
+        http_connector.enforce_http(false);
         http_connector.set_connect_timeout(Some(Duration::from_secs(30)));
 
         let tls_config = ClientTLSConfigBuilder::new().build()?;
