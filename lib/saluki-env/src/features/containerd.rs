@@ -42,6 +42,7 @@ impl ContainerdDetector {
 
         // If the path isn't empty, and it contains "containerd", we can assume it's the containerd socket.
         if !path_empty(&detected_socket_path) && path_contains(&detected_socket_path, "containerd") {
+            debug!(socket_path = %detected_socket_path.to_string_lossy(), "Detected containerd socket path.");
             Some(detected_socket_path)
         } else {
             None
