@@ -9,12 +9,14 @@ use std::{
     num::NonZeroUsize,
     ops::Deref as _,
     sync::{Arc, OnceLock, RwLock},
+    time::Duration,
 };
 
 use indexmap::{Equivalent, IndexSet};
 use metrics::Gauge;
 use saluki_metrics::static_metrics;
 use stringtheory::{interning::FixedSizeInterner, MetaString};
+use tracing::trace;
 
 static DIRTY_CONTEXT_HASH: OnceLock<u64> = OnceLock::new();
 
@@ -70,6 +72,7 @@ pub struct ContextResolver<const SHARD_FACTOR: usize = 8> {
     state: Arc<RwLock<State>>,
     hash_seen_buffer: PrehashedHashSet,
     allow_heap_allocations: bool,
+    background_expiration_running: bool,
 }
 
 impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
@@ -92,6 +95,7 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
             })),
             hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64Hasher::new()),
             allow_heap_allocations: true,
+            background_expiration_running: false,
         }
     }
 
@@ -114,6 +118,28 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
     /// Defaults to `true`.
     pub fn with_heap_allocations(mut self, allow: bool) -> Self {
         self.allow_heap_allocations = allow;
+        self
+    }
+
+    /// Enables background expiration of resolved contexts.
+    ///
+    /// This spawns a background thread which incrementally scans the list of resolved contexts and removes "expired"
+    /// ones, where an expired context is one that is no longer actively being used. This continuously happens in small
+    /// chunks, in order to make consistent, incremental progress on removing expired values without unnecessarily
+    /// blocking normal resolving operations for too long.
+    ///
+    /// ## Panics
+    ///
+    /// If background expiration is already configured, this method will panic.
+    pub fn with_background_expiration(mut self) -> Self {
+        if self.background_expiration_running {
+            panic!("Background expiration already configured!");
+        }
+
+        let state = Arc::clone(&self.state);
+        std::thread::spawn(move || run_background_expiration(state));
+
+        self.background_expiration_running = true;
         self
     }
 
@@ -219,7 +245,85 @@ impl<const SHARD_FACTOR: usize> Clone for ContextResolver<SHARD_FACTOR> {
             state: self.state.clone(),
             hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64Hasher::new()),
             allow_heap_allocations: self.allow_heap_allocations,
+            background_expiration_running: self.background_expiration_running,
         }
+    }
+}
+
+fn run_background_expiration(state: Arc<RwLock<State>>) {
+    // TODO: When there's a ton of contexts to expire, this is actually super slow, in terms of the rate at which we
+    // recover memory.
+
+    // Our expiration logic is pretty straightforward: we iterate over the resolved contexts in small chunks, trying to
+    // do a little bit of work, releasing the lock, sleeping, and then attempting to pick up where we left off before.
+    //
+    // This means that expiration is incremental and makes progress over time, while attempting to not block for long
+    // periods of time.
+
+    const PER_LOOP_ITERATIONS: usize = 100;
+
+    let mut last_check_idx = 0;
+
+    loop {
+        // Sleep for a bit before we start our next iteration.
+        std::thread::sleep(Duration::from_secs(1));
+
+        let mut state_rw = state.write().unwrap();
+
+        let contexts_len = state_rw.resolved_contexts.len();
+        trace!(contexts_len, "Starting context expiration iteration...");
+
+        // If we have no contexts, go back to sleep.
+        if contexts_len == 0 {
+            trace!("No contexts to expire. Sleeping.");
+            continue;
+        }
+
+        // Iterate over the contexts, expiring them if they are no longer active.
+        //
+        // Crucially, this means that we remove contexts if there's only a single strong reference, since that implies
+        // nobody else is holding a reference apart from ourselves.
+        let mut visited_contexts = 0;
+        let mut expired_contexts = 0;
+
+        let mut idx = last_check_idx;
+        while !state_rw.resolved_contexts.is_empty() && visited_contexts < PER_LOOP_ITERATIONS {
+            // If we've hit the end of the set of contexts, wrap back around.
+            if idx >= state_rw.resolved_contexts.len() {
+                idx = 0;
+            }
+
+            // Figure out if we should delete the context at `idx`.
+            //
+            // If the context is no longer active -- i.e. we are the only ones holding a reference to it -- then we can
+            // delete it. We'll only increment `idx` if we don't delete, since the swap remove will place a new element
+            // at the same index, which we'll want to check next.
+            let should_delete = state_rw
+                .resolved_contexts
+                .get_index(idx)
+                .map(|context| Arc::strong_count(&context.inner) == 1)
+                .unwrap_or(false);
+
+            if should_delete {
+                let old_context = state_rw.resolved_contexts.swap_remove_index(idx);
+                drop(old_context);
+
+                expired_contexts += 1;
+            } else {
+                idx += 1;
+            }
+
+            visited_contexts += 1;
+        }
+
+        if expired_contexts > 0 {
+            trace!("Expired {} contexts", expired_contexts);
+        }
+
+        trace!("Finished context expiration iteration.");
+
+        // Track where we left off for next time.
+        last_check_idx = idx;
     }
 }
 

@@ -11,6 +11,7 @@ indexmap = { workspace = true, features = ["std"] }
 metrics = { workspace = true }
 saluki-metrics = { workspace = true }
 stringtheory = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 metrics-util = { workspace = true, features = ["debugging"] }

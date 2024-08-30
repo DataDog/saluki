@@ -2536,6 +2536,7 @@ dependencies = [
  "metrics-util",
  "saluki-metrics",
  "stringtheory",
+ "tracing",
 ]
 
 [[package]]
