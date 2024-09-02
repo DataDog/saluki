@@ -10,7 +10,7 @@ use saluki_event::metric::OriginTagCardinality;
 use stringtheory::interning::FixedSizeInterner;
 
 #[cfg(target_os = "linux")]
-use crate::workload::collectors::CGroupsV2MetadataCollector;
+use crate::workload::collectors::CgroupsMetadataCollector;
 use crate::{
     features::{Feature, FeatureDetector},
     workload::{
@@ -81,8 +81,8 @@ impl RemoteAgentWorkloadProvider {
         #[cfg(target_os = "linux")]
         {
             let cgroups_collector =
-                CGroupsV2MetadataCollector::from_configuration(config, feature_detector, string_interner.clone())?;
-            collector_bounds.with_subcomponent("cgroups-v2", &cgroups_collector);
+                CgroupsMetadataCollector::from_configuration(config, feature_detector, string_interner.clone()).await?;
+            collector_bounds.with_subcomponent("cgroups", &cgroups_collector);
 
             aggregator.add_collector(cgroups_collector);
         }
