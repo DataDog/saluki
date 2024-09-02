@@ -106,7 +106,8 @@ impl CgroupsReader {
 
     pub async fn get_child_cgroups(&self) -> Vec<Cgroup> {
         // TODO: Probably don't do the container ID extraction here, just the returning of `Cgroup` with the cgroup path
-        // and inode.
+        // and inode. Would make things a little bit cleaner in the future if we just specifically handled cgroup data
+        // without any comingling of concerns.
         let mut cgroups = Vec::new();
         let mut visit = |path: &Path, ino: u64| {
             if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
@@ -121,17 +122,15 @@ impl CgroupsReader {
             }
         };
 
-        match &self.hierarchy_reader {
+        let root_path = match &self.hierarchy_reader {
             HierarchyReader::V1 {
                 base_controller_path, ..
-            } => {
-                if let Err(e) = visit_subdirectories(base_controller_path, &mut visit).await {
-                    error!(error = %e, "Failed to visit cgroups v1 hierarchy.");
-                }
-            }
-            HierarchyReader::V2 { .. } => {
-                todo!()
-            }
+            } => base_controller_path.as_path(),
+            HierarchyReader::V2 { root, .. } => root.as_path(),
+        };
+
+        if let Err(e) = visit_subdirectories(root_path, &mut visit).await {
+            error!(error = %e, "Failed to visit cgroups v1 hierarchy.");
         }
 
         cgroups
