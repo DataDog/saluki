@@ -7,10 +7,9 @@ use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::{Counter, Histogram};
 use saluki_config::GenericConfiguration;
-use saluki_context::{BorrowedTag, ContextResolver};
+use saluki_context::ContextResolver;
 use saluki_core::{
     components::{sources::*, MetricsBuilder},
-    constants::datadog::{CARDINALITY_TAG_KEY, ENTITY_ID_IGNORE_VALUE, ENTITY_ID_TAG_KEY, JMX_CHECK_NAME_TAG_KEY},
     pooling::{FixedSizeObjectPool, ObjectPool as _},
     spawn_traced,
     topology::{
@@ -21,14 +20,14 @@ use saluki_core::{
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_event::{
-    metric::{Metric, MetricMetadata, MetricOrigin, OriginEntity, OriginTagCardinality},
+    metric::{Metric, OriginEntity},
     DataType, Event,
 };
 use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, BytesBuffer},
     deser::{
         codec::{
-            dogstatsd::{MetricPacket, ParsedPacket},
+            dogstatsd::{build_metric_metadata_from_packet, MetricPacket, ParsedPacket},
             DogstatsdCodec, DogstatsdCodecConfiguration,
         },
         framing::Framer,
@@ -632,7 +631,7 @@ fn handle_metric_packet(
     packet: MetricPacket, event_buffer: &mut EventBuffer, multitenant_strategy: &MultitenantStrategy,
     origin_detection: bool, peer_addr: &ConnectionAddress, source_metrics: &Metrics,
 ) {
-    let metric_metadata = build_metadata_from_packet(&packet, origin_detection, peer_addr);
+    let metric_metadata = build_metric_metadata_from_packet(&packet, origin_detection, peer_addr);
     let mut context_resolver = multitenant_strategy.get_context_resolver_for_origin(metric_metadata.origin_entity());
 
     // Try resolving the context first, since we might need to bail if we can't.
@@ -653,47 +652,6 @@ fn handle_metric_packet(
         packet.values,
         metric_metadata.clone(),
     )));
-}
-
-fn build_metadata_from_packet(
-    packet: &MetricPacket<'_>, origin_detection: bool, peer_addr: &ConnectionAddress,
-) -> MetricMetadata {
-    let mut metric_metadata = MetricMetadata::default()
-        .with_sample_rate(packet.sample_rate)
-        .with_origin(MetricOrigin::dogstatsd());
-
-    if let Some(container_id) = packet.container_id {
-        metric_metadata.origin_entity_mut().set_container_id(container_id);
-    }
-
-    // We do one optional enrichment step here, which is to add the client's socket credentials as a tag
-    // on each metric, if they came over UDS. This would then be utilized downstream in the pipeline by
-    // origin enrichment, if present.
-    if origin_detection {
-        if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
-            metric_metadata.origin_entity_mut().set_process_id(creds.pid as u32);
-        }
-    }
-
-    // Update our metric metadata based on any tags we're configured to intercept.
-    for tag in &packet.tags {
-        let tag = BorrowedTag::from(tag);
-        match tag.name_and_value() {
-            (Some(ENTITY_ID_TAG_KEY), Some(entity_id)) if entity_id != ENTITY_ID_IGNORE_VALUE => {
-                metric_metadata.origin_entity_mut().set_pod_uid(entity_id)
-            }
-            (Some(JMX_CHECK_NAME_TAG_KEY), Some(jmx_check_name)) => {
-                metric_metadata.set_origin(MetricOrigin::jmx_check(jmx_check_name));
-            }
-            (Some(CARDINALITY_TAG_KEY), Some(value)) => {
-                if let Ok(cardinality) = OriginTagCardinality::try_from(value) {
-                    metric_metadata.origin_entity_mut().set_cardinality(cardinality);
-                }
-            }
-            _ => {}
-        }
-    }
-    metric_metadata
 }
 
 async fn forward_events(
