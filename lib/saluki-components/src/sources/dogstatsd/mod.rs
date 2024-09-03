@@ -7,9 +7,10 @@ use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::{Counter, Histogram};
 use saluki_config::GenericConfiguration;
-use saluki_context::ContextResolver;
+use saluki_context::{BorrowedTag, ContextResolver};
 use saluki_core::{
     components::{sources::*, MetricsBuilder},
+    constants::datadog::{CARDINALITY_TAG_KEY, ENTITY_ID_IGNORE_VALUE, ENTITY_ID_TAG_KEY, JMX_CHECK_NAME_TAG_KEY},
     pooling::{FixedSizeObjectPool, ObjectPool as _},
     spawn_traced,
     topology::{
@@ -19,11 +20,17 @@ use saluki_core::{
     },
 };
 use saluki_error::{generic_error, GenericError};
-use saluki_event::{DataType, Event};
+use saluki_event::{
+    metric::{Metric, MetricMetadata, MetricOrigin, OriginEntity, OriginTagCardinality},
+    DataType, Event,
+};
 use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, BytesBuffer},
     deser::{
-        codec::{dogstatsd::ParseError, DogstatsdCodec, DogstatsdCodecConfiguration},
+        codec::{
+            dogstatsd::{MetricPacket, ParsedPacket},
+            DogstatsdCodec, DogstatsdCodecConfiguration,
+        },
         framing::Framer,
     },
     net::{
@@ -39,9 +46,6 @@ use tracing::{debug, error, info, trace};
 
 mod framer;
 use self::framer::{get_framer, DsdFramer};
-
-mod interceptor;
-use self::interceptor::AgentLikeTagMetadataInterceptor;
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -246,17 +250,17 @@ impl SourceBuilder for DogStatsDConfiguration {
         let context_interner = FixedSizeInterner::new(context_string_interner_size);
         let context_resolver = ContextResolver::from_interner("dogstatsd", context_interner)
             .with_heap_allocations(self.allow_context_heap_allocations);
+        let multitenant_strategy = MultitenantStrategy::new(context_resolver);
 
         let codec_config = DogstatsdCodecConfiguration::default().with_timestamps(self.no_aggregation_pipeline_support);
-        let codec = DogstatsdCodec::from_context_resolver(context_resolver)
-            .with_configuration(codec_config)
-            .with_tag_metadata_interceptor(AgentLikeTagMetadataInterceptor);
+        let codec = DogstatsdCodec::from_configuration(codec_config);
 
         Ok(Box::new(DogStatsD {
             listeners,
             io_buffer_pool: get_fixed_bytes_buffer_pool(self.buffer_count, self.buffer_size),
             codec,
             origin_detection: self.origin_detection,
+            multitenant_strategy,
         }))
     }
 
@@ -287,28 +291,31 @@ impl MemoryBounds for DogStatsDConfiguration {
     }
 }
 
-struct HandlerContext {
-    listen_addr: String,
-    origin_detection: bool,
-    framer: DsdFramer,
-    codec: DogstatsdCodec<AgentLikeTagMetadataInterceptor>,
+pub struct DogStatsD {
+    listeners: Vec<Listener>,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
-    metrics: Metrics,
+    codec: DogstatsdCodec,
+    origin_detection: bool,
+    multitenant_strategy: MultitenantStrategy,
 }
 
 struct ListenerContext {
     shutdown_handle: DynamicShutdownHandle,
     listener: Listener,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
-    codec: DogstatsdCodec<AgentLikeTagMetadataInterceptor>,
+    codec: DogstatsdCodec,
     origin_detection: bool,
+    multitenant_strategy: MultitenantStrategy,
 }
 
-pub struct DogStatsD {
-    listeners: Vec<Listener>,
-    io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
-    codec: DogstatsdCodec<AgentLikeTagMetadataInterceptor>,
+struct HandlerContext {
+    listen_addr: String,
     origin_detection: bool,
+    framer: DsdFramer,
+    codec: DogstatsdCodec,
+    io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
+    metrics: Metrics,
+    multitenant_strategy: MultitenantStrategy,
 }
 
 struct Metrics {
@@ -316,6 +323,7 @@ struct Metrics {
     bytes_received: Counter,
     bytes_received_size: Histogram,
     decoder_errors: Counter,
+    failed_context_resolve_total: Counter,
 }
 
 impl Metrics {
@@ -334,6 +342,10 @@ impl Metrics {
     fn decoder_errors(&self) -> &Counter {
         &self.decoder_errors
     }
+
+    fn failed_context_resolve_total(&self) -> &Counter {
+        &self.failed_context_resolve_total
+    }
 }
 
 fn build_metrics(builder: MetricsBuilder) -> Metrics {
@@ -342,6 +354,24 @@ fn build_metrics(builder: MetricsBuilder) -> Metrics {
         bytes_received: builder.register_counter("component_bytes_received_total"),
         bytes_received_size: builder.register_histogram("component_bytes_received_size"),
         decoder_errors: builder.register_counter_with_labels("component_errors_total", &[("error_type", "decode")]),
+        failed_context_resolve_total: builder.register_counter("component_failed_context_resolve_total"),
+    }
+}
+
+// TODO: better name
+// This is basically a shim where we can implement logic to map a metric origin to a given context resolver and/or string interner.
+#[derive(Clone)]
+struct MultitenantStrategy {
+    context_resolver: ContextResolver,
+}
+
+impl MultitenantStrategy {
+    fn new(context_resolver: ContextResolver) -> Self {
+        Self { context_resolver }
+    }
+
+    fn get_context_resolver_for_origin(&self, _origin: &OriginEntity) -> ContextResolver {
+        self.context_resolver.clone()
     }
 }
 
@@ -367,6 +397,7 @@ impl Source for DogStatsD {
                 io_buffer_pool: self.io_buffer_pool.clone(),
                 codec: self.codec.clone(),
                 origin_detection: self.origin_detection,
+                multitenant_strategy: self.multitenant_strategy.clone(),
             };
 
             spawn_traced(process_listener(context.clone(), listener_context));
@@ -406,6 +437,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
         io_buffer_pool,
         codec,
         origin_detection,
+        multitenant_strategy,
     } = listener_context;
     tokio::pin!(shutdown_handle);
 
@@ -431,6 +463,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
                         codec: codec.clone(),
                         io_buffer_pool: io_buffer_pool.clone(),
                         metrics: build_metrics(MetricsBuilder::from_component_context(source_context.component_context())),
+                        multitenant_strategy: multitenant_strategy.clone(),
                     };
                     spawn_traced(process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register()));
                 }
@@ -466,10 +499,10 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
         listen_addr,
         origin_detection,
         mut framer,
-        mut codec,
+        codec,
         io_buffer_pool,
         metrics,
-        ..
+        multitenant_strategy,
     } = handler_context;
 
     loop {
@@ -524,12 +557,45 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
             bytes_read
         );
 
+        // Keep a spot for these buffers in case they're needed, but don't acquire one yet.
+        let mut maybe_eventd_event_buffer = None;
+        let mut maybe_service_checks_event_buffer = None;
+
         loop {
             match framer.next_frame(&buffer, reached_eof) {
                 Ok(Some((frame, advance_len))) => {
                     debug!(?frame, ?advance_len, "Decoded frame.");
-                    if let Err(e) = handle_frame(frame, &mut codec, &mut event_buffer, origin_detection, &peer_addr) {
-                        error!(%listen_addr, error = %e, "Failed to parse frame.");
+                    match codec.decode_packet(frame) {
+                        Ok(ParsedPacket::Metric(metric)) => handle_metric_packet(
+                            metric,
+                            &mut event_buffer,
+                            &multitenant_strategy,
+                            origin_detection,
+                            &peer_addr,
+                            &metrics,
+                        ),
+                        Ok(ParsedPacket::Event(event)) => {
+                            if maybe_eventd_event_buffer.is_none() {
+                                maybe_eventd_event_buffer = Some(source_context.event_buffer_pool().acquire().await);
+                            }
+                            maybe_eventd_event_buffer
+                                .as_mut()
+                                .expect("Eventd buffer was just set.")
+                                .push(Event::EventD(event))
+                        }
+                        Ok(ParsedPacket::ServiceCheck(service_check)) => {
+                            if maybe_service_checks_event_buffer.is_none() {
+                                maybe_service_checks_event_buffer =
+                                    Some(source_context.event_buffer_pool().acquire().await);
+                            }
+                            maybe_service_checks_event_buffer
+                                .as_mut()
+                                .expect("Service check buffer was just set.")
+                                .push(Event::ServiceCheck(service_check))
+                        }
+                        Err(error) => {
+                            error!(%listen_addr, %error, "Failed to parse frame.");
+                        }
                     }
                     buffer.advance(advance_len);
                 }
@@ -550,59 +616,92 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
             }
         }
         metrics.events_received().increment(event_buffer.len() as u64);
-        forward_events(event_buffer, &source_context, &peer_addr, &listen_addr).await;
+        forward_events(
+            event_buffer,
+            maybe_eventd_event_buffer,
+            maybe_service_checks_event_buffer,
+            &source_context,
+            &peer_addr,
+            &listen_addr,
+        )
+        .await;
     }
 }
 
-fn handle_frame(
-    frame: &[u8], codec: &mut DogstatsdCodec<AgentLikeTagMetadataInterceptor>, event_buffer: &mut EventBuffer,
-    origin_detection: bool, peer_addr: &ConnectionAddress,
-) -> Result<(), ParseError> {
-    codec.decode_packet(frame, event_buffer)?;
+fn handle_metric_packet(
+    packet: MetricPacket, event_buffer: &mut EventBuffer, multitenant_strategy: &MultitenantStrategy,
+    origin_detection: bool, peer_addr: &ConnectionAddress, source_metrics: &Metrics,
+) {
+    let metric_metadata = build_metadata_from_packet(&packet, origin_detection, peer_addr);
+    let mut context_resolver = multitenant_strategy.get_context_resolver_for_origin(metric_metadata.origin_entity());
+
+    // Try resolving the context first, since we might need to bail if we can't.
+    let context_ref = context_resolver.create_context_ref(packet.metric_name, &packet.tags);
+    let context = match context_resolver.resolve(context_ref) {
+        Some(context) => context,
+        None => {
+            source_metrics.failed_context_resolve_total().increment(1);
+            // TODO: maybe be louder here, but could be high frequency
+            return;
+        }
+    };
+
+    event_buffer.reserve(1);
+
+    event_buffer.push(Event::Metric(Metric::from_parts(
+        context.clone(),
+        packet.values,
+        metric_metadata.clone(),
+    )));
+}
+
+fn build_metadata_from_packet(
+    packet: &MetricPacket<'_>, origin_detection: bool, peer_addr: &ConnectionAddress,
+) -> MetricMetadata {
+    let mut metric_metadata = MetricMetadata::default()
+        .with_sample_rate(packet.sample_rate)
+        .with_origin(MetricOrigin::dogstatsd());
+
+    if let Some(container_id) = packet.container_id {
+        metric_metadata.origin_entity_mut().set_container_id(container_id);
+    }
 
     // We do one optional enrichment step here, which is to add the client's socket credentials as a tag
     // on each metric, if they came over UDS. This would then be utilized downstream in the pipeline by
     // origin enrichment, if present.
     if origin_detection {
         if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
-            for event in event_buffer {
-                if let Some(metric) = event.try_as_metric_mut() {
-                    metric
-                        .metadata_mut()
-                        .origin_entity_mut()
-                        .set_process_id(creds.pid as u32);
-                }
-            }
+            metric_metadata.origin_entity_mut().set_process_id(creds.pid as u32);
         }
     }
 
-    Ok(())
+    // Update our metric metadata based on any tags we're configured to intercept.
+    for tag in &packet.tags {
+        let tag = BorrowedTag::from(tag);
+        match tag.name_and_value() {
+            (Some(ENTITY_ID_TAG_KEY), Some(entity_id)) if entity_id != ENTITY_ID_IGNORE_VALUE => {
+                metric_metadata.origin_entity_mut().set_pod_uid(entity_id)
+            }
+            (Some(JMX_CHECK_NAME_TAG_KEY), Some(jmx_check_name)) => {
+                metric_metadata.set_origin(MetricOrigin::jmx_check(jmx_check_name));
+            }
+            (Some(CARDINALITY_TAG_KEY), Some(value)) => {
+                if let Ok(cardinality) = OriginTagCardinality::try_from(value) {
+                    metric_metadata.origin_entity_mut().set_cardinality(cardinality);
+                }
+            }
+            _ => {}
+        }
+    }
+    metric_metadata
 }
 
 async fn forward_events(
-    mut event_buffer: EventBuffer, source_context: &SourceContext, peer_addr: &ConnectionAddress, listen_addr: &str,
+    event_buffer: EventBuffer, maybe_eventd_event_buffer: Option<EventBuffer>,
+    maybe_service_checks_event_buffer: Option<EventBuffer>, source_context: &SourceContext,
+    peer_addr: &ConnectionAddress, listen_addr: &str,
 ) {
     let n = event_buffer.len();
-
-    // Extract eventd events only if at least one is present in the event buffer.
-    let maybe_eventd_event_buffer = match event_buffer.has_data_type(DataType::EventD) {
-        true => {
-            let mut eventd_event_buffer = source_context.event_buffer_pool().acquire().await;
-            eventd_event_buffer.extend(event_buffer.extract(Event::is_eventd));
-            Some(eventd_event_buffer)
-        }
-        false => None,
-    };
-
-    // Extract service check events only if at least one is present in the event buffer.
-    let maybe_service_checks_event_buffer = match event_buffer.has_data_type(DataType::ServiceCheck) {
-        true => {
-            let mut service_check_event_buffer = source_context.event_buffer_pool().acquire().await;
-            service_check_event_buffer.extend(event_buffer.extract(Event::is_service_check));
-            Some(service_check_event_buffer)
-        }
-        false => None,
-    };
 
     trace!(%listen_addr, %peer_addr, events_len = n, "Forwarding events.");
 
@@ -628,5 +727,59 @@ async fn forward_events(
         {
             error!(%listen_addr, %peer_addr, error = %e, "Failed to forward service checks events.");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use saluki_context::ContextResolver;
+    use saluki_core::{
+        components::{ComponentContext, MetricsBuilder},
+        pooling::helpers::get_pooled_object_via_default,
+        topology::{interconnect::EventBuffer, ComponentId},
+    };
+    use saluki_io::{
+        deser::codec::{dogstatsd::ParsedPacket, DogstatsdCodec, DogstatsdCodecConfiguration},
+        net::ConnectionAddress,
+    };
+
+    use crate::sources::dogstatsd::build_metrics;
+
+    use super::{handle_metric_packet, MultitenantStrategy};
+
+    #[test]
+    fn no_metrics_when_interner_full_allocations_disallowed() {
+        // We're specifically testing here that when we don't allow outside allocations, we should not be able to
+        // resolve a context if the interner is full. A no-op interner has the smallest possible size, so that's going
+        // to assure we can't intern anything... but we also need a string (name or one of the tags) that can't be
+        // _inlined_ either, since that will get around the interner being full.
+        //
+        // We set our metric name to be longer than 31 bytes (the inlining limit) to ensure this.
+
+        let codec = DogstatsdCodec::from_configuration(DogstatsdCodecConfiguration::default());
+        let context_resolver = ContextResolver::with_noop_interner().with_heap_allocations(false);
+        let multitenant_strategy = MultitenantStrategy::new(context_resolver);
+        let mut event_buffer = get_pooled_object_via_default::<EventBuffer>();
+
+        let input = "big_metric_name_that_cant_possibly_be_inlined:1|c|#tag1:value1,tag2:value2,tag3:value3";
+
+        let Ok(ParsedPacket::Metric(packet)) = codec.decode_packet(input.as_bytes()) else {
+            panic!("Failed to parse packet.");
+        };
+
+        handle_metric_packet(
+            packet,
+            &mut event_buffer,
+            &multitenant_strategy,
+            true,
+            &ConnectionAddress::from("1.1.1.1:1234".parse::<SocketAddr>().unwrap()),
+            &build_metrics(MetricsBuilder::from_component_context(ComponentContext::source(
+                ComponentId::try_from("test").unwrap(),
+            ))),
+        );
+
+        assert!(event_buffer.is_empty());
     }
 }
