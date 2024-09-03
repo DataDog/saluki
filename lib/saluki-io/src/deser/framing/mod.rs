@@ -8,7 +8,7 @@ pub use self::length_delimited::LengthDelimitedFramer;
 mod newline;
 pub use self::newline::NewlineFramer;
 
-#[derive(Debug, Snafu)]
+#[derive(Debug, Snafu, Eq, PartialEq)]
 #[snafu(context(suffix(false)))]
 pub enum FramingError {
     #[snafu(display(
