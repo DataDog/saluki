@@ -527,7 +527,8 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
         loop {
             match framer.next_frame(&buffer, reached_eof) {
                 Ok(Some((frame, advance_len))) => {
-                    debug!(?frame, ?advance_len, "Decoded frame.");
+                    let frame_str = String::from_utf8_lossy(frame);
+                    debug!(frame = %frame_str, ?advance_len, "Decoded frame.");
                     if let Err(e) = handle_frame(frame, &mut codec, &mut event_buffer, origin_detection, &peer_addr) {
                         error!(%listen_addr, error = %e, "Failed to parse frame.");
                     }

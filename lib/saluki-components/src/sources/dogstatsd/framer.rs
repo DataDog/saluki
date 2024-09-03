@@ -26,6 +26,6 @@ pub fn get_framer(listen_address: &ListenAddress) -> DsdFramer {
         #[cfg(unix)]
         ListenAddress::Unixgram(_) => DsdFramer::Newline(NewlineFramer::default().required_on_eof(false)),
         #[cfg(unix)]
-        ListenAddress::Unix(_) => DsdFramer::LengthDelimited(LengthDelimitedFramer),
+        ListenAddress::Unix(_) => DsdFramer::LengthDelimited(LengthDelimitedFramer::default()),
     }
 }
