@@ -142,8 +142,7 @@ fn create_topology(
     let int_metrics_agg_config = AggregateConfiguration::with_defaults();
 
     let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
-    let origin_enrichment_config =
-        OriginEnrichmentConfiguration::from_configuration(configuration)
+    let origin_enrichment_config = OriginEnrichmentConfiguration::from_configuration(configuration)
         .error_context("Failed to configure origin enrichment transform.")?
         .with_environment_provider(env_provider);
     let enrich_config = ChainedConfiguration::default()
