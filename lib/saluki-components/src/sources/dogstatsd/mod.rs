@@ -703,9 +703,8 @@ mod tests {
         net::ConnectionAddress,
     };
 
-    use crate::sources::dogstatsd::build_metrics;
-
     use super::{handle_metric_packet, MultitenantStrategy};
+    use crate::sources::dogstatsd::build_metrics;
 
     #[test]
     fn no_metrics_when_interner_full_allocations_disallowed() {
