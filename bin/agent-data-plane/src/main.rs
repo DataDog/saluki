@@ -134,19 +134,25 @@ fn create_topology(
 ) -> Result<TopologyBlueprint, GenericError> {
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
-    let dsd_config = DogStatsDConfiguration::from_configuration(configuration)?;
-    let dsd_agg_config = AggregateConfiguration::from_configuration(configuration)?;
+    let dsd_config = DogStatsDConfiguration::from_configuration(configuration)
+        .error_context("Failed to configure DogStatsD source.")?;
+    let dsd_agg_config = AggregateConfiguration::from_configuration(configuration)
+        .error_context("Failed to configure aggregate transform.")?;
     let int_metrics_config = InternalMetricsConfiguration;
     let int_metrics_agg_config = AggregateConfiguration::with_defaults();
 
     let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
     let origin_enrichment_config =
-        OriginEnrichmentConfiguration::from_configuration(configuration)?.with_environment_provider(env_provider);
+        OriginEnrichmentConfiguration::from_configuration(configuration)
+        .error_context("Failed to configure origin enrichment transform.")?
+        .with_environment_provider(env_provider);
     let enrich_config = ChainedConfiguration::default()
         .with_transform_builder(host_enrichment_config)
         .with_transform_builder(origin_enrichment_config);
-    let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)?;
-    let events_service_checks_config = DatadogEventsServiceChecksConfiguration::from_configuration(configuration)?;
+    let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
+        .error_context("Failed to configure Datadog Metrics destination.")?;
+    let events_service_checks_config = DatadogEventsServiceChecksConfiguration::from_configuration(configuration)
+        .error_context("Failed to configure Datadog Events/Service Checks destination.")?;
 
     let topology_registry = component_registry.get_or_create("topology");
     let mut blueprint = TopologyBlueprint::from_component_registry(topology_registry);
