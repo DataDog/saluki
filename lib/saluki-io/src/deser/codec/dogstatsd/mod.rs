@@ -20,9 +20,8 @@ use saluki_event::{
 use snafu::Snafu;
 
 mod message;
-use crate::net::ConnectionAddress;
-
 use self::message::{parse_message_type, MessageType};
+use crate::net::ConnectionAddress;
 
 type NomParserError<'a> = nom::Err<nom::error::Error<&'a [u8]>>;
 
@@ -725,12 +724,11 @@ mod tests {
     };
     use stringtheory::MetaString;
 
-    use crate::net::ConnectionAddress;
-
     use super::{
         build_metric_metadata_from_packet, parse_dogstatsd_event, parse_dogstatsd_metric,
         parse_dogstatsd_service_check, DogstatsdCodecConfiguration,
     };
+    use crate::net::ConnectionAddress;
 
     type NomResult<'input, T> = Result<T, nom::Err<nom::error::Error<&'input [u8]>>>;
     type OptionalNomResult<'input, T> = Result<Option<T>, nom::Err<nom::error::Error<&'input [u8]>>>;
