@@ -81,7 +81,9 @@ impl TopologyBlueprint {
         I: AsRef<str>,
         B: SourceBuilder + 'static,
     {
-        let component_id = self.graph.add_source(component_id, &builder)
+        let component_id = self
+            .graph
+            .add_source(component_id, &builder)
             .error_context("Failed to build/validate topology graph.")?;
 
         let mut source_registry = self
@@ -108,7 +110,9 @@ impl TopologyBlueprint {
         I: AsRef<str>,
         B: TransformBuilder + 'static,
     {
-        let component_id = self.graph.add_transform(component_id, &builder)
+        let component_id = self
+            .graph
+            .add_transform(component_id, &builder)
             .error_context("Failed to build/validate topology graph.")?;
 
         self.update_bounds_for_interconnect();
@@ -187,7 +191,9 @@ impl TopologyBlueprint {
     ///
     /// If any of the components could not be built, an error is returned.
     pub async fn build(mut self) -> Result<BuiltTopology, GenericError> {
-        self.graph.validate().error_context("Failed to build/validate topology graph.")?;
+        self.graph
+            .validate()
+            .error_context("Failed to build/validate topology graph.")?;
 
         let mut sources = HashMap::new();
         for (id, builder) in self.sources {
@@ -195,10 +201,15 @@ impl TopologyBlueprint {
             let allocation_token = component_registry.token();
 
             let _guard = allocation_token.enter();
-            let source = builder.build().await
+            let source = builder
+                .build()
+                .await
                 .with_error_context(|| format!("Failed to build source '{}'.", id))?;
 
-            sources.insert(id, RegisteredComponent::new(source.in_current_allocation_group(), component_registry));
+            sources.insert(
+                id,
+                RegisteredComponent::new(source.in_current_allocation_group(), component_registry),
+            );
         }
 
         let mut transforms = HashMap::new();
@@ -207,7 +218,9 @@ impl TopologyBlueprint {
             let allocation_token = component_registry.token();
 
             let _guard = allocation_token.enter();
-            let transform = builder.build().await
+            let transform = builder
+                .build()
+                .await
                 .with_error_context(|| format!("Failed to build transform '{}'.", id))?;
 
             transforms.insert(
@@ -222,7 +235,9 @@ impl TopologyBlueprint {
             let allocation_token = component_registry.token();
 
             let _guard = allocation_token.enter();
-            let destination = builder.build().await
+            let destination = builder
+                .build()
+                .await
                 .with_error_context(|| format!("Failed to build destination '{}'.", id))?;
 
             destinations.insert(
