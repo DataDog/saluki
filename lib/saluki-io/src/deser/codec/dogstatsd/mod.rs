@@ -8,6 +8,10 @@ use nom::{
     sequence::{delimited, preceded, separated_pair, terminated},
     IResult,
 };
+use saluki_context::BorrowedTag;
+use saluki_core::constants::datadog::{
+    CARDINALITY_TAG_KEY, ENTITY_ID_IGNORE_VALUE, ENTITY_ID_TAG_KEY, JMX_CHECK_NAME_TAG_KEY,
+};
 use saluki_event::{
     eventd::{AlertType, EventD, Priority},
     metric::*,
@@ -16,6 +20,8 @@ use saluki_event::{
 use snafu::Snafu;
 
 mod message;
+use crate::net::ConnectionAddress;
+
 use self::message::{parse_message_type, MessageType};
 
 type NomParserError<'a> = nom::Err<nom::error::Error<&'a [u8]>>;
@@ -242,6 +248,47 @@ pub struct MetricPacket<'a> {
     pub timestamp: Option<u64>,
     pub sample_rate: Option<f64>,
     pub container_id: Option<&'a str>,
+}
+
+pub fn build_metric_metadata_from_packet(
+    packet: &MetricPacket<'_>, origin_detection: bool, peer_addr: &ConnectionAddress,
+) -> MetricMetadata {
+    let mut metric_metadata = MetricMetadata::default()
+        .with_sample_rate(packet.sample_rate)
+        .with_origin(MetricOrigin::dogstatsd());
+
+    if let Some(container_id) = packet.container_id {
+        metric_metadata.origin_entity_mut().set_container_id(container_id);
+    }
+
+    // We do one optional enrichment step here, which is to add the client's socket credentials as a tag
+    // on each metric, if they came over UDS. This would then be utilized downstream in the pipeline by
+    // origin enrichment, if present.
+    if origin_detection {
+        if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
+            metric_metadata.origin_entity_mut().set_process_id(creds.pid as u32);
+        }
+    }
+
+    // Update our metric metadata based on any tags we're configured to intercept.
+    for tag in &packet.tags {
+        let tag = BorrowedTag::from(tag);
+        match tag.name_and_value() {
+            (Some(ENTITY_ID_TAG_KEY), Some(entity_id)) if entity_id != ENTITY_ID_IGNORE_VALUE => {
+                metric_metadata.origin_entity_mut().set_pod_uid(entity_id)
+            }
+            (Some(JMX_CHECK_NAME_TAG_KEY), Some(jmx_check_name)) => {
+                metric_metadata.set_origin(MetricOrigin::jmx_check(jmx_check_name));
+            }
+            (Some(CARDINALITY_TAG_KEY), Some(value)) => {
+                if let Ok(cardinality) = OriginTagCardinality::try_from(value) {
+                    metric_metadata.origin_entity_mut().set_cardinality(cardinality);
+                }
+            }
+            _ => {}
+        }
+    }
+    metric_metadata
 }
 
 fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfiguration) -> IResult<&'a [u8], EventD> {
@@ -666,161 +713,27 @@ impl<'a> Iterator for FloatIter<'a> {
     }
 }
 
-/// Action to take for a given tag.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum InterceptAction {
-    /// The tag should be passed through as-is.
-    Pass,
-
-    /// The tag should be intercepted for metadata purposes.
-    Intercept,
-
-    /// The tag should be dropped entirely.
-    Drop,
-}
-
-/// Evaluator for deciding how to handle a given tag prior to context resolving.
-pub trait TagMetadataInterceptor: std::fmt::Debug {
-    /// Evaluate the given tag.
-    fn evaluate(&self, tag: &str) -> InterceptAction;
-
-    /// Intercept the given tag, updating the metric metadata based on it.
-    fn intercept(&self, tag: &str, metadata: &mut MetricMetadata);
-}
-
-impl TagMetadataInterceptor for () {
-    fn evaluate(&self, _tag: &str) -> InterceptAction {
-        InterceptAction::Pass
-    }
-
-    fn intercept(&self, _tag: &str, _metadata: &mut MetricMetadata) {}
-}
-
-impl<'a, T> TagMetadataInterceptor for &'a T
-where
-    T: TagMetadataInterceptor,
-{
-    fn evaluate(&self, tag: &str) -> InterceptAction {
-        (**self).evaluate(tag)
-    }
-
-    fn intercept(&self, tag: &str, metadata: &mut MetricMetadata) {
-        (**self).intercept(tag, metadata)
-    }
-}
-
-#[derive(Debug, Clone)]
-struct TagFilterer<I, TMI> {
-    iter: I,
-    interceptor: TMI,
-}
-
-impl<I, TMI> TagFilterer<I, TMI> {
-    fn new(iter: I, interceptor: TMI) -> Self {
-        Self { iter, interceptor }
-    }
-}
-
-impl<'a, I, TMI> IntoIterator for TagFilterer<I, TMI>
-where
-    I: IntoIterator<Item = &'a str> + Clone,
-    TMI: TagMetadataInterceptor,
-{
-    type Item = I::Item;
-    type IntoIter = TagFiltererIter<I::IntoIter, TMI>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        TagFiltererIter {
-            iter: self.iter.into_iter(),
-            interceptor: self.interceptor,
-        }
-    }
-}
-
-struct TagFiltererIter<I, TMI> {
-    iter: I,
-    interceptor: TMI,
-}
-
-impl<'a, I, TMI> Iterator for TagFiltererIter<I, TMI>
-where
-    I: Iterator<Item = &'a str>,
-    TMI: TagMetadataInterceptor,
-{
-    type Item = I::Item;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            match self.iter.next() {
-                Some(tag) => match self.interceptor.evaluate(tag) {
-                    InterceptAction::Pass => return Some(tag),
-                    InterceptAction::Intercept | InterceptAction::Drop => continue,
-                },
-                None => return None,
-            }
-        }
-    }
-}
-
-fn update_metadata_from_tags<'a, I, TMI>(tags_iter: I, interceptor: &TMI, metadata: &mut MetricMetadata)
-where
-    I: Iterator<Item = &'a str>,
-    TMI: TagMetadataInterceptor,
-{
-    for tag in tags_iter {
-        if let InterceptAction::Intercept = interceptor.evaluate(tag) {
-            interceptor.intercept(tag, metadata)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use nom::IResult;
     use proptest::{collection::vec as arb_vec, prelude::*};
     use saluki_context::ContextResolver;
-    use saluki_core::{pooling::helpers::get_pooled_object_via_default, topology::interconnect::EventBuffer};
     use saluki_event::{
         eventd::{AlertType, EventD, Priority},
         metric::*,
         service_check::{CheckStatus, ServiceCheck},
-        Event,
     };
     use stringtheory::MetaString;
 
+    use crate::net::ConnectionAddress;
+
     use super::{
-        parse_dogstatsd_event, parse_dogstatsd_metric, parse_dogstatsd_service_check, DogstatsdCodecConfiguration,
+        build_metric_metadata_from_packet, parse_dogstatsd_event, parse_dogstatsd_metric,
+        parse_dogstatsd_service_check, DogstatsdCodecConfiguration,
     };
-    use super::{InterceptAction, TagMetadataInterceptor};
-    use crate::deser::codec::DogstatsdCodec;
 
     type NomResult<'input, T> = Result<T, nom::Err<nom::error::Error<&'input [u8]>>>;
     type OptionalNomResult<'input, T> = Result<Option<T>, nom::Err<nom::error::Error<&'input [u8]>>>;
-
-    #[derive(Debug)]
-    struct StaticInterceptor;
-
-    impl TagMetadataInterceptor for StaticInterceptor {
-        fn evaluate(&self, tag: &str) -> InterceptAction {
-            if tag.starts_with("host") {
-                InterceptAction::Intercept
-            } else if tag.starts_with("deprecated") {
-                InterceptAction::Drop
-            } else {
-                InterceptAction::Pass
-            }
-        }
-
-        fn intercept(&self, tag: &str, metadata: &mut MetricMetadata) {
-            if let Some((key, value)) = tag.split_once(':') {
-                if key == "host" {
-                    metadata.set_hostname(Arc::from(value));
-                }
-            }
-        }
-    }
 
     fn parse_dsd_metric(input: &[u8]) -> OptionalNomResult<'_, Metric> {
         let default_config = DogstatsdCodecConfiguration::default();
@@ -840,15 +753,20 @@ mod tests {
     fn parse_dsd_metric_direct<'input>(
         input: &'input [u8], config: &DogstatsdCodecConfiguration, context_resolver: &mut ContextResolver,
     ) -> IResult<&'input [u8], Option<Metric>> {
-        let (remaining, (name, tags_iter, values, metadata)) = parse_dogstatsd_metric(input, config)?;
+        let (remaining, packet) = parse_dogstatsd_metric(input, config)?;
+        let metadata = build_metric_metadata_from_packet(
+            &packet,
+            true,
+            &ConnectionAddress::SocketLike("1.1.1.1:8080".parse().unwrap()),
+        );
 
-        let context_ref = context_resolver.create_context_ref(name, tags_iter);
+        let context_ref = context_resolver.create_context_ref(packet.metric_name, &packet.tags);
         let context = match context_resolver.resolve(context_ref) {
             Some(context) => context,
             None => return Ok((remaining, None)),
         };
 
-        Ok((remaining, Some(Metric::from_parts(context, values, metadata))))
+        Ok((remaining, Some(Metric::from_parts(context, packet.values, metadata))))
     }
 
     fn parse_dsd_eventd(input: &[u8]) -> NomResult<'_, EventD> {
