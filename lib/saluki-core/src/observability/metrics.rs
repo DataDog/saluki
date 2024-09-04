@@ -10,7 +10,8 @@ use metrics_util::registry::{AtomicStorage, Registry};
 use saluki_context::{Context, ContextResolver};
 use saluki_event::{metric::*, Event};
 use stringtheory::interning::FixedSizeInterner;
-use tokio::sync::broadcast;
+use tokio::sync::broadcast::{self, error::RecvError};
+use tracing::debug;
 
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 const INTERNAL_METRICS_INTERNER_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(8192) };
@@ -101,7 +102,20 @@ impl MetricsReceiver {
 
     /// Waits for the next metrics snapshot.
     pub async fn next(&mut self) -> Arc<Vec<Event>> {
-        self.flush_rx.recv().await.expect("metrics receiver should be set")
+        loop {
+            match self.flush_rx.recv().await {
+                Ok(metrics) => return metrics,
+                Err(RecvError::Closed) => {
+                    panic!("metrics receiver should never be closed");
+                }
+                Err(RecvError::Lagged(missed_payloads)) => {
+                    debug!(
+                        missed_payloads,
+                        "Receiver lagging behind internal metrics producer. Internal metrics may have been lost."
+                    );
+                }
+            }
+        }
     }
 }
 
