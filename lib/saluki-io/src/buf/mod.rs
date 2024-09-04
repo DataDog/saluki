@@ -1,4 +1,6 @@
-use bytes::{Buf, BufMut};
+use std::collections::VecDeque;
+
+use bytes::{Buf, BufMut, Bytes};
 use saluki_core::pooling::FixedSizeObjectPool;
 
 mod chunked;
@@ -15,6 +17,18 @@ pub trait ReadIoBuffer: Buf {
 impl<'a> ReadIoBuffer for &'a [u8] {
     fn capacity(&self) -> usize {
         self.len()
+    }
+}
+
+impl ReadIoBuffer for Bytes {
+    fn capacity(&self) -> usize {
+        self.len()
+    }
+}
+
+impl ReadIoBuffer for VecDeque<u8> {
+    fn capacity(&self) -> usize {
+        self.capacity()
     }
 }
 
