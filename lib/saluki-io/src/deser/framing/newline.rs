@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use tracing::trace;
 
 use super::{Framer, FramingError};
@@ -29,21 +30,27 @@ impl NewlineFramer {
 }
 
 impl Framer for NewlineFramer {
-    fn next_frame<'a, B: ReadIoBuffer>(
-        &mut self, buf: &'a B, is_eof: bool,
-    ) -> Result<Option<(&'a [u8], usize)>, FramingError> {
-        trace!(buf_len = buf.remaining(), "Received buffer.");
+    fn next_frame<'a, B: ReadIoBuffer>(&mut self, buf: &mut B, is_eof: bool) -> Result<Option<Bytes>, FramingError> {
+        trace!(buf_len = buf.remaining(), "Processing buffer.");
 
         let chunk = buf.chunk();
         if chunk.is_empty() {
             return Ok(None);
         }
 
-        trace!(chunk_len = chunk.len(), "Received chunk.");
+        trace!(chunk_len = chunk.len(), "Processing chunk.");
 
         // Search through the buffer for our delimiter.
-        let (frame, advance_len) = match find_newline(chunk) {
-            Some(idx) => (&chunk[..idx], idx + 1),
+        match find_newline(chunk) {
+            Some(idx) => {
+                // If we found the delimiter, then we can return the frame.
+                let frame = buf.copy_to_bytes(idx);
+
+                // Advance the buffer past the delimiter.
+                buf.advance(1);
+
+                Ok(Some(frame))
+            }
             None => {
                 // If we're not at EOF, then we can't do anything else right now.
                 if !is_eof {
@@ -57,11 +64,9 @@ impl Framer for NewlineFramer {
                     });
                 }
 
-                (chunk, chunk.len())
+                Ok(Some(buf.copy_to_bytes(chunk.len())))
             }
-        };
-
-        Ok(Some((frame, advance_len)))
+        }
     }
 }
 
