@@ -12,7 +12,7 @@ pub fn fatal_and_exit(message: String) {
 /// Initializes the logging subsystem for `tracing`.
 ///
 /// This function reads the `DD_LOG_LEVEL` environment variable to determine the log level to use. If the environment
-/// variable is not set, the default log level is `INFO`. Additionally, it reads the `DD_LOG_FORMAT` environment
+/// variable is not set, the default log level is `INFO`. Additionally, it reads the `DD_LOG_FORMAT_JSON` environment
 /// variable to determine which output format to use. If it is set to `json` (case insensitive), the logs will be
 /// formatted as JSON. If it is set to any other value, or not set at all, the logs will default to a rich, colored,
 /// human-readable format.
@@ -21,8 +21,9 @@ pub fn fatal_and_exit(message: String) {
 ///
 /// If the logging subsystem was already initialized, an error will be returned.
 pub fn initialize_logging() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let is_json = std::env::var("DD_LOG_FORMAT")
-        .map(|s| s.to_lowercase() == "json")
+    let is_json = std::env::var("DD_LOG_FORMAT_JSON")
+        .map(|s| s.trim().to_lowercase())
+        .map(|s| s == "true" || s == "1")
         .unwrap_or(false);
 
     let level_filter = EnvFilter::builder()
