@@ -2529,7 +2529,9 @@ dependencies = [
  "figment",
  "saluki-error",
  "serde",
+ "serde_json",
  "snafu",
+ "tokio",
  "tracing",
 ]
 
