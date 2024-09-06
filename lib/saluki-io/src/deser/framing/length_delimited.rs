@@ -1,10 +1,8 @@
-use bytes::Buf;
-use saluki_core::topology::interconnect::EventBuffer;
-use snafu::ResultExt as _;
+use bytes::Bytes;
 use tracing::trace;
 
-use super::{FailedToDecode, Framer, FramingError};
-use crate::{buf::ReadIoBuffer, deser::Decoder};
+use super::{Framer, FramingError};
+use crate::buf::ReadIoBuffer;
 
 /// Frames incoming data by splitting data based on a fixed-size length delimiter.
 ///
@@ -14,94 +12,166 @@ use crate::{buf::ReadIoBuffer, deser::Decoder};
 #[derive(Default)]
 pub struct LengthDelimitedFramer;
 
-impl<D: Decoder + 'static> Framer<D> for LengthDelimitedFramer {
-    type Output = LengthDelimitedFraming<D>;
+impl Framer for LengthDelimitedFramer {
+    fn next_frame<B: ReadIoBuffer>(&mut self, buf: &mut B, is_eof: bool) -> Result<Option<Bytes>, FramingError> {
+        trace!(buf_len = buf.remaining(), "Processing buffer.");
 
-    fn with_decoder(self, decoder: D) -> Self::Output {
-        LengthDelimitedFraming { inner: decoder }
-    }
-}
-
-#[derive(Debug)]
-pub struct LengthDelimitedFraming<D> {
-    inner: D,
-}
-
-impl<D: Decoder> LengthDelimitedFraming<D> {
-    fn decode_inner<B: ReadIoBuffer>(
-        &mut self, buf: &mut B, events: &mut EventBuffer, is_eof: bool,
-    ) -> Result<usize, FramingError<D>> {
-        trace!(buf_len = buf.remaining(), "Received buffer.");
-
-        let mut events_decoded = 0;
-
-        loop {
-            let chunk = buf.chunk();
-            if chunk.is_empty() {
-                break;
-            }
-
-            trace!(chunk_len = chunk.len(), "Received chunk.");
-
-            // Read the length of the frame if we have enough bytes, and then see if we have enough bytes for the
-            // complete frame.
-            if chunk.len() < 4 {
-                break;
-            }
-
-            let frame_len = u32::from_le_bytes(chunk[0..4].try_into().unwrap()) as usize;
-            let delimited_frame_len = frame_len + 4;
-            if chunk.len() < delimited_frame_len {
-                if is_eof {
-                    // If we've hit EOF and we have a partial frame here, well, then... it's invalid.
-                    return Err(FramingError::InvalidFrame {
-                        buffer_len: buf.remaining(),
-                    });
-                } else {
-                    break;
-                }
-            }
-
-            // Frames cannot exceed the underlying buffer's capacity.
-            if frame_len > buf.capacity() {
-                return Err(FramingError::InvalidFrame {
-                    buffer_len: buf.remaining(),
-                });
-            }
-
-            // Advance past the length delimiter, and carve out the frame.
-            let mut frame = &chunk[4..delimited_frame_len];
-
-            // Pass the frame to the inner decoder.
-            let decode_result = self.inner.decode(&mut frame, events).context(FailedToDecode);
-            buf.advance(delimited_frame_len);
-
-            let event_count = decode_result?;
-            trace!(frame_len, event_count, "Decoded frame.");
-
-            // TODO: Emit a metric if `event_count` is zero, since that means we've decoded zero events _without_ an
-            // error. In some cases, this is entirely fine (e.g. DogStatsD couldn't resolve the context due to string
-            // interner being full) and so we don't want to emit an error -- it's intentional! -- but we should still
-            // emit a metric to track that it's happening.
-
-            events_decoded += event_count;
+        let chunk = buf.chunk();
+        if chunk.is_empty() {
+            return Ok(None);
         }
 
-        Ok(events_decoded)
+        trace!(chunk_len = chunk.len(), "Processing chunk.");
+
+        // See if there's enough data to read the frame length.
+        if chunk.len() < 4 {
+            return if is_eof {
+                Err(FramingError::InvalidFrame {
+                    buffer_len: buf.remaining(),
+                })
+            } else {
+                Ok(None)
+            };
+        }
+
+        // See if we have enough data to read the full frame.
+        let frame_len = u32::from_le_bytes(chunk[0..4].try_into().unwrap()) as usize;
+        let frame_len_with_length = frame_len + 4;
+        if chunk.len() < frame_len_with_length {
+            return if is_eof {
+                // If we've hit EOF and we have a partial frame here, well, then... it's invalid.
+                Err(FramingError::InvalidFrame {
+                    buffer_len: buf.remaining(),
+                })
+            } else {
+                Ok(None)
+            };
+        }
+
+        // Frames cannot exceed the underlying buffer's capacity.
+        if frame_len > buf.capacity() {
+            return Err(FramingError::InvalidFrame {
+                buffer_len: buf.remaining(),
+            });
+        }
+
+        // Split out the entire frame -- length delimiter included -- and then carve out the length delimiter from the
+        // frame that we return.
+        let frame = buf.copy_to_bytes(frame_len_with_length).slice(4..);
+
+        Ok(Some(frame))
     }
 }
 
-impl<D> Decoder for LengthDelimitedFraming<D>
-where
-    D: Decoder + 'static,
-{
-    type Error = FramingError<D>;
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
 
-    fn decode<B: ReadIoBuffer>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error> {
-        self.decode_inner(buf, events, false)
+    use super::LengthDelimitedFramer;
+    use crate::deser::framing::{Framer as _, FramingError};
+
+    fn get_delimited_payload(inner: &[u8], with_newline: bool) -> VecDeque<u8> {
+        let payload_len = if with_newline { inner.len() + 1 } else { inner.len() };
+
+        let mut payload = VecDeque::new();
+        payload.extend(&(payload_len as u32).to_le_bytes());
+        payload.extend(inner);
+        if with_newline {
+            payload.push_back(b'\n');
+        }
+
+        payload
     }
 
-    fn decode_eof<B: ReadIoBuffer>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error> {
-        self.decode_inner(buf, events, true)
+    #[test]
+    fn basic() {
+        let payload = b"hello, world!";
+        let mut buf = get_delimited_payload(payload, false);
+
+        let mut framer = LengthDelimitedFramer;
+
+        let frame = framer
+            .next_frame(&mut buf, false)
+            .expect("should not fail to read from payload")
+            .expect("should not fail to extract frame from payload");
+
+        assert_eq!(&frame[..], payload);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn partial_read() {
+        // We create a full, valid frame and then take incrementally larger slices of it, ensuring that we can't
+        // actually read the frame until we give the framer the entire buffer.
+        let payload = b"hello, world!";
+        let mut buf = get_delimited_payload(payload, false);
+
+        let mut framer = LengthDelimitedFramer;
+
+        // Try reading a frame from a buffer that doesn't have enough bytes for the length delimiter itself.
+        let mut no_delimiter_buf = buf.clone();
+        no_delimiter_buf.truncate(3);
+
+        let maybe_frame = framer
+            .next_frame(&mut no_delimiter_buf, false)
+            .expect("should not fail to read from payload");
+        assert!(maybe_frame.is_none());
+        assert_eq!(no_delimiter_buf.len(), 3);
+
+        // Try reading a frame from a buffer that has enough bytes for the length delimiter, but not as many bytes as
+        // the length delimiter indicates.
+        let mut delimiter_but_partial_buf = buf.clone();
+        delimiter_but_partial_buf.truncate(7);
+
+        let maybe_frame = framer
+            .next_frame(&mut delimiter_but_partial_buf, false)
+            .expect("should not fail to read from payload");
+        assert!(maybe_frame.is_none());
+        assert_eq!(delimiter_but_partial_buf.len(), 7);
+
+        // Now try reading a frame from the original buffer, which should succeed.
+        let frame = framer
+            .next_frame(&mut buf, false)
+            .expect("should not fail to read from payload")
+            .expect("should not fail to extract frame from payload");
+
+        assert_eq!(&frame[..], payload);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn partial_read_eof() {
+        // We create a full, valid frame and then take incrementally larger slices of it, ensuring that we can't
+        // actually read the frame until we give the framer the entire buffer.
+        let payload = b"hello, world!";
+        let mut buf = get_delimited_payload(payload, false);
+
+        let mut framer = LengthDelimitedFramer;
+
+        // Try reading a frame from a buffer that doesn't have enough bytes for the length delimiter itself.
+        let mut no_delimiter_buf = buf.clone();
+        no_delimiter_buf.truncate(3);
+
+        let maybe_frame = framer.next_frame(&mut no_delimiter_buf, true);
+        assert_eq!(maybe_frame, Err(FramingError::InvalidFrame { buffer_len: 3 }));
+        assert_eq!(no_delimiter_buf.len(), 3);
+
+        // Try reading a frame from a buffer that has enough bytes for the length delimiter, but not as many bytes as
+        // the length delimiter indicates.
+        let mut delimiter_but_partial_buf = buf.clone();
+        delimiter_but_partial_buf.truncate(7);
+
+        let maybe_frame = framer.next_frame(&mut delimiter_but_partial_buf, true);
+        assert_eq!(maybe_frame, Err(FramingError::InvalidFrame { buffer_len: 7 }));
+        assert_eq!(delimiter_but_partial_buf.len(), 7);
+
+        // Now try reading a frame from the original buffer, which should succeed.
+        let frame = framer
+            .next_frame(&mut buf, true)
+            .expect("should not fail to read from payload")
+            .expect("should not fail to extract frame from payload");
+
+        assert_eq!(&frame[..], payload);
+        assert!(buf.is_empty());
     }
 }

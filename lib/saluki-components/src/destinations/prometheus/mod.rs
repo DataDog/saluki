@@ -1,6 +1,7 @@
 use std::{convert::Infallible, fmt::Write as _, sync::Arc};
 
 use async_trait::async_trait;
+use ddsketch_agent::DDSketch;
 use http::{Request, Response};
 use hyper::{body::Incoming, service::service_fn};
 use indexmap::IndexMap;
@@ -9,7 +10,10 @@ use saluki_config::GenericConfiguration;
 use saluki_context::{Context, TagSet};
 use saluki_core::components::destinations::*;
 use saluki_error::GenericError;
-use saluki_event::{metric::MetricValue, DataType};
+use saluki_event::{
+    metric::{Metric, MetricValues},
+    DataType,
+};
 use saluki_io::net::{
     listener::ConnectionOrientedListener,
     server::http::{ErrorHandle, HttpServer, ShutdownHandle},
@@ -81,10 +85,10 @@ impl MemoryBounds for PrometheusConfiguration {
             .with_single_value::<Prometheus>();
         builder
             .firm()
-            // Even though our context map is really the Prometheus contest to a map of context/value pairs, we're just
+            // Even though our context map is really the Prometheus context to a map of context/value pairs, we're just
             // simplifying things here because the ratio of true "contexts" to Prometheus contexts should be very high,
             // high enough to make this a reasonable approximation.
-            .with_map::<Context, MetricValue>(CONTEXT_LIMIT)
+            .with_map::<Context, PrometheusValue>(CONTEXT_LIMIT)
             .with_fixed_amount(PAYLOAD_SIZE_LIMIT_BYTES)
             .with_fixed_amount(PAYLOAD_BUFFER_SIZE_LIMIT_BYTES)
             .with_fixed_amount(TAGS_BUFFER_SIZE_LIMIT_BYTES);
@@ -93,7 +97,7 @@ impl MemoryBounds for PrometheusConfiguration {
 
 struct Prometheus {
     listener: ConnectionOrientedListener,
-    metrics: IndexMap<PrometheusMetricContext, IndexMap<Context, MetricValue>>,
+    metrics: IndexMap<PrometheusContext, IndexMap<Context, PrometheusValue>>,
     contexts: usize,
     payload: Arc<RwLock<String>>,
     payload_buffer: String,
@@ -112,50 +116,32 @@ impl Destination for Prometheus {
             mut tags_buffer,
         } = *self;
 
-        debug!("Prometheus destination started.");
+        let mut health = context.take_health_handle();
 
         let (http_shutdown, mut http_error) = spawn_prom_scrape_service(listener, Arc::clone(&payload));
+        health.mark_ready();
+
+        debug!("Prometheus destination started.");
 
         loop {
             select! {
+                _ = health.live() => continue,
                 maybe_events = context.events().next() => match maybe_events {
                     Some(events) => {
                         // Process each metric event in the batch, either merging it with the existing value or
                         // inserting it for the first time.
                         for event in events {
-                            if let Some(metric) = event.try_into_metric() {
-                                let (context, value, _) = metric.into_parts();
-
-                                // Skip any metric types we can't handle.
-                                let value = match value {
-                                    // Skip sets and rates, because we can't convert them to a Prometheus-compatible type.
-                                    MetricValue::Rate { .. } | MetricValue::Set { .. } => continue,
-                                    // Everything else is fine as-is.
-                                    value => value,
-                                };
-
-                                // Generate a Prometheus-specific context, which is essentially the metric name + metric
-                                // type.
-                                //
-                                // We need to do this because we have to group all contexts with the same name to generate
-                                // their payload output as a group, as it's required by the Prometheus exposition specification.
-                                let prom_context = PrometheusMetricContext {
-                                    metric_name: context.name().clone(),
-                                    metric_type: PrometheusMetricType::from_value(&value),
-                                };
-
-                                let existing_contexts = metrics.entry(prom_context).or_insert_with(IndexMap::new);
+                            if let Some((prom_context, context, prom_value)) = event.try_into_metric().and_then(into_prometheus_metric) {
+                                let existing_contexts = metrics.entry(prom_context).or_default();
                                 match existing_contexts.get_mut(&context) {
-                                    Some(existing_value) => {
-                                        existing_value.merge(value);
-                                    },
+                                    Some(existing_prom_value) => existing_prom_value.merge(prom_value),
                                     None => {
                                         if contexts >= CONTEXT_LIMIT {
                                             debug!("Prometheus destination reached context limit. Skipping metric '{}'.", context.name());
                                             continue
                                         }
 
-                                        existing_contexts.insert(context, value);
+                                        existing_contexts.insert(context, prom_value);
                                         self.contexts += 1;
                                     },
                                 }
@@ -203,7 +189,7 @@ fn spawn_prom_scrape_service(
 
 #[allow(clippy::mutable_key_type)]
 async fn regenerate_payload(
-    metrics: &IndexMap<PrometheusMetricContext, IndexMap<Context, MetricValue>>, payload: &Arc<RwLock<String>>,
+    metrics: &IndexMap<PrometheusContext, IndexMap<Context, PrometheusValue>>, payload: &Arc<RwLock<String>>,
     payload_buffer: &mut String, tags_buffer: &mut String,
 ) {
     let mut payload = payload.write().await;
@@ -239,8 +225,8 @@ async fn regenerate_payload(
 }
 
 fn write_metrics(
-    payload_buffer: &mut String, tags_buffer: &mut String, prom_context: &PrometheusMetricContext,
-    contexts: &IndexMap<Context, MetricValue>,
+    payload_buffer: &mut String, tags_buffer: &mut String, prom_context: &PrometheusContext,
+    contexts: &IndexMap<Context, PrometheusValue>,
 ) -> bool {
     if contexts.is_empty() {
         debug!("No contexts for metric '{}'. Skipping.", prom_context.metric_name);
@@ -258,7 +244,7 @@ fn write_metrics(
     )
     .unwrap();
 
-    for (context, value) in contexts {
+    for (context, values) in contexts {
         if payload_buffer.len() > PAYLOAD_BUFFER_SIZE_LIMIT_BYTES {
             debug!("Payload buffer size limit exceeded. Additional contexts for this metric will be truncated.");
             break;
@@ -272,8 +258,8 @@ fn write_metrics(
         }
 
         // Write the metric value itself.
-        match value {
-            MetricValue::Counter { value } | MetricValue::Gauge { value } => {
+        match values {
+            PrometheusValue::Counter(value) | PrometheusValue::Gauge(value) => {
                 // No metric type-specific tags for counters or gauges, so just write them straight out.
                 payload_buffer.push_str(context.name());
                 if !tags_buffer.is_empty() {
@@ -283,7 +269,7 @@ fn write_metrics(
                 }
                 writeln!(payload_buffer, " {}", value).unwrap();
             }
-            MetricValue::Distribution { sketch } => {
+            PrometheusValue::Summary(sketch) => {
                 // We take a fixed set of quantiles from the sketch, which is hard-coded but should generally represent
                 // the quantiles people generally care about.
                 for quantile in [0.1, 0.25, 0.5, 0.95, 0.99, 0.999] {
@@ -312,7 +298,6 @@ fn write_metrics(
                 }
                 writeln!(payload_buffer, " {}", sketch.count()).unwrap();
             }
-            _ => unreachable!(),
         }
     }
 
@@ -353,22 +338,13 @@ fn format_tags(tags_buffer: &mut String, tags: &TagSet) -> bool {
 }
 
 #[derive(Eq, Hash, Ord, PartialEq, PartialOrd)]
-enum PrometheusMetricType {
+enum PrometheusType {
     Counter,
     Gauge,
     Summary,
 }
 
-impl PrometheusMetricType {
-    fn from_value(value: &MetricValue) -> Self {
-        match value {
-            MetricValue::Counter { .. } => Self::Counter,
-            MetricValue::Gauge { .. } => Self::Gauge,
-            MetricValue::Distribution { .. } => Self::Summary,
-            _ => unreachable!(),
-        }
-    }
-
+impl PrometheusType {
     fn as_str(&self) -> &'static str {
         match self {
             Self::Counter => "counter",
@@ -379,7 +355,72 @@ impl PrometheusMetricType {
 }
 
 #[derive(Eq, Hash, Ord, PartialEq, PartialOrd)]
-struct PrometheusMetricContext {
+struct PrometheusContext {
     metric_name: MetaString,
-    metric_type: PrometheusMetricType,
+    metric_type: PrometheusType,
+}
+
+enum PrometheusValue {
+    Counter(f64),
+    Gauge(f64),
+    Summary(DDSketch),
+}
+
+impl PrometheusValue {
+    fn merge(&mut self, other: Self) {
+        match (self, other) {
+            (Self::Counter(a), Self::Counter(b)) => *a += b,
+            (Self::Gauge(a), Self::Gauge(b)) => *a = b,
+            (Self::Summary(a), Self::Summary(b)) => a.merge(&b),
+            _ => unreachable!(),
+        }
+    }
+}
+
+fn into_prometheus_metric(metric: Metric) -> Option<(PrometheusContext, Context, PrometheusValue)> {
+    let (context, values, _) = metric.into_parts();
+
+    let (metric_type, metric_value) = match values {
+        MetricValues::Counter(points) => {
+            let value = points.into_iter().map(|(_, value)| value).sum();
+            (PrometheusType::Counter, PrometheusValue::Counter(value))
+        }
+        MetricValues::Gauge(points) => {
+            let latest_value = points
+                .into_iter()
+                .max_by_key(|(ts, _)| ts.map(|v| v.get()).unwrap_or_default())
+                .map(|(_, value)| value);
+            (
+                PrometheusType::Gauge,
+                PrometheusValue::Gauge(latest_value.unwrap_or_default()),
+            )
+        }
+        MetricValues::Set(points) => {
+            let latest_value = points
+                .into_iter()
+                .max_by_key(|(ts, _)| ts.map(|v| v.get()).unwrap_or_default())
+                .map(|(_, value)| value);
+            (
+                PrometheusType::Gauge,
+                PrometheusValue::Gauge(latest_value.unwrap_or_default()),
+            )
+        }
+        MetricValues::Distribution(sketches) => {
+            let sketch = sketches.into_iter().fold(DDSketch::default(), |mut acc, (_, sketch)| {
+                acc.merge(&sketch);
+                acc
+            });
+            (PrometheusType::Summary, PrometheusValue::Summary(sketch))
+        }
+        _ => return None,
+    };
+
+    Some((
+        PrometheusContext {
+            metric_name: context.name().clone(),
+            metric_type,
+        },
+        context,
+        metric_value,
+    ))
 }

@@ -3,6 +3,7 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{components::transforms::*, topology::OutputDefinition};
 use saluki_error::GenericError;
 use saluki_event::DataType;
+use tokio::select;
 use tracing::{debug, error};
 
 /// Chained transform.
@@ -74,6 +75,8 @@ pub struct Chained {
 #[async_trait]
 impl Transform for Chained {
     async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), ()> {
+        let mut health = context.take_health_handle();
+
         debug!(
             "Chained transform started with {} synchronous subtranform(s) present.",
             self.subtransforms.len()
@@ -86,20 +89,31 @@ impl Transform for Chained {
             .into_iter()
             .map(|(subtransform_id, subtransform)| {
                 (
-                    context.component_registry_mut().get_or_create(subtransform_id).token(),
+                    context.component_registry().get_or_create(subtransform_id).token(),
                     subtransform,
                 )
             })
             .collect::<Vec<_>>();
 
-        while let Some(mut event_buffer) = context.event_stream().next().await {
-            for (allocation_token, transform) in &subtransforms {
-                let _guard = allocation_token.enter();
-                transform.transform_buffer(&mut event_buffer);
-            }
+        health.mark_ready();
+        debug!("Chained transform started.");
 
-            if let Err(e) = context.forwarder().forward(event_buffer).await {
-                error!(error = %e, "Failed to forward events.");
+        loop {
+            select! {
+                _ = health.live() => continue,
+                maybe_events = context.event_stream().next() => match maybe_events {
+                    Some(mut event_buffer) => {
+                        for (allocation_token, transform) in &subtransforms {
+                            let _guard = allocation_token.enter();
+                            transform.transform_buffer(&mut event_buffer);
+                        }
+
+                        if let Err(e) = context.forwarder().forward(event_buffer).await {
+                            error!(error = %e, "Failed to forward events.");
+                        }
+                    },
+                    None => break,
+                },
             }
         }
 

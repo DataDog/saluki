@@ -1,11 +1,67 @@
 use std::{fmt, num::NonZeroU32, sync::Arc};
 
+use ordered_float::OrderedFloat;
+use serde::Deserialize;
 use stringtheory::MetaString;
 
 const ORIGIN_PRODUCT_AGENT: u32 = 10;
 const ORIGIN_SUBPRODUCT_DOGSTATSD: u32 = 10;
 const ORIGIN_SUBPRODUCT_INTEGRATION: u32 = 11;
 const ORIGIN_PRODUCT_DETAIL_NONE: u32 = 0;
+
+/// The cardinality of tags associated with the origin entity.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(try_from = "String")]
+pub enum OriginTagCardinality {
+    /// Low cardinality.
+    ///
+    /// This generally covers tags which are static, or relatively slow to change, and generally results in a small
+    /// number of unique values for the given tag key.
+    Low,
+
+    /// Orchestrator cardinality.
+    ///
+    /// This generally covers orchestrator-specific tags, such as Kubernetes pod UID, and lands somewhere between low
+    /// and high cardinality.
+    Orchestrator,
+
+    /// High cardinality.
+    ///
+    /// This generally covers tags which frequently change and generally results in a large number of unique values for
+    /// the given tag key.
+    High,
+}
+
+impl<'a> TryFrom<&'a str> for OriginTagCardinality {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "low" => Ok(Self::Low),
+            "high" => Ok(Self::High),
+            "orch" | "orchestrator" => Ok(Self::Orchestrator),
+            other => Err(format!("unknown tag cardinality type '{}'", other)),
+        }
+    }
+}
+
+impl TryFrom<String> for OriginTagCardinality {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_from(value.as_str())
+    }
+}
+
+impl fmt::Display for OriginTagCardinality {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Low => write!(f, "low"),
+            Self::Orchestrator => write!(f, "orchestrator"),
+            Self::High => write!(f, "high"),
+        }
+    }
+}
 
 /// The entity from which a metric originated from.
 ///
@@ -35,7 +91,7 @@ pub struct OriginEntity {
     /// Desired cardinality of any tags associated with the entity.
     ///
     /// This controls the cardinality of the tags added to this metric when enriching based on the available entity IDs.
-    cardinality: Option<MetaString>,
+    cardinality: Option<OriginTagCardinality>,
 }
 
 impl OriginEntity {
@@ -65,9 +121,9 @@ impl OriginEntity {
     /// Sets the desired cardinality of any tags associated with the entity.
     pub fn set_cardinality<S>(&mut self, cardinality: S)
     where
-        S: Into<MetaString>,
+        S: Into<Option<OriginTagCardinality>>,
     {
-        self.cardinality = Some(cardinality.into());
+        self.cardinality = cardinality.into();
     }
 
     /// Gets the process ID of the sender.
@@ -86,8 +142,8 @@ impl OriginEntity {
     }
 
     /// Gets the desired cardinality of any tags associated with the entity.
-    pub fn cardinality(&self) -> Option<&str> {
-        self.cardinality.as_deref()
+    pub fn cardinality(&self) -> Option<OriginTagCardinality> {
+        self.cardinality.as_ref().copied()
     }
 }
 
@@ -96,10 +152,9 @@ impl OriginEntity {
 /// Metadata includes all information that is not specifically related to the context or value of the metric itself,
 /// such as sample rate and timestamp.
 #[must_use]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetricMetadata {
-    sample_rate: f64,
-    timestamp: u64,
+    sample_rate: OrderedFloat<f64>,
     hostname: Option<Arc<str>>,
     origin_entity: OriginEntity,
     origin: Option<MetricOrigin>,
@@ -110,16 +165,7 @@ impl MetricMetadata {
     ///
     /// This value is between 0 and 1, inclusive.
     pub fn sample_rate(&self) -> f64 {
-        self.sample_rate
-    }
-
-    /// Gets the timestamp.
-    pub fn timestamp(&self) -> Option<u64> {
-        if self.timestamp == 0 {
-            None
-        } else {
-            Some(self.timestamp)
-        }
+        *self.sample_rate
     }
 
     /// Gets the hostname.
@@ -157,30 +203,7 @@ impl MetricMetadata {
     /// This value must be between 0 and 1, inclusive. If the value is outside of this range, it will be clamped to fit.
     pub fn set_sample_rate(&mut self, sample_rate: impl Into<Option<f64>>) {
         if let Some(sample_rate) = sample_rate.into().map(|sr| sr.clamp(0.0, 1.0)) {
-            self.sample_rate = sample_rate;
-        }
-    }
-
-    /// Set the timestamp.
-    ///
-    /// Represented as a Unix timestamp, or the number of seconds since the Unix epoch. Generally based on the time the
-    /// metric was received, but not always.
-    ///
-    /// This variant is specifically for use in builder-style APIs.
-    pub fn with_timestamp(mut self, timestamp: impl Into<Option<u64>>) -> Self {
-        self.set_timestamp(timestamp);
-        self
-    }
-
-    /// Set the timestamp.
-    ///
-    /// Represented as a Unix timestamp, or the number of seconds since the Unix epoch. Generally based on the time the
-    /// metric was received, but not always.
-    pub fn set_timestamp(&mut self, timestamp: impl Into<Option<u64>>) {
-        if let Some(timestamp) = timestamp.into() {
-            self.timestamp = timestamp;
-        } else {
-            self.timestamp = 0;
+            self.sample_rate = OrderedFloat(sample_rate);
         }
     }
 
@@ -245,8 +268,7 @@ impl MetricMetadata {
 impl Default for MetricMetadata {
     fn default() -> Self {
         Self {
-            sample_rate: 1.0,
-            timestamp: 0,
+            sample_rate: OrderedFloat(1.0),
             hostname: None,
             origin_entity: OriginEntity::default(),
             origin: None,
@@ -256,7 +278,7 @@ impl Default for MetricMetadata {
 
 impl fmt::Display for MetricMetadata {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ts={} sample_rate={}", self.timestamp, self.sample_rate)?;
+        write!(f, "sample_rate={}", self.sample_rate)?;
 
         if let Some(origin) = &self.origin {
             write!(f, " origin={}", origin)?;
@@ -277,7 +299,7 @@ impl fmt::Display for MetricMetadata {
 ///
 /// This is used to describe, in high-level terms, where a metric originated from, such as the specific software package
 /// or library that emitted. This is distinct from the `OriginEntity`, which describes the specific sender of the metric.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MetricOrigin {
     /// Originated from a generic source.
     ///

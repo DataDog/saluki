@@ -1,8 +1,9 @@
+use std::io;
+
 use datadog_protos::metrics::{self as proto, Resource};
 use http::{Method, Request, Uri};
 use protobuf::CodedOutputStream;
 use saluki_core::pooling::ObjectPool;
-use saluki_env::time::get_unix_timestamp;
 use saluki_event::metric::*;
 use saluki_io::net::client::replay::ReplayBody;
 use saluki_io::{
@@ -10,7 +11,6 @@ use saluki_io::{
     compression::*,
 };
 use snafu::{ResultExt, Snafu};
-use std::{io, time::Duration};
 use tokio::io::AsyncWriteExt as _;
 use tracing::{debug, trace};
 
@@ -92,12 +92,11 @@ impl MetricsEndpoint {
 
     /// Gets the endpoint for the given metric.
     pub fn from_metric(metric: &Metric) -> Self {
-        match metric.value() {
-            MetricValue::Counter { .. }
-            | MetricValue::Rate { .. }
-            | MetricValue::Gauge { .. }
-            | MetricValue::Set { .. } => Self::Series,
-            MetricValue::Distribution { .. } => Self::Sketches,
+        match metric.values() {
+            MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..) => {
+                Self::Series
+            }
+            MetricValues::Distribution(..) => Self::Sketches,
         }
     }
 
@@ -166,7 +165,7 @@ where
         let endpoint = MetricsEndpoint::from_metric(&metric);
         if endpoint != self.endpoint {
             return Err(RequestBuilderError::InvalidMetricForEndpoint {
-                metric_type: metric.value().as_str(),
+                metric_type: metric.values().as_str(),
                 endpoint: self.endpoint,
             });
         }
@@ -349,12 +348,11 @@ impl EncodedMetric {
 }
 
 fn encode_single_metric(metric: &Metric) -> EncodedMetric {
-    match metric.value() {
-        MetricValue::Counter { .. }
-        | MetricValue::Rate { .. }
-        | MetricValue::Gauge { .. }
-        | MetricValue::Set { .. } => EncodedMetric::Series(encode_series_metric(metric)),
-        MetricValue::Distribution { .. } => EncodedMetric::Sketch(encode_sketch_metric(metric)),
+    match metric.values() {
+        MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..) => {
+            EncodedMetric::Series(encode_series_metric(metric))
+        }
+        MetricValues::Distribution(..) => EncodedMetric::Sketch(encode_sketch_metric(metric)),
     }
 }
 
@@ -406,24 +404,32 @@ fn encode_series_metric(metric: &Metric) -> proto::MetricSeries {
         }
     }
 
-    let (metric_type, metric_value, maybe_interval) = match metric.value() {
-        MetricValue::Counter { value } => (proto::MetricType::COUNT, *value, None),
-        MetricValue::Rate { value, interval } => (proto::MetricType::RATE, *value, Some(duration_to_secs(*interval))),
-        MetricValue::Gauge { value } => (proto::MetricType::GAUGE, *value, None),
-        MetricValue::Set { values } => (proto::MetricType::GAUGE, values.len() as f64, None),
+    let (metric_type, points, maybe_interval) = match metric.values() {
+        MetricValues::Counter(points) => (proto::MetricType::COUNT, points.into_iter(), None),
+        MetricValues::Rate(points, interval) => (proto::MetricType::RATE, points.into_iter(), Some(interval)),
+        MetricValues::Gauge(points) => (proto::MetricType::GAUGE, points.into_iter(), None),
+        MetricValues::Set(points) => (proto::MetricType::GAUGE, points.into_iter(), None),
         _ => unreachable!(),
     };
 
     series.set_type(metric_type);
 
-    let mut point = proto::MetricPoint::new();
-    point.set_value(metric_value);
-    point.set_timestamp(metric.metadata().timestamp().unwrap_or_else(get_unix_timestamp) as i64);
+    for (timestamp, value) in points {
+        // If this is a rate metric, scale our value by the interval, in seconds.
+        let value = maybe_interval
+            .map(|interval| value / interval.as_secs_f64())
+            .unwrap_or(value);
+        let timestamp = timestamp.map(|ts| ts.get()).unwrap_or(0) as i64;
 
-    series.mut_points().push(point);
+        let mut point = proto::MetricPoint::new();
+        point.set_value(value);
+        point.set_timestamp(timestamp);
+
+        series.mut_points().push(point);
+    }
 
     if let Some(interval) = maybe_interval {
-        series.set_interval(interval);
+        series.set_interval(interval.as_secs() as i64);
     }
 
     series
@@ -464,15 +470,20 @@ fn encode_sketch_metric(metric: &Metric) -> proto::Sketch {
         ));
     }
 
-    let ddsketch = match metric.value() {
-        MetricValue::Distribution { sketch: ddsketch } => ddsketch,
+    let sketches = match metric.values() {
+        MetricValues::Distribution(sketches) => sketches,
         _ => unreachable!(),
     };
 
-    let mut dogsketch = proto::Dogsketch::new();
-    dogsketch.set_ts(metric.metadata().timestamp().unwrap_or_else(get_unix_timestamp) as i64);
-    ddsketch.merge_to_dogsketch(&mut dogsketch);
-    sketch.mut_dogsketches().push(dogsketch);
+    for (timestamp, value) in sketches {
+        let timestamp = timestamp.map(|ts| ts.get()).unwrap_or(0) as i64;
+
+        let mut dogsketch = proto::Dogsketch::new();
+        dogsketch.set_ts(timestamp);
+        value.merge_to_dogsketch(&mut dogsketch);
+
+        sketch.mut_dogsketches().push(dogsketch);
+    }
 
     sketch
 }
@@ -487,8 +498,4 @@ fn origin_metadata_to_proto_metadata(product: u32, subproduct: u32, product_deta
     proto_origin.set_origin_category(subproduct);
     proto_origin.set_origin_service(product_detail);
     metadata
-}
-
-fn duration_to_secs(duration: Duration) -> i64 {
-    duration.as_secs_f64() as i64
 }

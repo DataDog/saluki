@@ -3,8 +3,9 @@
 #![deny(missing_docs)]
 
 use std::{
+    collections::HashSet,
     fmt,
-    hash::{self, Hash as _, Hasher as _},
+    hash::{self, BuildHasher, Hash as _, Hasher as _},
     num::NonZeroUsize,
     ops::Deref as _,
     sync::{Arc, OnceLock, RwLock},
@@ -31,6 +32,8 @@ static_metrics! {
         counter(intern_fallback_total)
     ],
 }
+
+type PrehashedHashSet = HashSet<u64, NoopU64Hasher>;
 
 #[derive(Debug)]
 struct State {
@@ -60,11 +63,12 @@ struct State {
 /// Once a context is resolved, a cheap handle -- `Context` -- is returned. This handle, like `ContextResolver`, can be
 /// cheaply cloned. It points directly to the underlying context data (name and tags) and provides access to these
 /// components.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ContextResolver<const SHARD_FACTOR: usize = 8> {
     context_metrics: ContextMetrics,
     interner: FixedSizeInterner<SHARD_FACTOR>,
     state: Arc<RwLock<State>>,
+    hash_seen_buffer: PrehashedHashSet,
     allow_heap_allocations: bool,
 }
 
@@ -86,6 +90,7 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
             state: Arc::new(RwLock::new(State {
                 resolved_contexts: IndexSet::with_hasher(ahash::RandomState::new()),
             })),
+            hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64Hasher::new()),
             allow_heap_allocations: true,
         }
     }
@@ -142,6 +147,22 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
         })
     }
 
+    /// Creates a `ContextRef<'a, I>` from the given name and tags.
+    pub fn create_context_ref<'a, I, T>(&mut self, name: &'a str, tags: I) -> ContextRef<'a, I>
+    where
+        I: IntoIterator<Item = T> + Clone,
+        T: AsRef<str> + hash::Hash,
+    {
+        let (context_hash, tag_len) = hash_context_with_seen(name, tags.clone(), &mut self.hash_seen_buffer);
+
+        ContextRef {
+            name,
+            tags,
+            tag_len,
+            hash: context_hash,
+        }
+    }
+
     /// Resolves the given context.
     ///
     /// If the context has not yet been resolved, the name and tags are interned and a new context is created and
@@ -190,6 +211,18 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
     }
 }
 
+impl<const SHARD_FACTOR: usize> Clone for ContextResolver<SHARD_FACTOR> {
+    fn clone(&self) -> Self {
+        Self {
+            context_metrics: self.context_metrics.clone(),
+            interner: self.interner.clone(),
+            state: self.state.clone(),
+            hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64Hasher::new()),
+            allow_heap_allocations: self.allow_heap_allocations,
+        }
+    }
+}
+
 /// A metric context.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Context {
@@ -197,8 +230,23 @@ pub struct Context {
 }
 
 impl Context {
+    /// Creates a new `Context` from the given static name.
+    pub fn from_static_name(name: &'static str) -> Self {
+        const EMPTY_TAGS: &[&str] = &[];
+
+        let (hash, _) = hash_context(name, EMPTY_TAGS);
+        Self {
+            inner: Arc::new(ContextInner {
+                name: MetaString::from_static(name),
+                tags: TagSet::default(),
+                hash,
+                active_count: Gauge::noop(),
+            }),
+        }
+    }
+
     /// Creates a new `Context` from the given static name and given static tags.
-    pub fn from_static_parts(name: &'static str, tags: &'static [&'static str]) -> Self {
+    pub fn from_static_parts(name: &'static str, tags: &[&'static str]) -> Self {
         let mut tag_set = TagSet::with_capacity(tags.len());
         for tag in tags {
             tag_set.insert_tag(MetaString::from_static(tag));
@@ -246,6 +294,18 @@ impl Context {
 
         let inner = self.inner_mut();
         &mut inner.tags
+    }
+}
+
+impl From<&'static str> for Context {
+    fn from(name: &'static str) -> Self {
+        Self::from_static_name(name)
+    }
+}
+
+impl<'a> From<(&'static str, &'a [&'static str])> for Context {
+    fn from((name, tags): (&'static str, &'a [&'static str])) -> Self {
+        Self::from_static_parts(name, tags)
     }
 }
 
@@ -343,7 +403,7 @@ impl fmt::Debug for ContextInner {
 ///
 /// `ContextRef` (and `Context` itself) are order-oblivious [1] when it comes to tags, which means that we do not
 /// consider the order of the tags to be relevant to the resulting hash or when comparing two contexts for equality.
-/// This is acheived by hashing the tags in an order-oblivious way (XORing the hashes of the tags into a single value)
+/// This is achieved by hashing the tags in an order-oblivious way (XORing the hashes of the tags into a single value)
 /// and using the hash of the name/tags when comparing equality between two contexts, instead of comparing the
 /// names/tags directly to each other.
 ///
@@ -363,30 +423,6 @@ pub struct ContextRef<'a, I> {
     tags: I,
     tag_len: usize,
     hash: u64,
-}
-
-impl<'a, I, T> ContextRef<'a, I>
-where
-    I: IntoIterator<Item = T>,
-    T: hash::Hash,
-{
-    /// Creates a new `ContextRef` from the given name and tags.
-    ///
-    /// The given tags must be `Clone` as the iterator is consumed to calculate the hash of the context without storing
-    /// an owned version of the tags. This allows for zero-allocation context resolution, but requires that the iterator
-    /// be cloneable in order to take the tags later on if the context was not already resolved.
-    pub fn from_name_and_tags(name: &'a str, tags: I) -> Self
-    where
-        I: Clone,
-    {
-        let (hash, tag_len) = hash_context(name, tags.clone());
-        Self {
-            name,
-            tags,
-            tag_len,
-            hash,
-        }
-    }
 }
 
 impl<'a, I, T> hash::Hash for ContextRef<'a, I>
@@ -690,12 +726,16 @@ where
     I: IntoIterator<Item = T>,
     T: hash::Hash,
 {
-    // TODO: We don't do anything here to avoid duplicate tags canceling each other out (i.e., 0 XOR 0 and 1 XOR 1
-    // always equal 0) which could mean, for example, a hash collision between two identically-named metrics with
-    // different tags, where the tags were duplicated (e.g., metric_a{tag1, tag1} and metric_a{tag2, tag2} would have
-    // the same hash).
-    //
-    // This should be _exceedingly_ rare in practice, but we're noting it here for completeness.
+    let mut seen = PrehashedHashSet::with_hasher(NoopU64Hasher::new());
+    hash_context_with_seen(name, tags, &mut seen)
+}
+
+fn hash_context_with_seen<I, T>(name: &str, tags: I, seen: &mut PrehashedHashSet) -> (u64, usize)
+where
+    I: IntoIterator<Item = T>,
+    T: hash::Hash,
+{
+    seen.clear();
 
     let mut hasher = ahash::AHasher::default();
     name.hash(&mut hasher);
@@ -706,8 +746,14 @@ where
     for tag in tags {
         let mut tag_hasher = ahash::AHasher::default();
         tag.hash(&mut tag_hasher);
+        let tag_hash = tag_hasher.finish();
 
-        combined_tags_hash ^= tag_hasher.finish();
+        // If we've already seen this tag before, skip combining it again.
+        if !seen.insert(tag_hash) {
+            continue;
+        }
+
+        combined_tags_hash ^= tag_hash;
         tag_count += 1;
     }
 
@@ -726,6 +772,36 @@ fn get_dirty_context_hash_value() -> u64 {
 
 fn is_context_dirty(hash: u64) -> bool {
     hash == get_dirty_context_hash_value()
+}
+
+struct NoopU64Hasher(u64);
+
+impl NoopU64Hasher {
+    fn new() -> Self {
+        Self(0)
+    }
+}
+
+impl hash::Hasher for NoopU64Hasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = value;
+    }
+
+    fn write(&mut self, _: &[u8]) {
+        panic!("NoopU64Hasher is only valid for hashing `u64` values");
+    }
+}
+
+impl BuildHasher for NoopU64Hasher {
+    type Hasher = NoopU64Hasher;
+
+    fn build_hasher(&self) -> Self::Hasher {
+        Self(0)
+    }
 }
 
 #[cfg(test)]
@@ -764,15 +840,15 @@ mod tests {
 
     #[test]
     fn basic() {
-        let resolver: ContextResolver = ContextResolver::with_noop_interner();
+        let mut resolver: ContextResolver = ContextResolver::with_noop_interner();
 
         // Create two distinct contexts with the same name but different tags:
         let name = "metric_name";
         let tags1: [&str; 0] = [];
         let tags2 = ["tag1"];
 
-        let ref1 = ContextRef::from_name_and_tags(name, &tags1);
-        let ref2 = ContextRef::from_name_and_tags(name, &tags2);
+        let ref1 = resolver.create_context_ref(name, &tags1);
+        let ref2 = resolver.create_context_ref(name, &tags2);
         assert!(!refs_approx_eq(&ref1, &ref2));
 
         let context1 = resolver.resolve(ref1).expect("should not fail to resolve");
@@ -787,8 +863,8 @@ mod tests {
         );
 
         // If we create the context references again, we _should_ get back the same contexts as before:
-        let ref1 = ContextRef::from_name_and_tags(name, &tags1);
-        let ref2 = ContextRef::from_name_and_tags(name, &tags2);
+        let ref1 = resolver.create_context_ref(name, &tags1);
+        let ref2 = resolver.create_context_ref(name, &tags2);
         assert!(!refs_approx_eq(&ref1, &ref2));
 
         let context1_redo = resolver.resolve(ref1).expect("should not fail to resolve");
@@ -809,15 +885,15 @@ mod tests {
 
     #[test]
     fn tag_order() {
-        let resolver: ContextResolver = ContextResolver::with_noop_interner();
+        let mut resolver: ContextResolver = ContextResolver::with_noop_interner();
 
         // Create two distinct contexts with the same name and tags, but with the tags in a different order:
         let name = "metric_name";
         let tags1 = ["tag1", "tag2"];
         let tags2 = ["tag2", "tag1"];
 
-        let ref1 = ContextRef::from_name_and_tags(name, &tags1);
-        let ref2 = ContextRef::from_name_and_tags(name, &tags2);
+        let ref1 = resolver.create_context_ref(name, &tags1);
+        let ref2 = resolver.create_context_ref(name, &tags2);
         assert!(refs_approx_eq(&ref1, &ref2));
 
         let context1 = resolver.resolve(ref1).expect("should not fail to resolve");
@@ -839,10 +915,9 @@ mod tests {
 
         // Create our resolver and then create a context, which will have its metrics attached to our local recorder:
         let context = metrics::with_local_recorder(&recorder, || {
-            let resolver: ContextResolver = ContextResolver::with_noop_interner();
-            resolver
-                .resolve(ContextRef::from_name_and_tags("name", &["tag1"]))
-                .expect("should not fail to resolve")
+            let mut resolver: ContextResolver = ContextResolver::with_noop_interner();
+            let context_ref = resolver.create_context_ref("name", &["tag1"]);
+            resolver.resolve(context_ref).expect("should not fail to resolve")
         });
 
         // We should be able to see that the active context count is one, representing the context we created:
@@ -859,7 +934,7 @@ mod tests {
 
     #[test]
     fn mutate_tags() {
-        let resolver: ContextResolver = ContextResolver::with_noop_interner();
+        let mut resolver: ContextResolver = ContextResolver::with_noop_interner();
 
         // Create a basic context.
         //
@@ -868,8 +943,8 @@ mod tests {
         let name = "metric_name";
         let tags = ["tag1"];
 
-        let ref1 = ContextRef::from_name_and_tags(name, &tags);
-        let ref2 = ContextRef::from_name_and_tags(name, &tags);
+        let ref1 = resolver.create_context_ref(name, &tags);
+        let ref2 = resolver.create_context_ref(name, &tags);
         assert!(refs_approx_eq(&ref1, &ref2));
 
         let context1 = resolver.resolve(ref1).expect("should not fail to resolve");
@@ -901,5 +976,44 @@ mod tests {
             get_context_arc_pointer_value(&context1),
             get_context_arc_pointer_value(&context1_redo)
         );
+    }
+
+    #[test]
+    fn duplicate_tags() {
+        let mut resolver: ContextResolver = ContextResolver::with_noop_interner();
+
+        // Two contexts with the same name, but each with a different set of duplicate tags:
+        let name = "metric_name";
+        let tags1 = ["tag1"];
+        let tags1_duplicated = ["tag1", "tag1"];
+        let tags2 = ["tag2"];
+        let tags2_duplicated = ["tag2", "tag2"];
+
+        let ref1 = resolver.create_context_ref(name, &tags1);
+        let ref1_duplicated = resolver.create_context_ref(name, &tags1_duplicated);
+        let ref2 = resolver.create_context_ref(name, &tags2);
+        let ref2_duplicated = resolver.create_context_ref(name, &tags2_duplicated);
+
+        let context1 = resolver.resolve(ref1).expect("should not fail to resolve");
+        let context1_duplicated = resolver.resolve(ref1_duplicated).expect("should not fail to resolve");
+        let context2 = resolver.resolve(ref2).expect("should not fail to resolve");
+        let context2_duplicated = resolver.resolve(ref2_duplicated).expect("should not fail to resolve");
+
+        // Each non-duplicated/duplicated context pair should be equal to one another:
+        assert_eq!(context1, context1_duplicated);
+        assert_eq!(context2, context2_duplicated);
+
+        // Each pair should not be equal to the other pair, however.
+        //
+        // What we're asserting here is that, if we didn't handle duplicate tags correctly, the XOR hashing of [tag1,
+        // tag1] and [tag2, tag2] would result in the same hash value, since the second duplicate hash of tag1/tag2
+        // would cancel out the first... and thus all that would be left is the hash of the name itself, which is the
+        // same in this test. This would lead to the contexts being equal, which is obviously wrong.
+        //
+        // If we're handling duplicates properly, then the resulting context hashes _shouldn't_ be equal.
+        assert_ne!(context1, context2);
+        assert_ne!(context1_duplicated, context2_duplicated);
+        assert_ne!(context1, context2_duplicated);
+        assert_ne!(context2, context1_duplicated);
     }
 }

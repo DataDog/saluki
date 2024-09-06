@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 use saluki_api::{
     extract::State,
@@ -10,14 +7,13 @@ use saluki_api::{
     APIHandler, StatusCode,
 };
 use serde::{ser::SerializeMap as _, Serialize};
-use stringtheory::MetaString;
 
-use crate::ComponentHealth;
+use crate::Inner;
 
 /// State used for the healthy registry API handler.
 #[derive(Clone)]
 pub struct HealthRegistryState {
-    inner: Arc<Mutex<HashMap<MetaString, ComponentHealth>>>,
+    inner: Arc<Mutex<Inner>>,
 }
 
 impl HealthRegistryState {
@@ -29,6 +25,7 @@ impl HealthRegistryState {
         let inner = self.inner.lock().unwrap();
 
         let passing = inner
+            .component_health
             .values()
             .all(|health| if check_ready { health.ready } else { health.live });
         let status = if passing {
@@ -37,7 +34,7 @@ impl HealthRegistryState {
             StatusCode::SERVICE_UNAVAILABLE
         };
 
-        let rendered = serde_json::to_string(&*inner).unwrap();
+        let rendered = serde_json::to_string(&inner.component_health).unwrap();
 
         (status, rendered)
     }
@@ -58,8 +55,8 @@ impl Serialize for HealthRegistryState {
     {
         let inner = self.inner.lock().unwrap();
 
-        let mut map = serializer.serialize_map(Some(inner.len()))?;
-        for (name, health) in inner.iter() {
+        let mut map = serializer.serialize_map(Some(inner.component_health.len()))?;
+        for (name, health) in inner.component_health.iter() {
             map.serialize_entry(name, health)?;
         }
         map.end()
@@ -68,10 +65,10 @@ impl Serialize for HealthRegistryState {
 
 /// An API handler for reporting the health of all components.
 ///
-/// This handler exposes two main routes -- `/ready` and `/live` -- which return the overall readiness and liveness of
-/// all registered components, respectively. Each route will return a successful response (200 OK) if all components are
-/// ready/live, or a failure response (503 Service Unavailable) if any (or all) of the components are not ready/live,
-/// respectively.
+/// This handler exposes two main routes -- `/health/ready` and `/health/live` -- which return the overall readiness and
+/// liveness of all registered components, respectively. Each route will return a successful response (200 OK) if all
+/// components are ready/live, or a failure response (503 Service Unavailable) if any (or all) of the components are not
+/// ready/live, respectively.
 ///
 /// In both cases, the response body will be a JSON object with all registered components, each with their individual
 /// readiness and liveness status, as well as the response latency (in seconds) for the component to respond to the
@@ -81,9 +78,9 @@ pub struct HealthAPIHandler {
 }
 
 impl HealthAPIHandler {
-    pub(crate) fn from_state(state: Arc<Mutex<HashMap<MetaString, ComponentHealth>>>) -> Self {
+    pub(crate) fn from_state(inner: Arc<Mutex<Inner>>) -> Self {
         Self {
-            state: HealthRegistryState { inner: state },
+            state: HealthRegistryState { inner },
         }
     }
 
@@ -105,7 +102,7 @@ impl APIHandler for HealthAPIHandler {
 
     fn generate_routes(&self) -> Router<Self::State> {
         Router::new()
-            .route("/health/ready", get(Self::ready_handler))
-            .route("/health/live", get(Self::live_handler))
+            .route("/ready", get(Self::ready_handler))
+            .route("/live", get(Self::live_handler))
     }
 }

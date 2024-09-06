@@ -7,10 +7,11 @@ use std::{
 
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SetRecorderError, SharedString, Unit};
 use metrics_util::registry::{AtomicStorage, Registry};
-use saluki_context::{Context, ContextRef, ContextResolver};
+use saluki_context::{Context, ContextResolver};
 use saluki_event::{metric::*, Event};
 use stringtheory::interning::FixedSizeInterner;
-use tokio::sync::broadcast;
+use tokio::sync::broadcast::{self, error::RecvError};
+use tracing::debug;
 
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 const INTERNAL_METRICS_INTERNER_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(8192) };
@@ -101,7 +102,20 @@ impl MetricsReceiver {
 
     /// Waits for the next metrics snapshot.
     pub async fn next(&mut self) -> Arc<Vec<Event>> {
-        self.flush_rx.recv().await.expect("metrics receiver should be set")
+        loop {
+            match self.flush_rx.recv().await {
+                Ok(metrics) => return metrics,
+                Err(RecvError::Closed) => {
+                    panic!("metrics receiver should never be closed");
+                }
+                Err(RecvError::Lagged(missed_payloads)) => {
+                    debug!(
+                        missed_payloads,
+                        "Receiver lagging behind internal metrics producer. Internal metrics may have been lost."
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -109,7 +123,7 @@ async fn flush_metrics(flush_interval: Duration) {
     // TODO: This is only worth 8KB, but it would be good to find a proper spot to tie this into the memory
     // bounds/accounting stuff since we currently just initialize metrics (and logging) with all-inclusive free
     // functions that come way before we even construct a topology.
-    let context_resolver = ContextResolver::from_interner(
+    let mut context_resolver = ContextResolver::from_interner(
         "internal_metrics",
         FixedSizeInterner::new(INTERNAL_METRICS_INTERNER_SIZE),
     );
@@ -138,23 +152,15 @@ async fn flush_metrics(flush_interval: Duration) {
         let histograms = state.registry.get_histogram_handles();
 
         for (key, counter) in counters {
-            let delta = counter.swap(0, Ordering::Relaxed);
-            metrics.push(Event::Metric(Metric::from_parts(
-                context_from_key(&context_resolver, key),
-                MetricValue::Counter { value: delta as f64 },
-                MetricMetadata::default(),
-            )));
+            let context = context_from_key(&mut context_resolver, key);
+            let value = counter.swap(0, Ordering::Relaxed) as f64;
+            metrics.push(Event::Metric(Metric::counter(context, value)));
         }
 
         for (key, gauge) in gauges {
-            let value = gauge.load(Ordering::Relaxed);
-            metrics.push(Event::Metric(Metric::from_parts(
-                context_from_key(&context_resolver, key),
-                MetricValue::Gauge {
-                    value: f64::from_bits(value),
-                },
-                MetricMetadata::default(),
-            )));
+            let context = context_from_key(&mut context_resolver, key);
+            let value = f64::from_bits(gauge.load(Ordering::Relaxed));
+            metrics.push(Event::Metric(Metric::gauge(context, value)));
         }
 
         for (key, histogram) in histograms {
@@ -162,18 +168,15 @@ async fn flush_metrics(flush_interval: Duration) {
             //
             // If the histogram was empty, skip emitting a metric for this histogram entirely. Empty sketches don't make
             // sense to send.
-            let mut distribution_samples = Vec::new();
+            let mut distribution_samples = Vec::<f64>::new();
             histogram.clear_with(|samples| distribution_samples.extend(samples));
 
             if distribution_samples.is_empty() {
                 continue;
             }
 
-            metrics.push(Event::Metric(Metric::from_parts(
-                context_from_key(&context_resolver, key),
-                MetricValue::distribution_from_values(&distribution_samples),
-                MetricMetadata::default(),
-            )));
+            let context = context_from_key(&mut context_resolver, key);
+            metrics.push(Event::Metric(Metric::distribution(context, &distribution_samples[..])));
         }
 
         let shared = Arc::new(metrics);
@@ -181,14 +184,14 @@ async fn flush_metrics(flush_interval: Duration) {
     }
 }
 
-fn context_from_key(context_resolver: &ContextResolver, key: Key) -> Context {
+fn context_from_key(context_resolver: &mut ContextResolver, key: Key) -> Context {
     let (name, labels) = key.into_parts();
     let labels = labels
         .into_iter()
         .map(|l| format!("{}:{}", l.key(), l.value()))
         .collect::<Vec<_>>();
 
-    let context_ref = ContextRef::from_name_and_tags(name.as_str(), &labels);
+    let context_ref = context_resolver.create_context_ref(name.as_str(), &labels);
     context_resolver
         .resolve(context_ref)
         .expect("resolver should always allow falling back")

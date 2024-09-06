@@ -1,4 +1,5 @@
 use memory_accounting::{ComponentRegistry, MemoryLimiter};
+use saluki_health::{Health, HealthRegistry};
 
 use crate::{components::ComponentContext, topology::interconnect::EventStream};
 
@@ -7,6 +8,8 @@ pub struct DestinationContext {
     component_context: ComponentContext,
     events: EventStream,
     memory_limiter: MemoryLimiter,
+    health_handle: Option<Health>,
+    health_registry: HealthRegistry,
     component_registry: ComponentRegistry,
 }
 
@@ -14,14 +17,25 @@ impl DestinationContext {
     /// Creates a new `DestinationContext`.
     pub fn new(
         component_context: ComponentContext, events: EventStream, memory_limiter: MemoryLimiter,
-        component_registry: ComponentRegistry,
+        component_registry: ComponentRegistry, health_handle: Health, health_registry: HealthRegistry,
     ) -> Self {
         Self {
             component_context,
             events,
             memory_limiter,
+            health_handle: Some(health_handle),
+            health_registry,
             component_registry,
         }
+    }
+
+    /// Consumes the health handle of this destination context.
+    ///
+    /// ## Panics
+    ///
+    /// Panics if the health handle has already been taken.
+    pub fn take_health_handle(&mut self) -> Health {
+        self.health_handle.take().expect("health handle already taken")
     }
 
     /// Returns the component context.
@@ -39,8 +53,13 @@ impl DestinationContext {
         &self.memory_limiter
     }
 
-    /// Gets a mutable reference to the component registry.
-    pub fn component_registry_mut(&mut self) -> &ComponentRegistry {
+    /// Gets a reference to the health registry.
+    pub fn health_registry(&mut self) -> &HealthRegistry {
+        &self.health_registry
+    }
+
+    /// Gets a reference to the component registry.
+    pub fn component_registry(&mut self) -> &ComponentRegistry {
         &self.component_registry
     }
 }

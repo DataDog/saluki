@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use saluki_config::GenericConfiguration;
 use tracing::{debug, error};
 
-use super::{is_docker_runtime_present, path_contains, path_empty};
+use super::{is_running_inside_docker, path_contains, path_empty};
 use crate::features::{find_first_available_unix_socket, with_host_mount_prefixes};
 
 const DEFAULT_CONTAINERD_SOCKET_PATH_LINUX: &str = "/var/run/containerd/containerd.sock";
@@ -25,7 +25,7 @@ impl ContainerdDetector {
         let detected_socket_path = match config.try_get_typed::<PathBuf>("cri_socket_path") {
             Ok(Some(cri_socket_path)) => Some(cri_socket_path),
             Ok(None) => {
-                if is_docker_runtime_present() {
+                if is_running_inside_docker() {
                     None
                 } else {
                     debug!("Containerd socket path (`cri_socket_path`) not present in configuration. Trying to detect at default paths...");
@@ -42,6 +42,7 @@ impl ContainerdDetector {
 
         // If the path isn't empty, and it contains "containerd", we can assume it's the containerd socket.
         if !path_empty(&detected_socket_path) && path_contains(&detected_socket_path, "containerd") {
+            debug!(socket_path = %detected_socket_path.to_string_lossy(), "Detected containerd socket path.");
             Some(detected_socket_path)
         } else {
             None

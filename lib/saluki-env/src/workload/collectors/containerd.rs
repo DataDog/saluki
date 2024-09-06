@@ -9,7 +9,7 @@ use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use stringtheory::interning::FixedSizeInterner;
 use tokio::{sync::mpsc, time::sleep};
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use super::MetadataCollector;
 use crate::workload::{
@@ -60,6 +60,8 @@ impl MetadataCollector for ContainerdMetadataCollector {
     async fn watch(
         &self, operations_tx: &mut mpsc::Sender<MetadataOperation>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        debug!("Starting containerd metadata collector.");
+
         // Create a watcher for each namespace, and then join all of their watch streams, which then we'll just funnel
         // back to the operations channel.
         let watchers = self
@@ -168,6 +170,11 @@ impl NamespaceWatcher {
     }
 
     fn watch(self) -> impl Stream<Item = MetadataOperation> + Unpin {
+        debug!(
+            namespace = self.namespace.name,
+            "Starting containerd namespace watcher."
+        );
+
         // We watch the given namespace for all of the relevant events, and convert those into metadata operations that
         // we pass back to be collected by the parent watcher task, which then forwards them to the metadata aggregator.
         Box::pin(stream! {

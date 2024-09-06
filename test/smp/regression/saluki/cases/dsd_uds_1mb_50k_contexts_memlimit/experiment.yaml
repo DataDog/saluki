@@ -17,7 +17,7 @@ target:
     # allocate in an unbounded fashion.
     #
     # There is work slated to address that, which when it happens, will allow us to ratchet this limit down.
-    DD_MEMORY_LIMIT: "200MiB"
+    DD_MEMORY_LIMIT: "224MiB"
 
     # Set the context limit in the aggregator to ~50K, which matches the maximum number of contexts we expect to
     # generate. We essentially don't want the aggregator to be a limiting factor.

@@ -1,26 +1,33 @@
+use bytes::Bytes;
 use saluki_io::{
-    deser::{
-        codec::DogstatsdCodec,
-        framing::{LengthDelimitedFramer, NewlineFramer},
-    },
-    multi_framing,
+    buf::ReadIoBuffer,
+    deser::framing::{Framer, FramingError, LengthDelimitedFramer, NestedFramer, NewlineFramer},
     net::ListenAddress,
 };
 
-use super::interceptor::AgentLikeTagMetadataInterceptor;
+pub enum DsdFramer {
+    NonStream(NewlineFramer),
+    Stream(NestedFramer<NewlineFramer, LengthDelimitedFramer>),
+}
 
-multi_framing!(name => DogStatsD, codec => DogstatsdCodec<AgentLikeTagMetadataInterceptor>, {
-    Newline => NewlineFramer,
-    LengthDelimited => LengthDelimitedFramer,
-});
+impl Framer for DsdFramer {
+    fn next_frame<B: ReadIoBuffer>(&mut self, buf: &mut B, is_eof: bool) -> Result<Option<Bytes>, FramingError> {
+        match self {
+            Self::NonStream(framer) => framer.next_frame(buf, is_eof),
+            Self::Stream(framer) => framer.next_frame(buf, is_eof),
+        }
+    }
+}
 
-pub fn get_framer(listen_address: &ListenAddress) -> DogStatsDMultiFramer {
+pub fn get_framer(listen_address: &ListenAddress) -> DsdFramer {
+    let newline_framer = NewlineFramer::default().required_on_eof(false);
+
     match listen_address {
-        ListenAddress::Tcp(_) => unreachable!("TCP mode not support for Dogstatsd source"),
-        ListenAddress::Udp(_) => DogStatsDMultiFramer::Newline(NewlineFramer::default().required_on_eof(false)),
+        ListenAddress::Tcp(_) => unreachable!("TCP mode not support for DogStatsD source"),
+        ListenAddress::Udp(_) => DsdFramer::NonStream(newline_framer),
         #[cfg(unix)]
-        ListenAddress::Unixgram(_) => DogStatsDMultiFramer::Newline(NewlineFramer::default().required_on_eof(false)),
+        ListenAddress::Unixgram(_) => DsdFramer::NonStream(newline_framer),
         #[cfg(unix)]
-        ListenAddress::Unix(_) => DogStatsDMultiFramer::LengthDelimited(LengthDelimitedFramer),
+        ListenAddress::Unix(_) => DsdFramer::Stream(NestedFramer::new(newline_framer, LengthDelimitedFramer)),
     }
 }

@@ -9,8 +9,11 @@ repository = { workspace = true }
 bitmask-enum = { workspace = true }
 ddsketch-agent = { workspace = true }
 float_eq = { workspace = true }
+ordered-float = { workspace = true }
 saluki-context = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+smallvec = { workspace = true, features = ["const_generics", "drain_filter", "union"] }
 stringtheory = { workspace = true }
+
 [dev-dependencies]
 proptest = { workspace = true, features = ["std"] }

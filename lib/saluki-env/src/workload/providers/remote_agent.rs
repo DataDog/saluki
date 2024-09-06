@@ -6,30 +6,39 @@ use memory_accounting::ComponentRegistry;
 use saluki_config::GenericConfiguration;
 use saluki_context::TagSet;
 use saluki_error::GenericError;
+use saluki_event::metric::OriginTagCardinality;
 use stringtheory::interning::FixedSizeInterner;
 
+#[cfg(target_os = "linux")]
+use crate::workload::collectors::CgroupsMetadataCollector;
 use crate::{
     features::{Feature, FeatureDetector},
     workload::{
         aggregator::MetadataAggregator,
         collectors::{ContainerdMetadataCollector, RemoteAgentMetadataCollector},
         entity::EntityId,
-        metadata::TagCardinality,
         store::TagSnapshot,
     },
     WorkloadProvider,
 };
 
 // SAFETY: We know the value is not zero.
-const DEFAULT_TAG_INTERNER_SIZE_BYTES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(512 * 1024) }; // 512KB.
+const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(512 * 1024) }; // 512KB.
 
 /// Datadog Agent-based workload provider.
 ///
-/// This provider is based on two major components: `containerd` events and the Tagger Entity API exposed by the Datadog
-/// Agent. The Tagger Entity API exposes computed tags for a given entity -- specific containers, namely -- and is used
-/// here to collect those tags for querying. We also listen for `containerd` events, which get used to map container
-/// task PIDs to their container ID, which allows us to provide end-to-end linking of metrics sent by a specific
-/// container task ID to their container ID, and in turn the tags associated with that container.
+/// This provider is based primarily on the remote tagger API exposed by the Datadog Agent, which handles the bulk of
+/// the work by collecting and aggregating tags for container entities. This remote tagger API operates in a streaming
+/// fashion, which the provider uses to stream update operations to the tag store.
+///
+/// Additionally, two collectors are optionally used: a `containerd` collector and a `cgroups-v2` collector. The
+/// `containerd` collector will, if containerd is running, be used to collect metadata that allows mapping container
+/// PIDs (UDS-based Origin Detection) to container IDs. The `cgroups-v2` collector will collect metadata about the
+/// current set of cgroups v2 controllers, tracking any controllers which appear related to containers and storing a
+/// mapping of controller inodes to container IDs.
+///
+/// These additional collectors are necessary to bridge the gap from container PID and cgroup controller inode, as the
+/// remote tagger API does not stream us these mappings itself and only deals with resolved container IDs.
 #[derive(Clone)]
 pub struct RemoteAgentWorkloadProvider {
     shared_tags: Arc<ArcSwap<TagSnapshot>>,
@@ -38,21 +47,21 @@ pub struct RemoteAgentWorkloadProvider {
 impl RemoteAgentWorkloadProvider {
     /// Create a new `RemoteAgentWorkloadProvider` based on the given configuration.
     pub async fn from_configuration(
-        config: &GenericConfiguration, mut component_registry: ComponentRegistry,
+        config: &GenericConfiguration, component_registry: ComponentRegistry,
     ) -> Result<Self, GenericError> {
         let mut component_registry = component_registry.get_or_create("remote-agent");
         let mut provider_bounds = component_registry.bounds_builder();
 
-        // Create our tag interner.
-        let tag_interner_size_bytes = config
-            .try_get_typed::<NonZeroUsize>("remote_agent_tag_interner_size_bytes")?
-            .unwrap_or(DEFAULT_TAG_INTERNER_SIZE_BYTES);
-        let tag_interner = FixedSizeInterner::new(tag_interner_size_bytes);
+        // Create our string interner which will get used primarily for tags, but also for any other long-ish lived strings.
+        let string_interner_size_bytes = config
+            .try_get_typed::<NonZeroUsize>("remote_agent_string_interner_size_bytes")?
+            .unwrap_or(DEFAULT_STRING_INTERNER_SIZE_BYTES);
+        let string_interner = FixedSizeInterner::new(string_interner_size_bytes);
 
         provider_bounds
-            .subcomponent("tag_interner")
+            .subcomponent("string_interner")
             .firm()
-            .with_fixed_amount(tag_interner_size_bytes.get());
+            .with_fixed_amount(string_interner_size_bytes.get());
 
         // Construct our aggregator, and add any collectors based on the detected features we've been given.
         let mut aggregator = MetadataAggregator::new();
@@ -62,13 +71,23 @@ impl RemoteAgentWorkloadProvider {
 
         let feature_detector = FeatureDetector::automatic(config);
         if feature_detector.is_feature_available(Feature::Containerd) {
-            let cri_collector = ContainerdMetadataCollector::from_configuration(config, tag_interner.clone()).await?;
+            let cri_collector =
+                ContainerdMetadataCollector::from_configuration(config, string_interner.clone()).await?;
             collector_bounds.with_subcomponent("containerd", &cri_collector);
 
             aggregator.add_collector(cri_collector);
         }
 
-        let ra_collector = RemoteAgentMetadataCollector::from_configuration(config, tag_interner).await?;
+        #[cfg(target_os = "linux")]
+        {
+            let cgroups_collector =
+                CgroupsMetadataCollector::from_configuration(config, feature_detector, string_interner.clone()).await?;
+            collector_bounds.with_subcomponent("cgroups", &cgroups_collector);
+
+            aggregator.add_collector(cgroups_collector);
+        }
+
+        let ra_collector = RemoteAgentMetadataCollector::from_configuration(config, string_interner).await?;
         collector_bounds.with_subcomponent("remote-agent", &ra_collector);
 
         aggregator.add_collector(ra_collector);
@@ -84,7 +103,7 @@ impl RemoteAgentWorkloadProvider {
 
 #[async_trait]
 impl WorkloadProvider for RemoteAgentWorkloadProvider {
-    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: TagCardinality) -> Option<TagSet> {
+    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<TagSet> {
         self.shared_tags.load().get_entity_tags(entity_id, cardinality)
     }
 }

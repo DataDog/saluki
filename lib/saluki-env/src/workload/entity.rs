@@ -30,7 +30,7 @@ pub enum EntityId {
     /// A container inode.
     ///
     /// Represents the inode of the cgroups controller for a specific container.
-    ContainerInode(u32),
+    ContainerInode(u64),
 
     /// A container PID.
     ///

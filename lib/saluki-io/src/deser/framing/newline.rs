@@ -1,10 +1,8 @@
-use bytes::Buf;
-use saluki_core::topology::interconnect::EventBuffer;
-use snafu::ResultExt as _;
+use bytes::Bytes;
 use tracing::trace;
 
-use super::{FailedToDecode, Framer, FramingError};
-use crate::{buf::ReadIoBuffer, deser::Decoder};
+use super::{Framer, FramingError};
+use crate::buf::ReadIoBuffer;
 
 /// Frames incoming data by splitting on newlines.
 ///
@@ -31,94 +29,44 @@ impl NewlineFramer {
     }
 }
 
-impl<D: Decoder + 'static> Framer<D> for NewlineFramer {
-    type Output = NewlineFraming<D>;
+impl Framer for NewlineFramer {
+    fn next_frame<'a, B: ReadIoBuffer>(&mut self, buf: &mut B, is_eof: bool) -> Result<Option<Bytes>, FramingError> {
+        trace!(buf_len = buf.remaining(), "Processing buffer.");
 
-    fn with_decoder(self, decoder: D) -> Self::Output {
-        NewlineFraming {
-            inner: decoder,
-            required_on_eof: self.required_on_eof,
+        let chunk = buf.chunk();
+        if chunk.is_empty() {
+            return Ok(None);
         }
-    }
-}
 
-#[derive(Debug)]
-pub struct NewlineFraming<D> {
-    inner: D,
-    required_on_eof: bool,
-}
+        trace!(chunk_len = chunk.len(), "Processing chunk.");
 
-impl<D: Decoder> NewlineFraming<D> {
-    fn decode_inner<B: ReadIoBuffer>(
-        &mut self, buf: &mut B, events: &mut EventBuffer, is_eof: bool,
-    ) -> Result<usize, FramingError<D>> {
-        trace!(buf_len = buf.remaining(), "Received buffer.");
+        // Search through the buffer for our delimiter.
+        match find_newline(chunk) {
+            Some(idx) => {
+                // If we found the delimiter, then we can return the frame.
+                let frame = buf.copy_to_bytes(idx);
 
-        let mut events_decoded = 0;
+                // Advance the buffer past the delimiter.
+                buf.advance(1);
 
-        loop {
-            let chunk = buf.chunk();
-            if chunk.is_empty() {
-                break;
+                Ok(Some(frame))
             }
-
-            trace!(events_decoded, chunk_len = chunk.len(), "Received chunk.");
-
-            // Search through the buffer for our delimiter.
-            let (mut frame, advance_len) = match find_newline(chunk) {
-                Some(idx) => (&chunk[..idx], idx + 1),
-                None => {
-                    // If we're not at EOF, then we can't do anything else right now.
-                    if !is_eof {
-                        break;
-                    }
-
-                    // If we're at EOF and we require the delimiter, then this is an invalid frame.
-                    if self.required_on_eof {
-                        return Err(FramingError::InvalidFrame {
-                            buffer_len: buf.remaining(),
-                        });
-                    }
-
-                    (chunk, chunk.len())
+            None => {
+                // If we're not at EOF, then we can't do anything else right now.
+                if !is_eof {
+                    return Ok(None);
                 }
-            };
 
-            // Pass the frame to the inner decoder.
-            //
-            // We specifically advance the buffer before checking the result, just to make sure we don't forget to
-            // advance it.
-            let frame_len = frame.len();
-            let decode_result = self.inner.decode(&mut frame, events).context(FailedToDecode);
-            buf.advance(advance_len);
+                // If we're at EOF and we require the delimiter, then this is an invalid frame.
+                if self.required_on_eof {
+                    return Err(FramingError::InvalidFrame {
+                        buffer_len: buf.remaining(),
+                    });
+                }
 
-            let event_count = decode_result?;
-            trace!(frame_len, event_count, "Decoded frame.");
-
-            // TODO: Emit a metric if `event_count` is zero, since that means we've decoded zero events _without_ an
-            // error. In some cases, this is entirely fine (e.g. DogStatsD couldn't resolve the context due to string
-            // interner being full) and so we don't want to emit an error -- it's intentional! -- but we should still
-            // emit a metric to track that it's happening.
-
-            events_decoded += event_count;
+                Ok(Some(buf.copy_to_bytes(chunk.len())))
+            }
         }
-
-        Ok(events_decoded)
-    }
-}
-
-impl<D> Decoder for NewlineFraming<D>
-where
-    D: Decoder + 'static,
-{
-    type Error = FramingError<D>;
-
-    fn decode<B: ReadIoBuffer>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error> {
-        self.decode_inner(buf, events, false)
-    }
-
-    fn decode_eof<B: ReadIoBuffer>(&mut self, buf: &mut B, events: &mut EventBuffer) -> Result<usize, Self::Error> {
-        self.decode_inner(buf, events, true)
     }
 }
 

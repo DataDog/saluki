@@ -6,10 +6,11 @@ use std::{
 
 use crate::{
     allocator::{AllocationGroupRegistry, AllocationGroupToken},
+    api::MemoryAPIHandler,
     BoundsVerifier, ComponentBounds, MemoryBounds, MemoryGrant, VerifiedBounds, VerifierError,
 };
 
-struct ComponentMetadata {
+pub(crate) struct ComponentMetadata {
     full_name: Option<String>,
     bounds: ComponentBounds,
     token: Option<AllocationGroupToken>,
@@ -26,7 +27,7 @@ impl ComponentMetadata {
         }
     }
 
-    fn get_or_create<S>(&mut self, name: S) -> Arc<Mutex<Self>>
+    pub fn get_or_create<S>(&mut self, name: S) -> Arc<Mutex<Self>>
     where
         S: AsRef<str>,
     {
@@ -35,7 +36,7 @@ impl ComponentMetadata {
         // This lets us handle names which refer to a target nested component instead of having to chain a ton of calls
         // together.
         let name = name.as_ref();
-        let (current_level_name, remaining_name) = match name.split_once('/') {
+        let (current_level_name, remaining_name) = match name.split_once('.') {
             Some((current_level_name, remaining_name)) => (current_level_name, Some(remaining_name)),
             None => (name, None),
         };
@@ -96,7 +97,11 @@ impl ComponentMetadata {
         }
     }
 
-    fn as_bounds(&self) -> ComponentBounds {
+    pub fn self_bounds(&self) -> &ComponentBounds {
+        &self.bounds
+    }
+
+    pub fn as_bounds(&self) -> ComponentBounds {
         let mut bounds = ComponentBounds::default();
         bounds.self_firm_limit_bytes = self.bounds.self_firm_limit_bytes;
         bounds.self_minimum_required_bytes = self.bounds.self_minimum_required_bytes;
@@ -154,7 +159,7 @@ impl ComponentRegistry {
     /// nested form is given, each component in the path will be created if it doesn't exist.
     ///
     /// Returns a `ComponentRegistry` scoped to the component.
-    pub fn get_or_create<S>(&mut self, name: S) -> Self
+    pub fn get_or_create<S>(&self, name: S) -> Self
     where
         S: AsRef<str>,
     {
@@ -197,6 +202,15 @@ impl ComponentRegistry {
     pub fn verify_bounds(&mut self, initial_grant: MemoryGrant) -> Result<VerifiedBounds, VerifierError> {
         let bounds = self.inner.lock().unwrap().as_bounds();
         BoundsVerifier::new(initial_grant, bounds).verify()
+    }
+
+    /// Gets an API handler for reporting the memory bounds and usage of all components.
+    ///
+    /// This handler can be used to register routes on an [`APIBuilder`][saluki_api::APIBuilder] to expose the memory
+    /// bounds and usage of all registered components. See [`HealthAPIHandler`] for more information about routes and
+    /// responses.
+    pub fn api_handler(&self) -> MemoryAPIHandler {
+        MemoryAPIHandler::from_state(Arc::clone(&self.inner))
     }
 }
 

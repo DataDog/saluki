@@ -6,21 +6,18 @@ use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_core::{components::transforms::*, constants::datadog::*, topology::interconnect::EventBuffer};
-use saluki_env::{
-    workload::{EntityId, TagCardinality},
-    EnvironmentProvider, WorkloadProvider,
-};
+use saluki_env::{workload::EntityId, EnvironmentProvider, WorkloadProvider};
 use saluki_error::GenericError;
 use saluki_event::{
-    metric::{Metric, MetricOrigin, OriginEntity},
+    metric::{Metric, MetricOrigin, OriginEntity, OriginTagCardinality},
     Event,
 };
 use serde::Deserialize;
 use stringtheory::MetaString;
 use tracing::trace;
 
-const fn default_tag_cardinality() -> TagCardinality {
-    TagCardinality::Low
+const fn default_tag_cardinality() -> OriginTagCardinality {
+    OriginTagCardinality::Low
 }
 
 /// Origin Enrichment synchronous transform.
@@ -52,7 +49,7 @@ pub struct OriginEnrichmentConfiguration<E = ()> {
 
     /// The default cardinality of tags to enrich metrics with.
     #[serde(rename = "dogstatsd_tag_cardinality", default = "default_tag_cardinality")]
-    tag_cardinality: TagCardinality,
+    tag_cardinality: OriginTagCardinality,
 
     /// Whether or not to use the unified origin detection behavior.
     ///
@@ -115,7 +112,7 @@ pub struct OriginEnrichment<E> {
     env_provider: E,
     entity_id_precedence: bool,
     origin_detection_unified: bool,
-    tag_cardinality: TagCardinality,
+    tag_cardinality: OriginTagCardinality,
 }
 
 impl<E> OriginEnrichment<E>
@@ -136,10 +133,7 @@ where
         let maybe_container_id = origin_entity.container_id().and_then(EntityId::from_raw_container_id);
         let maybe_origin_pid = origin_entity.process_id().map(EntityId::ContainerPid);
 
-        let tag_cardinality = origin_entity
-            .cardinality()
-            .and_then(TagCardinality::parse)
-            .unwrap_or(self.tag_cardinality);
+        let tag_cardinality = origin_entity.cardinality().unwrap_or(self.tag_cardinality);
 
         if !self.origin_detection_unified {
             // If we discovered an entity ID via origin detection, and no client-provided entity ID was provided (or it was,

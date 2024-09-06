@@ -1,6 +1,6 @@
 use saluki_context::BorrowedTag;
 use saluki_core::constants::datadog::*;
-use saluki_event::metric::{MetricMetadata, MetricOrigin};
+use saluki_event::metric::{MetricMetadata, MetricOrigin, OriginTagCardinality};
 use saluki_io::deser::codec::dogstatsd::{InterceptAction, TagMetadataInterceptor};
 
 /// An interceptor that handles tags in a Datadog Agent-like way.
@@ -31,7 +31,9 @@ impl TagMetadataInterceptor for AgentLikeTagMetadataInterceptor {
                 metadata.set_origin(MetricOrigin::jmx_check(jmx_check_name));
             }
             (Some(CARDINALITY_TAG_KEY), Some(value)) => {
-                metadata.origin_entity_mut().set_cardinality(value);
+                if let Ok(cardinality) = OriginTagCardinality::try_from(value) {
+                    metadata.origin_entity_mut().set_cardinality(cardinality);
+                }
             }
             _ => {}
         }

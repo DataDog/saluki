@@ -4,6 +4,11 @@ use tracing::{debug, error};
 
 use super::metadata::MetadataOperation;
 
+#[cfg(target_os = "linux")]
+mod cgroups;
+#[cfg(target_os = "linux")]
+pub use self::cgroups::CgroupsMetadataCollector;
+
 mod containerd;
 pub use self::containerd::ContainerdMetadataCollector;
 

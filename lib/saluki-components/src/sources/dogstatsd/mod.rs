@@ -2,8 +2,10 @@ use std::num::NonZeroUsize;
 use std::sync::LazyLock;
 
 use async_trait::async_trait;
+use bytes::{Buf, BufMut};
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use metrics::{Counter, Histogram};
 use saluki_config::GenericConfiguration;
 use saluki_context::ContextResolver;
 use saluki_core::{
@@ -11,6 +13,7 @@ use saluki_core::{
     pooling::{FixedSizeObjectPool, ObjectPool as _},
     spawn_traced,
     topology::{
+        interconnect::EventBuffer,
         shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
         OutputDefinition,
     },
@@ -20,12 +23,12 @@ use saluki_event::{DataType, Event};
 use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, BytesBuffer},
     deser::{
-        codec::{DogstatsdCodec, DogstatsdCodecConfiguration},
-        Deserializer, DeserializerBuilder, DeserializerError,
+        codec::{dogstatsd::ParseError, DogstatsdCodec, DogstatsdCodecConfiguration},
+        framing::FramerExt as _,
     },
     net::{
         listener::{Listener, ListenerError},
-        ConnectionAddress, ListenAddress,
+        ConnectionAddress, ListenAddress, Stream,
     },
 };
 use serde::Deserialize;
@@ -35,7 +38,7 @@ use tokio::select;
 use tracing::{debug, error, info, trace};
 
 mod framer;
-use self::framer::{get_framer, DogStatsDMultiFraming};
+use self::framer::{get_framer, DsdFramer};
 
 mod interceptor;
 use self::interceptor::AgentLikeTagMetadataInterceptor;
@@ -285,10 +288,12 @@ impl MemoryBounds for DogStatsDConfiguration {
 }
 
 struct HandlerContext {
-    shutdown_handle: DynamicShutdownHandle,
     listen_addr: String,
     origin_detection: bool,
-    deserializer: Deserializer<DogStatsDMultiFraming, FixedSizeObjectPool<BytesBuffer>>,
+    framer: DsdFramer,
+    codec: DogstatsdCodec<AgentLikeTagMetadataInterceptor>,
+    io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
+    metrics: Metrics,
 }
 
 struct ListenerContext {
@@ -306,17 +311,56 @@ pub struct DogStatsD {
     origin_detection: bool,
 }
 
+struct Metrics {
+    events_received: Counter,
+    bytes_received: Counter,
+    bytes_received_size: Histogram,
+    decoder_errors: Counter,
+}
+
+impl Metrics {
+    fn events_received(&self) -> &Counter {
+        &self.events_received
+    }
+
+    fn bytes_received(&self) -> &Counter {
+        &self.bytes_received
+    }
+
+    fn bytes_received_size(&self) -> &Histogram {
+        &self.bytes_received_size
+    }
+
+    fn decoder_errors(&self) -> &Counter {
+        &self.decoder_errors
+    }
+}
+
+fn build_metrics(builder: MetricsBuilder) -> Metrics {
+    Metrics {
+        events_received: builder.register_counter("component_events_received_total"),
+        bytes_received: builder.register_counter("component_bytes_received_total"),
+        bytes_received_size: builder.register_histogram("component_bytes_received_size"),
+        decoder_errors: builder.register_counter_with_labels("component_errors_total", &[("error_type", "decode")]),
+    }
+}
+
 #[async_trait]
 impl Source for DogStatsD {
     async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), ()> {
-        let global_shutdown = context
-            .take_shutdown_handle()
-            .expect("should never fail to take shutdown handle");
+        let mut global_shutdown = context.take_shutdown_handle();
+        let mut health = context.take_health_handle();
 
         let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
         // For each listener, spawn a dedicated task to run it.
         for listener in self.listeners {
+            // TODO: Create a health handle for each listener.
+            //
+            // We need to rework `HealthRegistry` to look a little more like `ComponentRegistry` so that we can have it
+            // already be scoped properly, otherwise all we can do here at present is either have a relative name, like
+            // `uds-stream`, or try and hardcode the full component name, which we will inevitably forget to update if
+            // we tweak the topology configuration, etc.
             let listener_context = ListenerContext {
                 shutdown_handle: listener_shutdown_coordinator.register(),
                 listener,
@@ -328,10 +372,23 @@ impl Source for DogStatsD {
             spawn_traced(process_listener(context.clone(), listener_context));
         }
 
+        health.mark_ready();
         info!("DogStatsD source started.");
 
         // Wait for the global shutdown signal, then notify listeners to shutdown.
-        global_shutdown.await;
+        //
+        // We also handle liveness here, which doesn't really matter for _this_ task, since the real work is happening
+        // in the listeners, but we need to satisfy the health checker.
+        loop {
+            select! {
+                _ = &mut global_shutdown => {
+                    debug!("Received shutdown signal.");
+                    break
+                },
+                _ = health.live() => continue,
+            }
+        }
+
         info!("Stopping DogStatsD source...");
 
         listener_shutdown_coordinator.shutdown().await;
@@ -368,16 +425,14 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
                     debug!(%listen_addr, "Spawning new stream handler.");
 
                     let handler_context = HandlerContext {
-                        shutdown_handle: stream_shutdown_coordinator.register(),
                         listen_addr: listen_addr.to_string(),
                         origin_detection,
-                        deserializer: DeserializerBuilder::new()
-                            .with_framer_and_decoder(get_framer(&listen_addr), codec.clone())
-                            .with_buffer_pool(io_buffer_pool.clone())
-                            .with_metrics_builder(MetricsBuilder::from_component_context(source_context.component_context()))
-                            .into_deserializer(stream),
+                        framer: get_framer(&listen_addr),
+                        codec: codec.clone(),
+                        io_buffer_pool: io_buffer_pool.clone(),
+                        metrics: build_metrics(MetricsBuilder::from_component_context(source_context.component_context())),
                     };
-                    spawn_traced(process_stream(source_context.clone(), handler_context));
+                    spawn_traced(process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register()));
                 }
                 Err(e) => {
                     error!(%listen_addr, error = %e, "Failed to accept connection. Stopping listener.");
@@ -392,108 +447,188 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
     info!(%listen_addr, "DogStatsD listener stopped.");
 }
 
-async fn process_stream(source_context: SourceContext, handler_context: HandlerContext) {
-    let HandlerContext {
-        shutdown_handle,
-        listen_addr,
-        origin_detection,
-        deserializer,
-    } = handler_context;
+async fn process_stream(
+    stream: Stream, source_context: SourceContext, handler_context: HandlerContext,
+    shutdown_handle: DynamicShutdownHandle,
+) {
     tokio::pin!(shutdown_handle);
 
     select! {
         _ = &mut shutdown_handle => {
             debug!("Stream handler received shutdown signal.");
         },
-        _ = drive_stream(source_context, listen_addr, origin_detection, deserializer) => {},
+        _ = drive_stream(stream, source_context, handler_context) => {},
     }
 }
 
-async fn drive_stream(
-    source_context: SourceContext, listen_addr: String, origin_detection: bool,
-    mut deserializer: Deserializer<DogStatsDMultiFraming, FixedSizeObjectPool<BytesBuffer>>,
-) {
+async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler_context: HandlerContext) {
+    let HandlerContext {
+        listen_addr,
+        origin_detection,
+        mut framer,
+        mut codec,
+        io_buffer_pool,
+        metrics,
+        ..
+    } = handler_context;
+
     loop {
+        let mut eof = false;
+        // let mut eof_addr = None;
+
         source_context.memory_limiter().wait_for_capacity().await;
         let mut event_buffer = source_context.event_buffer_pool().acquire().await;
 
-        match deserializer.decode(&mut event_buffer).await {
-            // No events decoded. Connection is done.
-            Ok((0, peer_addr)) => {
-                trace!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
+        let mut buffer = io_buffer_pool.acquire().await;
+        debug!(capacity = buffer.remaining_mut(), "Acquired buffer for decoding.");
+
+        // If our buffer is full, we can't do any reads.
+        if !buffer.has_remaining_mut() {
+            // try to get a new buffer on the next iteration?
+            error!("Newly acquired buffer has no capacity. This should never happen.");
+            continue;
+        }
+
+        // Try filling our buffer from the underlying reader first.
+        debug!("About to receive data from the stream.");
+        let (bytes_read, peer_addr) = match stream.receive(&mut buffer).await {
+            Ok((bytes_read, peer_addr)) => (bytes_read, peer_addr),
+            Err(error) => {
+                error!(%listen_addr, %error, "I/O error while decoding. Stopping stream.");
                 break;
             }
-            // Got events. Forward them.
-            Ok((n, peer_addr)) => {
-                // We do one optional enrichment step here, which is to add the client's socket credentials as a tag
-                // on each metric, if they came over UDS. This would then be utilized downstream in the pipeline by
-                // origin enrichment, if present.
-                if origin_detection {
-                    if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
-                        for event in &mut event_buffer {
-                            if let Some(metric) = event.try_as_metric_mut() {
-                                metric
-                                    .metadata_mut()
-                                    .origin_entity_mut()
-                                    .set_process_id(creds.pid as u32);
-                            }
-                        }
-                    }
-                }
+        };
 
-                // Extract eventd events only if at least one is present in the event buffer.
-                let maybe_eventd_event_buffer = match event_buffer.has_data_type(DataType::EventD) {
-                    true => {
-                        let mut eventd_event_buffer = source_context.event_buffer_pool().acquire().await;
-                        eventd_event_buffer.extend(event_buffer.extract(Event::is_eventd));
-                        Some(eventd_event_buffer)
-                    }
-                    false => None,
-                };
+        if bytes_read == 0 {
+            eof = true;
+        }
 
-                // Extract service check events only if at least one is present in the event buffer.
-                let maybe_service_checks_event_buffer = match event_buffer.has_data_type(DataType::ServiceCheck) {
-                    true => {
-                        let mut service_check_event_buffer = source_context.event_buffer_pool().acquire().await;
-                        service_check_event_buffer.extend(event_buffer.extract(Event::is_service_check));
-                        Some(service_check_event_buffer)
-                    }
-                    false => None,
-                };
+        metrics.bytes_received().increment(bytes_read as u64);
+        metrics.bytes_received_size().record(bytes_read as f64);
 
-                trace!(%listen_addr, %peer_addr, events_len = n, "Forwarding events.");
+        // When we're actually at EOF, or we're dealing with a connectionless stream, we try to decode in EOF mode.
+        //
+        // For connectionless streams, we always try to decode the buffer as if it's EOF, since it effectively _is_
+        // always the end of file after a receive. For connection-oriented streams, we only want to do this once we've
+        // actually hit true EOF.
+        let reached_eof = eof || stream.is_connectionless();
 
-                if let Err(e) = source_context.forwarder().forward_named("metrics", event_buffer).await {
-                    error!(%listen_addr, %peer_addr, error = %e, "Failed to forward metric events.");
-                }
+        debug!(
+            chunk_len = buffer.chunk().len(),
+            chunk_cap = buffer.chunk_mut().len(),
+            buffer_len = buffer.remaining(),
+            buffer_cap = buffer.remaining_mut(),
+            eof = reached_eof,
+            "Received {} bytes from stream.",
+            bytes_read
+        );
 
-                if let Some(eventd_event_buffer) = maybe_eventd_event_buffer {
-                    if let Err(e) = source_context
-                        .forwarder()
-                        .forward_named("events", eventd_event_buffer)
-                        .await
+        let mut frames = buffer.framed(&mut framer, reached_eof);
+        loop {
+            match frames.next() {
+                Some(Ok(frame)) => {
+                    trace!(?frame, "Decoded frame.");
+
+                    if let Err(e) =
+                        handle_frame(&frame[..], &mut codec, &mut event_buffer, origin_detection, &peer_addr)
                     {
-                        error!(%listen_addr, %peer_addr, error = %e, "Failed to forward eventd events.");
+                        error!(%listen_addr, error = %e, "Failed to parse frame.");
                     }
                 }
-
-                if let Some(service_checks_event_buffer) = maybe_service_checks_event_buffer {
-                    if let Err(e) = source_context
-                        .forwarder()
-                        .forward_named("service_checks", service_checks_event_buffer)
-                        .await
-                    {
-                        error!(%listen_addr, %peer_addr, error = %e, "Failed to forward service checks events.");
+                Some(Err(e)) => {
+                    error!(error = %e, "Error decoding frame.");
+                    metrics.decoder_errors().increment(1);
+                    break;
+                }
+                None => {
+                    debug!("Not enough data to decode another frame.");
+                    if eof && !stream.is_connectionless() {
+                        trace!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
+                        return;
+                    } else {
+                        break;
                     }
                 }
             }
-            Err(e) => match e {
-                DeserializerError::Io { source } => {
-                    error!(%listen_addr, error = %source, "I/O error while decoding. Stopping stream.");
-                    break;
+        }
+        metrics.events_received().increment(event_buffer.len() as u64);
+        forward_events(event_buffer, &source_context, &peer_addr, &listen_addr).await;
+    }
+}
+
+fn handle_frame(
+    frame: &[u8], codec: &mut DogstatsdCodec<AgentLikeTagMetadataInterceptor>, event_buffer: &mut EventBuffer,
+    origin_detection: bool, peer_addr: &ConnectionAddress,
+) -> Result<(), ParseError> {
+    codec.decode_packet(frame, event_buffer)?;
+
+    // We do one optional enrichment step here, which is to add the client's socket credentials as a tag
+    // on each metric, if they came over UDS. This would then be utilized downstream in the pipeline by
+    // origin enrichment, if present.
+    if origin_detection {
+        if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
+            for event in event_buffer {
+                if let Some(metric) = event.try_as_metric_mut() {
+                    metric
+                        .metadata_mut()
+                        .origin_entity_mut()
+                        .set_process_id(creds.pid as u32);
                 }
-                other => error!(%listen_addr, error = %other, "Failed to decode events."),
-            },
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn forward_events(
+    mut event_buffer: EventBuffer, source_context: &SourceContext, peer_addr: &ConnectionAddress, listen_addr: &str,
+) {
+    let n = event_buffer.len();
+
+    // Extract eventd events only if at least one is present in the event buffer.
+    let maybe_eventd_event_buffer = match event_buffer.has_data_type(DataType::EventD) {
+        true => {
+            let mut eventd_event_buffer = source_context.event_buffer_pool().acquire().await;
+            eventd_event_buffer.extend(event_buffer.extract(Event::is_eventd));
+            Some(eventd_event_buffer)
+        }
+        false => None,
+    };
+
+    // Extract service check events only if at least one is present in the event buffer.
+    let maybe_service_checks_event_buffer = match event_buffer.has_data_type(DataType::ServiceCheck) {
+        true => {
+            let mut service_check_event_buffer = source_context.event_buffer_pool().acquire().await;
+            service_check_event_buffer.extend(event_buffer.extract(Event::is_service_check));
+            Some(service_check_event_buffer)
+        }
+        false => None,
+    };
+
+    trace!(%listen_addr, %peer_addr, events_len = n, "Forwarding events.");
+
+    if let Err(e) = source_context.forwarder().forward_named("metrics", event_buffer).await {
+        error!(%listen_addr, %peer_addr, error = %e, "Failed to forward metric events.");
+    }
+
+    if let Some(eventd_event_buffer) = maybe_eventd_event_buffer {
+        if let Err(e) = source_context
+            .forwarder()
+            .forward_named("events", eventd_event_buffer)
+            .await
+        {
+            error!(%listen_addr, %peer_addr, error = %e, "Failed to forward eventd events.");
+        }
+    }
+
+    if let Some(service_checks_event_buffer) = maybe_service_checks_event_buffer {
+        if let Err(e) = source_context
+            .forwarder()
+            .forward_named("service_checks", service_checks_event_buffer)
+            .await
+        {
+            error!(%listen_addr, %peer_addr, error = %e, "Failed to forward service checks events.");
         }
     }
 }

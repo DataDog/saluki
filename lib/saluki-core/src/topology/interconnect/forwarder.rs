@@ -158,23 +158,11 @@ impl Forwarder {
 mod tests {
     // TODO: Tests asserting we emit metrics, and the right metrics.
 
-    use saluki_context::Context;
-    use saluki_event::{
-        metric::{Metric, MetricMetadata, MetricValue},
-        Event,
-    };
+    use saluki_event::{metric::Metric, Event};
     use tokio_test::{task::spawn as test_spawn, *};
 
     use super::*;
     use crate::topology::ComponentId;
-
-    fn basic_metric() -> Metric {
-        Metric::from_parts(
-            Context::from_static_parts("basic_metric", &["env:dev", "service:foo"]),
-            MetricValue::Counter { value: 42.0 },
-            MetricMetadata::default(),
-        )
-    }
 
     fn create_forwarder(event_buffers: usize) -> (Forwarder, FixedSizeObjectPool<EventBuffer>) {
         let component_context = ComponentId::try_from("forwarder_test")
@@ -197,7 +185,7 @@ mod tests {
         forwarder.add_output(OutputName::Default, tx);
 
         // Create a basic metric event and then forward it.
-        let metric = basic_metric();
+        let metric = Metric::counter("basic_metric", 42.0);
 
         let mut ebuf = ebuf_pool.acquire().await;
         ebuf.push(Event::Metric(metric.clone()));
@@ -225,7 +213,7 @@ mod tests {
         forwarder.add_output(OutputName::Given("metrics".into()), tx);
 
         // Create a basic metric event and then forward it.
-        let metric = basic_metric();
+        let metric = Metric::counter("basic_metric", 42.0);
 
         let mut ebuf = ebuf_pool.acquire().await;
         ebuf.push(Event::Metric(metric.clone()));
@@ -255,7 +243,7 @@ mod tests {
         forwarder.add_output(OutputName::Default, tx2);
 
         // Create a basic metric event and then forward it.
-        let metric = basic_metric();
+        let metric = Metric::counter("basic_metric", 42.0);
 
         let mut ebuf = ebuf_pool.acquire().await;
         ebuf.push(Event::Metric(metric.clone()));
@@ -294,7 +282,7 @@ mod tests {
         forwarder.add_output(OutputName::Given("metrics".into()), tx2);
 
         // Create a basic metric event and then forward it.
-        let metric = basic_metric();
+        let metric = Metric::counter("basic_metric", 42.0);
 
         let mut ebuf = ebuf_pool.acquire().await;
         ebuf.push(Event::Metric(metric.clone()));
@@ -328,7 +316,7 @@ mod tests {
         let (forwarder, ebuf_pool) = create_forwarder(1);
 
         // Create a basic metric event and then forward it.
-        let metric = basic_metric();
+        let metric = Metric::counter("basic_metric", 42.0);
 
         let mut ebuf = ebuf_pool.acquire().await;
         ebuf.push(Event::Metric(metric.clone()));
@@ -343,7 +331,7 @@ mod tests {
         let (forwarder, ebuf_pool) = create_forwarder(1);
 
         // Create a basic metric event and then forward it.
-        let metric = basic_metric();
+        let metric = Metric::counter("basic_metric", 42.0);
 
         let mut ebuf = ebuf_pool.acquire().await;
         ebuf.push(Event::Metric(metric.clone()));
@@ -371,7 +359,7 @@ mod tests {
         //
         // Before forwarding, we'll acquire the second event buffer in the pool to ensure that the pool is empty, which
         // should allow us to control the blocking behavior of the forwarder.
-        let metric = basic_metric();
+        let metric = Metric::counter("basic_metric", 42.0);
 
         let mut acquire_ebuf1 = test_spawn(ebuf_pool.acquire());
         let mut ebuf1 = assert_ready!(acquire_ebuf1.poll());

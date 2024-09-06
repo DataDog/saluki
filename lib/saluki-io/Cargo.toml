@@ -38,6 +38,7 @@ saluki-core = { workspace = true }
 saluki-error = { workspace = true }
 saluki-event = { workspace = true }
 saluki-metrics = { workspace = true }
+saluki-tls = { workspace = true }
 serde = { workspace = true }
 simdutf8 = { workspace = true, features = ["std"] }
 slab = { workspace = true }

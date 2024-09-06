@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use memory_accounting::{allocator::Track as _, ComponentRegistry};
-use saluki_error::GenericError;
-use snafu::{ResultExt as _, Snafu};
+use saluki_error::{ErrorContext as _, GenericError};
+use snafu::Snafu;
 
 use super::{
     built::BuiltTopology,
@@ -76,16 +76,19 @@ impl TopologyBlueprint {
     /// ## Errors
     ///
     /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
-    pub fn add_source<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, BlueprintError>
+    pub fn add_source<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, GenericError>
     where
         I: AsRef<str>,
         B: SourceBuilder + 'static,
     {
-        let component_id = self.graph.add_source(component_id, &builder).context(InvalidGraph)?;
+        let component_id = self
+            .graph
+            .add_source(component_id, &builder)
+            .error_context("Failed to build/validate topology graph.")?;
 
         let mut source_registry = self
             .component_registry
-            .get_or_create(format!("components/sources/{}", component_id));
+            .get_or_create(format!("components.sources.{}", component_id));
         let mut bounds_builder = source_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
 
@@ -102,18 +105,21 @@ impl TopologyBlueprint {
     /// ## Errors
     ///
     /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
-    pub fn add_transform<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, BlueprintError>
+    pub fn add_transform<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, GenericError>
     where
         I: AsRef<str>,
         B: TransformBuilder + 'static,
     {
-        let component_id = self.graph.add_transform(component_id, &builder).context(InvalidGraph)?;
+        let component_id = self
+            .graph
+            .add_transform(component_id, &builder)
+            .error_context("Failed to build/validate topology graph.")?;
 
         self.update_bounds_for_interconnect();
 
         let mut transform_registry = self
             .component_registry
-            .get_or_create(format!("components/transforms/{}", component_id));
+            .get_or_create(format!("components.transforms.{}", component_id));
         let mut bounds_builder = transform_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
 
@@ -130,7 +136,7 @@ impl TopologyBlueprint {
     /// ## Errors
     ///
     /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
-    pub fn add_destination<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, BlueprintError>
+    pub fn add_destination<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, GenericError>
     where
         I: AsRef<str>,
         B: DestinationBuilder + 'static,
@@ -138,13 +144,13 @@ impl TopologyBlueprint {
         let component_id = self
             .graph
             .add_destination(component_id, &builder)
-            .context(InvalidGraph)?;
+            .error_context("Failed to build/validate topology graph.")?;
 
         self.update_bounds_for_interconnect();
 
         let mut destination_registry = self
             .component_registry
-            .get_or_create(format!("components/destinations/{}", component_id));
+            .get_or_create(format!("components.destinations.{}", component_id));
         let mut bounds_builder = destination_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
 
@@ -164,7 +170,7 @@ impl TopologyBlueprint {
     /// types between one of the source/destination component pairs is incompatible, an error is returned.
     pub fn connect_component<DI, SI, T>(
         &mut self, destination_component_id: DI, source_output_component_ids: SI,
-    ) -> Result<&mut Self, BlueprintError>
+    ) -> Result<&mut Self, GenericError>
     where
         DI: AsRef<str>,
         SI: IntoIterator<Item = T>,
@@ -173,7 +179,7 @@ impl TopologyBlueprint {
         for source_output_component_id in source_output_component_ids.into_iter() {
             self.graph
                 .add_edge(source_output_component_id, destination_component_id.as_ref())
-                .context(InvalidGraph)?;
+                .error_context("Failed to build/validate topology graph.")?;
         }
 
         Ok(self)
@@ -184,8 +190,10 @@ impl TopologyBlueprint {
     /// ## Errors
     ///
     /// If any of the components could not be built, an error is returned.
-    pub async fn build(mut self) -> Result<BuiltTopology, BlueprintError> {
-        self.graph.validate().context(InvalidGraph)?;
+    pub async fn build(mut self) -> Result<BuiltTopology, GenericError> {
+        self.graph
+            .validate()
+            .error_context("Failed to build/validate topology graph.")?;
 
         let mut sources = HashMap::new();
         for (id, builder) in self.sources {
@@ -193,15 +201,15 @@ impl TopologyBlueprint {
             let allocation_token = component_registry.token();
 
             let _guard = allocation_token.enter();
-            match builder.build().await {
-                Ok(source) => {
-                    sources.insert(
-                        id,
-                        RegisteredComponent::new(source.in_current_allocation_group(), component_registry),
-                    );
-                }
-                Err(e) => return Err(BlueprintError::FailedToBuildComponent { id, source: e }),
-            }
+            let source = builder
+                .build()
+                .await
+                .with_error_context(|| format!("Failed to build source '{}'.", id))?;
+
+            sources.insert(
+                id,
+                RegisteredComponent::new(source.in_current_allocation_group(), component_registry),
+            );
         }
 
         let mut transforms = HashMap::new();
@@ -210,15 +218,15 @@ impl TopologyBlueprint {
             let allocation_token = component_registry.token();
 
             let _guard = allocation_token.enter();
-            match builder.build().await {
-                Ok(transform) => {
-                    transforms.insert(
-                        id,
-                        RegisteredComponent::new(transform.in_current_allocation_group(), component_registry),
-                    );
-                }
-                Err(e) => return Err(BlueprintError::FailedToBuildComponent { id, source: e }),
-            }
+            let transform = builder
+                .build()
+                .await
+                .with_error_context(|| format!("Failed to build transform '{}'.", id))?;
+
+            transforms.insert(
+                id,
+                RegisteredComponent::new(transform.in_current_allocation_group(), component_registry),
+            );
         }
 
         let mut destinations = HashMap::new();
@@ -227,15 +235,15 @@ impl TopologyBlueprint {
             let allocation_token = component_registry.token();
 
             let _guard = allocation_token.enter();
-            match builder.build().await {
-                Ok(destination) => {
-                    destinations.insert(
-                        id,
-                        RegisteredComponent::new(destination.in_current_allocation_group(), component_registry),
-                    );
-                }
-                Err(e) => return Err(BlueprintError::FailedToBuildComponent { id, source: e }),
-            }
+            let destination = builder
+                .build()
+                .await
+                .with_error_context(|| format!("Failed to build destination '{}'.", id))?;
+
+            destinations.insert(
+                id,
+                RegisteredComponent::new(destination.in_current_allocation_group(), component_registry),
+            );
         }
 
         Ok(BuiltTopology::from_parts(
