@@ -1,6 +1,7 @@
 //! Object pooling.
 use std::{future::Future, sync::Arc};
 
+mod elastic;
 mod fixed;
 
 use saluki_metrics::static_metrics;
