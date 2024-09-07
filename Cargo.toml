@@ -4,6 +4,7 @@ members = [
   "lib/datadog-protos",
   "lib/ddsketch-agent",
   "lib/memory-accounting",
+  "lib/otel-protos",
   "lib/process-memory",
   "lib/saluki-api",
   "lib/saluki-app",
@@ -31,6 +32,7 @@ repository = "https://github.com/DataDog/saluki"
 datadog-protos = { path = "lib/datadog-protos" }
 ddsketch-agent = { path = "lib/ddsketch-agent" }
 memory-accounting = { path = "lib/memory-accounting" }
+otel-protos = { path = "lib/otel-protos" }
 process-memory = { path = "lib/process-memory" }
 saluki-api = { path = "lib/saluki-api" }
 saluki-app = { path = "lib/saluki-app" }

@@ -1790,6 +1790,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "otel-protos"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "prost",
+ "protobuf",
+ "protobuf-codegen",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
 name = "overload"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2488,6 +2500,7 @@ dependencies = [
  "metrics",
  "metrics-util",
  "nom",
+ "otel-protos",
  "paste",
  "pin-project",
  "protobuf",
@@ -2508,6 +2521,8 @@ dependencies = [
  "stringtheory",
  "tokio",
  "tokio-util",
+ "tonic",
+ "tonic-web",
  "tower",
  "tracing",
  "url",
@@ -2665,6 +2680,7 @@ dependencies = [
  "bytes",
  "datadog-protos",
  "ddsketch-agent",
+ "futures",
  "http",
  "http-body",
  "http-body-util",
@@ -2699,6 +2715,7 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tokio-util",
+ "tonic",
  "tower",
  "tracing",
  "url",
@@ -3283,6 +3300,26 @@ dependencies = [
  "prost-build",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "tonic-web"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b904b18f914fe88913a9f0d750065b39c9c497e4b2aa05148f2c29a724145541"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "http",
+ "http-body",
+ "http-body-util",
+ "pin-project",
+ "tokio-stream",
+ "tonic",
+ "tower-http",
+ "tower-layer",
+ "tower-service",
+ "tracing",
 ]
 
 [[package]]

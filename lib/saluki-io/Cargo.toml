@@ -15,6 +15,7 @@ bitmask-enum = { workspace = true }
 bytes = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
+futures = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 hyper = { workspace = true, features = ["client", "server"] }
@@ -46,6 +47,7 @@ socket2 = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
 tokio-util = { workspace = true }
+tonic = { workspace = true, features = ["transport"] }
 tower = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }

@@ -85,6 +85,18 @@ impl AsyncWrite for Connection {
     }
 }
 
+impl tonic::transport::server::Connected for Connection {
+    type ConnectInfo = ConnectionAddress;
+
+    fn connect_info(&self) -> Self::ConnectInfo {
+        match self {
+            Self::Tcp(_, addr) => ConnectionAddress::SocketLike(*addr),
+            #[cfg(unix)]
+            Self::Unix(_) => ConnectionAddress::ProcessLike(None),
+        }
+    }
+}
+
 /// A connectionless socket.
 ///
 /// This type wraps network sockets that operate in a connectionless manner, such as UDP or Unix domain sockets in
