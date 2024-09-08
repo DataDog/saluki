@@ -16,9 +16,8 @@ use saluki_error::GenericError;
 use saluki_tls::ClientTLSConfigBuilder;
 use tower::{BoxError, Service};
 
-use crate::buf::ChunkedBuffer;
-
 use super::replay::ReplayBody;
+use crate::buf::ChunkedBuffer;
 
 pub type ChunkedHttpsClient<O> = HttpClient<HttpsConnector<HttpConnector>, ReplayBody<ChunkedBuffer<O>>>;
 
