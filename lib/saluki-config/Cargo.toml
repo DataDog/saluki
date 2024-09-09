@@ -9,5 +9,7 @@ repository = { workspace = true }
 figment = { workspace = true, features = ["env", "json", "yaml"] }
 saluki-error = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 snafu = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "process", "time"] }
 tracing = { workspace = true }

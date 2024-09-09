@@ -75,6 +75,8 @@ async fn run(started: Instant) -> Result<(), GenericError> {
     let configuration = ConfigurationLoader::default()
         .try_from_yaml("/etc/datadog-agent/datadog.yaml")
         .from_environment("DD")?
+        .with_default_secrets_resolution()
+        .await?
         .into_generic()?;
 
     let component_registry = ComponentRegistry::default();
