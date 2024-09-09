@@ -252,9 +252,11 @@ mod tests {
     const TEST_BUF_GREATER_THAN_CHUNK_SIZED: &[u8] = b"hello world, here i come!";
 
     fn create_buffer_pool(chunks: usize, chunk_size: usize) -> (Arc<FixedSizeObjectPool<BytesBuffer>>, usize) {
-        let buffer_pool = Arc::new(FixedSizeObjectPool::<BytesBuffer>::with_builder(chunks, || {
-            FixedSizeVec::with_capacity(chunk_size)
-        }));
+        let buffer_pool = Arc::new(FixedSizeObjectPool::<BytesBuffer>::with_builder(
+            "chunked_test",
+            chunks,
+            || FixedSizeVec::with_capacity(chunk_size),
+        ));
 
         (buffer_pool, chunks * chunk_size)
     }

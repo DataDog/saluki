@@ -158,6 +158,7 @@ impl<TMI: TagMetadataInterceptor> DogstatsdCodec<TMI> {
     fn decode_metric(&mut self, data: &[u8], events: &mut EventBuffer) -> Result<usize, ParseError> {
         // Decode the payload and get the representative parts of the metric.
         let (_remaining, (metric_name, tags_iter, values, mut metadata)) = parse_dogstatsd_metric(data, &self.config)?;
+        let values_len = values.len();
 
         // Build our filtered tag iterator, which we'll use to skip intercepted/dropped tags when building the context.
         let filtered_tags_iter = TagFilterer::new(tags_iter.clone(), &self.tag_metadata_interceptor);
@@ -180,7 +181,7 @@ impl<TMI: TagMetadataInterceptor> DogstatsdCodec<TMI> {
 
         events.push(Event::Metric(Metric::from_parts(context, values, metadata)));
 
-        Ok(1)
+        Ok(values_len)
     }
 
     fn decode_event(&self, data: &[u8], events: &mut EventBuffer) -> Result<usize, ParseError> {
