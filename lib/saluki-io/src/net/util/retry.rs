@@ -26,9 +26,6 @@ pub enum BackoffRng {
     SecureDefault,
 
     /// A shared random number generator.
-    ///
-    /// Useful for testing purposes, where the RNG must be overridden to add determinism. The RNG is shared atomically
-    /// behind a mutex, allowing it to be clone, so care should be taken to never use this outside of tests.
     Shared(Arc<Mutex<Box<dyn RngCore + Send + Sync>>>),
 }
 
@@ -71,7 +68,7 @@ impl RngCore for BackoffRng {
     }
 }
 
-/// An exponential backoff strategy
+/// An exponential backoff strategy.
 ///
 /// This backoff strategy provides backoff durations that increase exponentially based on a user-provided error count,
 /// with a minimum and maximum bound on the duration. Additionally, jitter can be added to the backoff duration in order
@@ -120,7 +117,7 @@ impl ExponentialBackoff {
     /// Sets the random number generator to use for calculating jittered backoff durations.
     ///
     /// Useful for testing purposes, where the RNG must be overridden to add determinism. The RNG is shared atomically
-    /// behind a mutex, allowing it to be clone, so care should be taken to never use this outside of tests.
+    /// behind a mutex, allowing it to be cloned, so care should be taken to never use this outside of tests.
     ///
     /// Defaults to a lazily-initialized, thread-local CSPRNG seeded by the operating system.
     pub fn with_rng<R>(self, rng: R) -> Self
