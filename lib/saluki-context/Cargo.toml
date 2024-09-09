@@ -9,6 +9,7 @@ repository = { workspace = true }
 ahash = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
 metrics = { workspace = true }
+papaya = { workspace = true }
 saluki-metrics = { workspace = true }
 stringtheory = { workspace = true }
 tracing = { workspace = true }

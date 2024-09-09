@@ -245,8 +245,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
         let context_interner = FixedSizeInterner::new(context_string_interner_size);
         let context_resolver = ContextResolver::from_interner("dogstatsd", context_interner)
-            .with_heap_allocations(self.allow_context_heap_allocations)
-            .with_background_expiration();
+            .with_heap_allocations(self.allow_context_heap_allocations);
 
         let codec_config = DogstatsdCodecConfiguration::default().with_timestamps(self.no_aggregation_pipeline_support);
         let codec = DogstatsdCodec::from_context_resolver(context_resolver)

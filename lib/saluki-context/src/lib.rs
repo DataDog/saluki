@@ -8,15 +8,15 @@ use std::{
     hash::{self, BuildHasher, Hash as _, Hasher as _},
     num::NonZeroUsize,
     ops::Deref as _,
-    sync::{Arc, OnceLock, RwLock},
-    time::Duration,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, OnceLock,
+    },
 };
 
-use indexmap::{Equivalent, IndexSet};
-use metrics::Gauge;
+use papaya::HashMap;
 use saluki_metrics::static_metrics;
 use stringtheory::{interning::FixedSizeInterner, MetaString};
-use tracing::trace;
 
 static DIRTY_CONTEXT_HASH: OnceLock<u64> = OnceLock::new();
 
@@ -39,7 +39,8 @@ type PrehashedHashSet = HashSet<u64, NoopU64Hasher>;
 
 #[derive(Debug)]
 struct State {
-    resolved_contexts: IndexSet<Context, ahash::RandomState>,
+    resolved_contexts: HashMap<u64, Context, ahash::RandomState>,
+    metrics: ContextMetrics,
 }
 
 /// A centralized store for resolved contexts.
@@ -67,12 +68,10 @@ struct State {
 /// components.
 #[derive(Debug)]
 pub struct ContextResolver<const SHARD_FACTOR: usize = 8> {
-    context_metrics: ContextMetrics,
     interner: FixedSizeInterner<SHARD_FACTOR>,
-    state: Arc<RwLock<State>>,
+    state: Arc<State>,
     hash_seen_buffer: PrehashedHashSet,
     allow_heap_allocations: bool,
-    background_expiration_running: bool,
 }
 
 impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
@@ -81,21 +80,17 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
     where
         S: Into<String>,
     {
-        let context_metrics = ContextMetrics::new(name.into());
-
-        context_metrics
-            .interner_capacity_bytes()
-            .set(interner.capacity_bytes() as f64);
+        let metrics = ContextMetrics::new(name.into());
+        metrics.interner_capacity_bytes().set(interner.capacity_bytes() as f64);
 
         Self {
-            context_metrics,
             interner,
-            state: Arc::new(RwLock::new(State {
-                resolved_contexts: IndexSet::with_hasher(ahash::RandomState::new()),
-            })),
+            state: Arc::new(State {
+                resolved_contexts: HashMap::with_hasher(ahash::RandomState::new()),
+                metrics,
+            }),
             hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64Hasher::new()),
             allow_heap_allocations: true,
-            background_expiration_running: false,
         }
     }
 
@@ -121,28 +116,6 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
         self
     }
 
-    /// Enables background expiration of resolved contexts.
-    ///
-    /// This spawns a background thread which incrementally scans the list of resolved contexts and removes "expired"
-    /// ones, where an expired context is one that is no longer actively being used. This continuously happens in small
-    /// chunks, in order to make consistent, incremental progress on removing expired values without unnecessarily
-    /// blocking normal resolving operations for too long.
-    ///
-    /// ## Panics
-    ///
-    /// If background expiration is already configured, this method will panic.
-    pub fn with_background_expiration(mut self) -> Self {
-        if self.background_expiration_running {
-            panic!("Background expiration already configured!");
-        }
-
-        let state = Arc::clone(&self.state);
-        std::thread::spawn(move || run_background_expiration(state));
-
-        self.background_expiration_running = true;
-        self
-    }
-
     fn intern(&self, s: &str) -> Option<MetaString> {
         // First we'll see if we can inline the string, and if we can't, then we try to actually intern it. If interning
         // fails, then we just fall back to allocating a new `MetaString` instance.
@@ -151,7 +124,7 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
             .or_else(|| self.allow_heap_allocations.then(|| MetaString::from(s)))
     }
 
-    fn create_context_from_ref<I, T>(&self, context_ref: ContextRef<'_, I>, active_count: Gauge) -> Option<Context>
+    fn create_context_from_ref<I, T>(&self, context_ref: ContextRef<'_, I>) -> Option<Context>
     where
         I: IntoIterator<Item = T>,
         T: AsRef<str> + hash::Hash + std::fmt::Debug,
@@ -168,7 +141,8 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
                 name,
                 tags,
                 hash: context_ref.hash,
-                active_count,
+                active_refs: AtomicUsize::new(1),
+                resolver: Some(Arc::clone(&self.state)),
             }),
         })
     }
@@ -201,129 +175,63 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
         I: IntoIterator<Item = T>,
         T: AsRef<str> + hash::Hash + std::fmt::Debug,
     {
-        let state = self.state.read().unwrap();
-        match state.resolved_contexts.get(&context_ref) {
-            Some(context) => {
-                self.context_metrics.resolved_existing_context_total().increment(1);
-                Some(context.clone())
+        let context_hash = context_ref.hash;
+        let mut was_existing = true;
+
+        // Try to either find an existing resolved context for this context reference, or create one if it doesn't yet
+        // exist. We do a little scoping here to limit the time we have the context map pinned.
+        let context = {
+            let contexts = self.state.resolved_contexts.pin();
+            match contexts.get(&context_hash) {
+                Some(context) => {
+                    self.state.metrics.resolved_existing_context_total().increment(1);
+                    context.clone()
+                }
+                None => {
+                    // Create the context before we try and insert it.
+                    let new_context = self.create_context_from_ref(context_ref)?;
+
+                    // Now try to insert it, which is where we'll figure out if someone else beat us to it.
+                    let context = contexts.get_or_insert_with(context_hash, || {
+                        was_existing = false;
+                        new_context
+                    });
+                    context.clone()
+                }
             }
-            None => {
-                // Switch from read to write lock.
-                drop(state);
-                let mut state = self.state.write().unwrap();
+        };
 
-                // Create our new context and store it.
-                let active_count = self.context_metrics.active_contexts().clone();
-                let context = self.create_context_from_ref(context_ref, active_count)?;
-                state.resolved_contexts.insert(context.clone());
-
-                // TODO: This is lazily updated during resolve, which means this metric might lag behind the actual
-                // count as interned strings are dropped/reclaimed... but we don't have a way to figure out if a given
-                // `MetaString` is an interned string and if dropping it would actually reclaim the interned string...
-                // so this is our next best option short of instrumenting `FixedSizeInterner` directly.
-                //
-                // We probably want to do that in the future, but this is just a little cleaner without adding extra
-                // fluff to `FixedSizeInterner` which is already complex as-is.
-                self.context_metrics.interner_entries().set(self.interner.len() as f64);
-                self.context_metrics
-                    .interner_len_bytes()
-                    .set(self.interner.len_bytes() as f64);
-                self.context_metrics.resolved_new_context_total().increment(1);
-                self.context_metrics.active_contexts().increment(1);
-
-                Some(context)
-            }
+        // If this was a new context, update our telemetry accordingly.
+        //
+        // TODO: This is lazily updated during resolve, which means this metric might lag behind the actual
+        // count as interned strings are dropped/reclaimed... but we don't have a way to figure out if a given
+        // `MetaString` is an interned string and if dropping it would actually reclaim the interned string...
+        // so this is our next best option short of instrumenting `FixedSizeInterner` directly.
+        //
+        // We probably want to do that in the future, but this is just a little cleaner without adding extra
+        // fluff to `FixedSizeInterner` which is already complex as-is.
+        if !was_existing {
+            self.state.metrics.interner_entries().set(self.interner.len() as f64);
+            self.state
+                .metrics
+                .interner_len_bytes()
+                .set(self.interner.len_bytes() as f64);
+            self.state.metrics.resolved_new_context_total().increment(1);
+            self.state.metrics.active_contexts().increment(1);
         }
+
+        Some(context)
     }
 }
 
 impl<const SHARD_FACTOR: usize> Clone for ContextResolver<SHARD_FACTOR> {
     fn clone(&self) -> Self {
         Self {
-            context_metrics: self.context_metrics.clone(),
             interner: self.interner.clone(),
-            state: self.state.clone(),
+            state: Arc::clone(&self.state),
             hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64Hasher::new()),
             allow_heap_allocations: self.allow_heap_allocations,
-            background_expiration_running: self.background_expiration_running,
         }
-    }
-}
-
-fn run_background_expiration(state: Arc<RwLock<State>>) {
-    // TODO: When there's a ton of contexts to expire, this is actually super slow, in terms of the rate at which we
-    // recover memory.
-
-    // Our expiration logic is pretty straightforward: we iterate over the resolved contexts in small chunks, trying to
-    // do a little bit of work, releasing the lock, sleeping, and then attempting to pick up where we left off before.
-    //
-    // This means that expiration is incremental and makes progress over time, while attempting to not block for long
-    // periods of time.
-
-    const PER_LOOP_ITERATIONS: usize = 100;
-
-    let mut last_check_idx = 0;
-
-    loop {
-        // Sleep for a bit before we start our next iteration.
-        std::thread::sleep(Duration::from_secs(1));
-
-        let mut state_rw = state.write().unwrap();
-
-        let contexts_len = state_rw.resolved_contexts.len();
-        trace!(contexts_len, "Starting context expiration iteration...");
-
-        // If we have no contexts, go back to sleep.
-        if contexts_len == 0 {
-            trace!("No contexts to expire. Sleeping.");
-            continue;
-        }
-
-        // Iterate over the contexts, expiring them if they are no longer active.
-        //
-        // Crucially, this means that we remove contexts if there's only a single strong reference, since that implies
-        // nobody else is holding a reference apart from ourselves.
-        let mut visited_contexts = 0;
-        let mut expired_contexts = 0;
-
-        let mut idx = last_check_idx;
-        while !state_rw.resolved_contexts.is_empty() && visited_contexts < PER_LOOP_ITERATIONS {
-            // If we've hit the end of the set of contexts, wrap back around.
-            if idx >= state_rw.resolved_contexts.len() {
-                idx = 0;
-            }
-
-            // Figure out if we should delete the context at `idx`.
-            //
-            // If the context is no longer active -- i.e. we are the only ones holding a reference to it -- then we can
-            // delete it. We'll only increment `idx` if we don't delete, since the swap remove will place a new element
-            // at the same index, which we'll want to check next.
-            let should_delete = state_rw
-                .resolved_contexts
-                .get_index(idx)
-                .map(|context| Arc::strong_count(&context.inner) == 1)
-                .unwrap_or(false);
-
-            if should_delete {
-                let old_context = state_rw.resolved_contexts.swap_remove_index(idx);
-                drop(old_context);
-
-                expired_contexts += 1;
-            } else {
-                idx += 1;
-            }
-
-            visited_contexts += 1;
-        }
-
-        if expired_contexts > 0 {
-            trace!("Expired {} contexts", expired_contexts);
-        }
-
-        trace!("Finished context expiration iteration.");
-
-        // Track where we left off for next time.
-        last_check_idx = idx;
     }
 }
 
@@ -344,7 +252,8 @@ impl Context {
                 name: MetaString::from_static(name),
                 tags: TagSet::default(),
                 hash,
-                active_count: Gauge::noop(),
+                active_refs: AtomicUsize::new(1),
+                resolver: None,
             }),
         }
     }
@@ -362,7 +271,8 @@ impl Context {
                 name: MetaString::from_static(name),
                 tags: tag_set,
                 hash,
-                active_count: Gauge::noop(),
+                active_refs: AtomicUsize::new(1),
+                resolver: None,
             }),
         }
     }
@@ -398,6 +308,20 @@ impl Context {
 
         let inner = self.inner_mut();
         &mut inner.tags
+    }
+}
+
+impl Drop for Context {
+    fn drop(&mut self) {
+        if self.inner.active_refs.fetch_sub(1, Ordering::AcqRel) == 1 {
+            // The last reference to this context is in the contexts map, so we can stand to remove it.
+            if let Some(resolver) = &self.inner.resolver {
+                resolver.metrics.active_contexts().decrement(1);
+
+                // We're the last reference to this context, so we can drop it from the contexts map.
+                resolver.resolved_contexts.pin().remove(&self.inner.hash);
+            }
+        }
     }
 }
 
@@ -441,27 +365,25 @@ struct ContextInner {
     name: MetaString,
     tags: TagSet,
     hash: u64,
-    active_count: Gauge,
+    active_refs: AtomicUsize,
+    resolver: Option<Arc<State>>,
 }
 
 impl Clone for ContextInner {
     fn clone(&self) -> Self {
         // Increment the context count when cloning the context, since we only get here when we're about to create a
         // brand new context for the purpose of mutating the data... so we have a new context.
-        self.active_count.increment(1);
+        if let Some(resolver) = &self.resolver {
+            resolver.metrics.active_contexts().increment(1);
+        }
 
         Self {
             name: self.name.clone(),
             tags: self.tags.clone(),
             hash: self.hash,
-            active_count: self.active_count.clone(),
+            active_refs: AtomicUsize::new(1),
+            resolver: self.resolver.clone(),
         }
-    }
-}
-
-impl Drop for ContextInner {
-    fn drop(&mut self) {
-        self.active_count.decrement(1);
     }
 }
 
@@ -536,16 +458,6 @@ where
 {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         state.write_u64(self.hash);
-    }
-}
-
-impl<I, T> Equivalent<Context> for ContextRef<'_, I>
-where
-    I: IntoIterator<Item = T>,
-    T: hash::Hash + std::fmt::Debug,
-{
-    fn equivalent(&self, other: &Context) -> bool {
-        self.hash == other.inner.hash
     }
 }
 
@@ -1029,7 +941,8 @@ mod tests {
         let active_contexts = get_gauge_value(&metrics_before, ContextMetrics::active_contexts_name());
         assert_eq!(active_contexts, 1.0);
 
-        // Now drop the context, and observe the active context count drop to zero:
+        // Now drop the context, and the resolver, so that our context is entirely dropped, and observe the active
+        // context count drop to zero:
         drop(context);
         let metrics_after = snapshotter.snapshot().into_vec();
         let active_contexts = get_gauge_value(&metrics_after, ContextMetrics::active_contexts_name());
