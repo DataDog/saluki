@@ -8,19 +8,22 @@ pub use figment::value;
 use figment::{error::Kind, providers::Env, value::Value, Figment};
 use saluki_error::GenericError;
 use serde::Deserialize;
-use snafu::Snafu;
+use snafu::{ResultExt as _, Snafu};
+use tracing::debug;
 
 mod provider;
+mod secrets;
 use self::provider::ResolvedProvider;
 
 /// A configuration error.
 #[derive(Debug, Snafu)]
+#[snafu(context(suffix(false)))]
 pub enum ConfigurationError {
     /// Environment variable prefix was empty.
     #[snafu(display("Environment variable prefix must not be empty."))]
     EmptyPrefix,
 
-    /// Rquested field was missing from the configuration.
+    /// Requested field was missing from the configuration.
     #[snafu(display("Missing field '{}' in configuration. {}", field, help_text))]
     MissingField {
         /// Help text describing how to set the missing field.
@@ -54,10 +57,17 @@ pub enum ConfigurationError {
     },
 
     /// Generic configuration error.
-    #[snafu(display("{}", source))]
+    #[snafu(display("Failed to query configuration."))]
     Generic {
         /// Error source.
         source: GenericError,
+    },
+
+    /// Secrets resolution error.
+    #[snafu(display("Failed to resolve secrets."))]
+    Secrets {
+        /// Error source.
+        source: secrets::Error,
     },
 }
 
@@ -199,6 +209,89 @@ impl ConfigurationLoader {
 
         self.inner = self.inner.admerge(Env::prefixed(&prefix));
         self.lookup_sources.insert(LookupSource::Environment { prefix });
+        Ok(self)
+    }
+
+    /// Resolves secrets in the configuration based on available secret backend configuration.
+    ///
+    /// This will attempt to resolve any secret references (format shown below) in the configuration by using a "secrets
+    /// backend", which is a user-provided command that utilizes a simple JSON-based protocol to accept secrets to
+    /// resolve, and return those resolved secrets, or the errors that occurred during resolving.
+    ///
+    /// ## Configuration
+    ///
+    /// This method uses the existing configuration (see Caveats) to determine the secrets backend configuration. The
+    /// following configuration settings are used:
+    ///
+    /// - `secret_backend_command`: The executable to resolve secrets. (required)
+    /// - `secret_backend_timeout`: The timeout for the secrets backend command, in seconds. (optional, default: 30)
+    ///
+    /// ## Usage
+    ///
+    /// For any value which should be resolved as a secret, the value should be a string in the format of
+    /// `ENC[secret_reference]`. The `secret_reference` portion is the value that will be sent to the backend command
+    /// during resolution. There is no limitation on the format of the `secret_reference` value, so long as it can be
+    /// expressed through the existing configuration sources (YAML, environment variables, etc).
+    ///
+    /// The entire configuration value must match this pattern, and cannot be used to replace only part of a value, so
+    /// values such as `db-ENC[secret_reference]` would not be detected as secrets and thus would not be resolved.
+    ///
+    /// ## Protocol
+    ///
+    /// The executable is expected to accept a JSON object on stdin, with the following format:
+    ///
+    /// ```json
+    /// {
+    ///   "version": "1.0",
+    ///   "secrets": ["key1", "key2"]
+    /// }
+    /// ```
+    ///
+    /// The executable is expected return a JSON object on stdout, with the following format:
+    /// ```json
+    /// {
+    ///   "key1": {
+    ///     "value": "my_secret_password",
+    ///     "error": null
+    ///   },
+    ///   "key2": {
+    ///     "value": null,
+    ///     "error": "could not fetch the secret"
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// If any entry in the response has an `error` value that is anything but `null`, the overall resolution will be
+    /// considered failed.
+    ///
+    /// ## Caveats
+    ///
+    /// ### Time of resolution
+    ///
+    /// Secrets resolution happens at the time this method is called, and only resolves configuration values that are
+    /// already present in the configuration, which means all calls to load configuration (`try_from_yaml`,
+    /// `from_environment`, etc) must be made before calling this method.
+    ///
+    /// ### Sensitive data in error output
+    ///
+    /// Care should be taken to not return sensitive information in either the error output (standard error) of the
+    /// backend command or the `error` field in the JSON response, as these values are logged in order to aid debugging.
+    pub async fn with_default_secrets_resolution(mut self) -> Result<Self, ConfigurationError> {
+        // If no secrets backend is set, we can't resolve secrets, so just return early.
+        if !self.inner.contains("secret_backend_command") {
+            debug!("No secrets backend configured; skipping secrets resolution.");
+            return Ok(self);
+        }
+
+        let resolver_config = self.inner.extract::<secrets::ResolverConfiguration>()?;
+        let resolver = secrets::Resolver::from_configuration(resolver_config)
+            .await
+            .context(Secrets)?;
+
+        let mut provider = secrets::Provider::new();
+        provider.resolve(&resolver, &self.inner).await.context(Secrets)?;
+
+        self.inner = self.inner.admerge(provider);
         Ok(self)
     }
 

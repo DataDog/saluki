@@ -30,7 +30,7 @@ use saluki_io::{
             dogstatsd::{build_metric_metadata_from_packet, MetricPacket, ParsedPacket},
             DogstatsdCodec, DogstatsdCodecConfiguration,
         },
-        framing::Framer,
+        framing::FramerExt as _,
     },
     net::{
         listener::{Listener, ListenerError},
@@ -514,7 +514,6 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
 
         if bytes_read == 0 {
             eof = true;
-            // eof_addr = Some(peer_addr.clone());
         }
 
         metrics.bytes_received().increment(bytes_read as u64);
@@ -541,11 +540,12 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
         let mut maybe_eventd_event_buffer = None;
         let mut maybe_service_checks_event_buffer = None;
 
+        let mut frames = buffer.framed(&mut framer, reached_eof);
         loop {
-            match framer.next_frame(&buffer, reached_eof) {
-                Ok(Some((frame, advance_len))) => {
-                    debug!(?frame, ?advance_len, "Decoded frame.");
-                    match codec.decode_packet(frame) {
+            match frames.next() {
+                Some(Ok(frame)) => {
+                    debug!(?frame, "Decoded frame.");
+                    match codec.decode_packet(&frame[..]) {
                         Ok(ParsedPacket::Metric(metric)) => {
                             handle_metric_packet(metric, &mut event_buffer, &multitenant_strategy, &peer_addr, &metrics)
                         }
@@ -572,9 +572,13 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                             error!(%listen_addr, %error, "Failed to parse frame.");
                         }
                     }
-                    buffer.advance(advance_len);
                 }
-                Ok(None) => {
+                Some(Err(e)) => {
+                    error!(error = %e, "Error decoding frame.");
+                    metrics.decoder_errors().increment(1);
+                    break;
+                }
+                None => {
                     debug!("Not enough data to decode another frame.");
                     if eof && !stream.is_connectionless() {
                         trace!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
@@ -582,11 +586,6 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                     } else {
                         break;
                     }
-                }
-                Err(e) => {
-                    error!(error = %e, "Error decoding frame.");
-                    metrics.decoder_errors().increment(1);
-                    break;
                 }
             }
         }

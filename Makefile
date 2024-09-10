@@ -147,7 +147,7 @@ ifeq ($(shell test -n "$(DD_API_KEY)" || echo not-found), not-found)
 endif
 	@echo "[*] Running ADP..."
 	@DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_SOCKET=/tmp/adp-dsd.sock DD_DOGSTATSD_EXPIRY_SECONDS=30 \
-	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:6000 DD_LOG_LEVEL=info \
+	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:6000 \
 	target/release/agent-data-plane
 
 .PHONY: run-adp-standalone
@@ -159,7 +159,7 @@ endif
 	@echo "[*] Running ADP..."
 	@DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true \
 	DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_SOCKET=/tmp/adp-dsd.sock DD_DOGSTATSD_EXPIRY_SECONDS=30 \
-	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:6000 DD_LOG_LEVEL=info \
+	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:6000 \
 	target/release/agent-data-plane
 
 .PHONY: run-dsd-basic-udp
@@ -359,7 +359,7 @@ endif
 	@echo "[*] Running ADP under ddprof (service: adp, environment: local, version: $(GIT_COMMIT))..."
 	@DD_API_KEY=00000001adp DD_HOSTNAME=adp-profiling DD_DD_URL=http://127.0.0.1:9091 \
 	DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_SOCKET=/tmp/adp-dsd.sock DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true \
-	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:6000 DD_LOG_LEVEL=info \
+	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:6000 \
 	DD_DOGSTATSD_EXPIRY_SECONDS=30 \
 	./test/ddprof/bin/ddprof --service adp --environment local --service-version $(GIT_COMMIT) \
 	--url unix:///var/run/datadog/apm.socket \

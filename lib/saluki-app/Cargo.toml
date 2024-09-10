@@ -22,4 +22,4 @@ serde = { workspace = true }
 tokio = { workspace = true, features = ["macros", "sync"] }
 tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["std", "env-filter", "fmt", "ansi", "registry", "local-time", "tracing-log"] }
+tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt", "json", "local-time", "registry", "std", "tracing-log"] }
