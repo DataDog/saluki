@@ -249,9 +249,7 @@ pub struct MetricPacket<'a> {
     pub container_id: Option<&'a str>,
 }
 
-pub fn build_metric_metadata_from_packet(
-    packet: &MetricPacket<'_>, origin_detection: bool, peer_addr: &ConnectionAddress,
-) -> MetricMetadata {
+pub fn build_metric_metadata_from_packet(packet: &MetricPacket<'_>, peer_addr: &ConnectionAddress) -> MetricMetadata {
     let mut metric_metadata = MetricMetadata::default()
         .with_sample_rate(packet.sample_rate)
         .with_origin(MetricOrigin::dogstatsd());
@@ -263,10 +261,8 @@ pub fn build_metric_metadata_from_packet(
     // We do one optional enrichment step here, which is to add the client's socket credentials as a tag
     // on each metric, if they came over UDS. This would then be utilized downstream in the pipeline by
     // origin enrichment, if present.
-    if origin_detection {
-        if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
-            metric_metadata.origin_entity_mut().set_process_id(creds.pid as u32);
-        }
+    if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
+        metric_metadata.origin_entity_mut().set_process_id(creds.pid as u32);
     }
 
     // Update our metric metadata based on any tags we're configured to intercept.
@@ -752,11 +748,8 @@ mod tests {
         input: &'input [u8], config: &DogstatsdCodecConfiguration, context_resolver: &mut ContextResolver,
     ) -> IResult<&'input [u8], Option<Metric>> {
         let (remaining, packet) = parse_dogstatsd_metric(input, config)?;
-        let metadata = build_metric_metadata_from_packet(
-            &packet,
-            true,
-            &ConnectionAddress::SocketLike("1.1.1.1:8080".parse().unwrap()),
-        );
+        let metadata =
+            build_metric_metadata_from_packet(&packet, &ConnectionAddress::SocketLike("1.1.1.1:8080".parse().unwrap()));
 
         let context_ref = context_resolver.create_context_ref(packet.metric_name, &packet.tags);
         let context = match context_resolver.resolve(context_ref) {
