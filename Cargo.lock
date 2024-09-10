@@ -249,7 +249,7 @@ dependencies = [
  "serde",
  "sync_wrapper 1.0.1",
  "tokio",
- "tower",
+ "tower 0.4.13",
  "tower-layer",
  "tower-service",
 ]
@@ -1189,7 +1189,7 @@ dependencies = [
  "pin-project-lite",
  "socket2",
  "tokio",
- "tower",
+ "tower 0.4.13",
  "tower-service",
  "tracing",
 ]
@@ -1378,7 +1378,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
- "tower",
+ "tower 0.4.13",
  "tower-http",
  "tracing",
 ]
@@ -2074,7 +2074,7 @@ checksum = "5bb182580f71dd070f88d01ce3de9f4da5021db7115d2e1c3605a754153b77c1"
 dependencies = [
  "bytes",
  "heck",
- "itertools 0.10.5",
+ "itertools 0.12.1",
  "log",
  "multimap",
  "once_cell",
@@ -2094,7 +2094,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "acf0c195eebb4af52c752bec4f52f645da98b6e92077a04110c7f349477ae5ac"
 dependencies = [
  "anyhow",
- "itertools 0.10.5",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "syn",
@@ -2457,7 +2457,7 @@ dependencies = [
  "saluki-tls",
  "serde",
  "tokio",
- "tower",
+ "tower 0.5.0",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2508,7 +2508,7 @@ dependencies = [
  "stringtheory",
  "tokio",
  "tokio-util",
- "tower",
+ "tower 0.5.0",
  "tracing",
  "url",
 ]
@@ -2572,7 +2572,7 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tokio-util",
- "tower",
+ "tower 0.5.0",
  "tracing",
 ]
 
@@ -2613,7 +2613,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "tonic",
- "tower",
+ "tower 0.5.0",
  "tracing",
 ]
 
@@ -2667,6 +2667,7 @@ dependencies = [
  "bytes",
  "datadog-protos",
  "ddsketch-agent",
+ "futures",
  "http",
  "http-body",
  "http-body-util",
@@ -2682,9 +2683,11 @@ dependencies = [
  "nom",
  "paste",
  "pin-project",
+ "pin-project-lite",
  "proptest",
  "protobuf",
  "quanta",
+ "rand",
  "rustls",
  "saluki-context",
  "saluki-core",
@@ -2701,7 +2704,7 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tokio-util",
- "tower",
+ "tower 0.5.0",
  "tracing",
  "url",
 ]
@@ -3268,7 +3271,7 @@ dependencies = [
  "socket2",
  "tokio",
  "tokio-stream",
- "tower",
+ "tower 0.4.13",
  "tower-layer",
  "tower-service",
  "tracing",
@@ -3305,6 +3308,21 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "tower"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36b837f86b25d7c0d7988f00a54e74739be6477f2aac6201b8f429a7569991b7"
+dependencies = [
+ "futures-core",
+ "futures-util",
+ "pin-project-lite",
+ "sync_wrapper 0.1.2",
+ "tokio",
+ "tower-layer",
+ "tower-service",
 ]
 
 [[package]]

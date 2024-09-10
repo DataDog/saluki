@@ -3,10 +3,11 @@
 use std::future::Future;
 
 use axum::Router;
-use hyper_util::service::TowerToHyperService;
 use saluki_api::APIHandler;
 use saluki_error::GenericError;
-use saluki_io::net::{listener::ConnectionOrientedListener, server::http::HttpServer, ListenAddress};
+use saluki_io::net::{
+    listener::ConnectionOrientedListener, server::http::HttpServer, util::hyper::TowerToHyperService, ListenAddress,
+};
 use tokio::select;
 use tracing::error;
 
