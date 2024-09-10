@@ -1,5 +1,5 @@
-use std::num::NonZeroUsize;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
+use std::{num::NonZeroUsize, sync::RwLock};
 
 use async_trait::async_trait;
 use bytes::{Buf, BufMut};
@@ -38,6 +38,7 @@ use saluki_io::{
     },
 };
 use serde::Deserialize;
+use smallvec::SmallVec;
 use snafu::{ResultExt as _, Snafu};
 use stringtheory::interning::FixedSizeInterner;
 use tokio::select;
@@ -233,12 +234,10 @@ impl SourceBuilder for DogStatsDConfiguration {
             return Err(Error::NoListenersConfigured.into());
         }
 
-        let context_string_interner_size = NonZeroUsize::new(self.context_string_interner_bytes.as_u64() as usize)
-            .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
-        let context_interner = FixedSizeInterner::new(context_string_interner_size);
-        let context_resolver = ContextResolver::from_interner("dogstatsd", context_interner)
-            .with_heap_allocations(self.allow_context_heap_allocations);
-        let multitenant_strategy = MultitenantStrategy::new(context_resolver);
+        let multitenant_strategy = MultitenantStrategy::new(
+            self.context_string_interner_bytes.as_u64() as usize,
+            self.allow_context_heap_allocations,
+        )?;
 
         let codec_config = DogstatsdCodecConfiguration::default().with_timestamps(self.no_aggregation_pipeline_support);
         let codec = DogstatsdCodec::from_configuration(codec_config);
@@ -274,7 +273,7 @@ impl MemoryBounds for DogStatsDConfiguration {
             .with_fixed_amount(self.buffer_count * self.buffer_size)
             // We also allocate the backing storage for the string interner up front, which is used by our context
             // resolver.
-            .with_fixed_amount(self.context_string_interner_bytes.as_u64() as usize);
+            .with_fixed_amount(self.context_string_interner_bytes.as_u64() as usize * MAX_RESOLVER_COUNT + 1);
     }
 }
 
@@ -342,20 +341,59 @@ fn build_metrics(builder: MetricsBuilder) -> Metrics {
     }
 }
 
-// TODO: better name
-// This is basically a shim where we can implement logic to map a metric origin to a given context resolver and/or string interner.
+// This is where we can implement logic to map a metric origin to a given
+// context resolver and/or string interner.
+//
+// The current example implementation is pretty naive and will map metrics to
+// a context resolver based on the container ID. Up to 16 per-container-ID
+// resolvers can be constructed, as well as a fallback resolver.
 #[derive(Clone)]
 struct MultitenantStrategy {
-    context_resolver: ContextResolver,
+    interner_bytes: NonZeroUsize,
+    allow_allocations: bool,
+    per_container_id_resolvers: Arc<RwLock<SmallVec<[(String, ContextResolver); MAX_RESOLVER_COUNT]>>>,
+    fallback_context_resolver: ContextResolver,
 }
 
+const MAX_RESOLVER_COUNT: usize = 16;
+
 impl MultitenantStrategy {
-    fn new(context_resolver: ContextResolver) -> Self {
-        Self { context_resolver }
+    fn new(interner_bytes: usize, allow_allocations: bool) -> Result<Self, GenericError> {
+        let interner_bytes = NonZeroUsize::new(interner_bytes)
+            .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
+        let context_interner = FixedSizeInterner::new(interner_bytes);
+        let context_resolver =
+            ContextResolver::from_interner("dogstatsd", context_interner).with_heap_allocations(allow_allocations);
+
+        Ok(Self {
+            interner_bytes,
+            allow_allocations,
+            per_container_id_resolvers: Arc::new(RwLock::new(SmallVec::new())),
+            fallback_context_resolver: context_resolver,
+        })
     }
 
-    fn get_context_resolver_for_origin(&self, _origin: &OriginEntity) -> ContextResolver {
-        self.context_resolver.clone()
+    fn get_context_resolver_for_origin(
+        &self, origin: &OriginEntity, _peer_addr: &ConnectionAddress,
+    ) -> ContextResolver {
+        if let Some(cid) = origin.container_id() {
+            let resolvers = self.per_container_id_resolvers.read().expect("poisoned lock");
+            if let Some((_, resolver)) = resolvers.iter().find(|(id, _)| id == cid) {
+                return resolver.clone();
+            }
+
+            if resolvers.len() < resolvers.inline_size() {
+                let context_interner = FixedSizeInterner::new(self.interner_bytes);
+                let context_resolver = ContextResolver::from_interner("dogstatsd", context_interner)
+                    .with_heap_allocations(self.allow_allocations);
+                drop(resolvers);
+                let mut write_handle = self.per_container_id_resolvers.write().expect("poisoned lock");
+                write_handle.push((cid.into(), context_resolver.clone()));
+                return context_resolver;
+            }
+        }
+
+        return self.fallback_context_resolver.clone();
     }
 }
 
@@ -607,7 +645,8 @@ fn handle_metric_packet(
     peer_addr: &ConnectionAddress, source_metrics: &Metrics,
 ) {
     let metric_metadata = build_metric_metadata_from_packet(&packet, peer_addr);
-    let mut context_resolver = multitenant_strategy.get_context_resolver_for_origin(metric_metadata.origin_entity());
+    let mut context_resolver =
+        multitenant_strategy.get_context_resolver_for_origin(metric_metadata.origin_entity(), peer_addr);
 
     // Try resolving the context first, since we might need to bail if we can't.
     let context_ref = context_resolver.create_context_ref(packet.metric_name, &packet.tags);
@@ -666,7 +705,6 @@ async fn forward_events(
 mod tests {
     use std::net::SocketAddr;
 
-    use saluki_context::ContextResolver;
     use saluki_core::{
         components::{ComponentContext, MetricsBuilder},
         pooling::helpers::get_pooled_object_via_default,
@@ -690,8 +728,7 @@ mod tests {
         // We set our metric name to be longer than 31 bytes (the inlining limit) to ensure this.
 
         let codec = DogstatsdCodec::from_configuration(DogstatsdCodecConfiguration::default());
-        let context_resolver = ContextResolver::with_noop_interner().with_heap_allocations(false);
-        let multitenant_strategy = MultitenantStrategy::new(context_resolver);
+        let multitenant_strategy = MultitenantStrategy::new(1, false).unwrap();
         let mut event_buffer = get_pooled_object_via_default::<EventBuffer>();
 
         let input = "big_metric_name_that_cant_possibly_be_inlined:1|c|#tag1:value1,tag2:value2,tag3:value3";

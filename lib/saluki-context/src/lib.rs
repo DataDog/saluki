@@ -21,7 +21,7 @@ static DIRTY_CONTEXT_HASH: OnceLock<u64> = OnceLock::new();
 static_metrics! {
     name => ContextMetrics,
     prefix => context_resolver,
-    labels => [resolver_id: String],
+    labels => [resolver_id: String, container_id: String],
     metrics => [
         counter(resolved_existing_context_total),
         counter(resolved_new_context_total),
@@ -78,7 +78,19 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
     where
         S: Into<String>,
     {
-        let context_metrics = ContextMetrics::new(name.into());
+        Self::from_interner_with_container_id(name, "default", interner)
+    }
+
+    /// Creates a new `ContextResolver` with the given interner and container ID
+    /// for tagging metrics.
+    pub fn from_interner_with_container_id<S1, S2>(
+        name: S1, container_id: S2, interner: FixedSizeInterner<SHARD_FACTOR>,
+    ) -> Self
+    where
+        S1: Into<String>,
+        S2: Into<String>,
+    {
+        let context_metrics = ContextMetrics::new(name.into(), container_id.into());
 
         context_metrics
             .interner_capacity_bytes()
