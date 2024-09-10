@@ -48,6 +48,6 @@ snafu = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
 tokio-util = { workspace = true }
-tower = { workspace = true, features = ["timeout", "util"] }
+tower = { workspace = true, features = ["retry", "timeout", "util"] }
 tracing = { workspace = true }
 url = { workspace = true }

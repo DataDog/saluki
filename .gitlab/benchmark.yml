@@ -107,7 +107,7 @@ run-benchmarks-adp:
     when: always
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
-    SMP_VERSION: 0.13.0
+    SMP_VERSION: 0.17.0
     RUST_LOG: info,aws_config::profile::credentials=error
   script:
     # Do some pre-flight steps like creating directories, installing helper utilities, setting
@@ -131,7 +131,6 @@ run-benchmarks-adp:
     # Wait for job to complete.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
             job status
-            --use-consignor welch
             --wait
             --wait-delay-seconds 60
             --submission-metadata submission_metadata
@@ -140,7 +139,6 @@ run-benchmarks-adp:
     # Pull the analysis report and output it to stdout.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
             job sync
-            --use-consignor welch
             --submission-metadata submission_metadata
             --output-path outputs
     # Replace empty lines in the output with lines containing various unicode space characters.
@@ -174,7 +172,7 @@ run-benchmarks-dsd:
     when: always
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
-    SMP_VERSION: 0.13.0
+    SMP_VERSION: 0.17.0
     RUST_LOG: info,aws_config::profile::credentials=error
   script:
     # Do some pre-flight steps like creating directories, installing helper utilities, setting
@@ -198,7 +196,6 @@ run-benchmarks-dsd:
     # Wait for job to complete.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
             job status
-            --use-consignor welch
             --wait
             --wait-delay-seconds 60
             --submission-metadata submission_metadata
@@ -207,7 +204,6 @@ run-benchmarks-dsd:
     # Pull the analysis report and output it to stdout.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
             job sync
-            --use-consignor welch
             --submission-metadata submission_metadata
             --output-path outputs
     # Replace empty lines in the output with lines containing various unicode space characters.
