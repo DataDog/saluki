@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use super::event_buffer::EventBuffer;
 use crate::{
     components::{ComponentContext, MetricsBuilder},
-    pooling::{FixedSizeObjectPool, ObjectPool as _},
+    pooling::{ElasticObjectPool, ObjectPool as _},
     topology::OutputName,
 };
 
@@ -48,14 +48,14 @@ impl ForwarderMetrics {
 /// events as well as the forwarding latency.
 pub struct Forwarder {
     context: ComponentContext,
-    event_buffer_pool: FixedSizeObjectPool<EventBuffer>,
+    event_buffer_pool: ElasticObjectPool<EventBuffer>,
     default: Option<(ForwarderMetrics, Vec<mpsc::Sender<EventBuffer>>)>,
     targets: AHashMap<String, (ForwarderMetrics, Vec<mpsc::Sender<EventBuffer>>)>,
 }
 
 impl Forwarder {
     /// Create a new `Forwarder` for the given component context.
-    pub fn new(context: ComponentContext, event_buffer_pool: FixedSizeObjectPool<EventBuffer>) -> Self {
+    pub fn new(context: ComponentContext, event_buffer_pool: ElasticObjectPool<EventBuffer>) -> Self {
         Self {
             context,
             event_buffer_pool,
@@ -164,11 +164,11 @@ mod tests {
     use super::*;
     use crate::topology::ComponentId;
 
-    fn create_forwarder(event_buffers: usize) -> (Forwarder, FixedSizeObjectPool<EventBuffer>) {
+    fn create_forwarder(event_buffers: usize) -> (Forwarder, ElasticObjectPool<EventBuffer>) {
         let component_context = ComponentId::try_from("forwarder_test")
             .map(ComponentContext::source)
             .expect("component ID should never be invalid");
-        let event_buffer_pool = FixedSizeObjectPool::with_capacity("dummy", event_buffers);
+        let (event_buffer_pool, _) = ElasticObjectPool::with_capacity("test", 1, event_buffers);
 
         (
             Forwarder::new(component_context, event_buffer_pool.clone()),

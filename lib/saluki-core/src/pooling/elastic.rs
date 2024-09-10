@@ -10,13 +10,15 @@ use std::{
         Arc, Mutex,
     },
     task::{ready, Context, Poll},
+    time::Duration,
 };
 
 use pin_project::pin_project;
-use tokio::sync::Semaphore;
+use tokio::{sync::Semaphore, time::sleep};
 use tokio_util::sync::PollSemaphore;
+use tracing::debug;
 
-use super::{Clearable, ObjectPool, Poolable, ReclaimStrategy};
+use super::{Clearable, ObjectPool, PoolMetrics, Poolable, ReclaimStrategy};
 
 /// An elastic object pool.
 ///
@@ -35,29 +37,43 @@ pub struct ElasticObjectPool<T: Poolable> {
     strategy: Arc<ElasticStrategy<T>>,
 }
 
-impl<T: Poolable> ElasticObjectPool<T>
+impl<T> ElasticObjectPool<T>
 where
+    T: Poolable + 'static,
     T::Data: Default,
 {
     /// Creates a new `ElasticObjectPool` with the given minimum and maximum capacity.
-    pub fn with_capacity(min_capacity: usize, max_capacity: usize) -> Self {
-        Self {
-            strategy: Arc::new(ElasticStrategy::new(min_capacity, max_capacity)),
-        }
+    pub fn with_capacity<S>(pool_name: S, min_capacity: usize, max_capacity: usize) -> (Self, impl Future<Output = ()>)
+    where
+        S: Into<String>,
+    {
+        Self::with_builder(pool_name, min_capacity, max_capacity, T::Data::default)
     }
 }
 
-impl<T: Poolable> ElasticObjectPool<T> {
+impl<T> ElasticObjectPool<T>
+where
+    T: Poolable + 'static,
+{
     /// Creates a new `ElasticObjectPool` with the given minimum and maximum capacity and item builder.
     ///
     /// `builder` is called to construct each item.
-    pub fn with_builder<B>(min_capacity: usize, max_capacity: usize, builder: B) -> Self
+    pub fn with_builder<S, B>(
+        pool_name: S, min_capacity: usize, max_capacity: usize, builder: B,
+    ) -> (Self, impl Future<Output = ()>)
     where
+        S: Into<String>,
         B: Fn() -> T::Data + Send + Sync + 'static,
     {
-        Self {
-            strategy: Arc::new(ElasticStrategy::with_builder(min_capacity, max_capacity, builder)),
-        }
+        let strategy = Arc::new(ElasticStrategy::with_builder(
+            pool_name,
+            min_capacity,
+            max_capacity,
+            builder,
+        ));
+        let shrinker = run_background_shrinker(Arc::clone(&strategy));
+
+        (Self { strategy }, shrinker)
     }
 }
 
@@ -88,35 +104,13 @@ struct ElasticStrategy<T: Poolable> {
     active: AtomicUsize,
     min_capacity: usize,
     max_capacity: usize,
-}
-
-impl<T> ElasticStrategy<T>
-where
-    T: Poolable,
-    T::Data: Default,
-{
-    fn new(min_capacity: usize, max_capacity: usize) -> Self {
-        let builder = Box::new(T::Data::default);
-
-        // Allocate enough storage to hold the maximum number of items, but only _build_ the minimum number of items.
-        let mut items = VecDeque::with_capacity(max_capacity);
-        items.extend((0..min_capacity).map(|_| builder()));
-        let available = Arc::new(Semaphore::new(min_capacity));
-
-        Self {
-            items: Mutex::new(items),
-            builder,
-            available,
-            active: AtomicUsize::new(min_capacity),
-            min_capacity,
-            max_capacity,
-        }
-    }
+    metrics: PoolMetrics,
 }
 
 impl<T: Poolable> ElasticStrategy<T> {
-    fn with_builder<B>(min_capacity: usize, max_capacity: usize, builder: B) -> Self
+    fn with_builder<S, B>(pool_name: S, min_capacity: usize, max_capacity: usize, builder: B) -> Self
     where
+        S: Into<String>,
         B: Fn() -> T::Data + Send + Sync + 'static,
     {
         let builder = Box::new(builder);
@@ -126,6 +120,10 @@ impl<T: Poolable> ElasticStrategy<T> {
         items.extend((0..min_capacity).map(|_| builder()));
         let available = Arc::new(Semaphore::new(min_capacity));
 
+        let metrics = PoolMetrics::new(pool_name.into());
+        metrics.capacity().set(min_capacity as f64);
+        metrics.created().increment(min_capacity as u64);
+
         Self {
             items: Mutex::new(items),
             builder,
@@ -133,6 +131,7 @@ impl<T: Poolable> ElasticStrategy<T> {
             active: AtomicUsize::new(min_capacity),
             min_capacity,
             max_capacity,
+            metrics,
         }
     }
 }
@@ -153,6 +152,8 @@ impl<T: Poolable> ReclaimStrategy<T> for ElasticStrategy<T> {
 
         self.items.lock().unwrap().push_back(data);
         self.available.add_permits(1);
+        self.metrics.released().increment(1);
+        self.metrics.in_use().decrement(1.0);
     }
 }
 
@@ -208,6 +209,10 @@ where
                 let new_item = (strategy.builder)();
                 let strategy = this.strategy.take().unwrap();
 
+                strategy.metrics.created().increment(1);
+                strategy.metrics.capacity().increment(1.0);
+                strategy.metrics.in_use().increment(1.0);
+
                 return Poll::Ready(T::from_data(strategy, new_item));
             }
         }
@@ -218,9 +223,107 @@ where
 
                 let strategy = this.strategy.take().unwrap();
                 let data = strategy.items.lock().unwrap().pop_back().unwrap();
+
+                strategy.metrics.acquired().increment(1);
+                strategy.metrics.in_use().increment(1.0);
+
                 Poll::Ready(T::from_data(strategy, data))
             }
             None => unreachable!("semaphore should never be closed"),
         }
+    }
+}
+
+async fn run_background_shrinker<T: Poolable>(strategy: Arc<ElasticStrategy<T>>) {
+    // The shrinker continuously analyzes the object pool statistics, tracking both the active pool size (total number
+    // of allocated items belonging to the pool) and an exponentially weighted moving average of the number of
+    // _available_ items in the pool.
+    //
+    // When the active pool size is greater than the minimum pool size, _and_ the average number of available items is
+    // greater than 1, we consider the pool "eligible" for shrinking. We'll attempt to reduce the pool size by one,
+    // consuming an item and adjusting all of the relevant counts. We repeat this process on each iteration until the
+    // pool is at the minimum size or the average number of available items is less than 1.
+
+    // We use an alpha of 0.1, which provides a fairly strong smoothing effect.
+    let mut average_available = Ewma::new(0.1);
+    let min_capacity = strategy.min_capacity;
+
+    loop {
+        debug!("Shrinker sleeping.");
+        sleep(Duration::from_secs(1)).await;
+
+        // Track the number of available permits, and the number of active items.
+        //
+        // When we have available permits, and our active count is greater than the minimum capacity, we'll take an item
+        // from the pool.
+        let active = strategy.active.load(Relaxed);
+        if active <= min_capacity {
+            debug!("Object pool already at minimum capacity. Nothing to do.");
+            continue;
+        }
+
+        let available = strategy.available.available_permits();
+        average_available.update(available as f64);
+
+        if average_available.value() > 1.0 {
+            debug!(
+                avg_avail = average_available.value(),
+                active, min_capacity, "Pool qualifies for shrinking. Attempting to remove single item..."
+            );
+
+            // First try acquiring an item from the pool. If we can't, then maybe we hit a temporary burst of demand,
+            // and we'll just try again later.
+            let removed = {
+                let mut items = strategy.items.lock().unwrap();
+                match items.pop_back() {
+                    Some(item) => {
+                        // Explicitly drop the item here to make sure it's cleaned up and gone.
+                        drop(item);
+
+                        // Now that we've removed an item from the pool, decrement the active count and the available permits to
+                        // reflect it.
+                        strategy.active.fetch_sub(1, AcqRel);
+                        strategy.available.forget_permits(1);
+
+                        strategy.metrics.deleted().increment(1);
+                        strategy.metrics.capacity().decrement(1.0);
+                        strategy.metrics.in_use().decrement(1.0);
+
+                        true
+                    }
+                    None => false,
+                }
+            };
+
+            if removed {
+                debug!("Shrinker successfully removed an item from the pool.");
+            } else {
+                debug!("Outside caller acquired the last item before we could shrink.");
+            }
+        } else {
+            debug!(
+                avg_avail = average_available.value(),
+                active, min_capacity, "Pool does not qualify for shrinking."
+            );
+        }
+    }
+}
+
+struct Ewma {
+    value: f64,
+    alpha: f64,
+}
+
+impl Ewma {
+    fn new(alpha: f64) -> Self {
+        Self { value: 0.0, alpha }
+    }
+
+    fn update(&mut self, new_value: f64) {
+        self.value = (1.0 - self.alpha) * self.value + self.alpha * new_value;
+    }
+
+    fn value(&self) -> f64 {
+        self.value
     }
 }
