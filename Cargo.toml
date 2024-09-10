@@ -144,5 +144,9 @@ lto = "fat"
 codegen-units = 1
 debug = false
 
+[profile.optimized-debug-release]
+inherits = "optimized-release"
+debug = true
+
 [workspace.lints.clippy]
 new_without_default = "allow"
