@@ -139,17 +139,6 @@ pub struct DogStatsDConfiguration {
     #[serde(rename = "dogstatsd_non_local_traffic", default)]
     non_local_traffic: bool,
 
-    /// Whether or not to enable origin detection.
-    ///
-    /// Origin detection attempts to extract the sending process ID from the socket credentials of the client, which is
-    /// later used to map a metric to the container that sent it.
-    ///
-    /// Only relevant in UDS mode.
-    ///
-    /// Defaults to `false`.
-    #[serde(rename = "dogstatsd_origin_detection", default)]
-    origin_detection: bool,
-
     /// Whether or not to allow heap allocations when resolving contexts.
     ///
     /// When resolving contexts during parsing, the metric name and tags are interned to reduce memory usage. The
@@ -258,7 +247,6 @@ impl SourceBuilder for DogStatsDConfiguration {
             listeners,
             io_buffer_pool: get_fixed_bytes_buffer_pool(self.buffer_count, self.buffer_size),
             codec,
-            origin_detection: self.origin_detection,
             multitenant_strategy,
         }))
     }
@@ -294,7 +282,6 @@ pub struct DogStatsD {
     listeners: Vec<Listener>,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     codec: DogstatsdCodec,
-    origin_detection: bool,
     multitenant_strategy: MultitenantStrategy,
 }
 
@@ -303,13 +290,11 @@ struct ListenerContext {
     listener: Listener,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     codec: DogstatsdCodec,
-    origin_detection: bool,
     multitenant_strategy: MultitenantStrategy,
 }
 
 struct HandlerContext {
     listen_addr: String,
-    origin_detection: bool,
     framer: DsdFramer,
     codec: DogstatsdCodec,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
@@ -395,7 +380,6 @@ impl Source for DogStatsD {
                 listener,
                 io_buffer_pool: self.io_buffer_pool.clone(),
                 codec: self.codec.clone(),
-                origin_detection: self.origin_detection,
                 multitenant_strategy: self.multitenant_strategy.clone(),
             };
 
@@ -435,7 +419,6 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
         mut listener,
         io_buffer_pool,
         codec,
-        origin_detection,
         multitenant_strategy,
     } = listener_context;
     tokio::pin!(shutdown_handle);
@@ -457,7 +440,6 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
 
                     let handler_context = HandlerContext {
                         listen_addr: listen_addr.to_string(),
-                        origin_detection,
                         framer: get_framer(&listen_addr),
                         codec: codec.clone(),
                         io_buffer_pool: io_buffer_pool.clone(),
@@ -496,7 +478,6 @@ async fn process_stream(
 async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler_context: HandlerContext) {
     let HandlerContext {
         listen_addr,
-        origin_detection,
         mut framer,
         codec,
         io_buffer_pool,
@@ -565,14 +546,9 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                 Ok(Some((frame, advance_len))) => {
                     debug!(?frame, ?advance_len, "Decoded frame.");
                     match codec.decode_packet(frame) {
-                        Ok(ParsedPacket::Metric(metric)) => handle_metric_packet(
-                            metric,
-                            &mut event_buffer,
-                            &multitenant_strategy,
-                            origin_detection,
-                            &peer_addr,
-                            &metrics,
-                        ),
+                        Ok(ParsedPacket::Metric(metric)) => {
+                            handle_metric_packet(metric, &mut event_buffer, &multitenant_strategy, &peer_addr, &metrics)
+                        }
                         Ok(ParsedPacket::Event(event)) => {
                             if maybe_eventd_event_buffer.is_none() {
                                 maybe_eventd_event_buffer = Some(source_context.event_buffer_pool().acquire().await);
@@ -629,9 +605,9 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
 
 fn handle_metric_packet(
     packet: MetricPacket, event_buffer: &mut EventBuffer, multitenant_strategy: &MultitenantStrategy,
-    origin_detection: bool, peer_addr: &ConnectionAddress, source_metrics: &Metrics,
+    peer_addr: &ConnectionAddress, source_metrics: &Metrics,
 ) {
-    let metric_metadata = build_metric_metadata_from_packet(&packet, origin_detection, peer_addr);
+    let metric_metadata = build_metric_metadata_from_packet(&packet, peer_addr);
     let mut context_resolver = multitenant_strategy.get_context_resolver_for_origin(metric_metadata.origin_entity());
 
     // Try resolving the context first, since we might need to bail if we can't.
@@ -640,7 +616,6 @@ fn handle_metric_packet(
         Some(context) => context,
         None => {
             source_metrics.failed_context_resolve_total().increment(1);
-            // TODO: maybe be louder here, but could be high frequency
             return;
         }
     };
@@ -730,7 +705,6 @@ mod tests {
             packet,
             &mut event_buffer,
             &multitenant_strategy,
-            true,
             &ConnectionAddress::from("1.1.1.1:1234".parse::<SocketAddr>().unwrap()),
             &build_metrics(MetricsBuilder::from_component_context(ComponentContext::source(
                 ComponentId::try_from("test").unwrap(),
