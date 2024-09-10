@@ -14,9 +14,12 @@ use std::{
 
 use indexmap::{Equivalent, IndexSet};
 use metrics::Gauge;
+use roaring::RoaringBitmap;
 use saluki_metrics::static_metrics;
 use stringtheory::{interning::FixedSizeInterner, MetaString};
 use tracing::trace;
+
+mod bitmap;
 
 static DIRTY_CONTEXT_HASH: OnceLock<u64> = OnceLock::new();
 
@@ -40,6 +43,7 @@ type PrehashedHashSet = HashSet<u64, NoopU64Hasher>;
 #[derive(Debug)]
 struct State {
     resolved_contexts: IndexSet<Context, ahash::RandomState>,
+    recently_used: RoaringBitmap,
 }
 
 /// A centralized store for resolved contexts.
@@ -92,6 +96,7 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
             interner,
             state: Arc::new(RwLock::new(State {
                 resolved_contexts: IndexSet::with_hasher(ahash::RandomState::new()),
+                recently_used: RoaringBitmap::new(),
             })),
             hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64Hasher::new()),
             allow_heap_allocations: true,
