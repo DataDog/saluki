@@ -2,9 +2,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use http::{Request, Uri};
-use http_body_util::BodyExt as _;
+use http_body_util::BodyExt;
 use hyper::body::Incoming;
-use hyper_util::client::legacy::{Error, ResponseFuture};
+use hyper_rustls::HttpsConnector;
+use hyper_util::client::legacy::connect::HttpConnector;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::Counter;
 use saluki_config::GenericConfiguration;
@@ -17,14 +18,17 @@ use saluki_error::GenericError;
 use saluki_event::DataType;
 use saluki_io::{
     buf::{get_fixed_bytes_buffer_pool, BytesBuffer, ChunkedBuffer, ReadWriteIoBuffer},
-    net::client::http::HttpClient,
+    net::{
+        client::{http::HttpClient, replay::ReplayBody},
+        util::retry::{ExponentialBackoff, RollingExponentialBackoffRetryPolicy, StandardHttpClassifier},
+    },
 };
 use serde::Deserialize;
 use tokio::{
     select,
     sync::{mpsc, oneshot},
 };
-use tower::{BoxError, Service, ServiceBuilder};
+use tower::{retry::Retry, timeout::Timeout, BoxError, Service, ServiceBuilder};
 use tracing::{debug, error, trace};
 
 mod request_builder;
@@ -71,6 +75,7 @@ impl Metrics {
         &self.events_sent
     }
 
+    #[allow(dead_code)]
     fn bytes_sent(&self) -> &Counter {
         &self.bytes_sent
     }
@@ -99,6 +104,7 @@ impl Metrics {
 ///   it's just something like `https`)
 /// - retries, timeouts, rate limiting (no Tower middleware stack yet)
 #[derive(Deserialize)]
+#[allow(dead_code)]
 pub struct DatadogMetricsConfiguration {
     /// The API key to use.
     api_key: String,
@@ -125,12 +131,75 @@ pub struct DatadogMetricsConfiguration {
     /// The request timeout for forwarding metrics, in seconds.
     ///
     /// Defaults to 20 seconds.
-    #[serde(default = "default_timeout", rename = "forwarder_timeout")]
+    #[serde(default = "default_request_timeout_secs", rename = "forwarder_timeout")]
     request_timeout_secs: u64,
+
+    /// The minimum backoff factor to use when retrying requests.
+    ///
+    /// Controls the the interval range that a calculated backoff duration can fall within, such that with a minimum
+    /// backoff factor of 2.0, calculated backoff durations will fall between `d/2` and `d`, where `d` is the calculated
+    /// backoff duration using a purely exponential growth strategy.
+    ///
+    /// Defaults to 2.
+    #[serde(default = "default_request_backoff_factor", rename = "forwarder_backoff_factor")]
+    request_backoff_factor: f64,
+
+    /// The base growth rate of the backoff duration when retrying requests, in seconds.
+    ///
+    /// Defaults to 2 seconds.
+    #[serde(default = "default_request_backoff_base", rename = "forwarder_backoff_base")]
+    request_backoff_base: f64,
+
+    /// The upper bound of the backoff duration when retrying requests, in seconds.
+    ///
+    /// Defaults to 64 seconds.
+    #[serde(default = "default_request_backoff_max", rename = "forwarder_backoff_max")]
+    request_backoff_max: f64,
+
+    /// The amount to decrease the error count by when a request is successful.
+    ///
+    /// This essentially controls how quickly we forget about the number of previous errors when calculating the next
+    /// backoff duration for a request that must be retried.
+    ///
+    /// Increasing this value should be done with caution, as it can lead to more retries being attempted in the same
+    /// period of time when downstream services are flapping.
+    ///
+    /// Defaults to 2.
+    #[serde(
+        default = "default_request_recovery_error_decrease_factor",
+        rename = "forwarder_recovery_interval"
+    )]
+    request_recovery_error_decrease_factor: u32,
+
+    /// Whether or not a successful request should completely the error count.
+    ///
+    /// Defaults to false.
+    #[serde(default = "default_request_recovery_reset", rename = "forwarder_recovery_reset")]
+    request_recovery_reset: bool,
 }
 
-fn default_timeout() -> u64 {
+fn default_request_timeout_secs() -> u64 {
     20
+}
+
+fn default_request_backoff_factor() -> f64 {
+    2.0
+}
+
+fn default_request_backoff_base() -> f64 {
+    2.0
+}
+
+fn default_request_backoff_max() -> f64 {
+    64.0
+}
+
+fn default_request_recovery_error_decrease_factor() -> u32 {
+    2
+}
+
+fn default_request_recovery_reset() -> bool {
+    false
 }
 
 impl DatadogMetricsConfiguration {
@@ -170,11 +239,21 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
     async fn build(&self) -> Result<Box<dyn Destination + Send>, GenericError> {
         let http_client = HttpClient::https()?;
 
-        let service = Box::new(
-            ServiceBuilder::new()
-                .timeout(Duration::from_secs(self.request_timeout_secs))
-                .service(http_client),
+        let retry_backoff = ExponentialBackoff::with_jitter(
+            Duration::from_secs_f64(self.request_backoff_base),
+            Duration::from_secs_f64(self.request_backoff_max),
+            self.request_backoff_factor,
         );
+
+        let recovery_error_decrease_factor =
+            (!self.request_recovery_reset).then_some(self.request_recovery_error_decrease_factor);
+        let retry_policy = RollingExponentialBackoffRetryPolicy::new(StandardHttpClassifier, retry_backoff)
+            .with_recovery_error_decrease_factor(recovery_error_decrease_factor);
+
+        let service = ServiceBuilder::new()
+            .retry(retry_policy)
+            .timeout(Duration::from_secs(self.request_timeout_secs))
+            .service(http_client);
 
         let api_base = self.api_base()?;
 
@@ -219,14 +298,17 @@ impl MemoryBounds for DatadogMetricsConfiguration {
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
+            //
+            // TODO: This type signature is _ugly_, and it would be nice to improve it somehow.
             .with_single_value::<DatadogMetrics<
                 FixedSizeObjectPool<BytesBuffer>,
-                Box<
-                    dyn Service<
-                        Request<ChunkedBuffer<FixedSizeObjectPool<BytesBuffer>>>,
-                        Response = hyper::Response<Incoming>,
-                        Error = Error,
-                        Future = ResponseFuture,
+                Retry<
+                    RollingExponentialBackoffRetryPolicy<StandardHttpClassifier>,
+                    Timeout<
+                        HttpClient<
+                            HttpsConnector<HttpConnector>,
+                            ReplayBody<ChunkedBuffer<FixedSizeObjectPool<BytesBuffer>>>,
+                        >,
                     >,
                 >,
             >>()
@@ -236,7 +318,10 @@ impl MemoryBounds for DatadogMetricsConfiguration {
             // Capture the size of the requests channel.
             //
             // TODO: This type signature is _ugly_, and it would be nice to improve it somehow.
-            .with_array::<(usize, Request<ChunkedBuffer<FixedSizeObjectPool<BytesBuffer>>>)>(32);
+            .with_array::<(
+                usize,
+                Request<ReplayBody<ChunkedBuffer<FixedSizeObjectPool<BytesBuffer>>>>,
+            )>(32);
     }
 }
 
@@ -244,9 +329,9 @@ pub struct DatadogMetrics<O, S>
 where
     O: ObjectPool + 'static,
     O::Item: ReadWriteIoBuffer,
-    S: Service<Request<ChunkedBuffer<O>>> + 'static,
+    S: Service<Request<ReplayBody<ChunkedBuffer<O>>>> + 'static,
 {
-    service: Box<S>,
+    service: S,
     series_request_builder: RequestBuilder<O>,
     sketches_request_builder: RequestBuilder<O>,
 }
@@ -256,7 +341,7 @@ impl<O, S> Destination for DatadogMetrics<O, S>
 where
     O: ObjectPool + 'static,
     O::Item: ReadWriteIoBuffer,
-    S: Service<Request<ChunkedBuffer<O>>, Response = hyper::Response<Incoming>> + Send + 'static,
+    S: Service<Request<ReplayBody<ChunkedBuffer<O>>>, Response = hyper::Response<Incoming>> + Send + 'static,
     S::Future: Send,
     S::Error: Send + Into<BoxError>,
 {
@@ -399,20 +484,24 @@ where
 }
 
 async fn run_io_loop<O, S>(
-    mut requests_rx: mpsc::Receiver<(usize, Request<ChunkedBuffer<O>>)>, io_shutdown_tx: oneshot::Sender<()>,
-    mut service: S, metrics: Metrics,
+    mut requests_rx: mpsc::Receiver<(usize, Request<ReplayBody<ChunkedBuffer<O>>>)>,
+    io_shutdown_tx: oneshot::Sender<()>, mut service: S, metrics: Metrics,
 ) where
     O: ObjectPool + 'static,
     O::Item: ReadWriteIoBuffer,
-    S: Service<Request<ChunkedBuffer<O>>, Response = hyper::Response<Incoming>> + Send + 'static,
+    S: Service<Request<ReplayBody<ChunkedBuffer<O>>>, Response = hyper::Response<Incoming>> + Send + 'static,
     S::Future: Send,
     S::Error: Send + Into<BoxError>,
 {
     // Loop and process all incoming requests.
     while let Some((metrics_count, request)) = requests_rx.recv().await {
-        // TODO: This doesn't include the actual headers, or the HTTP framing, or anything... so it's a darn good
-        // approximation, but still only an approximation.
-        let request_length = request.body().len();
+        // TODO: We should emit the number of bytes sent, which was trivial to do prior to adding retry support via
+        // `ReplayBody<B>`. Even if we could delve into the inner body that is being wrapped, what we can't track is how
+        // the number of bytes sent during retry.
+        //
+        // This perhaps points to a need to more holistically capture bytes sent through the client itself, which not
+        // only covers potential retries but also stuff like HTTP headers, and so on.
+
         match service.call(request).await {
             Ok(response) => {
                 let status = response.status();
@@ -420,7 +509,6 @@ async fn run_io_loop<O, S>(
                     debug!(%status, "Request sent.");
 
                     metrics.events_sent().increment(metrics_count as u64);
-                    metrics.bytes_sent().increment(request_length as u64);
                 } else {
                     metrics.http_failed_send().increment(1);
                     metrics.events_dropped_http().increment(metrics_count as u64);

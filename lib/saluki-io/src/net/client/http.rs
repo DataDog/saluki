@@ -16,9 +16,10 @@ use saluki_error::GenericError;
 use saluki_tls::ClientTLSConfigBuilder;
 use tower::{BoxError, Service};
 
+use super::replay::ReplayBody;
 use crate::buf::ChunkedBuffer;
 
-pub type ChunkedHttpsClient<O> = HttpClient<HttpsConnector<HttpConnector>, ChunkedBuffer<O>>;
+pub type ChunkedHttpsClient<O> = HttpClient<HttpsConnector<HttpConnector>, ReplayBody<ChunkedBuffer<O>>>;
 
 /// A batteries-included HTTP client.
 ///
@@ -26,6 +27,7 @@ pub type ChunkedHttpsClient<O> = HttpClient<HttpsConnector<HttpConnector>, Chunk
 ///
 /// - TLS support (HTTPS) using the platform's native certificate store
 /// - automatically selects between HTTP/1.1 and HTTP/2 based on ALPN negotiation
+#[derive(Clone)]
 pub struct HttpClient<C = (), B = ()> {
     inner: Client<C, B>,
 }
@@ -38,7 +40,7 @@ impl HttpClient<(), ()> {
     /// If there was an error building the TLS configuration for the client, an error will be returned.
     pub fn https<B>() -> Result<HttpClient<HttpsConnector<HttpConnector>, B>, GenericError>
     where
-        B: Body + Unpin + Send + 'static,
+        B: Body + Clone + Unpin + Send + 'static,
         B::Data: Send,
         B::Error: std::error::Error + Send + Sync,
     {
@@ -60,7 +62,7 @@ impl HttpClient<(), ()> {
 impl<C, B> HttpClient<C, B>
 where
     C: Connect + Clone + Send + Sync + 'static,
-    B: Body + Send + Unpin + 'static,
+    B: Body + Clone + Send + Unpin + 'static,
     B::Data: Send,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
