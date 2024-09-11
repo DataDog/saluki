@@ -2535,7 +2535,6 @@ dependencies = [
  "metrics",
  "metrics-util",
  "saluki-metrics",
- "sharded-slab",
  "stringtheory",
  "tracing",
 ]

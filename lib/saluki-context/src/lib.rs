@@ -9,17 +9,18 @@ use std::{
     num::NonZeroUsize,
     ops::Deref as _,
     sync::{Arc, OnceLock, RwLock},
+    thread::sleep,
     time::Duration,
 };
 
 use indexmap::{Equivalent, IndexSet};
 use metrics::Gauge;
-use roaring::RoaringBitmap;
 use saluki_metrics::static_metrics;
 use stringtheory::{interning::FixedSizeInterner, MetaString};
 use tracing::trace;
 
 mod bitmap;
+use self::bitmap::ConcurrentBitmap;
 
 static DIRTY_CONTEXT_HASH: OnceLock<u64> = OnceLock::new();
 
@@ -43,7 +44,6 @@ type PrehashedHashSet = HashSet<u64, NoopU64Hasher>;
 #[derive(Debug)]
 struct State {
     resolved_contexts: IndexSet<Context, ahash::RandomState>,
-    recently_used: RoaringBitmap,
 }
 
 /// A centralized store for resolved contexts.
@@ -74,6 +74,7 @@ pub struct ContextResolver<const SHARD_FACTOR: usize = 8> {
     context_metrics: ContextMetrics,
     interner: FixedSizeInterner<SHARD_FACTOR>,
     state: Arc<RwLock<State>>,
+    recently_used: Arc<ConcurrentBitmap>,
     hash_seen_buffer: PrehashedHashSet,
     allow_heap_allocations: bool,
     background_expiration_running: bool,
@@ -96,8 +97,8 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
             interner,
             state: Arc::new(RwLock::new(State {
                 resolved_contexts: IndexSet::with_hasher(ahash::RandomState::new()),
-                recently_used: RoaringBitmap::new(),
             })),
+            recently_used: Arc::new(ConcurrentBitmap::new()),
             hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64Hasher::new()),
             allow_heap_allocations: true,
             background_expiration_running: false,
@@ -142,7 +143,8 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
         }
 
         let state = Arc::clone(&self.state);
-        std::thread::spawn(move || run_background_expiration(state));
+        let recently_used = Arc::clone(&self.recently_used);
+        std::thread::spawn(move || run_background_expiration(state, recently_used));
 
         self.background_expiration_running = true;
         self
@@ -207,9 +209,10 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
         T: AsRef<str> + hash::Hash + std::fmt::Debug,
     {
         let state = self.state.read().unwrap();
-        match state.resolved_contexts.get(&context_ref) {
-            Some(context) => {
+        match state.resolved_contexts.get_full(&context_ref) {
+            Some((context_idx, context)) => {
                 self.context_metrics.resolved_existing_context_total().increment(1);
+                self.recently_used.set(context_idx);
                 Some(context.clone())
             }
             None => {
@@ -220,7 +223,8 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
                 // Create our new context and store it.
                 let active_count = self.context_metrics.active_contexts().clone();
                 let context = self.create_context_from_ref(context_ref, active_count)?;
-                state.resolved_contexts.insert(context.clone());
+                let (context_idx, _) = state.resolved_contexts.insert_full(context.clone());
+                self.recently_used.set(context_idx);
 
                 // TODO: This is lazily updated during resolve, which means this metric might lag behind the actual
                 // count as interned strings are dropped/reclaimed... but we don't have a way to figure out if a given
@@ -248,6 +252,7 @@ impl<const SHARD_FACTOR: usize> Clone for ContextResolver<SHARD_FACTOR> {
             context_metrics: self.context_metrics.clone(),
             interner: self.interner.clone(),
             state: self.state.clone(),
+            recently_used: self.recently_used.clone(),
             hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64Hasher::new()),
             allow_heap_allocations: self.allow_heap_allocations,
             background_expiration_running: self.background_expiration_running,
@@ -255,80 +260,58 @@ impl<const SHARD_FACTOR: usize> Clone for ContextResolver<SHARD_FACTOR> {
     }
 }
 
-fn run_background_expiration(state: Arc<RwLock<State>>) {
-    // TODO: When there's a ton of contexts to expire, this is actually super slow, in terms of the rate at which we
-    // recover memory.
-
-    // Our expiration logic is pretty straightforward: we iterate over the resolved contexts in small chunks, trying to
-    // do a little bit of work, releasing the lock, sleeping, and then attempting to pick up where we left off before.
-    //
-    // This means that expiration is incremental and makes progress over time, while attempting to not block for long
-    // periods of time.
-
-    const PER_LOOP_ITERATIONS: usize = 100;
-
-    let mut last_check_idx = 0;
-
+fn run_background_expiration(state: Arc<RwLock<State>>, recently_used: Arc<ConcurrentBitmap>) {
+    // We operate our expiration in a two-phase process: take a snapshot of what contexts have been recently used, wait
+    // a little while, take another snapshot, and then expire the ones that weren't included in either snapshot.
     loop {
-        // Sleep for a bit before we start our next iteration.
-        std::thread::sleep(Duration::from_secs(1));
+        trace!("Taking initial usage snapshot.");
 
-        let mut state_rw = state.write().unwrap();
-
-        let contexts_len = state_rw.resolved_contexts.len();
-        trace!(contexts_len, "Starting context expiration iteration...");
-
-        // If we have no contexts, go back to sleep.
-        if contexts_len == 0 {
-            trace!("No contexts to expire. Sleeping.");
-            continue;
-        }
-
-        // Iterate over the contexts, expiring them if they are no longer active.
+        // Take our initial snapshot, sleep for a little bit, and then take another.
         //
-        // Crucially, this means that we remove contexts if there's only a single strong reference, since that implies
-        // nobody else is holding a reference apart from ourselves.
-        let mut visited_contexts = 0;
-        let mut expired_contexts = 0;
+        // We specifically skip any "unset" context indexes that are higher than the highest context index we've seen in
+        // our resolved contexts map, since the unset iterator may report excess unset bits in the last slot.
+        let highest_context_idx = {
+            let state_read = state.read().unwrap();
+            state_read.resolved_contexts.len()
+        };
+        let initial_snapshot = recently_used
+            .iter_rev_unset()
+            .skip_while(|idx| *idx >= highest_context_idx)
+            .collect::<IndexSet<_>>();
 
-        let mut idx = last_check_idx;
-        while !state_rw.resolved_contexts.is_empty() && visited_contexts < PER_LOOP_ITERATIONS {
-            // If we've hit the end of the set of contexts, wrap back around.
-            if idx >= state_rw.resolved_contexts.len() {
-                idx = 0;
-            }
+        sleep(Duration::from_secs(15));
 
-            // Figure out if we should delete the context at `idx`.
-            //
-            // If the context is no longer active -- i.e. we are the only ones holding a reference to it -- then we can
-            // delete it. We'll only increment `idx` if we don't delete, since the swap remove will place a new element
-            // at the same index, which we'll want to check next.
-            let should_delete = state_rw
-                .resolved_contexts
-                .get_index(idx)
-                .map(|context| Arc::strong_count(&context.inner) == 1)
-                .unwrap_or(false);
+        trace!("Taking follow-up usage snapshot.");
+        let followup_snapshot = recently_used
+            .iter_rev_unset()
+            .skip_while(|idx| *idx >= highest_context_idx)
+            .collect::<IndexSet<_>>();
 
-            if should_delete {
-                let old_context = state_rw.resolved_contexts.swap_remove_index(idx);
-                drop(old_context);
+        // Clear the recently used data for the next iteration.
+        recently_used.clear_all();
 
-                expired_contexts += 1;
-            } else {
-                idx += 1;
-            }
+        // Take both snapshots and get their intersection, which is contexts that were not marked as having been used
+        // since the initial snapshot.
+        let expired_context_idxs = initial_snapshot.intersection(&followup_snapshot);
 
-            visited_contexts += 1;
+        // Go through each expired context index and remove it from the resolved contexts map.
+        //
+        // Since our context indexes came in reverse order, and that order was maintained with `IndexSet`, we don't need
+        // to do any compensating offset math as we remove items, but we do use `swap_remove_index` to avoid having to
+        // shift tons of items each time we do a removal.
+        //
+        // TODO: It'd be nice(r) to chunk up the indexes to remove and do it in batches, so we could then temporarily
+        // release the write lock to let pending operations back through.
+        trace!("Removing expired contexts.");
+
+        let mut contexts_removed = 0;
+        let mut state_write = state.write().unwrap();
+        for idx in expired_context_idxs {
+            state_write.resolved_contexts.swap_remove_index(*idx);
+            contexts_removed += 1;
         }
 
-        if expired_contexts > 0 {
-            trace!("Expired {} contexts", expired_contexts);
-        }
-
-        trace!("Finished context expiration iteration.");
-
-        // Track where we left off for next time.
-        last_check_idx = idx;
+        trace!(contexts_removed, "Removed expired contexts.");
     }
 }
 
