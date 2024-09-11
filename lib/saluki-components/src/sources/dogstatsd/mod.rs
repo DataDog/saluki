@@ -619,12 +619,10 @@ fn handle_metric_packet(
         }
     };
 
-    event_buffer.reserve(1);
-
     event_buffer.push(Event::Metric(Metric::from_parts(
-        context.clone(),
+        context,
         packet.values,
-        metric_metadata.clone(),
+        metric_metadata,
     )));
 }
 
