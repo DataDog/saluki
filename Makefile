@@ -72,6 +72,12 @@ build-adp: ## Builds the ADP binary in release mode
 	@echo "[*] Building ADP locally..."
 	@cargo build --release --package agent-data-plane
 
+.PHONY: build-adp-profiling
+build-adp-profiling: check-rust-build-tools
+build-adp-profiling: ## Builds the ADP binary for profiling (optimized-debug-release profile)
+	@echo "[*] Building ADP locally..."
+	@cargo build --profile optimized-debug-release --package agent-data-plane
+
 .PHONY: build-adp-image
 build-adp-image: ## Builds the ADP container image ('latest' tag)
 	@echo "[*] Building ADP image..."
@@ -351,7 +357,7 @@ endif
 ##@ Profiling
 
 .PHONY: profile-run-adp-ddprof
-profile-run-adp-ddprof: ensure-ddprof build-adp
+profile-run-adp-ddprof: ensure-ddprof build-adp-profiling
 profile-run-adp-ddprof: ## Runs ADP under ddprof locally
 ifeq ($(shell test -S /var/run/datadog/apm.socket || echo not-found), not-found)
 	$(error "APM socket at /var/run/datadog/apm.socket not found. Is the Datadog Agent running?")
