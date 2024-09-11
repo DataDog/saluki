@@ -138,6 +138,7 @@ containerd-client = { git = "https://github.com/tobz/rust-extensions", branch = 
 lto = "thin"
 codegen-units = 4
 debug = true
+strip = "none"
 
 [profile.optimized-release]
 inherits = "release"
@@ -148,6 +149,7 @@ debug = false
 [profile.optimized-debug-release]
 inherits = "optimized-release"
 debug = true
+strip = "none"
 
 [workspace.lints.clippy]
 new_without_default = "allow"
