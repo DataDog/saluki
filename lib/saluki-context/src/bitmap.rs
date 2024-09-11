@@ -41,7 +41,7 @@ impl ConcurrentBitmap {
 		loop {
 			// Attempt to load the slot.
 			match self.slots.get(slot_idx) {
-				Some(slot) => Some(slot),
+				Some(slot) => return Some(slot),
 				None => {
 					// We need to backfill the slot. This means we might need to backfill _multiple_ slots between the
 					// highest slot we've initialized so far and the slot we're trying to access.
@@ -84,10 +84,10 @@ impl ConcurrentBitmap {
 						// don't... something is very wrong.
 						self.release_backfill_lock();
 
-						Some(self.slots.get(slot_idx).expect("slot should exist after just being inserted"))
+						return Some(self.slots.get(slot_idx).expect("slot should exist after just being inserted"))
 					} else {
 						// Someone else has the backfill lock, so wait until it's been released and then try again.
-						todo!()
+						self.wait_for_backfill_lock();
 					}
 				}
 			}
@@ -99,6 +99,26 @@ impl ConcurrentBitmap {
 	}
 	
 	fn acquire_backfill_lock(&self) -> bool {
-		todo!()
+		// If the previous value already had the backfill bit set, then we didn't acquire the lock.
+		self.state.fetch_or(BACKFILL_ACTIVE_BIT, AcqRel) & BACKFILL_ACTIVE_BIT == 0
+	}
+	
+	fn release_backfill_lock(&self) {
+		self.state.fetch_and(BACKFILL_CLEAR_MASK, AcqRel);
+	}
+
+	fn wait_for_backfill_lock(&self) {
+		// This is a busy loop. Yes, I know: busy loops (generally) suck!
+		//
+		// We're very likely to be calling this code from an async context, where sleeping or yielding to the OS would
+		// potentially be even worse/slower than just spinning. We generally shouldn't be waiting very often, because we
+		// don't expect backfills to do much more than a single slot at a time, and the cost of allocating the
+		// underlying slot pages is amortized over time as the pages get larger and larger...
+		//
+		// So this is all a very long way of saying that that I understand this sucks on the surface, but it's a
+		// reasonable middle ground for what is otherwise a fairly cold path.
+		while self.state.load(Acquire) & BACKFILL_ACTIVE_BIT != 0 {
+			std::thread::yield_now();
+		}
 	}
 }
