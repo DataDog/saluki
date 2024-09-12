@@ -9,7 +9,7 @@ use std::{
     num::NonZeroUsize,
     ops::Deref as _,
     sync::{Arc, OnceLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use metrics::Gauge;
@@ -20,7 +20,6 @@ use stringtheory::{interning::FixedSizeInterner, MetaString};
 mod hash;
 use self::hash::NoopU64Hasher;
 
-const RESOLVER_CACHE_SEGMENTS: usize = 8;
 const IDLE_CONTEXT_EXPIRATION_DURATION: Duration = Duration::from_secs(30);
 
 static DIRTY_CONTEXT_HASH: OnceLock<u64> = OnceLock::new();
@@ -87,7 +86,7 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
             .interner_capacity_bytes()
             .set(interner.capacity_bytes() as f64);
 
-        let resolved_contexts = SegmentedCache::builder(RESOLVER_CACHE_SEGMENTS)
+        let resolved_contexts = SegmentedCache::builder(SHARD_FACTOR)
             .time_to_idle(IDLE_CONTEXT_EXPIRATION_DURATION)
             .eviction_policy(EvictionPolicy::tiny_lfu())
             .build_with_hasher(NoopU64Hasher::new());   
@@ -95,14 +94,7 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
         // TODO: Double check that this is the only thing we need to be running in the background, and consider if we
         // should be spawning a _single_ background thread for all context resolvers to drive pending tasks, especially
         // when we might be creating more context resolvers soon for multi-tenancy fairness support.
-        let resolved_contexts_cache = resolved_contexts.clone();
-        std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_secs(10));
-
-                resolved_contexts_cache.run_pending_tasks();
-            }
-        });
+        spawn_background_housekeeper_thread(&context_metrics, &interner, &resolved_contexts);
 
         Self {
             context_metrics,
@@ -207,24 +199,40 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
                 let context = self.create_context_from_ref(context_ref, active_count)?;
                 self.resolved_contexts.insert(context_hash, context.clone());
 
-                // TODO: This is lazily updated during resolve, which means this metric might lag behind the actual
-                // count as interned strings are dropped/reclaimed... but we don't have a way to figure out if a given
-                // `MetaString` is an interned string and if dropping it would actually reclaim the interned string...
-                // so this is our next best option short of instrumenting `FixedSizeInterner` directly.
-                //
-                // We probably want to do that in the future, but this is just a little cleaner without adding extra
-                // fluff to `FixedSizeInterner` which is already complex as-is.
-                self.context_metrics.interner_entries().set(self.interner.len() as f64);
-                self.context_metrics
-                    .interner_len_bytes()
-                    .set(self.interner.len_bytes() as f64);
                 self.context_metrics.resolved_new_context_total().increment(1);
-                self.context_metrics.active_contexts().increment(1);
 
                 Some(context)
             }
         }
     }
+}
+
+fn spawn_background_housekeeper_thread<const N: usize>(context_metrics: &ContextMetrics, interner: &FixedSizeInterner<N>, resolved_contexts: &SegmentedCache<u64, Context, NoopU64Hasher>) {
+    const CACHE_UPKEEP_INTERVAL: Duration = Duration::from_secs(10);
+    
+    let context_metrics = context_metrics.clone();
+    let interner = interner.clone();
+    let resolved_contexts = resolved_contexts.clone();
+
+    std::thread::spawn(move || {
+        let mut last_resolved_contexts_upkeep = Instant::now();
+
+        loop {
+            // Update internal telemetry.
+            context_metrics.interner_len_bytes().set(interner.len_bytes() as f64);
+            context_metrics.interner_entries().set(interner.len() as f64);
+            context_metrics.active_contexts().set(resolved_contexts.entry_count() as f64);
+
+            // Handle any pending tasks for the resolved contexts cache.
+            if last_resolved_contexts_upkeep.elapsed() >= CACHE_UPKEEP_INTERVAL {
+                resolved_contexts.run_pending_tasks();
+
+                last_resolved_contexts_upkeep = Instant::now();
+            }
+
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    });
 }
 
 impl<const SHARD_FACTOR: usize> Clone for ContextResolver<SHARD_FACTOR> {
