@@ -1,7 +1,6 @@
 use std::collections::VecDeque;
 
 use bytes::{Buf, BufMut, Bytes};
-use saluki_core::pooling::FixedSizeObjectPool;
 
 mod chunked;
 pub use self::chunked::{ChunkedBuffer, ChunkedBufferObjectPool};
@@ -46,11 +45,4 @@ impl<T> ReadWriteIoBuffer for T where T: ReadIoBuffer + WriteIoBuffer {}
 pub trait ClearableIoBuffer {
     /// Clears the buffer, setting it back to its initial state.
     fn clear(&mut self);
-}
-
-/// Creates a new `FixedSizeObjectPool<BytesBuffers>` with the given number of buffers, each with the given buffer size.
-///
-/// This is an upfront allocation, and will immediately consume `buffers * buffer_size` bytes of memory.
-pub fn get_fixed_bytes_buffer_pool(buffers: usize, buffer_size: usize) -> FixedSizeObjectPool<BytesBuffer> {
-    FixedSizeObjectPool::with_builder(buffers, || FixedSizeVec::with_capacity(buffer_size))
 }

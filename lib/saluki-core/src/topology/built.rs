@@ -121,7 +121,7 @@ impl BuiltTopology {
         let _guard = self.component_token.enter();
 
         // Build our interconnects, which we'll grab from piecemeal as we spawn our components.
-        let event_buffer_pool = FixedSizeObjectPool::with_capacity(1024);
+        let event_buffer_pool = FixedSizeObjectPool::with_capacity("global_event_buffers", 1024);
         let (mut forwarders, mut event_streams) = self.create_component_interconnects(event_buffer_pool.clone());
 
         let mut shutdown_coordinator = ComponentShutdownCoordinator::default();

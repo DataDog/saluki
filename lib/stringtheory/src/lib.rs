@@ -275,7 +275,7 @@ impl Inner {
         }
     }
 
-    fn static_str(value: &'static str) -> Self {
+    const fn static_str(value: &'static str) -> Self {
         match value.len() {
             0 => Self::empty(),
             len => Self {
@@ -520,10 +520,10 @@ impl MetaString {
     /// Creates a new `MetaString` from the given static string.
     ///
     /// This does not allocate.
-    pub fn from_static(s: &'static str) -> Self {
-        Self::try_inline(s).unwrap_or_else(|| Self {
+    pub const fn from_static(s: &'static str) -> Self {
+        Self {
             inner: Inner::static_str(s),
-        })
+        }
     }
 
     /// Attempts to create a new `MetaString` from the given string if it can be inlined.
@@ -638,6 +638,12 @@ impl Deref for MetaString {
     }
 }
 
+impl AsRef<str> for MetaString {
+    fn as_ref(&self) -> &str {
+        self.deref()
+    }
+}
+
 impl fmt::Debug for MetaString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.deref().fmt(f)
@@ -671,11 +677,12 @@ mod tests {
 
     #[test]
     fn static_str_inlineable() {
+        // We always use the static variant, even if the string is inlineable, because this lets us make `from_static` const.
         let s = "hello";
         let meta = MetaString::from_static(s);
 
         assert_eq!(s, &*meta);
-        assert_eq!(meta.inner.get_union_type(), UnionType::Inlined);
+        assert_eq!(meta.inner.get_union_type(), UnionType::Static);
         assert_eq!(s, meta.into_owned());
     }
 

@@ -17,7 +17,7 @@ use saluki_core::{
 use saluki_error::GenericError;
 use saluki_event::DataType;
 use saluki_io::{
-    buf::{get_fixed_bytes_buffer_pool, BytesBuffer, ChunkedBuffer, ReadWriteIoBuffer},
+    buf::{BytesBuffer, ChunkedBuffer, FixedSizeVec, ReadWriteIoBuffer},
     net::{
         client::{http::HttpClient, replay::ReplayBody},
         util::retry::{ExponentialBackoff, RollingExponentialBackoffRetryPolicy, StandardHttpClassifier},
@@ -543,5 +543,7 @@ fn create_request_builder_buffer_pool() -> FixedSizeObjectPool<BytesBuffer> {
     // Series/Sketch V1 endpoint (max of 3.2MB) as well as the Series V2 endpoint (max 512KB).
     //
     // We chunk it up into 32KB segments mostly to allow for balancing fragmentation vs acquisition overhead.
-    get_fixed_bytes_buffer_pool(RB_BUFFER_POOL_COUNT, RB_BUFFER_POOL_BUF_SIZE)
+    FixedSizeObjectPool::with_builder("dd_metrics_request_buffer", RB_BUFFER_POOL_COUNT, || {
+        FixedSizeVec::with_capacity(RB_BUFFER_POOL_BUF_SIZE)
+    })
 }
