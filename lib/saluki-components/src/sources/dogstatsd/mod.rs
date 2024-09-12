@@ -354,8 +354,8 @@ impl MultitenantStrategy {
         Self { context_resolver }
     }
 
-    fn get_context_resolver_for_origin(&self, _origin: &OriginEntity) -> ContextResolver {
-        self.context_resolver.clone()
+    fn get_context_resolver_for_origin(&mut self, _origin: &OriginEntity) -> &mut ContextResolver {
+        &mut self.context_resolver
     }
 }
 
@@ -482,7 +482,7 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
         codec,
         io_buffer_pool,
         metrics,
-        multitenant_strategy,
+        mut multitenant_strategy,
     } = handler_context;
 
     loop {
@@ -546,9 +546,13 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                 Some(Ok(frame)) => {
                     debug!(?frame, "Decoded frame.");
                     match codec.decode_packet(&frame[..]) {
-                        Ok(ParsedPacket::Metric(metric)) => {
-                            handle_metric_packet(metric, &mut event_buffer, &multitenant_strategy, &peer_addr, &metrics)
-                        }
+                        Ok(ParsedPacket::Metric(metric)) => handle_metric_packet(
+                            metric,
+                            &mut event_buffer,
+                            &mut multitenant_strategy,
+                            &peer_addr,
+                            &metrics,
+                        ),
                         Ok(ParsedPacket::Event(event)) => {
                             if maybe_eventd_event_buffer.is_none() {
                                 maybe_eventd_event_buffer = Some(source_context.event_buffer_pool().acquire().await);
@@ -603,11 +607,11 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
 }
 
 fn handle_metric_packet(
-    packet: MetricPacket, event_buffer: &mut EventBuffer, multitenant_strategy: &MultitenantStrategy,
+    packet: MetricPacket, event_buffer: &mut EventBuffer, multitenant_strategy: &mut MultitenantStrategy,
     peer_addr: &ConnectionAddress, source_metrics: &Metrics,
 ) {
     let metric_metadata = build_metric_metadata_from_packet(&packet, peer_addr);
-    let mut context_resolver = multitenant_strategy.get_context_resolver_for_origin(metric_metadata.origin_entity());
+    let context_resolver = multitenant_strategy.get_context_resolver_for_origin(metric_metadata.origin_entity());
 
     // Try resolving the context first, since we might need to bail if we can't.
     let context_ref = context_resolver.create_context_ref(packet.metric_name, &packet.tags);
@@ -689,7 +693,7 @@ mod tests {
 
         let codec = DogstatsdCodec::from_configuration(DogstatsdCodecConfiguration::default());
         let context_resolver = ContextResolver::with_noop_interner().with_heap_allocations(false);
-        let multitenant_strategy = MultitenantStrategy::new(context_resolver);
+        let mut multitenant_strategy = MultitenantStrategy::new(context_resolver);
         let mut event_buffer = get_pooled_object_via_default::<EventBuffer>();
 
         let input = "big_metric_name_that_cant_possibly_be_inlined:1|c|#tag1:value1,tag2:value2,tag3:value3";
@@ -701,7 +705,7 @@ mod tests {
         handle_metric_packet(
             packet,
             &mut event_buffer,
-            &multitenant_strategy,
+            &mut multitenant_strategy,
             &ConnectionAddress::from("1.1.1.1:1234".parse::<SocketAddr>().unwrap()),
             &build_metrics(MetricsBuilder::from_component_context(ComponentContext::source(
                 ComponentId::try_from("test").unwrap(),
