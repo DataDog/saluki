@@ -5,22 +5,23 @@
 use std::{
     collections::HashSet,
     fmt,
-    hash::{self, BuildHasher, Hash as _, Hasher as _},
+    hash::{Hash as _, Hasher as _},
     num::NonZeroUsize,
     ops::Deref as _,
-    sync::{Arc, OnceLock, RwLock},
-    thread::sleep,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 
-use indexmap::{Equivalent, IndexSet};
 use metrics::Gauge;
+use moka::{policy::EvictionPolicy, sync::SegmentedCache};
 use saluki_metrics::static_metrics;
 use stringtheory::{interning::FixedSizeInterner, MetaString};
-use tracing::trace;
 
-mod bitmap;
-use self::bitmap::ConcurrentBitmap;
+mod hash;
+use self::hash::NoopU64Hasher;
+
+const RESOLVER_CACHE_SEGMENTS: usize = 8;
+const IDLE_CONTEXT_EXPIRATION_DURATION: Duration = Duration::from_secs(30);
 
 static DIRTY_CONTEXT_HASH: OnceLock<u64> = OnceLock::new();
 
@@ -40,11 +41,6 @@ static_metrics! {
 }
 
 type PrehashedHashSet = HashSet<u64, NoopU64Hasher>;
-
-#[derive(Debug)]
-struct State {
-    resolved_contexts: IndexSet<Context, ahash::RandomState>,
-}
 
 /// A centralized store for resolved contexts.
 ///
@@ -73,8 +69,7 @@ struct State {
 pub struct ContextResolver<const SHARD_FACTOR: usize = 8> {
     context_metrics: ContextMetrics,
     interner: FixedSizeInterner<SHARD_FACTOR>,
-    state: Arc<RwLock<State>>,
-    recently_used: Arc<ConcurrentBitmap>,
+    resolved_contexts: SegmentedCache<u64, Context, NoopU64Hasher>,
     hash_seen_buffer: PrehashedHashSet,
     allow_heap_allocations: bool,
     background_expiration_running: bool,
@@ -92,13 +87,27 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
             .interner_capacity_bytes()
             .set(interner.capacity_bytes() as f64);
 
+        let resolved_contexts = SegmentedCache::builder(RESOLVER_CACHE_SEGMENTS)
+            .time_to_idle(IDLE_CONTEXT_EXPIRATION_DURATION)
+            .eviction_policy(EvictionPolicy::tiny_lfu())
+            .build_with_hasher(NoopU64Hasher::new());   
+
+        // TODO: Double check that this is the only thing we need to be running in the background, and consider if we
+        // should be spawning a _single_ background thread for all context resolvers to drive pending tasks, especially
+        // when we might be creating more context resolvers soon for multi-tenancy fairness support.
+        let resolved_contexts_cache = resolved_contexts.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_secs(10));
+
+                resolved_contexts_cache.run_pending_tasks();
+            }
+        });
+
         Self {
             context_metrics,
             interner,
-            state: Arc::new(RwLock::new(State {
-                resolved_contexts: IndexSet::with_hasher(ahash::RandomState::new()),
-            })),
-            recently_used: Arc::new(ConcurrentBitmap::new()),
+            resolved_contexts,
             hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64Hasher::new()),
             allow_heap_allocations: true,
             background_expiration_running: false,
@@ -127,29 +136,6 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
         self
     }
 
-    /// Enables background expiration of resolved contexts.
-    ///
-    /// This spawns a background thread which incrementally scans the list of resolved contexts and removes "expired"
-    /// ones, where an expired context is one that is no longer actively being used. This continuously happens in small
-    /// chunks, in order to make consistent, incremental progress on removing expired values without unnecessarily
-    /// blocking normal resolving operations for too long.
-    ///
-    /// ## Panics
-    ///
-    /// If background expiration is already configured, this method will panic.
-    pub fn with_background_expiration(mut self) -> Self {
-        if self.background_expiration_running {
-            panic!("Background expiration already configured!");
-        }
-
-        let state = Arc::clone(&self.state);
-        let recently_used = Arc::clone(&self.recently_used);
-        std::thread::spawn(move || run_background_expiration(state, recently_used));
-
-        self.background_expiration_running = true;
-        self
-    }
-
     fn intern(&self, s: &str) -> Option<MetaString> {
         // First we'll see if we can inline the string, and if we can't, then we try to actually intern it. If interning
         // fails, then we just fall back to allocating a new `MetaString` instance.
@@ -161,7 +147,7 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
     fn create_context_from_ref<I, T>(&self, context_ref: ContextRef<'_, I>, active_count: Gauge) -> Option<Context>
     where
         I: IntoIterator<Item = T>,
-        T: AsRef<str> + hash::Hash + std::fmt::Debug,
+        T: AsRef<str> + std::hash::Hash + std::fmt::Debug,
     {
         let name = self.intern(context_ref.name)?;
         let mut tags = TagSet::with_capacity(context_ref.tag_len);
@@ -184,7 +170,7 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
     pub fn create_context_ref<'a, I, T>(&mut self, name: &'a str, tags: I) -> ContextRef<'a, I>
     where
         I: IntoIterator<Item = T> + Clone,
-        T: AsRef<str> + hash::Hash,
+        T: AsRef<str> + std::hash::Hash,
     {
         let (context_hash, tag_len) = hash_context_with_seen(name, tags.clone(), &mut self.hash_seen_buffer);
 
@@ -206,25 +192,20 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
     pub fn resolve<I, T>(&self, context_ref: ContextRef<'_, I>) -> Option<Context>
     where
         I: IntoIterator<Item = T>,
-        T: AsRef<str> + hash::Hash + std::fmt::Debug,
+        T: AsRef<str> + std::hash::Hash + std::fmt::Debug,
     {
-        let state = self.state.read().unwrap();
-        match state.resolved_contexts.get_full(&context_ref) {
-            Some((context_idx, context)) => {
+        let context_hash = context_ref.hash;
+
+        match self.resolved_contexts.get(&context_hash) {
+            Some(context) => {
                 self.context_metrics.resolved_existing_context_total().increment(1);
-                self.recently_used.set(context_idx);
-                Some(context.clone())
+                Some(context)
             }
             None => {
-                // Switch from read to write lock.
-                drop(state);
-                let mut state = self.state.write().unwrap();
-
                 // Create our new context and store it.
                 let active_count = self.context_metrics.active_contexts().clone();
                 let context = self.create_context_from_ref(context_ref, active_count)?;
-                let (context_idx, _) = state.resolved_contexts.insert_full(context.clone());
-                self.recently_used.set(context_idx);
+                self.resolved_contexts.insert(context_hash, context.clone());
 
                 // TODO: This is lazily updated during resolve, which means this metric might lag behind the actual
                 // count as interned strings are dropped/reclaimed... but we don't have a way to figure out if a given
@@ -251,67 +232,11 @@ impl<const SHARD_FACTOR: usize> Clone for ContextResolver<SHARD_FACTOR> {
         Self {
             context_metrics: self.context_metrics.clone(),
             interner: self.interner.clone(),
-            state: self.state.clone(),
-            recently_used: self.recently_used.clone(),
+            resolved_contexts: self.resolved_contexts.clone(),
             hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64Hasher::new()),
             allow_heap_allocations: self.allow_heap_allocations,
             background_expiration_running: self.background_expiration_running,
         }
-    }
-}
-
-fn run_background_expiration(state: Arc<RwLock<State>>, recently_used: Arc<ConcurrentBitmap>) {
-    // We operate our expiration in a two-phase process: take a snapshot of what contexts have been recently used, wait
-    // a little while, take another snapshot, and then expire the ones that weren't included in either snapshot.
-    loop {
-        trace!("Taking initial usage snapshot.");
-
-        // Take our initial snapshot, sleep for a little bit, and then take another.
-        //
-        // We specifically skip any "unset" context indexes that are higher than the highest context index we've seen in
-        // our resolved contexts map, since the unset iterator may report excess unset bits in the last slot.
-        let highest_context_idx = {
-            let state_read = state.read().unwrap();
-            state_read.resolved_contexts.len()
-        };
-        let initial_snapshot = recently_used
-            .iter_rev_unset()
-            .skip_while(|idx| *idx >= highest_context_idx)
-            .collect::<IndexSet<_>>();
-
-        sleep(Duration::from_secs(15));
-
-        trace!("Taking follow-up usage snapshot.");
-        let followup_snapshot = recently_used
-            .iter_rev_unset()
-            .skip_while(|idx| *idx >= highest_context_idx)
-            .collect::<IndexSet<_>>();
-
-        // Clear the recently used data for the next iteration.
-        recently_used.clear_all();
-
-        // Take both snapshots and get their intersection, which is contexts that were not marked as having been used
-        // since the initial snapshot.
-        let expired_context_idxs = initial_snapshot.intersection(&followup_snapshot);
-
-        // Go through each expired context index and remove it from the resolved contexts map.
-        //
-        // Since our context indexes came in reverse order, and that order was maintained with `IndexSet`, we don't need
-        // to do any compensating offset math as we remove items, but we do use `swap_remove_index` to avoid having to
-        // shift tons of items each time we do a removal.
-        //
-        // TODO: It'd be nice(r) to chunk up the indexes to remove and do it in batches, so we could then temporarily
-        // release the write lock to let pending operations back through.
-        trace!("Removing expired contexts.");
-
-        let mut contexts_removed = 0;
-        let mut state_write = state.write().unwrap();
-        for idx in expired_context_idxs {
-            state_write.resolved_contexts.swap_remove_index(*idx);
-            contexts_removed += 1;
-        }
-
-        trace!(contexts_removed, "Removed expired contexts.");
     }
 }
 
@@ -462,8 +387,8 @@ impl PartialEq<ContextInner> for ContextInner {
 
 impl Eq for ContextInner {}
 
-impl hash::Hash for ContextInner {
-    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+impl std::hash::Hash for ContextInner {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         // If the context is dirty -- has changed since it was originally resolved -- then our cached hash is now
         // invalid, so we need to re-hash the context. Otherwise, we can just use the cached hash.
         if is_context_dirty(self.hash) {
@@ -515,26 +440,6 @@ pub struct ContextRef<'a, I> {
     tags: I,
     tag_len: usize,
     hash: u64,
-}
-
-impl<'a, I, T> hash::Hash for ContextRef<'a, I>
-where
-    I: IntoIterator<Item = T>,
-    T: hash::Hash,
-{
-    fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        state.write_u64(self.hash);
-    }
-}
-
-impl<I, T> Equivalent<Context> for ContextRef<'_, I>
-where
-    I: IntoIterator<Item = T>,
-    T: hash::Hash + std::fmt::Debug,
-{
-    fn equivalent(&self, other: &Context) -> bool {
-        self.hash == other.inner.hash
-    }
 }
 
 /// A metric tag.
@@ -589,8 +494,8 @@ impl PartialEq<str> for Tag {
     }
 }
 
-impl hash::Hash for Tag {
-    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+impl std::hash::Hash for Tag {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.0.hash(state);
     }
 }
@@ -816,7 +721,7 @@ impl From<Tag> for TagSet {
 fn hash_context<I, T>(name: &str, tags: I) -> (u64, usize)
 where
     I: IntoIterator<Item = T>,
-    T: hash::Hash,
+    T: std::hash::Hash,
 {
     let mut seen = PrehashedHashSet::with_hasher(NoopU64Hasher::new());
     hash_context_with_seen(name, tags, &mut seen)
@@ -825,7 +730,7 @@ where
 fn hash_context_with_seen<I, T>(name: &str, tags: I, seen: &mut PrehashedHashSet) -> (u64, usize)
 where
     I: IntoIterator<Item = T>,
-    T: hash::Hash,
+    T: std::hash::Hash,
 {
     seen.clear();
 
@@ -866,36 +771,6 @@ fn is_context_dirty(hash: u64) -> bool {
     hash == get_dirty_context_hash_value()
 }
 
-struct NoopU64Hasher(u64);
-
-impl NoopU64Hasher {
-    fn new() -> Self {
-        Self(0)
-    }
-}
-
-impl hash::Hasher for NoopU64Hasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write_u64(&mut self, value: u64) {
-        self.0 = value;
-    }
-
-    fn write(&mut self, _: &[u8]) {
-        panic!("NoopU64Hasher is only valid for hashing `u64` values");
-    }
-}
-
-impl BuildHasher for NoopU64Hasher {
-    type Hasher = NoopU64Hasher;
-
-    fn build_hasher(&self) -> Self::Hasher {
-        Self(0)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use metrics::{SharedString, Unit};
@@ -925,7 +800,7 @@ mod tests {
     where
         I1: IntoIterator<Item = T>,
         I2: IntoIterator<Item = T>,
-        T: hash::Hash,
+        T: std::hash::Hash,
     {
         ref1.name == ref2.name && ref1.hash == ref2.hash && ref1.tag_len == ref2.tag_len
     }
