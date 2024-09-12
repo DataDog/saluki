@@ -1,7 +1,7 @@
 use memory_accounting::ComponentRegistry;
 use saluki_config::GenericConfiguration;
 use saluki_env::{
-    host::providers::AgentLikeHostProvider, workload::providers::RemoteAgentWorkloadProvider, EnvironmentProvider,
+    host::providers::AgentLikeHostProvider, time::CachedCoarseTimeProvider, workload::providers::RemoteAgentWorkloadProvider, EnvironmentProvider
 };
 use saluki_error::GenericError;
 use tracing::debug;
@@ -14,6 +14,7 @@ const TRUST_OS_HOSTNAME_CONFIG_KEY: &str = "hostname_trust_uts_namespace";
 pub struct ADPEnvironmentProvider {
     host_provider: AgentLikeHostProvider,
     workload_provider: Option<RemoteAgentWorkloadProvider>,
+    time_provider: CachedCoarseTimeProvider,
 }
 
 impl ADPEnvironmentProvider {
@@ -49,6 +50,7 @@ impl ADPEnvironmentProvider {
         Ok(Self {
             host_provider,
             workload_provider,
+            time_provider: CachedCoarseTimeProvider::new(),
         })
     }
 }
@@ -56,6 +58,7 @@ impl ADPEnvironmentProvider {
 impl EnvironmentProvider for ADPEnvironmentProvider {
     type Host = AgentLikeHostProvider;
     type Workload = Option<RemoteAgentWorkloadProvider>;
+    type Time = CachedCoarseTimeProvider;
 
     fn host(&self) -> &Self::Host {
         &self.host_provider
@@ -63,5 +66,9 @@ impl EnvironmentProvider for ADPEnvironmentProvider {
 
     fn workload(&self) -> &Self::Workload {
         &self.workload_provider
+    }
+
+    fn time(&self) -> &Self::Time {
+        &self.time_provider
     }
 }

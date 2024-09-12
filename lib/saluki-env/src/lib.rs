@@ -15,6 +15,7 @@ pub mod workload;
 
 pub use self::host::HostProvider;
 pub use self::workload::WorkloadProvider;
+pub use self::time::TimeProvider;
 
 /// Provides information about the environment in which the process is running.
 pub trait EnvironmentProvider {
@@ -24,9 +25,15 @@ pub trait EnvironmentProvider {
     /// Type of the workload provider.
     type Workload: self::workload::WorkloadProvider;
 
+    /// Type of the time provider.
+    type Time: self::time::TimeProvider;
+
     /// Gets a reference to the host provider for this environment.
     fn host(&self) -> &Self::Host;
 
     /// Gets a reference to workload provider for this environment.
     fn workload(&self) -> &Self::Workload;
+
+    /// Gets a reference to the time provider for this environment.
+    fn time(&self) -> &Self::Time;
 }
