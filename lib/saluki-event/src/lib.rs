@@ -91,6 +91,16 @@ impl Event {
         }
     }
 
+    /// Returns a reference inner event value, if this event is a `Metric`.
+    ///
+    /// Otherwise, `None` is returned.
+    pub fn try_as_metric(&self) -> Option<&Metric> {
+        match self {
+            Event::Metric(metric) => Some(metric),
+            _ => None,
+        }
+    }
+
     /// Returns a mutable reference inner event value, if this event is a `Metric`.
     ///
     /// Otherwise, `None` is returned.

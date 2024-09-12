@@ -168,7 +168,7 @@ mod tests {
         let component_context = ComponentId::try_from("forwarder_test")
             .map(ComponentContext::source)
             .expect("component ID should never be invalid");
-        let event_buffer_pool = FixedSizeObjectPool::with_capacity(event_buffers);
+        let event_buffer_pool = FixedSizeObjectPool::with_capacity("dummy", event_buffers);
 
         (
             Forwarder::new(component_context, event_buffer_pool.clone()),

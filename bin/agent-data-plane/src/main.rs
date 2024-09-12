@@ -5,8 +5,6 @@
 
 #![deny(warnings)]
 #![deny(missing_docs)]
-mod env_provider;
-
 use std::{future::pending, time::Instant};
 
 use memory_accounting::ComponentRegistry;
@@ -25,7 +23,11 @@ use saluki_health::HealthRegistry;
 use saluki_io::net::ListenAddress;
 use tracing::{error, info};
 
-use crate::env_provider::ADPEnvironmentProvider;
+mod components;
+use self::components::remapper::AgentTelemetryRemapperConfiguration;
+
+mod env_provider;
+use self::env_provider::ADPEnvironmentProvider;
 
 #[global_allocator]
 static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System> =
@@ -150,6 +152,7 @@ fn create_topology(
     let enrich_config = ChainedConfiguration::default()
         .with_transform_builder(host_enrichment_config)
         .with_transform_builder(origin_enrichment_config);
+    let internal_metrics_remap_config = AgentTelemetryRemapperConfiguration::new();
     let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Metrics destination.")?;
     let events_service_checks_config = DatadogEventsServiceChecksConfiguration::from_configuration(configuration)
@@ -162,11 +165,13 @@ fn create_topology(
         .add_source("internal_metrics_in", int_metrics_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
         .add_transform("internal_metrics_agg", int_metrics_agg_config)?
+        .add_transform("internal_metrics_remap", internal_metrics_remap_config)?
         .add_transform("enrich", enrich_config)?
         .add_destination("dd_metrics_out", dd_metrics_config)?
         .add_destination("dd_events_service_checks_out", events_service_checks_config)?
         .connect_component("dsd_agg", ["dsd_in.metrics"])?
-        .connect_component("internal_metrics_agg", ["internal_metrics_in"])?
+        .connect_component("internal_metrics_remap", ["internal_metrics_in"])?
+        .connect_component("internal_metrics_agg", ["internal_metrics_remap"])?
         .connect_component("enrich", ["dsd_agg", "internal_metrics_agg"])?
         .connect_component("dd_metrics_out", ["enrich"])?
         .connect_component(
@@ -179,7 +184,7 @@ fn create_topology(
         let prometheus_config = PrometheusConfiguration::from_configuration(configuration)?;
         blueprint
             .add_destination("internal_metrics_out", prometheus_config)?
-            .connect_component("internal_metrics_out", ["internal_metrics_in"])?;
+            .connect_component("internal_metrics_out", ["internal_metrics_remap"])?;
     }
 
     Ok(blueprint)

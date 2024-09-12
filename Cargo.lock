@@ -27,18 +27,22 @@ checksum = "512761e0bb2578dd7380c6baaa0f4ce03e84f95e960231d1dec8bf4d7d6e2627"
 name = "agent-data-plane"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytesize",
  "chrono",
  "memory-accounting",
  "saluki-app",
  "saluki-components",
  "saluki-config",
+ "saluki-context",
  "saluki-core",
  "saluki-env",
  "saluki-error",
+ "saluki-event",
  "saluki-health",
  "saluki-io",
  "serde",
+ "stringtheory",
  "tokio",
  "tracing",
 ]
@@ -2457,7 +2461,7 @@ dependencies = [
  "saluki-tls",
  "serde",
  "tokio",
- "tower 0.5.0",
+ "tower 0.5.1",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2508,7 +2512,7 @@ dependencies = [
  "stringtheory",
  "tokio",
  "tokio-util",
- "tower 0.5.0",
+ "tower 0.5.1",
  "tracing",
  "url",
 ]
@@ -2563,6 +2567,7 @@ dependencies = [
  "saluki-error",
  "saluki-event",
  "saluki-health",
+ "saluki-metrics",
  "serde",
  "serde_json",
  "similar-asserts",
@@ -2572,7 +2577,7 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tokio-util",
- "tower 0.5.0",
+ "tower 0.5.1",
  "tracing",
 ]
 
@@ -2613,7 +2618,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "tonic",
- "tower 0.5.0",
+ "tower 0.5.1",
  "tracing",
 ]
 
@@ -2704,7 +2709,7 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tokio-util",
- "tower 0.5.0",
+ "tower 0.5.1",
  "tracing",
  "url",
 ]
@@ -3312,9 +3317,9 @@ dependencies = [
 
 [[package]]
 name = "tower"
-version = "0.5.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36b837f86b25d7c0d7988f00a54e74739be6477f2aac6201b8f429a7569991b7"
+checksum = "2873938d487c3cfb9aed7546dc9f2711d867c9f90c46b889989a2cb84eba6b4f"
 dependencies = [
  "futures-core",
  "futures-util",

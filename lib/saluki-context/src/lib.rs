@@ -263,6 +263,20 @@ impl Context {
         }
     }
 
+    /// Creates a new `Context` from the given name and given tags.
+    pub fn from_parts<S: Into<MetaString>>(name: S, tags: TagSet) -> Self {
+        let name = name.into();
+        let (hash, _) = hash_context(&name, &tags);
+        Self {
+            inner: Arc::new(ContextInner {
+                name,
+                tags,
+                hash,
+                active_count: Gauge::noop(),
+            }),
+        }
+    }
+
     fn inner_mut(&mut self) -> &mut ContextInner {
         Arc::make_mut(&mut self.inner)
     }
@@ -626,6 +640,29 @@ impl TagSet {
         }
     }
 
+    /// Returns `true` if the given tag is contained in the set.
+    ///
+    /// This matches the complete tag, rather than just the name.
+    pub fn has_tag<T>(&self, tag: T) -> bool
+    where
+        T: AsRef<str>,
+    {
+        let tag = tag.as_ref();
+        self.0.iter().any(|existing| existing.0.as_ref() == tag)
+    }
+
+    /// Gets a single tag, by name, from the set.
+    ///
+    /// If multiple tags are present with the same name, the first tag with a matching name will be returned. If no tag
+    /// in the set matches, `None` is returned.
+    pub fn get_single_tag<T>(&self, tag_name: T) -> Option<&Tag>
+    where
+        T: AsRef<str>,
+    {
+        let tag_name = tag_name.as_ref();
+        self.0.iter().find(|tag| tag_has_name(tag, tag_name))
+    }
+
     /// Retains only the tags specified by the predicate.
     ///
     /// In other words, remove all tags `t` for which `f(&t)` returns `false`. This method operates in place, visiting
@@ -655,16 +692,12 @@ impl TagSet {
 }
 
 fn tag_has_name(tag: &Tag, tag_name: &str) -> bool {
-    // Try matching it as a bare tag (i.e. `production`).
-    if tag.0.deref() == tag_name {
-        return true;
-    }
-
-    // Try matching it as a key-value pair (i.e. `env:production`).
-    tag.0
-        .deref()
+    // Try matching it as a key-value pair (e.g., `env:production`) first, and then just try matching it as a bare tag
+    // (e.g., `production`).
+    let tag_str = tag.0.deref();
+    tag_str
         .split_once(':')
-        .map_or(false, |(name, _)| name == tag_name)
+        .map_or_else(|| tag_str == tag_name, |(name, _)| name == tag_name)
 }
 
 impl PartialEq<TagSet> for TagSet {

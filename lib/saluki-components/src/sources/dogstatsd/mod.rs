@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use bytes::{Buf, BufMut};
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use metrics::{Counter, Histogram};
+use metrics::{Counter, Gauge, Histogram};
 use saluki_config::GenericConfiguration;
 use saluki_context::ContextResolver;
 use saluki_core::{
@@ -21,7 +21,7 @@ use saluki_core::{
 use saluki_error::{generic_error, GenericError};
 use saluki_event::{DataType, Event};
 use saluki_io::{
-    buf::{get_fixed_bytes_buffer_pool, BytesBuffer},
+    buf::{BytesBuffer, FixedSizeVec},
     deser::{
         codec::{dogstatsd::ParseError, DogstatsdCodec, DogstatsdCodecConfiguration},
         framing::FramerExt as _,
@@ -254,7 +254,9 @@ impl SourceBuilder for DogStatsDConfiguration {
 
         Ok(Box::new(DogStatsD {
             listeners,
-            io_buffer_pool: get_fixed_bytes_buffer_pool(self.buffer_count, self.buffer_size),
+            io_buffer_pool: FixedSizeObjectPool::with_builder("dsd_packet_bufs", self.buffer_count, || {
+                FixedSizeVec::with_capacity(self.buffer_size)
+            }),
             codec,
             origin_detection: self.origin_detection,
         }))
@@ -316,6 +318,9 @@ struct Metrics {
     bytes_received: Counter,
     bytes_received_size: Histogram,
     decoder_errors: Counter,
+    connections_active: Gauge,
+    packet_receive_success: Counter,
+    packet_receive_failure: Counter,
 }
 
 impl Metrics {
@@ -334,14 +339,49 @@ impl Metrics {
     fn decoder_errors(&self) -> &Counter {
         &self.decoder_errors
     }
+
+    fn connections_active(&self) -> &Gauge {
+        &self.connections_active
+    }
+
+    fn packet_receive_success(&self) -> &Counter {
+        &self.packet_receive_success
+    }
+
+    fn packet_receive_failure(&self) -> &Counter {
+        &self.packet_receive_failure
+    }
 }
 
-fn build_metrics(builder: MetricsBuilder) -> Metrics {
+fn build_metrics(listen_addr: &ListenAddress, builder: MetricsBuilder) -> Metrics {
+    let listener_type = match listen_addr {
+        ListenAddress::Tcp(_) => unreachable!("TCP is not supported for DogStatsD"),
+        ListenAddress::Udp(_) => "udp",
+        ListenAddress::Unix(_) => "unix",
+        ListenAddress::Unixgram(_) => "unixgram",
+    };
+
     Metrics {
-        events_received: builder.register_counter("component_events_received_total"),
-        bytes_received: builder.register_counter("component_bytes_received_total"),
-        bytes_received_size: builder.register_histogram("component_bytes_received_size"),
-        decoder_errors: builder.register_counter_with_labels("component_errors_total", &[("error_type", "decode")]),
+        events_received: builder
+            .register_counter_with_labels("component_events_received_total", &[("listener_type", listener_type)]),
+        bytes_received: builder
+            .register_counter_with_labels("component_bytes_received_total", &[("listener_type", listener_type)]),
+        bytes_received_size: builder
+            .register_histogram_with_labels("component_bytes_received_size", &[("listener_type", listener_type)]),
+        decoder_errors: builder.register_counter_with_labels(
+            "component_errors_total",
+            &[("listener_type", listener_type), ("error_type", "decode")],
+        ),
+        connections_active: builder
+            .register_gauge_with_labels("component_connections_active", &[("listener_type", listener_type)]),
+        packet_receive_success: builder.register_counter_with_labels(
+            "component_packets_received_total",
+            &[("listener_type", listener_type), ("state", "ok")],
+        ),
+        packet_receive_failure: builder.register_counter_with_labels(
+            "component_packets_received_total",
+            &[("listener_type", listener_type), ("state", "error")],
+        ),
     }
 }
 
@@ -430,7 +470,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
                         framer: get_framer(&listen_addr),
                         codec: codec.clone(),
                         io_buffer_pool: io_buffer_pool.clone(),
-                        metrics: build_metrics(MetricsBuilder::from_component_context(source_context.component_context())),
+                        metrics: build_metrics(&listen_addr, MetricsBuilder::from_component_context(source_context.component_context())),
                     };
                     spawn_traced(process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register()));
                 }
@@ -472,7 +512,11 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
         ..
     } = handler_context;
 
-    loop {
+    if !stream.is_connectionless() {
+        metrics.connections_active().increment(1);
+    }
+
+    'read: loop {
         let mut eof = false;
         // let mut eof_addr = None;
 
@@ -486,7 +530,7 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
         if !buffer.has_remaining_mut() {
             // try to get a new buffer on the next iteration?
             error!("Newly acquired buffer has no capacity. This should never happen.");
-            continue;
+            continue 'read;
         }
 
         // Try filling our buffer from the underlying reader first.
@@ -495,7 +539,8 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
             Ok((bytes_read, peer_addr)) => (bytes_read, peer_addr),
             Err(error) => {
                 error!(%listen_addr, %error, "I/O error while decoding. Stopping stream.");
-                break;
+                metrics.packet_receive_failure().increment(1);
+                continue 'read;
             }
         };
 
@@ -503,6 +548,7 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
             eof = true;
         }
 
+        metrics.packet_receive_success().increment(1);
         metrics.bytes_received().increment(bytes_read as u64);
         metrics.bytes_received_size().record(bytes_read as f64);
 
@@ -524,43 +570,48 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
         );
 
         let mut frames = buffer.framed(&mut framer, reached_eof);
-        loop {
+        'frame: loop {
             match frames.next() {
                 Some(Ok(frame)) => {
                     trace!(?frame, "Decoded frame.");
+                    match handle_frame(&frame[..], &mut codec, &mut event_buffer, origin_detection, &peer_addr) {
+                        Ok(samples) => metrics.events_received().increment(samples as u64),
+                        Err(e) => {
+                            error!(%listen_addr, error = %e, "Failed to parse frame.");
 
-                    if let Err(e) =
-                        handle_frame(&frame[..], &mut codec, &mut event_buffer, origin_detection, &peer_addr)
-                    {
-                        error!(%listen_addr, error = %e, "Failed to parse frame.");
+                            // TODO: maybe actually packet receive failure? :thinking:
+                            metrics.decoder_errors().increment(1);
+                        }
                     }
                 }
                 Some(Err(e)) => {
                     error!(error = %e, "Error decoding frame.");
                     metrics.decoder_errors().increment(1);
-                    break;
+                    break 'frame;
                 }
                 None => {
                     debug!("Not enough data to decode another frame.");
                     if eof && !stream.is_connectionless() {
                         trace!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
-                        return;
+                        break 'read;
                     } else {
-                        break;
+                        break 'frame;
                     }
                 }
             }
         }
-        metrics.events_received().increment(event_buffer.len() as u64);
+
         forward_events(event_buffer, &source_context, &peer_addr, &listen_addr).await;
     }
+
+    metrics.connections_active().decrement(1);
 }
 
 fn handle_frame(
     frame: &[u8], codec: &mut DogstatsdCodec<AgentLikeTagMetadataInterceptor>, event_buffer: &mut EventBuffer,
     origin_detection: bool, peer_addr: &ConnectionAddress,
-) -> Result<(), ParseError> {
-    codec.decode_packet(frame, event_buffer)?;
+) -> Result<usize, ParseError> {
+    let samples = codec.decode_packet(frame, event_buffer)?;
 
     // We do one optional enrichment step here, which is to add the client's socket credentials as a tag
     // on each metric, if they came over UDS. This would then be utilized downstream in the pipeline by
@@ -578,7 +629,7 @@ fn handle_frame(
         }
     }
 
-    Ok(())
+    Ok(samples)
 }
 
 async fn forward_events(

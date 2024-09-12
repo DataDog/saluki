@@ -3,6 +3,8 @@ use std::{future::Future, sync::Arc};
 
 mod fixed;
 
+use saluki_metrics::static_metrics;
+
 pub use self::fixed::FixedSizeObjectPool;
 
 pub mod helpers;
@@ -52,4 +54,15 @@ pub trait ObjectPool: Send + Sync {
 
     /// Acquires an item from the object pool.
     fn acquire(&self) -> Self::AcquireFuture;
+}
+
+static_metrics! {
+    name => PoolMetrics,
+    prefix => object_pool,
+    labels => [pool_name: String],
+    metrics => [
+        counter(acquired),
+        counter(released),
+        gauge(in_use),
+    ],
 }
