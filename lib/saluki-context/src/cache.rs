@@ -30,7 +30,7 @@ impl ContextCache {
             name,
             contexts: RwLock::new(HashMap::with_hasher(NoopU64Hasher::new())),
             contexts_last_seen: Mutex::new(HashMap::with_hasher(NoopU64Hasher::new())),
-            contexts_touched_pending: ArrayQueue::new(1024),
+            contexts_touched_pending: ArrayQueue::new(65536),
         });
 
         let bg_inner = Arc::clone(&inner);
