@@ -7,6 +7,7 @@ repository = { workspace = true }
 
 [dependencies]
 bytesize = { workspace = true }
+tikv-jemallocator = { version = "0.5", features = ["unprefixed_malloc_on_supported_platforms", "background_threads", "background_threads_runtime_support"] }
 memory-accounting = { workspace = true }
 saluki-app = { workspace = true }
 saluki-components = { workspace = true }

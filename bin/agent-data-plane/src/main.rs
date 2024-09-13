@@ -9,7 +9,7 @@ mod env_provider;
 
 use std::{future::pending, time::Instant};
 
-use memory_accounting::ComponentRegistry;
+use memory_accounting::{allocator::TrackingAllocator, ComponentRegistry};
 use saluki_app::{api::APIBuilder, prelude::*};
 use saluki_components::{
     destinations::{DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration, PrometheusConfiguration},
@@ -23,13 +23,13 @@ use saluki_core::topology::TopologyBlueprint;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use saluki_io::net::ListenAddress;
+use tikv_jemallocator::Jemalloc;
 use tracing::{error, info};
 
 use crate::env_provider::ADPEnvironmentProvider;
 
 #[global_allocator]
-static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System> =
-    memory_accounting::allocator::TrackingAllocator::new(std::alloc::System);
+static ALLOC: TrackingAllocator<Jemalloc> = TrackingAllocator::new(Jemalloc);
 
 const ADP_VERSION: &str = env!("ADP_VERSION");
 const ADP_BUILD_DESC: &str = env!("ADP_BUILD_DESC");
