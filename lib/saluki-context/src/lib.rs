@@ -9,18 +9,17 @@ use std::{
     num::NonZeroUsize,
     ops::Deref as _,
     sync::{Arc, OnceLock},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
-use metrics::Gauge;
-use moka::{policy::EvictionPolicy, sync::SegmentedCache};
 use saluki_metrics::static_metrics;
 use stringtheory::{interning::FixedSizeInterner, MetaString};
 
+mod cache;
+use self::cache::ContextCache;
+
 mod hash;
 use self::hash::NoopU64Hasher;
-
-const IDLE_CONTEXT_EXPIRATION_DURATION: Duration = Duration::from_secs(30);
 
 static DIRTY_CONTEXT_HASH: OnceLock<u64> = OnceLock::new();
 
@@ -68,7 +67,7 @@ type PrehashedHashSet = HashSet<u64, NoopU64Hasher>;
 pub struct ContextResolver<const SHARD_FACTOR: usize = 8> {
     context_metrics: ContextMetrics,
     interner: FixedSizeInterner<SHARD_FACTOR>,
-    resolved_contexts: SegmentedCache<u64, Context, NoopU64Hasher>,
+    contexts: ContextCache,
     hash_seen_buffer: PrehashedHashSet,
     allow_heap_allocations: bool,
     background_expiration_running: bool,
@@ -80,26 +79,23 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
     where
         S: Into<String>,
     {
-        let context_metrics = ContextMetrics::new(name.into());
+        let name = name.into();
+        let contexts = ContextCache::new(name.clone());
+        let context_metrics = ContextMetrics::new(name);
 
         context_metrics
             .interner_capacity_bytes()
             .set(interner.capacity_bytes() as f64);
 
-        let resolved_contexts = SegmentedCache::builder(SHARD_FACTOR)
-            .time_to_idle(IDLE_CONTEXT_EXPIRATION_DURATION)
-            .eviction_policy(EvictionPolicy::tiny_lfu())
-            .build_with_hasher(NoopU64Hasher::new());   
-
         // TODO: Double check that this is the only thing we need to be running in the background, and consider if we
         // should be spawning a _single_ background thread for all context resolvers to drive pending tasks, especially
         // when we might be creating more context resolvers soon for multi-tenancy fairness support.
-        spawn_background_housekeeper_thread(&context_metrics, &interner, &resolved_contexts);
+        spawn_background_housekeeper_thread(&context_metrics, &interner, &contexts);
 
         Self {
             context_metrics,
             interner,
-            resolved_contexts,
+            contexts,
             hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64Hasher::new()),
             allow_heap_allocations: true,
             background_expiration_running: false,
@@ -136,7 +132,7 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
             .or_else(|| self.allow_heap_allocations.then(|| MetaString::from(s)))
     }
 
-    fn create_context_from_ref<I, T>(&self, context_ref: ContextRef<'_, I>, active_count: Gauge) -> Option<Context>
+    fn create_context_from_ref<I, T>(&self, context_ref: ContextRef<'_, I>) -> Option<Context>
     where
         I: IntoIterator<Item = T>,
         T: AsRef<str> + std::hash::Hash + std::fmt::Debug,
@@ -153,7 +149,6 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
                 name,
                 tags,
                 hash: context_ref.hash,
-                active_count,
             }),
         })
     }
@@ -187,48 +182,36 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
         T: AsRef<str> + std::hash::Hash + std::fmt::Debug,
     {
         let context_hash = context_ref.hash;
+        let mut existed = true;
 
-        match self.resolved_contexts.get(&context_hash) {
-            Some(context) => {
-                self.context_metrics.resolved_existing_context_total().increment(1);
-                Some(context)
-            }
-            None => {
-                // Create our new context and store it.
-                let active_count = self.context_metrics.active_contexts().clone();
-                let context = self.create_context_from_ref(context_ref, active_count)?;
-                self.resolved_contexts.insert(context_hash, context.clone());
+        let context = self.contexts.get_or_insert(context_hash, || {
+            existed = false;
+            self.create_context_from_ref(context_ref)
+        })?;
 
-                self.context_metrics.resolved_new_context_total().increment(1);
-
-                Some(context)
-            }
+        if existed {
+            self.context_metrics.resolved_existing_context_total().increment(1);
+        } else {
+            self.context_metrics.resolved_new_context_total().increment(1);
         }
+
+        Some(context)
     }
 }
 
-fn spawn_background_housekeeper_thread<const N: usize>(context_metrics: &ContextMetrics, interner: &FixedSizeInterner<N>, resolved_contexts: &SegmentedCache<u64, Context, NoopU64Hasher>) {
-    const CACHE_UPKEEP_INTERVAL: Duration = Duration::from_secs(10);
-    
+fn spawn_background_housekeeper_thread<const N: usize>(
+    context_metrics: &ContextMetrics, interner: &FixedSizeInterner<N>, contexts: &ContextCache,
+) {
     let context_metrics = context_metrics.clone();
     let interner = interner.clone();
-    let resolved_contexts = resolved_contexts.clone();
+    let contexts = contexts.clone();
 
     std::thread::spawn(move || {
-        let mut last_resolved_contexts_upkeep = Instant::now();
-
         loop {
             // Update internal telemetry.
             context_metrics.interner_len_bytes().set(interner.len_bytes() as f64);
             context_metrics.interner_entries().set(interner.len() as f64);
-            context_metrics.active_contexts().set(resolved_contexts.entry_count() as f64);
-
-            // Handle any pending tasks for the resolved contexts cache.
-            if last_resolved_contexts_upkeep.elapsed() >= CACHE_UPKEEP_INTERVAL {
-                resolved_contexts.run_pending_tasks();
-
-                last_resolved_contexts_upkeep = Instant::now();
-            }
+            context_metrics.active_contexts().set(contexts.len() as f64);
 
             std::thread::sleep(Duration::from_secs(1));
         }
@@ -240,7 +223,7 @@ impl<const SHARD_FACTOR: usize> Clone for ContextResolver<SHARD_FACTOR> {
         Self {
             context_metrics: self.context_metrics.clone(),
             interner: self.interner.clone(),
-            resolved_contexts: self.resolved_contexts.clone(),
+            contexts: self.contexts.clone(),
             hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64Hasher::new()),
             allow_heap_allocations: self.allow_heap_allocations,
             background_expiration_running: self.background_expiration_running,
@@ -265,7 +248,6 @@ impl Context {
                 name: MetaString::from_static(name),
                 tags: TagSet::default(),
                 hash,
-                active_count: Gauge::noop(),
             }),
         }
     }
@@ -283,7 +265,6 @@ impl Context {
                 name: MetaString::from_static(name),
                 tags: tag_set,
                 hash,
-                active_count: Gauge::noop(),
             }),
         }
     }
@@ -358,32 +339,11 @@ impl fmt::Display for Context {
     }
 }
 
+#[derive(Clone)]
 struct ContextInner {
     name: MetaString,
     tags: TagSet,
     hash: u64,
-    active_count: Gauge,
-}
-
-impl Clone for ContextInner {
-    fn clone(&self) -> Self {
-        // Increment the context count when cloning the context, since we only get here when we're about to create a
-        // brand new context for the purpose of mutating the data... so we have a new context.
-        self.active_count.increment(1);
-
-        Self {
-            name: self.name.clone(),
-            tags: self.tags.clone(),
-            hash: self.hash,
-            active_count: self.active_count.clone(),
-        }
-    }
-}
-
-impl Drop for ContextInner {
-    fn drop(&mut self) {
-        self.active_count.decrement(1);
-    }
 }
 
 impl PartialEq<ContextInner> for ContextInner {
@@ -781,27 +741,10 @@ fn is_context_dirty(hash: u64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use metrics::{SharedString, Unit};
-    use metrics_util::{
-        debugging::{DebugValue, DebuggingRecorder},
-        CompositeKey,
-    };
-
     use super::*;
 
     fn get_context_arc_pointer_value(context: &Context) -> usize {
         Arc::as_ptr(&context.inner) as usize
-    }
-
-    fn get_gauge_value(metrics: &[(CompositeKey, Option<Unit>, Option<SharedString>, DebugValue)], key: &str) -> f64 {
-        metrics
-            .iter()
-            .find(|(k, _, _, _)| k.key().name() == key)
-            .map(|(_, _, _, value)| match value {
-                DebugValue::Gauge(value) => value.into_inner(),
-                other => panic!("expected a gauge, got: {:?}", other),
-            })
-            .unwrap_or_else(|| panic!("no metric found with key: {}", key))
     }
 
     fn refs_approx_eq<I1, I2, T>(ref1: &ContextRef<'_, I1>, ref2: &ContextRef<'_, I2>) -> bool
@@ -881,30 +824,6 @@ mod tests {
             get_context_arc_pointer_value(&context1),
             get_context_arc_pointer_value(&context2)
         );
-    }
-
-    #[test]
-    fn active_contexts() {
-        let recorder = DebuggingRecorder::new();
-        let snapshotter = recorder.snapshotter();
-
-        // Create our resolver and then create a context, which will have its metrics attached to our local recorder:
-        let context = metrics::with_local_recorder(&recorder, || {
-            let mut resolver: ContextResolver = ContextResolver::with_noop_interner();
-            let context_ref = resolver.create_context_ref("name", &["tag1"]);
-            resolver.resolve(context_ref).expect("should not fail to resolve")
-        });
-
-        // We should be able to see that the active context count is one, representing the context we created:
-        let metrics_before = snapshotter.snapshot().into_vec();
-        let active_contexts = get_gauge_value(&metrics_before, ContextMetrics::active_contexts_name());
-        assert_eq!(active_contexts, 1.0);
-
-        // Now drop the context, and observe the active context count drop to zero:
-        drop(context);
-        let metrics_after = snapshotter.snapshot().into_vec();
-        let active_contexts = get_gauge_value(&metrics_after, ContextMetrics::active_contexts_name());
-        assert_eq!(active_contexts, 0.0);
     }
 
     #[test]

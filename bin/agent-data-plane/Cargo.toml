@@ -15,7 +15,8 @@ saluki-core = { workspace = true }
 saluki-env = { workspace = true }
 saluki-error = { workspace = true }
 saluki-health = { workspace = true }
-saluki-io = { workspace = true }
+saluki-io = { workspace = true }	
+saluki-time = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "signal"] }
 tracing = { workspace = true }

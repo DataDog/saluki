@@ -54,6 +54,8 @@ async fn main() {
         fatal_and_exit(format!("failed to initialize TLS: {}", e));
     }
 
+    saluki_time::initialize_coarse_time_updater();
+
     match run(started).await {
         Ok(()) => info!("Agent Data Plane stopped."),
         Err(e) => {

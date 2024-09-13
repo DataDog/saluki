@@ -40,6 +40,7 @@ saluki-env = { workspace = true }
 saluki-error = { workspace = true }
 saluki-event = { workspace = true }
 saluki-io = { workspace = true }
+saluki-time = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 slab = { workspace = true }

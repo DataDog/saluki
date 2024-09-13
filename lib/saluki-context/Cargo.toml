@@ -7,10 +7,11 @@ repository = { workspace = true }
 
 [dependencies]
 ahash = { workspace = true }
+crossbeam-queue = { workspace = true, features = ["std"] }
 indexmap = { workspace = true, features = ["std"] }
 metrics = { workspace = true }
-moka = { workspace = true, features = ["sync", "quanta"] }
 saluki-metrics = { workspace = true }
+saluki-time = { workspace = true }
 stringtheory = { workspace = true }
 tracing = { workspace = true }
 

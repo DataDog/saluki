@@ -10,9 +10,9 @@ use saluki_core::{
     pooling::{FixedSizeObjectPool, ObjectPool as _},
     topology::{interconnect::EventBuffer, OutputDefinition},
 };
-use saluki_env::time::get_unix_timestamp;
 use saluki_error::GenericError;
 use saluki_event::{metric::*, DataType, Event};
+use saluki_time::{get_unix_timestamp, get_unix_timestamp_coarse};
 use serde::Deserialize;
 use smallvec::SmallVec;
 use tokio::{select, time::interval_at};
@@ -282,7 +282,7 @@ impl Transform for Aggregate {
                         trace!(events_len = events.len(), "Received events.");
 
                         let event_buffer_len = event_buffer.len();
-                        let current_time = get_unix_timestamp();
+                        let current_time = get_unix_timestamp_coarse();
 
                         for event in events {
                             if let Some(metric) = event.try_into_metric() {

@@ -17,6 +17,7 @@ members = [
   "lib/saluki-health",
   "lib/saluki-io",
   "lib/saluki-metrics",
+  "lib/saluki-time",
   "lib/saluki-tls",
   "lib/stringtheory",
 ]
@@ -44,6 +45,7 @@ saluki-event = { path = "lib/saluki-event" }
 saluki-health = { path = "lib/saluki-health" }
 saluki-io = { path = "lib/saluki-io" }
 saluki-metrics = { path = "lib/saluki-metrics" }
+saluki-time = { path = "lib/saluki-time" }
 saluki-tls = { path = "lib/saluki-tls" }
 stringtheory = { path = "lib/stringtheory" }
 async-trait = { version = "0.1", default-features = false }
@@ -125,7 +127,7 @@ cgroupfs = { version = "0.8", default-features = false }
 rustls-native-certs = { version = "0.7", default-features = false }
 hashbrown = { version = "0.14.5", default-features = false }
 sharded-slab = { version = "0.1", default-features = false }
-moka = { version = "0.12", default-features = false }
+crossbeam-queue = { version = "0.3", default-features = false }
 
 [patch.crates-io]
 # Git dependency for `containerd-client` to:
