@@ -5,7 +5,6 @@ use std::{
     time::Duration,
 };
 
-use crossbeam_queue::ArrayQueue;
 use saluki_time::get_unix_timestamp_coarse;
 use tracing::trace;
 
@@ -15,8 +14,7 @@ use crate::{hash::NoopU64Hasher, Context};
 struct Inner {
     name: String,
     contexts: RwLock<HashMap<u64, Context, NoopU64Hasher>>,
-    contexts_last_seen: Mutex<HashMap<u64, u64, NoopU64Hasher>>,
-    contexts_touched_pending: ArrayQueue<u64>,
+    contexts_last_seen: Mutex<HashMap<u64, Context, NoopU64Hasher>>,
 }
 
 #[derive(Clone, Debug)]
@@ -30,7 +28,6 @@ impl ContextCache {
             name,
             contexts: RwLock::new(HashMap::with_hasher(NoopU64Hasher::new())),
             contexts_last_seen: Mutex::new(HashMap::with_hasher(NoopU64Hasher::new())),
-            contexts_touched_pending: ArrayQueue::new(65536),
         });
 
         let bg_inner = Arc::clone(&inner);
@@ -43,6 +40,8 @@ impl ContextCache {
     where
         F: FnOnce() -> Option<Context>,
     {
+        let mut is_new_context = false;
+
         // First, we try and find the cached context, and if it doesn't exist, we'll create it via `f`.
         let context = {
             let contexts_read = self.inner.contexts.read().unwrap();
@@ -50,6 +49,8 @@ impl ContextCache {
                 Some(context) => context.clone(),
                 None => {
                     drop(contexts_read);
+
+                    is_new_context = true;
 
                     let context = f()?;
                     let context_to_insert = context.clone();
@@ -62,7 +63,7 @@ impl ContextCache {
         };
 
         // Now we update the recency state for this context.
-        self.track_context_touched(id);
+        self.track_context_touched(id, &context, is_new_context);
 
         Some(context)
     }
@@ -71,23 +72,16 @@ impl ContextCache {
         self.inner.contexts.read().unwrap().len()
     }
 
-    fn track_context_touched(&self, id: u64) {
-        // Try to push the context ID to the pending queue. If the queue is currently full, we'll get back the oldest
-        // item from the queue, which we have now just replaced, and we'll incrementally update the last seen time.
-        if let Some(old_pending_id) = self.inner.contexts_touched_pending.force_push(id) {
-            self.with_last_seen_lock(|contexts_last_seen| {
-                let last_seen = contexts_last_seen.entry(old_pending_id).or_default();
-                *last_seen = get_unix_timestamp_coarse();
-            });
-        }
-    }
+    fn track_context_touched(&self, id: u64, context: &Context, is_new_context: bool) {
+        // Update the context's "last touched" time.
+        context.update_last_touched();
 
-    fn with_last_seen_lock<F>(&self, f: F)
-    where
-        F: FnOnce(&mut HashMap<u64, u64, NoopU64Hasher>),
-    {
-        let mut contexts_last_seen = self.inner.contexts_last_seen.lock().unwrap();
-        f(&mut contexts_last_seen);
+        // If this is a new context, we'll add it to the pending queue, which the background updated will use to update
+        // our tracking map.
+        if is_new_context {
+            let mut last_seen_write = self.inner.contexts_last_seen.lock().unwrap();
+            last_seen_write.entry(id).or_insert_with(|| context.clone());
+        }
     }
 }
 
@@ -103,23 +97,10 @@ fn run_background_expiration(bg_inner: Arc<Inner>) {
         let current_time = get_unix_timestamp_coarse();
         trace!(resolver_id = bg_inner.name, "Running background expiration.");
 
-        let mut contexts_updated = 0;
+        // Iterate through our last seen map and figure out which contexts are eligible for expiration.
         let mut last_seen_write = bg_inner.contexts_last_seen.lock().unwrap();
-        while let Some(pending_context_id) = bg_inner.contexts_touched_pending.pop() {
-            let last_seen = last_seen_write.entry(pending_context_id).or_default();
-            *last_seen = current_time;
-            contexts_updated += 1;
-        }
-
-        trace!(
-            resolver_id = bg_inner.name,
-            contexts_updated,
-            "Updated last seen for contexts."
-        );
-
-        // Now iterate through our last seen map and figure out which contexts are eligible for expiration.
-        for (context_id, last_seen) in last_seen_write.iter() {
-            if current_time - last_seen > CONTEXT_EXPIRATION_IDLE_SECONDS {
+        for (context_id, context) in last_seen_write.iter() {
+            if current_time - context.last_touched() > CONTEXT_EXPIRATION_IDLE_SECONDS {
                 contexts_to_expire.push(*context_id);
             }
         }
@@ -128,7 +109,7 @@ fn run_background_expiration(bg_inner: Arc<Inner>) {
             continue;
         }
 
-        // Finally, expire the contexts.
+        // Now expire the contexts.
         let mut contexts_write = bg_inner.contexts.write().unwrap();
 
         trace!(

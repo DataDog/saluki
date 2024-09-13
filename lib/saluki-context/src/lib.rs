@@ -8,11 +8,15 @@ use std::{
     hash::{Hash as _, Hasher as _},
     num::NonZeroUsize,
     ops::Deref as _,
-    sync::{Arc, OnceLock},
+    sync::{
+        atomic::{AtomicU64, Ordering::Relaxed},
+        Arc, OnceLock,
+    },
     time::Duration,
 };
 
 use saluki_metrics::static_metrics;
+use saluki_time::get_unix_timestamp_coarse;
 use stringtheory::{interning::FixedSizeInterner, MetaString};
 
 mod cache;
@@ -149,6 +153,7 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
                 name,
                 tags,
                 hash: context_ref.hash,
+                last_touched: AtomicU64::new(0),
             }),
         })
     }
@@ -248,6 +253,7 @@ impl Context {
                 name: MetaString::from_static(name),
                 tags: TagSet::default(),
                 hash,
+                last_touched: AtomicU64::new(0),
             }),
         }
     }
@@ -265,6 +271,7 @@ impl Context {
                 name: MetaString::from_static(name),
                 tags: tag_set,
                 hash,
+                last_touched: AtomicU64::new(0),
             }),
         }
     }
@@ -276,6 +283,14 @@ impl Context {
     fn mark_dirty(&mut self) {
         let inner = self.inner_mut();
         inner.hash = get_dirty_context_hash_value();
+    }
+
+    fn last_touched(&self) -> u64 {
+        self.inner.last_touched.load(Relaxed)
+    }
+
+    fn update_last_touched(&self) {
+        self.inner.last_touched.store(get_unix_timestamp_coarse(), Relaxed);
     }
 
     /// Gets the name of this context.
@@ -339,11 +354,22 @@ impl fmt::Display for Context {
     }
 }
 
-#[derive(Clone)]
 struct ContextInner {
     name: MetaString,
     tags: TagSet,
     hash: u64,
+    last_touched: AtomicU64,
+}
+
+impl Clone for ContextInner {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            tags: self.tags.clone(),
+            hash: self.hash,
+            last_touched: AtomicU64::new(0),
+        }
+    }
 }
 
 impl PartialEq<ContextInner> for ContextInner {
