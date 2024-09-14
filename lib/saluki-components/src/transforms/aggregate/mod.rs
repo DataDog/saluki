@@ -240,7 +240,7 @@ impl Transform for Aggregate {
         // events per event buffer. If we use the global event buffer pool, we risk churning through many event buffers,
         // having them reserve a lot of underlying capacity, and then having a ton of event buffers in the pool with
         // high capacity when we only need one every few seconds, etc.
-        let event_buffer_pool = FixedSizeObjectPool::<EventBuffer>::with_capacity(EVENT_BUFFER_POOL_SIZE);
+        let event_buffer_pool = FixedSizeObjectPool::<EventBuffer>::with_capacity("aggregate", EVENT_BUFFER_POOL_SIZE);
 
         health.mark_ready();
         debug!("Aggregation transform started.");
