@@ -5,7 +5,7 @@ FROM ${BUILD_IMAGE} AS builder
 
 ARG TARGETARCH
 ARG BUILD_PROFILE=release
-ARG JEMALLOC_SYS_WITH_MALLOC_CONF=background_thread:true,narenas:4,tcache_max:1024,oversize_threshold:1048576,dirty_decay_ms:5000,muzzy_decay_ms:5000
+ARG JEMALLOC_SYS_WITH_MALLOC_CONF=abort_conf:true,background_thread:true,narenas:2,tcache_max:512,oversize_threshold:1048576,dirty_decay_ms:2500,muzzy_decay_ms:2500
 
 # Install basic utilities and an updated compiler/binutils toolchain, which is necessary for compiling.
 #

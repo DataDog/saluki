@@ -40,7 +40,6 @@ dependencies = [
  "saluki-io",
  "saluki-time",
  "serde",
- "stringtheory",
  "tikv-jemallocator",
  "tokio",
  "tracing",
