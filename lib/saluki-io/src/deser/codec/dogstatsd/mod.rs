@@ -513,6 +513,20 @@ fn split_at_delimiter(input: &[u8], delimiter: u8) -> Option<(&[u8], &[u8])> {
 }
 
 #[inline]
+fn split_at_delimiter_inclusive(input: &[u8], delimiter: u8) -> Option<(&[u8], &[u8])> {
+    match memchr::memchr(delimiter, input) {
+        Some(index) => Some((&input[0..index], &input[index..input.len()])),
+        None => {
+            if input.is_empty() {
+                None
+            } else {
+                Some((input, &[]))
+            }
+        }
+    }
+}
+
+#[inline]
 fn ascii_alphanum_and_seps(input: &[u8]) -> IResult<&[u8], &str> {
     let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b' ' || c == b'_' || c == b'-' || c == b'.';
     map(take_while1(valid_char), |b| {
@@ -564,9 +578,10 @@ fn metric_tags(config: &DogstatsdCodecConfiguration) -> impl Fn(&[u8]) -> IResul
             return Err(nom::Err::Error(Error::new(input, ErrorKind::Verify)));
         }
 
-        map(take_while1(|c: u8| !c.is_ascii_control() && c != b'|'), |s| {
-            TagSplitter::new(s, max_tag_count, max_tag_len)
-        })(input)
+        match split_at_delimiter_inclusive(input, b'|') {
+            Some((tags, remaining)) => Ok((remaining, TagSplitter::new(tags, max_tag_count, max_tag_len))),
+            None => Err(nom::Err::Error(Error::new(input, ErrorKind::TakeWhile1))),
+        }
     }
 }
 
