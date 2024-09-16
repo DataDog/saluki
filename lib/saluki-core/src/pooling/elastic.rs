@@ -102,6 +102,7 @@ struct ElasticStrategy<T: Poolable> {
     builder: Box<dyn Fn() -> T::Data + Send + Sync>,
     available: Arc<Semaphore>,
     active: AtomicUsize,
+    on_demand_allocs: AtomicUsize,
     min_capacity: usize,
     max_capacity: usize,
     metrics: PoolMetrics,
@@ -129,6 +130,7 @@ impl<T: Poolable> ElasticStrategy<T> {
             builder,
             available,
             active: AtomicUsize::new(min_capacity),
+            on_demand_allocs: AtomicUsize::new(0),
             min_capacity,
             max_capacity,
             metrics,
@@ -209,6 +211,7 @@ where
                 let new_item = (strategy.builder)();
                 let strategy = this.strategy.take().unwrap();
 
+                strategy.on_demand_allocs.fetch_add(1, Relaxed);
                 strategy.metrics.created().increment(1);
                 strategy.metrics.capacity().increment(1.0);
                 strategy.metrics.in_use().increment(1.0);
@@ -235,17 +238,19 @@ where
 }
 
 async fn run_background_shrinker<T: Poolable>(strategy: Arc<ElasticStrategy<T>>) {
-    // The shrinker continuously analyzes the object pool statistics, tracking both the active pool size (total number
-    // of allocated items belonging to the pool) and an exponentially weighted moving average of the number of
-    // _available_ items in the pool.
+    // The shrinker continuously tracks the "demand" for items in the pool, and attempts to shrink the pool size such
+    // that it stays at the smallest possible size while minimizing the amount of on-demand allocations seen.
     //
-    // When the active pool size is greater than the minimum pool size, _and_ the average number of available items is
-    // greater than 1, we consider the pool "eligible" for shrinking. We'll attempt to reduce the pool size by one,
-    // consuming an item and adjusting all of the relevant counts. We repeat this process on each iteration until the
-    // pool is at the minimum size or the average number of available items is less than 1.
+    // Every time the shrinker runs, it consumes the current value of `fallback_count`, which gives us a delta of the
+    // number of on-demand allocations that have occurred since the last time the shrinker ran, or simply "demand". We
+    // track a rolling average of this demand, and if the average demand is less than N, where N is configurable, then
+    // we consider the pool eligible to shrink.
+    //
+    // We only shrink the pool down to its minimum capacity, even if the average demand is less than N. When the pool is
+    // eligible to shrink and not yet at the minimum capacity, we remove a single item from the pool per iteration.
 
     // We use an alpha of 0.1, which provides a fairly strong smoothing effect.
-    let mut average_available = Ewma::new(0.1);
+    let mut average_demand = Ewma::new(0.1);
     let min_capacity = strategy.min_capacity;
 
     loop {
@@ -262,12 +267,11 @@ async fn run_background_shrinker<T: Poolable>(strategy: Arc<ElasticStrategy<T>>)
             continue;
         }
 
-        let available = strategy.available.available_permits();
-        average_available.update(available as f64);
-
-        if average_available.value() > 1.0 {
+        let delta_demand = strategy.on_demand_allocs.swap(0, Relaxed);
+        average_demand.update(delta_demand as f64);
+        if average_demand.value() < 1.0 {
             debug!(
-                avg_avail = average_available.value(),
+                avg_demand = average_demand.value(),
                 active, min_capacity, "Pool qualifies for shrinking. Attempting to remove single item..."
             );
 
@@ -287,7 +291,6 @@ async fn run_background_shrinker<T: Poolable>(strategy: Arc<ElasticStrategy<T>>)
 
                         strategy.metrics.deleted().increment(1);
                         strategy.metrics.capacity().decrement(1.0);
-                        strategy.metrics.in_use().decrement(1.0);
 
                         true
                     }
@@ -302,7 +305,7 @@ async fn run_background_shrinker<T: Poolable>(strategy: Arc<ElasticStrategy<T>>)
             }
         } else {
             debug!(
-                avg_avail = average_available.value(),
+                avg_demand = average_demand.value(),
                 active, min_capacity, "Pool does not qualify for shrinking."
             );
         }
