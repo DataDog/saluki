@@ -1,10 +1,12 @@
 //! Object pooling.
 use std::{future::Future, sync::Arc};
 
-mod fixed;
-
+mod elastic;
 use saluki_metrics::static_metrics;
 
+pub use self::elastic::ElasticObjectPool;
+
+mod fixed;
 pub use self::fixed::FixedSizeObjectPool;
 
 pub mod helpers;
@@ -61,8 +63,11 @@ static_metrics! {
     prefix => object_pool,
     labels => [pool_name: String],
     metrics => [
+        counter(created),
         counter(acquired),
         counter(released),
+        counter(deleted),
+        gauge(capacity),
         gauge(in_use),
     ],
 }

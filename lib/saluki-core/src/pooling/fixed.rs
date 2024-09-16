@@ -117,10 +117,14 @@ impl<T: Poolable> FixedSizeStrategy<T> {
         items.extend((0..capacity).map(|_| builder()));
         let available = Arc::new(Semaphore::new(capacity));
 
+        let metrics = PoolMetrics::new(pool_name.into());
+        metrics.created().increment(capacity as u64);
+        metrics.capacity().set(capacity as f64);
+
         Self {
             items: Mutex::new(items),
             available,
-            metrics: PoolMetrics::new(pool_name.into()),
+            metrics,
         }
     }
 }
