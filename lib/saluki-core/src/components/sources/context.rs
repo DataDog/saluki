@@ -5,7 +5,7 @@ use saluki_health::{Health, HealthRegistry};
 
 use crate::{
     components::ComponentContext,
-    pooling::FixedSizeObjectPool,
+    pooling::ElasticObjectPool,
     topology::{
         interconnect::{EventBuffer, Forwarder},
         shutdown::ComponentShutdownHandle,
@@ -15,7 +15,7 @@ use crate::{
 struct SourceContextInner {
     component_context: ComponentContext,
     forwarder: Forwarder,
-    event_buffer_pool: FixedSizeObjectPool<EventBuffer>,
+    event_buffer_pool: ElasticObjectPool<EventBuffer>,
     memory_limiter: MemoryLimiter,
     health_registry: HealthRegistry,
     component_registry: ComponentRegistry,
@@ -32,7 +32,7 @@ impl SourceContext {
     /// Creates a new `SourceContext`.
     pub fn new(
         component_context: ComponentContext, shutdown_handle: ComponentShutdownHandle, forwarder: Forwarder,
-        event_buffer_pool: FixedSizeObjectPool<EventBuffer>, memory_limiter: MemoryLimiter,
+        event_buffer_pool: ElasticObjectPool<EventBuffer>, memory_limiter: MemoryLimiter,
         component_registry: ComponentRegistry, health_handle: Health, health_registry: HealthRegistry,
     ) -> Self {
         Self {
@@ -78,7 +78,7 @@ impl SourceContext {
     }
 
     /// Gets a reference to the event buffer pool.
-    pub fn event_buffer_pool(&self) -> &FixedSizeObjectPool<EventBuffer> {
+    pub fn event_buffer_pool(&self) -> &ElasticObjectPool<EventBuffer> {
         &self.inner.event_buffer_pool
     }
 
