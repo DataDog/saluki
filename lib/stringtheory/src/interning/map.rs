@@ -13,14 +13,13 @@ use std::{
     collections::BTreeSet,
     hash::Hasher as _,
     num::NonZeroUsize,
+    ops::Deref,
     ptr::NonNull,
     sync::atomic::Ordering::{AcqRel, Acquire},
 };
 
 #[cfg(feature = "loom")]
 use loom::sync::{atomic::AtomicUsize, Arc, Mutex};
-
-use super::{InternedString, InternerVtable};
 
 const HEADER_LEN: usize = std::mem::size_of::<EntryHeader>();
 const HEADER_ALIGN: usize = std::mem::align_of::<EntryHeader>();
@@ -45,31 +44,45 @@ const MAX_INTERNABLE_STRING_LENGTH: usize = ENTRY_CAP_MASK;
 // the smallest possible string capacity (8 bytes, since we always align to 8 bytes).
 const MINIMUM_ENTRY_LEN: usize = HEADER_LEN + HEADER_ALIGN;
 
-static FIXED_SIZE_VTABLE: InternerVtable = InternerVtable {
-    interner_name: "fixed_size",
-    as_raw_parts: fixed_size_as_raw_parts,
-    drop: fixed_size_drop,
-};
-
-unsafe fn fixed_size_as_raw_parts(state: *const ()) -> (*const u8, usize) {
-    let state = Arc::from_raw(state as *const StringState);
-    let (ptr, len) = get_entry_string_parts(state.header);
-
-    // Forget the `Arc` so that we don't drop it prematurely.
-    std::mem::forget(state);
-
-    (ptr, len)
+/// An interned string.
+///
+/// This string type is read-only, and dereferences to `&str` for ergonomic usage. It is cheap to clone (8 bytes), but
+/// generally will not be interacted with directly. Instead, most usages should be wrapped in `MetaString`.
+#[derive(Clone, Debug)]
+pub struct InternedString {
+    state: Arc<StringState>,
 }
 
-unsafe fn fixed_size_drop(state: *const ()) {
-    let state = Arc::from_raw(state as *const StringState);
-    drop(state);
+impl Deref for InternedString {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.state.get_entry()
+    }
 }
+
+impl PartialEq for InternedString {
+    fn eq(&self, other: &Self) -> bool {
+        (Arc::ptr_eq(&self.state.interner, &other.state.interner) && self.state.header == other.state.header)
+            || self.state.get_entry() == other.state.get_entry()
+    }
+}
+
+impl Eq for InternedString {}
 
 #[derive(Debug)]
 struct StringState {
     interner: Arc<Mutex<InternerShardState>>,
     header: NonNull<EntryHeader>,
+}
+
+impl StringState {
+    fn get_entry<'a>(&'a self) -> &'a str {
+        // NOTE: We're specifically upholding a safety variant here by tying the lifetime of the string reference to our
+        // own lifetime, as the lifetime of the string reference *cannot* exceed the lifetime of the interner state,
+        // which we keep alive by holding `Arc<Mutex<InternerShardState>>`.
+        get_entry_string::<'a>(self.header)
+    }
 }
 
 impl Drop for StringState {
@@ -344,9 +357,7 @@ impl InternerShardState {
             if header.is_active() && header.hash == hash && header.len() == s.len() {
                 // As a final check, we make sure that the entry string and `s` are equal. If they are, then we
                 // have an exact match and will return the entry.
-                //
-                // SAFETY: We know that our header is valid and initialized.
-                let s_entry = unsafe { get_entry_string(header_ptr) };
+                let s_entry = get_entry_string(header_ptr);
                 if s_entry == s {
                     // Increment the reference count for this entry so it's not prematurely reclaimed.
                     header.increment_active_refs();
@@ -796,24 +807,26 @@ const fn layout_for_data(capacity: NonZeroUsize) -> Layout {
     unsafe { Layout::from_size_align_unchecked(size, HEADER_ALIGN) }
 }
 
-unsafe fn get_entry_string_parts(header_ptr: NonNull<EntryHeader>) -> (*const u8, usize) {
+fn get_entry_string<'a>(header_ptr: NonNull<EntryHeader>) -> &'a str {
     // SAFETY: The caller is responsible for ensuring that `header_ptr` is well-aligned and points to an initialized
     // `EntryHeader` value.
-    let header = header_ptr.as_ref();
+    let header = unsafe { header_ptr.as_ref() };
 
-    // Advance past the header and get the pointer to the string.
+    // Advance past the header and get a reference to the string.
     //
-    // SAFETY: We know that we're simply skipping over the header by advancing the pointer by one when it's still typed
-    // as `*mut EntryHeader`.
-    let s_ptr = header_ptr.as_ptr().add(1).cast::<u8>();
-    (s_ptr, header.len())
-}
-
-unsafe fn get_entry_string<'a>(header_ptr: NonNull<EntryHeader>) -> &'a str {
-    let (ptr, len) = get_entry_string_parts(header_ptr);
-
-    // SAFETY: We depend on `get_entry_string_parts` to give us a valid pointer and length for the string.
-    std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len))
+    // SAFETY: The caller is responsible for ensuring that `header_ptr` can be advanced by the length of the entry
+    // header _and_ the length of the string, without exceeding the bounds of the data buffer.
+    //
+    // SAFETY: The string pointer is derived from `NonNull<EntryHeader>`, which is guaranteed to be non-null, and the
+    // alignment required for `u8` is one, so the pointer is always well-aligned.
+    //
+    // SAFETY: Entries are only ever written from string references, which are valid UTF-8, so we know that the string
+    // data is safe to coerce directly to `&str`.
+    unsafe {
+        let s_ptr = header_ptr.as_ptr().add(1).cast::<u8>();
+        let s_buf = std::slice::from_raw_parts(s_ptr, header.len());
+        std::str::from_utf8_unchecked(s_buf)
+    }
 }
 
 fn intern_with_shard_and_hash(shard: &Arc<Mutex<InternerShardState>>, hash: u64, s: &str) -> Option<InternedString> {
@@ -822,24 +835,17 @@ fn intern_with_shard_and_hash(shard: &Arc<Mutex<InternerShardState>>, hash: u64,
         shard.try_intern(hash, s)?
     };
 
-    let state = Arc::new(StringState {
-        interner: Arc::clone(shard),
-        header,
-    });
-
     Some(InternedString {
-        state: Arc::into_raw(state) as *const (),
-        vtable: &FIXED_SIZE_VTABLE,
+        state: Arc::new(StringState {
+            interner: Arc::clone(shard),
+            header,
+        }),
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::HashSet,
-        mem::ManuallyDrop,
-        ops::{Deref as _, RangeInclusive},
-    };
+    use std::{collections::HashSet, ops::RangeInclusive};
 
     use prop::sample::Index;
     use proptest::{
@@ -883,11 +889,9 @@ mod tests {
     }
 
     fn get_reclaimed_entry_for_string(s: &InternedString) -> ReclaimedEntry {
-        let state = ManuallyDrop::new(unsafe { Arc::from_raw(s.state as *const StringState) });
-
-        let ptr = state.interner.lock().unwrap().ptr.as_ptr();
-        let header = unsafe { state.header.as_ref() };
-        let offset = unsafe { state.header.as_ptr().cast::<u8>().offset_from(ptr) as usize };
+        let ptr = s.state.interner.lock().unwrap().ptr.as_ptr();
+        let header = unsafe { s.state.header.as_ref() };
+        let offset = unsafe { s.state.header.as_ptr().cast::<u8>().offset_from(ptr) as usize };
         ReclaimedEntry::new(offset, header.entry_len())
     }
 
@@ -906,6 +910,15 @@ mod tests {
         // Create a hash set, which handles the deduplication aspect for us, ensuring we have N unique strings where N
         // is within the `unique_strs` range... and then convert it to `Vec<String>` for easier consumption.
         hash_set(str_gen, unique_strs).prop_map(|unique_strs| unique_strs.into_iter().collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn size_of_interned_string() {
+        // We're asserting that `InternedString` itself is 8 bytes: the size of `Arc<T>`.
+        //
+        // While we still end up doing pointer indirection to actually _load_ the underlying string, making
+        // `InternedString` super lightweight is important to performance.
+        assert_eq!(std::mem::size_of::<InternedString>(), 8);
     }
 
     #[test]
