@@ -9,9 +9,6 @@
 #[cfg(not(feature = "loom"))]
 use std::sync::{atomic::AtomicUsize, Arc, Mutex};
 use std::{
-    alloc::Layout,
-    collections::BTreeSet,
-    hash::Hasher as _,
     num::NonZeroUsize,
     ptr::NonNull,
     sync::atomic::Ordering::{AcqRel, Acquire},
@@ -20,49 +17,47 @@ use std::{
 #[cfg(feature = "loom")]
 use loom::sync::{atomic::AtomicUsize, Arc, Mutex};
 
-use super::{InternedString, InternerVtable};
+use super::{
+    helpers::{aligned, aligned_string, hash_string, layout_for_data, PackedLengthCapacity},
+    InternedString, InternerVtable, ReclaimedEntries, ReclaimedEntry,
+};
 
 const HEADER_LEN: usize = std::mem::size_of::<EntryHeader>();
 const HEADER_ALIGN: usize = std::mem::align_of::<EntryHeader>();
-const ENTRY_CAP_MASK: usize = usize::MAX << (usize::BITS / 2);
-const ENTRY_CAP_SHIFT: u32 = usize::BITS / 2;
-const ENTRY_LEN_MASK: usize = usize::MAX >> (usize::BITS / 2);
 
-// In `EntryHeader`, we use the `len` field to store both the actual length of the string in the entry, as well as the
-// size of the entry itself (minus the header length). We do this so that when interning into a reclaimed entry, whose
-// size was large enough to have space left over, but not large enough to hold another string, we can properly track how
-// large the entry is overall, allowing us to properly seek to the start of the next possible entry... rather than
-// simply seek to the end of the current entry's string data (modulo padding).
-//
-// Effectively, we split a `usize` in half: the top half is the entry's maximum possible string length, and the bottom
-// half is the actual string length.
-const MAX_INTERNABLE_STRING_LENGTH: usize = ENTRY_CAP_MASK;
-
-// When reusing a reclaimed entry that's too big for the string we're interning, we check to see if we should "split"
-// it: take a portion of unneeded capacity at the end of the entry and turn it into another reclaimed entry.
-//
-// 32 bytes is the minimum size that such a split would need to be.. This accounts for the header itself (24 bytes) plus
-// the smallest possible string capacity (8 bytes, since we always align to 8 bytes).
+/// The minimum possible length of an entry.
+///
+/// For any entry in the interner, there is already an `EntryHeader` followed by the string data itself. In order to
+/// ensure that entries can be written contiguously, we additionally ensure that the number of bytes we utilize for the
+/// string data is aligned at least as much as `EntryHeader` itself.
+///
+/// This means that the minimum possible length of an entry, or the minimum number of bytes a valid entry could consume,
+/// is the length of the header plus the alignment of the header.
 const MINIMUM_ENTRY_LEN: usize = HEADER_LEN + HEADER_ALIGN;
 
 static FIXED_SIZE_VTABLE: InternerVtable = InternerVtable {
     interner_name: "fixed_size",
     as_raw_parts: fixed_size_as_raw_parts,
+    clone: fixed_size_clone,
     drop: fixed_size_drop,
 };
 
-unsafe fn fixed_size_as_raw_parts(state: *const ()) -> (*const u8, usize) {
-    let state = Arc::from_raw(state as *const StringState);
+unsafe fn fixed_size_as_raw_parts(state: NonNull<()>) -> (NonNull<u8>, usize) {
+    let state = unsafe { state.cast::<StringState>().as_ref() };
     let (ptr, len) = get_entry_string_parts(state.header);
-
-    // Forget the `Arc` so that we don't drop it prematurely.
-    std::mem::forget(state);
 
     (ptr, len)
 }
 
-unsafe fn fixed_size_drop(state: *const ()) {
-    let state = Arc::from_raw(state as *const StringState);
+unsafe fn fixed_size_clone(state: NonNull<()>) -> NonNull<()> {
+    // All we need to do is increment the strong count as if we cloned the `Arc<T>`, but otherwise, the same state
+    // pointer can be used for the clone.
+    Arc::increment_strong_count(state.as_ptr() as *const StringState);
+    state
+}
+
+unsafe fn fixed_size_drop(state: NonNull<()>) {
+    let state = Arc::from_raw(state.as_ptr() as *const StringState);
     drop(state);
 }
 
@@ -107,58 +102,95 @@ struct EntryHeader {
 
     /// Combined length/capacity of the entry, in terms of the string itself.
     ///
-    /// This is a `usize` where the top half is the capacity of the entry, and the bottom half is the length of the
-    /// entry, both in bytes. Since we often have extra padding bytes at the end of the entry, this allows us to track
-    /// the full size of the entry separately from how long the entry's string actually is... but in a single field.
-    ///
     /// Notably, this does _not_ include the length of the header itself. For example, an entry holding the string
     /// "hello, world!" has a string length of 13 bytes, but since we have to pad out to meet our alignment requirements
     /// for `EntryHeader`, we would end up with a capacity of 16 bytes. As such, `EntryHeader::len` would report `13`,
     /// while `EntryHeader::capacity` would report `16`. Likewise, `EntryHeader::entry_len` would report `40`,
     /// accounting for the string capacity (16) as well as the header length itself (24).
     ///
-    /// Practically, this does mean strings can only be as long as `usize::MAX / 2` bytes, but that's a lot of bytes
-    /// even on 32-bit platforms.
-    len_cap: usize,
+    /// As explained in the description of `PackedLengthCapacity`, this does mean strings can't be larger than ~4GB on
+    /// 64-bit platforms, which is not a problem we have.
+    len_cap: PackedLengthCapacity,
 }
 
 impl EntryHeader {
     /// Creates a tombstone entry with the given capacity.
     ///
-    /// This is to allow for updating a region in the data buffer, which has been reclaimed, so that iteration over
-    /// entries in the data buffer can properly skip over this entry.
-    fn tombstone(capacity: usize) -> Self {
+    /// This is to allow for updating a region in the data buffer, which has been reclaimed, such that it is
+    /// identifiable as being unused.
+    fn tombstone(entry: ReclaimedEntry) -> Self {
+        // The usable capacity for a reclaimed entry is the full capacity minus the size of `EntryHeader` itself, as
+        // reclaimed entries represent the _entire_ region in the data buffer, but `EntryHeader` only cares about the
+        // string portion itself.
+        let str_cap = EntryHeader::usable_from_reclaimed(entry);
+
         Self {
             hash: 0,
             refs: AtomicUsize::new(0),
-            len_cap: capacity << ENTRY_CAP_SHIFT,
+            len_cap: PackedLengthCapacity::new(str_cap, 0),
         }
     }
 
-    /// Creates a new `EntryHeader`.`
-    fn new(hash: u64, s: &str) -> Self {
-        let entry = ReclaimedEntry::new(0, Self::entry_len_for_str(s));
+    /// Creates a new entry for the given string.
+    fn from_string(hash: u64, s: &str) -> Self {
+        // We're dictating the necessary capacity here, which is the length of the string rounded to the nearest
+        // multiple of the alignment of `EntryHeader`, which ensures that any subsequent entry will be properly aligned.
+        let str_cap = aligned_string::<Self>(s);
 
-        Self::from_reclaimed_entry(entry, hash, s)
+        Self {
+            hash,
+            refs: AtomicUsize::new(1),
+            len_cap: PackedLengthCapacity::new(str_cap, s.len()),
+        }
     }
 
-    /// Creates a new `EntryHeader` based on the given reclaimed entry.
+    /// Creates a new entry for the given string, based on the given reclaimed entry.
     ///
     /// This maps the entry header to the underlying capacity of the given reclaimed entry, which is done in cases where
     /// a reclaimed entry is being used when interning a new string, and the reclaimed entry is larger than the string
     /// being interned, but not large enough that we could split the excess capacity into a new reclaimed entry.
-    fn from_reclaimed_entry(reclaimed_entry: ReclaimedEntry, hash: u64, s: &str) -> Self {
-        let len_cap = (reclaimed_entry.str_capacity() << ENTRY_CAP_SHIFT) | s.len();
-        Self {
+    fn from_reclaimed_entry(mut entry: ReclaimedEntry, hash: u64, s: &str) -> (Self, Option<ReclaimedEntry>) {
+        // The usable capacity for a reclaimed entry is the full capacity minus the size of `EntryHeader` itself, as
+        // reclaimed entries represent the _entire_ region in the data buffer, but `EntryHeader` only cares about the
+        // string portion itself.
+        let entry_str_cap = EntryHeader::usable_from_reclaimed(entry);
+        let required_str_cap = aligned_string::<Self>(s);
+
+        // If the reclaimed entry has enough additional space beyond what we need for the string, we'll split it off and
+        // return it for the caller to keep around in the reclaimed entries list.
+        let remainder = entry_str_cap - required_str_cap;
+        let (adjusted_str_cap, maybe_split_entry) = if remainder >= MINIMUM_ENTRY_LEN {
+            let entry_len = EntryHeader::len_for(s);
+            let split_entry = entry.split_off(entry_len);
+
+            (entry_len - HEADER_LEN, Some(split_entry))
+        } else {
+            (entry_str_cap, None)
+        };
+
+        let header = Self {
             hash,
             refs: AtomicUsize::new(1),
-            len_cap,
-        }
+            len_cap: PackedLengthCapacity::new(adjusted_str_cap, s.len()),
+        };
+
+        (header, maybe_split_entry)
     }
 
-    const fn entry_len_for_str(s: &str) -> usize {
-        let padded_s_len = aligned_str_len(s);
-        HEADER_LEN + padded_s_len
+    /// Returns the computed length of a complete entry, in bytes, for the given string.
+    ///
+    /// This includes the size of the entry header itself and the string data, when padded for alignment, and represents
+    /// the number of bytes that would be consumed in the data buffer.
+    const fn len_for(s: &str) -> usize {
+        HEADER_LEN + aligned_string::<Self>(s)
+    }
+
+    /// Returns the usable capacity of a reclaimed entry, in bytes.
+    ///
+    /// Usable refers to the number of bytes in a reclaimed entry that could be used for string data, after accounting
+    /// for the size of `EntryHeader` itself.
+    const fn usable_from_reclaimed(entry: ReclaimedEntry) -> usize {
+        entry.capacity() - HEADER_LEN
     }
 
     /// Returns the total number of bytes that this entry takes up in the data buffer.
@@ -168,12 +200,12 @@ impl EntryHeader {
 
     /// Returns the size of the string, in bytes, that this entry can hold.
     const fn capacity(&self) -> usize {
-        (self.len_cap & ENTRY_CAP_MASK) >> ENTRY_CAP_SHIFT
+        self.len_cap.capacity()
     }
 
     /// Returns the size of the string, in bytes, that this entry _actually_ holds.
     const fn len(&self) -> usize {
-        self.len_cap & ENTRY_LEN_MASK
+        self.len_cap.len()
     }
 
     /// Returns `true` if this entry is currently referenced.
@@ -194,77 +226,6 @@ impl EntryHeader {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct ReclaimedEntry {
-    offset: usize,
-    capacity: usize,
-}
-
-impl ReclaimedEntry {
-    /// Creates a new `ReclaimedEntry` with the given offset and capacity.
-    const fn new(offset: usize, capacity: usize) -> Self {
-        Self { offset, capacity }
-    }
-
-    /// Returns the maximum string size, in bytes, that the reclaimed entry could hold.
-    const fn str_capacity(&self) -> usize {
-        self.capacity - HEADER_LEN
-    }
-
-    /// Returns `true` if `other` comes immediately after (contiguous) `self`.
-    const fn followed_by(&self, other: &Self) -> bool {
-        self.offset + self.capacity == other.offset
-    }
-
-    /// Splits the entry into two at the given index.
-    ///
-    /// Afterwards, `self` will have a new capacity of `len` and its original offset, and the returned `ReclaimedEntry`
-    /// will have an offset of `self.offset + len` and a capacity of `self.capacity - len`.
-    fn split_off(&mut self, len: usize) -> Self {
-        let new_offset = self.offset + len;
-        let new_capacity = self.capacity - len;
-        self.capacity = len;
-
-        Self::new(new_offset, new_capacity)
-    }
-
-    /// Merges `other` into `self`, updating `self` to reflect the new, larger entry.
-    fn merge(&mut self, other: Self) {
-        debug_assert!(
-            self.followed_by(&other) || other.followed_by(self),
-            "`merge` should never be called for non-adjacent entries"
-        );
-
-        // We'll try and merge regardless of which side is adjacent, but we'll always merge `other` into `self`.
-        if self.offset < other.offset {
-            self.capacity += other.capacity;
-        } else {
-            self.offset = other.offset;
-            self.capacity += other.capacity;
-        }
-    }
-}
-
-impl PartialEq for ReclaimedEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.offset == other.offset && self.capacity == other.capacity
-    }
-}
-
-impl Eq for ReclaimedEntry {}
-
-impl PartialOrd for ReclaimedEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.offset.cmp(&other.offset))
-    }
-}
-
-impl Ord for ReclaimedEntry {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.offset.cmp(&other.offset)
-    }
-}
-
 #[derive(Debug)]
 struct InternerShardState {
     // Direct pieces of our buffer allocation.
@@ -276,14 +237,14 @@ struct InternerShardState {
     entries: usize,
 
     // Markers for entries that can be reused.
-    reclaimed: BTreeSet<ReclaimedEntry>,
+    reclaimed: ReclaimedEntries,
 }
 
 impl InternerShardState {
     /// Creates a new `InternerShardState` with a pre-allocated buffer that has the given capacity.
     pub fn with_capacity(capacity: NonZeroUsize) -> Self {
         assert!(
-            aligned(capacity.get(), HEADER_ALIGN) <= isize::MAX as usize,
+            aligned::<EntryHeader>(capacity.get()) <= isize::MAX as usize,
             "capacity would overflow isize::MAX, which violates layout constraints"
         );
 
@@ -291,7 +252,7 @@ impl InternerShardState {
         // for `EntryHeader`.
         //
         // SAFETY: `layout_for_data` ensures the layout is non-zero.
-        let data_layout = layout_for_data(capacity);
+        let data_layout = layout_for_data::<EntryHeader>(capacity);
         let data_ptr = unsafe { std::alloc::alloc(data_layout) };
         let ptr = match NonNull::new(data_ptr) {
             Some(ptr) => ptr,
@@ -303,7 +264,7 @@ impl InternerShardState {
             len: 0,
             capacity,
             entries: 0,
-            reclaimed: BTreeSet::new(),
+            reclaimed: ReclaimedEntries::new(),
         }
     }
 
@@ -320,15 +281,12 @@ impl InternerShardState {
 
         // SAFETY: The caller is responsible for ensuring that `offset` is within the bounds of the data buffer, and
         // that `offset` is well-aligned for `EntryHeader`.
-        let entry_ptr = unsafe { self.ptr.as_ptr().add(offset) };
-        debug_assert!(
-            entry_ptr.align_offset(HEADER_ALIGN) == 0,
-            "entry header pointer must be well-aligned"
-        );
+        let entry_ptr = unsafe { self.ptr.as_ptr().add(offset).cast::<EntryHeader>() };
+        debug_assert!(entry_ptr.is_aligned(), "entry header pointer must be well-aligned");
 
         // SAFETY: `entry_ptr` is derived from `self.ptr`, which itself is `NonNull<u8>`, and the caller is responsible
         // for ensuring that `offset` is within the bounds of the data buffer, so we know `entry_ptr` is non-null.
-        unsafe { NonNull::new_unchecked(entry_ptr.cast::<EntryHeader>()) }
+        unsafe { NonNull::new_unchecked(entry_ptr) }
     }
 
     fn find_entry(&self, hash: u64, s: &str) -> Option<NonNull<EntryHeader>> {
@@ -391,32 +349,24 @@ impl InternerShardState {
     }
 
     fn write_to_unoccupied(&mut self, s_hash: u64, s: &str) -> NonNull<EntryHeader> {
-        let entry_header = EntryHeader::new(s_hash, s);
-        let entry_len = entry_header.entry_len();
+        let entry_header = EntryHeader::from_string(s_hash, s);
 
         // Write the entry to the end of the data buffer.
         let entry_offset = self.len;
-        self.len += entry_len;
+        self.len += entry_header.entry_len();
 
         self.write_entry(entry_offset, entry_header, s)
     }
 
-    fn write_to_reclaimed_entry(
-        &mut self, mut reclaimed_entry: ReclaimedEntry, s_hash: u64, s: &str,
-    ) -> NonNull<EntryHeader> {
-        let entry_len = EntryHeader::entry_len_for_str(s);
-        let entry_offset = reclaimed_entry.offset;
+    fn write_to_reclaimed_entry(&mut self, entry: ReclaimedEntry, s_hash: u64, s: &str) -> NonNull<EntryHeader> {
+        let entry_offset = entry.offset();
+        let (entry_header, maybe_split_entry) = EntryHeader::from_reclaimed_entry(entry, s_hash, s);
 
-        // First, figure out if we can/should split the reclaimed entry.
-        let remainder = reclaimed_entry.capacity - entry_len;
-        if remainder >= MINIMUM_ENTRY_LEN {
-            // We can split the reclaimed entry, so we'll update the reclaimed entry to reflect the new entry that's
-            // been written, and then add the remainder as a new reclaimed entry.
-            let split_reclaimed_entry = reclaimed_entry.split_off(entry_len);
-            self.add_reclaimed(split_reclaimed_entry);
+        // If we had enough capacity in the reclaimed entry to hold this string _and_ potentially hold another entry, we
+        // split it off and store that remainder entry.
+        if let Some(split_entry) = maybe_split_entry {
+            self.add_reclaimed(split_entry);
         }
-
-        let entry_header = EntryHeader::from_reclaimed_entry(reclaimed_entry, s_hash, s);
 
         // Write the entry in place of the reclaimed entry.
         self.write_entry(entry_offset, entry_header, s)
@@ -442,55 +392,12 @@ impl InternerShardState {
         self.add_reclaimed(reclaimed_entry);
     }
 
-    fn add_reclaimed(&mut self, mut current_entry: ReclaimedEntry) {
-        // Reclamation is a two-step process: first, we try to find adjacent reclaimed entries to the one being added,
-        // and merge them together if possible, and secondly, we tombstone the entry (whether merged or not).
-
-        // First, try and find adjacent reclaimed entries.
-        //
-        // Essentially, if we have two (or more) contiguous entries, we want to merge them together... so that, for
-        // example, instead of 2 or 3 entries that are only 64 bytes large (which means 40 bytes usable for strings), we
-        // can have a single entry that's 128-192 bytes large (which means 104-168 bytes usable for strings).
-        //
-        // We iterate over the existing reclaimed entries to see if we can find any that come either directly before
-        // _or_ after the current entry we're trying to add, and that are adjacent to the current entry, and make a note
-        // of them if found.
-        let mut maybe_prev_entry = None;
-        let mut maybe_next_entry = None;
-
-        for entry in self.reclaimed.iter() {
-            if entry.followed_by(&current_entry) {
-                // We found an adjacent entry that comes right _before_ our current entry.
-                maybe_prev_entry = Some(*entry);
-            } else if current_entry.followed_by(entry) {
-                // We found an adjacent entry that comes right _after_ our current entry.
-                maybe_next_entry = Some(*entry);
-                break;
-            } else {
-                // We're past the current entry, so we can break early.
-                if entry.offset > current_entry.offset {
-                    break;
-                }
-            }
-        }
-
-        // We found adjacent entries, so remove them from the overall list of reclaimed entries and merge them into our
-        // current entry before adding the current entry to the list.
-        if let Some(prev_entry) = maybe_prev_entry {
-            self.reclaimed.remove(&prev_entry);
-            current_entry.merge(prev_entry);
-        }
-
-        if let Some(next_entry) = maybe_next_entry {
-            self.reclaimed.remove(&next_entry);
-            current_entry.merge(next_entry);
-        }
-
-        self.reclaimed.insert(current_entry);
-
-        // Now that we've ensured we have the biggest possible reclaimed entry after merging adjacent entries, we can
-        // finally tombstone it.
-        self.write_entry_tombstone(current_entry);
+    fn add_reclaimed(&mut self, current_entry: ReclaimedEntry) {
+        // Reclamation is a two-step process: first, we have to actually keep track of the reclaimed entry, which
+        // potentially involves merging adjacent reclaimed entries, and then once all of that has happened, we tombstone
+        // the entry (whether merged or not).
+        let merged_current_entry = self.reclaimed.insert(current_entry);
+        self.write_entry_tombstone(merged_current_entry);
     }
 
     fn mark_for_reclamation(&mut self, header_ptr: NonNull<EntryHeader>) {
@@ -511,20 +418,18 @@ impl InternerShardState {
         }
     }
 
-    fn write_entry_tombstone(&mut self, reclaimed_entry: ReclaimedEntry) {
-        let entry_ptr = self.get_entry_ptr(reclaimed_entry.offset);
+    fn write_entry_tombstone(&mut self, entry: ReclaimedEntry) {
+        let entry_ptr = self.get_entry_ptr(entry.offset);
 
-        // Write the entry tombstone itself.
-        //
-        // This zeroes out the hash, active references, and the string _length_, but leaves the string _capacity_, which
-        // is required for proper iteration in `find_entry`.
+        // Write the entry tombstone itself, which clears out the hash and sets the reference count to zero.
         //
         // SAFETY: We know that `entry_ptr` is valid for writes (reclaimed entries are, by definition, inactive regions
         // in the data buffer) and is well-aligned for `EntryHeader`.
+        let tombstone = EntryHeader::tombstone(entry);
+        let str_cap = tombstone.capacity();
+
         unsafe {
-            entry_ptr
-                .as_ptr()
-                .write(EntryHeader::tombstone(reclaimed_entry.str_capacity()));
+            entry_ptr.as_ptr().write(EntryHeader::tombstone(entry));
         }
 
         // Write a magic value to the entire string capacity for the entry. This ensures that there's a known repeating
@@ -536,15 +441,15 @@ impl InternerShardState {
         unsafe {
             // Take the entry pointer and add 1, which sets our pointer to right _after_ the header.
             let str_ptr = entry_ptr.as_ptr().add(1).cast::<u8>();
-            let str_buf = std::slice::from_raw_parts_mut(str_ptr, reclaimed_entry.str_capacity());
-            str_buf.fill(0x25);
+            let str_buf = std::slice::from_raw_parts_mut(str_ptr, str_cap);
+            str_buf.fill(0xAA);
         }
     }
 
     fn try_intern(&mut self, s_hash: u64, s: &str) -> Option<NonNull<EntryHeader>> {
-        // We can only intern strings with a size of `MAX_INTERNABLE_STRING_LENGTH` bytes or less. See the description
-        // of the constant for details.
-        if s.len() > MAX_INTERNABLE_STRING_LENGTH {
+        // We can only intern strings with a size that fits within a packed length/capacity value, so if `s` is larger
+        // than that, we can't intern it, and there's existing entry we could have for it either.
+        if s.len() > PackedLengthCapacity::maximum_value() {
             return None;
         }
 
@@ -555,25 +460,20 @@ impl InternerShardState {
             }
         }
 
-        let entry_len = EntryHeader::entry_len_for_str(s);
+        let required_cap = EntryHeader::len_for(s);
 
         // We didn't find an existing entry, so we're going to intern it.
         //
-        // First, try and see if we have a reclaimed entry that can fit this string and is aligned. If nothing suitable
-        // is found, then we'll just try to fit it in the remaining capacity of our data buffer.
+        // First, try and see if we have a reclaimed entry that can fit this string. If nothing suitable is found, or we
+        // have no reclaimed entries, then we'll just try to fit it in the remaining capacity of our data buffer.
         if !self.reclaimed.is_empty() {
-            let maybe_reclaimed_entry = self.reclaimed.iter().find(|re| re.capacity >= entry_len).copied();
+            let maybe_reclaimed_entry = self.reclaimed.take_if(|entry| entry.capacity() >= required_cap);
             if let Some(reclaimed_entry) = maybe_reclaimed_entry {
-                // We found a suitable reclaimed entry, so remove it from the list and then write into it.
-                self.reclaimed.remove(&reclaimed_entry);
-
                 return Some(self.write_to_reclaimed_entry(reclaimed_entry, s_hash, s));
             }
         }
 
-        // We couldn't find a large enough reclaimed entry, or we had none, so see if we can fit this string within the
-        // available capacity of our data buffer.
-        if entry_len <= self.available() {
+        if required_cap <= self.available() {
             Some(self.write_to_unoccupied(s_hash, s))
         } else {
             None
@@ -583,10 +483,10 @@ impl InternerShardState {
 
 impl Drop for InternerShardState {
     fn drop(&mut self) {
-        // SAFETY: We allocated this buffer with the global allocator, and we're generating the same layout for it as
-        // `InternerShardState::new` using `layout_for_data`.
+        // SAFETY: We allocated this buffer with the global allocator, and we're generating the same layout that was
+        // used to allocate it in the first place.
         unsafe {
-            std::alloc::dealloc(self.ptr.as_ptr(), layout_for_data(self.capacity));
+            std::alloc::dealloc(self.ptr.as_ptr(), layout_for_data::<EntryHeader>(self.capacity));
         }
     }
 }
@@ -624,7 +524,13 @@ impl<const SHARD_FACTOR: usize> InternerState<SHARD_FACTOR> {
         let shards = std::iter::repeat_with(|| Arc::new(Mutex::new(InternerShardState::with_capacity(shard_capacity))))
             .take(SHARD_FACTOR)
             .collect::<Vec<_>>();
-        let capacity = shards.iter().map(|shard| shard.lock().unwrap().capacity.get()).sum();
+        let capacity = shards
+            .iter()
+            .map(|shard| {
+                let shard = shard.lock().unwrap();
+                shard.capacity.get()
+            })
+            .sum();
         let shards: [Arc<Mutex<InternerShardState>>; SHARD_FACTOR] =
             shards.try_into().expect("should not fail to convert to array");
 
@@ -767,36 +673,7 @@ impl<const SHARD_FACTOR: usize> FixedSizeInterner<SHARD_FACTOR> {
     }
 }
 
-fn hash_string(s: &str) -> u64 {
-    let mut hasher = ahash::AHasher::default();
-    hasher.write(s.as_bytes());
-    hasher.finish()
-}
-
-/// Rounds up `len` to the nearest multiple of `align`.
-const fn aligned(len: usize, align: usize) -> usize {
-    len.wrapping_add(align).wrapping_sub(1) & !align.wrapping_sub(1)
-}
-
-/// Gets the number of bytes for the given string, rounded up to the nearest multiple of `HEADER_ALIGN`.
-const fn aligned_str_len(s: &str) -> usize {
-    aligned(s.len(), HEADER_ALIGN)
-}
-
-const fn layout_for_data(capacity: NonZeroUsize) -> Layout {
-    // Round up the capacity to the nearest multiple of the header size.
-    let size = capacity.get().div_ceil(HEADER_LEN) * HEADER_LEN;
-
-    // SAFETY: The size of the layout cannot be zero (since `capacity` is non-zero and we always divide rounding up,
-    // meaning `size` will always be atleast `HEADER_LEN`), and alignment comes directly from `std::mem::align_of`,
-    // where alignment preconditions are already upheld.
-    //
-    // SAFETY: The caller is responsible for ensuring that `capacity`, when rounded up to `HEADER_ALIGN`, does not
-    // overflow `isize` (i.e. less than or equal to `isize::MAX`).
-    unsafe { Layout::from_size_align_unchecked(size, HEADER_ALIGN) }
-}
-
-unsafe fn get_entry_string_parts(header_ptr: NonNull<EntryHeader>) -> (*const u8, usize) {
+unsafe fn get_entry_string_parts(header_ptr: NonNull<EntryHeader>) -> (NonNull<u8>, usize) {
     // SAFETY: The caller is responsible for ensuring that `header_ptr` is well-aligned and points to an initialized
     // `EntryHeader` value.
     let header = header_ptr.as_ref();
@@ -805,15 +682,15 @@ unsafe fn get_entry_string_parts(header_ptr: NonNull<EntryHeader>) -> (*const u8
     //
     // SAFETY: We know that we're simply skipping over the header by advancing the pointer by one when it's still typed
     // as `*mut EntryHeader`.
-    let s_ptr = header_ptr.as_ptr().add(1).cast::<u8>();
+    let s_ptr = header_ptr.add(1).cast::<u8>();
     (s_ptr, header.len())
 }
 
 unsafe fn get_entry_string<'a>(header_ptr: NonNull<EntryHeader>) -> &'a str {
-    let (ptr, len) = get_entry_string_parts(header_ptr);
+    let (s_ptr, s_len) = get_entry_string_parts(header_ptr);
 
     // SAFETY: We depend on `get_entry_string_parts` to give us a valid pointer and length for the string.
-    std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len))
+    std::str::from_utf8_unchecked(std::slice::from_raw_parts(s_ptr.as_ptr() as *const _, s_len))
 }
 
 fn intern_with_shard_and_hash(shard: &Arc<Mutex<InternerShardState>>, hash: u64, s: &str) -> Option<InternedString> {
@@ -827,8 +704,10 @@ fn intern_with_shard_and_hash(shard: &Arc<Mutex<InternerShardState>>, hash: u64,
         header,
     });
 
+    let state = NonNull::new(Arc::into_raw(state) as *mut ())?;
+
     Some(InternedString {
-        state: Arc::into_raw(state) as *const (),
+        state,
         vtable: &FIXED_SIZE_VTABLE,
     })
 }
@@ -875,20 +754,20 @@ mod tests {
     }
 
     fn shard_first_reclaimed_entry(shard: &Arc<Mutex<InternerShardState>>) -> ReclaimedEntry {
-        shard.lock().unwrap().reclaimed.first().copied().unwrap()
-    }
-
-    fn entry_len(s: &str) -> usize {
-        EntryHeader::entry_len_for_str(s)
+        shard.lock().unwrap().reclaimed.first().unwrap()
     }
 
     fn get_reclaimed_entry_for_string(s: &InternedString) -> ReclaimedEntry {
-        let state = ManuallyDrop::new(unsafe { Arc::from_raw(s.state as *const StringState) });
+        let state = ManuallyDrop::new(unsafe { Arc::from_raw(s.state.as_ptr() as *const StringState) });
 
         let ptr = state.interner.lock().unwrap().ptr.as_ptr();
         let header = unsafe { state.header.as_ref() };
         let offset = unsafe { state.header.as_ptr().cast::<u8>().offset_from(ptr) as usize };
         ReclaimedEntry::new(offset, header.entry_len())
+    }
+
+    fn entry_len(s: &str) -> usize {
+        EntryHeader::len_for(s)
     }
 
     fn arb_alphanum_strings(
@@ -1097,117 +976,6 @@ mod tests {
         assert_eq!(shard_entries(&shard), 1);
         assert_eq!(shard_reclaimed_len(&shard), 0);
         assert_eq!(s1_reclaimed_expected, s2_reclaimed_expected);
-    }
-
-    #[test]
-    fn reclamation_merges_previous_and_current() {
-        // NOTE: The drop order matters here, because what we're testing is that the reclamation logic can properly
-        // merge adjacent entries regardless of whether we're merging with an existing reclaimed entry that comes before
-        // us _or_ after us (or both!).
-
-        let shard = create_shard(NonZeroUsize::new(1024).unwrap());
-
-        // Intern two strings, back-to-back, which should fit without issue.
-        let s1 = intern_for_shard(&shard, "hello there, world!").expect("should not fail to intern");
-        let s1_reclaimed_expected = get_reclaimed_entry_for_string(&s1);
-
-        let s2 = intern_for_shard(&shard, "tally ho, chaps!").expect("should not fail to intern");
-        let s2_reclaimed_expected = get_reclaimed_entry_for_string(&s2);
-
-        assert_eq!(shard_entries(&shard), 2);
-        assert_eq!(shard_reclaimed_len(&shard), 0);
-
-        // Drop the both strings, which should lead to both entries being reclaimed and their entries merged as they're adjacent.
-        drop(s1);
-        drop(s2);
-
-        assert_eq!(shard_entries(&shard), 0);
-        assert_eq!(shard_reclaimed_len(&shard), 1);
-
-        // The reclaimed entry should be the sum of the reclaimed entries for both `s1` and `s2`.
-        let merged_reclaimed = shard_first_reclaimed_entry(&shard);
-        let mut expected_reclaimed = s1_reclaimed_expected;
-        expected_reclaimed.merge(s2_reclaimed_expected);
-
-        assert_eq!(expected_reclaimed, merged_reclaimed);
-    }
-
-    #[test]
-    fn reclamation_merges_current_and_subsequent() {
-        // NOTE: The drop order matters here, because what we're testing is that the reclamation logic can properly
-        // merge adjacent entries regardless of whether we're merging with an existing reclaimed entry that comes before
-        // us _or_ after us (or both!).
-
-        let shard = create_shard(NonZeroUsize::new(1024).unwrap());
-
-        // Intern two strings, back-to-back, which should fit without issue.
-        let s1 = intern_for_shard(&shard, "hello there, world!").expect("should not fail to intern");
-        let s1_reclaimed_expected = get_reclaimed_entry_for_string(&s1);
-
-        let s2 = intern_for_shard(&shard, "tally ho, chaps!").expect("should not fail to intern");
-        let s2_reclaimed_expected = get_reclaimed_entry_for_string(&s2);
-
-        assert_eq!(shard_entries(&shard), 2);
-        assert_eq!(shard_reclaimed_len(&shard), 0);
-
-        // Drop the both strings, which should lead to both entries being reclaimed and their entries merged as they're adjacent.
-        drop(s2);
-        drop(s1);
-
-        assert_eq!(shard_entries(&shard), 0);
-        assert_eq!(shard_reclaimed_len(&shard), 1);
-
-        // The reclaimed entry should be the sum of the reclaimed entries for both `s1` and `s2`.
-        let merged_reclaimed = shard_first_reclaimed_entry(&shard);
-        let mut expected_reclaimed = s1_reclaimed_expected;
-        expected_reclaimed.merge(s2_reclaimed_expected);
-
-        assert_eq!(expected_reclaimed, merged_reclaimed);
-    }
-
-    #[test]
-    fn reclamation_merges_previous_and_current_and_subsequent() {
-        // NOTE: The drop order matters here, because what we're testing is that the reclamation logic can properly
-        // merge adjacent entries regardless of whether we're merging with an existing reclaimed entry that comes before
-        // us _or_ after us (or both!).
-
-        let shard = create_shard(NonZeroUsize::new(1024).unwrap());
-
-        // Intern three strings, back-to-back-to-back, which should fit without issue.
-        let s1 = intern_for_shard(&shard, "hello there, world!").expect("should not fail to intern");
-        let s1_reclaimed_expected = get_reclaimed_entry_for_string(&s1);
-
-        let s2 = intern_for_shard(&shard, "tally ho, chaps!").expect("should not fail to intern");
-        let s2_reclaimed_expected = get_reclaimed_entry_for_string(&s2);
-
-        let s3 = intern_for_shard(&shard, "onward and upward!").expect("should not fail to intern");
-        let s3_reclaimed_expected = get_reclaimed_entry_for_string(&s3);
-
-        assert_eq!(shard_entries(&shard), 3);
-        assert_eq!(shard_reclaimed_len(&shard), 0);
-
-        // Drop the first and last strings, which should not be merged as they're not adjacent.
-        drop(s1);
-        drop(s3);
-
-        assert_eq!(shard_entries(&shard), 1);
-        assert_eq!(shard_reclaimed_len(&shard), 2);
-
-        // Now drop the second string, which is adjacent to both the first and third strings, and should result in a
-        // single merged reclamined entry.
-        drop(s2);
-
-        assert_eq!(shard_entries(&shard), 0);
-        assert_eq!(shard_reclaimed_len(&shard), 1);
-
-        // The reclaimed entry should be the sum of the reclaimed entries for `s1`, `s2`, and `s3`.
-        let merged_reclaimed = shard_first_reclaimed_entry(&shard);
-
-        let mut expected_reclaimed = s1_reclaimed_expected;
-        expected_reclaimed.merge(s2_reclaimed_expected);
-        expected_reclaimed.merge(s3_reclaimed_expected);
-
-        assert_eq!(expected_reclaimed, merged_reclaimed);
     }
 
     proptest! {
