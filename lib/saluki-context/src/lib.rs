@@ -8,11 +8,14 @@ use std::{
     hash::{self, BuildHasher, Hash as _, Hasher as _},
     num::NonZeroUsize,
     ops::Deref as _,
-    sync::{Arc, OnceLock, RwLock},
+    sync::{Arc, OnceLock},
 };
 
-use indexmap::{Equivalent, IndexSet};
 use metrics::Gauge;
+use quick_cache::{
+    sync::{Cache, DefaultLifecycle},
+    UnitWeighter,
+};
 use saluki_metrics::static_metrics;
 use stringtheory::{interning::FixedSizeInterner, MetaString};
 
@@ -33,12 +36,7 @@ static_metrics! {
     ],
 }
 
-type PrehashedHashSet = HashSet<u64, NoopU64Hasher>;
-
-#[derive(Debug)]
-struct State {
-    resolved_contexts: IndexSet<Context, ahash::RandomState>,
-}
+type PrehashedHashSet = HashSet<u64, NoopU64HashBuilder>;
 
 /// A centralized store for resolved contexts.
 ///
@@ -67,7 +65,7 @@ struct State {
 pub struct ContextResolver<const SHARD_FACTOR: usize = 8> {
     context_metrics: ContextMetrics,
     interner: FixedSizeInterner<SHARD_FACTOR>,
-    state: Arc<RwLock<State>>,
+    context_cache: Arc<Cache<ContextHashKey, Context, UnitWeighter, NoopU64HashBuilder>>,
     hash_seen_buffer: PrehashedHashSet,
     allow_heap_allocations: bool,
 }
@@ -87,10 +85,17 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
         Self {
             context_metrics,
             interner,
-            state: Arc::new(RwLock::new(State {
-                resolved_contexts: IndexSet::with_hasher(ahash::RandomState::new()),
-            })),
-            hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64Hasher::new()),
+
+            // This will also to cache up to 100K resolved contexts, but isn't a _limit_ on how many resolved contexts
+            // can be live at once.
+            context_cache: Arc::new(Cache::with(
+                100000,
+                100000,
+                UnitWeighter,
+                NoopU64HashBuilder,
+                DefaultLifecycle::default(),
+            )),
+            hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64HashBuilder),
             allow_heap_allocations: true,
         }
     }
@@ -122,7 +127,12 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
         // fails, then we just fall back to allocating a new `MetaString` instance.
         MetaString::try_inline(s)
             .or_else(|| self.interner.try_intern(s).map(MetaString::from))
-            .or_else(|| self.allow_heap_allocations.then(|| MetaString::from(s)))
+            .or_else(|| {
+                self.allow_heap_allocations.then(|| {
+                    self.context_metrics.intern_fallback_total().increment(1);
+                    MetaString::from(s)
+                })
+            })
     }
 
     fn create_context_from_ref<I, T>(&self, context_ref: ContextRef<'_, I>, active_count: Gauge) -> Option<Context>
@@ -175,38 +185,42 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
         I: IntoIterator<Item = T>,
         T: AsRef<str> + hash::Hash + std::fmt::Debug,
     {
-        let state = self.state.read().unwrap();
-        match state.resolved_contexts.get(&context_ref) {
-            Some(context) => {
-                self.context_metrics.resolved_existing_context_total().increment(1);
-                Some(context.clone())
+        let hash_key = context_ref.hash_key();
+        let mut was_created = false;
+
+        let create_context = || {
+            let active_count = self.context_metrics.active_contexts().clone();
+            match self.create_context_from_ref(context_ref, active_count) {
+                Some(context) => {
+                    was_created = true;
+                    Ok(context)
+                }
+                None => Err(()),
             }
-            None => {
-                // Switch from read to write lock.
-                drop(state);
-                let mut state = self.state.write().unwrap();
+        };
 
-                // Create our new context and store it.
-                let active_count = self.context_metrics.active_contexts().clone();
-                let context = self.create_context_from_ref(context_ref, active_count)?;
-                state.resolved_contexts.insert(context.clone());
-
-                // TODO: This is lazily updated during resolve, which means this metric might lag behind the actual
-                // count as interned strings are dropped/reclaimed... but we don't have a way to figure out if a given
-                // `MetaString` is an interned string and if dropping it would actually reclaim the interned string...
-                // so this is our next best option short of instrumenting `FixedSizeInterner` directly.
-                //
-                // We probably want to do that in the future, but this is just a little cleaner without adding extra
-                // fluff to `FixedSizeInterner` which is already complex as-is.
-                self.context_metrics.interner_entries().set(self.interner.len() as f64);
-                self.context_metrics
-                    .interner_len_bytes()
-                    .set(self.interner.len_bytes() as f64);
-                self.context_metrics.resolved_new_context_total().increment(1);
-                self.context_metrics.active_contexts().increment(1);
+        match self.context_cache.get_or_insert_with(&hash_key, create_context) {
+            Ok(context) => {
+                // Update our internal metrics if we had to create a new context.
+                if was_created {
+                    // TODO: This is lazily updated during resolve, which means this metric might lag behind the actual
+                    // count as interned strings are dropped/reclaimed... but we don't have a way to figure out if a given
+                    // `MetaString` is an interned string and if dropping it would actually reclaim the interned string...
+                    // so this is our next best option short of instrumenting `FixedSizeInterner` directly.
+                    //
+                    // We probably want to do that in the future, but this is just a little cleaner without adding extra
+                    // fluff to `FixedSizeInterner` which is already complex as-is.
+                    self.context_metrics.interner_entries().set(self.interner.len() as f64);
+                    self.context_metrics
+                        .interner_len_bytes()
+                        .set(self.interner.len_bytes() as f64);
+                    self.context_metrics.resolved_new_context_total().increment(1);
+                    self.context_metrics.active_contexts().increment(1);
+                }
 
                 Some(context)
             }
+            Err(()) => None,
         }
     }
 }
@@ -216,8 +230,8 @@ impl<const SHARD_FACTOR: usize> Clone for ContextResolver<SHARD_FACTOR> {
         Self {
             context_metrics: self.context_metrics.clone(),
             interner: self.interner.clone(),
-            state: self.state.clone(),
-            hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64Hasher::new()),
+            context_cache: Arc::clone(&self.context_cache),
+            hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64HashBuilder),
             allow_heap_allocations: self.allow_heap_allocations,
         }
     }
@@ -439,23 +453,18 @@ pub struct ContextRef<'a, I> {
     hash: u64,
 }
 
-impl<'a, I, T> hash::Hash for ContextRef<'a, I>
-where
-    I: IntoIterator<Item = T>,
-    T: hash::Hash,
-{
-    fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        state.write_u64(self.hash);
+impl<'a, I> ContextRef<'a, I> {
+    fn hash_key(&self) -> ContextHashKey {
+        ContextHashKey(self.hash)
     }
 }
 
-impl<I, T> Equivalent<Context> for ContextRef<'_, I>
-where
-    I: IntoIterator<Item = T>,
-    T: hash::Hash + std::fmt::Debug,
-{
-    fn equivalent(&self, other: &Context) -> bool {
-        self.hash == other.inner.hash
+#[derive(Clone, Eq, PartialEq)]
+struct ContextHashKey(u64);
+
+impl hash::Hash for ContextHashKey {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.0);
     }
 }
 
@@ -759,7 +768,7 @@ where
     I: IntoIterator<Item = T>,
     T: hash::Hash,
 {
-    let mut seen = PrehashedHashSet::with_hasher(NoopU64Hasher::new());
+    let mut seen = PrehashedHashSet::with_hasher(NoopU64HashBuilder);
     hash_context_with_seen(name, tags, &mut seen)
 }
 
@@ -809,12 +818,6 @@ fn is_context_dirty(hash: u64) -> bool {
 
 struct NoopU64Hasher(u64);
 
-impl NoopU64Hasher {
-    fn new() -> Self {
-        Self(0)
-    }
-}
-
 impl hash::Hasher for NoopU64Hasher {
     fn finish(&self) -> u64 {
         self.0
@@ -829,11 +832,14 @@ impl hash::Hasher for NoopU64Hasher {
     }
 }
 
-impl BuildHasher for NoopU64Hasher {
+#[derive(Clone)]
+struct NoopU64HashBuilder;
+
+impl BuildHasher for NoopU64HashBuilder {
     type Hasher = NoopU64Hasher;
 
     fn build_hasher(&self) -> Self::Hasher {
-        Self(0)
+        NoopU64Hasher(0)
     }
 }
 
