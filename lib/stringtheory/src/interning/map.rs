@@ -9,6 +9,7 @@
 #[cfg(not(feature = "loom"))]
 use std::sync::{atomic::AtomicUsize, Arc, Mutex};
 use std::{
+    collections::HashMap,
     num::NonZeroUsize,
     ptr::NonNull,
     sync::atomic::Ordering::{AcqRel, Acquire},
@@ -18,7 +19,7 @@ use std::{
 use loom::sync::{atomic::AtomicUsize, Arc, Mutex};
 
 use super::{
-    helpers::{aligned, aligned_string, hash_string, layout_for_data, PackedLengthCapacity},
+    helpers::{aligned_string, layout_for_data, PackedLengthCapacity},
     InternedString, InternerVtable, ReclaimedEntries, ReclaimedEntry,
 };
 
@@ -35,35 +36,34 @@ const HEADER_ALIGN: usize = std::mem::align_of::<EntryHeader>();
 /// is the length of the header plus the alignment of the header.
 const MINIMUM_ENTRY_LEN: usize = HEADER_LEN + HEADER_ALIGN;
 
-static FIXED_SIZE_VTABLE: InternerVtable = InternerVtable {
-    interner_name: "fixed_size",
-    as_raw_parts: fixed_size_as_raw_parts,
-    clone: fixed_size_clone,
-    drop: fixed_size_drop,
+static GENERIC_MAP_VTABLE: InternerVtable = InternerVtable {
+    interner_name: "generic_map",
+    as_raw_parts: generic_map_as_raw_parts,
+    clone: generic_map_clone,
+    drop: generic_map_drop,
 };
 
-unsafe fn fixed_size_as_raw_parts(state: NonNull<()>) -> (NonNull<u8>, usize) {
+unsafe fn generic_map_as_raw_parts(state: NonNull<()>) -> (NonNull<u8>, usize) {
     let state = unsafe { state.cast::<StringState>().as_ref() };
     let (ptr, len) = get_entry_string_parts(state.header);
 
     (ptr, len)
 }
 
-unsafe fn fixed_size_clone(state: NonNull<()>) -> NonNull<()> {
+unsafe fn generic_map_clone(state: NonNull<()>) -> NonNull<()> {
     // All we need to do is increment the strong count as if we cloned the `Arc<T>`, but otherwise, the same state
     // pointer can be used for the clone.
     Arc::increment_strong_count(state.as_ptr() as *const StringState);
     state
 }
 
-unsafe fn fixed_size_drop(state: NonNull<()>) {
+unsafe fn generic_map_drop(state: NonNull<()>) {
     let state = Arc::from_raw(state.as_ptr() as *const StringState);
     drop(state);
 }
 
-#[derive(Debug)]
 struct StringState {
-    interner: Arc<Mutex<InternerShardState>>,
+    interner: Arc<Mutex<InternerState>>,
     header: NonNull<EntryHeader>,
 }
 
@@ -80,21 +80,12 @@ impl Drop for StringState {
     }
 }
 
-// SAFETY: We don't take references to the entry header pointer that outlast `StringState`, and the only modification we
-// do to the entry header is through atomic operations, so it's safe to both send and share `StringState` between
-// threads.
-unsafe impl Send for StringState {}
-unsafe impl Sync for StringState {}
-
 /// Metadata about an interner entry.
 ///
 /// `EntryHeader` represents the smallest amount of information about an interned entry that is needed to support both
 /// lookup of existing interned strings, as well as the ability to reclaim space in the interner when an entry is no
 /// longer in use.
 struct EntryHeader {
-    /// The hash of the string that this entry represents.
-    hash: u64,
-
     /// The number of active references to this entry.
     ///
     /// Only incremented by the interner itself, and decremented by `InternedString` when it is dropped.
@@ -125,20 +116,18 @@ impl EntryHeader {
         let str_cap = EntryHeader::usable_from_reclaimed(entry);
 
         Self {
-            hash: 0,
             refs: AtomicUsize::new(0),
             len_cap: PackedLengthCapacity::new(str_cap, 0),
         }
     }
 
     /// Creates a new entry for the given string.
-    fn from_string(hash: u64, s: &str) -> Self {
+    fn from_string(s: &str) -> Self {
         // We're dictating the necessary capacity here, which is the length of the string rounded to the nearest
         // multiple of the alignment of `EntryHeader`, which ensures that any subsequent entry will be properly aligned.
         let str_cap = aligned_string::<Self>(s);
 
         Self {
-            hash,
             refs: AtomicUsize::new(1),
             len_cap: PackedLengthCapacity::new(str_cap, s.len()),
         }
@@ -149,7 +138,7 @@ impl EntryHeader {
     /// This maps the entry header to the underlying capacity of the given reclaimed entry, which is done in cases where
     /// a reclaimed entry is being used when interning a new string, and the reclaimed entry is larger than the string
     /// being interned, but not large enough that we could split the excess capacity into a new reclaimed entry.
-    fn from_reclaimed_entry(mut entry: ReclaimedEntry, hash: u64, s: &str) -> (Self, Option<ReclaimedEntry>) {
+    fn from_reclaimed_entry(mut entry: ReclaimedEntry, s: &str) -> (Self, Option<ReclaimedEntry>) {
         // The usable capacity for a reclaimed entry is the full capacity minus the size of `EntryHeader` itself, as
         // reclaimed entries represent the _entire_ region in the data buffer, but `EntryHeader` only cares about the
         // string portion itself.
@@ -169,7 +158,6 @@ impl EntryHeader {
         };
 
         let header = Self {
-            hash,
             refs: AtomicUsize::new(1),
             len_cap: PackedLengthCapacity::new(adjusted_str_cap, s.len()),
         };
@@ -193,11 +181,6 @@ impl EntryHeader {
         entry.capacity() - HEADER_LEN
     }
 
-    /// Returns the total number of bytes that this entry takes up in the data buffer.
-    const fn entry_len(&self) -> usize {
-        HEADER_LEN + self.capacity()
-    }
-
     /// Returns the size of the string, in bytes, that this entry can hold.
     const fn capacity(&self) -> usize {
         self.len_cap.capacity()
@@ -206,6 +189,13 @@ impl EntryHeader {
     /// Returns the size of the string, in bytes, that this entry _actually_ holds.
     const fn len(&self) -> usize {
         self.len_cap.len()
+    }
+
+    /// Returns the total length of the entry, in bytes.
+    ///
+    /// This includes the length of the header in addition to the string data.
+    const fn entry_len(&self) -> usize {
+        HEADER_LEN + self.capacity()
     }
 
     /// Returns `true` if this entry is currently referenced.
@@ -226,25 +216,27 @@ impl EntryHeader {
     }
 }
 
+// SAFETY: We don't take references to the entry header pointer that outlast `StringState`, and the only modification we
+// do to the entry header is through atomic operations, so it's safe to both send and share `StringState` between
+// threads.
+unsafe impl Send for StringState {}
+unsafe impl Sync for StringState {}
+
 #[derive(Debug)]
-struct InternerShardState {
+struct InternerStorage {
     // Direct pieces of our buffer allocation.
     ptr: NonNull<u8>,
     len: usize,
     capacity: NonZeroUsize,
 
-    // Number of active entries (strings) in the interner.
-    entries: usize,
-
     // Markers for entries that can be reused.
     reclaimed: ReclaimedEntries,
 }
 
-impl InternerShardState {
-    /// Creates a new `InternerShardState` with a pre-allocated buffer that has the given capacity.
-    pub fn with_capacity(capacity: NonZeroUsize) -> Self {
+impl InternerStorage {
+    fn with_capacity(capacity: NonZeroUsize) -> Self {
         assert!(
-            aligned::<EntryHeader>(capacity.get()) <= isize::MAX as usize,
+            capacity.get() <= isize::MAX as usize,
             "capacity would overflow isize::MAX, which violates layout constraints"
         );
 
@@ -263,7 +255,6 @@ impl InternerShardState {
             ptr,
             len: 0,
             capacity,
-            entries: 0,
             reclaimed: ReclaimedEntries::new(),
         }
     }
@@ -289,37 +280,6 @@ impl InternerShardState {
         unsafe { NonNull::new_unchecked(entry_ptr) }
     }
 
-    fn find_entry(&self, hash: u64, s: &str) -> Option<NonNull<EntryHeader>> {
-        let mut offset = 0;
-
-        while offset < self.len {
-            // Construct a pointer to the entry at `offset`, and get a reference to the header value.
-            let header_ptr = self.get_entry_ptr(offset);
-            let header = unsafe { header_ptr.as_ref() };
-
-            // See if this entry is active or not. If it's active, then we'll quickly check the hash/length of the
-            // string to see if this is likely to be a match for `s`.
-            if header.is_active() && header.hash == hash && header.len() == s.len() {
-                // As a final check, we make sure that the entry string and `s` are equal. If they are, then we
-                // have an exact match and will return the entry.
-                //
-                // SAFETY: We know that our header is valid and initialized.
-                let s_entry = unsafe { get_entry_string(header_ptr) };
-                if s_entry == s {
-                    // Increment the reference count for this entry so it's not prematurely reclaimed.
-                    header.increment_active_refs();
-
-                    return Some(header_ptr);
-                }
-            }
-
-            // Either this was a reclaimed entry or we didn't have a match, so we move on to the next entry.
-            offset += header.entry_len();
-        }
-
-        None
-    }
-
     fn write_entry(&mut self, offset: usize, entry_header: EntryHeader, s: &str) -> NonNull<EntryHeader> {
         debug_assert_eq!(
             entry_header.len(),
@@ -342,25 +302,22 @@ impl InternerShardState {
         };
         entry_s_buf.copy_from_slice(s_buf);
 
-        // Update the number of entries we have.
-        self.entries += 1;
-
         entry_ptr
     }
 
-    fn write_to_unoccupied(&mut self, s_hash: u64, s: &str) -> NonNull<EntryHeader> {
-        let entry_header = EntryHeader::from_string(s_hash, s);
+    fn write_to_unoccupied(&mut self, s: &str) -> (usize, NonNull<EntryHeader>) {
+        let entry_header = EntryHeader::from_string(s);
 
         // Write the entry to the end of the data buffer.
         let entry_offset = self.len;
         self.len += entry_header.entry_len();
 
-        self.write_entry(entry_offset, entry_header, s)
+        (entry_offset, self.write_entry(entry_offset, entry_header, s))
     }
 
-    fn write_to_reclaimed_entry(&mut self, entry: ReclaimedEntry, s_hash: u64, s: &str) -> NonNull<EntryHeader> {
+    fn write_to_reclaimed_entry(&mut self, entry: ReclaimedEntry, s: &str) -> (usize, NonNull<EntryHeader>) {
         let entry_offset = entry.offset();
-        let (entry_header, maybe_split_entry) = EntryHeader::from_reclaimed_entry(entry, s_hash, s);
+        let (entry_header, maybe_split_entry) = EntryHeader::from_reclaimed_entry(entry, s);
 
         // If we had enough capacity in the reclaimed entry to hold this string _and_ potentially hold another entry, we
         // split it off and store that remainder entry.
@@ -369,56 +326,18 @@ impl InternerShardState {
         }
 
         // Write the entry in place of the reclaimed entry.
-        self.write_entry(entry_offset, entry_header, s)
+        (entry_offset, self.write_entry(entry_offset, entry_header, s))
     }
 
-    fn add_reclaimed_from_header(&mut self, header_ptr: NonNull<EntryHeader>) {
-        // Get the offset of the header within the data buffer.
-        //
-        // SAFETY: The caller is responsible for ensuring the entry header reference belongs to this interner. If that
-        // is upheld, then we know that entry header belongs to our data buffer, and that the pointer to the entry
-        // header is not less than the base pointer of the data buffer, ensuring the offset is non-negative.
-        let entry_offset = unsafe {
-            header_ptr
-                .cast::<u8>()
-                .as_ptr()
-                .offset_from(self.ptr.as_ptr().cast_const())
-        };
-        debug_assert!(entry_offset >= 0, "entry offset must be non-negative");
-
-        let header = unsafe { header_ptr.as_ref() };
-
-        let reclaimed_entry = ReclaimedEntry::new(entry_offset as usize, header.entry_len());
-        self.add_reclaimed(reclaimed_entry);
-    }
-
-    fn add_reclaimed(&mut self, current_entry: ReclaimedEntry) {
+    fn add_reclaimed(&mut self, entry: ReclaimedEntry) {
         // Reclamation is a two-step process: first, we have to actually keep track of the reclaimed entry, which
         // potentially involves merging adjacent reclaimed entries, and then once all of that has happened, we tombstone
         // the entry (whether merged or not).
-        let merged_current_entry = self.reclaimed.insert(current_entry);
-        self.write_entry_tombstone(merged_current_entry);
+        let merged_entry = self.reclaimed.insert(entry);
+        self.clear_reclaimed_entry(merged_entry);
     }
 
-    fn mark_for_reclamation(&mut self, header_ptr: NonNull<EntryHeader>) {
-        // See if the reference count is zero.
-        //
-        // Only interned string values (the frontend handle that wraps the pointer to a specific entry) can decrement
-        // the reference count for their specific entry when dropped, and only `InternerShardState` -- with its access
-        // mediated through a mutex -- can increment the reference count for entries. This means that if the reference
-        // count is zero, then we know that nobody else is holding a reference to this entry, and no concurrent call to
-        // `try_intern` could be updating the reference count, either... so it's safe to be marked as reclaimed.
-        //
-        // SAFETY: The caller is responsible for ensuring that `header_ptr` is well-aligned and points to an initialized
-        // `EntryHeader` value.
-        let header = unsafe { header_ptr.as_ref() };
-        if !header.is_active() {
-            self.entries -= 1;
-            self.add_reclaimed_from_header(header_ptr);
-        }
-    }
-
-    fn write_entry_tombstone(&mut self, entry: ReclaimedEntry) {
+    fn clear_reclaimed_entry(&mut self, entry: ReclaimedEntry) {
         let entry_ptr = self.get_entry_ptr(entry.offset);
 
         // Write the entry tombstone itself, which clears out the hash and sets the reference count to zero.
@@ -442,46 +361,33 @@ impl InternerShardState {
             // Take the entry pointer and add 1, which sets our pointer to right _after_ the header.
             let str_ptr = entry_ptr.as_ptr().add(1).cast::<u8>();
             let str_buf = std::slice::from_raw_parts_mut(str_ptr, str_cap);
-            str_buf.fill(0xAA);
+            str_buf.fill(0x21);
         }
     }
 
-    fn try_intern(&mut self, s_hash: u64, s: &str) -> Option<NonNull<EntryHeader>> {
-        // We can only intern strings with a size that fits within a packed length/capacity value, so if `s` is larger
-        // than that, we can't intern it, and there's existing entry we could have for it either.
-        if s.len() > PackedLengthCapacity::maximum_value() {
-            return None;
-        }
-
-        // Try and find an existing entry for this string.
-        if self.entries != 0 {
-            if let Some(existing_entry) = self.find_entry(s_hash, s) {
-                return Some(existing_entry);
-            }
-        }
-
-        let required_cap = EntryHeader::len_for(s);
-
-        // We didn't find an existing entry, so we're going to intern it.
+    fn mark_for_reclamation(&mut self, header_ptr: NonNull<EntryHeader>) {
+        // Get the offset of the header within the data buffer.
         //
-        // First, try and see if we have a reclaimed entry that can fit this string. If nothing suitable is found, or we
-        // have no reclaimed entries, then we'll just try to fit it in the remaining capacity of our data buffer.
-        if !self.reclaimed.is_empty() {
-            let maybe_reclaimed_entry = self.reclaimed.take_if(|entry| entry.capacity() >= required_cap);
-            if let Some(reclaimed_entry) = maybe_reclaimed_entry {
-                return Some(self.write_to_reclaimed_entry(reclaimed_entry, s_hash, s));
-            }
-        }
+        // SAFETY: The caller is responsible for ensuring the entry header reference belongs to this interner. If that
+        // is upheld, then we know that entry header belongs to our data buffer, and that the pointer to the entry
+        // header is not less than the base pointer of the data buffer, ensuring the offset is non-negative.
+        let entry_offset = unsafe {
+            header_ptr
+                .cast::<u8>()
+                .as_ptr()
+                .offset_from(self.ptr.as_ptr().cast_const())
+        };
+        debug_assert!(entry_offset >= 0, "entry offset must be non-negative");
 
-        if required_cap <= self.available() {
-            Some(self.write_to_unoccupied(s_hash, s))
-        } else {
-            None
-        }
+        let header = unsafe { header_ptr.as_ref() };
+        let entry_len = header.entry_len();
+
+        let entry = ReclaimedEntry::new(entry_offset as usize, entry_len);
+        self.add_reclaimed(entry);
     }
 }
 
-impl Drop for InternerShardState {
+impl Drop for InternerStorage {
     fn drop(&mut self) {
         // SAFETY: We allocated this buffer with the global allocator, and we're generating the same layout that was
         // used to allocate it in the first place.
@@ -491,76 +397,100 @@ impl Drop for InternerShardState {
     }
 }
 
-// SAFETY: We don't take references to the data buffer pointer that outlast `InternerShardState`, and all access to
-// `InternerShardState` itself is mediated through a mutex, so we're safe to send it around and share it between
-// threads.
-unsafe impl Send for InternerShardState {}
-unsafe impl Sync for InternerShardState {}
+struct InternerState {
+    // Backing storage for the interned strings.
+    storage: InternerStorage,
 
-#[derive(Debug)]
-struct InternerState<const SHARD_FACTOR: usize> {
-    shards: [Arc<Mutex<InternerShardState>>; SHARD_FACTOR],
-    capacity: usize,
+    // Active entries in the interner.
+    entries: HashMap<&'static str, usize>,
 }
 
-impl<const SHARD_FACTOR: usize> InternerState<SHARD_FACTOR> {
-    // Ensure our shard factor is a power of two at compile, so that we can just use a mask to get the shard index.
-    const _POWER_OF_TWO_SHARD_FACTOR: () = {
-        if !SHARD_FACTOR.is_power_of_two() {
-            panic!("shard factor must be a power of two")
-        }
-    };
-
+impl InternerState {
+    /// Creates a new `InternerState` with a pre-allocated buffer that has the given capacity.
     pub fn with_capacity(capacity: NonZeroUsize) -> Self {
-        let shard_capacity = match NonZeroUsize::new(capacity.get() / SHARD_FACTOR) {
-            Some(shard_capacity) => shard_capacity,
-            // If we can't divide the capacity evenly, we just specify a capacity of one which will force every shard to
-            // upsize the capacity so that a single entry can fit, and satisfies the need for `NonZeroUsize`.
+        Self {
+            storage: InternerStorage::with_capacity(capacity),
+            entries: HashMap::new(),
+        }
+    }
+
+    fn mark_for_reclamation(&mut self, header_ptr: NonNull<EntryHeader>) {
+        // See if the reference count is zero.
+        //
+        // Only interned string values (the frontend handle that wraps the pointer to a specific entry) can decrement
+        // the reference count for their specific entry when dropped, and only `InternerState` -- with its access
+        // mediated through a mutex -- can increment the reference count for entries. This means that if the reference
+        // count is zero, then we know that nobody else is holding a reference to this entry, and no concurrent call to
+        // `try_intern` could be updating the reference count, either... so it's safe to be marked as reclaimed.
+        //
+        // SAFETY: The caller is responsible for ensuring that `header_ptr` is well-aligned and points to an initialized
+        // `EntryHeader` value.
+        let header = unsafe { header_ptr.as_ref() };
+        if !header.is_active() {
+            // Remove the entry from the entries map first before we reclaim the entry, since doing so overwrites the
+            // entry data in the data buffer.
             //
-            // SAFETY: One is obviously not zero.
-            None => unsafe { NonZeroUsize::new_unchecked(1) },
+            // SAFETY: The caller is responsible for ensuring that they've given us a pointer to an `EntryHeader` that
+            // was acquired from this interner.
+            let entry_str = unsafe { get_entry_string(header_ptr) };
+            self.entries.remove(entry_str);
+
+            self.storage.mark_for_reclamation(header_ptr);
+        }
+    }
+
+    fn try_intern(&mut self, s: &str) -> Option<NonNull<EntryHeader>> {
+        // We can only intern strings with a size that fits within a packed length/capacity value, so if `s` is larger
+        // than that, we can't intern it, and there's existing entry we could have for it either.
+        if s.len() > PackedLengthCapacity::maximum_value() {
+            return None;
+        }
+
+        // Try and find an existing entry for this string.
+        if let Some(entry_offset) = self.entries.get(s) {
+            let entry_ptr = self.storage.get_entry_ptr(*entry_offset);
+
+            let header = unsafe { entry_ptr.as_ref() };
+            header.increment_active_refs();
+
+            return Some(entry_ptr);
+        }
+
+        let required_cap = EntryHeader::len_for(s);
+
+        // We didn't find an existing entry, so we're going to intern it.
+        //
+        // First, try and see if we have a reclaimed entry that can fit this string. If nothing suitable is found, or we
+        // have no reclaimed entries, then we'll just try to fit it in the remaining capacity of our data buffer.
+        let maybe_reclaimed_entry = self.storage.reclaimed.take_if(|entry| entry.capacity() >= required_cap);
+        let (entry_offset, entry_ptr) = if let Some(reclaimed_entry) = maybe_reclaimed_entry {
+            self.storage.write_to_reclaimed_entry(reclaimed_entry, s)
+        } else if required_cap <= self.storage.available() {
+            self.storage.write_to_unoccupied(s)
+        } else {
+            // We don't have enough space to intern this string at all, so we'll just return `None`.
+            return None;
         };
 
-        let shards = std::iter::repeat_with(|| Arc::new(Mutex::new(InternerShardState::with_capacity(shard_capacity))))
-            .take(SHARD_FACTOR)
-            .collect::<Vec<_>>();
-        let capacity = shards
-            .iter()
-            .map(|shard| {
-                let shard = shard.lock().unwrap();
-                shard.capacity.get()
-            })
-            .sum();
-        let shards: [Arc<Mutex<InternerShardState>>; SHARD_FACTOR] =
-            shards.try_into().expect("should not fail to convert to array");
+        // SAFETY: Callers of `get_entry_string` are responsible for ensuring that the chosen lifetime of the string is
+        // valid with respect to ensuring that the underlying entry lives long enough, and that the string data is valid
+        // UTF-8 from as long as the reference is live.
+        //
+        // We're creating a `'static` reference here, which is generally frowned upon when the data is in fact not
+        // `'static`, but this is safe because we never leak this lifetime outside of the interner, and we ensure that
+        // we don't actually keep this reference around longer than the entry itself, as we only need a `'static`
+        // reference to use it as the key in the entries map.
+        let entry_str = unsafe { get_entry_string(entry_ptr) };
+        self.entries.insert(entry_str, entry_offset);
 
-        Self { shards, capacity }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.shards.iter().any(|shard| shard.lock().unwrap().entries != 0)
-    }
-
-    fn len(&self) -> usize {
-        self.shards.iter().map(|shard| shard.lock().unwrap().entries).sum()
-    }
-
-    fn len_bytes(&self) -> usize {
-        self.shards.iter().map(|shard| shard.lock().unwrap().len).sum()
-    }
-
-    fn capacity_bytes(&self) -> usize {
-        self.capacity
-    }
-
-    fn try_intern(&self, s: &str) -> Option<InternedString> {
-        let hash = hash_string(s);
-        let shard_idx = (hash as usize) & (SHARD_FACTOR - 1);
-
-        let shard = &self.shards[shard_idx];
-        intern_with_shard_and_hash(shard, hash, s)
+        Some(entry_ptr)
     }
 }
+
+// SAFETY: We don't take references to the data buffer pointer that outlast `InternerState`, and all access to
+// `InternerState` itself is mediated through a mutex, so we're safe to send it around and share it between threads.
+unsafe impl Send for InternerState {}
+unsafe impl Sync for InternerState {}
 
 /// A string interner based on a single, fixed-size backing buffer with support for reclamation.
 ///
@@ -628,40 +558,40 @@ impl<const SHARD_FACTOR: usize> InternerState<SHARD_FACTOR> {
 /// Additionally, when entries are reclaimed, adjacent entries are merged together where possible. This helps to avoid
 /// unnecessary fragmentation over time, although not as effectively as reconstructing the data buffer to re-pack
 /// entries.
-#[derive(Clone, Debug)]
-pub struct FixedSizeInterner<const SHARD_FACTOR: usize> {
-    state: Arc<InternerState<SHARD_FACTOR>>,
+#[derive(Clone)]
+pub struct GenericMapInterner {
+    state: Arc<Mutex<InternerState>>,
 }
 
-impl<const SHARD_FACTOR: usize> FixedSizeInterner<SHARD_FACTOR> {
-    /// Creates a new `FixedSizeInterner` with the given capacity.
+impl GenericMapInterner {
+    /// Creates a new `GenericMapInterner` with the given capacity.
     ///
     /// The given capacity will potentially be rounded up by a small number of bytes (up to 7) in order to ensure the
     /// backing buffer is properly aligned.
     pub fn new(capacity: NonZeroUsize) -> Self {
         Self {
-            state: Arc::new(InternerState::with_capacity(capacity)),
+            state: Arc::new(Mutex::new(InternerState::with_capacity(capacity))),
         }
     }
 
     /// Returns `true` if the interner contains no strings.
     pub fn is_empty(&self) -> bool {
-        self.state.is_empty()
+        self.state.lock().unwrap().entries.is_empty()
     }
 
     /// Returns the number of strings in the interner.
     pub fn len(&self) -> usize {
-        self.state.len()
+        self.state.lock().unwrap().entries.len()
     }
 
     /// Returns the total number of bytes in the interner.
     pub fn len_bytes(&self) -> usize {
-        self.state.len_bytes()
+        self.state.lock().unwrap().storage.len
     }
 
     /// Returns the total number of bytes the interner can hold.
     pub fn capacity_bytes(&self) -> usize {
-        self.state.capacity_bytes()
+        self.state.lock().unwrap().storage.capacity.get()
     }
 
     /// Tries to intern the given string.
@@ -669,7 +599,22 @@ impl<const SHARD_FACTOR: usize> FixedSizeInterner<SHARD_FACTOR> {
     /// If the intern is at capacity and the given string cannot fit, `None` is returned. Otherwise, `Some` is
     /// returned with a reference to the interned string.
     pub fn try_intern(&self, s: &str) -> Option<InternedString> {
-        self.state.try_intern(s)
+        let header = {
+            let mut state = self.state.lock().unwrap();
+            state.try_intern(s)?
+        };
+
+        let state = Arc::new(StringState {
+            interner: Arc::clone(&self.state),
+            header,
+        });
+
+        let state = NonNull::new(Arc::into_raw(state) as *mut ())?;
+
+        Some(InternedString {
+            state,
+            vtable: &GENERIC_MAP_VTABLE,
+        })
     }
 }
 
@@ -693,25 +638,6 @@ unsafe fn get_entry_string<'a>(header_ptr: NonNull<EntryHeader>) -> &'a str {
     std::str::from_utf8_unchecked(std::slice::from_raw_parts(s_ptr.as_ptr() as *const _, s_len))
 }
 
-fn intern_with_shard_and_hash(shard: &Arc<Mutex<InternerShardState>>, hash: u64, s: &str) -> Option<InternedString> {
-    let header = {
-        let mut shard = shard.lock().unwrap();
-        shard.try_intern(hash, s)?
-    };
-
-    let state = Arc::new(StringState {
-        interner: Arc::clone(shard),
-        header,
-    });
-
-    let state = NonNull::new(Arc::into_raw(state) as *mut ())?;
-
-    Some(InternedString {
-        state,
-        vtable: &FIXED_SIZE_VTABLE,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -728,46 +654,34 @@ mod tests {
 
     use super::*;
 
-    fn create_shard(capacity: NonZeroUsize) -> Arc<Mutex<InternerShardState>> {
-        Arc::new(Mutex::new(InternerShardState::with_capacity(capacity)))
+    fn create_interner(capacity: usize) -> GenericMapInterner {
+        assert!(capacity > 0, "capacity must be greater than zero");
+        GenericMapInterner::new(NonZeroUsize::new(capacity).unwrap())
     }
 
-    fn intern_for_shard(shard: &Arc<Mutex<InternerShardState>>, s: &str) -> Option<InternedString> {
-        let hash = hash_string(s);
-        intern_with_shard_and_hash(shard, hash, s)
+    fn available_len(interner: &GenericMapInterner) -> usize {
+        interner.state.lock().unwrap().storage.available()
     }
 
-    fn shard_capacity(shard: &Arc<Mutex<InternerShardState>>) -> usize {
-        shard.lock().unwrap().capacity.get()
+    fn reclaimed_len(interner: &GenericMapInterner) -> usize {
+        interner.state.lock().unwrap().storage.reclaimed.len()
     }
 
-    fn shard_available(shard: &Arc<Mutex<InternerShardState>>) -> usize {
-        shard.lock().unwrap().available()
+    fn first_reclaimed_entry(interner: &GenericMapInterner) -> ReclaimedEntry {
+        interner.state.lock().unwrap().storage.reclaimed.first().unwrap()
     }
 
-    fn shard_entries(shard: &Arc<Mutex<InternerShardState>>) -> usize {
-        shard.lock().unwrap().entries
-    }
-
-    fn shard_reclaimed_len(shard: &Arc<Mutex<InternerShardState>>) -> usize {
-        shard.lock().unwrap().reclaimed.len()
-    }
-
-    fn shard_first_reclaimed_entry(shard: &Arc<Mutex<InternerShardState>>) -> ReclaimedEntry {
-        shard.lock().unwrap().reclaimed.first().unwrap()
+    const fn entry_len(s: &str) -> usize {
+        EntryHeader::len_for(s)
     }
 
     fn get_reclaimed_entry_for_string(s: &InternedString) -> ReclaimedEntry {
         let state = ManuallyDrop::new(unsafe { Arc::from_raw(s.state.as_ptr() as *const StringState) });
 
-        let ptr = state.interner.lock().unwrap().ptr.as_ptr();
+        let ptr = state.interner.lock().unwrap().storage.ptr.as_ptr();
         let header = unsafe { state.header.as_ref() };
         let offset = unsafe { state.header.as_ptr().cast::<u8>().offset_from(ptr) as usize };
         ReclaimedEntry::new(offset, header.entry_len())
-    }
-
-    fn entry_len(s: &str) -> usize {
-        EntryHeader::len_for(s)
     }
 
     fn arb_alphanum_strings(
@@ -789,7 +703,7 @@ mod tests {
 
     #[test]
     fn basic() {
-        let interner = FixedSizeInterner::<1>::new(NonZeroUsize::new(1024).unwrap());
+        let interner = create_interner(1024);
 
         let s1 = interner.try_intern("hello").unwrap();
         let s2 = interner.try_intern("world").unwrap();
@@ -810,7 +724,7 @@ mod tests {
     #[test]
     fn try_intern_without_capacity() {
         // Big enough to fit a single "hello world!" string, but not big enough to fit two.
-        let interner = FixedSizeInterner::<1>::new(NonZeroUsize::new(64).unwrap());
+        let interner = create_interner(48);
 
         let s1 = interner.try_intern("hello world!");
         assert!(s1.is_some());
@@ -821,21 +735,21 @@ mod tests {
 
     #[test]
     fn reclaim_after_dropped() {
-        let shard = create_shard(NonZeroUsize::new(1024).unwrap());
+        let interner = create_interner(1024);
 
-        let s1 = intern_for_shard(&shard, "hello").expect("should not fail to intern");
+        let s1 = interner.try_intern("hello world!").expect("should not fail to intern");
         let s1_reclaimed_expected = get_reclaimed_entry_for_string(&s1);
 
-        assert_eq!(shard_entries(&shard), 1);
-        assert_eq!(shard_reclaimed_len(&shard), 0);
+        assert_eq!(interner.len(), 1);
+        assert_eq!(reclaimed_len(&interner), 0);
 
         // Drop the interned string, which should decrement the reference count to zero and then reclaim the entry.
         drop(s1);
 
-        assert_eq!(shard_entries(&shard), 0);
-        assert_eq!(shard_reclaimed_len(&shard), 1);
+        assert_eq!(interner.len(), 0);
+        assert_eq!(reclaimed_len(&interner), 1);
 
-        let s1_reclaimed = shard_first_reclaimed_entry(&shard);
+        let s1_reclaimed = first_reclaimed_entry(&interner);
         assert_eq!(s1_reclaimed_expected, s1_reclaimed);
     }
 
@@ -847,8 +761,8 @@ mod tests {
         //
         // The point is to demonstrate that our reclamation logic is sound in terms of allowing reclaimed entries to be
         // split while the search/insertion logic is operating.
-        let shard_capacity = NonZeroUsize::new(256).unwrap();
-        let shard = create_shard(shard_capacity);
+        let capacity = 256;
+        let interner = create_interner(capacity);
 
         // We craft four strings such that the first two (`s_large` and `s_medium1`) will take up enough capacity that
         // `s_small` can't possibly be interned in the available capacity. We'll also craft `s_medium2` so it can fit
@@ -859,38 +773,38 @@ mod tests {
         let s_medium2 = "if you want to go fast, go alone; if you want to go far, go together";
         let s_small = "are you there god? it's me, margaret";
 
-        let phase1_available_capacity = shard_capacity.get() - entry_len(s_large) - entry_len(s_medium1);
+        let phase1_available_capacity = capacity - entry_len(s_large) - entry_len(s_medium1);
         assert!(phase1_available_capacity < entry_len(s_small));
         assert!((entry_len(s_large) - entry_len(s_medium2)) < entry_len(s_small));
         assert!(entry_len(s_medium2) < entry_len(s_large));
 
         // Phase 1: intern our two larger strings.
-        let s1 = intern_for_shard(&shard, s_large).expect("should not fail to intern");
-        let s2 = intern_for_shard(&shard, s_medium1).expect("should not fail to intern");
+        let s1 = interner.try_intern(s_large).expect("should not fail to intern");
+        let s2 = interner.try_intern(s_medium1).expect("should not fail to intern");
 
-        assert_eq!(shard_entries(&shard), 2);
-        assert_eq!(shard_available(&shard), phase1_available_capacity);
-        assert_eq!(shard_reclaimed_len(&shard), 0);
+        assert_eq!(interner.len(), 2);
+        assert_eq!(available_len(&interner), phase1_available_capacity);
+        assert_eq!(reclaimed_len(&interner), 0);
 
         // Phase 2: drop `s_large` so it gets reclaimed.
         drop(s1);
-        assert_eq!(shard_entries(&shard), 1);
-        assert_eq!(shard_reclaimed_len(&shard), 1);
+        assert_eq!(interner.len(), 1);
+        assert_eq!(reclaimed_len(&interner), 1);
 
         // Phase 3: intern `s_medium2`, which should fit in the reclaimed entry for `s_large`. This should leave a
         // small, split off reclaimed entry.
-        let s3 = intern_for_shard(&shard, s_medium2).expect("should not fail to intern");
+        let s3 = interner.try_intern(s_medium2).expect("should not fail to intern");
 
-        assert_eq!(shard_entries(&shard), 2);
-        assert_eq!(shard_reclaimed_len(&shard), 1);
+        assert_eq!(interner.len(), 2);
+        assert_eq!(reclaimed_len(&interner), 1);
 
         // Phase 4: intern `s_small`, which should not fit in the leftover reclaimed entry from `s_large` _or_ the
         // available capacity.
-        let s4 = intern_for_shard(&shard, s_small);
+        let s4 = interner.try_intern(s_small);
         assert_eq!(s4, None);
 
-        assert_eq!(shard_entries(&shard), 2);
-        assert_eq!(shard_reclaimed_len(&shard), 1);
+        assert_eq!(interner.len(), 2);
+        assert_eq!(reclaimed_len(&interner), 1);
 
         // And make sure we can still dereference the interned strings we _do_ have left:
         assert_eq!(s2.deref(), s_medium1);
@@ -900,81 +814,82 @@ mod tests {
     #[test]
     fn has_reclaimed_entries_string_fits_exactly() {
         // The shard is large enough for one "hello world!"/"hello, world", but not two of them.
-        let shard = create_shard(NonZeroUsize::new(64).unwrap());
+        let interner = create_interner(48);
 
         // Intern the first string, which should fit without issue.
-        let s1 = intern_for_shard(&shard, "hello world!").expect("should not fail to intern");
+        let s1 = interner.try_intern("hello world!").expect("should not fail to intern");
         let s1_reclaimed_expected = get_reclaimed_entry_for_string(&s1);
 
-        assert_eq!(shard_entries(&shard), 1);
-        assert_eq!(shard_reclaimed_len(&shard), 0);
+        assert_eq!(interner.len(), 1);
+        assert_eq!(reclaimed_len(&interner), 0);
 
         // Try to intern the second string, which should fail as we don't have the space.
-        let s2 = intern_for_shard(&shard, "hello, world");
+        let s2 = interner.try_intern("hello, world");
         assert_eq!(s2, None);
 
         // Drop the first string, which should decrement the reference count to zero and then reclaim the entry.
         drop(s1);
 
-        assert_eq!(shard_entries(&shard), 0);
-        assert_eq!(shard_reclaimed_len(&shard), 1);
+        assert_eq!(interner.len(), 0);
+        assert_eq!(reclaimed_len(&interner), 1);
 
-        let s1_reclaimed = shard_first_reclaimed_entry(&shard);
+        let s1_reclaimed = first_reclaimed_entry(&interner);
         assert_eq!(s1_reclaimed_expected, s1_reclaimed);
 
         // Try again to intern the second string, which should now succeed and take over the reclaimed entry entirely
         // as the strings are identical in length.
-        let _s2 = intern_for_shard(&shard, "hello, world").expect("should not fail to intern");
+        let _s2 = interner.try_intern("hello, world").expect("should not fail to intern");
 
-        assert_eq!(shard_entries(&shard), 1);
-        assert_eq!(shard_reclaimed_len(&shard), 0);
+        assert_eq!(interner.len(), 1);
+        assert_eq!(reclaimed_len(&interner), 0);
     }
 
     #[test]
     fn reclaimed_entry_reuse_split_too_small() {
-        // Create a shard that's big enough to fit either string individually, but not at the same time.
-        let shard = create_shard(NonZeroUsize::new(72).unwrap());
+        // Create an interner that's big enough to fit either string individually, but not at the same time.
+        let interner = create_interner(72);
 
         // Declare our strings to intern and just check some preconditions by hand.
         let s_one = "a horse, a horse, my kingdom for a horse!";
         let s_one_entry_len = entry_len(s_one);
-        let s_two = "hello there, world!";
+        let s_two = "why hello there, beautiful";
         let s_two_entry_len = entry_len(s_two);
 
-        assert!(s_one_entry_len <= shard_capacity(&shard));
-        assert!(s_two_entry_len <= shard_capacity(&shard));
-        assert!(s_one_entry_len + s_two_entry_len > shard_capacity(&shard));
-        assert!(s_one_entry_len > s_two_entry_len && (s_one_entry_len - s_two_entry_len) < MINIMUM_ENTRY_LEN);
+        assert!(s_one_entry_len <= interner.capacity_bytes());
+        assert!(s_two_entry_len <= interner.capacity_bytes());
+        assert!(s_one_entry_len + s_two_entry_len > interner.capacity_bytes());
+        assert!(s_one_entry_len > s_two_entry_len);
+        assert!((s_one_entry_len - s_two_entry_len) < MINIMUM_ENTRY_LEN);
 
         // Intern the first string, which should fit without issue.
-        let s1 = intern_for_shard(&shard, s_one).expect("should not fail to intern");
+        let s1 = interner.try_intern(s_one).expect("should not fail to intern");
         let s1_reclaimed_expected = get_reclaimed_entry_for_string(&s1);
 
-        assert_eq!(shard_entries(&shard), 1);
-        assert_eq!(shard_reclaimed_len(&shard), 0);
+        assert_eq!(interner.len(), 1);
+        assert_eq!(reclaimed_len(&interner), 0);
 
         // Try to intern the second string, which should fail as we don't have the space.
-        let s2 = intern_for_shard(&shard, s_two);
+        let s2 = interner.try_intern(s_two);
         assert_eq!(s2, None);
 
         // Drop the first string, which should decrement the reference count to zero and then reclaim the entry.
         drop(s1);
 
-        assert_eq!(shard_entries(&shard), 0);
-        assert_eq!(shard_reclaimed_len(&shard), 1);
+        assert_eq!(interner.len(), 0);
+        assert_eq!(reclaimed_len(&interner), 1);
 
-        let s1_reclaimed = shard_first_reclaimed_entry(&shard);
+        let s1_reclaimed = first_reclaimed_entry(&interner);
         assert_eq!(s1_reclaimed_expected, s1_reclaimed);
 
         // Try again to intern the second string, which should now succeed and take over the reclaimed entry, but since
         // the remainder of the reclaimed entry after taking the necessary capacity for `s_two` is not large enough
         // (`MINIMUM_ENTRY_LEN`), we shouldn't end up splitting the reclaimed entry, and instead, `s2` should consume
         // the entire reclaimed entry.
-        let s2 = intern_for_shard(&shard, s_two).expect("should not fail to intern");
+        let s2 = interner.try_intern(s_two).expect("should not fail to intern");
         let s2_reclaimed_expected = get_reclaimed_entry_for_string(&s2);
 
-        assert_eq!(shard_entries(&shard), 1);
-        assert_eq!(shard_reclaimed_len(&shard), 0);
+        assert_eq!(interner.len(), 1);
+        assert_eq!(reclaimed_len(&interner), 0);
         assert_eq!(s1_reclaimed_expected, s2_reclaimed_expected);
     }
 
@@ -995,7 +910,7 @@ mod tests {
             // string size multiplied by the number of strings we've generated... plus a little constant factor per
             // string to account for the entry header.
             const ENTRY_SIZE: usize = 128 + HEADER_LEN;
-            let interner = FixedSizeInterner::<1>::new(NonZeroUsize::new(ENTRY_SIZE * indices.len()).unwrap());
+            let interner = create_interner(ENTRY_SIZE * indices.len());
 
             // For each index, pull out the string and both track it in `unique_strs` and intern it. We hold on to the
             // interned string handle to make sure the interned string is actually kept alive, keeping the entry count
@@ -1017,8 +932,16 @@ mod tests {
     #[cfg(feature = "loom")]
     #[test]
     fn concurrent_drop_and_intern() {
-        fn shard_reclaimed_entries(shard: &Arc<Mutex<InternerShardState>>) -> Vec<ReclaimedEntry> {
-            shard.lock().unwrap().reclaimed.iter().copied().collect()
+        fn reclaimed_entries(interner: &GenericMapInterner) -> Vec<ReclaimedEntry> {
+            interner
+                .state
+                .lock()
+                .unwrap()
+                .storage
+                .reclaimed
+                .iter()
+                .copied()
+                .collect()
         }
 
         fn do_reclaimed_entries_overlap(a: ReclaimedEntry, b: ReclaimedEntry) -> bool {
@@ -1039,17 +962,21 @@ mod tests {
         // We accept, as a caveat, that a possible outcome is that we intern the "new" string again, even though an
         // existing entry to that string may have existed in an alternative ordering.
         loom::model(|| {
-            let shard = create_shard(NonZeroUsize::new(1024).unwrap());
-            let t2_shard = Arc::clone(&shard);
+            let interner = create_interner(1024);
+            let t2_interner = interner.clone();
 
             // Intern the string from thread T1.
-            let t1_interned_s = intern_for_shard(&shard, STRING_TO_INTERN).expect("should not fail to intern");
+            let t1_interned_s = interner
+                .try_intern(STRING_TO_INTERN)
+                .expect("should not fail to intern");
             assert_eq!(t1_interned_s.deref(), STRING_TO_INTERN);
             let t1_reclaimed_entry = get_reclaimed_entry_for_string(&t1_interned_s);
 
             // Spawn thread T2, which tries to intern the same string and returns the handle to it.
             let t2_result = loom::thread::spawn(move || {
-                let interned_s = intern_for_shard(&t2_shard, STRING_TO_INTERN).expect("should not fail to intern");
+                let interned_s = t2_interner
+                    .try_intern(STRING_TO_INTERN)
+                    .expect("should not fail to intern");
                 let reclaimed_entry = get_reclaimed_entry_for_string(&interned_s);
 
                 (interned_s, reclaimed_entry)
@@ -1065,7 +992,7 @@ mod tests {
             // - there's a reclaimed entry (T2 didn't find the existing entry for the string before T1 marked it as
             //   inactive) but the reclaimed entry does _not_ overlap with the interned string from T2, meaning we
             //   didn't get confused and allow T2 to use an existing entry that T1 then later marked as reclaimed
-            let reclaimed_entries = shard_reclaimed_entries(&shard);
+            let reclaimed_entries = reclaimed_entries(&interner);
             assert!(reclaimed_entries.len() <= 1, "should have at most one reclaimed entry");
 
             if !reclaimed_entries.is_empty() {

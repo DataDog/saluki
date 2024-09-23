@@ -68,12 +68,18 @@ help:
 
 .PHONY: build-adp
 build-adp: check-rust-build-tools
-build-adp: ## Builds the ADP binary in release mode
+build-adp: ## Builds the ADP binary in debug mode
 	@echo "[*] Building ADP locally..."
-	@cargo build --release --package agent-data-plane
+	@cargo build --profile dev --package agent-data-plane
+
+.PHONY: build-adp-release
+build-adp-release: check-rust-build-tools
+build-adp-release: ## Builds the ADP binary in release mode
+	@echo "[*] Building ADP locally..."
+	@cargo build --profile release --package agent-data-plane
 
 .PHONY: build-adp-image
-build-adp-image: ## Builds the ADP container image ('latest' tag)
+build-adp-image: ## Builds the ADP container image in release mode ('latest' tag)
 	@echo "[*] Building ADP image..."
 	@$(CONTAINER_TOOL) build \
 		--tag saluki-images/agent-data-plane:latest \
@@ -148,7 +154,7 @@ endif
 	@echo "[*] Running ADP..."
 	@DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_SOCKET=/tmp/adp-dsd.sock DD_DOGSTATSD_EXPIRY_SECONDS=30 \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:6000 \
-	target/release/agent-data-plane
+	target/debug/agent-data-plane
 
 .PHONY: run-adp-standalone
 run-adp-standalone: build-adp
@@ -160,7 +166,7 @@ endif
 	@DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true \
 	DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_SOCKET=/tmp/adp-dsd.sock DD_DOGSTATSD_EXPIRY_SECONDS=30 \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:6000 \
-	target/release/agent-data-plane
+	target/debug/agent-data-plane
 
 .PHONY: run-dsd-basic-udp
 run-dsd-basic-udp: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDP)
