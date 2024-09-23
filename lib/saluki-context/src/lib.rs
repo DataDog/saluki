@@ -89,8 +89,8 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
             // This will also to cache up to 100K resolved contexts, but isn't a _limit_ on how many resolved contexts
             // can be live at once.
             context_cache: Arc::new(Cache::with(
-                100000,
-                100000,
+                275000,
+                275000,
                 UnitWeighter,
                 NoopU64HashBuilder,
                 DefaultLifecycle::default(),
