@@ -1,15 +1,15 @@
-use std::{hash, num::NonZeroUsize, sync::Arc};
+use std::{hash, num::NonZeroUsize, sync::Arc, time::Duration};
 
-use quick_cache::{
-    sync::{Cache, DefaultLifecycle},
-    UnitWeighter,
-};
+use quick_cache::{sync::Cache, UnitWeighter};
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::static_metrics;
 use stringtheory::{interning::GenericMapInterner, MetaString};
+use tokio::time::sleep;
+use tracing::debug;
 
 use crate::{
     context::{Context, ContextHashKey, ContextInner, ContextRef},
+    expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle},
     hash::{hash_context_with_seen, NoopU64HashBuilder, PrehashedHashSet},
     tags::TagSet,
 };
@@ -19,6 +19,9 @@ const DEFAULT_CONTEXT_RESOLVER_CACHED_CONTEXTS_LIMIT: usize = 500_000;
 // SAFETY: We know, unquestionably, that this value is not zero.
 const DEFAULT_CONTEXT_RESOLVER_INTERNER_CAPACITY_BYTES: NonZeroUsize =
     unsafe { NonZeroUsize::new_unchecked(2 * 1024 * 1024) };
+
+type ContextCache =
+    Cache<ContextHashKey, Context, UnitWeighter, NoopU64HashBuilder, ExpiryCapableLifecycle<ContextHashKey>>;
 
 static_metrics! {
     name => Statistics,
@@ -43,6 +46,8 @@ static_metrics! {
 pub struct ContextResolverBuilder {
     name: String,
     cached_contexts_limit: Option<usize>,
+    idle_context_expiration: Option<Duration>,
+    expiration_interval: Option<Duration>,
     interner_capacity_bytes: Option<NonZeroUsize>,
     allow_heap_allocations: Option<bool>,
 }
@@ -66,6 +71,8 @@ impl ContextResolverBuilder {
         Ok(Self {
             name,
             cached_contexts_limit: None,
+            idle_context_expiration: None,
+            expiration_interval: None,
             interner_capacity_bytes: None,
             allow_heap_allocations: None,
         })
@@ -84,6 +91,36 @@ impl ContextResolverBuilder {
     /// Defaults to 500,000.
     pub fn with_cached_contexts_limit(mut self, limit: usize) -> Self {
         self.cached_contexts_limit = Some(limit);
+        self
+    }
+
+    /// Sets the time before contexts are considered "idle" and eligible for expiration.
+    ///
+    /// This controls how long a context will be kept in the cache after its last access or creation time. This value is
+    /// a lower bound, as contexts eligible for expiration may not be expired immediately. Contexts may still be removed
+    /// prior to their natural expiration time if the cache is full and evictions are required to make room for a new
+    /// context.
+    ///
+    /// Defaults to no expiration.
+    pub fn with_idle_context_expiration(mut self, time_to_idle: Duration) -> Self {
+        self.idle_context_expiration = Some(time_to_idle);
+        self
+    }
+
+    /// Sets the interval at which the expiration process will run.
+    ///
+    /// This controls how often the expiration process will run to check for expired contexts. While contexts become
+    /// _eligible_ for expiration after being idle for the time-to-idle duration, they are not _guaranteed_ to be
+    /// removed immediately: the expiration process must still run to actually find the eligible contexts and remove them.
+    ///
+    /// This means that the rough upper bound for how long a context may be kept alive after going idle is the sum of
+    /// both the time-to-idle value and the expiration interval.
+    ///
+    /// This value is only relevant if the idle context expiration was set.
+    ///
+    /// Defaults to 1 second.
+    pub fn with_expiration_interval(mut self, expiration_interval: Duration) -> Self {
+        self.expiration_interval = Some(expiration_interval);
         self
     }
 
@@ -120,6 +157,26 @@ impl ContextResolverBuilder {
         self
     }
 
+    /// Builds a [`ContextResolver`] with a no-op configuration, suitable for tests.
+    ///
+    /// This ignores all configuration on the builder and uses a default configuration of:
+    ///
+    /// - resolver name of "noop"
+    /// - unlimited context cache size
+    /// - no-op interner (all strings are heap-allocated)
+    /// - heap allocations allowed
+    ///
+    /// This is generally only useful for testing purposes, and is exposed publicly in order to be used in cross-crate
+    /// testing scenarios.
+    pub fn for_tests() -> ContextResolver {
+        Self::from_name("noop")
+            .expect("resolver name not empty")
+            .with_cached_contexts_limit(usize::MAX)
+            .with_interner_capacity_bytes(NonZeroUsize::new(1).expect("not zero"))
+            .with_heap_allocations(true)
+            .build()
+    }
+
     /// Builds a [`ContextResolver`] from the current configuration.
     pub fn build(self) -> ContextResolver {
         let interner_capacity_bytes = self
@@ -133,7 +190,47 @@ impl ContextResolverBuilder {
         let allow_heap_allocations = self.allow_heap_allocations.unwrap_or(true);
 
         let interner = GenericMapInterner::new(interner_capacity_bytes);
-        ContextResolver::new(self.name, cached_context_limit, interner).with_heap_allocations(allow_heap_allocations)
+
+        let stats = Statistics::new(self.name);
+        stats.interner_capacity_bytes().set(interner.capacity_bytes() as f64);
+
+        let mut builder = ExpirationBuilder::new();
+        if let Some(time_to_idle) = self.idle_context_expiration {
+            builder = builder.with_time_to_idle(time_to_idle);
+        }
+        let (expiration, lifecycle) = builder.build();
+
+        // NOTE: We specifically use the cached context limit for both the estimated items capacity _and_ weight
+        // capacity, where weight capacity relates to "maximum size in bytes", because we're using the unit weighter,
+        // which counts every cache entry as a weight of one.
+        //
+        // In the future, if we wanted to weight contexts differently -- heap-allocated contexts "weigh" more than
+        // fully-interned contexts, etc -- then we would want to expose those, but for now, it's simpler to have users
+        // simply configure a larger interner rather than having to consider the trade-offs between configuring the
+        // interner capacity _and_ the overall cached contexts capacity, etc.
+        let context_cache = Arc::new(ContextCache::with(
+            cached_context_limit,
+            cached_context_limit as u64,
+            UnitWeighter,
+            NoopU64HashBuilder,
+            lifecycle,
+        ));
+
+        // If an idle context expiration was specified, spawn a background task to actually drive expiration.
+        if let Some(expiration_interval) = self.expiration_interval {
+            let context_cache = Arc::clone(&context_cache);
+            let expiration = expiration.clone();
+            tokio::spawn(drive_expiration(context_cache, expiration, expiration_interval));
+        }
+
+        ContextResolver {
+            stats,
+            interner,
+            context_cache,
+            expiration,
+            hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64HashBuilder),
+            allow_heap_allocations,
+        }
     }
 }
 
@@ -164,55 +261,13 @@ impl ContextResolverBuilder {
 pub struct ContextResolver {
     stats: Statistics,
     interner: GenericMapInterner,
-    context_cache: Arc<Cache<ContextHashKey, Context, UnitWeighter, NoopU64HashBuilder>>,
+    context_cache: Arc<ContextCache>,
+    expiration: Expiration<ContextHashKey>,
     hash_seen_buffer: PrehashedHashSet,
     allow_heap_allocations: bool,
 }
 
 impl ContextResolver {
-    /// Creates a new `ContextResolver` with the given name, cached context limit, and interner.
-    pub fn new<S>(name: S, cached_context_limit: usize, interner: GenericMapInterner) -> Self
-    where
-        S: Into<String>,
-    {
-        let stats = Statistics::new(name.into());
-        stats.interner_capacity_bytes().set(interner.capacity_bytes() as f64);
-
-        Self {
-            stats,
-            interner,
-
-            // NOTE: We specifically use the cached context limit for both the estimated items capacity _and_ weight
-            // capacity, where weight capacity relates to "maximum size in bytes", because we're using the unit
-            // weighter, which counts every cache entry as a weight of one.
-            //
-            // In the future, if we wanted to weight contexts differently -- heap-allocated contexts "weigh" more than
-            // fully-interned contexts, etc -- then we would want to expose those, but for now, it's simpler to have
-            // users simply configure a larger interner rather than having to consider the trade-offs between
-            // configuring the interner capacity _and_ the overall cached contexts capacity, etc.
-            context_cache: Arc::new(Cache::with(
-                cached_context_limit,
-                cached_context_limit as u64,
-                UnitWeighter,
-                NoopU64HashBuilder,
-                DefaultLifecycle::default(),
-            )),
-            hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64HashBuilder),
-            allow_heap_allocations: true,
-        }
-    }
-
-    /// Creates a new `ContextResolver` with a no-op interner and no cached context limit.
-    pub fn with_noop_interner() -> Self {
-        // It's not _really_ a no-op, but it's as small as we can possibly make it which will effectively make it a
-        // no-op after only a single string has been interned.
-        Self::new(
-            "noop".to_string(),
-            usize::MAX,
-            GenericMapInterner::new(NonZeroUsize::new(1).unwrap()),
-        )
-    }
-
     /// Sets whether or not to allow heap allocations when interning strings.
     ///
     /// In cases where the interner is full, this setting determines whether or not we refuse to resolve a context, or
@@ -289,15 +344,16 @@ impl ContextResolver {
         T: AsRef<str> + hash::Hash + std::fmt::Debug,
     {
         let hash_key = ContextHashKey(context_ref.hash);
-
         match self.context_cache.get(&hash_key) {
             Some(context) => {
                 self.stats.resolved_existing_context_total().increment(1);
+                self.expiration.mark_entry_accessed(hash_key);
                 Some(context)
             }
             None => match self.create_context_from_ref(context_ref) {
                 Some(context) => {
-                    self.context_cache.insert(hash_key, context.clone());
+                    self.context_cache.insert(hash_key.clone(), context.clone());
+                    self.expiration.mark_entry_accessed(hash_key);
 
                     // TODO: This is lazily updated during resolve, which means this metric might lag behind the actual
                     // count as interned strings are dropped/reclaimed... but we don't have a way to figure out if a given
@@ -325,9 +381,31 @@ impl Clone for ContextResolver {
             stats: self.stats.clone(),
             interner: self.interner.clone(),
             context_cache: Arc::clone(&self.context_cache),
+            expiration: self.expiration.clone(),
             hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64HashBuilder),
             allow_heap_allocations: self.allow_heap_allocations,
         }
+    }
+}
+
+async fn drive_expiration(
+    context_cache: Arc<ContextCache>, expiration: Expiration<ContextHashKey>, expiration_interval: Duration,
+) {
+    let mut expired_entries = Vec::new();
+
+    loop {
+        sleep(expiration_interval).await;
+
+        expiration.drain_expired_entries(&mut expired_entries);
+
+        let num_expired_contexts = expired_entries.len();
+        debug!(num_expired_contexts, "Found expired contexts.");
+
+        for entry in expired_entries.drain(..) {
+            context_cache.remove(&entry);
+        }
+
+        debug!(num_expired_contexts, "Removed expired contexts.");
     }
 }
 
@@ -364,7 +442,7 @@ mod tests {
 
     #[test]
     fn basic() {
-        let mut resolver: ContextResolver = ContextResolver::with_noop_interner();
+        let mut resolver: ContextResolver = ContextResolverBuilder::for_tests();
 
         // Create two distinct contexts with the same name but different tags:
         let name = "metric_name";
@@ -400,7 +478,7 @@ mod tests {
 
     #[test]
     fn tag_order() {
-        let mut resolver: ContextResolver = ContextResolver::with_noop_interner();
+        let mut resolver: ContextResolver = ContextResolverBuilder::for_tests();
 
         // Create two distinct contexts with the same name and tags, but with the tags in a different order:
         let name = "metric_name";
@@ -427,7 +505,7 @@ mod tests {
 
         // Create our resolver and then create a context, which will have its metrics attached to our local recorder:
         let context = metrics::with_local_recorder(&recorder, || {
-            let mut resolver: ContextResolver = ContextResolver::with_noop_interner();
+            let mut resolver: ContextResolver = ContextResolverBuilder::for_tests();
             let context_ref = resolver.create_context_ref("name", &["tag1"]);
             resolver.resolve(context_ref).expect("should not fail to resolve")
         });
@@ -446,7 +524,7 @@ mod tests {
 
     #[test]
     fn mutate_tags() {
-        let mut resolver: ContextResolver = ContextResolver::with_noop_interner();
+        let mut resolver: ContextResolver = ContextResolverBuilder::for_tests();
 
         // Create a basic context.
         //
@@ -486,7 +564,7 @@ mod tests {
 
     #[test]
     fn duplicate_tags() {
-        let mut resolver: ContextResolver = ContextResolver::with_noop_interner();
+        let mut resolver: ContextResolver = ContextResolverBuilder::for_tests();
 
         // Two contexts with the same name, but each with a different set of duplicate tags:
         let name = "metric_name";

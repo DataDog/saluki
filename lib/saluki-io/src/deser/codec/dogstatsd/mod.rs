@@ -859,7 +859,7 @@ mod tests {
 
     use nom::IResult;
     use proptest::{collection::vec as arb_vec, prelude::*};
-    use saluki_context::ContextResolver;
+    use saluki_context::{ContextResolver, ContextResolverBuilder};
     use saluki_core::{pooling::helpers::get_pooled_object_via_default, topology::interconnect::EventBuffer};
     use saluki_event::{
         eventd::{AlertType, EventD, Priority},
@@ -909,7 +909,7 @@ mod tests {
     fn parse_dsd_metric_with_conf<'input>(
         input: &'input [u8], config: &DogstatsdCodecConfiguration,
     ) -> OptionalNomResult<'input, Metric> {
-        let mut context_resolver = ContextResolver::with_noop_interner();
+        let mut context_resolver = ContextResolverBuilder::for_tests();
         let (remaining, result) = parse_dsd_metric_direct(input, config, &mut context_resolver)?;
         assert!(remaining.is_empty());
 
@@ -1232,7 +1232,7 @@ mod tests {
         // We set our metric name to be longer than 23 bytes (the inlining limit) to ensure this.
 
         let config = DogstatsdCodecConfiguration::default();
-        let mut context_resolver = ContextResolver::with_noop_interner().with_heap_allocations(false);
+        let mut context_resolver = ContextResolverBuilder::for_tests().with_heap_allocations(false);
 
         let metric_name = "big_metric_name_that_cant_possibly_be_inlined";
         assert!(MetaString::try_inline(metric_name).is_none());
@@ -1427,7 +1427,7 @@ mod tests {
 
     #[test]
     fn tag_interceptor() {
-        let mut codec = DogstatsdCodec::from_context_resolver(ContextResolver::with_noop_interner())
+        let mut codec = DogstatsdCodec::from_context_resolver(ContextResolverBuilder::for_tests())
             .with_configuration(DogstatsdCodecConfiguration::default())
             .with_tag_metadata_interceptor(StaticInterceptor);
 
