@@ -2,8 +2,6 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-mod expiry;
-
 mod context;
 pub use self::context::Context;
 
