@@ -289,20 +289,16 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
         T: AsRef<str> + hash::Hash + std::fmt::Debug,
     {
         let hash_key = ContextHashKey(context_ref.hash);
-        let mut was_created = false;
 
-        let create_context = || match self.create_context_from_ref(context_ref) {
+        match self.context_cache.get(&hash_key) {
             Some(context) => {
-                was_created = true;
-                Ok(context)
+                self.stats.resolved_existing_context_total().increment(1);
+                Some(context)
             }
-            None => Err(()),
-        };
+            None => match self.create_context_from_ref(context_ref) {
+                Some(context) => {
+                    self.context_cache.insert(hash_key, context.clone());
 
-        match self.context_cache.get_or_insert_with(&hash_key, create_context) {
-            Ok(context) => {
-                // Update our internal metrics if we had to create a new context.
-                if was_created {
                     // TODO: This is lazily updated during resolve, which means this metric might lag behind the actual
                     // count as interned strings are dropped/reclaimed... but we don't have a way to figure out if a given
                     // `MetaString` is an interned string and if dropping it would actually reclaim the interned string...
@@ -314,11 +310,11 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
                     self.stats.interner_len_bytes().set(self.interner.len_bytes() as f64);
                     self.stats.resolved_new_context_total().increment(1);
                     self.stats.active_contexts().increment(1);
-                }
 
-                Some(context)
-            }
-            Err(()) => None,
+                    Some(context)
+                }
+                None => None,
+            },
         }
     }
 }
