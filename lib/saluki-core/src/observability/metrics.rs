@@ -7,9 +7,8 @@ use std::{
 
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SetRecorderError, SharedString, Unit};
 use metrics_util::registry::{AtomicStorage, Registry};
-use saluki_context::{Context, ContextResolver};
+use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
 use saluki_event::{metric::*, Event};
-use stringtheory::interning::FixedSizeInterner;
 use tokio::sync::broadcast::{self, error::RecvError};
 use tracing::debug;
 
@@ -123,10 +122,10 @@ async fn flush_metrics(flush_interval: Duration) {
     // TODO: This is only worth 8KB, but it would be good to find a proper spot to tie this into the memory
     // bounds/accounting stuff since we currently just initialize metrics (and logging) with all-inclusive free
     // functions that come way before we even construct a topology.
-    let mut context_resolver = ContextResolver::from_interner(
-        "internal_metrics",
-        FixedSizeInterner::new(INTERNAL_METRICS_INTERNER_SIZE),
-    );
+    let mut context_resolver = ContextResolverBuilder::from_name("internal_metrics")
+        .expect("resolver name is not empty")
+        .with_interner_capacity_bytes(INTERNAL_METRICS_INTERNER_SIZE)
+        .build();
 
     let mut flush_interval = tokio::time::interval(flush_interval);
     flush_interval.tick().await;

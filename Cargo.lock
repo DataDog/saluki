@@ -2547,10 +2547,10 @@ name = "saluki-context"
 version = "0.1.0"
 dependencies = [
  "ahash",
- "indexmap 2.5.0",
  "metrics",
  "metrics-util",
  "quick_cache",
+ "saluki-error",
  "saluki-metrics",
  "stringtheory",
 ]

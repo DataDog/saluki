@@ -7,7 +7,7 @@ use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::{Counter, Gauge, Histogram};
 use saluki_config::GenericConfiguration;
-use saluki_context::ContextResolver;
+use saluki_context::ContextResolverBuilder;
 use saluki_core::{
     components::{sources::*, MetricsBuilder},
     pooling::{FixedSizeObjectPool, ObjectPool as _},
@@ -33,7 +33,6 @@ use saluki_io::{
 };
 use serde::Deserialize;
 use snafu::{ResultExt as _, Snafu};
-use stringtheory::interning::FixedSizeInterner;
 use tokio::select;
 use tracing::{debug, error, info, trace};
 
@@ -243,9 +242,11 @@ impl SourceBuilder for DogStatsDConfiguration {
 
         let context_string_interner_size = NonZeroUsize::new(self.context_string_interner_bytes.as_u64() as usize)
             .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
-        let context_interner = FixedSizeInterner::new(context_string_interner_size);
-        let context_resolver = ContextResolver::from_interner("dogstatsd", context_interner)
-            .with_heap_allocations(self.allow_context_heap_allocations);
+        let context_resolver = ContextResolverBuilder::from_name("dogstatsd")
+            .expect("resolver name is not empty")
+            .with_interner_capacity_bytes(context_string_interner_size)
+            .with_heap_allocations(self.allow_context_heap_allocations)
+            .build();
 
         let codec_config = DogstatsdCodecConfiguration::default().with_timestamps(self.no_aggregation_pipeline_support);
         let codec = DogstatsdCodec::from_context_resolver(context_resolver)

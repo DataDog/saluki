@@ -3,11 +3,11 @@ use std::num::NonZeroUsize;
 use async_trait::async_trait;
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_context::{Context, ContextResolver};
+use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
 use saluki_core::{components::transforms::*, pooling::ObjectPool as _, topology::OutputDefinition};
 use saluki_error::{generic_error, GenericError};
 use saluki_event::{metric::*, DataType, Event};
-use stringtheory::{interning::FixedSizeInterner, MetaString};
+use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, error};
 
@@ -42,8 +42,10 @@ impl TransformBuilder for AgentTelemetryRemapperConfiguration {
     async fn build(&self) -> Result<Box<dyn Transform + Send>, GenericError> {
         let context_string_interner_size = NonZeroUsize::new(self.context_string_interner_bytes.as_u64() as usize)
             .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
-        let context_interner = FixedSizeInterner::new(context_string_interner_size);
-        let context_resolver = ContextResolver::from_interner("agent_telemetry_remapper", context_interner);
+        let context_resolver = ContextResolverBuilder::from_name("agent_telemetry_remapper")
+            .expect("resolver name is not empty")
+            .with_interner_capacity_bytes(context_string_interner_size)
+            .build();
 
         Ok(Box::new(AgentTelemetryRemapper {
             context_resolver,
