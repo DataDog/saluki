@@ -221,10 +221,13 @@ impl ContextResolverBuilder {
         if let Some(expiration_interval) = self.expiration_interval {
             let context_cache = Arc::clone(&context_cache);
             let expiration = expiration.clone();
-            tokio::spawn(drive_expiration(context_cache, expiration, expiration_interval));
+            tokio::spawn(drive_expiration(
+                context_cache,
+                stats.clone(),
+                expiration,
+                expiration_interval,
+            ));
         }
-
-        tokio::spawn(drive_cache_telemetry(stats.clone(), Arc::clone(&context_cache)));
 
         ContextResolver {
             stats,
@@ -370,6 +373,15 @@ impl ContextResolver {
                     self.stats.resolved_new_context_total().increment(1);
                     self.stats.active_contexts().increment(1);
 
+                    // TODO: This is crappy to have to do every time we resolve, because we need to read all cache
+                    // shards. Realistically, what we could do -- to avoid having to do this as a background task --
+                    // would be to increment the `cached_contexts` metric here and then decrement it when an entry is
+                    // evicted, by pushing that logic into the lifecycle implementation.
+                    //
+                    // That wouldn't cover direct removals, though, which we only do as a result of expiration, to be
+                    // fair... but would still be a little janky as well.
+                    self.stats.cached_contexts().set(self.context_cache.len() as f64);
+
                     Some(context)
                 }
                 None => None,
@@ -392,7 +404,8 @@ impl Clone for ContextResolver {
 }
 
 async fn drive_expiration(
-    context_cache: Arc<ContextCache>, expiration: Expiration<ContextHashKey>, expiration_interval: Duration,
+    context_cache: Arc<ContextCache>, stats: Statistics, expiration: Expiration<ContextHashKey>,
+    expiration_interval: Duration,
 ) {
     let mut expired_entries = Vec::new();
 
@@ -409,12 +422,6 @@ async fn drive_expiration(
         }
 
         debug!(num_expired_contexts, "Removed expired contexts.");
-    }
-}
-
-async fn drive_cache_telemetry(stats: Statistics, context_cache: Arc<ContextCache>) {
-    loop {
-        sleep(Duration::from_secs(1)).await;
 
         stats.cached_contexts().set(context_cache.len() as f64);
     }
