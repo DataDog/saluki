@@ -26,9 +26,3 @@ target:
     # Enable internal telemetry endpoint.
     DD_TELEMETRY_ENABLED: "true"
     DD_PROMETHEUS_LISTEN_ADDR: tcp://127.0.0.1:6000
-
-    # Reduce the number of arenas used by glibc.
-    #
-    # The default, based on our SMP configuration, is 64: 8 CPUs used, and 8 arenas per CPU. This means a lot of
-    # potential heap usage in aggregate, as these arenas hold on to their heap allocations pretty aggressively.
-    MALLOC_ARENA_MAX: "4"
