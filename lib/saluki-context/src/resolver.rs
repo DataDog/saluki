@@ -6,7 +6,7 @@ use quick_cache::{
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::static_metrics;
-use stringtheory::{interning::FixedSizeInterner, MetaString};
+use stringtheory::{interning::GenericMapInterner, MetaString};
 
 use crate::{
     context::{Context, ContextHashKey, ContextInner, ContextRef},
@@ -132,7 +132,7 @@ impl ContextResolverBuilder {
 
         let allow_heap_allocations = self.allow_heap_allocations.unwrap_or(true);
 
-        let interner = FixedSizeInterner::new(interner_capacity_bytes);
+        let interner = GenericMapInterner::new(interner_capacity_bytes);
         ContextResolver::new(self.name, cached_context_limit, interner).with_heap_allocations(allow_heap_allocations)
     }
 }
@@ -161,17 +161,17 @@ impl ContextResolverBuilder {
 /// cheaply cloned. It points directly to the underlying context data (name and tags) and provides access to these
 /// components.
 #[derive(Debug)]
-pub struct ContextResolver<const SHARD_FACTOR: usize = 8> {
+pub struct ContextResolver {
     stats: Statistics,
-    interner: FixedSizeInterner<SHARD_FACTOR>,
+    interner: GenericMapInterner,
     context_cache: Arc<Cache<ContextHashKey, Context, UnitWeighter, NoopU64HashBuilder>>,
     hash_seen_buffer: PrehashedHashSet,
     allow_heap_allocations: bool,
 }
 
-impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
+impl ContextResolver {
     /// Creates a new `ContextResolver` with the given name, cached context limit, and interner.
-    pub fn new<S>(name: S, cached_context_limit: usize, interner: FixedSizeInterner<SHARD_FACTOR>) -> Self
+    pub fn new<S>(name: S, cached_context_limit: usize, interner: GenericMapInterner) -> Self
     where
         S: Into<String>,
     {
@@ -209,7 +209,7 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
         Self::new(
             "noop".to_string(),
             usize::MAX,
-            FixedSizeInterner::<SHARD_FACTOR>::new(NonZeroUsize::new(1).unwrap()),
+            GenericMapInterner::new(NonZeroUsize::new(1).unwrap()),
         )
     }
 
@@ -302,10 +302,10 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
                     // TODO: This is lazily updated during resolve, which means this metric might lag behind the actual
                     // count as interned strings are dropped/reclaimed... but we don't have a way to figure out if a given
                     // `MetaString` is an interned string and if dropping it would actually reclaim the interned string...
-                    // so this is our next best option short of instrumenting `FixedSizeInterner` directly.
+                    // so this is our next best option short of instrumenting `GenericMapInterner` directly.
                     //
                     // We probably want to do that in the future, but this is just a little cleaner without adding extra
-                    // fluff to `FixedSizeInterner` which is already complex as-is.
+                    // fluff to `GenericMapInterner` which is already complex as-is.
                     self.stats.interner_entries().set(self.interner.len() as f64);
                     self.stats.interner_len_bytes().set(self.interner.len_bytes() as f64);
                     self.stats.resolved_new_context_total().increment(1);
@@ -319,7 +319,7 @@ impl<const SHARD_FACTOR: usize> ContextResolver<SHARD_FACTOR> {
     }
 }
 
-impl<const SHARD_FACTOR: usize> Clone for ContextResolver<SHARD_FACTOR> {
+impl Clone for ContextResolver {
     fn clone(&self) -> Self {
         Self {
             stats: self.stats.clone(),
