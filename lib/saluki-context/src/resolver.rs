@@ -31,6 +31,7 @@ static_metrics! {
         counter(resolved_existing_context_total),
         counter(resolved_new_context_total),
         gauge(active_contexts),
+        gauge(cached_contexts),
         gauge(interner_capacity_bytes),
         gauge(interner_len_bytes),
         gauge(interner_entries),
@@ -223,6 +224,8 @@ impl ContextResolverBuilder {
             tokio::spawn(drive_expiration(context_cache, expiration, expiration_interval));
         }
 
+        tokio::spawn(drive_cache_telemetry(stats.clone(), Arc::clone(&context_cache)));
+
         ContextResolver {
             stats,
             interner,
@@ -406,6 +409,14 @@ async fn drive_expiration(
         }
 
         debug!(num_expired_contexts, "Removed expired contexts.");
+    }
+}
+
+async fn drive_cache_telemetry(stats: Statistics, context_cache: Arc<ContextCache>) {
+    loop {
+        sleep(Duration::from_secs(1)).await;
+
+        stats.cached_contexts().set(context_cache.len() as f64);
     }
 }
 
