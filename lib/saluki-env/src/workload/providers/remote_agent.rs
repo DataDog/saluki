@@ -7,7 +7,7 @@ use saluki_config::GenericConfiguration;
 use saluki_context::TagSet;
 use saluki_error::GenericError;
 use saluki_event::metric::OriginTagCardinality;
-use stringtheory::interning::FixedSizeInterner;
+use stringtheory::interning::GenericMapInterner;
 
 #[cfg(target_os = "linux")]
 use crate::workload::collectors::CgroupsMetadataCollector;
@@ -56,7 +56,7 @@ impl RemoteAgentWorkloadProvider {
         let string_interner_size_bytes = config
             .try_get_typed::<NonZeroUsize>("remote_agent_string_interner_size_bytes")?
             .unwrap_or(DEFAULT_STRING_INTERNER_SIZE_BYTES);
-        let string_interner = FixedSizeInterner::new(string_interner_size_bytes);
+        let string_interner = GenericMapInterner::new(string_interner_size_bytes);
 
         provider_bounds
             .subcomponent("string_interner")

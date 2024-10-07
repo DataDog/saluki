@@ -1,9 +1,9 @@
 //! Sharing-optimized strings and string interning utilities.
 //!
-//! `stringtheory` provides two main components: a sharing-optimized string type, `MetaString`, and a string interning
-//! implementation, `FixedSizeInterner`. These components are meant to work in concert, allowing for using a single
-//! string type that can handle owned, shared, and interned strings, and providing a way to efficiently intern strings
-//! strings when possible.
+//! `stringtheory` provides two main components: a sharing-optimized string type, `MetaString`, and string interning
+//! implementations (`FixedSizeInterner`, `GenericMapInterner`, etc). These components are meant to work in concert,
+//! allowing for using a single string type that can handle owned, shared, and interned strings, and providing a way to
+//! efficiently intern strings strings when possible.
 #![deny(warnings)]
 #![deny(missing_docs)]
 // We only support 64-bit little-endian platforms anyways, so there's no risk of our enum variants having their values truncated.
@@ -536,8 +536,9 @@ unsafe impl Sync for Inner {}
 ///
 /// ### Interned strings
 ///
-/// `MetaString` can also be created from `InternedString`, which is a string that has been interned using
-/// [`FixedSizeInterner`][crate::interning::FixedSizeInterner]. Interned strings are essentially a combination of the
+/// `MetaString` can also be created from `InternedString`, which is a string that has been interned (using an interner
+/// like [`FixedSizeInterner`][crate::interning::FixedSizeInterner] or
+/// [`GenericMapInterner`][crate::interning::GenericMapInterner]). Interned strings are essentially a combination of the
 /// properties of `Arc<T>` -- owned wrappers around an atomically reference counted piece of data -- and a fixed-size
 /// buffer, where we allocate one large buffer, and write many small strings into it, and provide references to those
 /// strings through `InternedString`.
@@ -717,7 +718,7 @@ mod tests {
 
     use proptest::{prelude::*, proptest};
 
-    use super::{interning::FixedSizeInterner, InlinedUnion, Inner, MetaString, UnionType};
+    use super::{interning::GenericMapInterner, InlinedUnion, Inner, MetaString, UnionType};
 
     #[test]
     fn struct_sizes() {
@@ -777,7 +778,7 @@ mod tests {
     fn interned_string() {
         let intern_str = "hello interned str!";
 
-        let interner = FixedSizeInterner::<1>::new(NonZeroUsize::new(1024).unwrap());
+        let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
         let s = interner.try_intern(intern_str).unwrap();
         assert_eq!(intern_str, &*s);
 
@@ -791,7 +792,7 @@ mod tests {
     fn empty_string_interned() {
         let intern_str = "";
 
-        let interner = FixedSizeInterner::<1>::new(NonZeroUsize::new(1024).unwrap());
+        let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
         let s = interner.try_intern(intern_str).unwrap();
         assert_eq!(intern_str, &*s);
 
