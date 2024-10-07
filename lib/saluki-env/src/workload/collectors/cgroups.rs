@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, GenericError};
-use stringtheory::interning::FixedSizeInterner;
+use stringtheory::interning::GenericMapInterner;
 use tokio::{sync::mpsc, time::sleep};
 use tracing::{debug, error};
 
@@ -38,7 +38,7 @@ impl CgroupsMetadataCollector {
     ///
     /// If a valid cgroups hierarchy can not be located at the configured path, an error will be returned.
     pub async fn from_configuration(
-        config: &GenericConfiguration, feature_detector: FeatureDetector, interner: FixedSizeInterner<1>,
+        config: &GenericConfiguration, feature_detector: FeatureDetector, interner: GenericMapInterner,
     ) -> Result<Self, GenericError> {
         let cgroups_config = CgroupsConfiguration::from_configuration(config, feature_detector)?;
         let reader = match CgroupsReader::try_from_config(&cgroups_config, interner).await? {

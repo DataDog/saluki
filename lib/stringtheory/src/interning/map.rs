@@ -397,6 +397,7 @@ impl Drop for InternerStorage {
     }
 }
 
+#[derive(Debug)]
 struct InternerState {
     // Backing storage for the interned strings.
     storage: InternerStorage,
@@ -558,7 +559,7 @@ unsafe impl Sync for InternerState {}
 /// Additionally, when entries are reclaimed, adjacent entries are merged together where possible. This helps to avoid
 /// unnecessary fragmentation over time, although not as effectively as reconstructing the data buffer to re-pack
 /// entries.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct GenericMapInterner {
     state: Arc<Mutex<InternerState>>,
 }

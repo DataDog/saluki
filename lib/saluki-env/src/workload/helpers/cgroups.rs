@@ -10,7 +10,7 @@ use std::{
 use regex::Regex;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use stringtheory::{interning::FixedSizeInterner, MetaString};
+use stringtheory::{interning::GenericMapInterner, MetaString};
 use tokio::{
     fs::{self, OpenOptions},
     io::{AsyncBufReadExt as _, BufReader},
@@ -90,12 +90,12 @@ impl CgroupsConfiguration {
 
 pub struct CgroupsReader {
     hierarchy_reader: HierarchyReader,
-    interner: FixedSizeInterner<1>,
+    interner: GenericMapInterner,
 }
 
 impl CgroupsReader {
     pub async fn try_from_config(
-        config: &CgroupsConfiguration, interner: FixedSizeInterner<1>,
+        config: &CgroupsConfiguration, interner: GenericMapInterner,
     ) -> Result<Option<Self>, GenericError> {
         let hierarchy_reader = HierarchyReader::try_from_config(config).await?;
         Ok(hierarchy_reader.map(|hierarchy_reader| Self {
@@ -310,7 +310,7 @@ where
     Ok(())
 }
 
-fn extract_container_id(cgroup_name: &str, interner: &FixedSizeInterner<1>) -> Option<MetaString> {
+fn extract_container_id(cgroup_name: &str, interner: &GenericMapInterner) -> Option<MetaString> {
     // This regular expression is meant to capture:
     // - 64 character hexadecimal strings (standard format for container IDs almost everywhere)
     // - 32 character hexadecimal strings followed by a dash and a number (used by AWS ECS)
