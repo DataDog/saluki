@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
-use saluki_core::{components::transforms::*, constants::datadog::*, topology::interconnect::EventBuffer};
+use saluki_core::{components::transforms::*, constants::datadog::*, topology::interconnect::FixedSizeEventBuffer};
 use saluki_env::{workload::EntityId, EnvironmentProvider, WorkloadProvider};
 use saluki_error::GenericError;
 use saluki_event::{
@@ -195,7 +195,7 @@ impl<E> SynchronousTransform for OriginEnrichment<E>
 where
     E: EnvironmentProvider,
 {
-    fn transform_buffer(&self, event_buffer: &mut EventBuffer) {
+    fn transform_buffer(&self, event_buffer: &mut FixedSizeEventBuffer) {
         for event in event_buffer {
             if let Some(metric) = event.try_as_metric_mut() {
                 self.enrich_metric(metric)

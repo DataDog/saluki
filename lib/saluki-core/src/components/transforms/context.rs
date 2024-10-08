@@ -4,7 +4,7 @@ use saluki_health::{Health, HealthRegistry};
 use crate::{
     components::ComponentContext,
     pooling::ElasticObjectPool,
-    topology::interconnect::{EventBuffer, EventStream, Forwarder},
+    topology::interconnect::{EventStream, FixedSizeEventBuffer, Forwarder},
 };
 
 /// Transform context.
@@ -12,7 +12,7 @@ pub struct TransformContext {
     component_context: ComponentContext,
     forwarder: Forwarder,
     event_stream: EventStream,
-    event_buffer_pool: ElasticObjectPool<EventBuffer>,
+    event_buffer_pool: ElasticObjectPool<FixedSizeEventBuffer>,
     memory_limiter: MemoryLimiter,
     health_handle: Option<Health>,
     health_registry: HealthRegistry,
@@ -23,7 +23,7 @@ impl TransformContext {
     /// Creates a new `TransformContext`.
     pub fn new(
         component_context: ComponentContext, forwarder: Forwarder, event_stream: EventStream,
-        event_buffer_pool: ElasticObjectPool<EventBuffer>, memory_limiter: MemoryLimiter,
+        event_buffer_pool: ElasticObjectPool<FixedSizeEventBuffer>, memory_limiter: MemoryLimiter,
         component_registry: ComponentRegistry, health_handle: Health, health_registry: HealthRegistry,
     ) -> Self {
         Self {
@@ -63,7 +63,7 @@ impl TransformContext {
     }
 
     /// Gets a reference to the event buffer pool.
-    pub fn event_buffer_pool(&self) -> &ElasticObjectPool<EventBuffer> {
+    pub fn event_buffer_pool(&self) -> &ElasticObjectPool<FixedSizeEventBuffer> {
         &self.event_buffer_pool
     }
 

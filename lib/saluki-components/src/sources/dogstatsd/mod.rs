@@ -13,7 +13,7 @@ use saluki_core::{
     pooling::{FixedSizeObjectPool, ObjectPool as _},
     spawn_traced,
     topology::{
-        interconnect::EventBuffer,
+        interconnect::FixedSizeEventBuffer,
         shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
         OutputDefinition,
     },
@@ -33,7 +33,10 @@ use saluki_io::{
 };
 use serde::Deserialize;
 use snafu::{ResultExt as _, Snafu};
-use tokio::select;
+use tokio::{
+    select,
+    time::{interval, MissedTickBehavior},
+};
 use tracing::{debug, error, info, trace};
 
 mod framer;
@@ -519,12 +522,17 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
         metrics.connections_active().increment(1);
     }
 
+    // Set a buffer flush interval of 100ms, which will ensure we always flush buffered events at least every 100ms if
+    // we're otherwise idle and not receiving packets from the client.
+    let mut buffer_flush = interval(Duration::from_millis(100));
+    buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+    let mut event_buffer = source_context.event_buffer_pool().acquire().await;
+
     'read: loop {
         let mut eof = false;
-        // let mut eof_addr = None;
 
         source_context.memory_limiter().wait_for_capacity().await;
-        let mut event_buffer = source_context.event_buffer_pool().acquire().await;
 
         let mut buffer = io_buffer_pool.acquire().await;
         debug!(capacity = buffer.remaining_mut(), "Acquired buffer for decoding.");
@@ -536,153 +544,175 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
             continue 'read;
         }
 
-        // Try filling our buffer from the underlying reader first.
-        debug!("About to receive data from the stream.");
-        let (bytes_read, peer_addr) = match stream.receive(&mut buffer).await {
-            Ok((bytes_read, peer_addr)) => (bytes_read, peer_addr),
-            Err(error) => {
-                error!(%listen_addr, %error, "I/O error while decoding. Stopping stream.");
-                metrics.packet_receive_failure().increment(1);
-                continue 'read;
-            }
-        };
+        select! {
+            // We read from the stream.
+            read_result = stream.receive(&mut buffer) => match read_result {
+                Ok((bytes_read, peer_addr)) => {
+                    if bytes_read == 0 {
+                        eof = true;
+                    }
 
-        if bytes_read == 0 {
-            eof = true;
-        }
+                    metrics.packet_receive_success().increment(1);
+                    metrics.bytes_received().increment(bytes_read as u64);
+                    metrics.bytes_received_size().record(bytes_read as f64);
 
-        metrics.packet_receive_success().increment(1);
-        metrics.bytes_received().increment(bytes_read as u64);
-        metrics.bytes_received_size().record(bytes_read as f64);
+                    // When we're actually at EOF, or we're dealing with a connectionless stream, we try to decode in EOF mode.
+                    //
+                    // For connectionless streams, we always try to decode the buffer as if it's EOF, since it effectively _is_
+                    // always the end of file after a receive. For connection-oriented streams, we only want to do this once we've
+                    // actually hit true EOF.
+                    let reached_eof = eof || stream.is_connectionless();
 
-        // When we're actually at EOF, or we're dealing with a connectionless stream, we try to decode in EOF mode.
-        //
-        // For connectionless streams, we always try to decode the buffer as if it's EOF, since it effectively _is_
-        // always the end of file after a receive. For connection-oriented streams, we only want to do this once we've
-        // actually hit true EOF.
-        let reached_eof = eof || stream.is_connectionless();
+                    debug!(
+                        chunk_len = buffer.chunk().len(),
+                        chunk_cap = buffer.chunk_mut().len(),
+                        buffer_len = buffer.remaining(),
+                        buffer_cap = buffer.remaining_mut(),
+                        eof = reached_eof,
+                        "Received {} bytes from stream.",
+                        bytes_read
+                    );
 
-        debug!(
-            chunk_len = buffer.chunk().len(),
-            chunk_cap = buffer.chunk_mut().len(),
-            buffer_len = buffer.remaining(),
-            buffer_cap = buffer.remaining_mut(),
-            eof = reached_eof,
-            "Received {} bytes from stream.",
-            bytes_read
-        );
+                    let mut frames = buffer.framed(&mut framer, reached_eof);
+                    'frame: loop {
+                        match frames.next() {
+                            Some(Ok(frame)) => {
+                                trace!(?frame, "Decoded frame.");
+                                match handle_frame(&frame[..], &mut codec, origin_detection, &peer_addr) {
+                                    Ok(Some((samples, event))) => {
+                                        metrics.events_received().increment(samples as u64);
 
-        let mut frames = buffer.framed(&mut framer, reached_eof);
-        'frame: loop {
-            match frames.next() {
-                Some(Ok(frame)) => {
-                    trace!(?frame, "Decoded frame.");
-                    match handle_frame(&frame[..], &mut codec, &mut event_buffer, origin_detection, &peer_addr) {
-                        Ok(samples) => metrics.events_received().increment(samples as u64),
-                        Err(e) => {
-                            error!(%listen_addr, error = %e, "Failed to parse frame.");
+                                        if let Some(event) = event_buffer.try_push(event) {
+                                            debug!("Event buffer is full. Forwarding events.");
+                                            forward_events(&mut event_buffer, &source_context, &listen_addr).await;
 
-                            // TODO: maybe actually packet receive failure? :thinking:
-                            metrics.decoder_errors().increment(1);
+                                            // Try to push the event again now that we have a new event buffer.
+                                            if event_buffer.try_push(event).is_some() {
+                                                error!("Event buffer is full even after forwarding events. Dropping event.");
+                                            }
+                                        }
+                                    },
+                                    Ok(None) => {
+                                        // We didn't decode an event, but there was no inherent error. This is
+                                        // likely due to hitting resource limits, etc.
+                                        //
+                                        // Simply continue on.
+                                        continue
+                                    },
+                                    Err(e) => {
+                                        error!(%listen_addr, error = %e, "Failed to parse frame.");
+                                        metrics.decoder_errors().increment(1);
+                                    }
+                                }
+                            }
+                            Some(Err(e)) => {
+                                error!(error = %e, "Error decoding frame.");
+                                metrics.decoder_errors().increment(1);
+                                break 'frame;
+                            }
+                            None => {
+                                debug!("Not enough data to decode another frame.");
+                                if eof && !stream.is_connectionless() {
+                                    trace!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
+                                    break 'read;
+                                } else {
+                                    break 'frame;
+                                }
+                            }
                         }
                     }
+                },
+                Err(e) => {
+                    error!(%listen_addr, %e, "I/O error while decoding. Stopping stream.");
+                    metrics.packet_receive_failure().increment(1);
+                    continue 'read;
                 }
-                Some(Err(e)) => {
-                    error!(error = %e, "Error decoding frame.");
-                    metrics.decoder_errors().increment(1);
-                    break 'frame;
-                }
-                None => {
-                    debug!("Not enough data to decode another frame.");
-                    if eof && !stream.is_connectionless() {
-                        trace!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
-                        break 'read;
-                    } else {
-                        break 'frame;
-                    }
-                }
-            }
-        }
+            },
 
-        forward_events(event_buffer, &source_context, &peer_addr, &listen_addr).await;
+            _ = buffer_flush.tick() => {
+                if !event_buffer.is_empty() {
+                    debug!("Buffer flush triggered. Forwarding events.");
+                    forward_events(&mut event_buffer, &source_context, &listen_addr).await;
+                } else {
+                    debug!("Buffer flush triggered, but no events to forward.");
+                }
+            },
+        }
+    }
+
+    if !event_buffer.is_empty() {
+        debug!("Stream finished. Forwarding remaining events.");
+        forward_events(&mut event_buffer, &source_context, &listen_addr).await;
     }
 
     metrics.connections_active().decrement(1);
 }
 
 fn handle_frame(
-    frame: &[u8], codec: &mut DogstatsdCodec<AgentLikeTagMetadataInterceptor>, event_buffer: &mut EventBuffer,
-    origin_detection: bool, peer_addr: &ConnectionAddress,
-) -> Result<usize, ParseError> {
-    let samples = codec.decode_packet(frame, event_buffer)?;
-
-    // We do one optional enrichment step here, which is to add the client's socket credentials as a tag
-    // on each metric, if they came over UDS. This would then be utilized downstream in the pipeline by
-    // origin enrichment, if present.
-    if origin_detection {
-        if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
-            for event in event_buffer {
-                if let Some(metric) = event.try_as_metric_mut() {
-                    metric
-                        .metadata_mut()
-                        .origin_entity_mut()
-                        .set_process_id(creds.pid as u32);
+    frame: &[u8], codec: &mut DogstatsdCodec<AgentLikeTagMetadataInterceptor>, origin_detection: bool,
+    peer_addr: &ConnectionAddress,
+) -> Result<Option<(usize, Event)>, ParseError> {
+    match codec.decode_packet(frame)? {
+        Some((samples, mut event)) => {
+            // We do one optional enrichment step here, which is to add the client's socket credentials as a tag
+            // on each metric, if they came over UDS. This would then be utilized downstream in the pipeline by
+            // origin enrichment, if present.
+            if origin_detection {
+                if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
+                    if let Some(metric) = event.try_as_metric_mut() {
+                        metric
+                            .metadata_mut()
+                            .origin_entity_mut()
+                            .set_process_id(creds.pid as u32);
+                    }
                 }
             }
-        }
-    }
 
-    Ok(samples)
+            Ok(Some((samples, event)))
+        }
+        None => Ok(None),
+    }
 }
 
-async fn forward_events(
-    mut event_buffer: EventBuffer, source_context: &SourceContext, peer_addr: &ConnectionAddress, listen_addr: &str,
-) {
-    let n = event_buffer.len();
+async fn forward_events(event_buffer: &mut FixedSizeEventBuffer, source_context: &SourceContext, listen_addr: &str) {
+    trace!(%listen_addr, events_len = event_buffer.len(), "Forwarding events.");
 
-    // Extract eventd events only if at least one is present in the event buffer.
-    let maybe_eventd_event_buffer = match event_buffer.has_data_type(DataType::EventD) {
-        true => {
-            let mut eventd_event_buffer = source_context.event_buffer_pool().acquire().await;
-            eventd_event_buffer.extend(event_buffer.extract(Event::is_eventd));
-            Some(eventd_event_buffer)
-        }
-        false => None,
-    };
+    // Acquire a new event buffer to replace the one we're about to forward, and swap them.
+    let new_event_buffer = source_context.event_buffer_pool().acquire().await;
+    let mut event_buffer = std::mem::replace(event_buffer, new_event_buffer);
 
-    // Extract service check events only if at least one is present in the event buffer.
-    let maybe_service_checks_event_buffer = match event_buffer.has_data_type(DataType::ServiceCheck) {
-        true => {
-            let mut service_check_event_buffer = source_context.event_buffer_pool().acquire().await;
-            service_check_event_buffer.extend(event_buffer.extract(Event::is_service_check));
-            Some(service_check_event_buffer)
-        }
-        false => None,
-    };
+    // TODO: This is maybe a little dicey because if we fail to forward the events, we may not have iterated over all of
+    // them, so there might still be eventd events when get to the service checks point, and eventd events and/or service
+    // check events when we get to the metrics point, and so on.
+    //
+    // There's probably something to be said for erroring out fully if this happens, since we should only fail to
+    // forward if the downstream component fails entirely... and unless we have a way to restart the component, then
+    // we're going to continue to fail to forward any more events until the process is restarted anyways.
 
-    trace!(%listen_addr, %peer_addr, events_len = n, "Forwarding events.");
-
-    if let Err(e) = source_context.forwarder().forward_named("metrics", event_buffer).await {
-        error!(%listen_addr, %peer_addr, error = %e, "Failed to forward metric events.");
-    }
-
-    if let Some(eventd_event_buffer) = maybe_eventd_event_buffer {
-        if let Err(e) = source_context
-            .forwarder()
-            .forward_named("events", eventd_event_buffer)
-            .await
-        {
-            error!(%listen_addr, %peer_addr, error = %e, "Failed to forward eventd events.");
+    // Forward any eventd events, if present.
+    if event_buffer.has_data_type(DataType::EventD) {
+        let eventd_events = event_buffer.extract(Event::is_eventd);
+        if let Err(e) = source_context.forwarder().forward_named("events", eventd_events).await {
+            error!(%listen_addr, error = %e, "Failed to forward eventd events.");
         }
     }
 
-    if let Some(service_checks_event_buffer) = maybe_service_checks_event_buffer {
+    // Forward any service check events, if present.
+    if event_buffer.has_data_type(DataType::ServiceCheck) {
+        let service_check_events = event_buffer.extract(Event::is_service_check);
         if let Err(e) = source_context
             .forwarder()
-            .forward_named("service_checks", service_checks_event_buffer)
+            .forward_named("service_checks", service_check_events)
             .await
         {
-            error!(%listen_addr, %peer_addr, error = %e, "Failed to forward service checks events.");
+            error!(%listen_addr, error = %e, "Failed to forward service check events.");
+        }
+    }
+
+    // Finally, if there are events left, they'll be metrics, so forward them.
+    if !event_buffer.is_empty() {
+        if let Err(e) = source_context.forwarder().forward_named("metrics", event_buffer).await {
+            error!(%listen_addr, error = %e, "Failed to forward metric events.");
         }
     }
 }

@@ -2585,7 +2585,7 @@ version = "0.1.0"
 dependencies = [
  "ahash",
  "crossbeam-queue",
- "hashbrown 0.14.5",
+ "hashbrown 0.15.0",
  "metrics",
  "metrics-util",
  "quick_cache",
@@ -2601,6 +2601,7 @@ name = "saluki-core"
 version = "0.1.0"
 dependencies = [
  "ahash",
+ "async-stream",
  "async-trait",
  "bytes",
  "bytesize",

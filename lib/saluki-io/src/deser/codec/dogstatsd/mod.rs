@@ -9,7 +9,6 @@ use nom::{
     IResult,
 };
 use saluki_context::ContextResolver;
-use saluki_core::topology::interconnect::EventBuffer;
 use saluki_event::{
     eventd::{AlertType, EventD, Priority},
     metric::*,
@@ -147,15 +146,15 @@ impl<TMI: TagMetadataInterceptor> DogstatsdCodec<TMI> {
         }
     }
 
-    pub fn decode_packet(&mut self, data: &[u8], event_buffer: &mut EventBuffer) -> Result<usize, ParseError> {
+    pub fn decode_packet(&mut self, data: &[u8]) -> Result<Option<(usize, Event)>, ParseError> {
         match parse_message_type(data) {
-            MessageType::Event => self.decode_event(data, event_buffer),
-            MessageType::ServiceCheck => self.decode_service_check(data, event_buffer),
-            MessageType::MetricSample => self.decode_metric(data, event_buffer),
+            MessageType::Event => self.decode_event(data),
+            MessageType::ServiceCheck => self.decode_service_check(data),
+            MessageType::MetricSample => self.decode_metric(data),
         }
     }
 
-    fn decode_metric(&mut self, data: &[u8], events: &mut EventBuffer) -> Result<usize, ParseError> {
+    fn decode_metric(&mut self, data: &[u8]) -> Result<Option<(usize, Event)>, ParseError> {
         // Decode the payload and get the representative parts of the metric.
         let (_remaining, (metric_name, tags_iter, values, mut metadata)) = parse_dogstatsd_metric(data, &self.config)?;
         let values_len = values.len();
@@ -172,28 +171,27 @@ impl<TMI: TagMetadataInterceptor> DogstatsdCodec<TMI> {
             None => {
                 self.codec_metrics.failed_context_resolve_total().increment(1);
 
-                return Ok(0);
+                return Ok(None);
             }
         };
 
         // Update our metric metadata based on any tags we're configured to intercept.
         update_metadata_from_tags(tags_iter.into_iter(), &self.tag_metadata_interceptor, &mut metadata);
 
-        events.push(Event::Metric(Metric::from_parts(context, values, metadata)));
-
-        Ok(values_len)
+        Ok(Some((
+            values_len,
+            Event::Metric(Metric::from_parts(context, values, metadata)),
+        )))
     }
 
-    fn decode_event(&self, data: &[u8], events: &mut EventBuffer) -> Result<usize, ParseError> {
+    fn decode_event(&self, data: &[u8]) -> Result<Option<(usize, Event)>, ParseError> {
         let (_remaining, event) = parse_dogstatsd_event(data, &self.config)?;
-        events.push(Event::EventD(event));
-        Ok(1)
+        Ok(Some((1, Event::EventD(event))))
     }
 
-    fn decode_service_check(&self, data: &[u8], events: &mut EventBuffer) -> Result<usize, ParseError> {
+    fn decode_service_check(&self, data: &[u8]) -> Result<Option<(usize, Event)>, ParseError> {
         let (_remaining, service_check) = parse_dogstatsd_service_check(data, &self.config)?;
-        events.push(Event::ServiceCheck(service_check));
-        Ok(1)
+        Ok(Some((1, Event::ServiceCheck(service_check))))
     }
 }
 
@@ -860,7 +858,6 @@ mod tests {
     use nom::IResult;
     use proptest::{collection::vec as arb_vec, prelude::*};
     use saluki_context::{ContextResolver, ContextResolverBuilder};
-    use saluki_core::{pooling::helpers::get_pooled_object_via_default, topology::interconnect::EventBuffer};
     use saluki_event::{
         eventd::{AlertType, EventD, Priority},
         metric::*,
@@ -1432,13 +1429,12 @@ mod tests {
             .with_tag_metadata_interceptor(StaticInterceptor);
 
         let input = b"some_metric:1|c|#tag_a:should_pass,deprecated_tag_b:should_drop,host:should_intercept";
-        let mut event_buffer = get_pooled_object_via_default::<EventBuffer>();
-        let events_decoded = codec
-            .decode_packet(&input[..], &mut event_buffer)
-            .expect("should not fail to decode");
-        assert_eq!(events_decoded, 1);
+        let (values_len, event) = codec
+            .decode_packet(&input[..])
+            .expect("should not fail to decode")
+            .expect("should not fail to construct event");
+        assert_eq!(values_len, 1);
 
-        let event = event_buffer.into_iter().next().expect("should have an event");
         match event {
             Event::Metric(metric) => {
                 let tags = metric.context().tags().into_iter().collect::<Vec<_>>();

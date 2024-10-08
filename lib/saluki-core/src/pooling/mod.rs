@@ -35,7 +35,7 @@ pub trait Poolable {
     fn from_data(strategy: Arc<dyn ReclaimStrategy<Self> + Send + Sync>, data: Self::Data) -> Self;
 }
 
-/// Object pool reclaimation strategy.
+/// Object pool reclamation strategy.
 ///
 /// This trait is used to define the strategy for reclaiming items to an object pool.
 pub trait ReclaimStrategy<T>
