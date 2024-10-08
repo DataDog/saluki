@@ -152,15 +152,15 @@ pub struct ContextInner {
 
 impl Clone for ContextInner {
     fn clone(&self) -> Self {
-        // Increment the context count when cloning the context, since we only get here when we're about to create a
-        // brand new context for the purpose of mutating the data... so we have a new context.
-        self.active_count.increment(1);
-
         Self {
             name: self.name.clone(),
             tags: self.tags.clone(),
             hash: self.hash,
-            active_count: self.active_count.clone(),
+
+            // We're specifically detaching this context from the statistics of the resolver from which `self`
+            // originated, as we only want to track the statistics of the contexts created _directly_ through the
+            // resolver.
+            active_count: Gauge::noop(),
         }
     }
 }
@@ -235,7 +235,7 @@ pub struct ContextRef<'a, I> {
     pub hash: u64,
 }
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContextHashKey(pub u64);
 
 impl hash::Hash for ContextHashKey {
