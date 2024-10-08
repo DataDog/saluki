@@ -42,6 +42,65 @@ impl ForwarderMetrics {
     }
 }
 
+struct BufferedSender<'a> {
+    buffer: Option<FixedSizeEventBuffer>,
+    buffer_pool: &'a ElasticObjectPool<FixedSizeEventBuffer>,
+    sender: &'a mpsc::Sender<FixedSizeEventBuffer>,
+}
+
+impl<'a> BufferedSender<'a> {
+    fn new(
+        buffer_pool: &'a ElasticObjectPool<FixedSizeEventBuffer>, sender: &'a mpsc::Sender<FixedSizeEventBuffer>,
+    ) -> Self {
+        Self {
+            buffer: None,
+            buffer_pool,
+            sender,
+        }
+    }
+
+    async fn push(&mut self, event: Event) -> Result<(), GenericError> {
+        // If our buffer is full, consume it and forward it, before acquiring a new one.
+        let buffer_full = self.buffer.as_ref().map_or(false, |b| b.is_full());
+        if buffer_full {
+            let buffer = self.buffer.take().unwrap();
+            let buffer_len = buffer.len();
+
+            self.sender
+                .send(buffer)
+                .await
+                .map_err(|_| generic_error!("Failed to send to output; {} events lost", buffer_len))?;
+        }
+
+        // Ensure we have a buffer to push into.
+        if self.buffer.is_none() {
+            self.buffer = Some(self.buffer_pool.acquire().await);
+        }
+
+        // Push the event into the buffer.
+        let buffer = self.buffer.as_mut().expect("buffer should be present");
+        if buffer.try_push(event).is_some() {
+            panic!("buffer should never be full at this point");
+        }
+
+        Ok(())
+    }
+
+    async fn flush(self) -> Result<(), GenericError> {
+        if let Some(buffer) = self.buffer {
+            let buffer_len = buffer.len();
+            if buffer_len > 0 {
+                self.sender
+                    .send(buffer)
+                    .await
+                    .map_err(|_| generic_error!("Failed to send to output; {} events lost", buffer_len))?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// Event forwarder.
 ///
 /// [`Forwarder`] provides an ergonomic interface for forwarding events out of a component. It has support for multiple
@@ -115,7 +174,7 @@ impl Forwarder {
         N: AsRef<str>,
         I: IntoIterator<Item = Event>,
     {
-        let (metrics, outputs) = match output_name {
+        let (metrics, senders) = match output_name {
             None => self
                 .default
                 .as_ref()
@@ -126,83 +185,94 @@ impl Forwarder {
                 .ok_or_else(|| generic_error!("No output named '{}' declared.", name.as_ref()))?,
         };
 
-        let mut buf_len = 0;
+        if senders.len() > 1 {
+            self.forward_inner_fixed_multi_sender(metrics, senders, events).await
+        } else {
+            let sender = senders.first().expect("output sender should be present");
+            self.forward_inner_fixed_single_sender(metrics, sender, events).await
+        }
+    }
+
+    async fn forward_inner_fixed_multi_sender<I>(
+        &self, metrics: &ForwarderMetrics, senders: &[mpsc::Sender<FixedSizeEventBuffer>], events: I,
+    ) -> Result<(), GenericError>
+    where
+        I: IntoIterator<Item = Event>,
+    {
+        let mut events_forwarded = 0;
         let start = Instant::now();
 
         // TODO: Ideally, we should be tracking the forward latency for each downstream component that we're sending to
         // here instead of for the overall forwarding operation.
 
-        // Iterate over the input events, writing them into each output buffer. When any of the output buffers is
-        // filled, we consume it and send it to the corresponding output. We'll only replace the event buffer for a
-        // given output if we have an event to write to it.
-        //
-        // We repeat this until all input events have been forwarded.
+        // Write all of the input events to each buffered sender, which handles flushing filled event buffers and
+        // acquiring empty event buffers as necessary.
+        let mut buffered_senders = senders
+            .iter()
+            .map(|sender| BufferedSender::new(&self.event_buffer_pool, sender))
+            .collect::<Vec<_>>();
 
-        // TODO: We could also bundle this together with what we store in `self.outputs`, so that it's all allocated
-        // ahead of time and we aren't ever allocating per forward operation.
-        let mut output_buffers = Vec::with_capacity(outputs.len());
-
+        let last_sender_idx = buffered_senders.len();
         for event in events {
-            // Lazily acquire event buffers for each output.
-            //
-            // We do this in case the input events iterator is empty, since we don't want to acquire event buffers only
-            // to just throw them back into the pool.
-            if output_buffers.is_empty() {
-                for _ in 0..outputs.len() {
-                    output_buffers.push(Some(self.event_buffer_pool.acquire().await));
-                }
+            let mut event = Some(event);
+
+            for (sender_idx, buffered_sender) in buffered_senders.iter_mut().enumerate() {
+                let event = if sender_idx == last_sender_idx {
+                    event.take().unwrap()
+                } else {
+                    event.clone().unwrap()
+                };
+
+                buffered_sender.push(event).await?;
             }
 
-            for (output_idx, output_buffer) in output_buffers.iter_mut().enumerate() {
-                // If the output's event buffer is full, consume it and forward it, before acquiring a new one.
-                let buffer_full = output_buffer.as_ref().map_or(false, |b| b.is_full());
-                if buffer_full {
-                    let filled_buffer = output_buffer.take().unwrap();
-                    let filled_buffer_len = filled_buffer.len();
-
-                    let output = &outputs[output_idx];
-                    output
-                        .send(filled_buffer)
-                        .await
-                        .map_err(|_| generic_error!("Failed to send to output; {} events lost", filled_buffer_len))?;
-
-                    // Acquire a new event buffer for the output.
-                    *output_buffer = Some(self.event_buffer_pool.acquire().await);
-                }
-
-                // Write the event into the output buffer.
-                let output_buffer = output_buffer
-                    .as_mut()
-                    .expect("output event buffer should never be unset at this point");
-
-                if output_buffer.try_push(event.clone()).is_some() {
-                    panic!("output event buffer should never be full at this point");
-                }
-            }
-
-            buf_len += 1;
+            events_forwarded += 1;
         }
 
-        // Flush any remaining events in the output buffers.
-        for (output_idx, output_buffer) in output_buffers.iter_mut().enumerate() {
-            if let Some(output_buffer) = output_buffer.take() {
-                if !output_buffer.is_empty() {
-                    let output_buffer_len = output_buffer.len();
-                    let output = &outputs[output_idx];
-                    output
-                        .send(output_buffer)
-                        .await
-                        .map_err(|_| generic_error!("Failed to send to output; {} events lost", output_buffer_len))?;
-                }
-            }
+        // Flush the buffered senders to ensure all events are forwarded.
+        for buffered_sender in buffered_senders {
+            buffered_sender.flush().await?;
         }
 
         // If we actually forwarded any events, update our telemetry.
-        if buf_len > 0 {
+        if events_forwarded > 0 {
             let latency = start.elapsed();
             metrics.forwarding_latency.record(latency);
+            metrics.events_sent.increment(events_forwarded as u64);
+        }
 
-            metrics.events_sent.increment(buf_len as u64);
+        Ok(())
+    }
+
+    async fn forward_inner_fixed_single_sender<I>(
+        &self, metrics: &ForwarderMetrics, sender: &mpsc::Sender<FixedSizeEventBuffer>, events: I,
+    ) -> Result<(), GenericError>
+    where
+        I: IntoIterator<Item = Event>,
+    {
+        let mut events_forwarded = 0;
+        let start = Instant::now();
+
+        // TODO: Ideally, we should be tracking the forward latency for each downstream component that we're sending to
+        // here instead of for the overall forwarding operation.
+
+        // Write all of the input events to the buffered sender, which handles flushing filled event buffers and
+        // acquiring empty event buffers as necessary.
+        let mut buffered_sender = BufferedSender::new(&self.event_buffer_pool, sender);
+        for event in events {
+            buffered_sender.push(event).await?;
+
+            events_forwarded += 1;
+        }
+
+        // Flush the buffered sender to ensure all events are forwarded.
+        buffered_sender.flush().await?;
+
+        // If we actually forwarded any events, update our telemetry.
+        if events_forwarded > 0 {
+            let latency = start.elapsed();
+            metrics.forwarding_latency.record(latency);
+            metrics.events_sent.increment(events_forwarded as u64);
         }
 
         Ok(())
