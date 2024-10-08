@@ -3,9 +3,10 @@ use std::time::Instant;
 use ahash::AHashMap;
 use metrics::{Counter, Histogram, SharedString};
 use saluki_error::{generic_error, GenericError};
+use saluki_event::Event;
 use tokio::sync::mpsc;
 
-use super::event_buffer::EventBuffer;
+use super::FixedSizeEventBuffer;
 use crate::{
     components::{ComponentContext, MetricsBuilder},
     pooling::{ElasticObjectPool, ObjectPool as _},
@@ -48,14 +49,14 @@ impl ForwarderMetrics {
 /// events as well as the forwarding latency.
 pub struct Forwarder {
     context: ComponentContext,
-    event_buffer_pool: ElasticObjectPool<EventBuffer>,
-    default: Option<(ForwarderMetrics, Vec<mpsc::Sender<EventBuffer>>)>,
-    targets: AHashMap<String, (ForwarderMetrics, Vec<mpsc::Sender<EventBuffer>>)>,
+    event_buffer_pool: ElasticObjectPool<FixedSizeEventBuffer>,
+    default: Option<(ForwarderMetrics, Vec<mpsc::Sender<FixedSizeEventBuffer>>)>,
+    targets: AHashMap<String, (ForwarderMetrics, Vec<mpsc::Sender<FixedSizeEventBuffer>>)>,
 }
 
 impl Forwarder {
     /// Create a new `Forwarder` for the given component context.
-    pub fn new(context: ComponentContext, event_buffer_pool: ElasticObjectPool<EventBuffer>) -> Self {
+    pub fn new(context: ComponentContext, event_buffer_pool: ElasticObjectPool<FixedSizeEventBuffer>) -> Self {
         Self {
             context,
             event_buffer_pool,
@@ -65,7 +66,7 @@ impl Forwarder {
     }
 
     /// Adds an output to the forwarder, attached to the given sender.
-    pub fn add_output(&mut self, output_name: OutputName, sender: mpsc::Sender<EventBuffer>) {
+    pub fn add_output(&mut self, output_name: OutputName, sender: mpsc::Sender<FixedSizeEventBuffer>) {
         match output_name {
             OutputName::Default => {
                 let (_, senders) = self.default.get_or_insert_with(|| {
@@ -84,30 +85,35 @@ impl Forwarder {
         }
     }
 
-    /// Forwards the event buffer to the default output.
+    /// Forwards the given events to the default output.
     ///
     /// ## Errors
     ///
     /// If the default output is not set, or there is an error sending to the default output, an error is returned.
-    pub async fn forward(&self, buffer: EventBuffer) -> Result<(), GenericError> {
-        self.forward_inner::<String>(None, buffer).await
+    pub async fn forward<I>(&self, events: I) -> Result<(), GenericError>
+    where
+        I: IntoIterator<Item = Event>,
+    {
+        self.forward_inner_fixed::<String, _>(None, events).await
     }
 
-    /// Forwards the event buffer to the given named output.
+    /// Forwards the given events to the given named output.
     ///
     /// ## Errors
     ///
     /// If a output of the given name is not set, or there is an error sending to the output, an error is returned.
-    pub async fn forward_named<N>(&self, output_name: N, buffer: EventBuffer) -> Result<(), GenericError>
+    pub async fn forward_named<N, I>(&self, output_name: N, events: I) -> Result<(), GenericError>
     where
         N: AsRef<str>,
+        I: IntoIterator<Item = Event>,
     {
-        self.forward_inner(Some(output_name), buffer).await
+        self.forward_inner_fixed(Some(output_name), events).await
     }
 
-    async fn forward_inner<N>(&self, output_name: Option<N>, buffer: EventBuffer) -> Result<(), GenericError>
+    async fn forward_inner_fixed<N, I>(&self, output_name: Option<N>, events: I) -> Result<(), GenericError>
     where
         N: AsRef<str>,
+        I: IntoIterator<Item = Event>,
     {
         let (metrics, outputs) = match output_name {
             None => self
@@ -120,36 +126,85 @@ impl Forwarder {
                 .ok_or_else(|| generic_error!("No output named '{}' declared.", name.as_ref()))?,
         };
 
-        let buf_len = buffer.len();
-        let mut buffer = Some(buffer);
-        let output_last_idx = outputs.len() - 1;
+        let mut buf_len = 0;
+        let start = Instant::now();
 
         // TODO: Ideally, we should be tracking the forward latency for each downstream component that we're sending to
         // here instead of for the overall forwarding operation.
-        let start = Instant::now();
-        for (output_idx, output) in outputs.iter().enumerate() {
-            // Handle potentially forwarding to multiple downstream components.
+
+        // Iterate over the input events, writing them into each output buffer. When any of the output buffers is
+        // filled, we consume it and send it to the corresponding output. We'll only replace the event buffer for a
+        // given output if we have an event to write to it.
+        //
+        // We repeat this until all input events have been forwarded.
+
+        // TODO: We could also bundle this together with what we store in `self.outputs`, so that it's all allocated
+        // ahead of time and we aren't ever allocating per forward operation.
+        let mut output_buffers = Vec::with_capacity(outputs.len());
+
+        for event in events {
+            // Lazily acquire event buffers for each output.
             //
-            // When sending to the last downstream component attached to this output, which might also be the only
-            // attached component, we consume the original event buffer. Otherwise, we acquire a new event buffer from
-            // the event buffer pool and extend it with the events from the original buffer.
-            let output_buffer = if output_idx == output_last_idx {
-                buffer.take().unwrap()
-            } else {
-                let mut new_output_buffer = self.event_buffer_pool.acquire().await;
-                new_output_buffer.extend(buffer.as_ref().map(|b| b.into_iter().cloned()).unwrap());
-                new_output_buffer
-            };
+            // We do this in case the input events iterator is empty, since we don't want to acquire event buffers only
+            // to just throw them back into the pool.
+            if output_buffers.is_empty() {
+                for _ in 0..outputs.len() {
+                    output_buffers.push(Some(self.event_buffer_pool.acquire().await));
+                }
+            }
 
-            output
-                .send(output_buffer)
-                .await
-                .map_err(|_| generic_error!("Failed to send to default output; {} events lost", buf_len))?;
+            for (output_idx, output_buffer) in output_buffers.iter_mut().enumerate() {
+                // If the output's event buffer is full, consume it and forward it, before acquiring a new one.
+                let buffer_full = output_buffer.as_ref().map_or(false, |b| b.is_full());
+                if buffer_full {
+                    let filled_buffer = output_buffer.take().unwrap();
+                    let filled_buffer_len = filled_buffer.len();
+
+                    let output = &outputs[output_idx];
+                    output
+                        .send(filled_buffer)
+                        .await
+                        .map_err(|_| generic_error!("Failed to send to output; {} events lost", filled_buffer_len))?;
+
+                    // Acquire a new event buffer for the output.
+                    *output_buffer = Some(self.event_buffer_pool.acquire().await);
+                }
+
+                // Write the event into the output buffer.
+                let output_buffer = output_buffer
+                    .as_mut()
+                    .expect("output event buffer should never be unset at this point");
+
+                if output_buffer.try_push(event.clone()).is_some() {
+                    panic!("output event buffer should never be full at this point");
+                }
+            }
+
+            buf_len += 1;
         }
-        let latency = start.elapsed();
-        metrics.forwarding_latency.record(latency);
 
-        metrics.events_sent.increment(buf_len as u64);
+        // Flush any remaining events in the output buffers.
+        for (output_idx, output_buffer) in output_buffers.iter_mut().enumerate() {
+            if let Some(output_buffer) = output_buffer.take() {
+                if !output_buffer.is_empty() {
+                    let output_buffer_len = output_buffer.len();
+                    let output = &outputs[output_idx];
+                    output
+                        .send(output_buffer)
+                        .await
+                        .map_err(|_| generic_error!("Failed to send to output; {} events lost", output_buffer_len))?;
+                }
+            }
+        }
+
+        // If we actually forwarded any events, update our telemetry.
+        if buf_len > 0 {
+            let latency = start.elapsed();
+            metrics.forwarding_latency.record(latency);
+
+            metrics.events_sent.increment(buf_len as u64);
+        }
+
         Ok(())
     }
 }
@@ -162,13 +217,15 @@ mod tests {
     use tokio_test::{task::spawn as test_spawn, *};
 
     use super::*;
-    use crate::topology::ComponentId;
+    use crate::topology::interconnect::fixed_event_buffer::FixedSizeEventBufferInner;
 
-    fn create_forwarder(event_buffers: usize) -> (Forwarder, ElasticObjectPool<EventBuffer>) {
-        let component_context = ComponentId::try_from("forwarder_test")
-            .map(ComponentContext::source)
-            .expect("component ID should never be invalid");
-        let (event_buffer_pool, _) = ElasticObjectPool::with_capacity("test", 1, event_buffers);
+    fn create_forwarder(
+        event_buffers: usize, buffer_size: usize,
+    ) -> (Forwarder, ElasticObjectPool<FixedSizeEventBuffer>) {
+        let component_context = ComponentContext::test_source("forwarder_test");
+        let (event_buffer_pool, _) = ElasticObjectPool::with_builder("test", 1, event_buffers, move || {
+            FixedSizeEventBufferInner::with_capacity(buffer_size)
+        });
 
         (
             Forwarder::new(component_context, event_buffer_pool.clone()),
@@ -179,7 +236,7 @@ mod tests {
     #[tokio::test]
     async fn default_output() {
         // Create the forwarder and wire up a sender to the default output so that we can receive what gets forwarded.
-        let (mut forwarder, ebuf_pool) = create_forwarder(1);
+        let (mut forwarder, ebuf_pool) = create_forwarder(1, 1);
 
         let (tx, mut rx) = mpsc::channel(1);
         forwarder.add_output(OutputName::Default, tx);
@@ -188,7 +245,7 @@ mod tests {
         let metric = Metric::counter("basic_metric", 42.0);
 
         let mut ebuf = ebuf_pool.acquire().await;
-        ebuf.push(Event::Metric(metric.clone()));
+        assert!(ebuf.try_push(Event::Metric(metric.clone())).is_none());
 
         forwarder.forward(ebuf).await.unwrap();
 
@@ -207,7 +264,7 @@ mod tests {
     #[tokio::test]
     async fn named_output() {
         // Create the forwarder and wire up a sender to the named output so that we can receive what gets forwarded.
-        let (mut forwarder, ebuf_pool) = create_forwarder(1);
+        let (mut forwarder, ebuf_pool) = create_forwarder(1, 1);
 
         let (tx, mut rx) = mpsc::channel(1);
         forwarder.add_output(OutputName::Given("metrics".into()), tx);
@@ -216,7 +273,7 @@ mod tests {
         let metric = Metric::counter("basic_metric", 42.0);
 
         let mut ebuf = ebuf_pool.acquire().await;
-        ebuf.push(Event::Metric(metric.clone()));
+        assert!(ebuf.try_push(Event::Metric(metric.clone())).is_none());
 
         forwarder.forward_named("metrics", ebuf).await.unwrap();
 
@@ -235,7 +292,7 @@ mod tests {
     #[tokio::test]
     async fn multiple_senders_default_output() {
         // Create the forwarder and wire up two senders to the default output so that we can receive what gets forwarded.
-        let (mut forwarder, ebuf_pool) = create_forwarder(2);
+        let (mut forwarder, _) = create_forwarder(2, 1);
 
         let (tx1, mut rx1) = mpsc::channel(1);
         let (tx2, mut rx2) = mpsc::channel(1);
@@ -244,11 +301,9 @@ mod tests {
 
         // Create a basic metric event and then forward it.
         let metric = Metric::counter("basic_metric", 42.0);
+        let events = vec![Event::Metric(metric.clone())];
 
-        let mut ebuf = ebuf_pool.acquire().await;
-        ebuf.push(Event::Metric(metric.clone()));
-
-        forwarder.forward(ebuf).await.unwrap();
+        forwarder.forward(events).await.unwrap();
 
         // Make sure there's an event buffer waiting for us on each received and that it has one event: the one we sent.
         let forwarded_ebuf1 = rx1.try_recv().expect("event buffer should have been forwarded");
@@ -274,7 +329,7 @@ mod tests {
     #[tokio::test]
     async fn multiple_senders_named_output() {
         // Create the forwarder and wire up two senders to the default output so that we can receive what gets forwarded.
-        let (mut forwarder, ebuf_pool) = create_forwarder(2);
+        let (mut forwarder, _) = create_forwarder(2, 1);
 
         let (tx1, mut rx1) = mpsc::channel(1);
         let (tx2, mut rx2) = mpsc::channel(1);
@@ -283,11 +338,9 @@ mod tests {
 
         // Create a basic metric event and then forward it.
         let metric = Metric::counter("basic_metric", 42.0);
+        let events = vec![Event::Metric(metric.clone())];
 
-        let mut ebuf = ebuf_pool.acquire().await;
-        ebuf.push(Event::Metric(metric.clone()));
-
-        forwarder.forward_named("metrics", ebuf).await.unwrap();
+        forwarder.forward_named("metrics", events).await.unwrap();
 
         // Make sure there's an event buffer waiting for us on each received and that it has one event: the one we sent.
         let forwarded_ebuf1 = rx1.try_recv().expect("event buffer should have been forwarded");
@@ -313,13 +366,13 @@ mod tests {
     #[tokio::test]
     async fn error_when_default_output_not_set() {
         // Create the forwarder and try to forward an event without setting up a default output.
-        let (forwarder, ebuf_pool) = create_forwarder(1);
+        let (forwarder, ebuf_pool) = create_forwarder(1, 1);
 
         // Create a basic metric event and then forward it.
         let metric = Metric::counter("basic_metric", 42.0);
 
         let mut ebuf = ebuf_pool.acquire().await;
-        ebuf.push(Event::Metric(metric.clone()));
+        assert!(ebuf.try_push(Event::Metric(metric.clone())).is_none());
 
         let result = forwarder.forward(ebuf).await;
         assert!(result.is_err());
@@ -328,13 +381,13 @@ mod tests {
     #[tokio::test]
     async fn error_when_named_output_not_set() {
         // Create the forwarder and try to forward an event without setting up a named output.
-        let (forwarder, ebuf_pool) = create_forwarder(1);
+        let (forwarder, ebuf_pool) = create_forwarder(1, 1);
 
         // Create a basic metric event and then forward it.
         let metric = Metric::counter("basic_metric", 42.0);
 
         let mut ebuf = ebuf_pool.acquire().await;
-        ebuf.push(Event::Metric(metric.clone()));
+        assert!(ebuf.try_push(Event::Metric(metric.clone())).is_none());
 
         let result = forwarder.forward_named("metrics", ebuf).await;
         assert!(result.is_err());
@@ -348,7 +401,7 @@ mod tests {
         // Crucially, our event buffer pool is set at a fixed size of two, and we'll use this to control if the event
         // buffer pool is empty or not when calling `forward`, to ensure that forwarding blocks when the pool is empty
         // and completes when it can acquire the necessary additional buffer.
-        let (mut forwarder, ebuf_pool) = create_forwarder(2);
+        let (mut forwarder, ebuf_pool) = create_forwarder(2, 1);
 
         let (tx1, mut rx1) = mpsc::channel(1);
         let (tx2, mut rx2) = mpsc::channel(1);
@@ -357,31 +410,30 @@ mod tests {
 
         // Create a basic metric event and then attempt to forward it.
         //
-        // Before forwarding, we'll acquire the second event buffer in the pool to ensure that the pool is empty, which
-        // should allow us to control the blocking behavior of the forwarder.
+        // Before forwarding, we'll acquire an event buffer in the pool to ensure that the pool only has one event
+        // buffer present, since forwarding to two outputs will require two event buffers overall.
         let metric = Metric::counter("basic_metric", 42.0);
-
-        let mut acquire_ebuf1 = test_spawn(ebuf_pool.acquire());
-        let mut ebuf1 = assert_ready!(acquire_ebuf1.poll());
-        ebuf1.push(Event::Metric(metric.clone()));
-
-        let mut acquire_ebuf2 = test_spawn(ebuf_pool.acquire());
-        let ebuf2 = assert_ready!(acquire_ebuf2.poll());
+        let events = vec![Event::Metric(metric.clone())];
 
         let mut receive1 = test_spawn(rx1.recv());
         let mut receive2 = test_spawn(rx2.recv());
         assert_pending!(receive1.poll());
         assert_pending!(receive2.poll());
 
-        let mut forward = test_spawn(forwarder.forward(ebuf1));
+        // Grab an event buffer from the pool and hold on to it before trying to forward:
+        let mut acquire_ebuf = test_spawn(ebuf_pool.acquire());
+        let ebuf = assert_ready!(acquire_ebuf.poll());
+
+        let mut forward = test_spawn(forwarder.forward(events));
         assert_pending!(forward.poll());
 
-        // Since we clone the event buffer for each sender except the last one, both receivers should still be pending:
+        // We know our `forward` call is pending, and neither receiver should have gotten anything yet because we have
+        // to acquire all event buffers for each output before we start pushing any events into the output buffers:
         assert_pending!(receive1.poll());
         assert_pending!(receive2.poll());
 
         // Now drop the spare event buffer, which returns it to the pool and should unblock the forward:
-        drop(ebuf2);
+        drop(ebuf);
         assert_ready_ok!(forward.poll());
 
         let forwarded_ebuf1 = assert_ready!(receive1.poll()).expect("event buffer should have been forwarded");

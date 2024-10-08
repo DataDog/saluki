@@ -3,7 +3,7 @@ use std::{future::poll_fn, num::NonZeroUsize};
 use metrics::{Counter, Histogram};
 use tokio::sync::mpsc;
 
-use super::EventBuffer;
+use super::FixedSizeEventBuffer;
 use crate::components::{ComponentContext, MetricsBuilder};
 
 // Since we're dealing with event _buffers_, this becomes a multiplicative factor, so we might be receiving 128 (or
@@ -20,14 +20,14 @@ const NEXT_READY_RECV_LIMIT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked
 /// Like `Forwarder`, `EventStream` works with batches of events ([`EventBuffer`]) and provides telemetry around the
 /// number of events received and the size of event buffers.
 pub struct EventStream {
-    inner: mpsc::Receiver<EventBuffer>,
+    inner: mpsc::Receiver<FixedSizeEventBuffer>,
     events_received: Counter,
     events_received_size: Histogram,
 }
 
 impl EventStream {
     /// Create a new `EventStream` for the given component context and inner receiver.
-    pub fn new(context: ComponentContext, inner: mpsc::Receiver<EventBuffer>) -> Self {
+    pub fn new(context: ComponentContext, inner: mpsc::Receiver<FixedSizeEventBuffer>) -> Self {
         let metrics_builder = MetricsBuilder::from_component_context(context);
 
         Self {
@@ -40,7 +40,7 @@ impl EventStream {
     /// Gets the next event buffer in the stream.
     ///
     /// If the component (or components) connected to this event stream have stopped, `None` is returned.
-    pub async fn next(&mut self) -> Option<EventBuffer> {
+    pub async fn next(&mut self) -> Option<FixedSizeEventBuffer> {
         match self.inner.recv().await {
             Some(buffer) => {
                 self.events_received.increment(buffer.len() as u64);
@@ -58,7 +58,7 @@ impl EventStream {
     /// then it will wait until at least one is available, just like [`next`][Self::next].
     ///
     /// If the component (or components) connected to this event stream have stopped, `None` is returned.
-    pub async fn next_ready(&mut self) -> Option<Vec<EventBuffer>> {
+    pub async fn next_ready(&mut self) -> Option<Vec<FixedSizeEventBuffer>> {
         let mut buffers = Vec::new();
         poll_fn(|cx| self.inner.poll_recv_many(cx, &mut buffers, NEXT_READY_RECV_LIMIT.get())).await;
 
@@ -82,9 +82,9 @@ mod tests {
     // TODO: Tests asserting we emit metrics, and the right metrics.
 
     use super::*;
-    use crate::{pooling::helpers::get_pooled_object_via_default, topology::ComponentId};
+    use crate::topology::ComponentId;
 
-    fn create_event_stream(channel_size: usize) -> (EventStream, mpsc::Sender<EventBuffer>) {
+    fn create_event_stream(channel_size: usize) -> (EventStream, mpsc::Sender<FixedSizeEventBuffer>) {
         let component_context = ComponentId::try_from("event_stream_test")
             .map(ComponentContext::source)
             .expect("component ID should never be invalid");
@@ -100,7 +100,7 @@ mod tests {
         let (mut event_stream, tx) = create_event_stream(1);
 
         // Send an event buffer, and make sure we can receive it:
-        let ebuf = get_pooled_object_via_default::<EventBuffer>();
+        let ebuf = FixedSizeEventBuffer::for_test(1);
         assert!(ebuf.is_empty());
 
         tx.send(ebuf).await.expect("should not fail to send event buffer");
@@ -119,7 +119,7 @@ mod tests {
         let (mut event_stream, tx) = create_event_stream(1);
 
         // Send an event buffer, and make sure we can receive it:
-        let ebuf = get_pooled_object_via_default::<EventBuffer>();
+        let ebuf = FixedSizeEventBuffer::for_test(1);
         tx.send(ebuf).await.expect("should not fail to send event buffer");
 
         let received_ebufs = event_stream.next_ready().await.expect("should receive event buffers");
@@ -139,7 +139,7 @@ mod tests {
         let (mut event_stream, tx) = create_event_stream(bufs_to_send);
 
         for _ in 0..bufs_to_send {
-            let ebuf = get_pooled_object_via_default::<EventBuffer>();
+            let ebuf = FixedSizeEventBuffer::for_test(1);
             tx.send(ebuf).await.expect("should not fail to send event buffer");
         }
 

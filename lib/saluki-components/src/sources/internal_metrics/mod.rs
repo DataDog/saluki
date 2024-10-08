@@ -2,10 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::{
-    components::sources::*, observability::metrics::MetricsReceiver, pooling::ObjectPool as _,
-    topology::OutputDefinition,
-};
+use saluki_core::{components::sources::*, observability::metrics::MetricsReceiver, topology::OutputDefinition};
 use saluki_error::GenericError;
 use saluki_event::DataType;
 use tokio::select;
@@ -59,10 +56,8 @@ impl Source for InternalMetrics {
                 metrics = receiver.next() => {
                     debug!(metrics_len = metrics.len(), "Received internal metrics.");
 
-                    let mut event_buffer = context.event_buffer_pool().acquire().await;
-                    event_buffer.extend(Arc::unwrap_or_clone(metrics));
-
-                    if let Err(e) = context.forwarder().forward(event_buffer).await {
+                    let events = Arc::unwrap_or_clone(metrics);
+                    if let Err(e) = context.forwarder().forward(events).await {
                         error!(error = %e, "Failed to forward events.");
                     }
                 },

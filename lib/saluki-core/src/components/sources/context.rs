@@ -7,7 +7,7 @@ use crate::{
     components::ComponentContext,
     pooling::ElasticObjectPool,
     topology::{
-        interconnect::{EventBuffer, Forwarder},
+        interconnect::{FixedSizeEventBuffer, Forwarder},
         shutdown::ComponentShutdownHandle,
     },
 };
@@ -15,7 +15,7 @@ use crate::{
 struct SourceContextInner {
     component_context: ComponentContext,
     forwarder: Forwarder,
-    event_buffer_pool: ElasticObjectPool<EventBuffer>,
+    event_buffer_pool: ElasticObjectPool<FixedSizeEventBuffer>,
     memory_limiter: MemoryLimiter,
     health_registry: HealthRegistry,
     component_registry: ComponentRegistry,
@@ -32,7 +32,7 @@ impl SourceContext {
     /// Creates a new `SourceContext`.
     pub fn new(
         component_context: ComponentContext, shutdown_handle: ComponentShutdownHandle, forwarder: Forwarder,
-        event_buffer_pool: ElasticObjectPool<EventBuffer>, memory_limiter: MemoryLimiter,
+        event_buffer_pool: ElasticObjectPool<FixedSizeEventBuffer>, memory_limiter: MemoryLimiter,
         component_registry: ComponentRegistry, health_handle: Health, health_registry: HealthRegistry,
     ) -> Self {
         Self {
@@ -78,7 +78,7 @@ impl SourceContext {
     }
 
     /// Gets a reference to the event buffer pool.
-    pub fn event_buffer_pool(&self) -> &ElasticObjectPool<EventBuffer> {
+    pub fn event_buffer_pool(&self) -> &ElasticObjectPool<FixedSizeEventBuffer> {
         &self.inner.event_buffer_pool
     }
 

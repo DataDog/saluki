@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
-use saluki_core::{components::transforms::*, pooling::ObjectPool as _, topology::OutputDefinition};
+use saluki_core::{components::transforms::*, topology::OutputDefinition};
 use saluki_error::{generic_error, GenericError};
 use saluki_event::{metric::*, DataType, Event};
 use stringtheory::MetaString;
@@ -99,25 +99,22 @@ impl Transform for AgentTelemetryRemapper {
             select! {
                 _ = health.live() => continue,
                 maybe_events = context.event_stream().next() => match maybe_events {
-                    Some(event_buffer) => {
-                        let mut remapped_event_buffer = context.event_buffer_pool().acquire().await;
+                    Some(events) => {
+                        // TODO: This is a bit suboptimal, allocating a new vector to hold the remapped events.
+                        //
+                        // It would be nicer to use a pooled event buffer, but doing so would mean needing to handle
+                        // splaying over potentially multiple event buffers, and we're punting on coming up with a clean
+                        // bit of code to do that... at least for now.
+                        let remapped_events = (&events).into_iter()
+                            .filter_map(|event| event.try_as_metric().and_then(|metric| self.try_remap_metric(metric).map(Event::Metric)))
+                            .collect::<Vec<Event>>();
 
-                        for event in &event_buffer {
-                            if let Some(metric) = event.try_as_metric() {
-                                if let Some(new_metric) = self.try_remap_metric(metric) {
-                                    remapped_event_buffer.push(Event::Metric(new_metric));
-                                }
-                            }
-                        }
-
-                        if let Err(e) = context.forwarder().forward(event_buffer).await {
+                        if let Err(e) = context.forwarder().forward(remapped_events).await {
                             error!(error = %e, "Failed to forward events.");
                         }
 
-                        if !remapped_event_buffer.is_empty() {
-                            if let Err(e) = context.forwarder().forward(remapped_event_buffer).await {
-                                error!(error = %e, "Failed to forward events.");
-                            }
+                        if let Err(e) = context.forwarder().forward(events).await {
+                            error!(error = %e, "Failed to forward events.");
                         }
                     },
                     None => break,
