@@ -1,5 +1,5 @@
-use std::num::NonZeroUsize;
 use std::sync::LazyLock;
+use std::{num::NonZeroUsize, time::Duration};
 
 use async_trait::async_trait;
 use bytes::{Buf, BufMut};
@@ -245,6 +245,8 @@ impl SourceBuilder for DogStatsDConfiguration {
         let context_resolver = ContextResolverBuilder::from_name("dogstatsd")
             .expect("resolver name is not empty")
             .with_interner_capacity_bytes(context_string_interner_size)
+            .with_idle_context_expiration(Duration::from_secs(30))
+            .with_expiration_interval(Duration::from_secs(1))
             .with_heap_allocations(self.allow_context_heap_allocations)
             .build();
 

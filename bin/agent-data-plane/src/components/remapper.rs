@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn test_remap_object_pool_metrics() {
         let mut remapper = AgentTelemetryRemapper {
-            context_resolver: ContextResolver::with_noop_interner(),
+            context_resolver: ContextResolverBuilder::for_tests(),
             rules: generate_remapper_rules(),
         };
 

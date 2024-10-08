@@ -158,7 +158,7 @@ endif
 
 .PHONY: run-adp-standalone
 run-adp-standalone: build-adp
-run-adp-standalone: ## Runs ADP locally in standalone mode
+run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 ifeq ($(shell test -n "$(DD_API_KEY)" || echo not-found), not-found)
 	$(error "API key not set. Please set the DD_API_KEY environment variable.")
 endif
@@ -167,6 +167,18 @@ endif
 	DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_SOCKET=/tmp/adp-dsd.sock DD_DOGSTATSD_EXPIRY_SECONDS=30 \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:6000 \
 	target/debug/agent-data-plane
+
+.PHONY: run-adp-standalone-release
+run-adp-standalone-release: build-adp-release
+run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
+ifeq ($(shell test -n "$(DD_API_KEY)" || echo not-found), not-found)
+	$(error "API key not set. Please set the DD_API_KEY environment variable.")
+endif
+	@echo "[*] Running ADP..."
+	@DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true \
+	DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_SOCKET=/tmp/adp-dsd.sock DD_DOGSTATSD_EXPIRY_SECONDS=30 \
+	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:6000 \
+	target/release/agent-data-plane
 
 .PHONY: run-dsd-basic-udp
 run-dsd-basic-udp: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDP)
@@ -380,7 +392,7 @@ ifeq ($(shell test -f test/smp/regression/saluki/cases/$(EXPERIMENT)/lading/ladi
 endif
 	@echo "[*] Running '$(EXPERIMENT)' experiment (15 minutes)..."
 	@./test/lading/bin/lading --config-path test/smp/regression/saluki/cases/$(EXPERIMENT)/lading/lading.yaml \
-	--no-target --warmup-duration-seconds 1 --experiment-duration-seconds 900
+		--no-target --warmup-duration-seconds 1 --experiment-duration-seconds 900 --prometheus-addr 127.0.0.1:9229
 
 .PHONY: ensure-ddprof
 ensure-ddprof:
@@ -394,8 +406,8 @@ endif
 .PHONY: ensure-lading
 ensure-lading:
 ifeq ($(shell test -f test/lading/bin/lading || echo not-found), not-found)
-	@echo "[*] Downloading lading v0.21.1..."
-	@curl -q -L -o /tmp/lading.tar.gz https://github.com/DataDog/lading/releases/download/v0.21.1/lading-x86_64-unknown-linux-gnu.tar.gz
+	@echo "[*] Downloading lading v0.23.0..."
+	@curl -q -L -o /tmp/lading.tar.gz https://github.com/DataDog/lading/releases/download/v0.23.0/lading-x86_64-unknown-linux-gnu.tar.gz
 	@mkdir -p test/lading/bin
 	@tar -C test/lading/bin -xf /tmp/lading.tar.gz
 	@rm -f /tmp/lading.tar.gz
