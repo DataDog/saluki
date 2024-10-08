@@ -236,18 +236,16 @@ mod tests {
     #[tokio::test]
     async fn default_output() {
         // Create the forwarder and wire up a sender to the default output so that we can receive what gets forwarded.
-        let (mut forwarder, ebuf_pool) = create_forwarder(1, 1);
+        let (mut forwarder, _) = create_forwarder(1, 1);
 
         let (tx, mut rx) = mpsc::channel(1);
         forwarder.add_output(OutputName::Default, tx);
 
         // Create a basic metric event and then forward it.
         let metric = Metric::counter("basic_metric", 42.0);
+        let events = vec![Event::Metric(metric.clone())];
 
-        let mut ebuf = ebuf_pool.acquire().await;
-        assert!(ebuf.try_push(Event::Metric(metric.clone())).is_none());
-
-        forwarder.forward(ebuf).await.unwrap();
+        forwarder.forward(events).await.unwrap();
 
         // Make sure there's an event buffer waiting for us and that it has one event: the one we sent.
         let forwarded_ebuf = rx.try_recv().expect("event buffer should have been forwarded");
@@ -264,18 +262,16 @@ mod tests {
     #[tokio::test]
     async fn named_output() {
         // Create the forwarder and wire up a sender to the named output so that we can receive what gets forwarded.
-        let (mut forwarder, ebuf_pool) = create_forwarder(1, 1);
+        let (mut forwarder, _) = create_forwarder(1, 1);
 
         let (tx, mut rx) = mpsc::channel(1);
         forwarder.add_output(OutputName::Given("metrics".into()), tx);
 
         // Create a basic metric event and then forward it.
         let metric = Metric::counter("basic_metric", 42.0);
+        let events = vec![Event::Metric(metric.clone())];
 
-        let mut ebuf = ebuf_pool.acquire().await;
-        assert!(ebuf.try_push(Event::Metric(metric.clone())).is_none());
-
-        forwarder.forward_named("metrics", ebuf).await.unwrap();
+        forwarder.forward_named("metrics", events).await.unwrap();
 
         // Make sure there's an event buffer waiting for us and that it has one event: the one we sent.
         let forwarded_ebuf = rx.try_recv().expect("event buffer should have been forwarded");
