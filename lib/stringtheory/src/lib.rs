@@ -587,6 +587,11 @@ impl MetaString {
         Inner::try_inlined(s).map(|inner| Self { inner })
     }
 
+    /// Returns `true` if `self` has a length of zero bytes.
+    pub fn is_empty(&self) -> bool {
+        self.deref().is_empty()
+    }
+
     /// Consumes `self` and returns an owned `String`.
     ///
     /// If the `MetaString` is already owned, this will simply return the inner `String` directly. Otherwise, this will

@@ -1,6 +1,6 @@
 //! Events.
 
-use std::fmt;
+use std::{fmt, num::NonZeroU64};
 
 use serde::{Serialize, Serializer};
 use stringtheory::MetaString;
@@ -130,11 +130,14 @@ impl Priority {
 pub struct EventD {
     title: MetaString,
     text: MetaString,
-    timestamp: Option<u64>,
-    hostname: Option<MetaString>,
-    aggregation_key: Option<MetaString>,
+    timestamp: Option<NonZeroU64>,
+    #[serde(skip_serializing_if = "MetaString::is_empty")]
+    hostname: MetaString,
+    #[serde(skip_serializing_if = "MetaString::is_empty")]
+    aggregation_key: MetaString,
     priority: Option<Priority>,
-    source_type_name: Option<MetaString>,
+    #[serde(skip_serializing_if = "MetaString::is_empty")]
+    source_type_name: MetaString,
     alert_type: Option<AlertType>,
     tags: Option<Vec<MetaString>>,
 }
@@ -152,12 +155,20 @@ impl EventD {
 
     /// Returns the host where the event originated from.
     pub fn hostname(&self) -> Option<&str> {
-        self.hostname.as_deref()
+        if self.hostname.is_empty() {
+            None
+        } else {
+            Some(&self.hostname)
+        }
     }
 
     /// Returns the aggregation key of the event.
     pub fn aggregation_key(&self) -> Option<&str> {
-        self.aggregation_key.as_deref()
+        if self.aggregation_key.is_empty() {
+            None
+        } else {
+            Some(&self.aggregation_key)
+        }
     }
 
     /// Returns the priority of the event.
@@ -167,7 +178,11 @@ impl EventD {
 
     /// Returns the source type name of the event.
     pub fn source_type_name(&self) -> Option<&str> {
-        self.source_type_name.as_deref()
+        if self.source_type_name.is_empty() {
+            None
+        } else {
+            Some(&self.source_type_name)
+        }
     }
 
     /// Returns the alert type of the event.
@@ -179,7 +194,7 @@ impl EventD {
     ///
     /// This is a Unix timestamp, or the number of seconds since the Unix epoch.
     pub fn timestamp(&self) -> Option<u64> {
-        self.timestamp
+        self.timestamp.map(|ts| ts.get())
     }
 
     /// Returns the tags associated with the event.
@@ -193,7 +208,7 @@ impl EventD {
     ///
     /// This variant is specifically for use in builder-style APIs.
     pub fn with_timestamp(mut self, timestamp: impl Into<Option<u64>>) -> Self {
-        self.timestamp = timestamp.into();
+        self.timestamp = timestamp.into().and_then(NonZeroU64::new);
         self
     }
 
@@ -201,40 +216,52 @@ impl EventD {
     ///
     /// Represented as a Unix timestamp, or the number of seconds since the Unix epoch.
     pub fn set_timestamp(&mut self, timestamp: impl Into<Option<u64>>) {
-        self.timestamp = timestamp.into();
+        self.timestamp = timestamp.into().and_then(NonZeroU64::new);
     }
 
     /// Set the hostname where the event originated from.
     ///
     /// This variant is specifically for use in builder-style APIs.
     pub fn with_hostname(mut self, hostname: impl Into<Option<MetaString>>) -> Self {
-        self.hostname = hostname.into();
+        self.hostname = match hostname.into() {
+            Some(s) => s,
+            None => MetaString::empty(),
+        };
         self
     }
 
     /// Set the hostname where the event originated from.
     pub fn set_hostname(&mut self, hostname: impl Into<Option<MetaString>>) {
-        self.hostname = hostname.into();
+        self.hostname = match hostname.into() {
+            Some(s) => s,
+            None => MetaString::empty(),
+        };
     }
 
-    /// Set the aggregation key of the event
+    /// Set the aggregation key of the event.
     ///
     /// Aggregation key is use to group events together in the event stream.
     ///
     /// This variant is specifically for use in builder-style APIs.
-    pub fn with_aggregation_key(mut self, hostname: impl Into<Option<MetaString>>) -> Self {
-        self.hostname = hostname.into();
+    pub fn with_aggregation_key(mut self, aggregation_key: impl Into<Option<MetaString>>) -> Self {
+        self.aggregation_key = match aggregation_key.into() {
+            Some(s) => s,
+            None => MetaString::empty(),
+        };
         self
     }
 
     /// Set the hostname where the event originated from.
     ///
     /// Aggregation key is use to group events together in the event stream.
-    pub fn set_aggregation_key(&mut self, hostname: impl Into<Option<MetaString>>) {
-        self.hostname = hostname.into();
+    pub fn set_aggregation_key(&mut self, aggregation_key: impl Into<Option<MetaString>>) {
+        self.aggregation_key = match aggregation_key.into() {
+            Some(s) => s,
+            None => MetaString::empty(),
+        };
     }
 
-    /// Set the priority of the event
+    /// Set the priority of the event.
     ///
     /// This variant is specifically for use in builder-style APIs.
     pub fn with_priority(mut self, priority: impl Into<Option<Priority>>) -> Self {
@@ -242,25 +269,31 @@ impl EventD {
         self
     }
 
-    /// Set the priority of the event
+    /// Set the priority of the event.
     pub fn set_priority(&mut self, priority: impl Into<Option<Priority>>) {
         self.priority = priority.into();
     }
 
-    /// Set the source type name of the event
+    /// Set the source type name of the event.
     ///
     /// This variant is specifically for use in builder-style APIs.
     pub fn with_source_type_name(mut self, source_type_name: impl Into<Option<MetaString>>) -> Self {
-        self.source_type_name = source_type_name.into();
+        self.source_type_name = match source_type_name.into() {
+            Some(s) => s,
+            None => MetaString::empty(),
+        };
         self
     }
 
-    /// Set the source type name of the event
+    /// Set the source type name of the event.
     pub fn set_source_type_name(&mut self, source_type_name: impl Into<Option<MetaString>>) {
-        self.source_type_name = source_type_name.into();
+        self.source_type_name = match source_type_name.into() {
+            Some(s) => s,
+            None => MetaString::empty(),
+        };
     }
 
-    /// Set the alert type of the event
+    /// Set the alert type of the event.
     ///
     /// This variant is specifically for use in builder-style APIs.
     pub fn with_alert_type(mut self, alert_type: impl Into<Option<AlertType>>) -> Self {
@@ -268,7 +301,7 @@ impl EventD {
         self
     }
 
-    /// Set the alert type name of the event
+    /// Set the alert type name of the event.
     pub fn set_alert_type(&mut self, alert_type: impl Into<Option<AlertType>>) {
         self.alert_type = alert_type.into();
     }
@@ -281,7 +314,7 @@ impl EventD {
         self
     }
 
-    /// Set the tags of the event
+    /// Set the tags of the event.
     pub fn set_tags(&mut self, tags: impl Into<Option<Vec<MetaString>>>) {
         self.tags = tags.into();
     }
@@ -294,10 +327,10 @@ impl EventD {
             title: title.into(),
             text: text.into(),
             timestamp: None,
-            hostname: None,
-            aggregation_key: None,
+            hostname: MetaString::empty(),
+            aggregation_key: MetaString::empty(),
             priority: Some(Priority::Normal),
-            source_type_name: None,
+            source_type_name: MetaString::empty(),
             alert_type: Some(AlertType::Info),
             tags: None,
         }
