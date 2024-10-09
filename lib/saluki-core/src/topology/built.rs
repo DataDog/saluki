@@ -121,7 +121,7 @@ impl BuiltTopology {
         let _guard = self.component_token.enter();
 
         // Build our interconnects, which we'll grab from piecemeal as we spawn our components.
-        let (event_buffer_pool, shrinker) = ElasticObjectPool::with_builder("global_event_buffers", 64, 1024, || {
+        let (event_buffer_pool, shrinker) = ElasticObjectPool::with_builder("global_event_buffers", 64, 512, || {
             FixedSizeEventBufferInner::with_capacity(1024)
         });
         tokio::spawn(shrinker);

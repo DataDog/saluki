@@ -10,9 +10,9 @@ target:
     DD_HOSTNAME: smp-regression
     DD_DD_URL: http://127.0.0.1:9091
 
-    # Set the context limit in the aggregator to ~50K, which matches the maximum number of contexts we expect to
-    # generate. We essentially don't want the aggregator to be a limiting factor.
-    DD_AGGREGATE_CONTEXT_LIMIT: "50050"
+    # Set the context limit in the aggregator to right above 50K, which matches the maximum number of contexts we expect
+    # to generate. We essentially don't want the aggregator to be a limiting factor.
+    DD_AGGREGATE_CONTEXT_LIMIT: "50100"
 
     # Disables UDP and enables listening on UDS in SOCK_DGRAM mode.
     DD_DOGSTATSD_PORT: "0"

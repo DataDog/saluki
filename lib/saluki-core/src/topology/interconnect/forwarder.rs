@@ -4,6 +4,7 @@ use ahash::AHashMap;
 use metrics::{Counter, Histogram, SharedString};
 use saluki_error::{generic_error, GenericError};
 use saluki_event::Event;
+use smallvec::SmallVec;
 use tokio::sync::mpsc;
 
 use super::FixedSizeEventBuffer;
@@ -42,66 +43,43 @@ impl ForwarderMetrics {
     }
 }
 
-enum SenderBackend<'a> {
-    Direct(&'a mpsc::Sender<FixedSizeEventBuffer>),
-    Forwarder(&'a Forwarder),
-}
-
-/// A buffered sender for forwarding events.
-///
-/// When utilizing pooled event buffers to store/hold events before forwarding them to a downstream component, the
-/// caller must manage the buffer capacity, such that once the buffer is filled, it is forwarded and a new buffer is
-/// acquired. In many cases, the code to do this is clunky and error-prone.
-///
-/// `BufferedSender` provides a simple wrapper around a sender and an object pool used to acquire event buffers. It
-/// handles the lifecycle of both event buffers as well as the sender, ensuring that event buffers are flushed (sent) to
-/// the sender when full, as well as acquiring a new event buffer to continue writing into.
-pub struct BufferedSender<'a, O>
+struct BufferedSender<'a, O>
 where
     O: ObjectPool<Item = FixedSizeEventBuffer>,
 {
     buffer: Option<FixedSizeEventBuffer>,
     buffer_pool: &'a O,
-    flushed_len: usize,
-    sender: SenderBackend<'a>,
+    metrics: &'a ForwarderMetrics,
+    sender: &'a mpsc::Sender<FixedSizeEventBuffer>,
 }
 
 impl<'a, O> BufferedSender<'a, O>
 where
     O: ObjectPool<Item = FixedSizeEventBuffer>,
 {
-    /// Creates a new `BufferedSender` in direct mode.
-    pub fn direct(buffer_pool: &'a O, sender: &'a mpsc::Sender<FixedSizeEventBuffer>) -> Self {
+    fn new(buffer_pool: &'a O, metrics: &'a ForwarderMetrics, sender: &'a mpsc::Sender<FixedSizeEventBuffer>) -> Self {
         Self {
             buffer: None,
             buffer_pool,
-            flushed_len: 0,
-            sender: SenderBackend::Direct(sender),
+            metrics,
+            sender,
         }
     }
 
-    /// Creates a new `BufferedSender` in forwarder mode.
-    ///
-    /// This sends event buffers to the given forwarder's default output.
-    pub fn forwarder(buffer_pool: &'a O, forwarder: &'a Forwarder) -> Self {
-        Self {
-            buffer: None,
-            buffer_pool,
-            flushed_len: 0,
-            sender: SenderBackend::Forwarder(forwarder),
-        }
-    }
+    async fn send_buffer_direct(&self, buffer: FixedSizeEventBuffer) -> Result<(), GenericError> {
+        let start = Instant::now();
 
-    /// Returns the number of events currently buffered in this sender.
-    pub fn buffered_len(&self) -> usize {
-        self.buffer.as_ref().map_or(0, |b| b.len())
-    }
+        let buffer_len = buffer.len();
+        let result = self
+            .sender
+            .send(buffer)
+            .await
+            .map_err(|_| generic_error!("Failed to send to output; {} events lost", buffer_len));
 
-    /// Returns the number of events that have been pushed into this sender.
-    ///
-    /// This includes all events which have been flushed, and those which are currently buffered.
-    pub fn pushed_len(&self) -> usize {
-        self.flushed_len + self.buffer.as_ref().map_or(0, |b| b.len())
+        let elapsed = start.elapsed();
+        self.metrics.forwarding_latency.record(elapsed);
+
+        result
     }
 
     async fn try_flush_buffer(&mut self) -> Result<(), GenericError> {
@@ -110,27 +88,7 @@ where
             Some(buffer) => {
                 let buffer_len = buffer.len();
                 if buffer_len > 0 {
-                    let result = match &mut self.sender {
-                        SenderBackend::Direct(sender) => sender
-                            .send(buffer)
-                            .await
-                            .map_err(|_| generic_error!("Failed to send to output; {} events lost", buffer_len)),
-
-                        // NOTE: This `Pin<Box<...>>` wrapping is necessary to break recursion, since we also use
-                        // `BufferedSender` in `Forwarder`.
-                        //
-                        // While I don't _love_ this, it's fine for now because this is a lower throughput codepath and
-                        // we can always make it more efficient later, if necessary, by using something like
-                        // `tokio_util::ReusableBoxFuture` and splitting `BufferedSender`` into two concrete types to
-                        // avoid the recursive codepath when used within `Forwarder`, and so on.
-                        SenderBackend::Forwarder(forwarder) => Box::pin(forwarder.forward_buffer(buffer)).await,
-                    };
-
-                    if result.is_ok() {
-                        self.flushed_len += buffer_len;
-                    }
-
-                    result
+                    self.send_buffer_direct(buffer).await
                 } else {
                     Ok(())
                 }
@@ -138,14 +96,7 @@ where
         }
     }
 
-    /// Pushes an event into the buffered sender.
-    ///
-    /// If the current event buffer is full, it is flushed to the sender before acquiring a new buffer.
-    ///
-    /// # Errors
-    ///
-    /// If there is an error flushing an event buffer to the sender, an error is returned.
-    pub async fn push(&mut self, event: Event) -> Result<(), GenericError> {
+    async fn push(&mut self, event: Event) -> Result<(), GenericError> {
         // If our buffer is full, consume it and forward it, before acquiring a new one.
         let buffer_full = self.buffer.as_ref().map_or(false, |b| b.is_full());
         if buffer_full {
@@ -166,15 +117,129 @@ where
         Ok(())
     }
 
-    /// Consumes this buffered sender, flushing the current event buffer to the sender if it is non-empty.
-    ///
-    /// # Errors
-    ///
-    /// If there is an error flushing the event buffer to the sender, an error is returned.
-    pub async fn flush(mut self) -> Result<(), GenericError> {
+    async fn flush(mut self) -> Result<(), GenericError> {
         self.try_flush_buffer().await?;
 
         Ok(())
+    }
+}
+
+enum SenderBackend<'a, O>
+where
+    O: ObjectPool<Item = FixedSizeEventBuffer>,
+{
+    Single(BufferedSender<'a, O>),
+    Multiple(SmallVec<[BufferedSender<'a, O>; 4]>),
+}
+
+/// A buffered forwarder.
+///
+/// `BufferedForwarder` provides an efficient and ergonomic interface to `Forwarder` that allows for writing events
+/// one-by-one into batches, which are then forwarded to the configured output as needed. This allows callers to focus
+/// on the logic around what events to send, without needing to worry about the details of event buffer sizing or
+/// flushing.
+pub struct BufferedForwarder<'a, O>
+where
+    O: ObjectPool<Item = FixedSizeEventBuffer>,
+{
+    metrics: &'a ForwarderMetrics,
+    flushed_len: usize,
+    backend: SenderBackend<'a, O>,
+}
+
+impl<'a, O> BufferedForwarder<'a, O>
+where
+    O: ObjectPool<Item = FixedSizeEventBuffer>,
+{
+    fn new(
+        buffer_pool: &'a O, metrics: &'a ForwarderMetrics, senders: &'a [mpsc::Sender<FixedSizeEventBuffer>],
+    ) -> Self {
+        let backend = if senders.len() == 1 {
+            SenderBackend::Single(BufferedSender::new(buffer_pool, metrics, &senders[0]))
+        } else {
+            let senders = senders
+                .iter()
+                .map(|sender| BufferedSender::new(buffer_pool, metrics, sender))
+                .collect::<SmallVec<[_; 4]>>();
+            SenderBackend::Multiple(senders)
+        };
+
+        Self {
+            metrics,
+            flushed_len: 0,
+            backend,
+        }
+    }
+
+    /// Pushes an event into the buffered forwarder.
+    ///
+    /// # Errors
+    ///
+    /// If there is an error flushing events to the output, an error is returned.
+    pub async fn push(&mut self, event: Event) -> Result<(), GenericError> {
+        match &mut self.backend {
+            SenderBackend::Single(sender) => sender.push(event).await?,
+            SenderBackend::Multiple(senders) => {
+                let mut event = Some(event);
+                let last_sender_idx = senders.len();
+
+                for (sender_idx, sender) in senders.iter_mut().enumerate() {
+                    let event = if sender_idx == last_sender_idx {
+                        event.take().unwrap()
+                    } else {
+                        event.clone().unwrap()
+                    };
+
+                    sender.push(event).await?;
+                }
+            }
+        }
+
+        self.flushed_len += 1;
+
+        Ok(())
+    }
+
+    /// Consumes this buffered forwarder and sends/flushes all input events to the underlying output.
+    ///
+    /// If flushing is successful, `Ok(flushed)` is returned, where `flushed` is the total number of events that
+    /// have been flushed through this buffered forwarder.
+    ///
+    /// # Errors
+    ///
+    /// If there is an error sending events to the output, an error is returned.
+    pub async fn send_all<I>(mut self, events: I) -> Result<usize, GenericError>
+    where
+        I: IntoIterator<Item = Event>,
+    {
+        for event in events {
+            self.push(event).await?;
+        }
+
+        self.flush().await
+    }
+
+    /// Consumes this buffered forwarder, flushing any buffered events to the underlying output.
+    ///
+    /// If flushing is successful, `Ok(flushed)` is returned, where `flushed` is the total number of events that have
+    /// been flushed through this buffered forwarder.
+    ///
+    /// # Errors
+    ///
+    /// If there is an error sending events to the output, an error is returned.
+    pub async fn flush(self) -> Result<usize, GenericError> {
+        match self.backend {
+            SenderBackend::Single(sender) => sender.flush().await?,
+            SenderBackend::Multiple(senders) => {
+                for sender in senders {
+                    sender.flush().await?;
+                }
+            }
+        }
+
+        self.metrics.events_sent.increment(self.flushed_len as u64);
+
+        Ok(self.flushed_len)
     }
 }
 
@@ -221,7 +286,97 @@ impl Forwarder {
         }
     }
 
+    /// Creates a buffered forwarder for the default output.
+    ///
+    /// This should generally be used if the events being forwarded are not already collected in a container, or exposed
+    /// via an iterable type. It allows for efficiently buffering events one-by-one before forwarding them to the
+    /// underlying output.
+    ///
+    /// # Errors
+    ///
+    /// If the default output has not been configured, an error will be returned.
+    pub fn buffered(&self) -> Result<BufferedForwarder<'_, ElasticObjectPool<FixedSizeEventBuffer>>, GenericError> {
+        let (metrics, senders) = self
+            .default
+            .as_ref()
+            .ok_or_else(|| generic_error!("No default output declared."))?;
+        Ok(BufferedForwarder::new(&self.event_buffer_pool, metrics, senders))
+    }
+
+    /// Creates a buffered forwarder for the given named output.
+    ///
+    /// This should generally be used if the events being forwarded are not already collected in a container, or exposed
+    /// via an iterable type. It allows for efficiently buffering events one-by-one before forwarding them to the
+    /// underlying output.
+    ///
+    /// # Errors
+    ///
+    /// If the given named output has not been configured, an error will be returned.
+    pub fn buffered_named<N>(
+        &self, output_name: N,
+    ) -> Result<BufferedForwarder<'_, ElasticObjectPool<FixedSizeEventBuffer>>, GenericError>
+    where
+        N: AsRef<str>,
+    {
+        let (metrics, senders) = self
+            .targets
+            .get(output_name.as_ref())
+            .ok_or_else(|| generic_error!("No output named '{}' declared.", output_name.as_ref()))?;
+        Ok(BufferedForwarder::new(&self.event_buffer_pool, metrics, senders))
+    }
+
+    /// Forwards the given events to the default output.
+    ///
+    /// If forwarding is successful, `Ok(flushed)` is returned, where `flushed` is the total number of events that have
+    /// been forwarded.    
+    ///
+    /// ## Errors
+    ///
+    /// If the default output is not set, or there is an error sending to the default output, an error is returned.
+    pub async fn forward<I>(&self, events: I) -> Result<usize, GenericError>
+    where
+        I: IntoIterator<Item = Event>,
+    {
+        self.forward_inner::<String, _>(None, events).await
+    }
+
+    /// Forwards the given events to the given named output.
+    ///
+    /// If forwarding is successful, `Ok(flushed)` is returned, where `flushed` is the total number of events that have
+    /// been forwarded.
+    ///
+    /// ## Errors
+    ///
+    /// If a output of the given name is not set, or there is an error sending to the output, an error is returned.
+    pub async fn forward_named<N, I>(&self, output_name: N, events: I) -> Result<usize, GenericError>
+    where
+        N: AsRef<str>,
+        I: IntoIterator<Item = Event>,
+    {
+        self.forward_inner(Some(output_name), events).await
+    }
+
+    async fn forward_inner<N, I>(&self, output_name: Option<N>, events: I) -> Result<usize, GenericError>
+    where
+        N: AsRef<str>,
+        I: IntoIterator<Item = Event>,
+    {
+        let mut buffered_forwarder = match output_name {
+            None => self.buffered()?,
+            Some(name) => self.buffered_named(name)?,
+        };
+
+        for event in events {
+            buffered_forwarder.push(event).await?;
+        }
+
+        buffered_forwarder.flush().await
+    }
+
     /// Forwards the given event buffer to the default output.
+    ///
+    /// This is provided for special cases where an event buffer is already held and should be forwarded directly to an
+    /// output, rather than needing to submit events one-by-one such as when using [`buffered`][Self::buffered].
     ///
     /// ## Errors
     ///
@@ -231,6 +386,9 @@ impl Forwarder {
     }
 
     /// Forwards the given event buffer to the given named output.
+    ///
+    /// This is provided for special cases where an event buffer is already held and should be forwarded directly to an
+    /// output, rather than needing to submit events one-by-one such as when using [`buffered_named`][Self::buffered_named].
     ///
     /// ## Errors
     ///
@@ -242,31 +400,6 @@ impl Forwarder {
         N: AsRef<str>,
     {
         self.forward_buffer_inner(Some(output_name), buffer).await
-    }
-
-    /// Forwards the given events to the default output.
-    ///
-    /// ## Errors
-    ///
-    /// If the default output is not set, or there is an error sending to the default output, an error is returned.
-    pub async fn forward<I>(&self, events: I) -> Result<(), GenericError>
-    where
-        I: IntoIterator<Item = Event>,
-    {
-        self.forward_inner::<String, _>(None, events).await
-    }
-
-    /// Forwards the given events to the given named output.
-    ///
-    /// ## Errors
-    ///
-    /// If a output of the given name is not set, or there is an error sending to the output, an error is returned.
-    pub async fn forward_named<N, I>(&self, output_name: N, events: I) -> Result<(), GenericError>
-    where
-        N: AsRef<str>,
-        I: IntoIterator<Item = Event>,
-    {
-        self.forward_inner(Some(output_name), events).await
     }
 
     async fn forward_buffer_inner<N>(
@@ -286,24 +419,11 @@ impl Forwarder {
                 .ok_or_else(|| generic_error!("No output named '{}' declared.", name.as_ref()))?,
         };
 
-        if senders.len() > 1 {
-            self.forward_buffer_inner_multi_sender(metrics, senders, buffer).await
-        } else {
-            let sender = senders.first().expect("output sender should be present");
-            self.forward_buffer_inner_single_sender(metrics, sender, buffer).await
-        }
-    }
-
-    async fn forward_buffer_inner_multi_sender(
-        &self, metrics: &ForwarderMetrics, senders: &[mpsc::Sender<FixedSizeEventBuffer>], buffer: FixedSizeEventBuffer,
-    ) -> Result<(), GenericError> {
         // Nothing to do if the buffer is empty.
         let buffer_len = buffer.len();
         if buffer_len == 0 {
             return Ok(());
         }
-
-        let start = Instant::now();
 
         // TODO: Ideally, we should be tracking the forward latency for each downstream component that we're sending to
         // here instead of for the overall forwarding operation.
@@ -313,7 +433,7 @@ impl Forwarder {
         let mut buffered_senders = senders
             .iter()
             .take(senders.len() - 1)
-            .map(|sender| BufferedSender::direct(&self.event_buffer_pool, sender))
+            .map(|sender| BufferedSender::new(&self.event_buffer_pool, metrics, sender))
             .collect::<Vec<_>>();
 
         for event in &buffer {
@@ -333,146 +453,6 @@ impl Forwarder {
             .send(buffer)
             .await
             .map_err(|_| generic_error!("Failed to send to output; {} events lost", buffer_len))?;
-
-        // If we actually forwarded any events, update our telemetry.
-        if buffer_len > 0 {
-            let latency = start.elapsed();
-            metrics.forwarding_latency.record(latency);
-            metrics.events_sent.increment(buffer_len as u64);
-        }
-
-        Ok(())
-    }
-
-    async fn forward_buffer_inner_single_sender(
-        &self, metrics: &ForwarderMetrics, sender: &mpsc::Sender<FixedSizeEventBuffer>, buffer: FixedSizeEventBuffer,
-    ) -> Result<(), GenericError> {
-        // Nothing to do if the buffer is empty.
-        let buffer_len = buffer.len();
-        if buffer_len == 0 {
-            return Ok(());
-        }
-
-        let start = Instant::now();
-
-        // Forward the buffer directly to the sender.
-        sender
-            .send(buffer)
-            .await
-            .map_err(|_| generic_error!("Failed to send to output; {} events lost", buffer_len))?;
-
-        // If we actually forwarded any events, update our telemetry.
-        if buffer_len > 0 {
-            let latency = start.elapsed();
-            metrics.forwarding_latency.record(latency);
-            metrics.events_sent.increment(buffer_len as u64);
-        }
-
-        Ok(())
-    }
-
-    async fn forward_inner<N, I>(&self, output_name: Option<N>, events: I) -> Result<(), GenericError>
-    where
-        N: AsRef<str>,
-        I: IntoIterator<Item = Event>,
-    {
-        let (metrics, senders) = match output_name {
-            None => self
-                .default
-                .as_ref()
-                .ok_or_else(|| generic_error!("No default output declared."))?,
-            Some(name) => self
-                .targets
-                .get(name.as_ref())
-                .ok_or_else(|| generic_error!("No output named '{}' declared.", name.as_ref()))?,
-        };
-
-        if senders.len() > 1 {
-            self.forward_inner_multi_sender(metrics, senders, events).await
-        } else {
-            let sender = senders.first().expect("output sender should be present");
-            self.forward_inner_single_sender(metrics, sender, events).await
-        }
-    }
-
-    async fn forward_inner_multi_sender<I>(
-        &self, metrics: &ForwarderMetrics, senders: &[mpsc::Sender<FixedSizeEventBuffer>], events: I,
-    ) -> Result<(), GenericError>
-    where
-        I: IntoIterator<Item = Event>,
-    {
-        let mut events_forwarded = 0;
-        let start = Instant::now();
-
-        // TODO: Ideally, we should be tracking the forward latency for each downstream component that we're sending to
-        // here instead of for the overall forwarding operation.
-
-        // Write all of the input events to each buffered sender, which handles flushing filled event buffers and
-        // acquiring empty event buffers as necessary.
-        let mut buffered_senders = senders
-            .iter()
-            .map(|sender| BufferedSender::direct(&self.event_buffer_pool, sender))
-            .collect::<Vec<_>>();
-
-        let last_sender_idx = buffered_senders.len();
-        for event in events {
-            let mut event = Some(event);
-
-            for (sender_idx, buffered_sender) in buffered_senders.iter_mut().enumerate() {
-                let event = if sender_idx == last_sender_idx {
-                    event.take().unwrap()
-                } else {
-                    event.clone().unwrap()
-                };
-
-                buffered_sender.push(event).await?;
-            }
-
-            events_forwarded += 1;
-        }
-
-        // Flush the buffered senders to ensure all events are forwarded.
-        for buffered_sender in buffered_senders {
-            buffered_sender.flush().await?;
-        }
-
-        // If we actually forwarded any events, update our telemetry.
-        if events_forwarded > 0 {
-            let latency = start.elapsed();
-            metrics.forwarding_latency.record(latency);
-            metrics.events_sent.increment(events_forwarded as u64);
-        }
-
-        Ok(())
-    }
-
-    async fn forward_inner_single_sender<I>(
-        &self, metrics: &ForwarderMetrics, sender: &mpsc::Sender<FixedSizeEventBuffer>, events: I,
-    ) -> Result<(), GenericError>
-    where
-        I: IntoIterator<Item = Event>,
-    {
-        let mut events_forwarded = 0;
-        let start = Instant::now();
-
-        // Write all of the input events to the buffered sender, which handles flushing filled event buffers and
-        // acquiring empty event buffers as necessary.
-        let mut buffered_sender = BufferedSender::direct(&self.event_buffer_pool, sender);
-        for event in events {
-            buffered_sender.push(event).await?;
-
-            events_forwarded += 1;
-        }
-
-        // Flush the buffered sender to ensure all events are forwarded.
-        buffered_sender.flush().await?;
-
-        // If we actually forwarded any events, update our telemetry.
-        if events_forwarded > 0 {
-            let latency = start.elapsed();
-            metrics.forwarding_latency.record(latency);
-            metrics.events_sent.increment(events_forwarded as u64);
-        }
 
         Ok(())
     }
@@ -512,9 +492,11 @@ mod tests {
 
         // Create a basic metric event and then forward it.
         let metric = Metric::counter("basic_metric", 42.0);
-        let events = vec![Event::Metric(metric.clone())];
 
-        forwarder.forward(events).await.unwrap();
+        let mut buffered = forwarder.buffered().unwrap();
+        buffered.push(Event::Metric(metric.clone())).await.unwrap();
+        let flushed_len = buffered.flush().await.unwrap();
+        assert_eq!(flushed_len, 1);
 
         // Make sure there's an event buffer waiting for us and that it has one event: the one we sent.
         let forwarded_ebuf = rx.try_recv().expect("event buffer should have been forwarded");
@@ -538,9 +520,11 @@ mod tests {
 
         // Create a basic metric event and then forward it.
         let metric = Metric::counter("basic_metric", 42.0);
-        let events = vec![Event::Metric(metric.clone())];
 
-        forwarder.forward_named("metrics", events).await.unwrap();
+        let mut buffered = forwarder.buffered_named("metrics").unwrap();
+        buffered.push(Event::Metric(metric.clone())).await.unwrap();
+        let flushed_len = buffered.flush().await.unwrap();
+        assert_eq!(flushed_len, 1);
 
         // Make sure there's an event buffer waiting for us and that it has one event: the one we sent.
         let forwarded_ebuf = rx.try_recv().expect("event buffer should have been forwarded");
@@ -566,9 +550,11 @@ mod tests {
 
         // Create a basic metric event and then forward it.
         let metric = Metric::counter("basic_metric", 42.0);
-        let events = vec![Event::Metric(metric.clone())];
 
-        forwarder.forward(events).await.unwrap();
+        let mut buffered = forwarder.buffered().unwrap();
+        buffered.push(Event::Metric(metric.clone())).await.unwrap();
+        let flushed_len = buffered.flush().await.unwrap();
+        assert_eq!(flushed_len, 1);
 
         // Make sure there's an event buffer waiting for us on each received and that it has one event: the one we sent.
         let forwarded_ebuf1 = rx1.try_recv().expect("event buffer should have been forwarded");
@@ -603,9 +589,11 @@ mod tests {
 
         // Create a basic metric event and then forward it.
         let metric = Metric::counter("basic_metric", 42.0);
-        let events = vec![Event::Metric(metric.clone())];
 
-        forwarder.forward_named("metrics", events).await.unwrap();
+        let mut buffered = forwarder.buffered_named("metrics").unwrap();
+        buffered.push(Event::Metric(metric.clone())).await.unwrap();
+        let flushed_len = buffered.flush().await.unwrap();
+        assert_eq!(flushed_len, 1);
 
         // Make sure there's an event buffer waiting for us on each received and that it has one event: the one we sent.
         let forwarded_ebuf1 = rx1.try_recv().expect("event buffer should have been forwarded");
@@ -629,32 +617,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn error_when_default_output_not_set() {
+    async fn default_output_not_set() {
         // Create the forwarder and try to forward an event without setting up a default output.
         let (forwarder, ebuf_pool) = create_forwarder(1, 1);
 
-        // Create a basic metric event and then forward it.
-        let metric = Metric::counter("basic_metric", 42.0);
+        let result = forwarder.buffered();
+        assert!(result.is_err());
 
-        let mut ebuf = ebuf_pool.acquire().await;
-        assert!(ebuf.try_push(Event::Metric(metric.clone())).is_none());
-
-        let result = forwarder.forward(ebuf).await;
+        let ebuf = ebuf_pool.acquire().await;
+        let result = forwarder.forward_buffer(ebuf).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn error_when_named_output_not_set() {
+    async fn named_output_not_set() {
         // Create the forwarder and try to forward an event without setting up a named output.
         let (forwarder, ebuf_pool) = create_forwarder(1, 1);
 
-        // Create a basic metric event and then forward it.
-        let metric = Metric::counter("basic_metric", 42.0);
+        let result = forwarder.buffered_named("metrics");
+        assert!(result.is_err());
 
-        let mut ebuf = ebuf_pool.acquire().await;
-        assert!(ebuf.try_push(Event::Metric(metric.clone())).is_none());
-
-        let result = forwarder.forward_named("metrics", ebuf).await;
+        let ebuf = ebuf_pool.acquire().await;
+        let result = forwarder.forward_buffer_named("metrics", ebuf).await;
         assert!(result.is_err());
     }
 
@@ -678,7 +662,6 @@ mod tests {
         // Before forwarding, we'll acquire an event buffer in the pool to ensure that the pool only has one event
         // buffer present, since forwarding to two outputs will require two event buffers overall.
         let metric = Metric::counter("basic_metric", 42.0);
-        let events = vec![Event::Metric(metric.clone())];
 
         let mut receive1 = test_spawn(rx1.recv());
         let mut receive2 = test_spawn(rx2.recv());
@@ -689,17 +672,23 @@ mod tests {
         let mut acquire_ebuf = test_spawn(ebuf_pool.acquire());
         let ebuf = assert_ready!(acquire_ebuf.poll());
 
-        let mut forward = test_spawn(forwarder.forward(events));
-        assert_pending!(forward.poll());
+        let mut buffered = forwarder.buffered().unwrap();
+        let mut buffered_push = test_spawn(buffered.push(Event::Metric(metric.clone())));
+        assert_pending!(buffered_push.poll());
 
-        // We know our `forward` call is pending, and neither receiver should have gotten anything yet because we have
+        // We know our push call is pending, and neither receiver should have gotten anything yet because we have
         // to acquire all event buffers for each output before we start pushing any events into the output buffers:
         assert_pending!(receive1.poll());
         assert_pending!(receive2.poll());
 
-        // Now drop the spare event buffer, which returns it to the pool and should unblock the forward:
+        // Now drop the spare event buffer, which returns it to the pool and should unblock the push:
         drop(ebuf);
-        assert_ready_ok!(forward.poll());
+        assert_ready_ok!(buffered_push.poll());
+        drop(buffered_push);
+
+        // Finally, flush the buffered forwarder to ensure all events are forwarded:
+        let mut buffered_flush = test_spawn(buffered.flush());
+        assert_ready_ok!(buffered_flush.poll());
 
         let forwarded_ebuf1 = assert_ready!(receive1.poll()).expect("event buffer should have been forwarded");
         assert_eq!(forwarded_ebuf1.len(), 1);
