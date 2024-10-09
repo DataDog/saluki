@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use super::FixedSizeEventBuffer;
 use crate::{
     components::{ComponentContext, MetricsBuilder},
-    pooling::{ElasticObjectPool, ObjectPool as _},
+    pooling::{ElasticObjectPool, ObjectPool},
     topology::OutputName,
 };
 
@@ -42,34 +42,114 @@ impl ForwarderMetrics {
     }
 }
 
-struct BufferedSender<'a> {
-    buffer: Option<FixedSizeEventBuffer>,
-    buffer_pool: &'a ElasticObjectPool<FixedSizeEventBuffer>,
-    sender: &'a mpsc::Sender<FixedSizeEventBuffer>,
+enum SenderBackend<'a> {
+    Direct(&'a mpsc::Sender<FixedSizeEventBuffer>),
+    Forwarder(&'a Forwarder),
 }
 
-impl<'a> BufferedSender<'a> {
-    fn new(
-        buffer_pool: &'a ElasticObjectPool<FixedSizeEventBuffer>, sender: &'a mpsc::Sender<FixedSizeEventBuffer>,
-    ) -> Self {
+/// A buffered sender for forwarding events.
+///
+/// When utilizing pooled event buffers to store/hold events before forwarding them to a downstream component, the
+/// caller must manage the buffer capacity, such that once the buffer is filled, it is forwarded and a new buffer is
+/// acquired. In many cases, the code to do this is clunky and error-prone.
+///
+/// `BufferedSender` provides a simple wrapper around a sender and an object pool used to acquire event buffers. It
+/// handles the lifecycle of both event buffers as well as the sender, ensuring that event buffers are flushed (sent) to
+/// the sender when full, as well as acquiring a new event buffer to continue writing into.
+pub struct BufferedSender<'a, O>
+where
+    O: ObjectPool<Item = FixedSizeEventBuffer>,
+{
+    buffer: Option<FixedSizeEventBuffer>,
+    buffer_pool: &'a O,
+    flushed_len: usize,
+    sender: SenderBackend<'a>,
+}
+
+impl<'a, O> BufferedSender<'a, O>
+where
+    O: ObjectPool<Item = FixedSizeEventBuffer>,
+{
+    /// Creates a new `BufferedSender` in direct mode.
+    pub fn direct(buffer_pool: &'a O, sender: &'a mpsc::Sender<FixedSizeEventBuffer>) -> Self {
         Self {
             buffer: None,
             buffer_pool,
-            sender,
+            flushed_len: 0,
+            sender: SenderBackend::Direct(sender),
         }
     }
 
-    async fn push(&mut self, event: Event) -> Result<(), GenericError> {
+    /// Creates a new `BufferedSender` in forwarder mode.
+    ///
+    /// This sends event buffers to the given forwarder's default output.
+    pub fn forwarder(buffer_pool: &'a O, forwarder: &'a Forwarder) -> Self {
+        Self {
+            buffer: None,
+            buffer_pool,
+            flushed_len: 0,
+            sender: SenderBackend::Forwarder(forwarder),
+        }
+    }
+
+    /// Returns the number of events currently buffered in this sender.
+    pub fn buffered_len(&self) -> usize {
+        self.buffer.as_ref().map_or(0, |b| b.len())
+    }
+
+    /// Returns the number of events that have been pushed into this sender.
+    ///
+    /// This includes all events which have been flushed, and those which are currently buffered.
+    pub fn pushed_len(&self) -> usize {
+        self.flushed_len + self.buffer.as_ref().map_or(0, |b| b.len())
+    }
+
+    async fn try_flush_buffer(&mut self) -> Result<(), GenericError> {
+        match self.buffer.take() {
+            None => Ok(()),
+            Some(buffer) => {
+                let buffer_len = buffer.len();
+                if buffer_len > 0 {
+                    let result = match &mut self.sender {
+                        SenderBackend::Direct(sender) => sender
+                            .send(buffer)
+                            .await
+                            .map_err(|_| generic_error!("Failed to send to output; {} events lost", buffer_len)),
+
+                        // NOTE: This `Pin<Box<...>>` wrapping is necessary to break recursion, since we also use
+                        // `BufferedSender` in `Forwarder`.
+                        //
+                        // While I don't _love_ this, it's fine for now because this is a lower throughput codepath and
+                        // we can always make it more efficient later, if necessary, by using something like
+                        // `tokio_util::ReusableBoxFuture` and splitting `BufferedSender`` into two concrete types to
+                        // avoid the recursive codepath when used within `Forwarder`, and so on.
+                        SenderBackend::Forwarder(forwarder) => Box::pin(forwarder.forward_buffer(buffer)).await,
+                    };
+
+                    if result.is_ok() {
+                        self.flushed_len += buffer_len;
+                    }
+
+                    result
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    /// Pushes an event into the buffered sender.
+    ///
+    /// If the current event buffer is full, it is flushed to the sender before acquiring a new buffer.
+    ///
+    /// # Errors
+    ///
+    /// If there is an error flushing an event buffer to the sender, an error is returned.
+    pub async fn push(&mut self, event: Event) -> Result<(), GenericError> {
         // If our buffer is full, consume it and forward it, before acquiring a new one.
         let buffer_full = self.buffer.as_ref().map_or(false, |b| b.is_full());
         if buffer_full {
-            let buffer = self.buffer.take().unwrap();
-            let buffer_len = buffer.len();
-
-            self.sender
-                .send(buffer)
-                .await
-                .map_err(|_| generic_error!("Failed to send to output; {} events lost", buffer_len))?;
+            self.try_flush_buffer().await?;
         }
 
         // Ensure we have a buffer to push into.
@@ -86,16 +166,13 @@ impl<'a> BufferedSender<'a> {
         Ok(())
     }
 
-    async fn flush(self) -> Result<(), GenericError> {
-        if let Some(buffer) = self.buffer {
-            let buffer_len = buffer.len();
-            if buffer_len > 0 {
-                self.sender
-                    .send(buffer)
-                    .await
-                    .map_err(|_| generic_error!("Failed to send to output; {} events lost", buffer_len))?;
-            }
-        }
+    /// Consumes this buffered sender, flushing the current event buffer to the sender if it is non-empty.
+    ///
+    /// # Errors
+    ///
+    /// If there is an error flushing the event buffer to the sender, an error is returned.
+    pub async fn flush(mut self) -> Result<(), GenericError> {
+        self.try_flush_buffer().await?;
 
         Ok(())
     }
@@ -144,6 +221,29 @@ impl Forwarder {
         }
     }
 
+    /// Forwards the given event buffer to the default output.
+    ///
+    /// ## Errors
+    ///
+    /// If the default output is not set, or there is an error sending to the default output, an error is returned.
+    pub async fn forward_buffer(&self, buffer: FixedSizeEventBuffer) -> Result<(), GenericError> {
+        self.forward_buffer_inner::<String>(None, buffer).await
+    }
+
+    /// Forwards the given event buffer to the given named output.
+    ///
+    /// ## Errors
+    ///
+    /// If a output of the given name is not set, or there is an error sending to the output, an error is returned.
+    pub async fn forward_buffer_named<N>(
+        &self, output_name: N, buffer: FixedSizeEventBuffer,
+    ) -> Result<(), GenericError>
+    where
+        N: AsRef<str>,
+    {
+        self.forward_buffer_inner(Some(output_name), buffer).await
+    }
+
     /// Forwards the given events to the default output.
     ///
     /// ## Errors
@@ -153,7 +253,7 @@ impl Forwarder {
     where
         I: IntoIterator<Item = Event>,
     {
-        self.forward_inner_fixed::<String, _>(None, events).await
+        self.forward_inner::<String, _>(None, events).await
     }
 
     /// Forwards the given events to the given named output.
@@ -166,10 +266,112 @@ impl Forwarder {
         N: AsRef<str>,
         I: IntoIterator<Item = Event>,
     {
-        self.forward_inner_fixed(Some(output_name), events).await
+        self.forward_inner(Some(output_name), events).await
     }
 
-    async fn forward_inner_fixed<N, I>(&self, output_name: Option<N>, events: I) -> Result<(), GenericError>
+    async fn forward_buffer_inner<N>(
+        &self, output_name: Option<N>, buffer: FixedSizeEventBuffer,
+    ) -> Result<(), GenericError>
+    where
+        N: AsRef<str>,
+    {
+        let (metrics, senders) = match output_name {
+            None => self
+                .default
+                .as_ref()
+                .ok_or_else(|| generic_error!("No default output declared."))?,
+            Some(name) => self
+                .targets
+                .get(name.as_ref())
+                .ok_or_else(|| generic_error!("No output named '{}' declared.", name.as_ref()))?,
+        };
+
+        if senders.len() > 1 {
+            self.forward_buffer_inner_multi_sender(metrics, senders, buffer).await
+        } else {
+            let sender = senders.first().expect("output sender should be present");
+            self.forward_buffer_inner_single_sender(metrics, sender, buffer).await
+        }
+    }
+
+    async fn forward_buffer_inner_multi_sender(
+        &self, metrics: &ForwarderMetrics, senders: &[mpsc::Sender<FixedSizeEventBuffer>], buffer: FixedSizeEventBuffer,
+    ) -> Result<(), GenericError> {
+        // Nothing to do if the buffer is empty.
+        let buffer_len = buffer.len();
+        if buffer_len == 0 {
+            return Ok(());
+        }
+
+        let start = Instant::now();
+
+        // TODO: Ideally, we should be tracking the forward latency for each downstream component that we're sending to
+        // here instead of for the overall forwarding operation.
+
+        // Write all of the input events to each buffered sender, except for the last, which will be sent the original
+        // event buffer directly. This lets us avoid an additional clone of the event buffer.
+        let mut buffered_senders = senders
+            .iter()
+            .take(senders.len() - 1)
+            .map(|sender| BufferedSender::direct(&self.event_buffer_pool, sender))
+            .collect::<Vec<_>>();
+
+        for event in &buffer {
+            for buffered_sender in &mut buffered_senders {
+                buffered_sender.push(event.clone()).await?;
+            }
+        }
+
+        // Flush the buffered senders to ensure all events are forwarded.
+        for buffered_sender in buffered_senders {
+            buffered_sender.flush().await?;
+        }
+
+        // Finally, send the original event buffer to the last sender.
+        let last_sender = senders.last().expect("last sender should be present");
+        last_sender
+            .send(buffer)
+            .await
+            .map_err(|_| generic_error!("Failed to send to output; {} events lost", buffer_len))?;
+
+        // If we actually forwarded any events, update our telemetry.
+        if buffer_len > 0 {
+            let latency = start.elapsed();
+            metrics.forwarding_latency.record(latency);
+            metrics.events_sent.increment(buffer_len as u64);
+        }
+
+        Ok(())
+    }
+
+    async fn forward_buffer_inner_single_sender(
+        &self, metrics: &ForwarderMetrics, sender: &mpsc::Sender<FixedSizeEventBuffer>, buffer: FixedSizeEventBuffer,
+    ) -> Result<(), GenericError> {
+        // Nothing to do if the buffer is empty.
+        let buffer_len = buffer.len();
+        if buffer_len == 0 {
+            return Ok(());
+        }
+
+        let start = Instant::now();
+
+        // Forward the buffer directly to the sender.
+        sender
+            .send(buffer)
+            .await
+            .map_err(|_| generic_error!("Failed to send to output; {} events lost", buffer_len))?;
+
+        // If we actually forwarded any events, update our telemetry.
+        if buffer_len > 0 {
+            let latency = start.elapsed();
+            metrics.forwarding_latency.record(latency);
+            metrics.events_sent.increment(buffer_len as u64);
+        }
+
+        Ok(())
+    }
+
+    async fn forward_inner<N, I>(&self, output_name: Option<N>, events: I) -> Result<(), GenericError>
     where
         N: AsRef<str>,
         I: IntoIterator<Item = Event>,
@@ -186,14 +388,14 @@ impl Forwarder {
         };
 
         if senders.len() > 1 {
-            self.forward_inner_fixed_multi_sender(metrics, senders, events).await
+            self.forward_inner_multi_sender(metrics, senders, events).await
         } else {
             let sender = senders.first().expect("output sender should be present");
-            self.forward_inner_fixed_single_sender(metrics, sender, events).await
+            self.forward_inner_single_sender(metrics, sender, events).await
         }
     }
 
-    async fn forward_inner_fixed_multi_sender<I>(
+    async fn forward_inner_multi_sender<I>(
         &self, metrics: &ForwarderMetrics, senders: &[mpsc::Sender<FixedSizeEventBuffer>], events: I,
     ) -> Result<(), GenericError>
     where
@@ -209,7 +411,7 @@ impl Forwarder {
         // acquiring empty event buffers as necessary.
         let mut buffered_senders = senders
             .iter()
-            .map(|sender| BufferedSender::new(&self.event_buffer_pool, sender))
+            .map(|sender| BufferedSender::direct(&self.event_buffer_pool, sender))
             .collect::<Vec<_>>();
 
         let last_sender_idx = buffered_senders.len();
@@ -244,7 +446,7 @@ impl Forwarder {
         Ok(())
     }
 
-    async fn forward_inner_fixed_single_sender<I>(
+    async fn forward_inner_single_sender<I>(
         &self, metrics: &ForwarderMetrics, sender: &mpsc::Sender<FixedSizeEventBuffer>, events: I,
     ) -> Result<(), GenericError>
     where
@@ -253,12 +455,9 @@ impl Forwarder {
         let mut events_forwarded = 0;
         let start = Instant::now();
 
-        // TODO: Ideally, we should be tracking the forward latency for each downstream component that we're sending to
-        // here instead of for the overall forwarding operation.
-
         // Write all of the input events to the buffered sender, which handles flushing filled event buffers and
         // acquiring empty event buffers as necessary.
-        let mut buffered_sender = BufferedSender::new(&self.event_buffer_pool, sender);
+        let mut buffered_sender = BufferedSender::direct(&self.event_buffer_pool, sender);
         for event in events {
             buffered_sender.push(event).await?;
 

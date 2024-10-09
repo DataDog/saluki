@@ -10,4 +10,4 @@ mod fixed_event_buffer;
 pub use self::fixed_event_buffer::{FixedSizeEventBuffer, FixedSizeEventBufferInner};
 
 mod forwarder;
-pub use self::forwarder::Forwarder;
+pub use self::forwarder::{BufferedSender, Forwarder};
