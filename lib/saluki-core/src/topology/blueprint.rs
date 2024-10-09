@@ -8,13 +8,10 @@ use snafu::Snafu;
 use super::{
     built::BuiltTopology,
     graph::{Graph, GraphError},
-    interconnect::EventBuffer,
+    interconnect::{FixedSizeEventBuffer, FixedSizeEventBufferInner},
     ComponentId, RegisteredComponent,
 };
-use crate::{
-    components::{destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder},
-    topology::interconnect::FixedSizeEventBufferInner,
-};
+use crate::components::{destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder};
 
 /// A topology blueprint error.
 #[derive(Debug, Snafu)]
@@ -88,7 +85,7 @@ impl TopologyBlueprint {
             .get_or_create("interconnects")
             .bounds_builder()
             .minimum()
-            .with_array::<EventBuffer>(128);
+            .with_array::<FixedSizeEventBuffer>(128);
     }
 
     /// Adds a source component to the blueprint.

@@ -466,7 +466,7 @@ mod tests {
     use tokio_test::{task::spawn as test_spawn, *};
 
     use super::*;
-    use crate::topology::interconnect::fixed_event_buffer::FixedSizeEventBufferInner;
+    use crate::topology::interconnect::FixedSizeEventBufferInner;
 
     fn create_forwarder(
         event_buffers: usize, buffer_size: usize,

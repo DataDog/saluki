@@ -7,7 +7,6 @@ repository = { workspace = true }
 
 [dependencies]
 ahash = { workspace = true }
-async-stream = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 bytesize = { workspace = true }
