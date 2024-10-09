@@ -113,7 +113,7 @@ impl Transform for AgentTelemetryRemapper {
                             error!(error = %e, "Failed to forward events.");
                         }
 
-                        if let Err(e) = context.forwarder().forward(events).await {
+                        if let Err(e) = context.forwarder().forward_buffer(events).await {
                             error!(error = %e, "Failed to forward events.");
                         }
                     },

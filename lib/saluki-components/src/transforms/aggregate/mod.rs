@@ -7,8 +7,11 @@ use saluki_config::GenericConfiguration;
 use saluki_context::Context;
 use saluki_core::{
     components::{transforms::*, MetricsBuilder},
-    pooling::{FixedSizeObjectPool, ObjectPool as _},
-    topology::{interconnect::EventBuffer, OutputDefinition},
+    pooling::{FixedSizeObjectPool, ObjectPool},
+    topology::{
+        interconnect::{BufferedSender, FixedSizeEventBuffer, FixedSizeEventBufferInner},
+        OutputDefinition,
+    },
 };
 use saluki_env::time::get_unix_timestamp;
 use saluki_error::GenericError;
@@ -240,7 +243,21 @@ impl Transform for Aggregate {
         // events per event buffer. If we use the global event buffer pool, we risk churning through many event buffers,
         // having them reserve a lot of underlying capacity, and then having a ton of event buffers in the pool with
         // high capacity when we only need one every few seconds, etc.
-        let event_buffer_pool = FixedSizeObjectPool::<EventBuffer>::with_capacity("aggregate", EVENT_BUFFER_POOL_SIZE);
+        //
+        // TODO: We should rework this to use the global event buffer pool, but there's a few problems/suboptimal
+        // aspects of doing so:
+        //
+        // - we'd be sending smaller event buffers to downstream components, which could lead to suboptimal resource
+        //   consumption (i.e. smaller event buffers could lead to sending more requests from the Datadog Metrics
+        //   destination because we don't buffer, we just gather all available event buffers and then build/send the
+        //   requests)
+        // - we could end up needing a lot of event buffers to hold all of the contexts in a given flush, and perhaps
+        //   exhaust the number of event buffers in the pool during large flushes, which might lead to
+        //   stalls/oscillations in ingest throughput as sources battle the aggregate transform for event buffers
+        let flush_event_buffer_pool =
+            FixedSizeObjectPool::<FixedSizeEventBuffer>::with_builder("aggregate", EVENT_BUFFER_POOL_SIZE, || {
+                FixedSizeEventBufferInner::with_capacity(self.context_limit)
+            });
 
         health.mark_ready();
         debug!("Aggregation transform started.");
@@ -248,12 +265,6 @@ impl Transform for Aggregate {
         let mut final_flush = false;
 
         loop {
-            let mut unaggregated_events = 0;
-            let mut flushed_events = 0;
-
-            let mut event_buffer = event_buffer_pool.acquire().await;
-            debug!(buf_cap = event_buffer.capacity(), "Acquired event buffer.");
-
             select! {
                 _ = health.live() => continue,
                 _ = flush.tick() => {
@@ -265,10 +276,17 @@ impl Transform for Aggregate {
 
                         let should_flush_open_windows = final_flush && self.flush_open_windows;
 
-                        let event_buffer_len = event_buffer.len();
-                        state.flush(get_unix_timestamp(), should_flush_open_windows, &mut event_buffer);
+                        let mut flush_event_sender = BufferedSender::forwarder(&flush_event_buffer_pool, context.forwarder());
+                        if let Err(e) = state.flush(get_unix_timestamp(), should_flush_open_windows, &mut flush_event_sender).await {
+                            error!(error = %e, "Failed to flush aggregation state.");
+                        }
 
-                        flushed_events = event_buffer.len() - event_buffer_len;
+                        let aggregated_events = flush_event_sender.pushed_len();
+                        if let Err(e) = flush_event_sender.flush().await {
+                            error!(error = %e, "Failed to flush aggregated events.");
+                        } else {
+                            debug!(aggregated_events, "Forwarded events.");
+                        }
                     }
 
                     // If this is the final flush, we break out of the loop.
@@ -281,7 +299,7 @@ impl Transform for Aggregate {
                     Some(events) => {
                         trace!(events_len = events.len(), "Received events.");
 
-                        let event_buffer_len = event_buffer.len();
+                        let mut passthrough_event_sender = BufferedSender::forwarder(context.event_buffer_pool(), context.forwarder());
                         let current_time = get_unix_timestamp();
 
                         for event in events {
@@ -292,9 +310,13 @@ impl Transform for Aggregate {
                                     // it's either the original metric because no values had timestamps _or_ it's a
                                     // modified version of the metric after all timestamped values were split out and
                                     // directly forwarded.
-                                    match handle_forward_timestamped_metric(metric, &mut event_buffer) {
-                                        Some(metric) => metric,
-                                        None => continue,
+                                    match handle_forward_timestamped_metric(metric, &mut passthrough_event_sender).await {
+                                        Ok(None) => continue,
+                                        Ok(Some(metric)) => metric,
+                                        Err(e) => {
+                                            error!(error = %e, "Failed to handle timestamped metric.");
+                                            continue;
+                                        }
                                     }
                                 } else {
                                     metric
@@ -307,7 +329,12 @@ impl Transform for Aggregate {
                             }
                         }
 
-                        unaggregated_events = event_buffer.len() - event_buffer_len;
+                        let unaggregated_events = passthrough_event_sender.pushed_len();
+                        if let Err(e) = passthrough_event_sender.flush().await {
+                            error!(error = %e, "Failed to flush unaggregated events.");
+                        } else {
+                            debug!(unaggregated_events, "Forwarded events.");
+                        }
                     },
                     None => {
                         // We've reached the end of our input stream, so mark ourselves for a final flush and reset the
@@ -320,15 +347,6 @@ impl Transform for Aggregate {
                     }
                 },
             }
-
-            if !event_buffer.is_empty() {
-                if let Err(e) = context.forwarder().forward(event_buffer).await {
-                    error!(error = %e, "Failed to forward events.");
-                    return Err(());
-                }
-
-                debug!(unaggregated_events, flushed_events, "Forwarded events.");
-            }
         }
 
         debug!("Aggregation transform stopped.");
@@ -337,22 +355,27 @@ impl Transform for Aggregate {
     }
 }
 
-fn handle_forward_timestamped_metric(mut metric: Metric, event_buffer: &mut EventBuffer) -> Option<Metric> {
+async fn handle_forward_timestamped_metric<O>(
+    mut metric: Metric, buffered_sender: &mut BufferedSender<'_, O>,
+) -> Result<Option<Metric>, GenericError>
+where
+    O: ObjectPool<Item = FixedSizeEventBuffer>,
+{
     if metric.values().all_timestamped() {
         // All the values are timestamped, so take and forward the metric as-is.
-        event_buffer.push(Event::Metric(metric));
-        None
+        buffered_sender.push(Event::Metric(metric)).await?;
+        Ok(None)
     } else if metric.values().any_timestamped() {
         // Only _some_ of the values are timestamped, so split out those timestamped ones, forward them, and then hand
         // back the now-modified original metric.
         let new_metric_values = metric.values_mut().split_timestamped();
         let new_metric = Metric::from_parts(metric.context().clone(), new_metric_values, metric.metadata().clone());
-        event_buffer.push(Event::Metric(new_metric));
+        buffered_sender.push(Event::Metric(new_metric)).await?;
 
-        Some(metric)
+        Ok(Some(metric))
     } else {
         // No timestamped values, so we need to aggregate this metric.
-        Some(metric)
+        Ok(Some(metric))
     }
 }
 
@@ -365,6 +388,7 @@ struct AggregatedMetric {
 
 struct AggregationState {
     contexts: HashMap<Context, AggregatedMetric, ahash::RandomState>,
+    contexts_remove_buf: Vec<Context>,
     context_limit: usize,
     bucket_width_secs: u64,
     counter_expire_secs: Option<NonZeroU64>,
@@ -377,6 +401,7 @@ impl AggregationState {
 
         Self {
             contexts: HashMap::default(),
+            contexts_remove_buf: Vec::new(),
             context_limit,
             bucket_width_secs: bucket_width.as_secs(),
             counter_expire_secs,
@@ -431,7 +456,14 @@ impl AggregationState {
         true
     }
 
-    fn flush(&mut self, current_time: u64, flush_open_buckets: bool, event_buffer: &mut EventBuffer) {
+    async fn flush<O>(
+        &mut self, current_time: u64, flush_open_buckets: bool, buffered_sender: &mut BufferedSender<'_, O>,
+    ) -> Result<(), GenericError>
+    where
+        O: ObjectPool<Item = FixedSizeEventBuffer>,
+    {
+        self.contexts_remove_buf.clear();
+
         let bucket_width_secs = self.bucket_width_secs;
         let counter_expire_secs = self.counter_expire_secs.map(|d| d.get()).unwrap_or(0);
 
@@ -457,7 +489,7 @@ impl AggregationState {
         // Iterate over each context we're tracking, and flush any values that are in buckets which are now closed.
         debug!(timestamp = current_time, "Flushing buckets.");
 
-        let should_retain = |context: &Context, am: &mut AggregatedMetric| {
+        for (context, am) in self.contexts.iter_mut() {
             // Figure out if we should remove this metric or not if it has no values in open buckets.
             //
             // We have a special carve-out for counters here, which we have the ability to keep alive after they are
@@ -506,23 +538,34 @@ impl AggregationState {
                     closed_bucket_values,
                     am.metadata.clone(),
                     bucket_width_secs,
-                    event_buffer,
-                );
+                    buffered_sender,
+                )
+                .await?;
             }
 
-            !(am.values.is_empty() && should_expire_if_empty)
-        };
+            if am.values.is_empty() && should_expire_if_empty {
+                self.contexts_remove_buf.push(context.clone());
+            }
+        }
 
-        self.contexts.retain(should_retain);
+        // Remove any contexts that were marked as needing to be removed.
+        for context in &self.contexts_remove_buf {
+            self.contexts.remove(context);
+        }
 
         self.last_flush = current_time;
+
+        Ok(())
     }
 }
 
-fn transform_and_push_metric(
+async fn transform_and_push_metric<O>(
     context: Context, values: MetricValues, metadata: MetricMetadata, bucket_width_secs: u64,
-    event_buffer: &mut EventBuffer,
-) {
+    buffered_sender: &mut BufferedSender<'_, O>,
+) -> Result<(), GenericError>
+where
+    O: ObjectPool<Item = FixedSizeEventBuffer>,
+{
     // If we're dealing with a counter, convert it to a rate metric now that it's been aggregated.
     let values = match values {
         MetricValues::Counter(values) => MetricValues::rate(values, Duration::from_secs(bucket_width_secs)),
@@ -530,7 +573,7 @@ fn transform_and_push_metric(
     };
 
     let metric = Metric::from_parts(context, values, metadata);
-    event_buffer.push(Event::Metric(metric));
+    buffered_sender.push(Event::Metric(metric)).await
 }
 
 const fn align_to_bucket_start(timestamp: u64, bucket_width_secs: u64) -> u64 {
@@ -566,7 +609,7 @@ const fn is_bucket_closed(
 // then we run it to make sure that we are always generating sequential timestamps for data points, etc.
 #[cfg(test)]
 mod tests {
-    use saluki_core::pooling::helpers::get_pooled_object_via_default;
+    use tokio::sync::mpsc;
 
     use super::*;
 
@@ -590,19 +633,39 @@ mod tests {
         BUCKET_WIDTH_SECS * (step + 1)
     }
 
-    fn get_flushed_metrics(timestamp: u64, state: &mut AggregationState) -> Vec<Metric> {
+    async fn get_flushed_metrics(timestamp: u64, state: &mut AggregationState) -> Vec<Metric> {
+        // Create a simple object pool with a single event buffer in it, and then create an MPSC channel, and tie them
+        // both together as a buffered sender:
+        let pool = FixedSizeObjectPool::with_builder("test", 1, || FixedSizeEventBufferInner::with_capacity(8));
+        let (sender, mut receiver) = mpsc::channel(1);
+        let mut buffered_sender = BufferedSender::direct(&pool, &sender);
+
         // Flush the metrics to an event buffer.
-        let mut event_buffer = get_pooled_object_via_default::<EventBuffer>();
-        state.flush(timestamp, true, &mut event_buffer);
+        state
+            .flush(timestamp, true, &mut buffered_sender)
+            .await
+            .expect("should not fail to flush aggregation state");
 
-        // Map all of the metrics from their `Event` representation back to `Metric`, and sort them by name.
-        let mut metrics = event_buffer
-            .into_iter()
-            .filter_map(|event| event.try_into_metric())
-            .collect::<Vec<_>>();
+        // Flush our buffered sender, which should ensure that the event buffer is sent out, and then read it from the
+        // receiver:
+        buffered_sender
+            .flush()
+            .await
+            .expect("should not fail to flush buffered sender");
 
-        metrics.sort_by(|a, b| a.context().name().cmp(b.context().name()));
-        metrics
+        match receiver.try_recv() {
+            Ok(event_buffer) => {
+                // Map all of the metrics from their `Event` representation back to `Metric`, and sort them by name.
+                let mut metrics = event_buffer
+                    .into_iter()
+                    .filter_map(|event| event.try_into_metric())
+                    .collect::<Vec<_>>();
+
+                metrics.sort_by(|a, b| a.context().name().cmp(b.context().name()));
+                metrics
+            }
+            Err(_) => Vec::new(),
+        }
     }
 
     macro_rules! assert_flushed_counter_metric {
@@ -652,8 +715,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn context_limit() {
+    #[tokio::test]
+    async fn context_limit() {
         // Create our aggregation state with a context limit of 2.
         let mut state = AggregationState::new(BUCKET_WIDTH, 2, COUNTER_EXPIRE);
 
@@ -670,7 +733,7 @@ mod tests {
         assert!(!state.insert(insert_ts(1), metric4.clone()));
 
         // We should only see the first two gauges after flushing.
-        let metrics = get_flushed_metrics(flush_ts(1), &mut state);
+        let metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
         assert_eq!(metrics.len(), 2);
         assert_eq!(metrics[0].context(), metric1.context());
         assert_eq!(metrics[1].context(), metric2.context());
@@ -680,14 +743,14 @@ mod tests {
         assert!(state.insert(insert_ts(2), metric3.clone()));
         assert!(state.insert(insert_ts(2), metric4.clone()));
 
-        let metrics = get_flushed_metrics(flush_ts(2), &mut state);
+        let metrics = get_flushed_metrics(flush_ts(2), &mut state).await;
         assert_eq!(metrics.len(), 2);
         assert_eq!(metrics[0].context(), metric3.context());
         assert_eq!(metrics[1].context(), metric4.context());
     }
 
-    #[test]
-    fn context_limit_with_zero_value_counters() {
+    #[tokio::test]
+    async fn context_limit_with_zero_value_counters() {
         // We test here to ensure that zero-value counters contribute to the context limit.
         let mut state = AggregationState::new(BUCKET_WIDTH, 2, COUNTER_EXPIRE);
 
@@ -699,13 +762,13 @@ mod tests {
         assert!(state.insert(insert_ts(1), metric2.clone()));
 
         // Flush the aggregation state, and observe they're both present.
-        let mut metrics = get_flushed_metrics(flush_ts(1), &mut state);
+        let mut metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
         assert_eq!(metrics.len(), 2);
         assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(1) => 1.0]);
         assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(1) => 2.0]);
 
         // Flush _again_ to ensure that we then emit zero-value variants for both counters.
-        let mut metrics = get_flushed_metrics(flush_ts(2), &mut state);
+        let mut metrics = get_flushed_metrics(flush_ts(2), &mut state).await;
         assert_eq!(metrics.len(), 2);
         assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(2) => 0.0]);
         assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(2) => 0.0]);
@@ -715,26 +778,26 @@ mod tests {
         assert!(!state.insert(insert_ts(3), metric3.clone()));
 
         // Flush the aggregation state, and observe that we only see the two original counters.
-        let mut metrics = get_flushed_metrics(flush_ts(3), &mut state);
+        let mut metrics = get_flushed_metrics(flush_ts(3), &mut state).await;
         assert_eq!(metrics.len(), 2);
         assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(3) => 0.0]);
         assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(3) => 0.0]);
 
         // With a fourth flush interval, the two counters should now have expired, and thus be dropped and no longer
         // contributing to the context limit.
-        let metrics = get_flushed_metrics(flush_ts(4), &mut state);
+        let metrics = get_flushed_metrics(flush_ts(4), &mut state).await;
         assert_eq!(metrics.len(), 0);
 
         // Now we should be able to insert the third counter, and it should be the only one present after flushing.
         assert!(state.insert(insert_ts(5), metric3.clone()));
 
-        let mut metrics = get_flushed_metrics(flush_ts(5), &mut state);
+        let mut metrics = get_flushed_metrics(flush_ts(5), &mut state).await;
         assert_eq!(metrics.len(), 1);
         assert_flushed_counter_metric!(&metric3, metrics.remove(0), [bucket_ts(5) => 3.0]);
     }
 
-    #[test]
-    fn zero_value_counters() {
+    #[tokio::test]
+    async fn zero_value_counters() {
         // We're testing that we properly emit and expire zero-value counters in all relevant scenarios.
         let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE);
 
@@ -746,13 +809,13 @@ mod tests {
         assert!(state.insert(insert_ts(1), metric2.clone()));
 
         // Flush the aggregation state, and observe they're both present.
-        let mut metrics = get_flushed_metrics(flush_ts(1), &mut state);
+        let mut metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
         assert_eq!(metrics.len(), 2);
         assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(1) => 1.0]);
         assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(1) => 2.0]);
 
         // Perform our second flush, which should have them as zero-value counters.
-        let mut metrics = get_flushed_metrics(flush_ts(2), &mut state);
+        let mut metrics = get_flushed_metrics(flush_ts(2), &mut state).await;
         assert_eq!(metrics.len(), 2);
         assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(2) => 0.0]);
         assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(2) => 0.0]);
@@ -763,7 +826,7 @@ mod tests {
 
         // Flush the aggregation state, and observe that we have two zero-value counters for the flush period we
         // skipped, but that we see them appear again in the fourth flush period.
-        let mut metrics = get_flushed_metrics(flush_ts(4), &mut state);
+        let mut metrics = get_flushed_metrics(flush_ts(4), &mut state).await;
         assert_eq!(metrics.len(), 2);
         assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(3) => 0.0, bucket_ts(4) => 1.0]);
         assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(3) => 0.0, bucket_ts(4) => 2.0]);
@@ -771,14 +834,14 @@ mod tests {
         // Now we'll skip multiple flush periods and ensure that we emit zero-value counters up until the point they
         // expire. As our zero-value counter expiration is 20 seconds, this is two flush periods, so we skip by three
         // flush periods, and we should only see the counters emitted for the first two.
-        let mut metrics = get_flushed_metrics(flush_ts(7), &mut state);
+        let mut metrics = get_flushed_metrics(flush_ts(7), &mut state).await;
         assert_eq!(metrics.len(), 2);
         assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(5) => 0.0, bucket_ts(6) => 0.0]);
         assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(5) => 0.0, bucket_ts(6) => 0.0]);
     }
 
-    #[test]
-    fn merge_identical_timestamped_values_on_flush() {
+    #[tokio::test]
+    async fn merge_identical_timestamped_values_on_flush() {
         // We're testing that we properly emit and expire zero-value counters in all relevant scenarios.
         let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE);
 
@@ -789,7 +852,7 @@ mod tests {
 
         // Flush the aggregation state, and observe the metric is present _and_ that we've properly merged all of the
         // values within the same timestamp.
-        let mut metrics = get_flushed_metrics(flush_ts(1), &mut state);
+        let mut metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
         assert_eq!(metrics.len(), 1);
         assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(1) => 15.0]);
     }

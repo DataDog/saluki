@@ -734,7 +734,11 @@ async fn forward_events(event_buffer: &mut FixedSizeEventBuffer, source_context:
 
     // Finally, if there are events left, they'll be metrics, so forward them.
     if !event_buffer.is_empty() {
-        if let Err(e) = source_context.forwarder().forward_named("metrics", event_buffer).await {
+        if let Err(e) = source_context
+            .forwarder()
+            .forward_buffer_named("metrics", event_buffer)
+            .await
+        {
             error!(%listen_addr, error = %e, "Failed to forward metric events.");
         }
     }
