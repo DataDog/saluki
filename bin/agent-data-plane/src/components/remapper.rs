@@ -100,16 +100,16 @@ impl Transform for AgentTelemetryRemapper {
                 _ = health.live() => continue,
                 maybe_events = context.event_stream().next() => match maybe_events {
                     Some(events) => {
-                        // TODO: This is a bit suboptimal, allocating a new vector to hold the remapped events.
-                        //
-                        // It would be nicer to use a pooled event buffer, but doing so would mean needing to handle
-                        // splaying over potentially multiple event buffers, and we're punting on coming up with a clean
-                        // bit of code to do that... at least for now.
-                        let remapped_events = (&events).into_iter()
-                            .filter_map(|event| event.try_as_metric().and_then(|metric| self.try_remap_metric(metric).map(Event::Metric)))
-                            .collect::<Vec<Event>>();
+                        let mut buffered_forwarder = context.forwarder().buffered().expect("default output must always exist");
+                        for event in &events {
+                            if let Some(new_event) = event.try_as_metric().and_then(|metric| self.try_remap_metric(metric).map(Event::Metric)) {
+                                if let Err(e) = buffered_forwarder.push(new_event).await {
+                                    error!(error = %e, "Failed to forward event.");
+                                }
+                            }
+                        }
 
-                        if let Err(e) = context.forwarder().forward(remapped_events).await {
+                        if let Err(e) = buffered_forwarder.flush().await {
                             error!(error = %e, "Failed to forward events.");
                         }
 
