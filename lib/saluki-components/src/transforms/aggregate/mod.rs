@@ -7,9 +7,9 @@ use saluki_config::GenericConfiguration;
 use saluki_context::Context;
 use saluki_core::{
     components::{transforms::*, MetricsBuilder},
-    pooling::{FixedSizeObjectPool, ObjectPool},
+    pooling::ObjectPool,
     topology::{
-        interconnect::{BufferedSender, FixedSizeEventBuffer, FixedSizeEventBufferInner},
+        interconnect::{BufferedForwarder, FixedSizeEventBuffer},
         OutputDefinition,
     },
 };
@@ -21,8 +21,6 @@ use smallvec::SmallVec;
 use tokio::{select, time::interval_at};
 use tracing::{debug, error, trace};
 
-const EVENT_BUFFER_POOL_SIZE: usize = 8;
-
 const fn default_window_duration() -> Duration {
     Duration::from_secs(10)
 }
@@ -32,7 +30,7 @@ const fn default_flush_interval() -> Duration {
 }
 
 const fn default_context_limit() -> usize {
-    1000
+    5000
 }
 
 const fn default_counter_expiry_seconds() -> Option<u64> {
@@ -193,19 +191,12 @@ impl MemoryBounds for AggregateConfiguration {
         //
         // However, there could be many more values in a single metric, and we don't account for that.
 
-        // Since we use our own event buffer pool, we account for that directly here, and we use our knowledge of the
-        // context limit to determine how large we'd expect those event buffers to grow to in the worst case. With a
-        // context limit of N, we would only aggregate N metrics at any given time, and thus we should flush a maximum
-        // of N metrics per flush interval.
-        let event_buffer_pool_size = EVENT_BUFFER_POOL_SIZE * self.context_limit * std::mem::size_of::<Event>();
-
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
             .with_single_value::<Aggregate>();
         builder
             .firm()
-            .with_fixed_amount(event_buffer_pool_size)
             // Account for the aggregation state map, where we map contexts to the merged metric.
             .with_map::<Context, AggregatedMetric>(self.context_limit);
     }
@@ -237,28 +228,6 @@ impl Transform for Aggregate {
         let events_dropped =
             metrics_builder.register_counter_with_labels("component_events_dropped_total", &[("intentional", "true")]);
 
-        // Create our own event buffer pool.
-        //
-        // We do this because aggregation often leads to a high amount of cardinality, where we're flushing a lot more
-        // events per event buffer. If we use the global event buffer pool, we risk churning through many event buffers,
-        // having them reserve a lot of underlying capacity, and then having a ton of event buffers in the pool with
-        // high capacity when we only need one every few seconds, etc.
-        //
-        // TODO: We should rework this to use the global event buffer pool, but there's a few problems/suboptimal
-        // aspects of doing so:
-        //
-        // - we'd be sending smaller event buffers to downstream components, which could lead to suboptimal resource
-        //   consumption (i.e. smaller event buffers could lead to sending more requests from the Datadog Metrics
-        //   destination because we don't buffer, we just gather all available event buffers and then build/send the
-        //   requests)
-        // - we could end up needing a lot of event buffers to hold all of the contexts in a given flush, and perhaps
-        //   exhaust the number of event buffers in the pool during large flushes, which might lead to
-        //   stalls/oscillations in ingest throughput as sources battle the aggregate transform for event buffers
-        let flush_event_buffer_pool =
-            FixedSizeObjectPool::<FixedSizeEventBuffer>::with_builder("aggregate", EVENT_BUFFER_POOL_SIZE, || {
-                FixedSizeEventBufferInner::with_capacity(self.context_limit)
-            });
-
         health.mark_ready();
         debug!("Aggregation transform started.");
 
@@ -276,16 +245,14 @@ impl Transform for Aggregate {
 
                         let should_flush_open_windows = final_flush && self.flush_open_windows;
 
-                        let mut flush_event_sender = BufferedSender::forwarder(&flush_event_buffer_pool, context.forwarder());
-                        if let Err(e) = state.flush(get_unix_timestamp(), should_flush_open_windows, &mut flush_event_sender).await {
+                        let mut forwarder = context.forwarder().buffered().expect("default output should always exist");
+                        if let Err(e) = state.flush(get_unix_timestamp(), should_flush_open_windows, &mut forwarder).await {
                             error!(error = %e, "Failed to flush aggregation state.");
                         }
 
-                        let aggregated_events = flush_event_sender.pushed_len();
-                        if let Err(e) = flush_event_sender.flush().await {
-                            error!(error = %e, "Failed to flush aggregated events.");
-                        } else {
-                            debug!(aggregated_events, "Forwarded events.");
+                        match forwarder.flush().await {
+                            Ok(aggregated_events) => debug!(aggregated_events, "Forwarded events."),
+                            Err(e) => error!(error = %e, "Failed to flush aggregated events."),
                         }
                     }
 
@@ -299,7 +266,7 @@ impl Transform for Aggregate {
                     Some(events) => {
                         trace!(events_len = events.len(), "Received events.");
 
-                        let mut passthrough_event_sender = BufferedSender::forwarder(context.event_buffer_pool(), context.forwarder());
+                        let mut forwarder = context.forwarder().buffered().expect("default output should always exist");
                         let current_time = get_unix_timestamp();
 
                         for event in events {
@@ -310,7 +277,7 @@ impl Transform for Aggregate {
                                     // it's either the original metric because no values had timestamps _or_ it's a
                                     // modified version of the metric after all timestamped values were split out and
                                     // directly forwarded.
-                                    match handle_forward_timestamped_metric(metric, &mut passthrough_event_sender).await {
+                                    match handle_forward_timestamped_metric(metric, &mut forwarder).await {
                                         Ok(None) => continue,
                                         Ok(Some(metric)) => metric,
                                         Err(e) => {
@@ -329,11 +296,9 @@ impl Transform for Aggregate {
                             }
                         }
 
-                        let unaggregated_events = passthrough_event_sender.pushed_len();
-                        if let Err(e) = passthrough_event_sender.flush().await {
-                            error!(error = %e, "Failed to flush unaggregated events.");
-                        } else {
-                            debug!(unaggregated_events, "Forwarded events.");
+                        match forwarder.flush().await {
+                            Ok(unaggregated_events) => debug!(unaggregated_events, "Forwarded events."),
+                            Err(e) => error!(error = %e, "Failed to flush unaggregated events."),
                         }
                     },
                     None => {
@@ -356,21 +321,21 @@ impl Transform for Aggregate {
 }
 
 async fn handle_forward_timestamped_metric<O>(
-    mut metric: Metric, buffered_sender: &mut BufferedSender<'_, O>,
+    mut metric: Metric, forwarder: &mut BufferedForwarder<'_, O>,
 ) -> Result<Option<Metric>, GenericError>
 where
     O: ObjectPool<Item = FixedSizeEventBuffer>,
 {
     if metric.values().all_timestamped() {
         // All the values are timestamped, so take and forward the metric as-is.
-        buffered_sender.push(Event::Metric(metric)).await?;
+        forwarder.push(Event::Metric(metric)).await?;
         Ok(None)
     } else if metric.values().any_timestamped() {
         // Only _some_ of the values are timestamped, so split out those timestamped ones, forward them, and then hand
         // back the now-modified original metric.
         let new_metric_values = metric.values_mut().split_timestamped();
         let new_metric = Metric::from_parts(metric.context().clone(), new_metric_values, metric.metadata().clone());
-        buffered_sender.push(Event::Metric(new_metric)).await?;
+        forwarder.push(Event::Metric(new_metric)).await?;
 
         Ok(Some(metric))
     } else {
@@ -457,7 +422,7 @@ impl AggregationState {
     }
 
     async fn flush<O>(
-        &mut self, current_time: u64, flush_open_buckets: bool, buffered_sender: &mut BufferedSender<'_, O>,
+        &mut self, current_time: u64, flush_open_buckets: bool, forwarder: &mut BufferedForwarder<'_, O>,
     ) -> Result<(), GenericError>
     where
         O: ObjectPool<Item = FixedSizeEventBuffer>,
@@ -538,7 +503,7 @@ impl AggregationState {
                     closed_bucket_values,
                     am.metadata.clone(),
                     bucket_width_secs,
-                    buffered_sender,
+                    forwarder,
                 )
                 .await?;
             }
@@ -561,7 +526,7 @@ impl AggregationState {
 
 async fn transform_and_push_metric<O>(
     context: Context, values: MetricValues, metadata: MetricMetadata, bucket_width_secs: u64,
-    buffered_sender: &mut BufferedSender<'_, O>,
+    forwarder: &mut BufferedForwarder<'_, O>,
 ) -> Result<(), GenericError>
 where
     O: ObjectPool<Item = FixedSizeEventBuffer>,
@@ -573,7 +538,7 @@ where
     };
 
     let metric = Metric::from_parts(context, values, metadata);
-    buffered_sender.push(Event::Metric(metric)).await
+    forwarder.push(Event::Metric(metric)).await
 }
 
 const fn align_to_bucket_start(timestamp: u64, bucket_width_secs: u64) -> u64 {
@@ -609,6 +574,14 @@ const fn is_bucket_closed(
 // then we run it to make sure that we are always generating sequential timestamps for data points, etc.
 #[cfg(test)]
 mod tests {
+    use saluki_core::{
+        components::ComponentContext,
+        pooling::ElasticObjectPool,
+        topology::{
+            interconnect::{FixedSizeEventBufferInner, Forwarder},
+            ComponentId, OutputName,
+        },
+    };
     use tokio::sync::mpsc;
 
     use super::*;
@@ -634,21 +607,28 @@ mod tests {
     }
 
     async fn get_flushed_metrics(timestamp: u64, state: &mut AggregationState) -> Vec<Metric> {
-        // Create a simple object pool with a single event buffer in it, and then create an MPSC channel, and tie them
-        // both together as a buffered sender:
-        let pool = FixedSizeObjectPool::with_builder("test", 1, || FixedSizeEventBufferInner::with_capacity(8));
+        // Create the forwarder that we'll use to flush the metrics into.
+        //
+        // NOTE: This is more involved than it really ought to be, but alas.
         let (sender, mut receiver) = mpsc::channel(1);
-        let mut buffered_sender = BufferedSender::direct(&pool, &sender);
+
+        let (object_pool, _) =
+            ElasticObjectPool::with_builder("test", 1, 1, || FixedSizeEventBufferInner::with_capacity(8));
+        let component_id = ComponentId::try_from("test").expect("should not fail to create component ID");
+        let mut forwarder = Forwarder::new(ComponentContext::transform(component_id), object_pool);
+        forwarder.add_output(OutputName::Default, sender);
+
+        let mut buffered_forwarder = forwarder.buffered().expect("default output should always exist");
 
         // Flush the metrics to an event buffer.
         state
-            .flush(timestamp, true, &mut buffered_sender)
+            .flush(timestamp, true, &mut buffered_forwarder)
             .await
             .expect("should not fail to flush aggregation state");
 
-        // Flush our buffered sender, which should ensure that the event buffer is sent out, and then read it from the
+        // Flush our buffered forwarder, which should ensure that the event buffer is sent out, and then read it from the
         // receiver:
-        buffered_sender
+        buffered_forwarder
             .flush()
             .await
             .expect("should not fail to flush buffered sender");

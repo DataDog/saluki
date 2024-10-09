@@ -32,6 +32,7 @@ saluki-metrics = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 slab = { workspace = true }
+smallvec = { workspace = true }
 snafu = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
