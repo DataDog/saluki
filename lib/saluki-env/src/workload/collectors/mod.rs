@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use saluki_error::GenericError;
 use tokio::sync::mpsc;
 use tracing::{debug, error};
 
@@ -26,9 +27,7 @@ pub trait MetadataCollector {
     fn name(&self) -> &'static str;
 
     /// Watch for metadata changes.
-    async fn watch(
-        &self, operations_tx: &mut mpsc::Sender<MetadataOperation>,
-    ) -> Result<(), Box<dyn std::error::Error>>;
+    async fn watch(&mut self, operations_tx: &mut mpsc::Sender<MetadataOperation>) -> Result<(), GenericError>;
 }
 
 /// A worker that runs a metadata collector.
@@ -52,7 +51,7 @@ impl MetadataCollectorWorker {
     /// This method will run indefinitely, watching for metadata changes and sending them to the given `operations_tx`. If
     /// an error is encountered during the call to [`MetadataCollector::watch`], it will be logged. Watching is always
     /// retried regardless of the return value.
-    pub async fn run(self, mut operations_tx: mpsc::Sender<MetadataOperation>) {
+    pub async fn run(mut self, mut operations_tx: mpsc::Sender<MetadataOperation>) {
         debug!(
             collector_name = self.collector.name(),
             "Starting metadata collector worker."

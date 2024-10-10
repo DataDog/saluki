@@ -145,8 +145,8 @@ endif
 .PHONY: run-adp
 run-adp: build-adp
 run-adp: ## Runs ADP locally (requires Datadog Agent for tagging)
-ifeq ($(shell test -f /etc/datadog-agent/auth/token || echo not-found), not-found)
-	$(error "Authentication token not found at /etc/datadog-agent/auth/token. Is the Datadog Agent running? Is the current user in the right group to access it?")
+ifeq ($(shell test -f /etc/datadog-agent/auth_token || echo not-found), not-found)
+	$(error "Authentication token not found at /etc/datadog-agent/auth_token. Is the Datadog Agent running? Is the current user in the right group to access it?")
 endif
 ifeq ($(shell test -n "$(DD_API_KEY)" || echo not-found), not-found)
 	$(error "API key not set. Please set the DD_API_KEY environment variable.")
@@ -154,6 +154,7 @@ endif
 	@echo "[*] Running ADP..."
 	@DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_SOCKET=/tmp/adp-dsd.sock DD_DOGSTATSD_EXPIRY_SECONDS=30 \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:6000 \
+	DD_AUTH_TOKEN_FILE_PATH=/etc/datadog-agent/auth_token \
 	target/debug/agent-data-plane
 
 .PHONY: run-adp-standalone
