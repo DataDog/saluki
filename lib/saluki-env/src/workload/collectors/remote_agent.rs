@@ -10,14 +10,15 @@ use saluki_config::GenericConfiguration;
 use saluki_context::{Tag, TagSet};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_event::metric::OriginTagCardinality;
+use saluki_health::Health;
 use stringtheory::interning::GenericMapInterner;
-use tokio::sync::mpsc;
+use tokio::{pin, select, sync::mpsc};
 use tonic::{
     service::interceptor::InterceptedService,
     transport::{Channel, Endpoint, Uri},
     Code,
 };
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 use super::MetadataCollector;
 use crate::workload::{
@@ -34,6 +35,7 @@ const DEFAULT_AGENT_AUTH_TOKEN_FILE_PATH: &str = "/etc/datadog-agent/auth/token"
 pub struct RemoteAgentMetadataCollector {
     agent_client: AgentSecureClient<InterceptedService<Channel, BearerAuthInterceptor>>,
     tag_interner: GenericMapInterner,
+    health: Health,
 }
 
 impl RemoteAgentMetadataCollector {
@@ -44,7 +46,7 @@ impl RemoteAgentMetadataCollector {
     /// If the Agent gRPC client cannot be created (invalid API endpoint, missing authentication token, etc), or if the
     /// authentication token is invalid, an error will be returned.
     pub async fn from_configuration(
-        config: &GenericConfiguration, tag_interner: GenericMapInterner,
+        config: &GenericConfiguration, health: Health, tag_interner: GenericMapInterner,
     ) -> Result<Self, GenericError> {
         let raw_ipc_endpoint = config
             .try_get_typed::<String>("agent_ipc_endpoint")?
@@ -74,20 +76,32 @@ impl RemoteAgentMetadataCollector {
                     )
                 })?;
 
+        // TODO: We need to write a Tower middleware service that allows applying a backoff between failed calls,
+        // specifically so that we can throttle reconnection attempts.
+        //
+        // When the remote Agent endpoint is not available -- Agent isn't running, etc -- the gRPC client will
+        // essentially freewheel, trying to reconnect as quickly as possible, which spams the logs, wastes resources, so
+        // on and so forth. We would want to essentially apply a backoff like any other client would for the RPC calls
+        // themselves, but use it with the _connector_ instead.
+        //
+        // We could potentially just use a retry middleware, but Tonic does have its own reconnection logic, so we'd
+        // have to test it out to make sure it behaves sensibly.
         let channel = Endpoint::from(ipc_endpoint)
             .connect_timeout(Duration::from_secs(2))
+            //.timeout(Duration::from_secs(2))
             .connect_with_connector(build_self_signed_https_connector())
             .await
             .with_error_context(|| format!("Failed to connect to Datadog Agent IPC endpoint '{}'", raw_ipc_endpoint))?;
 
         let mut agent_client = AgentSecureClient::with_interceptor(channel, bearer_token_interceptor);
 
-        // Try and do a basic healthcheck to make sure we can connect and that our authentication token is valid.
+        // Try and do a basic health check to make sure we can connect and that our authentication token is valid.
         try_query_agent_api(&mut agent_client).await?;
 
         Ok(Self {
             agent_client,
             tag_interner,
+            health,
         })
     }
 
@@ -108,9 +122,9 @@ impl MetadataCollector for RemoteAgentMetadataCollector {
         "remote-agent"
     }
 
-    async fn watch(
-        &self, operations_tx: &mut mpsc::Sender<MetadataOperation>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn watch(&mut self, operations_tx: &mut mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {
+        self.health.mark_ready();
+
         let mut client = self.agent_client.clone();
 
         let request = StreamTagsRequest {
@@ -118,78 +132,105 @@ impl MetadataCollector for RemoteAgentMetadataCollector {
             ..Default::default()
         };
 
-        let mut stream = client.tagger_stream_entities(request).await?.into_inner();
+        // A little trickery here to allow marking liveness of the component while we establish the initial streaming
+        // response.
+        //
+        // Essentially, until the very first message is received, the call to `tagger_stream_entities` won't return,
+        // which can happen if there's actually nothing yet in the remote tagger to send back to us. This is, IMO, an
+        // issue with the gRPC client/server bits here, and it feels like it should really act more like a socket
+        // connection/"OK, we're ready to receive streaming messages", sort of thing... but we have to cope with it
+        // as-is for now.
+        let stream_fut = client.tagger_stream_entities(request);
+        pin!(stream_fut);
+
+        let mut stream = loop {
+            select! {
+                _ = self.health.live() => continue,
+                stream_result = &mut stream_fut => break stream_result?.into_inner(),
+            }
+        };
+        debug!("Established tagger entity stream.");
+
         loop {
-            match stream.message().await {
-                Ok(Some(response)) => {
-                    for event in response.events {
-                        let event_type = match EventType::try_from(event.r#type) {
-                            Ok(event_type) => event_type,
-                            Err(_) => {
-                                debug!("Received tagger stream event with unknown type: {}", event.r#type);
-                                continue;
-                            }
-                        };
+            select! {
+                _ = self.health.live() => {},
+                result = stream.message() => match result {
+                    Ok(Some(response)) => {
+                        trace!("Received tagger stream event.");
 
-                        let entity = match event.entity {
-                            Some(entity) => entity,
-                            None => {
-                                debug!("Received tagger stream event with no entity.");
-                                continue;
-                            }
-                        };
+                        for event in response.events {
+                            let event_type = match EventType::try_from(event.r#type) {
+                                Ok(event_type) => event_type,
+                                Err(_) => {
+                                    debug!("Received tagger stream event with unknown type: {}", event.r#type);
+                                    continue;
+                                }
+                            };
 
-                        let entity_id = match entity.id.and_then(remote_entity_id_to_entity_id) {
-                            Some(entity_id) => entity_id,
-                            None => {
-                                debug!("Received tagger stream event with missing or invalid entity ID.");
-                                continue;
-                            }
-                        };
+                            let entity = match event.entity {
+                                Some(entity) => entity,
+                                None => {
+                                    debug!("Received tagger stream event with no entity.");
+                                    continue;
+                                }
+                            };
 
-                        let maybe_operation = match event_type {
-                            EventType::Added | EventType::Modified => {
-                                let entity_tags = [
-                                    (OriginTagCardinality::Low, entity.low_cardinality_tags),
-                                    (OriginTagCardinality::Orchestrator, entity.orchestrator_cardinality_tags),
-                                    (OriginTagCardinality::High, entity.high_cardinality_tags),
-                                ];
+                            let entity_id = match entity.id.and_then(remote_entity_id_to_entity_id) {
+                                Some(entity_id) => entity_id,
+                                None => {
+                                    debug!("Received tagger stream event with missing or invalid entity ID.");
+                                    continue;
+                                }
+                            };
 
-                                let mut actions = Vec::new();
-                                for (cardinality, tags) in entity_tags {
-                                    if !tags.is_empty() {
-                                        match self.get_interned_tagset(tags) {
-                                            Some(tags) => actions.push(MetadataAction::SetTags { cardinality, tags }),
-                                            None => {
-                                                warn!(%entity_id, %cardinality, "Failed to intern tags for entity. Tags will not be present.");
+                            let maybe_operation = match event_type {
+                                EventType::Added | EventType::Modified => {
+                                    let entity_tags = [
+                                        (OriginTagCardinality::Low, entity.low_cardinality_tags),
+                                        (OriginTagCardinality::Orchestrator, entity.orchestrator_cardinality_tags),
+                                        (OriginTagCardinality::High, entity.high_cardinality_tags),
+                                    ];
+
+                                    let mut actions = Vec::new();
+                                    for (cardinality, tags) in entity_tags {
+                                        if !tags.is_empty() {
+                                            match self.get_interned_tagset(tags) {
+                                                Some(tags) => actions.push(MetadataAction::SetTags { cardinality, tags }),
+                                                None => {
+                                                    warn!(%entity_id, %cardinality, "Failed to intern tags for entity. Tags will not be present.");
+                                                }
                                             }
                                         }
                                     }
-                                }
 
-                                if actions.is_empty() {
-                                    None
-                                } else {
-                                    Some(MetadataOperation {
-                                        entity_id,
-                                        actions: actions.into(),
-                                    })
+                                    if actions.is_empty() {
+                                        None
+                                    } else {
+                                        Some(MetadataOperation {
+                                            entity_id,
+                                            actions: actions.into(),
+                                        })
+                                    }
                                 }
-                            }
-                            EventType::Deleted => Some(MetadataOperation::delete(entity_id)),
-                        };
+                                EventType::Deleted => Some(MetadataOperation::delete(entity_id)),
+                            };
 
-                        if let Some(operation) = maybe_operation {
-                            if let Err(e) = operations_tx.send(operation).await {
-                                debug!(error = %e, "Failed to send metadata operation.");
+                            if let Some(operation) = maybe_operation {
+                                if let Err(e) = operations_tx.send(operation).await {
+                                    debug!(error = %e, "Failed to send metadata operation.");
+                                }
                             }
                         }
-                    }
+
+                        trace!("Processed tagger stream event.");
+                    },
+                    Ok(None) => break,
+                    Err(e) => return Err(e.into()),
                 }
-                Ok(None) => break,
-                Err(e) => return Err(Box::new(e)),
             }
         }
+
+        self.health.mark_not_ready();
 
         Ok(())
     }

@@ -2663,6 +2663,7 @@ dependencies = [
  "saluki-context",
  "saluki-error",
  "saluki-event",
+ "saluki-health",
  "serde",
  "serde_json",
  "snafu",

@@ -4,8 +4,9 @@ use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, GenericError};
+use saluki_health::Health;
 use stringtheory::interning::GenericMapInterner;
-use tokio::{sync::mpsc, time::sleep};
+use tokio::{select, sync::mpsc, time::interval};
 use tracing::{debug, error};
 
 use super::MetadataCollector;
@@ -29,6 +30,7 @@ use crate::{
 /// for origin enrichment, so this mapping allows resolving controller inodes to their canonical container ID.
 pub struct CgroupsMetadataCollector {
     reader: CgroupsReader,
+    health: Health,
 }
 
 impl CgroupsMetadataCollector {
@@ -38,7 +40,7 @@ impl CgroupsMetadataCollector {
     ///
     /// If a valid cgroups hierarchy can not be located at the configured path, an error will be returned.
     pub async fn from_configuration(
-        config: &GenericConfiguration, feature_detector: FeatureDetector, interner: GenericMapInterner,
+        config: &GenericConfiguration, feature_detector: FeatureDetector, health: Health, interner: GenericMapInterner,
     ) -> Result<Self, GenericError> {
         let cgroups_config = CgroupsConfiguration::from_configuration(config, feature_detector)?;
         let reader = match CgroupsReader::try_from_config(&cgroups_config, interner).await? {
@@ -48,7 +50,7 @@ impl CgroupsMetadataCollector {
             }
         };
 
-        Ok(Self { reader })
+        Ok(Self { reader, health })
     }
 }
 
@@ -58,11 +60,10 @@ impl MetadataCollector for CgroupsMetadataCollector {
         "cgroups"
     }
 
-    async fn watch(
-        &self, operations_tx: &mut mpsc::Sender<MetadataOperation>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        debug!("Starting cgroups metadata collector.");
+    async fn watch(&mut self, operations_tx: &mut mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {
+        self.health.mark_ready();
 
+        let mut traverse_interval = interval(Duration::from_secs(2));
         let mut operations = Vec::with_capacity(64);
 
         // Repeatedly traverse the cgroups v2 hierarchy in a loop, generating ancestry links for controller
@@ -71,16 +72,19 @@ impl MetadataCollector for CgroupsMetadataCollector {
         //
         // We batch these metadata operations and then send them all at the end of the loop.
         loop {
-            match traverse_cgroups(&self.reader, &mut operations).await {
-                Ok(()) => {
-                    for operation in operations.drain(..) {
-                        operations_tx.send(operation).await?;
+            select! {
+                _ = self.health.live() => {},
+                _ = traverse_interval.tick() => {
+                    match traverse_cgroups(&self.reader, &mut operations).await {
+                        Ok(()) => {
+                            for operation in operations.drain(..) {
+                                operations_tx.send(operation).await?;
+                            }
+                        }
+                        Err(e) => error!(error = %e, "Failed to read cgroups."),
                     }
-                }
-                Err(e) => error!(error = %e, "Failed to read cgroups."),
+                },
             }
-
-            sleep(Duration::from_secs(2)).await;
         }
     }
 }
