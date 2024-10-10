@@ -4,6 +4,7 @@ use saluki_env::{
     host::providers::AgentLikeHostProvider, workload::providers::RemoteAgentWorkloadProvider, EnvironmentProvider,
 };
 use saluki_error::GenericError;
+use saluki_health::HealthRegistry;
 use tracing::debug;
 
 const HOSTNAME_CONFIG_KEY: &str = "hostname";
@@ -18,8 +19,10 @@ pub struct ADPEnvironmentProvider {
 
 impl ADPEnvironmentProvider {
     pub async fn from_configuration(
-        config: &GenericConfiguration, mut component_registry: ComponentRegistry,
+        config: &GenericConfiguration, component_registry: &ComponentRegistry, health_registry: &HealthRegistry,
     ) -> Result<Self, GenericError> {
+        let mut provider_component = component_registry.get_or_create("env_provider");
+
         let host_provider = AgentLikeHostProvider::new(
             config,
             HOSTNAME_CONFIG_KEY,
@@ -27,7 +30,7 @@ impl ADPEnvironmentProvider {
             TRUST_OS_HOSTNAME_CONFIG_KEY,
         )?;
 
-        component_registry
+        provider_component
             .bounds_builder()
             .with_subcomponent("host", &host_provider);
 
@@ -40,10 +43,10 @@ impl ADPEnvironmentProvider {
             debug!("Using no-op workload provider as instructed by configuration.");
             None
         } else {
-            Some(
-                RemoteAgentWorkloadProvider::from_configuration(config, component_registry.get_or_create("workload"))
-                    .await?,
-            )
+            let workload_component = component_registry.get_or_create("workload");
+            let workload_provider =
+                RemoteAgentWorkloadProvider::from_configuration(config, workload_component, health_registry).await?;
+            Some(workload_provider)
         };
 
         Ok(Self {

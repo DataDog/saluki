@@ -84,8 +84,8 @@ async fn run(started: Instant) -> Result<(), GenericError> {
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
 
-    let env_provider_component = component_registry.get_or_create("env_provider");
-    let env_provider = ADPEnvironmentProvider::from_configuration(&configuration, env_provider_component).await?;
+    let env_provider =
+        ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry).await?;
 
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.

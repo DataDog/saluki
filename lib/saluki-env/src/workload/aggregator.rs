@@ -2,7 +2,8 @@ use std::{num::NonZeroUsize, sync::Arc};
 
 use arc_swap::ArcSwap;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use tokio::sync::mpsc;
+use saluki_health::Health;
+use tokio::{select, sync::mpsc};
 use tracing::debug;
 
 use super::{
@@ -31,17 +32,19 @@ pub struct MetadataAggregator {
     shared_tags: Arc<ArcSwap<TagSnapshot>>,
     operations_tx: mpsc::Sender<MetadataOperation>,
     operations_rx: mpsc::Receiver<MetadataOperation>,
+    health: Health,
 }
 
 impl MetadataAggregator {
     /// Create a new `MetadataAggregator`.
-    pub fn new() -> Self {
+    pub fn new(health: Health) -> Self {
         let (operations_tx, operations_rx) = mpsc::channel(OPERATIONS_CHANNEL_SIZE);
         Self {
             tag_store: TagStore::with_entity_limit(DEFAULT_ENTITY_LIMIT),
             shared_tags: Arc::new(ArcSwap::new(Arc::new(TagSnapshot::default()))),
             operations_tx,
             operations_rx,
+            health,
         }
     }
 
@@ -70,14 +73,30 @@ impl MetadataAggregator {
     /// specific entity.
     pub async fn run(mut self) {
         debug!("Metadata aggregator started.");
+        self.health.mark_ready();
 
-        while let Some(operation) = self.operations_rx.recv().await {
-            self.tag_store.process_operation(operation);
+        loop {
+            select! {
+                _ = self.health.live() => {},
+                maybe_operation = self.operations_rx.recv() => match maybe_operation {
+                    Some(operation) => {
+                        self.tag_store.process_operation(operation);
 
-            // Update the shared tag state.
-            let tags = self.tag_store.snapshot();
-            self.shared_tags.store(Arc::new(tags));
+                        // Update the shared tag state.
+                        let tags = self.tag_store.snapshot();
+                        self.shared_tags.store(Arc::new(tags));
+                    },
+                    None => {
+                        debug!("Metadata aggregator operations channel closed. Stopping...");
+                        break
+                    },
+                },
+            }
         }
+
+        self.health.mark_not_ready();
+
+        debug!("Metadata aggregator stopped.");
     }
 }
 

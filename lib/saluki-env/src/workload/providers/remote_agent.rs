@@ -5,8 +5,9 @@ use async_trait::async_trait;
 use memory_accounting::ComponentRegistry;
 use saluki_config::GenericConfiguration;
 use saluki_context::TagSet;
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use saluki_event::metric::OriginTagCardinality;
+use saluki_health::HealthRegistry;
 use stringtheory::interning::GenericMapInterner;
 
 #[cfg(target_os = "linux")]
@@ -47,7 +48,7 @@ pub struct RemoteAgentWorkloadProvider {
 impl RemoteAgentWorkloadProvider {
     /// Create a new `RemoteAgentWorkloadProvider` based on the given configuration.
     pub async fn from_configuration(
-        config: &GenericConfiguration, component_registry: ComponentRegistry,
+        config: &GenericConfiguration, component_registry: ComponentRegistry, health_registry: &HealthRegistry,
     ) -> Result<Self, GenericError> {
         let mut component_registry = component_registry.get_or_create("remote-agent");
         let mut provider_bounds = component_registry.bounds_builder();
@@ -64,30 +65,53 @@ impl RemoteAgentWorkloadProvider {
             .with_fixed_amount(string_interner_size_bytes.get());
 
         // Construct our aggregator, and add any collectors based on the detected features we've been given.
-        let mut aggregator = MetadataAggregator::new();
+        let aggregator_health = health_registry
+            .register_component("env_provider.workload.remote_agent.aggregator")
+            .ok_or_else(|| {
+                generic_error!(
+                    "Component 'env_provider.workload.remote_agent.aggregator' already registered in health registry."
+                )
+            })?;
+        let mut aggregator = MetadataAggregator::new(aggregator_health);
         provider_bounds.with_subcomponent("aggregator", &aggregator);
 
         let mut collector_bounds = provider_bounds.subcomponent("collectors");
 
+        // Add the containerd collector if the feature is available.
         let feature_detector = FeatureDetector::automatic(config);
         if feature_detector.is_feature_available(Feature::Containerd) {
+            let collector_health = health_registry.register_component("env_provider.workload.remote_agent.collector.containerd")
+                .ok_or_else(|| generic_error!("Component 'env_provider.workload.remote_agent.collector.containerd' already registered in health registry."))?;
             let cri_collector =
-                ContainerdMetadataCollector::from_configuration(config, string_interner.clone()).await?;
+                ContainerdMetadataCollector::from_configuration(config, collector_health, string_interner.clone())
+                    .await?;
             collector_bounds.with_subcomponent("containerd", &cri_collector);
 
             aggregator.add_collector(cri_collector);
         }
 
+        // Add the cgroups collector if the feature if we're on Linux.
         #[cfg(target_os = "linux")]
         {
-            let cgroups_collector =
-                CgroupsMetadataCollector::from_configuration(config, feature_detector, string_interner.clone()).await?;
+            let collector_health = health_registry.register_component("env_provider.workload.remote_agent.collector.cgroups")
+                .ok_or_else(|| generic_error!("Component 'env_provider.workload.remote_agent.collector.cgroups' already registered in health registry."))?;
+            let cgroups_collector = CgroupsMetadataCollector::from_configuration(
+                config,
+                feature_detector,
+                collector_health,
+                string_interner.clone(),
+            )
+            .await?;
             collector_bounds.with_subcomponent("cgroups", &cgroups_collector);
 
             aggregator.add_collector(cgroups_collector);
         }
 
-        let ra_collector = RemoteAgentMetadataCollector::from_configuration(config, string_interner).await?;
+        // Finally, add the Remote Agent collector.
+        let collector_health = health_registry.register_component("env_provider.workload.remote_agent.collector.remote-agent")
+                .ok_or_else(|| generic_error!("Component 'env_provider.workload.remote_agent.collector.remote-agent' already registered in health registry."))?;
+        let ra_collector =
+            RemoteAgentMetadataCollector::from_configuration(config, collector_health, string_interner).await?;
         collector_bounds.with_subcomponent("remote-agent", &ra_collector);
 
         aggregator.add_collector(ra_collector);

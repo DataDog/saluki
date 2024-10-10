@@ -7,8 +7,9 @@ use futures::{stream::select_all, Stream, StreamExt as _};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
+use saluki_health::Health;
 use stringtheory::interning::GenericMapInterner;
-use tokio::{sync::mpsc, time::sleep};
+use tokio::{select, sync::mpsc, time::sleep};
 use tracing::{debug, error, warn};
 
 use super::MetadataCollector;
@@ -28,6 +29,7 @@ pub struct ContainerdMetadataCollector {
     client: ContainerdClient,
     watched_namespaces: Vec<Namespace>,
     tag_interner: GenericMapInterner,
+    health: Health,
 }
 
 impl ContainerdMetadataCollector {
@@ -38,7 +40,7 @@ impl ContainerdMetadataCollector {
     /// If the containerd gRPC client cannot be created, or listing the namespaces in the containerd runtime fails, an
     /// error will be returned.
     pub async fn from_configuration(
-        config: &GenericConfiguration, tag_interner: GenericMapInterner,
+        config: &GenericConfiguration, health: Health, tag_interner: GenericMapInterner,
     ) -> Result<Self, GenericError> {
         let client = ContainerdClient::from_configuration(config).await?;
         let watched_namespaces = client.list_namespaces().await?;
@@ -47,6 +49,7 @@ impl ContainerdMetadataCollector {
             client,
             watched_namespaces,
             tag_interner,
+            health,
         })
     }
 }
@@ -57,10 +60,8 @@ impl MetadataCollector for ContainerdMetadataCollector {
         "containerd"
     }
 
-    async fn watch(
-        &self, operations_tx: &mut mpsc::Sender<MetadataOperation>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        debug!("Starting containerd metadata collector.");
+    async fn watch(&mut self, operations_tx: &mut mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {
+        self.health.mark_ready();
 
         // Create a watcher for each namespace, and then join all of their watch streams, which then we'll just funnel
         // back to the operations channel.
@@ -74,6 +75,20 @@ impl MetadataCollector for ContainerdMetadataCollector {
         while let Some(operation) = operations_stream.next().await {
             operations_tx.send(operation).await?;
         }
+
+        loop {
+            select! {
+                _ = self.health.live() => {},
+                maybe_operation = operations_stream.next() => match maybe_operation {
+                    Some(operation) => {
+                        operations_tx.send(operation).await?;
+                    },
+                    None => break,
+                },
+            }
+        }
+
+        self.health.mark_not_ready();
 
         Ok(())
     }
