@@ -13,6 +13,7 @@ use std::{
     time::Duration,
 };
 
+use memory_accounting::allocator::{AllocationGroupToken, Track as _, Tracked};
 use pin_project::pin_project;
 use tokio::{sync::Semaphore, time::sleep};
 use tokio_util::sync::PollSemaphore;
@@ -90,10 +91,10 @@ where
     T: Poolable + Send + Unpin + 'static,
 {
     type Item = T;
-    type AcquireFuture = ElasticAcquireFuture<T>;
+    type AcquireFuture = Tracked<ElasticAcquireFuture<T>>;
 
     fn acquire(&self) -> Self::AcquireFuture {
-        ElasticStrategy::acquire(&self.strategy)
+        ElasticStrategy::acquire(&self.strategy).track_allocations(self.strategy.token)
     }
 }
 
@@ -106,6 +107,7 @@ struct ElasticStrategy<T: Poolable> {
     min_capacity: usize,
     max_capacity: usize,
     metrics: PoolMetrics,
+    token: AllocationGroupToken,
 }
 
 impl<T: Poolable> ElasticStrategy<T> {
@@ -134,6 +136,7 @@ impl<T: Poolable> ElasticStrategy<T> {
             min_capacity,
             max_capacity,
             metrics,
+            token: AllocationGroupToken::current(),
         }
     }
 }
