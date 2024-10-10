@@ -385,7 +385,6 @@ fn build_metrics(listen_addr: &ListenAddress, builder: MetricsBuilder) -> Metric
     }
 }
 
-// TODO: better name
 // This is basically a shim where we can implement logic to map a metric origin to a given context resolver and/or string interner.
 #[derive(Clone)]
 struct MultitenantStrategy {
@@ -768,7 +767,7 @@ mod tests {
             &mut multitenant_strategy,
             &ConnectionAddress::from("1.1.1.1:1234".parse::<SocketAddr>().unwrap()),
             &build_metrics(
-                &ListenAddress::Tcp(([127, 0, 0, 1], 9999).into()),
+                &ListenAddress::Udp(([127, 0, 0, 1], 9999).into()),
                 MetricsBuilder::from_component_context(ComponentContext::source(
                     ComponentId::try_from("test").unwrap(),
                 )),
