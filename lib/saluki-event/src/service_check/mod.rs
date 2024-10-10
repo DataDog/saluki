@@ -2,6 +2,7 @@
 
 use serde::{Serialize, Serializer};
 use stringtheory::MetaString;
+
 /// Service status.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CheckStatus {
@@ -28,8 +29,10 @@ pub struct ServiceCheck {
     name: MetaString,
     status: CheckStatus,
     timestamp: Option<u64>,
-    hostname: Option<MetaString>,
-    message: Option<MetaString>,
+    #[serde(skip_serializing_if = "MetaString::is_empty")]
+    hostname: MetaString,
+    #[serde(skip_serializing_if = "MetaString::is_empty")]
+    message: MetaString,
     tags: Option<Vec<MetaString>>,
 }
 
@@ -53,12 +56,20 @@ impl ServiceCheck {
 
     /// Returns the host where the check originated from.
     pub fn hostname(&self) -> Option<&str> {
-        self.hostname.as_deref()
+        if self.hostname.is_empty() {
+            None
+        } else {
+            Some(&self.hostname)
+        }
     }
 
     /// Returns the message associated with the check.
     pub fn message(&self) -> Option<&str> {
-        self.message.as_deref()
+        if self.message.is_empty() {
+            None
+        } else {
+            Some(&self.message)
+        }
     }
 
     /// Returns the tags associated with the check.
@@ -72,8 +83,8 @@ impl ServiceCheck {
             name: name.into(),
             status,
             timestamp: None,
-            hostname: None,
-            message: None,
+            hostname: MetaString::empty(),
+            message: MetaString::empty(),
             tags: None,
         }
     }
@@ -92,7 +103,10 @@ impl ServiceCheck {
     ///
     /// This variant is specifically for use in builder-style APIs.
     pub fn with_hostname(mut self, hostname: impl Into<Option<MetaString>>) -> Self {
-        self.hostname = hostname.into();
+        self.hostname = match hostname.into() {
+            Some(hostname) => hostname,
+            None => MetaString::empty(),
+        };
         self
     }
 
@@ -108,7 +122,10 @@ impl ServiceCheck {
     ///
     /// This variant is specifically for use in builder-style APIs.
     pub fn with_message(mut self, message: impl Into<Option<MetaString>>) -> Self {
-        self.message = message.into();
+        self.message = match message.into() {
+            Some(message) => message,
+            None => MetaString::empty(),
+        };
         self
     }
 }

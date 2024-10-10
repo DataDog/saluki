@@ -491,6 +491,20 @@ fn split_at_delimiter(input: &[u8], delimiter: u8) -> Option<(&[u8], &[u8])> {
 }
 
 #[inline]
+fn split_at_delimiter_inclusive(input: &[u8], delimiter: u8) -> Option<(&[u8], &[u8])> {
+    match memchr::memchr(delimiter, input) {
+        Some(index) => Some((&input[0..index], &input[index..input.len()])),
+        None => {
+            if input.is_empty() {
+                None
+            } else {
+                Some((input, &[]))
+            }
+        }
+    }
+}
+
+#[inline]
 fn ascii_alphanum_and_seps(input: &[u8]) -> IResult<&[u8], &str> {
     let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b' ' || c == b'_' || c == b'-' || c == b'.';
     map(take_while1(valid_char), |b| {
@@ -542,9 +556,10 @@ fn metric_tags(config: &DogstatsdCodecConfiguration) -> impl Fn(&[u8]) -> IResul
             return Err(nom::Err::Error(Error::new(input, ErrorKind::Verify)));
         }
 
-        map(take_while1(|c: u8| !c.is_ascii_control() && c != b'|'), |s| {
-            TagSplitter::new(s, max_tag_count, max_tag_len)
-        })(input)
+        match split_at_delimiter_inclusive(input, b'|') {
+            Some((tags, remaining)) => Ok((remaining, TagSplitter::new(tags, max_tag_count, max_tag_len))),
+            None => Err(nom::Err::Error(Error::new(input, ErrorKind::TakeWhile1))),
+        }
     }
 }
 
@@ -712,7 +727,7 @@ impl<'a> Iterator for FloatIter<'a> {
 mod tests {
     use nom::IResult;
     use proptest::{collection::vec as arb_vec, prelude::*};
-    use saluki_context::ContextResolver;
+    use saluki_context::{ContextResolver, ContextResolverBuilder};
     use saluki_event::{
         eventd::{AlertType, EventD, Priority},
         metric::*,
@@ -737,7 +752,7 @@ mod tests {
     fn parse_dsd_metric_with_conf<'input>(
         input: &'input [u8], config: &DogstatsdCodecConfiguration,
     ) -> OptionalNomResult<'input, Metric> {
-        let mut context_resolver = ContextResolver::with_noop_interner();
+        let mut context_resolver = ContextResolverBuilder::for_tests();
         let (remaining, result) = parse_dsd_metric_direct(input, config, &mut context_resolver)?;
         assert!(remaining.is_empty());
 
@@ -1062,7 +1077,7 @@ mod tests {
         // We set our metric name to be longer than 23 bytes (the inlining limit) to ensure this.
 
         let config = DogstatsdCodecConfiguration::default();
-        let mut context_resolver = ContextResolver::with_noop_interner().with_heap_allocations(false);
+        let mut context_resolver = ContextResolverBuilder::for_tests().with_heap_allocations(false);
 
         let metric_name = "big_metric_name_that_cant_possibly_be_inlined";
         assert!(MetaString::try_inline(metric_name).is_none());

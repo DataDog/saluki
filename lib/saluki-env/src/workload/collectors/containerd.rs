@@ -7,7 +7,7 @@ use futures::{stream::select_all, Stream, StreamExt as _};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
-use stringtheory::interning::FixedSizeInterner;
+use stringtheory::interning::GenericMapInterner;
 use tokio::{sync::mpsc, time::sleep};
 use tracing::{debug, error, warn};
 
@@ -27,7 +27,7 @@ static CONTAINERD_WATCH_EVENTS: &[ContainerdTopic] = &[ContainerdTopic::TaskStar
 pub struct ContainerdMetadataCollector {
     client: ContainerdClient,
     watched_namespaces: Vec<Namespace>,
-    tag_interner: FixedSizeInterner<1>,
+    tag_interner: GenericMapInterner,
 }
 
 impl ContainerdMetadataCollector {
@@ -38,7 +38,7 @@ impl ContainerdMetadataCollector {
     /// If the containerd gRPC client cannot be created, or listing the namespaces in the containerd runtime fails, an
     /// error will be returned.
     pub async fn from_configuration(
-        config: &GenericConfiguration, tag_interner: FixedSizeInterner<1>,
+        config: &GenericConfiguration, tag_interner: GenericMapInterner,
     ) -> Result<Self, GenericError> {
         let client = ContainerdClient::from_configuration(config).await?;
         let watched_namespaces = client.list_namespaces().await?;
@@ -90,11 +90,11 @@ impl MemoryBounds for ContainerdMetadataCollector {
 struct NamespaceWatcher {
     namespace: Namespace,
     client: ContainerdClient,
-    tag_interner: FixedSizeInterner<1>,
+    tag_interner: GenericMapInterner,
 }
 
 impl NamespaceWatcher {
-    fn new(client: ContainerdClient, namespace: Namespace, tag_interner: FixedSizeInterner<1>) -> Self {
+    fn new(client: ContainerdClient, namespace: Namespace, tag_interner: GenericMapInterner) -> Self {
         Self {
             client,
             namespace,

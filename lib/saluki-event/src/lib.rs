@@ -91,6 +91,16 @@ impl Event {
         }
     }
 
+    /// Returns a reference inner event value, if this event is a `Metric`.
+    ///
+    /// Otherwise, `None` is returned.
+    pub fn try_as_metric(&self) -> Option<&Metric> {
+        match self {
+            Event::Metric(metric) => Some(metric),
+            _ => None,
+        }
+    }
+
     /// Returns a mutable reference inner event value, if this event is a `Metric`.
     ///
     /// Otherwise, `None` is returned.
@@ -135,5 +145,28 @@ impl Event {
     /// Returns `true` if the event is a service check.
     pub fn is_service_check(&self) -> bool {
         matches!(self, Event::ServiceCheck(_))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "only used to get struct sizes for core event data types"]
+    fn sizes() {
+        println!("Event: {} bytes", std::mem::size_of::<Event>());
+        println!("Metric: {} bytes", std::mem::size_of::<Metric>());
+        println!("  Context: {} bytes", std::mem::size_of::<saluki_context::Context>());
+        println!(
+            "  MetricValues: {} bytes",
+            std::mem::size_of::<crate::metric::MetricValues>()
+        );
+        println!(
+            "  MetricMetadata: {} bytes",
+            std::mem::size_of::<crate::metric::MetricMetadata>()
+        );
+        println!("EventD: {} bytes", std::mem::size_of::<EventD>());
+        println!("ServiceCheck: {} bytes", std::mem::size_of::<ServiceCheck>());
     }
 }
