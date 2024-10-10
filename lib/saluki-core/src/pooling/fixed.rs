@@ -10,12 +10,18 @@ use pin_project::pin_project;
 use tokio::sync::Semaphore;
 use tokio_util::sync::PollSemaphore;
 
-use super::{Clearable, ObjectPool, Poolable, ReclaimStrategy};
+use super::{Clearable, ObjectPool, PoolMetrics, Poolable, ReclaimStrategy};
 
 /// A fixed-size object pool.
 ///
 /// All items for this object pool are created up front, and when the object pool is empty, calls to `acquire` will
 /// block until an item is returned to the pool.
+///
+/// ## Metrics
+///
+/// - `object_pool.acquired{pool_name="<pool_name>"}` - total count of the number of objects acquired from the pool (counter)
+/// - `object_pool.released{pool_name="<pool_name>"}` - total count of the number of objects released back to the pool (counter)
+/// - `object_pool.in_use{pool_name="<pool_name>"}` - number of objects from the pool that are currently in use (gauge)
 pub struct FixedSizeObjectPool<T: Poolable> {
     strategy: Arc<FixedSizeStrategy<T>>,
 }
@@ -25,9 +31,14 @@ where
     T::Data: Default,
 {
     /// Creates a new `FixedSizeObjectPool` with the given capacity.
-    pub fn with_capacity(capacity: usize) -> Self {
+    ///
+    /// Metrics are emitted for the pool with a tag (`pool_name`) that is set to the value of the given pool name.
+    pub fn with_capacity<S>(pool_name: S, capacity: usize) -> Self
+    where
+        S: Into<String>,
+    {
         Self {
-            strategy: Arc::new(FixedSizeStrategy::new(capacity)),
+            strategy: Arc::new(FixedSizeStrategy::new(pool_name, capacity)),
         }
     }
 }
@@ -36,12 +47,15 @@ impl<T: Poolable> FixedSizeObjectPool<T> {
     /// Creates a new `FixedSizeObjectPool` with the given capacity and item builder.
     ///
     /// `builder` is called to construct each item.
-    pub fn with_builder<B>(capacity: usize, builder: B) -> Self
+    ///
+    /// Metrics are emitted for the pool with a tag (`pool_name`) that is set to the value of the given pool name.
+    pub fn with_builder<S, B>(pool_name: S, capacity: usize, builder: B) -> Self
     where
+        S: Into<String>,
         B: Fn() -> T::Data,
     {
         Self {
-            strategy: Arc::new(FixedSizeStrategy::with_builder(capacity, builder)),
+            strategy: Arc::new(FixedSizeStrategy::with_builder(pool_name, capacity, builder)),
         }
     }
 }
@@ -69,6 +83,7 @@ where
 struct FixedSizeStrategy<T: Poolable> {
     items: Mutex<VecDeque<T::Data>>,
     available: Arc<Semaphore>,
+    metrics: PoolMetrics,
 }
 
 impl<T> FixedSizeStrategy<T>
@@ -76,7 +91,10 @@ where
     T: Poolable,
     T::Data: Default,
 {
-    fn new(capacity: usize) -> Self {
+    fn new<S>(pool_name: S, capacity: usize) -> Self
+    where
+        S: Into<String>,
+    {
         let mut items = VecDeque::with_capacity(capacity);
         items.extend((0..capacity).map(|_| T::Data::default()));
         let available = Arc::new(Semaphore::new(capacity));
@@ -84,22 +102,29 @@ where
         Self {
             items: Mutex::new(items),
             available,
+            metrics: PoolMetrics::new(pool_name.into()),
         }
     }
 }
 
 impl<T: Poolable> FixedSizeStrategy<T> {
-    fn with_builder<B>(capacity: usize, builder: B) -> Self
+    fn with_builder<S, B>(pool_name: S, capacity: usize, builder: B) -> Self
     where
+        S: Into<String>,
         B: Fn() -> T::Data,
     {
         let mut items = VecDeque::with_capacity(capacity);
         items.extend((0..capacity).map(|_| builder()));
         let available = Arc::new(Semaphore::new(capacity));
 
+        let metrics = PoolMetrics::new(pool_name.into());
+        metrics.created().increment(capacity as u64);
+        metrics.capacity().set(capacity as f64);
+
         Self {
             items: Mutex::new(items),
             available,
+            metrics,
         }
     }
 }
@@ -120,6 +145,8 @@ impl<T: Poolable> ReclaimStrategy<T> for FixedSizeStrategy<T> {
 
         self.items.lock().unwrap().push_back(data);
         self.available.add_permits(1);
+        self.metrics.released().increment(1);
+        self.metrics.in_use().decrement(1.0);
     }
 }
 
@@ -154,6 +181,8 @@ where
 
                 let strategy = this.strategy.take().unwrap();
                 let data = strategy.items.lock().unwrap().pop_back().unwrap();
+                strategy.metrics.acquired().increment(1);
+                strategy.metrics.in_use().increment(1.0);
                 Poll::Ready(T::from_data(strategy, data))
             }
             None => unreachable!("semaphore should never be closed"),

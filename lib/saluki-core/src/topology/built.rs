@@ -23,7 +23,7 @@ use crate::{
         transforms::{Transform, TransformContext},
         ComponentContext,
     },
-    pooling::FixedSizeObjectPool,
+    pooling::ElasticObjectPool,
     spawn_traced,
 };
 
@@ -58,7 +58,7 @@ impl BuiltTopology {
     }
 
     fn create_component_interconnects(
-        &self, event_buffer_pool: FixedSizeObjectPool<EventBuffer>,
+        &self, event_buffer_pool: ElasticObjectPool<EventBuffer>,
     ) -> (HashMap<ComponentId, Forwarder>, HashMap<ComponentId, EventStream>) {
         // Collect all of the outbound edges in our topology graph.
         //
@@ -121,7 +121,9 @@ impl BuiltTopology {
         let _guard = self.component_token.enter();
 
         // Build our interconnects, which we'll grab from piecemeal as we spawn our components.
-        let event_buffer_pool = FixedSizeObjectPool::with_capacity(1024);
+        let (event_buffer_pool, shrinker) = ElasticObjectPool::with_capacity("global_event_buffers", 64, 1024);
+        tokio::spawn(shrinker);
+
         let (mut forwarders, mut event_streams) = self.create_component_interconnects(event_buffer_pool.clone());
 
         let mut shutdown_coordinator = ComponentShutdownCoordinator::default();

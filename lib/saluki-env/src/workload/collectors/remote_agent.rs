@@ -10,7 +10,7 @@ use saluki_config::GenericConfiguration;
 use saluki_context::{Tag, TagSet};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_event::metric::OriginTagCardinality;
-use stringtheory::interning::FixedSizeInterner;
+use stringtheory::interning::GenericMapInterner;
 use tokio::sync::mpsc;
 use tonic::{
     service::interceptor::InterceptedService,
@@ -33,7 +33,7 @@ const DEFAULT_AGENT_AUTH_TOKEN_FILE_PATH: &str = "/etc/datadog-agent/auth/token"
 /// Agent, to provide workload information.
 pub struct RemoteAgentMetadataCollector {
     agent_client: AgentSecureClient<InterceptedService<Channel, BearerAuthInterceptor>>,
-    tag_interner: FixedSizeInterner<1>,
+    tag_interner: GenericMapInterner,
 }
 
 impl RemoteAgentMetadataCollector {
@@ -44,7 +44,7 @@ impl RemoteAgentMetadataCollector {
     /// If the Agent gRPC client cannot be created (invalid API endpoint, missing authentication token, etc), or if the
     /// authentication token is invalid, an error will be returned.
     pub async fn from_configuration(
-        config: &GenericConfiguration, tag_interner: FixedSizeInterner<1>,
+        config: &GenericConfiguration, tag_interner: GenericMapInterner,
     ) -> Result<Self, GenericError> {
         let raw_ipc_endpoint = config
             .try_get_typed::<String>("agent_ipc_endpoint")?

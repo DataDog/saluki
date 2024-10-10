@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use rustls::{client::Resumption, ClientConfig, RootCertStore};
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_error::{generic_error, GenericError};
 use tracing::debug;
 
 /// Tracks if the default cryptography provider for `rustls` has been set.
@@ -199,9 +199,22 @@ pub fn load_platform_root_certificates() -> Result<(), GenericError> {
 
     let mut root_cert_store = RootCertStore::empty();
 
-    let root_certs = rustls_native_certs::load_native_certs()
-        .error_context("Failed to load/read native root certificates from environment.")?;
-    let (added, failed) = root_cert_store.add_parsable_certificates(root_certs);
+    let result = rustls_native_certs::load_native_certs();
+    if !result.errors.is_empty() {
+        let joined_errors = result
+            .errors
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        return Err(generic_error!(
+            "Failed to load certificates from platform's native certificate store: {}",
+            joined_errors
+        ));
+    }
+
+    let (added, failed) = root_cert_store.add_parsable_certificates(result.certs);
     if failed == 0 && added > 0 {
         debug!(
             "Added {} certificates from environment to the default root certificate store.",

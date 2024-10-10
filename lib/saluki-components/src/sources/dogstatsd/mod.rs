@@ -1,13 +1,13 @@
-use std::num::NonZeroUsize;
 use std::sync::LazyLock;
+use std::{num::NonZeroUsize, time::Duration};
 
 use async_trait::async_trait;
 use bytes::{Buf, BufMut};
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use metrics::{Counter, Histogram};
+use metrics::{Counter, Gauge, Histogram};
 use saluki_config::GenericConfiguration;
-use saluki_context::ContextResolver;
+use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::{
     components::{sources::*, MetricsBuilder},
     pooling::{FixedSizeObjectPool, ObjectPool as _},
@@ -24,7 +24,7 @@ use saluki_event::{
     DataType, Event,
 };
 use saluki_io::{
-    buf::{get_fixed_bytes_buffer_pool, BytesBuffer},
+    buf::{BytesBuffer, FixedSizeVec},
     deser::{
         codec::{
             dogstatsd::{build_metric_metadata_from_packet, MetricPacket, ParsedPacket},
@@ -39,7 +39,6 @@ use saluki_io::{
 };
 use serde::Deserialize;
 use snafu::{ResultExt as _, Snafu};
-use stringtheory::interning::FixedSizeInterner;
 use tokio::select;
 use tracing::{debug, error, info, trace};
 
@@ -235,9 +234,13 @@ impl SourceBuilder for DogStatsDConfiguration {
 
         let context_string_interner_size = NonZeroUsize::new(self.context_string_interner_bytes.as_u64() as usize)
             .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
-        let context_interner = FixedSizeInterner::new(context_string_interner_size);
-        let context_resolver = ContextResolver::from_interner("dogstatsd", context_interner)
-            .with_heap_allocations(self.allow_context_heap_allocations);
+        let context_resolver = ContextResolverBuilder::from_name("dogstatsd")
+            .expect("resolver name is not empty")
+            .with_interner_capacity_bytes(context_string_interner_size)
+            .with_idle_context_expiration(Duration::from_secs(30))
+            .with_expiration_interval(Duration::from_secs(1))
+            .with_heap_allocations(self.allow_context_heap_allocations)
+            .build();
         let multitenant_strategy = MultitenantStrategy::new(context_resolver);
 
         let codec_config = DogstatsdCodecConfiguration::default().with_timestamps(self.no_aggregation_pipeline_support);
@@ -245,7 +248,9 @@ impl SourceBuilder for DogStatsDConfiguration {
 
         Ok(Box::new(DogStatsD {
             listeners,
-            io_buffer_pool: get_fixed_bytes_buffer_pool(self.buffer_count, self.buffer_size),
+            io_buffer_pool: FixedSizeObjectPool::with_builder("dsd_packet_bufs", self.buffer_count, || {
+                FixedSizeVec::with_capacity(self.buffer_size)
+            }),
             codec,
             multitenant_strategy,
         }))
@@ -308,6 +313,9 @@ struct Metrics {
     bytes_received_size: Histogram,
     decoder_errors: Counter,
     failed_context_resolve_total: Counter,
+    connections_active: Gauge,
+    packet_receive_success: Counter,
+    packet_receive_failure: Counter,
 }
 
 impl Metrics {
@@ -330,14 +338,49 @@ impl Metrics {
     fn failed_context_resolve_total(&self) -> &Counter {
         &self.failed_context_resolve_total
     }
+
+    fn connections_active(&self) -> &Gauge {
+        &self.connections_active
+    }
+
+    fn packet_receive_success(&self) -> &Counter {
+        &self.packet_receive_success
+    }
+
+    fn packet_receive_failure(&self) -> &Counter {
+        &self.packet_receive_failure
+    }
 }
 
-fn build_metrics(builder: MetricsBuilder) -> Metrics {
+fn build_metrics(listen_addr: &ListenAddress, builder: MetricsBuilder) -> Metrics {
+    let listener_type = match listen_addr {
+        ListenAddress::Tcp(_) => unreachable!("TCP is not supported for DogStatsD"),
+        ListenAddress::Udp(_) => "udp",
+        ListenAddress::Unix(_) => "unix",
+        ListenAddress::Unixgram(_) => "unixgram",
+    };
+
     Metrics {
-        events_received: builder.register_counter("component_events_received_total"),
-        bytes_received: builder.register_counter("component_bytes_received_total"),
-        bytes_received_size: builder.register_histogram("component_bytes_received_size"),
-        decoder_errors: builder.register_counter_with_labels("component_errors_total", &[("error_type", "decode")]),
+        events_received: builder
+            .register_counter_with_labels("component_events_received_total", &[("listener_type", listener_type)]),
+        bytes_received: builder
+            .register_counter_with_labels("component_bytes_received_total", &[("listener_type", listener_type)]),
+        bytes_received_size: builder
+            .register_histogram_with_labels("component_bytes_received_size", &[("listener_type", listener_type)]),
+        decoder_errors: builder.register_counter_with_labels(
+            "component_errors_total",
+            &[("listener_type", listener_type), ("error_type", "decode")],
+        ),
+        connections_active: builder
+            .register_gauge_with_labels("component_connections_active", &[("listener_type", listener_type)]),
+        packet_receive_success: builder.register_counter_with_labels(
+            "component_packets_received_total",
+            &[("listener_type", listener_type), ("state", "ok")],
+        ),
+        packet_receive_failure: builder.register_counter_with_labels(
+            "component_packets_received_total",
+            &[("listener_type", listener_type), ("state", "error")],
+        ),
         failed_context_resolve_total: builder.register_counter("component_failed_context_resolve_total"),
     }
 }
@@ -443,7 +486,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
                         framer: get_framer(&listen_addr),
                         codec: codec.clone(),
                         io_buffer_pool: io_buffer_pool.clone(),
-                        metrics: build_metrics(MetricsBuilder::from_component_context(source_context.component_context())),
+                        metrics: build_metrics(&listen_addr, MetricsBuilder::from_component_context(source_context.component_context())),
                         multitenant_strategy: multitenant_strategy.clone(),
                     };
                     spawn_traced(process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register()));
@@ -485,7 +528,11 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
         mut multitenant_strategy,
     } = handler_context;
 
-    loop {
+    if !stream.is_connectionless() {
+        metrics.connections_active().increment(1);
+    }
+
+    'read: loop {
         let mut eof = false;
         // let mut eof_addr = None;
 
@@ -499,7 +546,7 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
         if !buffer.has_remaining_mut() {
             // try to get a new buffer on the next iteration?
             error!("Newly acquired buffer has no capacity. This should never happen.");
-            continue;
+            continue 'read;
         }
 
         // Try filling our buffer from the underlying reader first.
@@ -508,7 +555,8 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
             Ok((bytes_read, peer_addr)) => (bytes_read, peer_addr),
             Err(error) => {
                 error!(%listen_addr, %error, "I/O error while decoding. Stopping stream.");
-                break;
+                metrics.packet_receive_failure().increment(1);
+                continue 'read;
             }
         };
 
@@ -516,6 +564,7 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
             eof = true;
         }
 
+        metrics.packet_receive_success().increment(1);
         metrics.bytes_received().increment(bytes_read as u64);
         metrics.bytes_received_size().record(bytes_read as f64);
 
@@ -541,7 +590,7 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
         let mut maybe_service_checks_event_buffer = None;
 
         let mut frames = buffer.framed(&mut framer, reached_eof);
-        loop {
+        'frame: loop {
             match frames.next() {
                 Some(Ok(frame)) => {
                     debug!(?frame, "Decoded frame.");
@@ -574,21 +623,24 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                         }
                         Err(error) => {
                             error!(%listen_addr, %error, "Failed to parse frame.");
+
+                            // TODO: maybe actually packet receive failure? :thinking:
+                            metrics.decoder_errors().increment(1);
                         }
                     }
                 }
                 Some(Err(e)) => {
                     error!(error = %e, "Error decoding frame.");
                     metrics.decoder_errors().increment(1);
-                    break;
+                    break 'frame;
                 }
                 None => {
                     debug!("Not enough data to decode another frame.");
                     if eof && !stream.is_connectionless() {
                         trace!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
-                        return;
+                        break 'read;
                     } else {
-                        break;
+                        break 'frame;
                     }
                 }
             }
@@ -604,6 +656,8 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
         )
         .await;
     }
+
+    metrics.connections_active().decrement(1);
 }
 
 fn handle_metric_packet(
@@ -622,6 +676,8 @@ fn handle_metric_packet(
             return;
         }
     };
+
+    source_metrics.events_received().increment(packet.values.len() as u64);
 
     event_buffer.push(Event::Metric(Metric::from_parts(
         context,
@@ -666,9 +722,9 @@ async fn forward_events(
 
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddr;
+    use std::{net::SocketAddr, num::NonZeroUsize};
 
-    use saluki_context::ContextResolver;
+    use saluki_context::ContextResolverBuilder;
     use saluki_core::{
         components::{ComponentContext, MetricsBuilder},
         pooling::helpers::get_pooled_object_via_default,
@@ -676,7 +732,7 @@ mod tests {
     };
     use saluki_io::{
         deser::codec::{dogstatsd::ParsedPacket, DogstatsdCodec, DogstatsdCodecConfiguration},
-        net::ConnectionAddress,
+        net::{ConnectionAddress, ListenAddress},
     };
 
     use super::{handle_metric_packet, MultitenantStrategy};
@@ -692,7 +748,11 @@ mod tests {
         // We set our metric name to be longer than 31 bytes (the inlining limit) to ensure this.
 
         let codec = DogstatsdCodec::from_configuration(DogstatsdCodecConfiguration::default());
-        let context_resolver = ContextResolver::with_noop_interner().with_heap_allocations(false);
+        let context_resolver = ContextResolverBuilder::from_name("test")
+            .expect("valid name")
+            .with_interner_capacity_bytes(NonZeroUsize::new(1).expect("1 > 0"))
+            .with_heap_allocations(false)
+            .build();
         let mut multitenant_strategy = MultitenantStrategy::new(context_resolver);
         let mut event_buffer = get_pooled_object_via_default::<EventBuffer>();
 
@@ -707,9 +767,12 @@ mod tests {
             &mut event_buffer,
             &mut multitenant_strategy,
             &ConnectionAddress::from("1.1.1.1:1234".parse::<SocketAddr>().unwrap()),
-            &build_metrics(MetricsBuilder::from_component_context(ComponentContext::source(
-                ComponentId::try_from("test").unwrap(),
-            ))),
+            &build_metrics(
+                &ListenAddress::Tcp(([127, 0, 0, 1], 9999).into()),
+                MetricsBuilder::from_component_context(ComponentContext::source(
+                    ComponentId::try_from("test").unwrap(),
+                )),
+            ),
         );
 
         assert!(event_buffer.is_empty());
