@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
-use saluki_core::{components::transforms::*, pooling::ObjectPool as _, topology::OutputDefinition};
+use saluki_core::{components::transforms::*, topology::OutputDefinition};
 use saluki_error::{generic_error, GenericError};
 use saluki_event::{metric::*, DataType, Event};
 use stringtheory::MetaString;
@@ -99,25 +99,22 @@ impl Transform for AgentTelemetryRemapper {
             select! {
                 _ = health.live() => continue,
                 maybe_events = context.event_stream().next() => match maybe_events {
-                    Some(event_buffer) => {
-                        let mut remapped_event_buffer = context.event_buffer_pool().acquire().await;
-
-                        for event in &event_buffer {
-                            if let Some(metric) = event.try_as_metric() {
-                                if let Some(new_metric) = self.try_remap_metric(metric) {
-                                    remapped_event_buffer.push(Event::Metric(new_metric));
+                    Some(events) => {
+                        let mut buffered_forwarder = context.forwarder().buffered().expect("default output must always exist");
+                        for event in &events {
+                            if let Some(new_event) = event.try_as_metric().and_then(|metric| self.try_remap_metric(metric).map(Event::Metric)) {
+                                if let Err(e) = buffered_forwarder.push(new_event).await {
+                                    error!(error = %e, "Failed to forward event.");
                                 }
                             }
                         }
 
-                        if let Err(e) = context.forwarder().forward(event_buffer).await {
+                        if let Err(e) = buffered_forwarder.flush().await {
                             error!(error = %e, "Failed to forward events.");
                         }
 
-                        if !remapped_event_buffer.is_empty() {
-                            if let Err(e) = context.forwarder().forward(remapped_event_buffer).await {
-                                error!(error = %e, "Failed to forward events.");
-                            }
+                        if let Err(e) = context.forwarder().forward_buffer(events).await {
+                            error!(error = %e, "Failed to forward events.");
                         }
                     },
                     None => break,

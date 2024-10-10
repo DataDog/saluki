@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 
-use crate::topology::interconnect::EventBuffer;
+use crate::topology::interconnect::FixedSizeEventBuffer;
 
 mod builder;
 pub use self::builder::{SynchronousTransformBuilder, TransformBuilder};
@@ -39,5 +39,5 @@ pub trait Transform {
 /// within a single transform component for processing efficiency.
 pub trait SynchronousTransform {
     /// Transforms the events in the event buffer.
-    fn transform_buffer(&self, buffer: &mut EventBuffer);
+    fn transform_buffer(&self, buffer: &mut FixedSizeEventBuffer);
 }

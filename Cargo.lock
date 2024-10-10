@@ -2626,6 +2626,7 @@ dependencies = [
  "serde_json",
  "similar-asserts",
  "slab",
+ "smallvec",
  "snafu",
  "stringtheory",
  "tokio",

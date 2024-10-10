@@ -2,12 +2,13 @@ use std::collections::HashMap;
 
 use memory_accounting::{allocator::Track as _, ComponentRegistry};
 use saluki_error::{ErrorContext as _, GenericError};
+use saluki_event::Event;
 use snafu::Snafu;
 
 use super::{
     built::BuiltTopology,
     graph::{Graph, GraphError},
-    interconnect::EventBuffer,
+    interconnect::{FixedSizeEventBuffer, FixedSizeEventBufferInner},
     ComponentId, RegisteredComponent,
 };
 use crate::components::{destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder};
@@ -46,12 +47,28 @@ pub struct TopologyBlueprint {
 impl TopologyBlueprint {
     /// Creates an empty `TopologyBlueprint` attached to the given `ComponentRegistry`.
     pub fn from_component_registry(mut component_registry: ComponentRegistry) -> Self {
-        // Update our bounds for some basic stuff that we know about upfront.
+        // Account for our global event buffer pool, which has a lower and upper bound for the pooled object limit, but
+        // using fixed-size event buffers.
+        //
+        // Based on how minimum/firm limits are calculated, we have to subtract the minimum size from our firm size.
+        //
+        // TODO: We should consider adding a helper to `MemoryBoundsBuilder` that does this for you, since it would also
+        // ensure that if we ever changed the logic of how minimum/firm limits are used in calculations, we could avoid
+        // having to change it in all places that need to do these manual minimum/firm calculations.
+        const GLOBAL_EVENT_BUFFER_SIZE: usize =
+            std::mem::size_of::<FixedSizeEventBufferInner>() + (1024 * std::mem::size_of::<Event>());
+        const GLOBAL_EVENT_BUFFER_POOL_SIZE_MIN: usize = 64 * GLOBAL_EVENT_BUFFER_SIZE;
+        const GLOBAL_EVENT_BUFFER_POOL_SIZE_FIRM: usize =
+            (512 * GLOBAL_EVENT_BUFFER_SIZE) - GLOBAL_EVENT_BUFFER_POOL_SIZE_MIN;
+
         let mut bounds_builder = component_registry.bounds_builder();
-        bounds_builder
-            .subcomponent("buffer_pools/event_buffer")
+        let mut event_buffer_bounds_builder = bounds_builder.subcomponent("buffer_pools/event_buffer");
+        event_buffer_bounds_builder
             .minimum()
-            .with_array::<EventBuffer>(1024);
+            .with_fixed_amount(GLOBAL_EVENT_BUFFER_POOL_SIZE_MIN);
+        event_buffer_bounds_builder
+            .firm()
+            .with_fixed_amount(GLOBAL_EVENT_BUFFER_POOL_SIZE_FIRM);
 
         Self {
             graph: Graph::default(),
@@ -68,7 +85,7 @@ impl TopologyBlueprint {
             .get_or_create("interconnects")
             .bounds_builder()
             .minimum()
-            .with_array::<EventBuffer>(128);
+            .with_array::<FixedSizeEventBuffer>(128);
     }
 
     /// Adds a source component to the blueprint.
