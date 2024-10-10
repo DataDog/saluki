@@ -384,7 +384,7 @@ impl MultitenantStrategy {
 
             if resolvers.len() < resolvers.inline_size() {
                 let context_interner = FixedSizeInterner::new(self.interner_bytes);
-                let context_resolver = ContextResolver::from_interner("dogstatsd", context_interner)
+                let context_resolver = ContextResolver::from_interner(format!("dogstatsd-cid:{cid}"), context_interner)
                     .with_heap_allocations(self.allow_allocations);
                 drop(resolvers);
                 let mut write_handle = self.per_container_id_resolvers.write().expect("poisoned lock");
@@ -393,7 +393,7 @@ impl MultitenantStrategy {
             }
         }
 
-        return self.fallback_context_resolver.clone();
+        self.fallback_context_resolver.clone()
     }
 }
 
