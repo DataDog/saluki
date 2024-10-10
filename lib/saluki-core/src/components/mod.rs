@@ -50,6 +50,33 @@ impl ComponentContext {
         }
     }
 
+    /// Creates a new `ComponentContext` for a source component with the given identifier.
+    #[cfg(test)]
+    pub fn test_source<S: AsRef<str>>(component_id: S) -> Self {
+        Self {
+            component_id: ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
+            component_type: "source",
+        }
+    }
+
+    /// Creates a new `ComponentContext` for a transform component with the given identifier.
+    #[cfg(test)]
+    pub fn test_transform<S: AsRef<str>>(component_id: S) -> Self {
+        Self {
+            component_id: ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
+            component_type: "transform",
+        }
+    }
+
+    /// Creates a new `ComponentContext` for a destination component with the given identifier.
+    #[cfg(test)]
+    pub fn test_destination<S: AsRef<str>>(component_id: S) -> Self {
+        Self {
+            component_id: ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
+            component_type: "destination",
+        }
+    }
+
     /// Returns the component identifier.
     pub fn component_id(&self) -> &ComponentId {
         &self.component_id

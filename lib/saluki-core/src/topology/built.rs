@@ -11,7 +11,7 @@ use tracing::{debug, error_span};
 
 use super::{
     graph::Graph,
-    interconnect::{EventBuffer, EventStream, Forwarder},
+    interconnect::{EventStream, FixedSizeEventBuffer, FixedSizeEventBufferInner, Forwarder},
     running::RunningTopology,
     shutdown::ComponentShutdownCoordinator,
     ComponentId, RegisteredComponent,
@@ -58,7 +58,7 @@ impl BuiltTopology {
     }
 
     fn create_component_interconnects(
-        &self, event_buffer_pool: ElasticObjectPool<EventBuffer>,
+        &self, event_buffer_pool: ElasticObjectPool<FixedSizeEventBuffer>,
     ) -> (HashMap<ComponentId, Forwarder>, HashMap<ComponentId, EventStream>) {
         // Collect all of the outbound edges in our topology graph.
         //
@@ -67,7 +67,7 @@ impl BuiltTopology {
 
         let mut forwarders = HashMap::new();
         let mut event_streams = HashMap::new();
-        let mut event_stream_senders: HashMap<ComponentId, mpsc::Sender<EventBuffer>> = HashMap::new();
+        let mut event_stream_senders: HashMap<ComponentId, mpsc::Sender<FixedSizeEventBuffer>> = HashMap::new();
 
         for (upstream_id, output_map) in outbound_edges {
             // Get a reference to the forwarder for the current upstream component
@@ -121,7 +121,9 @@ impl BuiltTopology {
         let _guard = self.component_token.enter();
 
         // Build our interconnects, which we'll grab from piecemeal as we spawn our components.
-        let (event_buffer_pool, shrinker) = ElasticObjectPool::with_capacity("global_event_buffers", 64, 1024);
+        let (event_buffer_pool, shrinker) = ElasticObjectPool::with_builder("global_event_buffers", 64, 512, || {
+            FixedSizeEventBufferInner::with_capacity(1024)
+        });
         tokio::spawn(shrinker);
 
         let (mut forwarders, mut event_streams) = self.create_component_interconnects(event_buffer_pool.clone());
@@ -276,6 +278,6 @@ fn spawn_destination(
     spawn_traced(async move { destination.run(context).await })
 }
 
-fn build_interconnect_channel() -> (mpsc::Sender<EventBuffer>, mpsc::Receiver<EventBuffer>) {
+fn build_interconnect_channel() -> (mpsc::Sender<FixedSizeEventBuffer>, mpsc::Receiver<FixedSizeEventBuffer>) {
     mpsc::channel(128)
 }

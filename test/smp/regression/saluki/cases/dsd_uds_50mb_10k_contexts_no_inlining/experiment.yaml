@@ -15,7 +15,7 @@ target:
     # We specifically _don't_ disallow heap allocations here so we do expect the memory usage to grow over the course of
     # the experiment, although based on empirical testing, this should be sufficient to avoid hitting the global memory
     # limiter, at least until the very end of the experiment run.
-    DD_MEMORY_LIMIT: "80MiB"
+    DD_MEMORY_LIMIT: "160MiB"
 
     # Sets the context resolver's string interner size to 2MiB.
     DD_DOGSTATS_STRING_INTERNER_SIZE: "2MiB"
@@ -24,9 +24,9 @@ target:
     # allocations are turned off.
     DD_ENABLE_GLOBAL_LIMITER: false
 
-    # Set the context limit in the aggregator to 6K, which matches the maximum number of contexts we expect to
-    # generate. We essentially don't want the aggregator to be a limiting factor.
-    DD_AGGREGATE_CONTEXT_LIMIT: "6000"
+    # Set the context limit in the aggregator to right above 10K, which matches the maximum number of contexts we expect
+    # to generate. We essentially don't want the aggregator to be a limiting factor.
+    DD_AGGREGATE_CONTEXT_LIMIT: "10100"
 
     # Disables UDP and enables listening on UDS in SOCK_DGRAM mode.
     DD_DOGSTATSD_PORT: "0"

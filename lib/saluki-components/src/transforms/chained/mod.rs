@@ -78,11 +78,11 @@ impl Transform for Chained {
         let mut health = context.take_health_handle();
 
         debug!(
-            "Chained transform started with {} synchronous subtranform(s) present.",
+            "Chained transform started with {} synchronous subtransform(s) present.",
             self.subtransforms.len()
         );
 
-        // We have to reassociate each subtransform with their allocation group token here, as we don't have access to
+        // We have to re-associate each subtransform with their allocation group token here, as we don't have access to
         // it when the bounds are initially defined.
         let subtransforms = self
             .subtransforms
@@ -108,7 +108,7 @@ impl Transform for Chained {
                             transform.transform_buffer(&mut event_buffer);
                         }
 
-                        if let Err(e) = context.forwarder().forward(event_buffer).await {
+                        if let Err(e) = context.forwarder().forward_buffer(event_buffer).await {
                             error!(error = %e, "Failed to forward events.");
                         }
                     },
