@@ -11,7 +11,7 @@ use memory_accounting::ComponentRegistry;
 use saluki_app::{api::APIBuilder, prelude::*};
 use saluki_components::{
     destinations::{DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration, PrometheusConfiguration},
-    sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
+    sources::{ChecksConfiguration, DogStatsDConfiguration, InternalMetricsConfiguration},
     transforms::{
         AggregateConfiguration, ChainedConfiguration, HostEnrichmentConfiguration, OriginEnrichmentConfiguration,
     },
@@ -145,6 +145,14 @@ fn create_topology(
     let int_metrics_config = InternalMetricsConfiguration;
     let int_metrics_agg_config = AggregateConfiguration::with_defaults();
 
+    // Aggregation currently only supports time windows
+    // we'll need to add support for a "check sampler" like aggregator
+    // basically this _only_ does metric aggregation rules, no time rules.
+    // flushing is similar to current behavior, just need to think about 'counter' resets
+    // for now, just use time windows, if we make each window shorter than the check interval, it should be fine
+    let checks_agg_config = AggregateConfiguration::from_window(Duration::from_secs(15));
+    let check_config = ChecksConfiguration::from_configuration(&configuration)?;
+
     let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
     let origin_enrichment_config = OriginEnrichmentConfiguration::from_configuration(configuration)
         .error_context("Failed to configure origin enrichment transform.")?
@@ -162,18 +170,22 @@ fn create_topology(
     let mut blueprint = TopologyBlueprint::from_component_registry(topology_registry);
     blueprint
         .add_source("dsd_in", dsd_config)?
+        .add_source("checks_in", check_config)?
         .add_source("internal_metrics_in", int_metrics_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
+        .add_transform("checks_agg", checks_agg_config)?
         .add_transform("internal_metrics_agg", int_metrics_agg_config)?
         .add_transform("internal_metrics_remap", internal_metrics_remap_config)?
         .add_transform("enrich", enrich_config)?
         .add_destination("dd_metrics_out", dd_metrics_config)?
         .add_destination("dd_events_service_checks_out", events_service_checks_config)?
         .connect_component("dsd_agg", ["dsd_in.metrics"])?
+        .connect_component("checks_agg", ["checks_in"])?
         .connect_component("internal_metrics_remap", ["internal_metrics_in"])?
         .connect_component("internal_metrics_agg", ["internal_metrics_remap"])?
-        .connect_component("enrich", ["dsd_agg", "internal_metrics_agg"])?
+        .connect_component("enrich", ["dsd_agg", "internal_metrics_agg", ""])?
         .connect_component("dd_metrics_out", ["enrich"])?
+        .connect_component("enrich", ["dsd_agg", "internal_metrics_agg", "checks_agg"])?
         .connect_component(
             "dd_events_service_checks_out",
             ["dsd_in.events", "dsd_in.service_checks"],
