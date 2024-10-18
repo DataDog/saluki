@@ -1,0 +1,15 @@
+# Using a fixed hostname is both required to avoid errors, and also will ensure consistent tags between DSD/ADP.
+hostname: "correctness-testing"
+
+# Dummy API key.
+api_key: dummy-api-key-correctness-testing
+
+# We have to specifically configure the health port to use.
+health_port: 5555
+
+# Point ourselves at the metrics-intake service.
+dd_url: "http://metrics-intake:2049"
+
+# Turn off UDP and listen on a UDS socket instead.
+dogstatsd_port: 0
+dogstatsd_stream_socket: /airlock/metrics.sock

@@ -1,0 +1,18 @@
+[package]
+name = "airlock"
+version = "0.1.0"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+bollard = { workspace = true }
+clap = { workspace = true, features = ["std", "color", "derive", "help", "wrap_help", "usage", "error-context", "suggestions"] }
+futures = { workspace = true }
+saluki-app = { workspace = true, features = ["logging"] }
+saluki-error = { workspace = true }
+tokio = { workspace = true, features = ["fs", "macros", "rt", "rt-multi-thread"] }
+tracing = { workspace = true }
+
+[lints]
+workspace = true
