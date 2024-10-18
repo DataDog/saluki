@@ -1,6 +1,11 @@
 [workspace]
 members = [
   "bin/agent-data-plane",
+  "bin/correctness/airlock",
+  "bin/correctness/ground-truth",
+  "bin/correctness/metrics-intake",
+  "bin/correctness/millstone",
+  "bin/correctness/stele",
   "lib/datadog-protos",
   "lib/ddsketch-agent",
   "lib/memory-accounting",
@@ -122,6 +127,13 @@ hashbrown = { version = "0.15", default-features = false }
 quick_cache = { version = "0.6", default-features = false }
 crossbeam-queue = { version = "0.3", default-features = false }
 float-cmp = { version = "0.10", default-features = false }
+tower-http = { version = "0.6", default-features = false }
+bollard = { version = "0.17", default-features = false }
+clap = { version = "4.5.20", default-features = false }
+reqwest = { version = "0.12.8", default-features = false }
+governor = { version = "0.6", default-features = false }
+lading-payload = { git = "https://github.com/DataDog/lading", tag = "v0.23.3" }
+serde_yaml = { version = "0.9", default-features = false }
 
 [profile.release]
 lto = "thin"

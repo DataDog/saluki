@@ -109,6 +109,34 @@ build-gen-statsd-image: ## Builds the gen-statsd container image ('latest' tag)
 		--file ./docker/Dockerfile.gen-statsd \
 		.
 
+.PHONY: build-ground-truth
+build-ground-truth: check-rust-build-tools
+build-ground-truth: ## Builds the ground-truth binary in debug mode
+	@echo "[*] Building ground-truth locally..."
+	@cargo build --profile dev --package ground-truth
+
+.PHONY: build-metrics-intake-image
+build-metrics-intake-image: ## Builds the metrics-intake container image in release mode ('latest' tag)
+	@echo "[*] Building metrics-intake image..."
+	@$(CONTAINER_TOOL) build \
+		--tag saluki-images/metrics-intake:latest \
+		--tag local.dev/saluki-images/metrics-intake:testing \
+		--build-arg BUILD_IMAGE=$(ADP_BUILD_IMAGE) \
+		--build-arg APP_IMAGE=$(ADP_APP_IMAGE) \
+		--file ./docker/Dockerfile.metrics-intake \
+		.
+
+.PHONY: build-millstone-image
+build-millstone-image: ## Builds the millstone container image in release mode ('latest' tag)
+	@echo "[*] Building millstone image..."
+	@$(CONTAINER_TOOL) build \
+		--tag saluki-images/millstone:latest \
+		--tag local.dev/saluki-images/millstone:testing \
+		--build-arg BUILD_IMAGE=$(ADP_BUILD_IMAGE) \
+		--build-arg APP_IMAGE=$(ADP_APP_IMAGE) \
+		--file ./docker/Dockerfile.millstone \
+		.
+
 .PHONY: build-proxy-dumper-image
 build-proxy-dumper-image: check-proxy-dumper-tools ## Builds the proxy-dumper container image ('latest' tag)
 ifeq ($(shell test -d test/build/dd-agent-benchmarks || echo not-found), not-found)
@@ -357,6 +385,21 @@ test-loom: ## Runs all Loom-specific unit tests
 test-all: ## Test everything
 test-all: test test-docs test-miri test-loom
 
+.PHONY: test-correctnes
+test-correctness: build-ground-truth
+test-correctness: ## Runs the metrics correctness (ground-truth) suite
+	@echo "[*] Running correctness suite..."
+	@target/debug/ground-truth \
+		--millstone-image saluki-images/millstone:latest \
+		--millstone-config-path $(shell pwd)/test/correctness/millstone.yaml \
+		--metrics-intake-image saluki-images/metrics-intake:latest \
+		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
+		--dsd-image docker.io/datadog/dogstatsd:7.55.2 \
+		--dsd-config-path $(shell pwd)/test/correctness/datadog.yaml \
+		--adp-image saluki-images/agent-data-plane:latest \
+		--adp-config-path $(shell pwd)/test/correctness/datadog.yaml \
+		--adp-env-arg DD_LOG_LEVEL=debug
+
 .PHONY: ensure-rust-miri
 ensure-rust-miri:
 ifeq ($(shell command -v rustup >/dev/null || echo not-found), not-found)
@@ -432,6 +475,13 @@ clean: ## Clean all build artifacts (debug/release)
 clean-docker: ## Cleans up Docker build cache
 	@echo "[*] Cleaning Docker cache..."
 	@docker builder prune --filter type=exec.cachemount --force
+
+.PHONY: clean-airlock
+clean-airlock: ## Cleans up Airlock-related resources in Docker (used for correctness tests)
+	@echo "[*] Cleaning Airlock-related resources..."
+	@$(CONTAINER_TOOL) container ls --filter label=created_by=airlock -q | xargs -r $(CONTAINER_TOOL) container rm -f
+	@$(CONTAINER_TOOL) volume ls --filter label=created_by=airlock -q | xargs -r $(CONTAINER_TOOL) volume rm -f
+	@$(CONTAINER_TOOL) network ls --filter label=created_by=airlock -q | xargs -r $(CONTAINER_TOOL) network rm -f
 
 .PHONY: fmt
 fmt: check-rust-build-tools cargo-install-cargo-autoinherit cargo-install-cargo-sort
