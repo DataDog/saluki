@@ -1,7 +1,7 @@
 use bytes::{buf::UninitSlice, Buf, BufMut};
 use saluki_core::pooling::{helpers::pooled_newtype, Clearable};
 
-use super::{ClearableIoBuffer, ReadIoBuffer};
+use super::{ClearableIoBuffer, CollapsibleReadWriteIoBuffer, ReadIoBuffer};
 
 /// A fixed-size byte vector.
 ///
@@ -78,6 +78,30 @@ impl ReadIoBuffer for BytesBuffer {
     }
 }
 
+impl CollapsibleReadWriteIoBuffer for BytesBuffer {
+    fn collapse(&mut self) {
+        let remaining = self.remaining();
+
+        // If the buffer is empty, all we have to do is reset the buffer to its initial state.
+        if remaining == 0 {
+            let inner = self.data_mut();
+            inner.read_idx = 0;
+            inner.data.clear();
+            return;
+        }
+
+        // Otherwise, we have to actually shift the remaining data to the front of the buffer and then also update our
+        // buffer state.
+        let inner = self.data_mut();
+
+        let src_start = inner.read_idx;
+        let src_end = inner.data.len();
+        inner.data.copy_within(src_start..src_end, 0);
+        inner.data.truncate(remaining);
+        inner.read_idx = 0;
+    }
+}
+
 impl ClearableIoBuffer for BytesBuffer {
     fn clear(&mut self) {
         self.data_mut().clear();
@@ -139,5 +163,98 @@ mod tests {
         buf.data_mut().clear();
         assert_eq!(buf.remaining(), 0);
         assert_eq!(buf.remaining_mut(), 13);
+    }
+
+    #[test]
+    fn collapsible_empty() {
+        let mut buf = get_pooled_object_via_builder::<_, BytesBuffer>(|| FixedSizeVec::with_capacity(13));
+
+        // Buffer is empty.
+        assert_eq!(buf.remaining(), 0);
+        assert_eq!(buf.remaining_mut(), 13);
+
+        buf.collapse();
+
+        // Buffer is still empty.
+        assert_eq!(buf.remaining(), 0);
+        assert_eq!(buf.remaining_mut(), 13);
+    }
+
+    #[test]
+    fn collapsible_remaining_already_collapsed() {
+        let mut buf = get_pooled_object_via_builder::<_, BytesBuffer>(|| FixedSizeVec::with_capacity(24));
+
+        // Write a simple string to the buffer.
+        buf.put_slice(b"hello, world!");
+        assert_eq!(buf.remaining(), 13);
+        assert_eq!(buf.remaining_mut(), 11);
+
+        buf.collapse();
+
+        // Buffer is still the same since we never read anything from the buffer.
+        assert_eq!(buf.remaining(), 13);
+        assert_eq!(buf.remaining_mut(), 11);
+    }
+
+    #[test]
+    fn collapsible_remaining_not_collapsed_no_overlap() {
+        let mut buf = get_pooled_object_via_builder::<_, BytesBuffer>(|| FixedSizeVec::with_capacity(24));
+
+        // Write a simple string to the buffer.
+        buf.put_slice(b"hello, world!");
+        assert_eq!(buf.remaining(), 13);
+        assert_eq!(buf.remaining_mut(), 11);
+        assert_eq!(buf.chunk(), b"hello, world!");
+
+        // Write another simple string to the buffer.
+        buf.put_slice(b"huzzah!");
+        assert_eq!(buf.remaining(), 20);
+        assert_eq!(buf.remaining_mut(), 4);
+        assert_eq!(buf.chunk(), b"hello, world!huzzah!");
+
+        // Simulate reading the first string from the buffer, which will end up leaving a hole in the buffer, prior to
+        // the second string, that is big enough to fit the second string entirely.
+        buf.advance(13);
+        assert_eq!(buf.remaining(), 7);
+        assert_eq!(buf.remaining_mut(), 4);
+        assert_eq!(buf.chunk(), b"huzzah!");
+
+        buf.collapse();
+
+        // Buffer should now be collapsed, with the second string at the beginning of the buffer.
+        assert_eq!(buf.remaining(), 7);
+        assert_eq!(buf.remaining_mut(), 17);
+        assert_eq!(buf.chunk(), b"huzzah!");
+    }
+
+    #[test]
+    fn collapsible_remaining_not_collapsed_with_overlap() {
+        let mut buf = get_pooled_object_via_builder::<_, BytesBuffer>(|| FixedSizeVec::with_capacity(24));
+
+        // Write a simple string to the buffer.
+        buf.put_slice(b"huzzah!");
+        assert_eq!(buf.remaining(), 7);
+        assert_eq!(buf.remaining_mut(), 17);
+        assert_eq!(buf.chunk(), b"huzzah!");
+
+        // Write another simple string to the buffer.
+        buf.put_slice(b"hello, world!");
+        assert_eq!(buf.remaining(), 20);
+        assert_eq!(buf.remaining_mut(), 4);
+        assert_eq!(buf.chunk(), b"huzzah!hello, world!");
+
+        // Simulate reading the first string from the buffer, which will end up leaving a hole in the buffer, prior to
+        // the second string, that isn't big enough to fit the second string entirely.
+        buf.advance(7);
+        assert_eq!(buf.remaining(), 13);
+        assert_eq!(buf.remaining_mut(), 4);
+        assert_eq!(buf.chunk(), b"hello, world!");
+
+        buf.collapse();
+
+        // Buffer should now be collapsed, with the second string at the beginning of the buffer.
+        assert_eq!(buf.remaining(), 13);
+        assert_eq!(buf.remaining_mut(), 11);
+        assert_eq!(buf.chunk(), b"hello, world!");
     }
 }
