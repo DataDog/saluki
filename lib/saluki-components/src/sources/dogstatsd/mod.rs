@@ -24,7 +24,7 @@ use saluki_event::{
     DataType, Event,
 };
 use saluki_io::{
-    buf::{BytesBuffer, FixedSizeVec},
+    buf::{BytesBuffer, CollapsibleReadWriteIoBuffer as _, FixedSizeVec},
     deser::{
         codec::{
             dogstatsd::{build_metric_metadata_from_packet, MetricPacket, ParseError, ParsedPacket},
@@ -252,7 +252,7 @@ impl SourceBuilder for DogStatsDConfiguration {
         Ok(Box::new(DogStatsD {
             listeners,
             io_buffer_pool: FixedSizeObjectPool::with_builder("dsd_packet_bufs", self.buffer_count, || {
-                FixedSizeVec::with_capacity(self.buffer_size)
+                FixedSizeVec::with_capacity(get_adjusted_buffer_size(self.buffer_size))
             }),
             codec,
             multitenant_strategy,
@@ -279,7 +279,7 @@ impl MemoryBounds for DogStatsDConfiguration {
             // Capture the size of the heap allocation when the component is built.
             .with_single_value::<DogStatsD>()
             // We allocate our I/O buffers entirely up front.
-            .with_fixed_amount(self.buffer_count * self.buffer_size)
+            .with_fixed_amount(self.buffer_count * get_adjusted_buffer_size(self.buffer_size))
             // We also allocate the backing storage for the string interner up front, which is used by our context
             // resolver.
             .with_fixed_amount(self.context_string_interner_bytes.as_u64() as usize);
@@ -540,21 +540,28 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     let mut event_buffer = source_context.event_buffer_pool().acquire().await;
+    let mut buffer = io_buffer_pool.acquire().await;
+    if !buffer.has_remaining_mut() {
+        error!("Newly acquired buffer has no capacity. This should never happen.");
+        return;
+    }
+
+    debug!(capacity = buffer.remaining_mut(), "Acquired buffer for decoding.");
 
     'read: loop {
         let mut eof = false;
 
         source_context.memory_limiter().wait_for_capacity().await;
 
-        let mut buffer = io_buffer_pool.acquire().await;
-        debug!(capacity = buffer.remaining_mut(), "Acquired buffer for decoding.");
-
-        // If our buffer is full, we can't do any reads.
-        if !buffer.has_remaining_mut() {
-            // try to get a new buffer on the next iteration?
-            error!("Newly acquired buffer has no capacity. This should never happen.");
-            continue 'read;
-        }
+        // If we have any remaining data in the buffer, we collapse it which shifts it to the front of the buffer to
+        // free up capacity. For datagrams, this should be a no-op because we'll often be receiving a single packet in a
+        // payload... but for streams, we may have multiple packets in the buffer, with the last packet being a partial
+        // frame... so we need to collapse the buffer so we can do another follow-up read to get the rest of it, etc.
+        //
+        // TODO: Should we just require `CollapsibleReadWriteIoBuffer` in the framer interface, and have the framer do
+        // it? Less cognitive burden for future developers, but not sure if we'd be hiding too much magic
+        // behind-the-scenes by doing so. :shrug:
+        buffer.collapse();
 
         select! {
             // We read from the stream.
@@ -564,9 +571,11 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                         eof = true;
                     }
 
-                    metrics.packet_receive_success().increment(1);
-                    metrics.bytes_received().increment(bytes_read as u64);
-                    metrics.bytes_received_size().record(bytes_read as f64);
+                    if !eof {
+                        metrics.packet_receive_success().increment(1);
+                        metrics.bytes_received().increment(bytes_read as u64);
+                        metrics.bytes_received_size().record(bytes_read as f64);
+                    }
 
                     // When we're actually at EOF, or we're dealing with a connectionless stream, we try to decode in EOF mode.
                     //
@@ -603,8 +612,8 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                                         }
                                     },
                                     Ok(None) => {
-                                        // We didn't decode an event, but there was no inherent error. This is
-                                        // likely due to hitting resource limits, etc.
+                                        // We didn't decode an event, but there was no inherent error. This is likely
+                                        // due to hitting resource limits, etc.
                                         //
                                         // Simply continue on.
                                         continue
@@ -617,6 +626,12 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                             }
                             Some(Err(e)) => {
                                 error!(error = %e, "Error decoding frame.");
+
+                                if buffer.remaining() == 8192 {
+                                    info!("Buffer contents: {:?}", buffer.chunk());
+                                    panic!("boom");
+                                }
+
                                 metrics.decoder_errors().increment(1);
                                 break 'frame;
                             }
@@ -742,6 +757,24 @@ async fn forward_events(event_buffer: &mut FixedSizeEventBuffer, source_context:
             error!(%listen_addr, error = %e, "Failed to forward metric events.");
         }
     }
+}
+
+const fn get_adjusted_buffer_size(buffer_size: usize) -> usize {
+    // This is a little goofy, but hear me out:
+    //
+    // In the Datadog Agent, the way the UDS listener works is that if it's in stream mode, it will do a standalone
+    // socket read to get _just_ the length delimiter, which is 4 bytes. After that, it will do a read to get the packet
+    // data itself, up to the limit of `dogstatsd_buffer_size`. This means that a _full_ UDS stream packet can be up to
+    // `dogstatsd_buffer_size + 4` bytes.
+    //
+    // This isn't a problem in the Agent due to how it does the reads, but it's a problem for us because we want to be
+    // able to get an entire frame in a single buffer for the purpose of decoding the frame. Rather than rewriting our
+    // read loop such that we have to change the logic depending on UDP/UDS datagram vs UDS stream, we simply increase
+    // the buffer size by 4 bytes to account for the length delimiter.
+    //
+    // We do it this way so that we don't have to change the buffer size in the configuration, since if you just ported
+    // over a Datadog Agent configuration, the value would be too small, and vise versa.
+    buffer_size + 4
 }
 
 #[cfg(test)]
