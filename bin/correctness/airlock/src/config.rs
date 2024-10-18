@@ -38,19 +38,19 @@ impl Cli {
 pub enum Action {
     /// Run a millstone container to generate input metrics.
     #[command(name = "run-millstone")]
-    RunMillstone(MillstoneConfig),
+    Millstone(MillstoneConfig),
 
     /// Run a metrics-intake container to receive output metrics.
     #[command(name = "run-metrics-intake")]
-    RunMetricsIntake(MetricsIntakeConfig),
+    MetricsIntake(MetricsIntakeConfig),
 
     /// Run a DogStatsD container to receive input metrics.
     #[command(name = "run-dogstatsd")]
-    RunDogstatsd(DSDConfig),
+    Dogstatsd(DSDConfig),
 
     /// Run an Agent Data Plane container to receive input metrics.
     #[command(name = "run-adp")]
-    RunAgentDataPlane(ADPConfig),
+    AgentDataPlane(ADPConfig),
 }
 
 /// Millstone configuration.

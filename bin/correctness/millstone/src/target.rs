@@ -35,7 +35,7 @@ impl TargetSender {
             TargetAddress::Udp(addr) => {
                 // We have to bind the socket first before we can "connect" it.
                 let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).error_context("Failed to bind UDP socket.")?;
-                let _ = socket
+                socket
                     .connect(addr)
                     .with_error_context(|| format!("Failed to connect to UDP target '{}'.", addr))?;
 
@@ -43,7 +43,7 @@ impl TargetSender {
             }
             TargetAddress::UnixDatagram(path) => {
                 let datagram = UnixDatagram::unbound().error_context("Failed to bind Unix datagram socket.")?;
-                let _ = datagram.connect(path).with_error_context(|| {
+                datagram.connect(path).with_error_context(|| {
                     format!("Failed to connect to Unix datagram target '{}'.", path.display())
                 })?;
 

@@ -561,28 +561,27 @@ impl Driver {
     async fn start_container_inner(&self, container_name: &str) -> Result<DriverDetails, GenericError> {
         self.docker.start_container::<String>(container_name, None).await?;
 
-        let mut details = DriverDetails::default();
-        details.container_name = container_name.to_string();
+        let mut details = DriverDetails {
+            container_name: container_name.to_string(),
+            ..Default::default()
+        };
 
         let response = self.docker.inspect_container(container_name, None).await?;
         if let Some(network_settings) = response.network_settings {
             if let Some(ports) = network_settings.ports {
-                let port_mappings = details.port_mappings.get_or_insert_with(|| HashMap::new());
+                let port_mappings = details.port_mappings.get_or_insert_with(HashMap::new);
                 for (internal_port, bindings) in ports {
                     if let Some(bindings) = bindings {
                         for binding in bindings {
                             if let Some(host_ip) = binding.host_ip.as_deref() {
-                                match host_ip {
-                                    "0.0.0.0" => {
-                                        let maybe_host_port =
-                                            binding.host_port.as_ref().and_then(|value| value.parse::<u16>().ok());
+                                if host_ip == "0.0.0.0" {
+                                    let maybe_host_port =
+                                        binding.host_port.as_ref().and_then(|value| value.parse::<u16>().ok());
 
-                                        if let Some(host_port) = maybe_host_port {
-                                            port_mappings.insert(internal_port, host_port);
-                                            break;
-                                        }
+                                    if let Some(host_port) = maybe_host_port {
+                                        port_mappings.insert(internal_port, host_port);
+                                        break;
                                     }
-                                    _ => {}
                                 }
                             }
                         }
@@ -718,7 +717,7 @@ impl Driver {
                     Ok(ExitStatus::Failed { code, error })
                 }
 
-                Err(e) => return Err(generic_error!("Failed to wait for container to finish: {:?}", e)),
+                Err(e) => Err(generic_error!("Failed to wait for container to finish: {:?}", e)),
             },
             None => unreachable!("Docker wait stream ended unexpectedly."),
         }

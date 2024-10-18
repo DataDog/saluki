@@ -55,10 +55,7 @@ async fn run() -> Result<(), GenericError> {
     info!("metrics-intake started: listening on 0.0.0.0:2049");
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            shutdown_rx.recv().await;
-            ()
-        })
+        .with_graceful_shutdown(async move { shutdown_rx.recv().await.unwrap_or(()) })
         .await
         .map_err(Into::into)
 }

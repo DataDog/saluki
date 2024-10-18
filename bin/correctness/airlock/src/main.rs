@@ -30,7 +30,7 @@ async fn run(cli: Cli) -> Result<(), GenericError> {
     info!("airlock starting...");
 
     match cli.action {
-        Action::RunMillstone(config) => {
+        Action::Millstone(config) => {
             info!("User requested 'millstone' driver. Starting...");
 
             let driver_config = DriverConfig::millstone(config).await?;
@@ -42,7 +42,7 @@ async fn run(cli: Cli) -> Result<(), GenericError> {
 
             driver.cleanup().await?;
         }
-        Action::RunMetricsIntake(config) => {
+        Action::MetricsIntake(config) => {
             info!("User requested 'metrics-intake' driver. Starting...");
 
             let driver_config = DriverConfig::metrics_intake(config).await?;
@@ -62,7 +62,7 @@ async fn run(cli: Cli) -> Result<(), GenericError> {
 
             driver.cleanup().await?;
         }
-        Action::RunDogstatsd(config) => {
+        Action::Dogstatsd(config) => {
             info!("User requested 'dogstatsd' driver. Starting...");
 
             let driver_config = DriverConfig::dogstatsd(config).await?;
@@ -74,7 +74,7 @@ async fn run(cli: Cli) -> Result<(), GenericError> {
 
             driver.cleanup().await?;
         }
-        Action::RunAgentDataPlane(config) => {
+        Action::AgentDataPlane(config) => {
             info!("User requested 'agent-data-plane' driver. Starting...");
 
             let driver_config = DriverConfig::agent_data_plane(config).await?;

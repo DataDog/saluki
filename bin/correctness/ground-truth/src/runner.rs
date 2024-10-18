@@ -101,11 +101,11 @@ impl TestRunner {
 
                 // Figure out which side failed to initially spawn successfully, and return the appropriate
                 // error. If both failed, then we log both errors and return a generic error instead.
-                return match (maybe_dsd_error, maybe_adp_error) {
+                match (maybe_dsd_error, maybe_adp_error) {
                     (Ok(_), Err(adp_error)) => Err(adp_error),
                     (Err(dsd_error), _) => Err(dsd_error),
                     _ => unreachable!(),
-                };
+                }
             }
         }
     }
