@@ -108,6 +108,7 @@ impl Config {
 
 /// A sketch bin.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub(crate) struct Bin {
     /// The bin index.
     k: i16,
@@ -162,9 +163,18 @@ pub struct Bucket {
 /// having to ship the buckets -- upper bound and count -- to a downstream system that might have no native way to do
 /// the same thing, basically providing no value as they have no way to render useful data from them.
 ///
+/// # Features
+///
+/// This crate exposes a single feature, `serde`, which enables serialization and deserialization of `DDSketch` with
+/// `serde`. This feature is not enabled by default, as it can be slightly risky to use. This is primarily due to the
+/// fact that the format of `DDSketch` is not promised to be stable over time. If you enable this feature, you should
+/// take care to avoid storing serialized `DDSketch` data for long periods of time, as deserializing it in the future
+/// may work but could lead to incorrect/unexpected behavior or issues with correctness.
+///
 /// [ddsketch]: https://www.vldb.org/pvldb/vol12/p2195-masson.pdf
 /// [ddagent]: https://github.com/DataDog/datadog-agent
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct DDSketch {
     /// The bins within the sketch.
     bins: SmallVec<[Bin; 4]>,
@@ -706,6 +716,37 @@ impl Default for DDSketch {
 }
 
 impl Eq for DDSketch {}
+
+impl TryFrom<Dogsketch> for DDSketch {
+    type Error = &'static str;
+
+    fn try_from(value: Dogsketch) -> Result<Self, Self::Error> {
+        let mut sketch = DDSketch {
+            count: u32::try_from(value.cnt).map_err(|_| "sketch count overflows u32")?,
+            min: value.min,
+            max: value.max,
+            avg: value.avg,
+            sum: value.sum,
+            ..Default::default()
+        };
+
+        let k = value.k;
+        let n = value.n;
+
+        if k.len() != n.len() {
+            return Err("k and n bin vectors have differing lengths");
+        }
+
+        for (k, n) in k.into_iter().zip(n.into_iter()) {
+            let k = i16::try_from(k).map_err(|_| "bin key overflows i16")?;
+            let n = u16::try_from(n).map_err(|_| "bin count overflows u16")?;
+
+            sketch.bins.push(Bin { k, n });
+        }
+
+        Ok(sketch)
+    }
+}
 
 fn float_eq(l_value: f64, r_value: f64) -> bool {
     use float_eq::FloatEq as _;
