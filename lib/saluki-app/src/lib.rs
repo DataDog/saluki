@@ -5,18 +5,29 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
+#[cfg(feature = "api")]
 pub mod api;
+
+#[cfg(feature = "logging")]
 pub mod logging;
+
+#[cfg(feature = "memory")]
 pub mod memory;
+
+#[cfg(feature = "metrics")]
 pub mod metrics;
+
+#[cfg(feature = "tls")]
 pub mod tls;
 
 /// Common imports.
 pub mod prelude {
-    pub use super::{
-        logging::{fatal_and_exit, initialize_logging},
-        memory::{initialize_allocator_telemetry, initialize_memory_bounds, MemoryBoundsConfiguration},
-        metrics::initialize_metrics,
-        tls::initialize_tls,
-    };
+    #[cfg(feature = "logging")]
+    pub use super::logging::{fatal_and_exit, initialize_logging};
+    #[cfg(feature = "memory")]
+    pub use super::memory::{initialize_allocator_telemetry, initialize_memory_bounds, MemoryBoundsConfiguration};
+    #[cfg(feature = "metrics")]
+    pub use super::metrics::initialize_metrics;
+    #[cfg(feature = "tls")]
+    pub use super::tls::initialize_tls;
 }

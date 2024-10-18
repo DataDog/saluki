@@ -20,14 +20,14 @@ pub fn fatal_and_exit(message: String) {
 /// ## Errors
 ///
 /// If the logging subsystem was already initialized, an error will be returned.
-pub fn initialize_logging() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub fn initialize_logging(default_level: Option<LevelFilter>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let is_json = std::env::var("DD_LOG_FORMAT_JSON")
         .map(|s| s.trim().to_lowercase())
         .map(|s| s == "true" || s == "1")
         .unwrap_or(false);
 
     let level_filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::INFO.into())
+        .with_default_directive(default_level.unwrap_or(LevelFilter::INFO).into())
         .with_env_var("DD_LOG_LEVEL")
         .from_env_lossy();
 

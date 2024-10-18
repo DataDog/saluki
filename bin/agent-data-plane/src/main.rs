@@ -40,7 +40,7 @@ const ADP_BUILD_DESC: &str = env!("ADP_BUILD_DESC");
 async fn main() {
     let started = Instant::now();
 
-    if let Err(e) = initialize_logging() {
+    if let Err(e) = initialize_logging(None) {
         fatal_and_exit(format!("failed to initialize logging: {}", e));
     }
 
