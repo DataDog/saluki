@@ -66,7 +66,7 @@ fn get_finalized_corpus_blueprint(config: &Config) -> Result<CorpusBlueprint, Ge
     }
 
     // Validate that the blueprint is valid from a payload generation standpoint.
-    let _ = blueprint.validate()?;
+    blueprint.validate()?;
 
     Ok(blueprint)
 }
@@ -90,7 +90,7 @@ where
     let total_size = payloads.iter().map(|p| p.len() as u64).sum();
 
     if payloads.is_empty() {
-        return Err(generic_error!("No payloads were generated."));
+        Err(generic_error!("No payloads were generated."))
     } else {
         Ok((payloads, max_payload_size, ByteSize(total_size)))
     }

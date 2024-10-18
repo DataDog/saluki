@@ -49,9 +49,10 @@ impl TestRunner {
             self.cancel_token.child_token(),
         );
 
-		let dogstatsd_config = DriverConfig::dogstatsd(self.dsd_config.clone()).await?
-			// We _have_ to pass the API key as an environment variable, otherwise the container won't cleanly start.
-			.with_env_var("DD_API_KEY", "dummy-api-key-correctness-testing");
+        let dogstatsd_config = DriverConfig::dogstatsd(self.dsd_config.clone())
+            .await?
+            // We _have_ to pass the API key as an environment variable, otherwise the container won't cleanly start.
+            .with_env_var("DD_API_KEY", "dummy-api-key-correctness-testing");
 
         group_runner
             .with_driver(DriverConfig::metrics_intake(self.metrics_intake_config.clone()).await?)?
@@ -70,12 +71,13 @@ impl TestRunner {
             self.cancel_token.child_token(),
         );
 
-		let adp_config = DriverConfig::agent_data_plane(self.adp_config.clone()).await?
-			.with_env_var("DD_API_KEY", "dummy-api-key-correctness-testing")
-			.with_env_var("DD_ADP_USE_NOOP_WORKLOAD_PROVIDER", "true")
-			.with_env_var("DD_TELEMETRY_ENABLED", "true")
-			.with_env_var("DD_PROMETHEUS_LISTEN_ADDR", "tcp://0.0.0.0:6000")
-			.with_exposed_port("tcp", 6000);
+        let adp_config = DriverConfig::agent_data_plane(self.adp_config.clone())
+            .await?
+            .with_env_var("DD_API_KEY", "dummy-api-key-correctness-testing")
+            .with_env_var("DD_ADP_USE_NOOP_WORKLOAD_PROVIDER", "true")
+            .with_env_var("DD_TELEMETRY_ENABLED", "true")
+            .with_env_var("DD_PROMETHEUS_LISTEN_ADDR", "tcp://0.0.0.0:6000")
+            .with_exposed_port("tcp", 6000);
 
         group_runner
             .with_driver(DriverConfig::metrics_intake(self.metrics_intake_config.clone()).await?)?
@@ -99,11 +101,11 @@ impl TestRunner {
 
                 // Figure out which side failed to initially spawn successfully, and return the appropriate
                 // error. If both failed, then we log both errors and return a generic error instead.
-                return match (maybe_dsd_error, maybe_adp_error) {
+                match (maybe_dsd_error, maybe_adp_error) {
                     (Ok(_), Err(adp_error)) => Err(adp_error),
                     (Err(dsd_error), _) => Err(dsd_error),
                     _ => unreachable!(),
-                };
+                }
             }
         }
     }
@@ -113,7 +115,7 @@ impl TestRunner {
         // monitoring the containers, as well as cleaning them up after failure and/or when we're done.
         let dsd_group_runner = self.build_dsd_group_runner().await?;
         let adp_group_runner = self.build_adp_group_runner().await?;
-		info!("Group runners built for DSD and ADP.");
+        info!("Group runners built for DSD and ADP.");
 
         // Do the initial spawn of both group runners, which should get all relevant containers spawned and running in
         // the correct order, and so on.
@@ -123,7 +125,7 @@ impl TestRunner {
         // Everything is running, so just wait for the results (or an error) to come back from both group runners.
         let (dsd_result_collector, adp_result_collector) =
             self.unwrap_or_shutdown(dsd_spawn_result, adp_spawn_result).await?;
-		info!("Group runners spawned successfully for DSD and ADP. Waiting for results...");
+        info!("Group runners spawned successfully for DSD and ADP. Waiting for results...");
 
         let maybe_dsd_results = dsd_result_collector.wait_for_results().await;
         let maybe_adp_results = adp_result_collector.wait_for_results().await;
@@ -131,7 +133,7 @@ impl TestRunner {
         let (dsd_results, adp_results) = self.unwrap_or_shutdown(maybe_dsd_results, maybe_adp_results).await?;
 
         // We've gotten our results back, so signal to any remaining containers that they can shutdown now.
-		info!("Shutting down remaining containers in DSD and ADP group runners...");
+        info!("Shutting down remaining containers in DSD and ADP group runners...");
         self.cancel_token.cancel();
         self.coordinator.wait().await;
 
@@ -271,8 +273,10 @@ impl ResultCollector {
         // Wait for millstone to complete, since that signals that all metrics have been _sent_ to the target.
         if let ExitStatus::Failed { code, error } = self.millstone_handle.wait().await {
             return Err(generic_error!("Failed to drive millstone to completion; process exited with non-zero exit code ({}). Error message: {}", code, error));
-		}
-		debug!("Millstone container stopped successfully. Waiting for flush interval to elapse before dumping metrics...");
+        }
+        debug!(
+            "Millstone container stopped successfully. Waiting for flush interval to elapse before dumping metrics..."
+        );
 
         // Now we'll briefly wait (for the duration of an aggregation flush interval, plus a little extra) before dumping the metrics from
         // metrics-intake, to ensure everything from the target has been flushed out.
@@ -288,7 +292,7 @@ impl ResultCollector {
             .await
             .error_context("Failed to decode dumped metrics from metrics-intake response.")?;
 
-		debug!("Metrics dumped successfully.");
+        debug!("Metrics dumped successfully.");
 
         Ok(metrics)
     }
@@ -377,10 +381,10 @@ async fn spawn_driver_with_details(
 
     // Start the container and wait for it to become healthy.
     let details = driver.start().await?;
-	debug!("Container started. Waiting for it to become healthy...");
+    debug!("Container started. Waiting for it to become healthy...");
 
     driver.wait_for_container_healthy().await?;
-	debug!("Container is healthy. Proceeding...");
+    debug!("Container is healthy. Proceeding...");
 
     // Spawn a management task that will ensure the container runs until the shutdown signal is received, or the
     // container stops, whichever comes first.
