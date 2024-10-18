@@ -11,6 +11,23 @@ pub struct Metric {
     values: Vec<(u64, MetricValue)>,
 }
 
+impl Metric {
+    /// Returns the name of the metric.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the tags associated with the metric.
+    pub fn tags(&self) -> &[String] {
+        &self.tags
+    }
+
+    /// Returns the values associated with the metric.
+    pub fn values(&self) -> &[(u64, MetricValue)] {
+        &self.values
+    }
+}
+
 /// A metric value.
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "mtype")]
