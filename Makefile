@@ -205,7 +205,7 @@ ifeq ($(shell test -n "$(DD_API_KEY)" || echo not-found), not-found)
 endif
 	@echo "[*] Running ADP..."
 	@DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true \
-	DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_SOCKET=/tmp/adp-dsd.sock DD_DOGSTATSD_EXPIRY_SECONDS=30 \
+	DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dsd.sock DD_DOGSTATSD_EXPIRY_SECONDS=30 \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:6000 \
 	target/release/agent-data-plane
 

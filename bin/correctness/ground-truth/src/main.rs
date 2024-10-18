@@ -38,13 +38,7 @@ async fn run(cli: Cli) -> Result<(), GenericError> {
 
     info!("All tests completed successfully. Running analysis...");
 
-    info!(
-        "Received {} metrics from DogStatsD, and {} metrics from Agent Data Plane.",
-        raw_results.dsd_metrics().len(),
-        raw_results.adp_metrics().len()
-    );
-
-    // TODO: filter out DSD/ADP internal telemetry from dumps
+    raw_results.run_analysis()?;
 
     // TODO: compare basic context count between DSD and ADP
 
