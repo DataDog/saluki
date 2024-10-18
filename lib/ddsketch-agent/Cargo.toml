@@ -7,11 +7,13 @@ repository = { workspace = true }
 
 [features]
 ddsketch_extended = []
+serde = ["dep:serde", "smallvec/serde"]
 
 [dependencies]
 datadog-protos = { workspace = true }
 float_eq = { workspace = true }
 ordered-float = { workspace = true }
+serde = { workspace = true, optional = true }
 smallvec = { workspace = true, features = ["union"] }
 
 [dev-dependencies]
