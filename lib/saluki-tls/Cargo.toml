@@ -5,6 +5,10 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[features]
+default = []
+fips = ["rustls/fips"]
+
 [dependencies]
 rustls = { workspace = true, features = ["std"] }
 rustls-native-certs = { workspace = true }
