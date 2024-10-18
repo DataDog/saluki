@@ -23,7 +23,6 @@ const DEFAULT_MAX_TLS12_RESUMPTION_SESSIONS: usize = 8;
 ///
 /// ## Missing
 ///
-/// - ability to disable FIPS mode (i.e. FIPS mode is always enforced)
 /// - ability to configure client authentication
 pub struct ClientTLSConfigBuilder {
     max_tls12_resumption_sessions: Option<usize>,
@@ -83,6 +82,7 @@ impl ClientTLSConfigBuilder {
         config.resumption = Resumption::in_memory_sessions(max_tls12_resumption_sessions);
 
         // Do our final check that this configuration is FIPS compliant.
+        #[cfg(feature = "fips")]
         if !config.fips() {
             return Err(generic_error!("Client TLS configuration is not FIPS compliant."));
         }

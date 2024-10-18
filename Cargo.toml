@@ -84,7 +84,7 @@ quanta = { version = "0.12", default-features = false }
 rand = { version = "0.8.5", default-features = false }
 rand_distr = { version = "0.4.3", default-features = false }
 regex = { version = "1.11", default-features = false }
-rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "fips", "logging", "std", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "logging", "std", "tls12"] }
 similar-asserts = { version = "1.5", default-features = false }
 slab = { version = "0.4", default-features = false }
 tokio-util = { version = "0.7.10", default-features = false }

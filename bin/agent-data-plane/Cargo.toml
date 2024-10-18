@@ -5,6 +5,10 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[features]
+default = []
+fips = ["saluki-app/tls-fips"]
+
 [dependencies]
 async-trait = { workspace = true }
 bytesize = { workspace = true }
