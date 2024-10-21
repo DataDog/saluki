@@ -1,7 +1,7 @@
 //! A DDSketch implementation based on the Datadog Agent's DDSketch implementation.
 #![deny(warnings)]
 #![deny(missing_docs)]
-use std::{cmp::Ordering, mem};
+use std::cmp::Ordering;
 
 use datadog_protos::metrics::Dogsketch;
 use float_cmp::ApproxEqRatio as _;
@@ -110,28 +110,13 @@ impl Config {
 /// A sketch bin.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-pub(crate) struct Bin {
+#[cfg(test)]
+pub struct Bin {
     /// The bin index.
     k: i16,
 
     /// The number of observations within the bin.
     n: u16,
-}
-
-impl Bin {
-    #[allow(clippy::cast_possible_truncation)]
-    fn increment(&mut self, n: u32) -> u32 {
-        let next = n + u32::from(self.n);
-        if next > u32::from(MAX_BIN_WIDTH) {
-            self.n = MAX_BIN_WIDTH;
-            return next - u32::from(MAX_BIN_WIDTH);
-        }
-
-        // SAFETY: We already know `next` is less than or equal to `MAX_BIN_WIDTH` if we got here, and `MAX_BIN_WIDTH`
-        // is u16, so next can't possibly be larger than a u16.
-        self.n = next as u16;
-        0
-    }
 }
 
 /// A histogram bucket.
@@ -177,8 +162,11 @@ pub struct Bucket {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct DDSketch {
-    /// The bins within the sketch.
-    bins: SmallVec<[Bin; 4]>,
+    /// The keys of the bins within the sketch.
+    keys: SmallVec<[i16; 4]>,
+
+    /// The counts of the bins within the sketch.
+    counts: SmallVec<[u16; 4]>,
 
     /// The number of observations within the sketch.
     count: u32,
@@ -199,12 +187,16 @@ pub struct DDSketch {
 impl DDSketch {
     #[cfg(test)]
     fn bin_count(&self) -> usize {
-        self.bins.len()
+        self.keys.len()
     }
 
     #[cfg(test)]
-    fn bins(&self) -> &[Bin] {
-        &self.bins
+    fn bins(&self) -> impl Iterator<Item = Bin> + '_ {
+        self.keys
+            .iter()
+            .copied()
+            .zip(self.counts.iter().copied())
+            .map(|(k, n)| Bin { k, n })
     }
 
     /// Whether or not this sketch is empty.
@@ -268,7 +260,8 @@ impl DDSketch {
         self.max = f64::MIN;
         self.avg = 0.0;
         self.sum = 0.0;
-        self.bins.clear();
+        self.keys.clear();
+        self.counts.clear();
     }
 
     fn adjust_basic_stats(&mut self, v: f64, n: u32) {
@@ -296,11 +289,12 @@ impl DDSketch {
         // Counts need to be sorted by key.
         counts.sort_unstable_by(|(k1, _), (k2, _)| k1.cmp(k2));
 
-        let mut temp = SmallVec::<[Bin; 4]>::new();
+        let mut temp_keys = SmallVec::<[i16; 4]>::new();
+        let mut temp_counts = SmallVec::<[u16; 4]>::new();
 
         let mut bins_idx = 0;
         let mut key_idx = 0;
-        let bins_len = self.bins.len();
+        let bins_len = self.keys.len();
         let counts_len = counts.len();
 
         // PERF TODO: there's probably a fast path to be had where could check if all if the counts have existing bins
@@ -311,41 +305,45 @@ impl DDSketch {
         // min/max key, and if it doesn't, then we know we have to go through the non-fast path, and if it passes, we do
         // the scan to see if we can just update bins directly?
         while bins_idx < bins_len && key_idx < counts_len {
-            let bin = self.bins[bins_idx];
+            let bin_k = self.keys[bins_idx];
+            let bin_n = self.counts[bins_idx];
             let vk = counts[key_idx].0;
             let kn = counts[key_idx].1;
 
-            match bin.k.cmp(&vk) {
+            match bin_k.cmp(&vk) {
                 Ordering::Greater => {
-                    generate_bins(&mut temp, vk, kn);
+                    generate_bins(&mut temp_keys, &mut temp_counts, vk, kn);
                     key_idx += 1;
                 }
                 Ordering::Less => {
-                    temp.push(bin);
+                    temp_keys.push(bin_k);
+                    temp_counts.push(bin_n);
                     bins_idx += 1;
                 }
                 Ordering::Equal => {
-                    generate_bins(&mut temp, bin.k, u32::from(bin.n) + kn);
+                    generate_bins(&mut temp_keys, &mut temp_counts, bin_k, u32::from(bin_n) + kn);
                     bins_idx += 1;
                     key_idx += 1;
                 }
             }
         }
 
-        temp.extend_from_slice(&self.bins[bins_idx..]);
+        temp_keys.extend_from_slice(&self.keys[bins_idx..]);
+        temp_counts.extend_from_slice(&self.counts[bins_idx..]);
 
         while key_idx < counts_len {
             let vk = counts[key_idx].0;
             let kn = counts[key_idx].1;
-            generate_bins(&mut temp, vk, kn);
+            generate_bins(&mut temp_keys, &mut temp_counts, vk, kn);
             key_idx += 1;
         }
 
-        trim_left(&mut temp, SKETCH_CONFIG.bin_limit);
+        trim_left(&mut temp_keys, &mut temp_counts, SKETCH_CONFIG.bin_limit);
 
         // PERF TODO: This is where we might do a mem::swap instead so that we could shove the bin vector into an object
         // pool but I'm not sure this actually matters at the moment.
-        self.bins = temp;
+        self.keys = temp_keys;
+        self.counts = temp_counts;
     }
 
     fn insert_keys(&mut self, mut keys: Vec<i16>) {
@@ -355,11 +353,12 @@ impl DDSketch {
 
         keys.sort_unstable();
 
-        let mut temp = SmallVec::<[Bin; 4]>::new();
+        let mut temp_keys = SmallVec::<[i16; 4]>::new();
+        let mut temp_counts = SmallVec::<[u16; 4]>::new();
 
         let mut bins_idx = 0;
         let mut key_idx = 0;
-        let bins_len = self.bins.len();
+        let bins_len = self.keys.len();
         let keys_len = keys.len();
 
         // PERF TODO: there's probably a fast path to be had where could check if all if the counts have existing bins
@@ -370,42 +369,46 @@ impl DDSketch {
         // min/max key, and if it doesn't, then we know we have to go through the non-fast path, and if it passes, we do
         // the scan to see if we can just update bins directly?
         while bins_idx < bins_len && key_idx < keys_len {
-            let bin = self.bins[bins_idx];
+            let bin_k = self.keys[bins_idx];
+            let bin_n = self.counts[bins_idx];
             let vk = keys[key_idx];
 
-            match bin.k.cmp(&vk) {
+            match bin_k.cmp(&vk) {
                 Ordering::Greater => {
                     let kn = buf_count_leading_equal(&keys, key_idx);
-                    generate_bins(&mut temp, vk, kn);
+                    generate_bins(&mut temp_keys, &mut temp_counts, vk, kn);
                     key_idx += kn as usize;
                 }
                 Ordering::Less => {
-                    temp.push(bin);
+                    temp_keys.push(bin_k);
+                    temp_counts.push(bin_n);
                     bins_idx += 1;
                 }
                 Ordering::Equal => {
                     let kn = buf_count_leading_equal(&keys, key_idx);
-                    generate_bins(&mut temp, bin.k, u32::from(bin.n) + kn);
+                    generate_bins(&mut temp_keys, &mut temp_counts, bin_k, u32::from(bin_n) + kn);
                     bins_idx += 1;
                     key_idx += kn as usize;
                 }
             }
         }
 
-        temp.extend_from_slice(&self.bins[bins_idx..]);
+        temp_keys.extend_from_slice(&self.keys[bins_idx..]);
+        temp_counts.extend_from_slice(&self.counts[bins_idx..]);
 
         while key_idx < keys_len {
             let vk = keys[key_idx];
             let kn = buf_count_leading_equal(&keys, key_idx);
-            generate_bins(&mut temp, vk, kn);
+            generate_bins(&mut temp_keys, &mut temp_counts, vk, kn);
             key_idx += kn as usize;
         }
 
-        trim_left(&mut temp, SKETCH_CONFIG.bin_limit);
+        trim_left(&mut temp_keys, &mut temp_counts, SKETCH_CONFIG.bin_limit);
 
         // PERF TODO: This is where we might do a mem::swap instead so that we could shove the bin vector into an object
         // pool but I'm not sure this actually matters at the moment.
-        self.bins = temp;
+        self.keys = temp_keys;
+        self.counts = temp_counts;
     }
 
     /// Inserts a single value into the sketch.
@@ -418,29 +421,30 @@ impl DDSketch {
 
         let mut insert_at = None;
 
-        for (bin_idx, b) in self.bins.iter_mut().enumerate() {
-            if b.k == key {
-                if b.n < MAX_BIN_WIDTH {
-                    // Fast path for adding to an existing bin without overflow.
-                    b.n += 1;
+        for (idx, &k) in self.keys.iter().enumerate() {
+            if k == key {
+                if self.counts[idx] < MAX_BIN_WIDTH {
+                    self.counts[idx] += 1;
                     return;
                 } else {
-                    insert_at = Some(bin_idx);
+                    insert_at = Some(idx);
                     break;
                 }
             }
-            if b.k > key {
-                insert_at = Some(bin_idx);
+            if k > key {
+                insert_at = Some(idx);
                 break;
             }
         }
 
-        if let Some(bin_idx) = insert_at {
-            self.bins.insert(bin_idx, Bin { k: key, n: 1 });
+        if let Some(idx) = insert_at {
+            self.keys.insert(idx, key);
+            self.counts.insert(idx, 1);
         } else {
-            self.bins.push(Bin { k: key, n: 1 });
+            self.keys.push(key);
+            self.counts.push(1);
         }
-        trim_left(&mut self.bins, SKETCH_CONFIG.bin_limit);
+        trim_left(&mut self.keys, &mut self.counts, SKETCH_CONFIG.bin_limit);
     }
 
     /// Inserts many values into the sketch.
@@ -448,9 +452,9 @@ impl DDSketch {
         // TODO: This should return a result that makes sure we have enough room to actually add N more samples without
         // hitting `self.config.bin_limit`.
         let mut keys = Vec::with_capacity(vs.len());
-        for v in vs {
-            self.adjust_basic_stats(*v, 1);
-            keys.push(SKETCH_CONFIG.key(*v));
+        for &v in vs {
+            self.adjust_basic_stats(v, 1);
+            keys.push(SKETCH_CONFIG.key(v));
         }
         self.insert_keys(keys);
     }
@@ -574,7 +578,8 @@ impl DDSketch {
     pub(crate) fn insert_raw_bin(&mut self, k: i16, n: u16) {
         let v = SKETCH_CONFIG.bin_lower_bound(k);
         self.adjust_basic_stats(v, u32::from(n));
-        self.bins.push(Bin { k, n });
+        self.keys.push(k);
+        self.counts.push(n);
     }
 
     /// Gets the value at a given quantile.
@@ -595,17 +600,18 @@ impl DDSketch {
         let mut estimated = None;
         let wanted_rank = rank(self.count, q);
 
-        for (i, bin) in self.bins.iter().enumerate() {
-            n += f64::from(bin.n);
+        for (i, (&bin_k, &bin_n)) in self.keys.iter().zip(&self.counts).enumerate() {
+            n += f64::from(bin_n);
             if n <= wanted_rank {
                 continue;
             }
 
-            let weight = (n - wanted_rank) / f64::from(bin.n);
-            let mut v_low = SKETCH_CONFIG.bin_lower_bound(bin.k);
+            let weight = (n - wanted_rank) / f64::from(bin_n);
+            let mut v_low = SKETCH_CONFIG.bin_lower_bound(bin_k);
             let mut v_high = v_low * SKETCH_CONFIG.gamma_v;
 
-            if i == self.bins.len() {
+            // Todo: should this be len-1 or len?
+            if i == self.keys.len() - 1 {
                 v_high = self.max;
             } else if i == 0 {
                 v_low = self.min;
@@ -635,33 +641,52 @@ impl DDSketch {
         self.avg = self.avg + (other.avg - self.avg) * f64::from(other.count) / f64::from(self.count);
 
         // Now merge the bins.
-        let mut temp = SmallVec::<[Bin; 4]>::new();
+        let mut temp_keys = SmallVec::<[i16; 4]>::new();
+        let mut temp_counts = SmallVec::<[u16; 4]>::new();
 
         let mut bins_idx = 0;
-        for other_bin in &other.bins {
-            let start = bins_idx;
-            while bins_idx < self.bins.len() && self.bins[bins_idx].k < other_bin.k {
-                bins_idx += 1;
-            }
+        let mut other_bins_idx = 0;
 
-            temp.extend_from_slice(&self.bins[start..bins_idx]);
+        while bins_idx < self.keys.len() && other_bins_idx < other.keys.len() {
+            let bin_k = self.keys[bins_idx];
+            let bin_n = self.counts[bins_idx];
+            let other_k = other.keys[other_bins_idx];
+            let other_n = other.counts[other_bins_idx];
 
-            if bins_idx >= self.bins.len() || self.bins[bins_idx].k > other_bin.k {
-                temp.push(*other_bin);
-            } else if self.bins[bins_idx].k == other_bin.k {
-                generate_bins(
-                    &mut temp,
-                    other_bin.k,
-                    u32::from(other_bin.n) + u32::from(self.bins[bins_idx].n),
-                );
-                bins_idx += 1;
+            match bin_k.cmp(&other_k) {
+                Ordering::Less => {
+                    temp_keys.push(bin_k);
+                    temp_counts.push(bin_n);
+                    bins_idx += 1;
+                }
+                Ordering::Greater => {
+                    temp_keys.push(other_k);
+                    temp_counts.push(other_n);
+                    other_bins_idx += 1;
+                }
+                Ordering::Equal => {
+                    generate_bins(
+                        &mut temp_keys,
+                        &mut temp_counts,
+                        bin_k,
+                        u32::from(bin_n) + u32::from(other_n),
+                    );
+                    bins_idx += 1;
+                    other_bins_idx += 1;
+                }
             }
         }
 
-        temp.extend_from_slice(&self.bins[bins_idx..]);
-        trim_left(&mut temp, SKETCH_CONFIG.bin_limit);
+        temp_keys.extend_from_slice(&self.keys[bins_idx..]);
+        temp_counts.extend_from_slice(&self.counts[bins_idx..]);
 
-        self.bins = temp;
+        temp_keys.extend_from_slice(&other.keys[other_bins_idx..]);
+        temp_counts.extend_from_slice(&other.counts[other_bins_idx..]);
+
+        trim_left(&mut temp_keys, &mut temp_counts, SKETCH_CONFIG.bin_limit);
+
+        self.keys = temp_keys;
+        self.counts = temp_counts;
     }
 
     /// Merges this sketch into the `Dogsketch` Protocol Buffers representation.
@@ -672,13 +697,8 @@ impl DDSketch {
         dogsketch.set_avg(self.avg);
         dogsketch.set_sum(self.sum);
 
-        let mut k = Vec::new();
-        let mut n = Vec::new();
-
-        for bin in &self.bins {
-            k.push(i32::from(bin.k));
-            n.push(u32::from(bin.n));
-        }
+        let k: Vec<i32> = self.keys.iter().map(|&k| i32::from(k)).collect();
+        let n: Vec<u32> = self.counts.iter().map(|&n| u32::from(n)).collect();
 
         dogsketch.set_k(k);
         dogsketch.set_n(n);
@@ -699,14 +719,16 @@ impl PartialEq for DDSketch {
             && float_eq(self.max, other.max)
             && float_eq(self.sum, other.sum)
             && float_eq(self.avg, other.avg)
-            && self.bins == other.bins
+            && self.keys == other.keys
+            && self.counts == other.counts
     }
 }
 
 impl Default for DDSketch {
     fn default() -> Self {
         Self {
-            bins: SmallVec::new(),
+            keys: SmallVec::new(),
+            counts: SmallVec::new(),
             count: 0,
             min: f64::MAX,
             max: f64::MIN,
@@ -742,7 +764,8 @@ impl TryFrom<Dogsketch> for DDSketch {
             let k = i16::try_from(k).map_err(|_| "bin key overflows i16")?;
             let n = u16::try_from(n).map_err(|_| "bin count overflows u16")?;
 
-            sketch.bins.push(Bin { k, n });
+            sketch.keys.push(k);
+            sketch.counts.push(n);
         }
 
         Ok(sketch)
@@ -777,65 +800,79 @@ fn buf_count_leading_equal(keys: &[i16], start_idx: usize) -> u32 {
     (idx - start_idx) as u32
 }
 
-fn trim_left(bins: &mut SmallVec<[Bin; 4]>, bin_limit: u16) {
+fn trim_left(keys: &mut SmallVec<[i16; 4]>, counts: &mut SmallVec<[u16; 4]>, bin_limit: u16) {
     // We won't ever support Vector running on anything other than a 32-bit platform and above, I imagine, so this
     // should always be safe.
     let bin_limit = bin_limit as usize;
-    if bin_limit == 0 || bins.len() < bin_limit {
+    if bin_limit == 0 || keys.len() < bin_limit {
         return;
     }
 
-    let num_to_remove = bins.len() - bin_limit;
+    let num_to_remove = keys.len() - bin_limit;
     let mut missing = 0;
-    let mut overflow = SmallVec::<[Bin; 4]>::new();
+    let mut overflow_keys = SmallVec::<[i16; 4]>::new();
+    let mut overflow_counts = SmallVec::<[u16; 4]>::new();
 
-    for bin in bins.iter().take(num_to_remove) {
-        missing += u32::from(bin.n);
+    for idx in 0..num_to_remove {
+        missing += u32::from(counts[idx]);
 
         if missing > u32::from(MAX_BIN_WIDTH) {
-            overflow.push(Bin {
-                k: bin.k,
-                n: MAX_BIN_WIDTH,
-            });
+            overflow_keys.push(keys[idx]);
+            overflow_counts.push(MAX_BIN_WIDTH);
 
             missing -= u32::from(MAX_BIN_WIDTH);
         }
     }
 
-    let bin_remove = &mut bins[num_to_remove];
-    missing = bin_remove.increment(missing);
+    // todo: check below here for correct operation
+    let bin_remove_idx = num_to_remove;
+    missing = increment_count(&mut counts[bin_remove_idx], missing);
     if missing > 0 {
-        generate_bins(&mut overflow, bin_remove.k, missing);
+        generate_bins(&mut overflow_keys, &mut overflow_counts, keys[bin_remove_idx], missing);
     }
 
-    let overflow_len = overflow.len();
-    let (_, bins_end) = bins.split_at(num_to_remove);
-    overflow.extend_from_slice(bins_end);
+    let keys_end = &keys[bin_remove_idx..];
+    let counts_end = &counts[bin_remove_idx..];
+    overflow_keys.extend_from_slice(keys_end);
+    overflow_counts.extend_from_slice(counts_end);
 
     // I still don't yet understand how this works, since you'd think bin limit should be the overall limit of the
     // number of bins, but we're allowing more than that.. :thinkies:
-    overflow.truncate(bin_limit + overflow_len);
+    overflow_keys.truncate(bin_limit + overflow_keys.len());
+    overflow_counts.truncate(bin_limit + overflow_counts.len());
 
-    mem::swap(bins, &mut overflow);
+    *keys = overflow_keys;
+    *counts = overflow_counts;
+}
+
+fn increment_count(count: &mut u16, n: u32) -> u32 {
+    let next = n + u32::from(*count);
+    if next > u32::from(MAX_BIN_WIDTH) {
+        *count = MAX_BIN_WIDTH;
+        next - u32::from(MAX_BIN_WIDTH)
+    } else {
+        *count = next as u16;
+        0
+    }
 }
 
 #[allow(clippy::cast_possible_truncation)]
-fn generate_bins(bins: &mut SmallVec<[Bin; 4]>, k: i16, n: u32) {
+fn generate_bins(keys: &mut SmallVec<[i16; 4]>, counts: &mut SmallVec<[u16; 4]>, k: i16, n: u32) {
     if n < u32::from(MAX_BIN_WIDTH) {
+        keys.push(k);
         // SAFETY: Cannot truncate `n`, as it's less than a u16 value.
-        bins.push(Bin { k, n: n as u16 });
+        counts.push(n as u16);
     } else {
         let overflow = n % u32::from(MAX_BIN_WIDTH);
         if overflow != 0 {
-            bins.push(Bin {
-                k,
-                // SAFETY: Cannot truncate `overflow`, as it's modulo'd by a u16 value.
-                n: overflow as u16,
-            });
+            keys.push(k);
+            // SAFETY: Cannot truncate `overflow`, as it's modulo'd by a u16 value.
+            counts.push(overflow as u16);
         }
 
         for _ in 0..(n / u32::from(MAX_BIN_WIDTH)) {
-            bins.push(Bin { k, n: MAX_BIN_WIDTH });
+            keys.push(k);
+            counts.push(MAX_BIN_WIDTH);
         }
     }
 }
@@ -1144,7 +1181,7 @@ mod tests {
         assert_eq!(actual.min(), expected.min());
         assert_eq!(actual.max(), expected.max());
         assert_eq!(actual.count(), expected.count());
-        assert_eq!(actual.bins(), expected.bins());
+        assert_eq!(actual.bins().collect::<Vec<_>>(), expected.bins().collect::<Vec<_>>());
     }
 
     #[test]
@@ -1268,7 +1305,12 @@ mod tests {
                 }
 
                 let expected = parse_sketch_from_string_bins(case.expected);
-                assert_eq!(expected.bins(), sketch.bins(), "{}", case.description);
+                assert_eq!(
+                    expected.bins().collect::<Vec<_>>(),
+                    sketch.bins().collect::<Vec<_>>(),
+                    "{}",
+                    case.description
+                );
             }
         }
     }
@@ -1289,10 +1331,10 @@ mod tests {
 
             assert_eq!(expected.count(), case.count);
             assert_eq!(actual.count(), case.count);
-            assert_eq!(actual.bins(), expected.bins());
+            assert_eq!(actual.bins().collect::<Vec<_>>(), expected.bins().collect::<Vec<_>>());
             compare_sketches(actual, &expected, case.allowed_err);
 
-            let actual_count: u32 = actual.bins.iter().map(|b| u32::from(b.n)).sum();
+            let actual_count: u32 = actual.bins().map(|b| u32::from(b.n)).sum();
             assert_eq!(actual_count, case.count);
         };
 

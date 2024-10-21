@@ -19,10 +19,10 @@ fn test_one_thousand_single_points_ddsketch() {
     insert_many_and_serialize(&points);
     let stats = dhat::HeapStats::get();
 
-    dhat::assert_eq!(stats.total_blocks, 21);
-    dhat::assert_eq!(stats.total_bytes, 8080);
+    dhat::assert_eq!(stats.total_blocks, 15);
+    dhat::assert_eq!(stats.total_bytes, 5736);
     dhat::assert_eq!(stats.max_blocks, 3);
-    dhat::assert_eq!(stats.max_bytes, 3072);
+    dhat::assert_eq!(stats.max_bytes, 3024);
     dhat::assert_eq!(stats.curr_blocks, 0);
     dhat::assert_eq!(stats.curr_bytes, 0);
 }
