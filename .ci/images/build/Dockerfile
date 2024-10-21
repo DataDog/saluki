@@ -13,6 +13,38 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 ENV PATH="/usr/lib/binutils-2.26/bin:${PATH}"
 
+# Do python schenanigans
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    build-essential \
+    libssl-dev \
+    zlib1g-dev \
+    libncurses5-dev \
+    libncursesw5-dev \
+    libreadline-dev \
+    libsqlite3-dev \
+    libgdbm-dev \
+    libdb5.3-dev \
+    libbz2-dev \
+    libexpat1-dev \
+    liblzma-dev \
+    tk-dev \
+    wget && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV PYTHON_VERSION=3.12.6
+RUN wget https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz && \
+    tar -xzf Python-${PYTHON_VERSION}.tgz && \
+    cd Python-${PYTHON_VERSION} && \
+    ./configure --enable-optimizations && \
+    make -j$(nproc) && \
+    make altinstall && \
+    cd .. && \
+    rm -rf Python-${PYTHON_VERSION} Python-${PYTHON_VERSION}.tgz
+
+ENV PYTHON_HOME=/usr/local
+ENV PATH="${PYTHON_HOME}/bin:${PATH}"
+
 # Install Go, which we need to build AWS-LC in FIPS-compliant mode.
 ENV PATH="/usr/local/go/bin:${PATH}"
 RUN curl -s -L -o /tmp/go-1.23.0.tar.gz https://go.dev/dl/go1.23.0.linux-${TARGETARCH}.tar.gz
@@ -35,7 +67,7 @@ RUN rustup toolchain add nightly && \
 # Pre-install the relevant Cargo tools we use in the build process.
 COPY ./Makefile /
 RUN make cargo-preinstall
-    
+
 COPY .ci/images/build/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT [ "/entrypoint.sh" ]
