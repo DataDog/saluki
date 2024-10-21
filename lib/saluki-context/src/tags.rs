@@ -12,6 +12,14 @@ impl Tag {
         Self(MetaString::empty())
     }
 
+    /// Creates new tag with the given value.
+    pub fn new<S>(s: S) -> Self
+    where
+        S: Into<MetaString>,
+    {
+        Self(s.into())
+    }
+
     /// Returns `true` if the tag is empty.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
@@ -131,6 +139,11 @@ impl<'a> From<&'a str> for BorrowedTag<'a> {
 pub struct TagSet(Vec<Tag>);
 
 impl TagSet {
+    /// Creates a new tag set from the provided Vec
+    pub fn new(tags: Vec<Tag>) -> Self {
+        Self(tags)
+    }
+
     /// Creates a new, empty tag set with the given capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self(Vec::with_capacity(capacity))

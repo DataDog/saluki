@@ -3,23 +3,27 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::Counter;
 use pyo3::prelude::*;
 use saluki_config::GenericConfiguration;
+use saluki_context::{Context, Tag, TagSet};
+use saluki_core::pooling::ObjectPool;
 use saluki_core::{
-    components::{metrics::MetricsBuilder, Source, SourceBuilder, SourceContext},
+    components::{
+        sources::{Source, SourceBuilder, SourceContext},
+        MetricsBuilder,
+    },
     topology::{
         shutdown::{ComponentShutdownHandle, DynamicShutdownCoordinator, DynamicShutdownHandle},
         OutputDefinition,
     },
 };
-use saluki_env::time::get_unix_timestamp;
 use saluki_error::{generic_error, GenericError};
 use saluki_event::{metric::*, DataType, Event};
 use serde::Deserialize;
 use snafu::Snafu;
+use std::collections::HashSet;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
 };
-use std::{collections::HashSet, io};
 use std::{fmt::Display, time::Duration};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, error, info, trace, warn};
@@ -31,19 +35,7 @@ mod python_scheduler;
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 enum Error {
-    #[snafu(display("Directory incorrect"))]
-    DirectoryIncorrect {
-        source: io::Error,
-    },
-    CantReadConfiguration {
-        source: serde_yaml::Error,
-    },
-    NoSourceAvailable {
-        reason: String,
-    },
-    Python {
-        reason: String,
-    },
+    CantReadConfiguration { source: serde_yaml::Error },
 }
 /// Checks source.
 ///
@@ -422,6 +414,7 @@ pub struct ChecksTelemetry {
     check_instances_started: Counter,
 }
 
+#[cfg(test)]
 impl ChecksTelemetry {
     fn noop() -> Self {
         Self {
@@ -484,7 +477,10 @@ impl Checks {
                     info!("Received check metric: {:?}", check_metric);
                     let mut event_buffer = context.event_buffer_pool().acquire().await;
                     let event: Event = check_metric.try_into().expect("can't convert");
-                    event_buffer.push(event);
+                    if let Some(_unsent) = event_buffer.try_push(event) {
+                        error!("Event buffer full, dropping event");
+                        continue;
+                    }
                     if let Err(e) = context.forwarder().forward(event_buffer).await {
                         error!(error = %e, "Failed to forward check metrics.");
                     }
@@ -518,9 +514,7 @@ impl Checks {
 #[async_trait]
 impl Source for Checks {
     async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), ()> {
-        let global_shutdown = context
-            .take_shutdown_handle()
-            .expect("should never fail to take shutdown handle");
+        let global_shutdown = context.take_shutdown_handle();
         match self.run_inner(context, global_shutdown).await {
             Ok(_) => Ok(()),
             Err(e) => {
@@ -641,20 +635,24 @@ impl TryInto<Event> for CheckMetric {
     type Error = AggregatorError;
 
     fn try_into(self) -> Result<Event, Self::Error> {
-        let tags: MetricTags = self.tags.into();
+        // Convert Vec<String> to Vec<Tag>
+        let tags: Vec<Tag> = self.tags.into_iter().map(Tag::new).collect();
 
-        let context = MetricContext { name: self.name, tags };
-        let metadata = MetricMetadata::from_timestamp(get_unix_timestamp());
+        // Convert Vec<Tag> to TagSet
+        let tagset: TagSet = TagSet::new(tags);
+
+        let context = Context::from_parts(self.name, tagset);
+        let metadata = MetricMetadata::default();
 
         match self.metric_type {
             PyMetricType::Gauge => Ok(saluki_event::Event::Metric(Metric::from_parts(
                 context,
-                MetricValue::Gauge { value: self.value },
+                MetricValues::gauge(self.value),
                 metadata,
             ))),
             PyMetricType::Counter => Ok(saluki_event::Event::Metric(Metric::from_parts(
                 context,
-                MetricValue::Counter { value: self.value },
+                MetricValues::counter(self.value),
                 metadata,
             ))),
             // TODO(remy): rest of the types

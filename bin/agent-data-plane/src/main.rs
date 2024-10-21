@@ -150,8 +150,8 @@ fn create_topology(
     // basically this _only_ does metric aggregation rules, no time rules.
     // flushing is similar to current behavior, just need to think about 'counter' resets
     // for now, just use time windows, if we make each window shorter than the check interval, it should be fine
-    let checks_agg_config = AggregateConfiguration::from_window(Duration::from_secs(15));
-    let check_config = ChecksConfiguration::from_configuration(&configuration)?;
+    let checks_agg_config = AggregateConfiguration::with_defaults();
+    let check_config = ChecksConfiguration::from_configuration(configuration)?;
 
     let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
     let origin_enrichment_config = OriginEnrichmentConfiguration::from_configuration(configuration)
@@ -183,7 +183,6 @@ fn create_topology(
         .connect_component("checks_agg", ["checks_in"])?
         .connect_component("internal_metrics_remap", ["internal_metrics_in"])?
         .connect_component("internal_metrics_agg", ["internal_metrics_remap"])?
-        .connect_component("enrich", ["dsd_agg", "internal_metrics_agg", ""])?
         .connect_component("dd_metrics_out", ["enrich"])?
         .connect_component("enrich", ["dsd_agg", "internal_metrics_agg", "checks_agg"])?
         .connect_component(
