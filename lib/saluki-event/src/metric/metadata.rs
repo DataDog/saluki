@@ -1,6 +1,5 @@
 use std::{fmt, num::NonZeroU32, sync::Arc};
 
-use ordered_float::OrderedFloat;
 use serde::Deserialize;
 use stringtheory::MetaString;
 
@@ -160,22 +159,14 @@ impl OriginEntity {
 /// Metadata includes all information that is not specifically related to the context or value of the metric itself,
 /// such as sample rate and timestamp.
 #[must_use]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MetricMetadata {
-    sample_rate: OrderedFloat<f64>,
     hostname: Option<Arc<str>>,
     origin_entity: OriginEntity,
     origin: Option<MetricOrigin>,
 }
 
 impl MetricMetadata {
-    /// Gets the sample rate.
-    ///
-    /// This value is between 0 and 1, inclusive.
-    pub fn sample_rate(&self) -> f64 {
-        *self.sample_rate
-    }
-
     /// Gets the hostname.
     pub fn hostname(&self) -> Option<&str> {
         self.hostname.as_deref()
@@ -194,25 +185,6 @@ impl MetricMetadata {
     /// Gets a mutable reference to the origin entity.
     pub fn origin_entity_mut(&mut self) -> &mut OriginEntity {
         &mut self.origin_entity
-    }
-
-    /// Set the sample rate.
-    ///
-    /// This value must be between 0 and 1, inclusive. If the value is outside of this range, it will be clamped to fit.
-    ///
-    /// This variant is specifically for use in builder-style APIs.
-    pub fn with_sample_rate(mut self, sample_rate: impl Into<Option<f64>>) -> Self {
-        self.set_sample_rate(sample_rate);
-        self
-    }
-
-    /// Set the sample rate.
-    ///
-    /// This value must be between 0 and 1, inclusive. If the value is outside of this range, it will be clamped to fit.
-    pub fn set_sample_rate(&mut self, sample_rate: impl Into<Option<f64>>) {
-        if let Some(sample_rate) = sample_rate.into().map(|sr| sr.clamp(0.0, 1.0)) {
-            self.sample_rate = OrderedFloat(sample_rate);
-        }
     }
 
     /// Set the hostname where the metric originated from.
@@ -273,21 +245,8 @@ impl MetricMetadata {
     }
 }
 
-impl Default for MetricMetadata {
-    fn default() -> Self {
-        Self {
-            sample_rate: OrderedFloat(1.0),
-            hostname: None,
-            origin_entity: OriginEntity::default(),
-            origin: None,
-        }
-    }
-}
-
 impl fmt::Display for MetricMetadata {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "sample_rate={}", self.sample_rate)?;
-
         if let Some(origin) = &self.origin {
             write!(f, " origin={}", origin)?;
         }

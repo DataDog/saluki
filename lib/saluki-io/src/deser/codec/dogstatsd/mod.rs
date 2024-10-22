@@ -25,6 +25,15 @@ use crate::net::ConnectionAddress;
 
 type NomParserError<'a> = nom::Err<nom::error::Error<&'a [u8]>>;
 
+enum MetricType {
+    Count,
+    Gauge,
+    Set,
+    Timer,
+    Histogram,
+    Distribution,
+}
+
 /// DogStatsD codec configuration.
 #[derive(Clone, Debug)]
 pub struct DogstatsdCodecConfiguration {
@@ -159,8 +168,8 @@ fn parse_dogstatsd_metric<'a>(
 ) -> IResult<&'a [u8], MetricPacket<'a>> {
     // We always parse the metric name and value(s) first, where value is both the kind (counter, gauge, etc) and the
     // actual value itself.
-    let (remaining, (metric_name, mut metric_values)) =
-        separated_pair(ascii_alphanum_and_seps, tag(":"), metric_values)(input)?;
+    let (remaining, (metric_name, (metric_type, raw_metric_values))) =
+        separated_pair(ascii_alphanum_and_seps, tag(":"), raw_metric_values)(input)?;
 
     // At this point, we may have some of this additional data, and if so, we also then would have a pipe separator at
     // the very front, which we'd want to consume before going further.
@@ -222,6 +231,8 @@ fn parse_dogstatsd_metric<'a>(
         remaining
     };
 
+    let mut metric_values = metric_values_from_raw(raw_metric_values, metric_type, maybe_sample_rate)?;
+
     // If we got a timestamp, apply it to all metric values.
     if let Some(timestamp) = maybe_timestamp {
         metric_values.set_timestamp(timestamp);
@@ -250,9 +261,7 @@ pub struct MetricPacket<'a> {
 }
 
 pub fn build_metric_metadata_from_packet(packet: &MetricPacket<'_>, peer_addr: &ConnectionAddress) -> MetricMetadata {
-    let mut metric_metadata = MetricMetadata::default()
-        .with_sample_rate(packet.sample_rate)
-        .with_origin(MetricOrigin::dogstatsd());
+    let mut metric_metadata = MetricMetadata::default().with_origin(MetricOrigin::dogstatsd());
 
     if let Some(container_id) = packet.container_id {
         metric_metadata.origin_entity_mut().set_container_id(container_id);
@@ -515,7 +524,7 @@ fn ascii_alphanum_and_seps(input: &[u8]) -> IResult<&[u8], &str> {
 }
 
 #[inline]
-fn metric_values(input: &[u8]) -> IResult<&[u8], MetricValues> {
+fn raw_metric_values(input: &[u8]) -> IResult<&[u8], (MetricType, &[u8])> {
     let (remaining, raw_values) = terminated(take_while1(|b| b != b'|'), tag("|"))(input)?;
     let (remaining, raw_kind) = alt((tag(b"g"), tag(b"c"), tag(b"ms"), tag(b"h"), tag(b"s"), tag(b"d")))(remaining)?;
 
@@ -524,25 +533,41 @@ fn metric_values(input: &[u8]) -> IResult<&[u8], MetricValues> {
         return Err(nom::Err::Error(Error::new(raw_values, ErrorKind::Verify)));
     }
 
-    let floats = FloatIter::new(raw_values);
-    let values = match raw_kind {
-        b"s" => {
-            // SAFETY: We've already checked above that `raw_values` is valid UTF-8.
-            let value = unsafe { std::str::from_utf8_unchecked(raw_values) };
-            MetricValues::set(value.to_string())
+    let metric_type = match raw_kind {
+        b"c" => MetricType::Count,
+        b"g" => MetricType::Gauge,
+        b"s" => MetricType::Set,
+        b"ms" => MetricType::Timer,
+        b"h" => MetricType::Histogram,
+        b"d" => MetricType::Distribution,
+        _ => unreachable!("should be constrained by alt parser"),
+    };
+
+    Ok((remaining, (metric_type, raw_values)))
+}
+
+#[inline]
+fn metric_values_from_raw(
+    input: &[u8], metric_type: MetricType, sample_rate: Option<f64>,
+) -> Result<MetricValues, NomParserError<'_>> {
+    let floats = FloatIter::new(input);
+    match metric_type {
+        MetricType::Count => MetricValues::counter_sampled_fallible(floats, sample_rate),
+        MetricType::Gauge => MetricValues::gauge_fallible(floats),
+        MetricType::Set => {
+            // SAFETY: We've already checked above that `input` is valid UTF-8.
+            let value = unsafe { std::str::from_utf8_unchecked(input) };
+            Ok(MetricValues::set(value.to_string()))
         }
         // TODO: We're handling distributions 100% correctly, but we're taking a shortcut here by also handling
         // timers/histograms directly as distributions.
         //
         // We need to figure out if this is OK or if we need to keep them separate and only convert up at the source
         // level based on configuration or something.
-        b"ms" | b"h" | b"d" => MetricValues::distribution_fallible(floats)?,
-        b"g" => MetricValues::gauge_fallible(floats)?,
-        b"c" => MetricValues::counter_fallible(floats)?,
-        _ => return Err(nom::Err::Error(Error::new(raw_kind, ErrorKind::Char))),
-    };
-
-    Ok((remaining, values))
+        MetricType::Timer | MetricType::Histogram | MetricType::Distribution => {
+            MetricValues::distribution_sampled_fallible(floats, sample_rate)
+        }
+    }
 }
 
 #[inline]
@@ -904,11 +929,22 @@ mod tests {
         let value = 1.0;
         let sample_rate = 0.5;
         let raw = format!("{}:{}|c|@{}", name, value, sample_rate);
-        let mut expected = Metric::counter(name, value);
-        expected.metadata_mut().set_sample_rate(sample_rate);
+
+        let value_sample_rate_adjusted = value * (1.0 / sample_rate);
+        let expected = Metric::counter(name, value_sample_rate_adjusted);
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
-        check_basic_metric_eq(expected, actual);
+        let actual = check_basic_metric_eq(expected, actual);
+        let values = match actual.values() {
+            MetricValues::Counter(values) => values
+                .into_iter()
+                .map(|(ts, v)| (ts.map(|v| v.get()).unwrap_or(0), v))
+                .collect::<Vec<_>>(),
+            _ => panic!("expected counter values"),
+        };
+
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0], (0, value_sample_rate_adjusted));
     }
 
     #[test]
@@ -957,8 +993,9 @@ mod tests {
             container_id,
             timestamp
         );
-        let mut expected = Metric::counter((name, &tags[..]), value);
-        expected.metadata_mut().set_sample_rate(sample_rate);
+
+        let value_sample_rate_adjusted = value * (1.0 / sample_rate);
+        let mut expected = Metric::counter((name, &tags[..]), value_sample_rate_adjusted);
         expected
             .metadata_mut()
             .origin_entity_mut()
@@ -967,16 +1004,16 @@ mod tests {
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
         let actual = check_basic_metric_eq(expected, actual);
-        let value_timestamps = match actual.values() {
+        let values = match actual.values() {
             MetricValues::Counter(values) => values
                 .into_iter()
-                .map(|(ts, _)| ts.map(|v| v.get()).unwrap_or(0))
+                .map(|(ts, v)| (ts.map(|v| v.get()).unwrap_or(0), v))
                 .collect::<Vec<_>>(),
             _ => panic!("expected counter values"),
         };
 
-        assert_eq!(value_timestamps.len(), 1);
-        assert_eq!(value_timestamps[0], timestamp);
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0], (timestamp, value_sample_rate_adjusted));
     }
 
     #[test]
