@@ -14,5 +14,19 @@ FROM ${DD_AGENT_IMAGE}
 # Copy the ADP binary and all of the required licensing bits.
 COPY --from=adp /usr/local/bin/agent-data-plane /opt/datadog-agent/embedded/bin/agent-data-plane
 COPY --from=adp /opt/datadog/agent-data-plane /opt/datadog/
+# make embedded lib path available to the system
+RUN echo "/opt/datadog-agent/embedded/lib/" > /etc/ld.so.conf.d/datadog-agent.conf
+RUN ldconfig
+
+# Create the ADP s6 service directory
+RUN mkdir -p /etc/services.d/adp
+
+# Copy the run and finish scripts
+
+COPY .ci/s6/adp-run /etc/services.d/adp/run
+COPY .ci/s6/adp-finish /etc/services.d/adp/finish
+
+# Ensure the scripts are executable
+RUN chmod +x /etc/services.d/adp/run /etc/services.d/adp/finish
 
 # Everything else we'll leave at the defaults of the Datadog Agent image.

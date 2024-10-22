@@ -28,7 +28,8 @@ use crate::workload::{
 };
 
 const DEFAULT_AGENT_IPC_ENDPOINT: &str = "https://127.0.0.1:5001";
-const DEFAULT_AGENT_AUTH_TOKEN_FILE_PATH: &str = "/etc/datadog-agent/auth/token";
+const DEFAULT_AGENT_AUTH_TOKEN_FILE_PATHS: &[&str] =
+    &["/etc/datadog-agent/auth/token", "/etc/datadog-agent/auth_token"];
 
 /// A workload provider that uses the remote tagger API from a Datadog Agent, or Datadog Cluster
 /// Agent, to provide workload information.
@@ -62,9 +63,20 @@ impl RemoteAgentMetadataCollector {
             }
         };
 
-        let token_path = config
-            .try_get_typed::<String>("auth_token_file_path")?
-            .unwrap_or_else(|| DEFAULT_AGENT_AUTH_TOKEN_FILE_PATH.to_string());
+        // Improved code to support multiple default file paths, testing each for existence
+        let token_path = match config.try_get_typed::<String>("auth_token_file_path")? {
+            Some(path) => path,
+            None => DEFAULT_AGENT_AUTH_TOKEN_FILE_PATHS
+                .iter()
+                .find(|path| std::fs::metadata(path).is_ok())
+                .map(|s| s.to_string())
+                .ok_or_else(|| {
+                    generic_error!(
+                        "None of the default auth token file paths exist: {:?}",
+                        DEFAULT_AGENT_AUTH_TOKEN_FILE_PATHS
+                    )
+                })?,
+        };
 
         let bearer_token_interceptor =
             BearerAuthInterceptor::from_file(&token_path)

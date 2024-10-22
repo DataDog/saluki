@@ -110,6 +110,9 @@ impl RemoteAgentWorkloadProvider {
         // Finally, add the Remote Agent collector.
         let collector_health = health_registry.register_component("env_provider.workload.remote_agent.collector.remote-agent")
                 .ok_or_else(|| generic_error!("Component 'env_provider.workload.remote_agent.collector.remote-agent' already registered in health registry."))?;
+
+        // TODO add a retry here if the agent is not available
+        // This is in the hot-path for startup, so it should only wait a few seconds
         let ra_collector =
             RemoteAgentMetadataCollector::from_configuration(config, collector_health, string_interner).await?;
         collector_bounds.with_subcomponent("remote-agent", &ra_collector);
