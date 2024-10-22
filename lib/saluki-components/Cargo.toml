@@ -9,6 +9,7 @@ repository = { workspace = true }
 ahash = { workspace = true }
 async-compression = { workspace = true, features = ["tokio", "zlib"] }
 async-trait = { workspace = true }
+async-walkdir = { workspace = true }
 bitmask-enum = { workspace = true }
 bytes = { workspace = true }
 bytesize = { workspace = true }
@@ -31,6 +32,7 @@ nom = { workspace = true }
 paste = { workspace = true }
 pin-project = { workspace = true }
 protobuf = { workspace = true }
+pyo3 = { workspace = true, features = ["anyhow"] }
 quanta = { workspace = true }
 rustls = { workspace = true }
 saluki-config = { workspace = true }
@@ -42,12 +44,18 @@ saluki-event = { workspace = true }
 saluki-io = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 slab = { workspace = true }
 smallvec = { workspace = true }
 snafu = { workspace = true }
 stringtheory = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
 tokio-util = { workspace = true }
 tower = { workspace = true, features = ["retry", "timeout", "util"] }
 tracing = { workspace = true }
+tracing-test = { workspace = true }
 url = { workspace = true }
+wasmtime = { workspace = true }
+wasmtime-wasi = { workspace = true }
+

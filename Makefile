@@ -420,6 +420,33 @@ endif
 fast-edit-test: fmt sync-licenses check-clippy check-deny check-licenses test-all
 fast-edit-test: ## Runs a lightweight format/lint/test pass
 
+## Sets up a basic Python check for local development
+.PHONY: gen-testing-pychecks
+gen-testing-pychecks: ## Sets up a basic Python check for local development
+ifeq ($(shell test -f dist/checks.d/simple.py || echo not-found), not-found)
+	@echo "from datadog_checks.checks import AgentCheck\n" > dist/checks.d/simple.py
+	@echo "class SimpleCheck(AgentCheck):" >> dist/checks.d/simple.py
+	@echo "    def __init__(self, name, init_config, instances):" >> dist/checks.d/simple.py
+	@echo "        super(SimpleCheck, self).__init__(name, init_config, instances)" >> dist/checks.d/simple.py
+	@echo "        print(\"Init config: {}\".format(init_config))\n" >> dist/checks.d/simple.py
+	@echo "    def check(self, instance):" >> dist/checks.d/simple.py
+	@echo "        self.gauge('computed_value', 42, tags=['hello:world', 'argument:{}'.format(instance.get('argument'))])" >> dist/checks.d/simple.py
+	@echo "[*] Created dist/checks.d/simple.py"
+endif
+ifeq ($(shell test -f dist/conf.d/simple.yaml || echo not-found), not-found)
+	@echo "init_config:\n\ninstances:\n  - argument: value" > dist/conf.d/simple.yaml
+	@echo "[*] Created dist/conf.d/simple.yaml with TODO stub"
+endif
+ifeq ($(shell test -d checks_venv || echo not-found), not-found)
+	@echo "[*] Initializing Python virtual environment..."
+	@python3 -m venv checks_venv
+	@. checks_venv/bin/activate
+	@pip install datadog_checks_base
+	@pip install datadog_checks_base[deps]
+	@echo "[*] Installed datadog-checks-dev in virtual environment"
+endif
+
+
 ##@ Utility
 
 .PHONY: clean
@@ -450,7 +477,7 @@ sync-licenses: ## Synchronizes the third-party license file with the current cra
 	@$(HOME)/.cargo/bin/dd-rust-license-tool write
 
 .PHONY: cargo-preinstall
-cargo-preinstall: cargo-install-dd-rust-license-tool cargo-install-cargo-deny cargo-install-cargo-hack 
+cargo-preinstall: cargo-install-dd-rust-license-tool cargo-install-cargo-deny cargo-install-cargo-hack
 cargo-preinstall: cargo-install-cargo-nextest cargo-install-cargo-autoinherit cargo-install-cargo-sort
 cargo-preinstall: ## Pre-installs all necessary Cargo tools (used for CI)
 	@echo "[*] Pre-installed all necessary Cargo tools!"

@@ -42,6 +42,22 @@ All remaining crates are part of Saluki itself, and all have a name with the pre
 - `lib/saluki-io`: core I/O primitives for networking (TCP/UDP/UDS), serialization (codecs and framers), compression,
   I/O-specific buffers, as well as some common codec implementations (e.g. DogStatsD)
 
+### Saluki Components
+#### Checks
+Python checks can be loaded and executed from the active venv via yaml config files in `./dist/conf.d`.
+
+Local python checks can be placed in `./dist/foo.py` and configured via `./dist/conf.d/foo.yaml`.
+
+pyo3 is used to provide python support, which works off of your system's python
+install, `sudo apt install libpython3-devel` (todo double check the package name)
+
+#### Getting Started With Checks
+`make gen-testing-pychecks` will generate a simple python check and setup a
+virtualenv that includes the base-clases for python checks.
+
+The venv is at `check_venv` and should be activated manually before running
+saluki.
+
 ## Contributing
 
 If you find an issue with this package and have a fix, or simply want to report it, please review our
