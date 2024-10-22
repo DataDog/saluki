@@ -1,9 +1,6 @@
 seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
-target: "unix:///airlock/metrics.sock"
-volume:
-  size:
-    mode: count
-    value: 10000
+target: "unixgram:///airlock/metrics.sock"
+volume: 10000
 corpus:
   # TODO: This is a little confusing, because we're specifying the number of metrics to generate (which we _will_
   # honor faithfully) but since we're specifying the contexts count in the payload definition, we might not
@@ -12,9 +9,7 @@ corpus:
   #
   # We need to figure that out, since the intent is that specifying a fixed count should lead to that many metrics
   # (and no more) being generated, such that you could depend on that for testing purposes.
-  size:
-    mode: count
-    value: 10000
+  size: 10000
   payload:
     dogstatsd:
       contexts:
@@ -31,6 +26,12 @@ corpus:
         inclusive:
           min: 2
           max: 8
+      value:
+        float_probability: 0.5
+        range:
+          inclusive:
+            min: -9999999
+            max: 9999999
       multivalue_count:
         inclusive:
           min: 2
@@ -46,5 +47,10 @@ corpus:
         gauge: 66
         timer: 0
         distribution: 72
-        set: 9
+        # We specifically _don't_ want to generate sets, because we can't assert their correctness once they've been
+        # aggregated: a gauge is generated for each aggregator flush that represents the unique number of values in a
+        # given set, but in general, gauges are meant to be last-write-wins, so unless the metric names/tags can
+        # indicate that they're for a set, we can't know that it's safe for us to _aggregate_ the gauge values, and with
+        # our default behavior of taking the latest gauge value... we end up with non-deterministic results.
+        set: 0
         histogram: 1

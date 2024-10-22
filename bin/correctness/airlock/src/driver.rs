@@ -2,11 +2,11 @@ use std::{
     collections::HashMap,
     fmt,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bollard::{
-    container::{Config, CreateContainerOptions, LogOutput, LogsOptions},
+    container::{Config, CreateContainerOptions, ListContainersOptions, LogOutput, LogsOptions},
     errors::Error,
     image::CreateImageOptions,
     models::{HealthConfig, HealthStatusEnum, HostConfig, Ipam},
@@ -277,7 +277,7 @@ pub struct Driver {
     container_name: String,
     config: DriverConfig,
     docker: Docker,
-    log_base_dir: Option<PathBuf>,
+    log_dir: Option<PathBuf>,
 }
 
 impl Driver {
@@ -299,7 +299,7 @@ impl Driver {
     ///
     /// # Errors
     ///
-    /// If the Docker client cannot be created/configured, and error will be returned.
+    /// If the Docker client cannot be created/configured, an error will be returned.
     pub fn from_config(isolation_group_id: String, config: DriverConfig) -> Result<Self, GenericError> {
         let docker = Docker::connect_with_local_defaults()?;
 
@@ -309,7 +309,7 @@ impl Driver {
             isolation_group_id,
             config,
             docker,
-            log_base_dir: None,
+            log_dir: None,
         })
     }
 
@@ -318,8 +318,8 @@ impl Driver {
     /// The logs will be stored in the given directory, under a subdirectory named after the isolation group ID. Each
     /// container will get a log for standard output and standard error, following the pattern of `<container
     /// name>.[stdout|stderr].log`.
-    pub fn with_logging(mut self, log_base_dir: PathBuf) -> Self {
-        self.log_base_dir = Some(log_base_dir);
+    pub fn with_logging(mut self, log_dir: PathBuf) -> Self {
+        self.log_dir = Some(log_dir);
         self
     }
 
@@ -328,6 +328,76 @@ impl Driver {
     /// This is generally a shorthand of the application/service, such as `dogstatsd` or `millstone`.
     pub fn driver_id(&self) -> &'static str {
         self.config.driver_id
+    }
+
+    /// Clean up any containers, networks, and volumes related to the given isolation group ID.
+    ///
+    /// This is a free function to facilitate cleaning up resources after a number of drivers are run.
+    ///
+    /// # Errors
+    ///
+    /// If the Docker client cannot be created/configured, or there is an error when finding or removing any of the
+    /// related resources, an error will be returned.
+    pub async fn clean_related_resources(isolation_group_id: String) -> Result<(), GenericError> {
+        let docker = Docker::connect_with_local_defaults()?;
+
+        let isolation_group_name = format!("airlock-{}", isolation_group_id);
+        let isolation_group_label = format!("airlock-isolation-group={}", isolation_group_id);
+
+        // Remove any containers related to the isolation group. We do so forcefully.
+        let list_options = Some(ListContainersOptions {
+            all: true,
+            filters: vec![("label", vec!["created_by=airlock", isolation_group_label.as_str()])]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        });
+        let containers = docker.list_containers(list_options).await.with_error_context(|| {
+            format!(
+                "Failed to list containers attached to isolation group '{}'.",
+                isolation_group_id
+            )
+        })?;
+
+        for container in containers {
+            let container_name = match container.id {
+                Some(id) => id,
+                None => {
+                    debug!("Listed container had no ID. Skipping removal.");
+                    continue;
+                }
+            };
+
+            if let Err(e) = docker.stop_container(container_name.as_str(), None).await {
+                error!(error = %e, "Failed to stop container '{}'.", container_name);
+                continue;
+            } else {
+                debug!("Stopped container '{}'.", container_name);
+            }
+
+            if let Err(e) = docker.remove_container(container_name.as_str(), None).await {
+                error!(error = %e, "Failed to remove container '{}'.", container_name);
+                continue;
+            } else {
+                debug!("Removed container '{}'.", container_name);
+            }
+        }
+
+        // Remove the shared volume.
+        if let Err(e) = docker.remove_volume(isolation_group_name.as_str(), None).await {
+            error!(error = %e, "Failed to remove shared volume '{}'.", isolation_group_name);
+        } else {
+            debug!("Removed shared volume '{}'.", isolation_group_name);
+        }
+
+        // Remove the network.
+        if let Err(e) = docker.remove_network(isolation_group_name.as_str()).await {
+            error!(error = %e, "Failed to remove shared network '{}'.", isolation_group_name);
+        } else {
+            debug!("Removed shared network '{}'.", isolation_group_name);
+        }
+
+        Ok(())
     }
 
     async fn create_network_if_missing(&self) -> Result<(), GenericError> {
@@ -350,12 +420,12 @@ impl Driver {
 
         // Create the network since it doesn't yet exist.
         let network_options = CreateNetworkOptions {
-            name: self.isolation_group_name.as_str(),
+            name: self.isolation_group_name.clone(),
             check_duplicate: true,
-            driver: "bridge",
+            driver: "bridge".to_string(),
             ipam: Ipam::default(),
             enable_ipv6: false,
-            labels: get_default_airlock_labels(),
+            labels: get_default_airlock_labels(self.isolation_group_id.as_str()),
             ..Default::default()
         };
         let response = self.docker.create_network(network_options).await?;
@@ -433,7 +503,7 @@ impl Driver {
         let volume_options = CreateVolumeOptions {
             name: self.isolation_group_name.clone(),
             driver: "local".to_string(),
-            labels: get_default_airlock_labels(),
+            labels: get_default_airlock_labels(self.isolation_group_id.as_str()),
             ..Default::default()
         };
         self.docker.create_volume(volume_options).await?;
@@ -511,7 +581,7 @@ impl Driver {
             }),
             healthcheck: self.config.healthcheck.clone(),
             exposed_ports,
-            labels: Some(get_default_airlock_labels()),
+            labels: Some(get_default_airlock_labels(self.isolation_group_id.as_str())),
             ..Default::default()
         };
 
@@ -603,15 +673,14 @@ impl Driver {
 
         let details = self.start_container_inner(&self.container_name).await?;
 
-        if let Some(log_base_dir) = self.log_base_dir.as_ref() {
-            let container_log_dir = log_base_dir.join(&self.isolation_group_id);
+        if let Some(log_dir) = self.log_dir.clone() {
             debug!(
                 "Capturing logs for container '{}' to {}...",
                 self.container_name,
-                container_log_dir.display()
+                log_dir.display()
             );
 
-            self.capture_container_logs(container_log_dir, self.config.driver_id, &self.container_name)
+            self.capture_container_logs(log_dir, self.config.driver_id, &self.container_name)
                 .await?;
         }
 
@@ -771,13 +840,16 @@ impl Driver {
             self.container_name
         );
 
+        let start = Instant::now();
+
         self.cleanup_inner(&self.container_name).await?;
 
         debug!(
             driver_id = self.config.driver_id,
             isolation_group = self.isolation_group_id,
-            "Container '{}' removed.",
-            self.container_name
+            "Container '{}' removed after {:?}.",
+            self.container_name,
+            start.elapsed()
         );
 
         Ok(())
@@ -860,11 +932,9 @@ impl Driver {
     }
 }
 
-fn get_default_airlock_labels<T>() -> HashMap<T, T>
-where
-    T: From<&'static str> + Eq + std::hash::Hash,
-{
+fn get_default_airlock_labels(isolation_group_id: &str) -> HashMap<String, String> {
     let mut labels = HashMap::new();
-    labels.insert("created_by".into(), "airlock".into());
+    labels.insert("created_by".to_string(), "airlock".to_string());
+    labels.insert("airlock-isolation-group".to_string(), isolation_group_id.to_string());
     labels
 }

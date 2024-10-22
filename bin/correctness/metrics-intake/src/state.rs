@@ -3,19 +3,16 @@ use std::sync::{Arc, Mutex};
 use datadog_protos::metrics::{MetricPayload, SketchPayload};
 use saluki_error::GenericError;
 use stele::Metric;
-use tokio::sync::mpsc;
 
 #[derive(Clone)]
 pub struct IntakeState {
-    shutdown_tx: mpsc::Sender<()>,
     metrics: Arc<Mutex<Vec<Metric>>>,
 }
 
 impl IntakeState {
-    /// Creates a new `IntakeState` with the given shutdown trigger.
-    pub fn new(shutdown_tx: mpsc::Sender<()>) -> Self {
+    /// Creates a new `IntakeState`.
+    pub fn new() -> Self {
         Self {
-            shutdown_tx,
             metrics: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -24,11 +21,6 @@ impl IntakeState {
     pub fn dump_metrics(&self) -> Vec<Metric> {
         let data = self.metrics.lock().unwrap();
         data.clone()
-    }
-
-    /// Triggers shutdown of the intake server.
-    pub fn trigger_shutdown(&self) {
-        self.shutdown_tx.try_send(()).unwrap();
     }
 
     /// Merges the given series payload into the current metrics state.

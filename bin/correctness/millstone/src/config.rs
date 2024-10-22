@@ -49,17 +49,6 @@ impl TryFrom<String> for TargetAddress {
     }
 }
 
-#[derive(Deserialize)]
-pub struct TargetVolume {
-    /// The size of payloads to send.
-    ///
-    /// This controls how many payloads, or the number of payload bytes, that are sent overall.
-    ///
-    /// This can be larger than the size of the corpus, in which case the corpus will be cycled through as many times as
-    /// needed to reach the target volume size.
-    pub size: CountOrSize,
-}
-
 #[derive(Clone, Deserialize)]
 #[serde(try_from = "ByteSize")]
 pub struct NonZeroByteSize(ByteSize);
@@ -84,24 +73,6 @@ impl TryFrom<ByteSize> for NonZeroByteSize {
 }
 
 #[derive(Clone, Deserialize)]
-#[serde(tag = "mode", content = "value")]
-pub enum CountOrSize {
-    /// A fixed number of payloads.
-    ///
-    /// This mode is useful when a deterministic number of payloads -- whether in terms of generating them or sending
-    /// them -- is desired.
-    #[serde(rename = "count")]
-    FixedCount(NonZeroUsize),
-
-    /// A fixed size, in bytes, of payloads.
-    ///
-    /// Supports either a pure integer value, which is interpreted as the number of bytes, and additionally supports
-    /// human-friendly values using either binary or decimal SI prefixes, such as `12 KiB`, `1.5MB`, and so on.
-    #[serde(rename = "size")]
-    FixedSize(NonZeroByteSize),
-}
-
-#[derive(Clone, Deserialize)]
 pub enum Payload {
     /// DogStatsD-encoded metrics.
     #[serde(rename = "dogstatsd")]
@@ -119,8 +90,8 @@ impl Payload {
 
 #[derive(Clone, Deserialize)]
 pub struct CorpusBlueprint {
-    /// The size of the corpus to generate.
-    pub size: CountOrSize,
+    /// The number of payloads to generate.
+    pub size: NonZeroUsize,
 
     /// The payload configuration.
     pub payload: Payload,
@@ -151,14 +122,14 @@ pub struct Config {
 
     /// Output volume.
     ///
-    /// This controls how much total data volume is sent to the target.
-    #[serde(with = "serde_yaml::with::singleton_map_recursive")]
-    pub volume: TargetVolume,
+    /// This controls the number of payloads to send. If this number is larger than the corpus size, then the entire
+    /// corpus will be sent multiple times, repeatedly cycling through it, until the target volume is reached.
+    pub volume: NonZeroUsize,
 
     /// Corpus blueprint.
     ///
-    /// This controls how payloads are generated, including the type of payload to generate and how many payloads/how
-    /// much to generate.
+    /// This controls how payloads are generated, including the type of payload to generate and how many payloads to
+    /// generate.
     #[serde(with = "serde_yaml::with::singleton_map_recursive")]
     pub corpus: CorpusBlueprint,
 }

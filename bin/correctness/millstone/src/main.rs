@@ -1,3 +1,9 @@
+//! A deterministic load generator, in the spirit of Lading, that also adds determinism around how many payloads are
+//! sent to a target.
+
+#![deny(warnings)]
+#![deny(missing_docs)]
+
 use saluki_app::prelude::*;
 use saluki_error::GenericError;
 use tracing::{error, info};

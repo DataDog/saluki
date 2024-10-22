@@ -1,0 +1,18 @@
+root = true
+
+# All source code should be 4-space indented with Unix-style end-of-line markers (LF), including a final,
+# trailing newline at the end of each file.
+[{*.(py,rs}]
+indent_style = space
+indent_size = 4
+end_of_line = lf
+insert_final_newline = true
+
+# Configuration data can be denser/more succinct, with 2-space indentation.
+[*.{yaml,yml,toml,json}]
+indent_style = space
+indent_size = 2
+
+# Makefiles _require_ tab indentation otherwise it literally doesn't work right
+[Makefile]
+indent_style = tab

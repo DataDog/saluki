@@ -1,4 +1,11 @@
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::{
+    collections::HashMap,
+    future::Future,
+    path::PathBuf,
+    pin::Pin,
+    task::{ready, Context, Poll},
+    time::Duration,
+};
 
 use airlock::{
     config::{ADPConfig, DSDConfig, MetricsIntakeConfig, MillstoneConfig},
@@ -40,9 +47,9 @@ impl TestRunner {
         }
     }
 
-    async fn build_dsd_group_runner(&self) -> Result<GroupRunner, GenericError> {
+    async fn build_dsd_group_runner(&self, isolation_group_id: String) -> Result<GroupRunner, GenericError> {
         let mut group_runner = GroupRunner::new(
-            generate_isolation_group_id(),
+            isolation_group_id,
             "dsd",
             self.log_base_dir.clone(),
             self.coordinator.clone(),
@@ -62,9 +69,9 @@ impl TestRunner {
         Ok(group_runner)
     }
 
-    async fn build_adp_group_runner(&self) -> Result<GroupRunner, GenericError> {
+    async fn build_adp_group_runner(&self, isolation_group_id: String) -> Result<GroupRunner, GenericError> {
         let mut group_runner = GroupRunner::new(
-            generate_isolation_group_id(),
+            isolation_group_id,
             "adp",
             self.log_base_dir.clone(),
             self.coordinator.clone(),
@@ -88,7 +95,7 @@ impl TestRunner {
     }
 
     async fn unwrap_or_shutdown<T>(
-        &mut self, dsd_result: Result<T, GenericError>, adp_result: Result<T, GenericError>,
+        &mut self, step_id: &'static str, dsd_result: Result<T, GenericError>, adp_result: Result<T, GenericError>,
     ) -> Result<(T, T), GenericError> {
         match (dsd_result, adp_result) {
             (Ok(dsd_result), Ok(adp_result)) => Ok((dsd_result, adp_result)),
@@ -102,8 +109,19 @@ impl TestRunner {
                 // Figure out which side failed to initially spawn successfully, and return the appropriate
                 // error. If both failed, then we log both errors and return a generic error instead.
                 match (maybe_dsd_error, maybe_adp_error) {
-                    (Ok(_), Err(adp_error)) => Err(adp_error),
-                    (Err(dsd_error), _) => Err(dsd_error),
+                    (Ok(_), Err(adp_error)) => {
+                        error!("DogStatsD group runner completed step '{}' successfully, but Agent Data Plane group runner encountered an error.", step_id);
+                        Err(adp_error)
+                    }
+                    (Err(dsd_error), Ok(_)) => {
+                        error!("Agent Data Plane group runner completed step '{}' successfully, but DogStatsD group runner encountered an error.", step_id);
+                        Err(dsd_error)
+                    }
+                    (Err(dsd_error), Err(adp_error)) => {
+                        error!(error = %dsd_error, "DogStatsD group runner encountered an error at step '{}'.", step_id);
+                        error!(error = %adp_error, "Agent Data Plane group runner encountered an error at step '{}'.", step_id);
+                        Err(generic_error!("Failed to complete step '{}'.", step_id))
+                    }
                     _ => unreachable!(),
                 }
             }
@@ -111,33 +129,80 @@ impl TestRunner {
     }
 
     pub async fn run(mut self) -> Result<RawTestResults, GenericError> {
+        let dsd_isolation_group_id = generate_isolation_group_id();
+        let adp_isolation_group_id = generate_isolation_group_id();
+
         // Build a group runner for both DogStatsD and Agent Data Plane, which handles the complexities of spawning and
         // monitoring the containers, as well as cleaning them up after failure and/or when we're done.
-        let dsd_group_runner = self.build_dsd_group_runner().await?;
-        let adp_group_runner = self.build_adp_group_runner().await?;
-        info!("Group runners built for DSD and ADP.");
+        let dsd_group_runner = self.build_dsd_group_runner(dsd_isolation_group_id.clone()).await?;
+        let adp_group_runner = self.build_adp_group_runner(adp_isolation_group_id.clone()).await?;
+        info!("Spawning containers for DogStatsD and Agent Data Plane...");
 
         // Do the initial spawn of both group runners, which should get all relevant containers spawned and running in
         // the correct order, and so on.
-        let dsd_spawn_result = dsd_group_runner.spawn().await;
-        let adp_spawn_result = adp_group_runner.spawn().await;
+        let dsd_spawn_result = run_in_background(dsd_group_runner.spawn());
+        let adp_spawn_result = run_in_background(adp_group_runner.spawn());
 
         // Everything is running, so just wait for the results (or an error) to come back from both group runners.
-        let (dsd_result_collector, adp_result_collector) =
-            self.unwrap_or_shutdown(dsd_spawn_result, adp_spawn_result).await?;
-        info!("Group runners spawned successfully for DSD and ADP. Waiting for results...");
+        let (dsd_result_collector, adp_result_collector) = self
+            .unwrap_or_shutdown("spawn_containers", dsd_spawn_result.await, adp_spawn_result.await)
+            .await?;
+        info!("Containers spawned successfully. Waiting for results...");
 
-        let maybe_dsd_results = dsd_result_collector.wait_for_results().await;
-        let maybe_adp_results = adp_result_collector.wait_for_results().await;
+        let maybe_dsd_results = run_in_background(dsd_result_collector.wait_for_results());
+        let maybe_adp_results = run_in_background(adp_result_collector.wait_for_results());
 
-        let (dsd_results, adp_results) = self.unwrap_or_shutdown(maybe_dsd_results, maybe_adp_results).await?;
+        let (dsd_results, adp_results) = self
+            .unwrap_or_shutdown("collect_results", maybe_dsd_results.await, maybe_adp_results.await)
+            .await?;
 
         // We've gotten our results back, so signal to any remaining containers that they can shutdown now.
-        info!("Shutting down remaining containers in DSD and ADP group runners...");
+        info!("Cleaning up remaining containers and resources...");
+
         self.cancel_token.cancel();
         self.coordinator.wait().await;
 
+        if let Err(e) = Driver::clean_related_resources(dsd_isolation_group_id).await {
+            error!(error = %e, "Failed to clean up DogStatsD-related resources. Manual cleanup may be required.");
+        }
+
+        if let Err(e) = Driver::clean_related_resources(adp_isolation_group_id).await {
+            error!(error = %e, "Failed to clean up Agent Data Plane-related resources. Manual cleanup may be required.");
+        }
+
+        info!("Cleanup complete.");
+
         Ok(RawTestResults::new(dsd_results, adp_results))
+    }
+}
+
+fn run_in_background<F, T>(f: F) -> SpawnedResult<T>
+where
+    F: Future<Output = Result<T, GenericError>> + Send + 'static,
+    T: Send + 'static,
+{
+    let handle = tokio::spawn(f);
+    SpawnedResult { handle }
+}
+
+struct SpawnedResult<T> {
+    handle: JoinHandle<Result<T, GenericError>>,
+}
+
+impl<T> Future for SpawnedResult<T>
+where
+    T: Send + 'static,
+{
+    type Output = Result<T, GenericError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: `JoinHandle<T>` is `Unpin`, which means we're `Unpin`, so we can safely project the inner
+        // `JoinHandle` field.
+        let handle = unsafe { self.map_unchecked_mut(|sr| &mut sr.handle) };
+        match ready!(handle.poll(cx)) {
+            Ok(result) => Poll::Ready(result),
+            Err(e) => Poll::Ready(Err(generic_error!("Task panicked during normal operation: {}", e))),
+        }
     }
 }
 
@@ -145,7 +210,7 @@ impl TestRunner {
 struct GroupRunner {
     isolation_group_id: String,
     test_id: &'static str,
-    log_base_dir: PathBuf,
+    runner_log_dir: PathBuf,
     drivers: Vec<Driver>,
     coordinator: Coordinator,
     cancel_token: CancellationToken,
@@ -156,10 +221,18 @@ impl GroupRunner {
         isolation_group_id: String, test_id: &'static str, log_base_dir: PathBuf, coordinator: Coordinator,
         cancel_token: CancellationToken,
     ) -> Self {
+        let runner_log_dir = log_base_dir.join(isolation_group_id.clone());
+
+        info!(
+            "Creating test group runner for driver '{}'. Logs will be saved to {}.",
+            test_id,
+            runner_log_dir.display()
+        );
+
         Self {
             isolation_group_id,
             test_id,
-            log_base_dir,
+            runner_log_dir,
             drivers: Vec::new(),
             coordinator,
             cancel_token,
@@ -168,7 +241,7 @@ impl GroupRunner {
 
     fn with_driver(&mut self, config: DriverConfig) -> Result<&mut Self, GenericError> {
         let driver =
-            Driver::from_config(self.isolation_group_id.clone(), config)?.with_logging(self.log_base_dir.clone());
+            Driver::from_config(self.isolation_group_id.clone(), config)?.with_logging(self.runner_log_dir.clone());
         self.drivers.push(driver);
         Ok(self)
     }
@@ -280,7 +353,7 @@ impl ResultCollector {
 
         // Now we'll briefly wait (for the duration of an aggregation flush interval, plus a little extra) before dumping the metrics from
         // metrics-intake, to ensure everything from the target has been flushed out.
-        sleep(Duration::from_secs(16)).await;
+        sleep(Duration::from_secs(32)).await;
 
         let client = reqwest::Client::new();
         let metrics = client
@@ -390,30 +463,30 @@ async fn spawn_driver_with_details(
     // container stops, whichever comes first.
     let task_token = coordinator.register();
     let handle = tokio::spawn(async move {
-		// Re-bind our task handle here to ensure it moves and thus drops when the task completes.
-		let _token = task_token;
+        // Re-bind our task handle here to ensure it moves and thus drops when the task completes.
+        let _token = task_token;
 
-		select! {
-			result = driver.wait_for_container_exit() => {
-				if let Err(e) = driver.cleanup().await {
-					error!(error = %e, "Failed to cleanup container.");
-				}
+        select! {
+            result = driver.wait_for_container_exit() => {
+                if let Err(e) = driver.cleanup().await {
+                    error!(error = %e, "Failed to cleanup container.");
+                }
 
-				match result {
-					Ok(exit_status) => exit_status,
-					Err(e) => ExitStatus::Failed { code: -1, error: format!("failed to wait for container exit: {}", e) },
-				}
-			},
-			_ = cancel_token.cancelled() => {
-				debug!("Container stopping due to shutdown signal.");
-				if let Err(e) = driver.cleanup().await {
-					error!(error = %e, "Failed to cleanup container.");
-				}
+                match result {
+                    Ok(exit_status) => exit_status,
+                    Err(e) => ExitStatus::Failed { code: -1, error: format!("failed to wait for container exit: {}", e) },
+                }
+            },
+            _ = cancel_token.cancelled() => {
+                debug!("Container stopping due to shutdown signal.");
+                if let Err(e) = driver.cleanup().await {
+                    error!(error = %e, "Failed to cleanup container.");
+                }
 
-				ExitStatus::Success
-			},
-		}
-	}.in_current_span());
+                ExitStatus::Success
+            },
+        }
+    }.in_current_span());
 
     Ok(DriverHandle {
         driver_id,
