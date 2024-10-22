@@ -22,12 +22,21 @@ http-body = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["client"] }
 hyper-rustls = { workspace = true }
-hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "tokio"] }
+hyper-util = { workspace = true, features = [
+    "client",
+    "client-legacy",
+    "http1",
+    "tokio",
+] }
 indexmap = { workspace = true, features = ["std"] }
 memchr = { workspace = true, features = ["std"] }
 memory-accounting = { workspace = true }
 metrics = { workspace = true }
-metrics-util = { workspace = true, features = ["handles", "recency", "registry"] }
+metrics-util = { workspace = true, features = [
+    "handles",
+    "recency",
+    "registry",
+] }
 nom = { workspace = true }
 paste = { workspace = true }
 pin-project = { workspace = true }
@@ -50,12 +59,17 @@ smallvec = { workspace = true }
 snafu = { workspace = true }
 stringtheory = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
+tokio = { workspace = true, features = [
+    "io-util",
+    "macros",
+    "net",
+    "rt",
+    "rt-multi-thread",
+    "signal",
+    "sync",
+] }
 tokio-util = { workspace = true }
 tower = { workspace = true, features = ["retry", "timeout", "util"] }
 tracing = { workspace = true }
 tracing-test = { workspace = true }
 url = { workspace = true }
-wasmtime = { workspace = true }
-wasmtime-wasi = { workspace = true }
-
