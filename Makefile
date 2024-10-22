@@ -424,6 +424,8 @@ fast-edit-test: ## Runs a lightweight format/lint/test pass
 .PHONY: gen-testing-pychecks
 gen-testing-pychecks: ## Sets up a basic Python check for local development
 ifeq ($(shell test -f dist/checks.d/simple.py || echo not-found), not-found)
+	@mkdir -p dist/checks.d
+	@touch dist/checks.d/simple.py
 	@echo "from datadog_checks.checks import AgentCheck\n" > dist/checks.d/simple.py
 	@echo "class SimpleCheck(AgentCheck):" >> dist/checks.d/simple.py
 	@echo "    def __init__(self, name, init_config, instances):" >> dist/checks.d/simple.py
@@ -434,18 +436,21 @@ ifeq ($(shell test -f dist/checks.d/simple.py || echo not-found), not-found)
 	@echo "[*] Created dist/checks.d/simple.py"
 endif
 ifeq ($(shell test -f dist/conf.d/simple.yaml || echo not-found), not-found)
+	@mkdir -p dist/conf.d
+	@touch dist/conf.d/simple.yaml
 	@echo "init_config:\n\ninstances:\n  - argument: value" > dist/conf.d/simple.yaml
 	@echo "[*] Created dist/conf.d/simple.yaml with TODO stub"
 endif
 ifeq ($(shell test -d checks_venv || echo not-found), not-found)
 	@echo "[*] Initializing Python virtual environment..."
 	@python3 -m venv checks_venv
-	@. checks_venv/bin/activate
-	@pip install datadog_checks_base
-	@pip install datadog_checks_base[deps]
-	@echo "[*] Installed datadog-checks-dev in virtual environment"
 endif
-
+	@echo "[*] Activating Python virtual environment..."
+	# We can cd into the ven folder and run source: https://stackoverflow.com/a/66444046
+	@cd checks_venv && source bin/activate
+	@python3 -m pip install datadog_checks_base
+	@python3 -m pip install datadog_checks_base[deps]
+	@echo "[*] Installed datadog-checks-dev in virtual environment"
 
 ##@ Utility
 

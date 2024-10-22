@@ -5,6 +5,8 @@ test/k8s/charts/
 test/build/
 test/ddprof
 test/lading
+dist/
 checks_venv/
+etc-datadog-agent/
 dhat-heap.json
 .DS_Store
