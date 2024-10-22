@@ -12,7 +12,7 @@ mod common;
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
 #[test]
-fn test_one_thousand_single_points_ddsketch() {
+fn test_one_thousand_batched_points_ddsketch() {
     let points = make_points(1000);
 
     let _profiler = dhat::Profiler::builder().testing().build();
