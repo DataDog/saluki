@@ -1,12 +1,13 @@
-use super::python_exposed_modules::aggregator as pyagg;
-use super::python_exposed_modules::datadog_agent;
-use super::*;
 use pyo3::prelude::PyAnyMethods;
 use pyo3::types::PyDict;
 use pyo3::types::PyList;
 use pyo3::types::PyType;
 use saluki_error::{generic_error, GenericError};
 use tracing::trace;
+
+use super::python_exposed_modules::aggregator as pyagg;
+use super::python_exposed_modules::datadog_agent;
+use super::*;
 
 struct CheckHandle(Py<PyAny>);
 
@@ -349,9 +350,10 @@ impl CheckScheduler for PythonCheckScheduler {
 
 #[cfg(test)]
 mod tests {
+    use tokio::sync::mpsc;
+
     use super::super::*;
     use super::*;
-    use tokio::sync::mpsc;
 
     #[tokio::test]
     async fn test_new_check_scheduler() {

@@ -151,8 +151,9 @@ pub struct DirCheckListenerContext {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tokio::io::AsyncWriteExt;
+
+    use super::*;
 
     macro_rules! setup_test_dir {
         ($($file_path:expr => $content:expr),* $(,)?) => {{

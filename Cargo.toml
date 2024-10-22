@@ -127,6 +127,12 @@ rustls-native-certs = { version = "0.8", default-features = false }
 hashbrown = { version = "0.15", default-features = false }
 quick_cache = { version = "0.6", default-features = false }
 crossbeam-queue = { version = "0.3", default-features = false }
+async-walkdir = "1.0.0"
+pyo3 = "0.21.2"
+tempfile = "3.10.1"
+tracing-test = "0.2.4"
+wasmtime = "21.0.1"
+wasmtime-wasi = "21.0.1"
 
 [patch.crates-io]
 # Git dependency for `containerd-client` to:

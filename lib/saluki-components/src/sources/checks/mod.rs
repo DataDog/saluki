@@ -1,3 +1,10 @@
+use std::collections::HashSet;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
+use std::{fmt::Display, time::Duration};
+
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::Counter;
@@ -19,12 +26,6 @@ use saluki_error::{generic_error, GenericError};
 use saluki_event::{metric::*, DataType, Event};
 use serde::Deserialize;
 use snafu::Snafu;
-use std::collections::HashSet;
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-};
-use std::{fmt::Display, time::Duration};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, error, info, trace, warn};
 
