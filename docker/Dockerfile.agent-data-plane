@@ -43,8 +43,13 @@ RUN apt-get update && \
 COPY --from=builder /adp/target/${BUILD_PROFILE}/agent-data-plane /usr/local/bin/agent-data-plane
 COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
 
+# Glob all the embedded libraries and python bits from the Datadog Agent image.
+COPY --from=builder /opt/datadog-agent/embedded/ /opt/datadog-agent/embedded/
+ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
+ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
+
 # HACK(tobz): SMP currently fails to run experiments if `/etc/<target name>` doesn't exist... so we're populating this
 # directory manually for the time being to get ADP benchmarks running.
-RUN mkdir /etc/saluki 
+RUN mkdir /etc/saluki
 
 ENTRYPOINT [ "/usr/local/bin/agent-data-plane" ]

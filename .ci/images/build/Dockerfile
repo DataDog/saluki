@@ -17,11 +17,6 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 ENV PATH="/usr/lib/binutils-2.26/bin:${PATH}"
 
-# Import python bits from Agent image.
-COPY --from=agent /opt/datadog-agent/embedded/ /opt/datadog-agent/embedded/
-ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
-ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
-
 # Install Go, which we need to build AWS-LC in FIPS-compliant mode.
 ENV PATH="/usr/local/go/bin:${PATH}"
 RUN curl -s -L -o /tmp/go-1.23.0.tar.gz https://go.dev/dl/go1.23.0.linux-${TARGETARCH}.tar.gz
@@ -44,6 +39,12 @@ RUN rustup toolchain add nightly && \
 # Pre-install the relevant Cargo tools we use in the build process.
 COPY ./Makefile /
 RUN make cargo-preinstall
+
+# Import python bits from Agent image.
+# Do last in the pipeline to avoid polluting the builds of above protobuf/go etc from using these libs
+COPY --from=agent /opt/datadog-agent/embedded/ /opt/datadog-agent/embedded/
+ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
+ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
 
 COPY .ci/images/build/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
