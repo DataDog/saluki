@@ -1029,6 +1029,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "float-cmp"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b09cf3155332e944990140d967ff5eceb70df778b34f77d8075db46e4704e6d8"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "float-ord"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3711,6 +3720,7 @@ version = "0.1.0"
 dependencies = [
  "datadog-protos",
  "ddsketch-agent",
+ "float-cmp",
  "saluki-error",
  "serde",
  "tracing",

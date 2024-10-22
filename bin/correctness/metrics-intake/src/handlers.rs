@@ -2,14 +2,9 @@ use axum::{body::Bytes, extract::State, http::StatusCode, Json};
 use datadog_protos::metrics::{MetricPayload, SketchPayload};
 use protobuf::Message as _;
 use stele::Metric;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 use crate::state::IntakeState;
-
-pub async fn handle_shutdown(State(state): State<IntakeState>) {
-    info!("Received shutdown request. Stopping...");
-    state.trigger_shutdown();
-}
 
 pub async fn handle_metrics_dump(State(state): State<IntakeState>) -> Json<Vec<Metric>> {
     Json(state.dump_metrics())

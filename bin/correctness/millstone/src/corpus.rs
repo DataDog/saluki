@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 use bytes::{BufMut as _, Bytes, BytesMut};
 use bytesize::ByteSize;
 use lading_payload::DogStatsD;
@@ -5,7 +7,7 @@ use rand::{rngs::StdRng, Rng, SeedableRng as _};
 use saluki_error::{generic_error, GenericError};
 use tracing::info;
 
-use crate::config::{Config, CorpusBlueprint, CountOrSize, Payload, TargetAddress};
+use crate::config::{Config, CorpusBlueprint, Payload, TargetAddress};
 
 /// A generated test corpus.
 pub struct Corpus {
@@ -97,7 +99,7 @@ where
 }
 
 fn generate_payloads_inner<G, R>(
-    generator: &G, mut rng: R, payloads: &mut Vec<Bytes>, size: CountOrSize, max_bytes: usize,
+    generator: &G, mut rng: R, payloads: &mut Vec<Bytes>, size: NonZeroUsize, max_bytes: usize,
 ) -> Result<usize, GenericError>
 where
     G: lading_payload::Serialize,
@@ -105,42 +107,16 @@ where
 {
     let mut max_payload_size = 0;
 
-    match size {
-        CountOrSize::FixedCount(count) => {
-            for _ in 0..count.get() {
-                let mut payload = BytesMut::new();
-                let mut payload_writer = (&mut payload).writer();
-                generator.to_bytes(&mut rng, max_bytes, &mut payload_writer)?;
+    for _ in 0..size.get() {
+        let mut payload = BytesMut::new();
+        let mut payload_writer = (&mut payload).writer();
+        generator.to_bytes(&mut rng, max_bytes, &mut payload_writer)?;
 
-                if payload.len() > max_payload_size {
-                    max_payload_size = payload.len();
-                }
-
-                payloads.push(payload.freeze());
-            }
+        if payload.len() > max_payload_size {
+            max_payload_size = payload.len();
         }
-        CountOrSize::FixedSize(size) => {
-            let mut current_size = 0;
-            let max_size = size.as_u64();
 
-            while current_size < max_size {
-                let mut payload = BytesMut::new();
-                let mut payload_writer = (&mut payload).writer();
-                generator.to_bytes(&mut rng, max_bytes, &mut payload_writer)?;
-
-                let payload_size = payload.len() as u64;
-                if current_size + payload_size > max_size {
-                    break;
-                }
-
-                if payload.len() > max_payload_size {
-                    max_payload_size = payload.len();
-                }
-
-                current_size += payload_size;
-                payloads.push(payload.freeze());
-            }
-        }
+        payloads.push(payload.freeze());
     }
 
     Ok(max_payload_size)

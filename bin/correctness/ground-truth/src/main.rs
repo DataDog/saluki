@@ -1,6 +1,11 @@
+//! Test runner for comparing the outputs of DogStatsD and Agent Data Plane when fed deterministic inputs.
+
+#![deny(warnings)]
+#![deny(missing_docs)]
+
 use clap::Parser as _;
 use saluki_app::prelude::*;
-use saluki_error::GenericError;
+use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{error, info};
 
 mod analysis;
@@ -36,13 +41,11 @@ async fn run(cli: Cli) -> Result<(), GenericError> {
     let test_runner = TestRunner::from_cli(&cli);
     let raw_results = test_runner.run().await?;
 
-    info!("All tests completed successfully. Running analysis...");
+    info!("Running analysis...");
 
-    raw_results.run_analysis()?;
+    raw_results.run_analysis().error_context("Analysis failed.")?;
 
-    // TODO: compare basic context count between DSD and ADP
-
-    info!("Analysis complete.");
+    info!("Analysis complete: no difference detected between DogStatsD and Agent Data Plane.");
 
     Ok(())
 }

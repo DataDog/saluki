@@ -4,11 +4,7 @@ use bytesize::ByteSize;
 use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{info, trace};
 
-use crate::{
-    config::{Config, CountOrSize},
-    corpus::Corpus,
-    target::TargetSender,
-};
+use crate::{config::Config, corpus::Corpus, target::TargetSender};
 
 /// Load driver.
 ///
@@ -46,15 +42,11 @@ impl Driver {
         let mut payload_bytes_sent = 0;
         let mut partial_sends = 0;
 
-        let (max_payloads, max_payload_bytes) = match self.config.volume.size {
-            CountOrSize::FixedCount(count) => (count.get(), u64::MAX),
-            CountOrSize::FixedSize(size) => (usize::MAX, size.as_u64()),
-        };
-
+        let max_payloads = self.config.volume.get();
         let start = Instant::now();
 
         loop {
-            if payloads_sent >= max_payloads || payload_bytes_sent >= max_payload_bytes {
+            if payloads_sent >= max_payloads {
                 break;
             }
 

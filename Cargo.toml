@@ -50,6 +50,7 @@ saluki-health = { path = "lib/saluki-health" }
 saluki-io = { path = "lib/saluki-io" }
 saluki-metrics = { path = "lib/saluki-metrics" }
 saluki-tls = { path = "lib/saluki-tls" }
+stele = { path = "bin/correctness/stele" }
 stringtheory = { path = "lib/stringtheory" }
 async-trait = { version = "0.1", default-features = false }
 axum = { version = "0.7", default-features = false }
@@ -134,6 +135,7 @@ reqwest = { version = "0.12.8", default-features = false }
 governor = { version = "0.6", default-features = false }
 lading-payload = { git = "https://github.com/DataDog/lading", tag = "v0.23.3" }
 serde_yaml = { version = "0.9", default-features = false }
+float-cmp = { version = "0.10", default-features = false }
 
 [profile.release]
 lto = "thin"

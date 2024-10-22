@@ -8,6 +8,7 @@ repository = { workspace = true }
 [dependencies]
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true, features = ["serde"] }
+float-cmp = { workspace = true, features = ["ratio"] }
 saluki-error = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }

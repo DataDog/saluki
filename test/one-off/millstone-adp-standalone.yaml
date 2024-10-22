@@ -1,9 +1,6 @@
 seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
 target: "unix:///tmp/adp-dsd.sock"
-volume:
-  size:
-    mode: count
-    value: 2
+volume: 2
 corpus:
   # TODO: This is a little confusing, because we're specifying the number of metrics to generate (which we _will_
   # honor faithfully) but since we're specifying the contexts count in the payload definition, we might not
@@ -12,9 +9,7 @@ corpus:
   #
   # We need to figure that out, since the intent is that specifying a fixed count should lead to that many metrics
   # (and no more) being generated, such that you could depend on that for testing purposes.
-  size:
-    mode: count
-    value: 10000
+  size: 10000
   payload:
     dogstatsd:
       contexts:

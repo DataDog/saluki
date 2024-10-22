@@ -12,4 +12,9 @@ dd_url: "http://metrics-intake:2049"
 
 # Turn off UDP and listen on a UDS socket instead.
 dogstatsd_port: 0
-dogstatsd_stream_socket: /airlock/metrics.sock
+dogstatsd_socket: /airlock/metrics.sock
+
+# Gauges can be processed out-of-order when multiple workers are used, while ADP does not use multiple workers, so ADP
+# always ends up with the correct (last seen) value, while DSD might return the last seen value... or the value seen
+# four updates ago, etc etc.
+dogstatsd_workers_count: 1
