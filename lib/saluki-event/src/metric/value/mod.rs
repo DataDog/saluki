@@ -426,14 +426,19 @@ impl MetricValues {
         Self::Counter(values.into())
     }
 
-    /// Creates a set of counter values from a fallible iterator of values.
-    pub fn counter_fallible<I, E>(iter: I) -> Result<Self, E>
+    /// Creates a set of counter values from a fallible iterator of values, based on the given sample rate.
+    ///
+    /// If `sample_rate` is `None`, no values will be modified. Otherwise, each value will be scaled proportionally to
+    /// the quotient of `1 / sample_rate`.
+    pub fn counter_sampled_fallible<I, E>(iter: I, sample_rate: Option<f64>) -> Result<Self, E>
     where
         I: Iterator<Item = Result<f64, E>>,
     {
+        let sample_rate_scaled = sample_rate.map(|rate| 1.0 / rate);
         let mut points = ScalarPoints::new();
         for value in iter {
-            points.add_point(None, value?);
+            let value = value?;
+            points.add_point(None, sample_rate_scaled.map_or(value, |sr| value * sr));
         }
         Ok(Self::Counter(points))
     }
@@ -474,14 +479,29 @@ impl MetricValues {
         Self::Distribution(values.into())
     }
 
-    /// Creates a set of distribution values from a fallible iterator of values.
-    pub fn distribution_fallible<I, E>(iter: I) -> Result<Self, E>
+    /// Creates a set of distribution values from a fallible iterator of values, based on the given sample rate.
+    ///
+    /// If `sample_rate` is `None`, only the values present in the iterator will be used. Otherwise, each value will be
+    /// inserted at a scaled count of `1 / sample_rate`.
+    pub fn distribution_sampled_fallible<I, E>(iter: I, sample_rate: Option<f64>) -> Result<Self, E>
     where
         I: Iterator<Item = Result<f64, E>>,
     {
         let mut sketch = DDSketch::default();
-        for value in iter {
-            sketch.insert(value?);
+        match sample_rate {
+            Some(rate) => {
+                let n = (1.0 / rate) as u32;
+
+                for value in iter {
+                    let value = value?;
+                    sketch.insert_n(value, n);
+                }
+            }
+            None => {
+                for value in iter {
+                    sketch.insert(value?);
+                }
+            }
         }
         Ok(Self::Distribution(sketch.into()))
     }
