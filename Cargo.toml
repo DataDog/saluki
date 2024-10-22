@@ -96,7 +96,7 @@ ndarray-stats = { version = "0.6", default-features = false }
 noisy_float = { version = "0.2", default-features = false }
 libc = { version = "0.2.153", default-features = false }
 socket2 = { version = "0.5.7", default-features = false }
-containerd-client = { version = "0.5.0", default-features = false }
+containerd-client = { version = "0.6.0", default-features = false }
 tonic-build = { version = "0.12", default-features = false }
 tonic = { version = "0.12", default-features = false }
 arc-swap = { version = "1.7.1", default-features = false }
@@ -126,14 +126,6 @@ rustls-native-certs = { version = "0.8", default-features = false }
 hashbrown = { version = "0.15", default-features = false }
 quick_cache = { version = "0.6", default-features = false }
 crossbeam-queue = { version = "0.3", default-features = false }
-
-[patch.crates-io]
-# Git dependency for `containerd-client` to:
-# - add specific `prost-build` settings that allow type-erased payloads in containerd events to be decoded
-# - update to tonic 0.12/prost 0.13 to eliminate having both hyper 0.14/hyper 1.0 in the the dep tree
-#
-# Will be removed once all work is upstreamed and a release is published.
-containerd-client = { git = "https://github.com/tobz/rust-extensions", branch = "tobz/tonic-0.12-prost-0.13" }
 
 [profile.release]
 lto = "thin"
