@@ -2,6 +2,7 @@
 /.gitlab
 /.git
 /.vscode
+/checks_venv
 /docker
 /target
 /test
