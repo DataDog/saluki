@@ -547,8 +547,9 @@ dependencies = [
 
 [[package]]
 name = "containerd-client"
-version = "0.5.0"
-source = "git+https://github.com/tobz/rust-extensions?branch=tobz/tonic-0.12-prost-0.13#3dec7f5b2733667919dae78cd220e3ec437ab485"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce8bbfa492159a878a45bbd8fbd8d5a6fb2a4d6bd74836204a324523ba3233e0"
 dependencies = [
  "hyper-util",
  "prost",
