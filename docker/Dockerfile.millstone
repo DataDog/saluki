@@ -37,10 +37,6 @@ FROM ${APP_IMAGE}
 
 ARG BUILD_PROFILE=release
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates=20240203~22.04.1 && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
 COPY --from=builder /millstone/target/${BUILD_PROFILE}/millstone /usr/local/bin/millstone
 
 ENTRYPOINT [ "/usr/local/bin/millstone" ]

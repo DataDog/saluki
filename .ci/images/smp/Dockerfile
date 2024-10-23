@@ -6,7 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # Install basic utilities and an updated compiler/binutils toolchain, which is necessary for compiling.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates awscli lsb-release git jq bc && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get clean
 
 RUN curl -L https://s3.amazonaws.com/dd-package-public/dd-package-$(dpkg --print-architecture).deb -o dd-package.deb && \
     dpkg -i dd-package.deb && \
