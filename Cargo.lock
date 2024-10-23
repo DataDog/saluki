@@ -686,6 +686,7 @@ dependencies = [
  "ndarray-stats",
  "noisy_float",
  "ordered-float 4.4.0",
+ "protobuf",
  "rand",
  "rand_distr",
  "serde",

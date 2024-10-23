@@ -14,6 +14,7 @@ datadog-protos = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }
 integer-encoding =  { workspace = true }
 ordered-float = { workspace = true }
+protobuf = { workspace = true }
 serde = { workspace = true, optional = true }
 smallvec = { workspace = true, features = ["union"] }
 

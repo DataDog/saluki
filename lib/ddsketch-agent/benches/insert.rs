@@ -1,6 +1,5 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use datadog_protos::metrics::Dogsketch;
-use ddsketch_agent::DDSketch;
+use ddsketch_agent::{DDSketch, SendOnlyDogsketch};
 use rand::SeedableRng;
 use rand_distr::{Distribution, Pareto};
 
@@ -10,7 +9,7 @@ fn insert_single_and_serialize(ns: &[f64]) {
         sketch.insert(*i);
     }
 
-    let mut dogsketch = Dogsketch::new();
+    let mut dogsketch = SendOnlyDogsketch::new();
     sketch.merge_to_dogsketch(&mut dogsketch);
 }
 
@@ -18,7 +17,7 @@ fn insert_many_and_serialize(ns: &[f64]) {
     let mut sketch = DDSketch::default();
     sketch.insert_many(ns);
 
-    let mut dogsketch = Dogsketch::new();
+    let mut dogsketch = SendOnlyDogsketch::new();
     sketch.merge_to_dogsketch(&mut dogsketch);
 }
 
