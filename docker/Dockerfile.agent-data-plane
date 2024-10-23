@@ -42,14 +42,15 @@ RUN cargo build --profile ${BUILD_PROFILE}
 # Now stick our resulting binary in a clean image.
 FROM ${APP_IMAGE}
 
-ARG BUILD_PROFILE=release
+# Redeclare the input argument to take the global-scope's value
+ARG BUILD_PROFILE
 
 USER root
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
-COPY --from=builder /adp/target/${BUILD_PROFILE}/agent-data-plane /usr/local/bin/agent-data-plane
+COPY --from=builder /adp/target/*/agent-data-plane /usr/local/bin/agent-data-plane
 # TODO do I need to copy /opt/datadog-agent/embedded here as well?
 # I think I do because the `APP_IMAGE` will not contain this
 # For my testing, I don't run this standalone, only in the converged agent image, so leaving this as a future TODO
