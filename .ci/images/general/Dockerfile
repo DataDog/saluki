@@ -2,7 +2,7 @@ FROM registry.ddbuild.io/images/mirror/ubuntu:20.04
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates awscli && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get clean
 
 RUN curl -L https://s3.amazonaws.com/dd-package-public/dd-package-$(dpkg --print-architecture).deb -o dd-package.deb && \
     dpkg -i dd-package.deb && \

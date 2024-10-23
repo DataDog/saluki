@@ -1,0 +1,21 @@
+[package]
+name = "ground-truth"
+version = "0.1.0"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+airlock = { path = "../airlock" }
+clap = { workspace = true, features = ["std", "color", "derive", "help", "wrap_help", "usage", "error-context", "suggestions"] }
+rand = { workspace = true, features = ["std", "std_rng"] }
+reqwest = { workspace = true, features = ["json", "zstd"] }
+saluki-app = { workspace = true, features = ["logging"] }
+saluki-error = { workspace = true }
+stele = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

@@ -12,10 +12,18 @@ RUN go build -o ./target/proxy-dumper ./cmd/
 
 # Re-package proxy-dumper into a slightly _bigger_ image, one which has basic file utilities and what not for debugging.
 FROM ${APP_IMAGE}
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+
+# Only install ca-certificates if the directory doesn't exist.
+#
+# We do this because we don't want to set the user to `root` in the application image, but we need `root` to use
+# `apt-get`... so if we're building in CI where CA certificates are already present, and the base image doesn't use the
+# `root` user, we skip this step.
+#
+# For local builds, the regular Ubuntu application image needs to have the CA certificates installed, but it also uses
+# the `root` user, so we can install them without issue.
+RUN test -d /usr/local/share/ca-certificates || apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates=20240203~22.04.1 && \
+    apt-get clean
 COPY --from=builder /src/app/target/proxy-dumper /proxy-dumper
 
 EXPOSE 8081

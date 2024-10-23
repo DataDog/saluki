@@ -197,8 +197,8 @@ pub struct DDSketch {
 }
 
 impl DDSketch {
-    #[cfg(test)]
-    fn bin_count(&self) -> usize {
+    /// Returns the number of bins in the sketch.
+    pub fn bin_count(&self) -> usize {
         self.bins.len()
     }
 
