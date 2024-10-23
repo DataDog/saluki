@@ -12,6 +12,8 @@ ARG BUILD_PROFILE=release
 # local development (Debian Buster, where it's `cmake`) and the build image for CI (Ubuntu 14.04, where it's `cmake3`).
 #
 # Our CI build image already installs `cmake3`, though, so we just need to handle the local development case here.
+
+# no-dd-sa: We don't care abput pinning package versions in the build stage.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates unzip && \
     (which cmake >/dev/null || apt-get install -y --no-install-recommends cmake)
@@ -35,9 +37,8 @@ FROM ${APP_IMAGE}
 
 ARG BUILD_PROFILE=release
 
-USER root
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
+    apt-get install -y --no-install-recommends ca-certificates=20240203~22.04.1 && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=builder /metrics-intake/target/${BUILD_PROFILE}/metrics-intake /usr/local/bin/metrics-intake
