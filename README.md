@@ -25,22 +25,34 @@ application-specific binaries.
   [used][ddsketch-agent] in the Datadog Agent
 - `lib/memory-accounting`: foundational traits and helpers for declaring memory bounds on components, and partitioning
   memory grants based on those components
+- `lib/process-memory`: cross-platform library for querying the RSS of the current process with few to no allocations
+- `lib/stringtheory`: custom string types and string interning implementations for high-performance string handling
 
 ### Saluki
 
 All remaining crates are part of Saluki itself, and all have a name with the prefix `saluki-`:
 
+- `lib/saluki-api`: minimal interface for defining API endpoints (to avoid circular crate dependencies)
 - `lib/saluki-app`: generic helpers for application bring up (initialization of logging, metrics, etc)
 - `lib/saluki-components`: feature-complete implementations of various common components (DogStatsD source, Datadog
   Metrics destination, and so on)
 - `lib/saluki-config`: lightweight helpers for both typed and untyped configuration file loading
+- `lib/saluki-context`: core primitives for metric contexts (unique name and tag combination), including zero-allocation
+  resolving and caching
 - `lib/saluki-core`: core primitives for building data planes, such as the topology builder, foundational traits for
   components, buffers, and more
 - `lib/saluki-env`: helpers for interacting with the process's environment, such as querying time, hostname, host
   environment (e.g. cloud provider), and so on
+- `lib/saluki-error`: generic error type and helpers for error handling based on `anyhow`
 - `lib/saluki-event`: the core event model used by Saluki
+- `lib/saluki-health`: lightweight library for defining components and checking/exposing the health of those components
 - `lib/saluki-io`: core I/O primitives for networking (TCP/UDP/UDS), serialization (codecs and framers), compression,
   I/O-specific buffers, as well as some common codec implementations (e.g. DogStatsD)
+- `lib/saluki-metrics`: helper macros for generating statically-defined metric structs to ease creating/holding
+  registered metric handles
+- `lib/saluki-tls`: lightweight library for initializing global TLS primitives, as well as build client/server TLS
+  configurations, in a centralized way that is amenable to ensuring certain aspects of usage (such as operating in
+  FIPS mode) are controlled and conforming
 
 ## Contributing
 
