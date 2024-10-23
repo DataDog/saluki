@@ -4,6 +4,7 @@
 use std::{cmp::Ordering, mem};
 
 use datadog_protos::metrics::Dogsketch;
+use float_cmp::ApproxEqRatio as _;
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 
@@ -749,9 +750,10 @@ impl TryFrom<Dogsketch> for DDSketch {
 }
 
 fn float_eq(l_value: f64, r_value: f64) -> bool {
-    use float_eq::FloatEq as _;
+    // When comparing two values, the smaller value cannot deviate by more than 0.0000001% of the larger value.
+    const RATIO_ERROR: f64 = 0.00000001;
 
-    (l_value.is_nan() && r_value.is_nan()) || l_value.eq_ulps(&r_value, &1)
+    (l_value.is_nan() && r_value.is_nan()) || l_value.approx_eq_ratio(&r_value, RATIO_ERROR)
 }
 
 fn rank(count: u32, q: f64) -> f64 {
