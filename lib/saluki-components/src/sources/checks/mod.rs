@@ -1,4 +1,5 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::hash::Hasher;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -6,6 +7,7 @@ use std::{
 use std::{fmt::Display, time::Duration};
 
 use async_trait::async_trait;
+use fnv::FnvHasher;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::Counter;
 use pyo3::prelude::*;
@@ -25,7 +27,7 @@ use saluki_core::{
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_event::{metric::*, DataType, Event};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use snafu::Snafu;
 use tokio::{select, sync::mpsc};
 use tracing::{debug, error, info, trace, warn};
@@ -64,8 +66,8 @@ struct CheckRequest {
     // In python checks, this is the module name for the check.
     // In core checks, TBD.
     name: String,
-    instances: Vec<CheckInstanceConfiguration>,
-    init_config: CheckInitConfiguration,
+    instances: Vec<CheckConfiguration>,
+    init_config: CheckConfiguration,
     source: CheckSource,
 }
 
@@ -138,24 +140,95 @@ fn map_to_pydict<'py>(
     Ok(dict)
 }
 
-#[derive(Debug, Clone, Default)]
-struct CheckInitConfiguration(HashMap<String, serde_yaml::Value>);
+/// Builds a unique ID for a check name and its configuration.
+///
+/// # Arguments
+///
+/// * `check_name` - The name of the check.
+/// * `integration_config_digest` - Defined in agent-code in comp/core/autodiscovery/integration/config.go
+/// * `instance` - Configuration for a specific check instance
+/// * `init_config` - Shared initial configuration amongst this check
+///
+/// `integration_config_digest` is a hash implemented as follows:
+///
+/// // FastDigest returns an hash value representing the data stored in this configuration.
+/// // Difference with Digest is that FastDigest does not consider that difference may appear inside Instances
+/// // allowing to remove costly YAML Marshal/UnMarshal operations
+/// // The ClusterCheck field is intentionally left out to keep a stable digest
+/// // between the cluster-agent and the node-agents
+/// func (c *Config) FastDigest() uint64 {
+/// »···h := murmur3.New64()
+/// »···_, _ = h.Write([]byte(c.Name))
+/// »···for _, i := range c.Instances {
+/// »···»···_, _ = h.Write([]byte(i))
+/// »···}
+/// »···_, _ = h.Write([]byte(c.InitConfig))
+/// »···for _, i := range c.ADIdentifiers {
+/// »···»···_, _ = h.Write([]byte(i))
+/// »···}
+/// »···_, _ = h.Write([]byte(c.NodeName))
+/// »···_, _ = h.Write([]byte(c.LogsConfig))
+/// »···_, _ = h.Write([]byte(c.ServiceID))
+/// »···_, _ = h.Write([]byte(strconv.FormatBool(c.IgnoreAutodiscoveryTags)))
+///
+/// »···return h.Sum64()
+/// }
 
-impl CheckInitConfiguration {
-    fn to_pydict<'py>(&self, p: &'py pyo3::Python) -> Bound<'py, pyo3::types::PyDict> {
-        map_to_pydict(&self.0, p).expect("Could convert")
+/// # Returns
+///
+/// A unique `ID` as a `String`.
+fn build_check_id(
+    check_name: &str, integration_config_digest: u64, instance: &CheckConfiguration, init_config: &CheckConfiguration,
+) -> String {
+    // Convert the digest to big-endian bytes.
+    let digest_bytes = integration_config_digest.to_be_bytes();
+
+    // Initialize the FNV hasher.
+    let mut hasher = FnvHasher::default();
+    hasher.write(&digest_bytes);
+    hasher.write(&instance.as_bytes());
+    hasher.write(&init_config.as_bytes());
+
+    // Compute the hash.
+    let hash = hasher.finish();
+
+    // Get the name from the instance.
+    // this just needs to check for a 'name' field and return it
+    let name = instance.name();
+
+    // Build the ID based on whether the name is empty.
+    if let Some(name) = name {
+        format!("{}:{}:{:x}", check_name, name, hash)
+    } else {
+        format!("{}:{:x}", check_name, hash)
     }
 }
 
-#[derive(Debug, Clone)]
-struct CheckInstanceConfiguration(HashMap<String, serde_yaml::Value>);
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CheckConfiguration(HashMap<String, serde_yaml::Value>);
 
-impl CheckInstanceConfiguration {
+impl CheckConfiguration {
     fn min_collection_interval_ms(&self) -> u32 {
         self.0
             .get("min_collection_interval")
             .map(|v| v.as_i64().expect("min_collection_interval must be an integer") as u32)
             .unwrap_or_else(default_min_collection_interval_ms)
+    }
+
+    fn name(&self) -> Option<String> {
+        match self.0.get("name") {
+            Some(serde_yaml::Value::String(s)) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    /// Serializes the configuration to bytes in a deterministic way.
+    fn as_bytes(&self) -> Vec<u8> {
+        // Convert HashMap to BTreeMap for deterministic ordering
+        let map: BTreeMap<_, _> = self.0.iter().collect();
+
+        // Serialize the BTreeMap to JSON bytes
+        serde_json::to_vec(&map).unwrap()
     }
 
     fn to_pydict<'py>(&self, p: &'py pyo3::Python) -> Bound<'py, pyo3::types::PyDict> {
@@ -253,9 +326,9 @@ impl CheckSource {
                         .map(|(k, v)| (k.as_str().expect("Only string instance config keys").to_string(), v))
                         .collect();
 
-                    CheckInitConfiguration(map)
+                    CheckConfiguration(map)
                 } else {
-                    CheckInitConfiguration(HashMap::new())
+                    CheckConfiguration(HashMap::new())
                 };
 
                 for instance in read_yaml.instances.into_iter() {
@@ -266,7 +339,7 @@ impl CheckSource {
                         .map(|(k, v)| (k.as_str().expect("Only string instance config keys").to_string(), v))
                         .collect();
 
-                    checks_config.push(CheckInstanceConfiguration(map));
+                    checks_config.push(CheckConfiguration(map));
                 }
 
                 let check_name = match &read_yaml.name {

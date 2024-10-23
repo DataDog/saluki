@@ -2746,6 +2746,7 @@ dependencies = [
  "bytesize",
  "datadog-protos",
  "ddsketch-agent",
+ "fnv",
  "futures",
  "hashbrown 0.15.0",
  "http",

@@ -328,8 +328,23 @@ impl CheckScheduler for PythonCheckScheduler {
                     .set_item("instances", instance_list)
                     .expect("could not set instance list");
 
+                let check_id = build_check_id(&check.check_request.name, 0, &instance, &init_config);
+
                 match check_py_class.0.call_bound(py, (), Some(&kwargs)) {
-                    Ok(c) => Ok(c),
+                    Ok(c) => {
+                        // If check is successfully created, then set check_id
+                        if let Err(e) = c.setattr(py, "check_id", &check_id) {
+                            error!(%e, "Could not set check_id on instance of check '{name}'", name = check.check_request.name);
+                        } else {
+                            info!(
+                                "Set check_id to '{check_id}' on instance of check '{name}'",
+                                check_id = check_id,
+                                name = check.check_request.name
+                            );
+                        }
+
+                        Ok(c)
+                    }
                     Err(e) => {
                         // TODO: This represents an initialization error for one of the instances
                         // requested. It should be tracked and made visible to the user.
