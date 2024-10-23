@@ -9,12 +9,17 @@ use super::python_exposed_modules::aggregator as pyagg;
 use super::python_exposed_modules::datadog_agent;
 use super::*;
 
-struct CheckHandle(Py<PyAny>);
+struct PyCheckClassHandle(Py<PyAny>);
 
-impl Clone for CheckHandle {
+impl Clone for PyCheckClassHandle {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
+}
+
+pub enum RunnableDecision {
+    CanRun,
+    CannotRun(String),
 }
 
 #[pyclass]
@@ -22,9 +27,14 @@ pub struct PythonSenderHolder {
     pub sender: mpsc::Sender<CheckMetric>,
 }
 
+struct RunningPythonInstance {
+    _check_handle: Py<PyAny>,
+    join_handle: tokio::task::JoinHandle<()>,
+}
+
 pub struct PythonCheckScheduler {
     tlm: ChecksTelemetry,
-    running: HashMap<CheckSource, (CheckHandle, Vec<tokio::task::JoinHandle<()>>)>,
+    running: HashMap<CheckSource, (PyCheckClassHandle, Vec<RunningPythonInstance>)>,
     agent_check_base_class: Py<PyAny>,
 }
 
@@ -46,7 +56,7 @@ impl PythonCheckScheduler {
             syspath.insert(0, Path::new("./dist/"))?; // path.GetDistPath()
             syspath.insert(0, Path::new("./dist/checks.d/"))?; // custom checks in checks.d subdir
                                                                // syspath.insert(0, config.get('additional_checksd'))?; // config option not supported yet
-            debug!("Python sys.path is: {:?}", syspath);
+            info!("Python sys.path is: {:?}", syspath);
 
             // Initialize the aggregator module with the submission queue
             match py.import_bound("aggregator") {
@@ -107,7 +117,7 @@ impl PythonCheckScheduler {
 
     // See `CheckRequest::to_runnable_request` for more TODO items here
     // Returns an opaque handle to the python class implementing the check
-    fn register_check(&mut self, check: &RunnableCheckRequest) -> Result<CheckHandle, GenericError> {
+    fn register_check(&mut self, check: &RunnableCheckRequest) -> Result<PyCheckClassHandle, GenericError> {
         let check_handle = match self.register_check_impl(check) {
             Ok(h) => h,
             Err(e) => {
@@ -135,7 +145,7 @@ impl PythonCheckScheduler {
         vec![module_name.to_string(), format!("datadog_checks.{}", module_name)]
     }
 
-    fn register_check_impl(&mut self, check: &RunnableCheckRequest) -> Result<CheckHandle, GenericError> {
+    fn register_check_impl(&mut self, check: &RunnableCheckRequest) -> Result<PyCheckClassHandle, GenericError> {
         let check_module_name = &check.check_request.name;
         // if there is a specific source, then this will populate into locals and can be found
         if let Some(py_source) = &check.check_source_code {
@@ -158,7 +168,11 @@ impl PythonCheckScheduler {
         ))
     }
 
-    fn register_check_from_imports(&self, import_path: &str) -> Result<CheckHandle, GenericError> {
+    /// Attempt to import the module and find a subclass of `AgentCheck`
+    /// If the module is found, and a subclass of `AgentCheck` is found, return a handle to the class
+    ///
+    /// Returns: A handle to the class that is a subclass of `AgentCheck`
+    fn register_check_from_imports(&self, import_path: &str) -> Result<PyCheckClassHandle, GenericError> {
         pyo3::Python::with_gil(|py| {
             let module = py.import_bound(import_path)?;
             let base_class = self.agent_check_base_class.bind(py);
@@ -175,7 +189,6 @@ impl PythonCheckScheduler {
                         Ok(c) => c,
                         Err(_) => return false,
                     };
-                    trace!("Found a class: {class_bound}");
                     if class_bound.is(base_class) {
                         // skip the base class
                         return false;
@@ -193,12 +206,12 @@ impl PythonCheckScheduler {
                 return Err(generic_error!("Multiple checks found in source"));
             }
             let (check_key, check_value) = &checks[0];
-            info!("Found base class {check_key} for check {import_path} {check_value:?}");
-            Ok(CheckHandle(check_value.as_unbound().clone()))
+            debug!("Found base class {check_key} for check {import_path} {check_value:?}");
+            Ok(PyCheckClassHandle(check_value.as_unbound().clone()))
         })
     }
 
-    fn register_check_with_source(&mut self, py_source: String) -> Result<CheckHandle, GenericError> {
+    fn register_check_with_source(&mut self, py_source: String) -> Result<PyCheckClassHandle, GenericError> {
         pyo3::Python::with_gil(|py| {
             debug!("Running provided check source and checking locals for subclasses of 'AgentCheck'");
             let locals = pyo3::types::PyDict::new_bound(py);
@@ -240,17 +253,19 @@ impl PythonCheckScheduler {
             }
             let (check_key, check_value) = &checks[0];
             info!("Found check {check_key} from source: {py_source}");
-            Ok(CheckHandle(check_value.as_unbound().clone()))
+            Ok(PyCheckClassHandle(check_value.as_unbound().clone()))
         })
     }
 }
+
 impl CheckScheduler for PythonCheckScheduler {
-    fn can_run_check(&self, check: &RunnableCheckRequest) -> bool {
-        self.possible_import_paths_for_module(check.check_request.name.as_str())
+    fn can_run_check(&self, check: &RunnableCheckRequest) -> RunnableDecision {
+        let attempted_import_paths = self.possible_import_paths_for_module(check.check_request.name.as_str());
+        let found_baseclass = attempted_import_paths
             .iter()
             .map(|module_name| {
                 let handle = self.register_check_from_imports(module_name);
-                info!(
+                trace!(
                     "Checking if py module '{name}' can be run. Handle exists? {}",
                     handle.is_ok(),
                     name = module_name,
@@ -258,7 +273,17 @@ impl CheckScheduler for PythonCheckScheduler {
 
                 handle.is_ok()
             })
-            .any(|x| x)
+            .any(|x| x);
+
+        if found_baseclass {
+            RunnableDecision::CanRun
+        } else {
+            let paths_attempted = attempted_import_paths.join(", ");
+            RunnableDecision::CannotRun(format!(
+                "Could not find base class for check '{}', attempted: [{paths_attempted}]",
+                check.check_request.name.as_str()
+            ))
+        }
     }
 
     // This function does 3 things
@@ -267,61 +292,70 @@ impl CheckScheduler for PythonCheckScheduler {
     //    queues a run of the check every min_collection_interval_ms
     // 3. Stores the handles in the running hashmap
     fn run_check(&mut self, check: &RunnableCheckRequest) -> Result<(), GenericError> {
-        let check_handle = self.register_check(check)?;
+        let check_py_class = self.register_check(check)?;
         let running_entry = self
             .running
             .entry(check.check_request.source.clone())
-            .or_insert((check_handle.clone(), Vec::new()));
+            .or_insert((check_py_class.clone(), Vec::new()));
 
         info!(
-            "Running check {name} with {num_instances} instances",
+            "Starting up check '{name}' with {num_instances} instances",
             name = check.check_request.name,
             num_instances = check.check_request.instances.len()
         );
-        for (idx, instance) in check.check_request.instances.iter().enumerate() {
+        for instance in check.check_request.instances.iter() {
             let instance = instance.clone();
             let init_config = check.check_request.init_config.clone();
 
-            let check_handle = check_handle.clone();
-            trace!("Spawning task for check instance {idx}");
+            let check_py_class = check_py_class.clone();
+            // create check
+            let pycheck_instance = pyo3::Python::with_gil(|py| -> Result<pyo3::Py<pyo3::PyAny>, GenericError> {
+                // In rtloader, 'instance_as_pydict' is created by invoking
+                //  `AgentCheck.load_config(instance)`
+                // However, this is un-necessary as pyo3 provides an api to directly convert
+                // 'instance' (yaml) to a pydict.
+                let instance_as_pydict = instance.to_pydict(&py);
+                let instance_list = PyList::new_bound(py, &[instance_as_pydict]);
+
+                let kwargs = PyDict::new_bound(py);
+                kwargs
+                    .set_item("name", "placeholder_check_name")
+                    .expect("Could not set name");
+                kwargs
+                    .set_item("init_config", init_config.to_pydict(&py))
+                    .expect("could not set init_config");
+                kwargs
+                    .set_item("instances", instance_list)
+                    .expect("could not set instance list");
+
+                match check_py_class.0.call_bound(py, (), Some(&kwargs)) {
+                    Ok(c) => Ok(c),
+                    Err(e) => {
+                        // TODO: This represents an initialization error for one of the instances
+                        // requested. It should be tracked and made visible to the user.
+                        error!(%e, "Instantiating '{name}' failed.", name = check.check_request.name);
+                        if let Some(traceback) = e.traceback_bound(py) {
+                            error!("{}", traceback.format().expect("Could format traceback"));
+                        }
+                        Err(e.into())
+                    }
+                }
+            })?;
+
             self.tlm.check_instances_started.increment(1);
-            let handle = tokio::task::spawn(async move {
+            let cloned_pycheck_instance = pycheck_instance.clone();
+            let join_handle = tokio::task::spawn(async move {
                 let mut interval =
                     tokio::time::interval(Duration::from_millis(instance.min_collection_interval_ms().into()));
                 loop {
                     interval.tick().await;
-                    // run check
-                    info!("Running check instance {idx}");
+                    // create check
                     pyo3::Python::with_gil(|py| {
-                        let instance_as_pydict = instance.to_pydict(&py);
-
-                        let instance_list = PyList::new_bound(py, &[instance_as_pydict]);
-                        let kwargs = PyDict::new_bound(py);
-                        kwargs
-                            .set_item("name", "placeholder_check_name")
-                            .expect("Could not set name");
-                        kwargs
-                            .set_item("init_config", init_config.to_pydict(&py))
-                            .expect("could not set init_config");
-                        kwargs
-                            .set_item("instances", instance_list)
-                            .expect("could not set instance list");
-
-                        // TODO should this be moved up outside of the loop?
-                        // I kind of think so, this makes a new check instance every tick
-                        let pycheck = match check_handle.0.call_bound(py, (), Some(&kwargs)) {
-                            Ok(c) => c,
-                            Err(e) => {
-                                error!(%e, "Could not instantiate check.");
-                                if let Some(traceback) = e.traceback_bound(py) {
-                                    error!("Traceback: {}", traceback.format().expect("Could format traceback"));
-                                }
-                                return;
-                            }
-                        };
                         // 'run' method invokes 'check' with the instance we initialized with
                         // ref https://github.com/DataDog/integrations-core/blob/bc3b1c3496e79aa1b75ebcc9ef1c2a2b26487ebd/datadog_checks_base/datadog_checks/base/checks/base.py#L1197
-                        let result = pycheck.call_method0(py, "run").unwrap();
+                        let result = cloned_pycheck_instance
+                            .call_method_bound(py, "run", (), None)
+                            .expect("Can run check");
 
                         let s: String = result
                             .extract(py)
@@ -331,7 +365,11 @@ impl CheckScheduler for PythonCheckScheduler {
                     })
                 }
             });
-            running_entry.1.push(handle);
+            let running_instance = RunningPythonInstance {
+                _check_handle: pycheck_instance,
+                join_handle,
+            };
+            running_entry.1.push(running_instance);
         }
 
         Ok(())
@@ -340,8 +378,10 @@ impl CheckScheduler for PythonCheckScheduler {
     fn stop_check(&mut self, check: CheckRequest) {
         info!("Deleting check request {check}");
         if let Some((check_handle, running)) = self.running.remove(&check.source) {
-            for handle in running.iter() {
-                handle.abort();
+            for current in running.iter() {
+                // does the running check need to be torn down?
+                // maybe current.check_handle.call_method("stop", (), None).expect("Can stop check");
+                current.join_handle.abort();
             }
             drop(check_handle); // release the reference to this check
         }

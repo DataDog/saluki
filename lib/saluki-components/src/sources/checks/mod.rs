@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::Counter;
 use pyo3::prelude::*;
+use python_scheduler::RunnableDecision;
 use saluki_config::GenericConfiguration;
 use saluki_context::{Context, Tag, TagSet};
 use saluki_core::pooling::ObjectPool;
@@ -381,24 +382,27 @@ impl CheckDispatcher {
             loop {
                 select! {
                     Some(check_request) = check_run_requests.recv() => {
-                        if python_scheduler.can_run_check(&check_request) {
-                            info!("Dispatching to Python {}", check_request);
-                            match python_scheduler.run_check(&check_request) {
-                                Ok(_) => {
-                                    tlm.check_requests_dispatched.increment(1);
-                                    debug!("Check request dispatched: {}", check_request);
-                                }
-                                Err(e) => {
-                                    error!("Error dispatching check request: {}", e);
+                        let decision = python_scheduler.can_run_check(&check_request);
+                        match decision {
+                            RunnableDecision::CanRun => {
+                                match python_scheduler.run_check(&check_request) {
+                                    Ok(_) => {
+                                        tlm.check_requests_dispatched.increment(1);
+                                        debug!("Check request dispatched: {}", check_request);
+                                    }
+                                    Err(e) => {
+                                        error!("Error dispatching check request: {}", e);
+                                    }
                                 }
                             }
-                        } else {
-                            warn!("Check request not dispatched: {}", check_request);
-                        }
+                            RunnableDecision::CannotRun(reason) => {
+                                error!("Check request {check_request} cannot be run due to: {reason}");
+                            }
+                        };
                     },
                     Some(check_request) = check_stop_requests.recv() => {
                         info!("Stopping check request: {}", check_request);
-                        // TODO check wihch one is running it and then stop it on that one
+                        // TODO check which one is running it and then stop it on that one
                         python_scheduler.stop_check(check_request);
                     }
                 }
@@ -582,7 +586,7 @@ async fn process_listener(
 }
 
 trait CheckScheduler {
-    fn can_run_check(&self, check_request: &RunnableCheckRequest) -> bool;
+    fn can_run_check(&self, check_request: &RunnableCheckRequest) -> RunnableDecision;
     fn run_check(&mut self, check_request: &RunnableCheckRequest) -> Result<(), GenericError>;
     fn stop_check(&mut self, check_name: CheckRequest);
 }

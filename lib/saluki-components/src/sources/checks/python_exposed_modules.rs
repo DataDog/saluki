@@ -49,6 +49,7 @@ pub(crate) fn submit_metric(
 }
 
 #[pyfunction]
+#[pyo3(signature = (name, status, tags, hostname, message=None))]
 fn submit_service_check(name: String, status: i32, tags: Vec<String>, hostname: String, message: Option<String>) {
     println!(
         "submit_service_check called with name: {}, status: {}, tags: {:?}, hostname: {}, message: {:?}",
@@ -123,6 +124,8 @@ fn log(message: String, level: u32) {
         // https://docs.python.org/3/library/logging.html#levels
         // Trace is manually specified in datadog_checks_base
         // https://github.com/DataDog/integrations-core/blob/458274dfd867b40e368c795574b6d97a9b7e471d/datadog_checks_base/datadog_checks/base/log.py#L20-L21
+        // Currently the '_check_id' / 'check_id' field is unset inside python-world
+        // so these logs say "Unknown" instead of the check-name
         40 => tracing::event!(tracing::Level::ERROR, "Python Log: {}", message),
         30 => tracing::event!(tracing::Level::WARN, "Python Log: {}", message),
         20 => tracing::event!(tracing::Level::INFO, "Python Log: {}", message),
