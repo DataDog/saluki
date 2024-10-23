@@ -26,10 +26,21 @@ mod api;
 const DEFAULT_PROBE_TIMEOUT_DUR: Duration = Duration::from_secs(5);
 const DEFAULT_PROBE_BACKOFF_DUR: Duration = Duration::from_secs(1);
 
-#[derive(Default, Serialize)]
+#[derive(Serialize)]
 struct ComponentHealth {
     ready: bool,
     live: bool,
+    status_detail: serde_json::Value,
+}
+
+impl Default for ComponentHealth {
+    fn default() -> Self {
+        Self {
+            ready: false,
+            live: false,
+            status_detail: serde_json::Value::Null,
+        }
+    }
 }
 
 /// A handle for updating the health of a component.
@@ -37,9 +48,18 @@ pub struct Health {
     ready: Arc<AtomicBool>,
     request_rx: mpsc::Receiver<LivenessRequest>,
     response_tx: mpsc::Sender<LivenessResponse>,
+    status_detail: Arc<Mutex<serde_json::Value>>,
 }
 
 impl Health {
+    pub fn noop() -> Self {
+        Self {
+            ready: Arc::new(AtomicBool::new(true)),
+            request_rx: mpsc::channel(0).1,
+            response_tx: mpsc::channel(0).0,
+            status_detail: Arc::new(Mutex::new(serde_json::Value::Null)),
+        }
+    }
     /// Marks the component as ready.
     pub fn mark_ready(&mut self) {
         self.ready.store(true, Relaxed);
@@ -48,6 +68,16 @@ impl Health {
     /// Marks the component as not ready.
     pub fn mark_not_ready(&mut self) {
         self.ready.store(false, Relaxed);
+    }
+
+    pub fn get_status_detail_copy(&self) -> serde_json::Value {
+        let status = self.status_detail.lock().unwrap();
+        status.clone()
+    }
+
+    pub fn set_status_detail(&self, detail: serde_json::Value) {
+        let mut status = self.status_detail.lock().unwrap();
+        *status = detail;
     }
 
     /// Waits for a liveness probe to be sent to the component, and then responds to it.
@@ -75,6 +105,7 @@ struct ComponentState {
     name: MetaString,
     health: HealthState,
     ready: Arc<AtomicBool>,
+    status_detail: Arc<Mutex<serde_json::Value>>,
     request_tx: mpsc::Sender<LivenessRequest>,
     last_response: Instant,
     last_response_latency: Duration,
@@ -84,11 +115,13 @@ impl ComponentState {
     fn new(name: MetaString, response_tx: mpsc::Sender<LivenessResponse>) -> (Self, Health) {
         let ready = Arc::new(AtomicBool::new(false));
         let (request_tx, request_rx) = mpsc::channel(1);
+        let status_detail = Arc::new(Mutex::new(serde_json::Value::Null));
 
         let state = Self {
             name,
             health: HealthState::Unknown,
             ready: Arc::clone(&ready),
+            status_detail: Arc::clone(&status_detail),
             request_tx,
             last_response: Instant::now(),
             last_response_latency: Duration::from_secs(0),
@@ -98,6 +131,7 @@ impl ComponentState {
             ready,
             request_rx,
             response_tx,
+            status_detail,
         };
 
         (state, handle)
@@ -409,18 +443,21 @@ impl Runner {
         }
 
         // Update the shared health map with our component's new health status.
-        let (component_name, component_ready, component_live) = {
+        let (component_name, component_ready, component_live, status_detail) = {
             let component_state = &inner.component_state[component_id];
+            let status_detail = component_state.status_detail.lock().unwrap().clone();
             (
                 component_state.name.clone(),
                 component_state.is_ready(),
                 component_state.is_live(),
+                status_detail,
             )
         };
 
         let component_health = inner.component_health.entry(component_name).or_default();
         component_health.ready = component_ready;
         component_health.live = component_live;
+        component_health.status_detail = status_detail;
     }
 
     async fn run(mut self) {

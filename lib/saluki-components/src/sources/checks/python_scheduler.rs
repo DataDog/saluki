@@ -3,6 +3,7 @@ use pyo3::types::PyDict;
 use pyo3::types::PyList;
 use pyo3::types::PyType;
 use saluki_error::{generic_error, GenericError};
+use serde_json::json;
 use tracing::trace;
 
 use super::python_exposed_modules::aggregator as pyagg;
@@ -32,14 +33,28 @@ struct RunningPythonInstance {
     join_handle: tokio::task::JoinHandle<()>,
 }
 
+#[derive(Clone, Serialize, Default)]
+struct StatusDetail {
+    // This maps from a given check request (TODO: Conflicts between check names are probable, so this should key off of check_id)
+    check_request_failures: HashMap<String, serde_json::Value>,
+
+    running_checks: HashMap<String, Vec<String>>,
+}
+
 pub struct PythonCheckScheduler {
     tlm: ChecksTelemetry,
-    running: HashMap<CheckSource, (PyCheckClassHandle, Vec<RunningPythonInstance>)>,
+    health: Health,
+    // Contains human-readable debugging information
+    status_detail: StatusDetail,
+    // A CheckSource will either appear in 'running'
+    running: HashMap<CheckRequest, (PyCheckClassHandle, Vec<RunningPythonInstance>)>,
     agent_check_base_class: Py<PyAny>,
 }
 
 impl PythonCheckScheduler {
-    pub fn new(send_check_metrics: mpsc::Sender<CheckMetric>, tlm: ChecksTelemetry) -> Result<Self, GenericError> {
+    pub fn new(
+        send_check_metrics: mpsc::Sender<CheckMetric>, tlm: ChecksTelemetry, health: Health,
+    ) -> Result<Self, GenericError> {
         // TODO future improvement to hook into py allocators to track memory usage
         // ref https://docs.rs/pyembed/latest/src/pyembed/pyalloc.rs.html#605-609
         pyo3::append_to_inittab!(datadog_agent);
@@ -110,6 +125,8 @@ impl PythonCheckScheduler {
 
         Ok(Self {
             tlm,
+            health,
+            status_detail: StatusDetail::default(),
             running: HashMap::new(),
             agent_check_base_class: agent_check_base_class.expect("AgentCheck class should be present"),
         })
@@ -259,7 +276,7 @@ impl PythonCheckScheduler {
 }
 
 impl CheckScheduler for PythonCheckScheduler {
-    fn can_run_check(&self, check: &RunnableCheckRequest) -> RunnableDecision {
+    fn can_run_check(&mut self, check: &RunnableCheckRequest) -> RunnableDecision {
         let attempted_import_paths = self.possible_import_paths_for_module(check.check_request.name.as_str());
         let found_baseclass = attempted_import_paths
             .iter()
@@ -275,15 +292,24 @@ impl CheckScheduler for PythonCheckScheduler {
             })
             .any(|x| x);
 
-        if found_baseclass {
-            RunnableDecision::CanRun
-        } else {
+        let mut ret = RunnableDecision::CanRun;
+        if !found_baseclass {
             let paths_attempted = attempted_import_paths.join(", ");
-            RunnableDecision::CannotRun(format!(
+            self.status_detail.check_request_failures.insert(
+                check.check_request.name.clone(),
+                json!({
+                    "error": "Could not find base class for check",
+                    "attempted_import_paths": attempted_import_paths,
+                }),
+            );
+            ret = RunnableDecision::CannotRun(format!(
                 "Could not find base class for check '{}', attempted: [{paths_attempted}]",
                 check.check_request.name.as_str()
-            ))
+            ));
         }
+        self.health
+            .set_status_detail(serde_json::to_value(&self.status_detail).expect("Can serialize"));
+        ret
     }
 
     // This function does 3 things
@@ -295,7 +321,7 @@ impl CheckScheduler for PythonCheckScheduler {
         let check_py_class = self.register_check(check)?;
         let running_entry = self
             .running
-            .entry(check.check_request.source.clone())
+            .entry(check.check_request.clone())
             .or_insert((check_py_class.clone(), Vec::new()));
 
         info!(
@@ -392,7 +418,7 @@ impl CheckScheduler for PythonCheckScheduler {
 
     fn stop_check(&mut self, check: CheckRequest) {
         info!("Deleting check request {check}");
-        if let Some((check_handle, running)) = self.running.remove(&check.source) {
+        if let Some((check_handle, running)) = self.running.remove(&check) {
             for current in running.iter() {
                 // does the running check need to be torn down?
                 // maybe current.check_handle.call_method("stop", (), None).expect("Can stop check");
@@ -413,14 +439,16 @@ mod tests {
     #[tokio::test]
     async fn test_new_check_scheduler() {
         let (sender, _) = mpsc::channel(10);
-        let scheduler = PythonCheckScheduler::new(sender, ChecksTelemetry::noop()).unwrap();
+        let scheduler =
+            PythonCheckScheduler::new(sender, ChecksTelemetry::noop(), saluki_health::Health::noop()).unwrap();
         assert!(scheduler.running.is_empty());
     }
 
     #[tokio::test]
     async fn test_register_check_with_source() {
         let (sender, _) = mpsc::channel(10);
-        let mut scheduler = PythonCheckScheduler::new(sender, ChecksTelemetry::noop()).unwrap();
+        let mut scheduler =
+            PythonCheckScheduler::new(sender, ChecksTelemetry::noop(), saluki_health::Health::noop()).unwrap();
         let py_source = r#"
 from datadog_checks.checks import AgentCheck
 
@@ -438,44 +466,8 @@ class MyCheck(AgentCheck):
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_run_check() {
         let (sender, mut receiver) = mpsc::channel(10);
-        let mut scheduler = PythonCheckScheduler::new(sender, ChecksTelemetry::noop()).unwrap();
-        let py_source = r#"
-from datadog_checks.checks import AgentCheck
-
-class MyCheck(AgentCheck):
-    def check(self, instance):
-        self.gauge('test-metric-name', 41, tags=['hello:world'])"#;
-
-        let source = CheckSource::Yaml(YamlCheck::new(
-            "my_check",
-            "instances: [{}]",
-            Some(PathBuf::from("/tmp/my_check.yaml")),
-        ));
-        let check_request = source.to_check_request().unwrap();
-
-        let runnable_check_request = RunnableCheckRequest {
-            check_source_code: Some(py_source.to_string()),
-            check_request,
-        };
-
-        scheduler.run_check(&runnable_check_request).unwrap();
-        assert_eq!(scheduler.running.len(), 1);
-        assert_eq!(scheduler.running.keys().next(), Some(&source));
-
-        let check_metric = CheckMetric {
-            name: "test-metric-name".to_string(),
-            metric_type: PyMetricType::Gauge,
-            value: 41.0,
-            tags: vec!["hello:world".to_string()],
-        };
-        let check_from_channel = receiver.recv().await.unwrap();
-        assert_eq!(check_from_channel, check_metric);
-    }
-
-    #[tokio::test]
-    async fn test_stop_check() {
-        let (sender, mut receiver) = mpsc::channel(10);
-        let mut scheduler = PythonCheckScheduler::new(sender, ChecksTelemetry::noop()).unwrap();
+        let mut scheduler =
+            PythonCheckScheduler::new(sender, ChecksTelemetry::noop(), saluki_health::Health::noop()).unwrap();
         let py_source = r#"
 from datadog_checks.checks import AgentCheck
 
@@ -497,7 +489,45 @@ class MyCheck(AgentCheck):
 
         scheduler.run_check(&runnable_check_request).unwrap();
         assert_eq!(scheduler.running.len(), 1);
-        assert_eq!(scheduler.running.keys().next(), Some(&source));
+        assert_eq!(scheduler.running.keys().next(), Some(&check_request));
+
+        let check_metric = CheckMetric {
+            name: "test-metric-name".to_string(),
+            metric_type: PyMetricType::Gauge,
+            value: 41.0,
+            tags: vec!["hello:world".to_string()],
+        };
+        let check_from_channel = receiver.recv().await.unwrap();
+        assert_eq!(check_from_channel, check_metric);
+    }
+
+    #[tokio::test]
+    async fn test_stop_check() {
+        let (sender, mut receiver) = mpsc::channel(10);
+        let mut scheduler =
+            PythonCheckScheduler::new(sender, ChecksTelemetry::noop(), saluki_health::Health::noop()).unwrap();
+        let py_source = r#"
+from datadog_checks.checks import AgentCheck
+
+class MyCheck(AgentCheck):
+    def check(self, instance):
+        self.gauge('test-metric-name', 41, tags=['hello:world'])"#;
+
+        let source = CheckSource::Yaml(YamlCheck::new(
+            "my_check",
+            "instances: [{}]",
+            Some(PathBuf::from("/tmp/my_check.yaml")),
+        ));
+        let check_request = source.to_check_request().unwrap();
+
+        let runnable_check_request = RunnableCheckRequest {
+            check_source_code: Some(py_source.to_string()),
+            check_request: check_request.clone(),
+        };
+
+        scheduler.run_check(&runnable_check_request).unwrap();
+        assert_eq!(scheduler.running.len(), 1);
+        assert_eq!(scheduler.running.keys().next(), Some(&check_request));
 
         scheduler.stop_check(check_request);
         assert!(scheduler.running.is_empty());

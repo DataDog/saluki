@@ -27,7 +27,9 @@ use saluki_core::{
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_event::{metric::*, DataType, Event};
+use saluki_health::Health;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use snafu::Snafu;
 use tokio::{select, sync::mpsc};
 use tracing::{debug, error, info, trace, warn};
@@ -59,7 +61,7 @@ fn default_check_config_dirs() -> Vec<String> {
     ]
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 struct CheckRequest {
     // Name is _not_ just for display, the 'name' field identifies which check should be instantiated
     // and run to satisfy this check request.
@@ -130,7 +132,7 @@ struct YamlCheckConfiguration {
 }
 
 fn map_to_pydict<'py>(
-    map: &HashMap<String, serde_yaml::Value>, p: &'py pyo3::Python,
+    map: &BTreeMap<String, serde_yaml::Value>, p: &'py pyo3::Python,
 ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
     let dict = pyo3::types::PyDict::new_bound(*p);
     for (key, value) in map {
@@ -204,8 +206,8 @@ fn build_check_id(
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CheckConfiguration(HashMap<String, serde_yaml::Value>);
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
+struct CheckConfiguration(BTreeMap<String, serde_yaml::Value>);
 
 impl CheckConfiguration {
     fn min_collection_interval_ms(&self) -> u32 {
@@ -321,20 +323,20 @@ impl CheckSource {
                 let init_config = if let Some(init_config) = read_yaml.init_config {
                     let mapping: serde_yaml::Mapping = init_config;
 
-                    let map: HashMap<String, serde_yaml::Value> = mapping
+                    let map: BTreeMap<String, serde_yaml::Value> = mapping
                         .into_iter()
                         .map(|(k, v)| (k.as_str().expect("Only string instance config keys").to_string(), v))
                         .collect();
 
                     CheckConfiguration(map)
                 } else {
-                    CheckConfiguration(HashMap::new())
+                    CheckConfiguration(BTreeMap::new())
                 };
 
                 for instance in read_yaml.instances.into_iter() {
                     let mapping: serde_yaml::Mapping = instance.to_owned();
 
-                    let map: HashMap<String, serde_yaml::Value> = mapping
+                    let map: BTreeMap<String, serde_yaml::Value> = mapping
                         .into_iter()
                         .map(|(k, v)| (k.as_str().expect("Only string instance config keys").to_string(), v))
                         .collect();
@@ -416,21 +418,35 @@ impl MemoryBounds for ChecksConfiguration {
 
 struct CheckDispatcher {
     tlm: ChecksTelemetry,
+    health: Health,
     python_scheduler: python_scheduler::PythonCheckScheduler,
     check_metrics_rx: mpsc::Receiver<CheckMetric>,
     check_run_requests: mpsc::Receiver<RunnableCheckRequest>,
     check_stop_requests: mpsc::Receiver<CheckRequest>,
 }
 
+#[derive(Clone, Deserialize, Serialize, Default)]
+struct DispatcherStatusDetail {
+    // Each incoming check request should record if it was dispatched and to which scheduler
+    check_request_state: HashMap<String, serde_json::Value>,
+}
+
 impl CheckDispatcher {
     fn new(
         check_run_requests: mpsc::Receiver<RunnableCheckRequest>, check_stop_requests: mpsc::Receiver<CheckRequest>,
-        tlm: ChecksTelemetry,
+        tlm: ChecksTelemetry, check_dispatcher_health: Option<Health>, python_scheduler_health: Option<Health>,
     ) -> Result<Self, GenericError> {
         let (check_metrics_tx, check_metrics_rx) = mpsc::channel(10_000_000);
-        let python_scheduler = python_scheduler::PythonCheckScheduler::new(check_metrics_tx.clone(), tlm.clone())?;
+        let python_scheduler_health = python_scheduler_health.expect("Health is not present");
+        let check_dispatcher_health = check_dispatcher_health.expect("Health is not present");
+        let python_scheduler = python_scheduler::PythonCheckScheduler::new(
+            check_metrics_tx.clone(),
+            tlm.clone(),
+            python_scheduler_health,
+        )?;
         Ok(Self {
             tlm,
+            health: check_dispatcher_health,
             check_metrics_rx,
             check_run_requests,
             check_stop_requests,
@@ -446,13 +462,17 @@ impl CheckDispatcher {
 
         let CheckDispatcher {
             tlm,
+            health,
             mut check_run_requests,
             mut check_stop_requests,
             mut python_scheduler,
             check_metrics_rx,
         } = self;
+        health.set_status_detail(serde_json::to_value(DispatcherStatusDetail::default()).expect("Can serialize"));
         tokio::spawn(async move {
             loop {
+                let mut details: DispatcherStatusDetail = serde_json::from_value(health.get_status_detail_copy())
+                    .expect("Failed to deserialize status detail");
                 select! {
                     Some(check_request) = check_run_requests.recv() => {
                         let decision = python_scheduler.can_run_check(&check_request);
@@ -461,14 +481,17 @@ impl CheckDispatcher {
                                 match python_scheduler.run_check(&check_request) {
                                     Ok(_) => {
                                         tlm.check_requests_dispatched.increment(1);
+                                        details.check_request_state.entry(check_request.check_request.name.clone()).or_insert(json!("dispatched to Python"));
                                         debug!("Check request dispatched: {}", check_request);
                                     }
                                     Err(e) => {
+                                        details.check_request_state.entry(check_request.check_request.name.clone()).or_insert(json!(format!("Python runnable check failed due to error {e}")));
                                         error!("Error dispatching check request: {}", e);
                                     }
                                 }
                             }
                             RunnableDecision::CannotRun(reason) => {
+                                details.check_request_state.entry(check_request.check_request.name.clone()).or_insert(json!(format!("Check request {check_request} cannot be run in python due to {reason}")));
                                 error!("Check request {check_request} cannot be run due to: {reason}");
                             }
                         };
@@ -477,8 +500,13 @@ impl CheckDispatcher {
                         info!("Stopping check request: {}", check_request);
                         // TODO check which one is running it and then stop it on that one
                         python_scheduler.stop_check(check_request);
+                    },
+                    else => {
+                        error!("Check Dispatcher cannot recieve any more requests, shutting down.");
+                        break;
                     }
                 }
+                health.set_status_detail(serde_json::to_value(details).expect("Can serialize"));
             }
         });
 
@@ -516,12 +544,21 @@ impl Checks {
             check_instances_started: metrics.register_counter("checkinstances.started"),
         };
 
+        let check_dispatcher_health = context.health_registry().register_component("check_dispatcher");
+        let python_check_scheduler = context.health_registry().register_component("python_check_scheduler");
+
         let Checks { listeners } = self;
 
         let (check_run_requests_tx, check_run_requests_rx) = mpsc::channel(100);
         let (check_stop_requests_tx, check_stop_requests_rx) = mpsc::channel(100);
-        let dispatcher =
-            CheckDispatcher::new(check_run_requests_rx, check_stop_requests_rx, tlm).expect("Could create");
+        let dispatcher = CheckDispatcher::new(
+            check_run_requests_rx,
+            check_stop_requests_rx,
+            tlm,
+            check_dispatcher_health,
+            python_check_scheduler,
+        )
+        .expect("Could create");
 
         let mut joinset = tokio::task::JoinSet::new();
         // Run the local task set.
@@ -659,7 +696,7 @@ async fn process_listener(
 }
 
 trait CheckScheduler {
-    fn can_run_check(&self, check_request: &RunnableCheckRequest) -> RunnableDecision;
+    fn can_run_check(&mut self, check_request: &RunnableCheckRequest) -> RunnableDecision;
     fn run_check(&mut self, check_request: &RunnableCheckRequest) -> Result<(), GenericError>;
     fn stop_check(&mut self, check_name: CheckRequest);
 }
@@ -733,8 +770,36 @@ impl TryInto<Event> for CheckMetric {
                 MetricValues::counter(self.value),
                 metadata,
             ))),
-            // TODO(remy): rest of the types
-            _ => Err(AggregatorError::UnsupportedType {}),
+            PyMetricType::Histogram => Ok(saluki_event::Event::Metric(Metric::from_parts(
+                context,
+                // TODO support more metric types
+                MetricValues::gauge(self.value),
+                metadata,
+            ))),
+            PyMetricType::Historate => Ok(saluki_event::Event::Metric(Metric::from_parts(
+                context,
+                // TODO what is historate? what do I do with it?
+                MetricValues::gauge(self.value),
+                metadata,
+            ))),
+            PyMetricType::MonotonicCount => Ok(saluki_event::Event::Metric(Metric::from_parts(
+                context,
+                // TODO incorrect handling of monotonic count
+                MetricValues::counter(self.value),
+                metadata,
+            ))),
+            PyMetricType::Rate => Ok(saluki_event::Event::Metric(Metric::from_parts(
+                context,
+                // TODO incorrect handling of rate
+                MetricValues::counter(self.value),
+                metadata,
+            ))),
+            PyMetricType::Count => Ok(saluki_event::Event::Metric(Metric::from_parts(
+                context,
+                // TODO incorrect handling of count
+                MetricValues::counter(self.value),
+                metadata,
+            ))),
         }
     }
 }
