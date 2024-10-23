@@ -41,6 +41,3 @@ tokio-util = { workspace = true, features = ["time"] }
 tonic = { workspace = true, features = ["transport"] }
 tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-cgroupfs = { workspace = true }

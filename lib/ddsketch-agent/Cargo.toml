@@ -11,7 +11,7 @@ serde = ["dep:serde", "smallvec/serde"]
 
 [dependencies]
 datadog-protos = { workspace = true }
-float_eq = { workspace = true }
+float-cmp = { workspace = true, features = ["ratio"] }
 ordered-float = { workspace = true }
 serde = { workspace = true, optional = true }
 smallvec = { workspace = true, features = ["union"] }

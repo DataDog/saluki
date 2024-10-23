@@ -8,7 +8,6 @@ repository = { workspace = true }
 [dependencies]
 bitmask-enum = { workspace = true }
 ddsketch-agent = { workspace = true }
-float_eq = { workspace = true }
 ordered-float = { workspace = true }
 saluki-context = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

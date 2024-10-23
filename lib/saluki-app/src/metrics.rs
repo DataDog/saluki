@@ -104,7 +104,7 @@ struct RuntimeMetrics {
     num_alive_tasks: Gauge,
     blocking_queue_depth: Gauge,
     budget_forced_yield_count: Gauge,
-    injection_queue_depth: Gauge,
+    global_queue_depth: Gauge,
     io_driver_fd_deregistered_count: Gauge,
     io_driver_fd_registered_count: Gauge,
     io_driver_ready_count: Gauge,
@@ -127,7 +127,7 @@ impl RuntimeMetrics {
             num_alive_tasks: gauge!("runtime.num_alive_tasks"),
             blocking_queue_depth: gauge!("runtime.blocking_queue_depth"),
             budget_forced_yield_count: gauge!("runtime.budget_forced_yield_count"),
-            injection_queue_depth: gauge!("runtime.injection_queue_depth"),
+            global_queue_depth: gauge!("runtime.global_queue_depth"),
             io_driver_fd_deregistered_count: gauge!("runtime.io_driver_fd_deregistered_count"),
             io_driver_fd_registered_count: gauge!("runtime.io_driver_fd_registered_count"),
             io_driver_ready_count: gauge!("runtime.io_driver_ready_count"),
@@ -145,7 +145,7 @@ impl RuntimeMetrics {
         self.blocking_queue_depth.set(metrics.blocking_queue_depth() as f64);
         self.budget_forced_yield_count
             .set(metrics.budget_forced_yield_count() as f64);
-        self.injection_queue_depth.set(metrics.injection_queue_depth() as f64);
+        self.global_queue_depth.set(metrics.global_queue_depth() as f64);
         self.io_driver_fd_deregistered_count
             .set(metrics.io_driver_fd_deregistered_count() as f64);
         self.io_driver_fd_registered_count
