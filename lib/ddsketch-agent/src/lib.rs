@@ -766,6 +766,13 @@ impl DDSketch {
             }
         }
 
+        if let Some(self_bin) = self_bin_opt {
+            temp_bins.push(self_bin);
+        }
+        if let Some(other_bin) = other_bin_opt {
+            temp_bins.push(other_bin);
+        }
+
         // One of these will be empty after the loop above. Extend with bins from the other.
         temp_bins.extend(self_bin_iter);
         temp_bins.extend(other_bin_iter);
