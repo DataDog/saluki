@@ -51,11 +51,14 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=builder /adp/target/*/agent-data-plane /usr/local/bin/agent-data-plane
-# TODO do I need to copy /opt/datadog-agent/embedded here as well?
-# I think I do because the `APP_IMAGE` will not contain this
-# For my testing, I don't run this standalone, only in the converged agent image, so leaving this as a future TODO
 COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
 
+# Copy the Datadog Agent's embedded Python environment into the image to resolve Python dependencies
+COPY --from=agent "/opt/datadog-agent/embedded" "/opt/datadog-agent/embedded"
+ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
+ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
+# Also copy the conf.d to get default integration configurations
+COPY --from=agent "/etc/datadog-agent/conf.d" "/etc/datadog-agent/conf.d"
 
 # HACK(tobz): SMP currently fails to run experiments if `/etc/<target name>` doesn't exist... so we're populating this
 # directory manually for the time being to get ADP benchmarks running.
