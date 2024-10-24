@@ -43,10 +43,12 @@ impl Default for ComponentHealth {
     }
 }
 
+// Cloneable to allow components to pass a handle around to spawned sub-tasks.
+#[derive(Clone)]
 /// A handle for updating the health of a component.
 pub struct Health {
     ready: Arc<AtomicBool>,
-    request_rx: mpsc::Receiver<LivenessRequest>,
+    request_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<LivenessRequest>>>,
     response_tx: mpsc::Sender<LivenessResponse>,
     status_detail: Arc<Mutex<serde_json::Value>>,
 }
@@ -55,7 +57,7 @@ impl Health {
     pub fn noop() -> Self {
         Self {
             ready: Arc::new(AtomicBool::new(true)),
-            request_rx: mpsc::channel(0).1,
+            request_rx: Arc::new(tokio::sync::Mutex::new(mpsc::channel(0).1)),
             response_tx: mpsc::channel(0).0,
             status_detail: Arc::new(Mutex::new(serde_json::Value::Null)),
         }
@@ -87,7 +89,7 @@ impl Health {
     pub async fn live(&mut self) {
         // Simply wait for the health registry to send us a liveness probe, and if we receive one, we respond back to it
         // immediately.
-        if let Some(request) = self.request_rx.recv().await {
+        if let Some(request) = self.request_rx.lock().await.recv().await {
             let response = request.into_response();
             let _ = self.response_tx.send(response).await;
         }
@@ -129,7 +131,7 @@ impl ComponentState {
 
         let handle = Health {
             ready,
-            request_rx,
+            request_rx: Arc::new(tokio::sync::Mutex::new(request_rx)),
             response_tx,
             status_detail,
         };

@@ -79,31 +79,33 @@ impl CheckDispatcher {
                         let decision = python_scheduler.can_run_check(&check_request);
                         match decision {
                             RunnableDecision::CanRun => {
-                                match python_scheduler.run_check(&check_request) {
+                                match python_scheduler.run_check(&check_request).await {
                                     Ok(_) => {
                                         tlm.check_requests_dispatched.increment(1);
                                         details.check_request_state.entry(check_request.name.clone()).or_insert(json!("dispatched to Python"));
-                                        debug!("Check request dispatched: {}", check_request);
+                                        debug!("Check request dispatched to python successfully: {}", check_request);
                                     }
                                     Err(e) => {
-                                        details.check_request_state.entry(check_request.name.clone()).or_insert(json!(format!("Python runnable check failed due to error {e}")));
+                                        details.check_request_state.entry(check_request.name.clone()).or_insert(json!(format!("Err dispatching to Python: {e}")));
                                         error!("Error dispatching check request: {}", e);
                                     }
                                 }
                             }
                             RunnableDecision::CannotRun(reason) => {
-                                details.check_request_state.entry(check_request.name.clone()).or_insert(json!(format!("Check request {check_request} cannot be run in python due to {reason}")));
+                                details.check_request_state.entry(check_request.name.clone()).or_insert(json!(format!("Not runnable in Python: {reason}")));
                                 error!("Check request {check_request} cannot be run due to: {reason}");
                             }
                         };
                     },
                     Some(check_request) = check_stop_requests.recv() => {
                         info!("Stopping check request: {}", check_request);
-                        // TODO check which one is running it and then stop it on that one
+                        // If multiple schedulers exist in the future, this will need to be smarter about which scheduler to stop
                         python_scheduler.stop_check(check_request);
                     },
                     else => {
                         error!("Check Dispatcher cannot recieve any more requests, shutting down.");
+                        // TODO mark component as fully dead here
+                        // but that health api doesn't exist
                         break;
                     }
                 }

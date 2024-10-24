@@ -559,7 +559,7 @@ async fn process_listener(
 
 trait CheckScheduler {
     fn can_run_check(&mut self, check_request: &CheckRequest) -> RunnableDecision;
-    fn run_check(&mut self, check_request: &CheckRequest) -> Result<(), GenericError>;
+    async fn run_check(&mut self, check_request: &CheckRequest) -> Result<(), GenericError>;
     fn stop_check(&mut self, check_name: CheckRequest);
 }
 

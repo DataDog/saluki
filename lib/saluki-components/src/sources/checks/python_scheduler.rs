@@ -1,9 +1,11 @@
+use std::sync::Arc;
+
 use pyo3::prelude::PyAnyMethods;
 use pyo3::types::PyDict;
 use pyo3::types::PyList;
 use pyo3::types::PyType;
 use saluki_error::{generic_error, GenericError};
-use serde_json::json;
+use tokio::sync::Mutex;
 use tracing::trace;
 
 use super::python_exposed_modules::aggregator as pyagg;
@@ -20,7 +22,7 @@ impl Clone for PyCheckClassHandle {
 
 pub enum RunnableDecision {
     CanRun,
-    CannotRun(String),
+    CannotRun(GenericError),
 }
 
 #[pyclass]
@@ -34,18 +36,24 @@ struct RunningPythonInstance {
 }
 
 #[derive(Clone, Serialize, Default)]
-struct StatusDetail {
-    // This maps from a given check request (TODO: Conflicts between check names are probable, so this should key off of check_id)
-    check_request_failures: HashMap<String, serde_json::Value>,
+struct InstanceStatus {
+    last_execution_duration_ms: Option<u64>,
+    last_execution_result: Option<String>,
+    num_executions: u64,
+    errors: Vec<String>,
+}
 
-    running_checks: HashMap<String, Vec<String>>,
+#[derive(Clone, Serialize, Default)]
+struct StatusDetail {
+    // Key'd by check_id
+    instance_statuses: HashMap<String, InstanceStatus>,
 }
 
 pub struct PythonCheckScheduler {
     tlm: ChecksTelemetry,
     health: Health,
     // Contains human-readable debugging information
-    status_detail: StatusDetail,
+    status_detail: Arc<Mutex<StatusDetail>>,
     // A CheckSource will either appear in 'running'
     running: HashMap<CheckRequest, (PyCheckClassHandle, Vec<RunningPythonInstance>)>,
     agent_check_base_class: Py<PyAny>,
@@ -127,7 +135,7 @@ impl PythonCheckScheduler {
         Ok(Self {
             tlm,
             health,
-            status_detail: StatusDetail::default(),
+            status_detail: Arc::new(Mutex::new(StatusDetail::default())),
             running: HashMap::new(),
             manually_registered_checks: HashMap::new(),
             agent_check_base_class: agent_check_base_class.expect("AgentCheck class should be present"),
@@ -208,10 +216,10 @@ impl PythonCheckScheduler {
                 })
                 .collect::<Vec<_>>();
             if checks.is_empty() {
-                return Err(generic_error!("No checks found in source"));
+                return Err(generic_error!("No checks found in '{import_path}'"));
             }
             if checks.len() >= 2 {
-                return Err(generic_error!("Multiple checks found in source"));
+                return Err(generic_error!("Multiple checks found in '{import_path}'"));
             }
             let (check_key, check_value) = &checks[0];
             debug!("Found base class {check_key} for check {import_path} {check_value:?}");
@@ -290,22 +298,11 @@ impl PythonCheckScheduler {
 
 impl CheckScheduler for PythonCheckScheduler {
     fn can_run_check(&mut self, check: &CheckRequest) -> RunnableDecision {
-        let ret = match self.find_agentcheck(check) {
+        match self.find_agentcheck(check) {
             Ok(_) => RunnableDecision::CanRun,
-            Err(e) => {
-                self.status_detail.check_request_failures.insert(
-                    check.name.clone(),
-                    json!({
-                        "error": e.to_string(),
-                    }),
-                );
-                RunnableDecision::CannotRun(format!("Could not find base class for check '{}'", check.name))
-            }
-        };
-
-        self.health
-            .set_status_detail(serde_json::to_value(&self.status_detail).expect("Can serialize"));
-        ret
+            // TODO return error message up to the dispatcher
+            Err(e) => RunnableDecision::CannotRun(e),
+        }
     }
 
     /// This function does 3 things
@@ -316,7 +313,7 @@ impl CheckScheduler for PythonCheckScheduler {
     ///
     /// Known Gaps:
     /// - `__version__` not set correctyl. ref PythonCheckLoader::Load in Agent
-    fn run_check(&mut self, check: &CheckRequest) -> Result<(), GenericError> {
+    async fn run_check(&mut self, check: &CheckRequest) -> Result<(), GenericError> {
         let check_py_class = self.find_agentcheck(check)?;
         let running_entry = self
             .running
@@ -332,77 +329,114 @@ impl CheckScheduler for PythonCheckScheduler {
             let instance = instance.clone();
             let init_config = check.init_config.clone();
 
+            let check_id = build_check_id(&check.name, 0, &instance, &init_config);
+
             let check_py_class = check_py_class.clone();
             // create check
-            let pycheck_instance = pyo3::Python::with_gil(|py| -> Result<pyo3::Py<pyo3::PyAny>, GenericError> {
-                // In rtloader, 'instance_as_pydict' is created by invoking
-                //  `AgentCheck.load_config(instance)`
-                // However, this is un-necessary as pyo3 provides an api to directly convert
-                // 'instance' (yaml) to a pydict.
-                let instance_as_pydict = instance.to_pydict(&py);
-                let instance_list = PyList::new_bound(py, &[instance_as_pydict]);
+            let instantiate_result =
+                pyo3::Python::with_gil(|py| -> Result<pyo3::Py<pyo3::PyAny>, (GenericError, String)> {
+                    // In rtloader, 'instance_as_pydict' is created by invoking
+                    //  `AgentCheck.load_config(instance)`
+                    // However, this is un-necessary as pyo3 provides an api to directly convert
+                    // 'instance' (yaml) to a pydict.
+                    let instance_as_pydict = instance.to_pydict(&py);
+                    let instance_list = PyList::new_bound(py, &[instance_as_pydict]);
 
-                let kwargs = PyDict::new_bound(py);
-                kwargs
-                    .set_item("name", "placeholder_check_name")
-                    .expect("Could not set name");
-                kwargs
-                    .set_item("init_config", init_config.to_pydict(&py))
-                    .expect("could not set init_config");
-                kwargs
-                    .set_item("instances", instance_list)
-                    .expect("could not set instance list");
+                    let kwargs = PyDict::new_bound(py);
+                    kwargs
+                        .set_item("name", "placeholder_check_name")
+                        .expect("Could not set name");
+                    kwargs
+                        .set_item("init_config", init_config.to_pydict(&py))
+                        .expect("could not set init_config");
+                    kwargs
+                        .set_item("instances", instance_list)
+                        .expect("could not set instance list");
 
-                let check_id = build_check_id(&check.name, 0, &instance, &init_config);
+                    match check_py_class.0.call_bound(py, (), Some(&kwargs)) {
+                        Ok(c) => {
+                            // If check is successfully created, then set check_id
+                            if let Err(e) = c.setattr(py, "check_id", &check_id) {
+                                error!(%e, "Could not set check_id on instance of check '{name}'", name = check.name);
+                            } else {
+                                info!(
+                                    "Set check_id to '{check_id}' on instance of check '{name}'",
+                                    check_id = check_id,
+                                    name = check.name
+                                );
+                            }
 
-                match check_py_class.0.call_bound(py, (), Some(&kwargs)) {
-                    Ok(c) => {
-                        // If check is successfully created, then set check_id
-                        if let Err(e) = c.setattr(py, "check_id", &check_id) {
-                            error!(%e, "Could not set check_id on instance of check '{name}'", name = check.name);
-                        } else {
-                            info!(
-                                "Set check_id to '{check_id}' on instance of check '{name}'",
-                                check_id = check_id,
-                                name = check.name
-                            );
+                            Ok(c)
                         }
-
-                        Ok(c)
-                    }
-                    Err(e) => {
-                        // TODO: This represents an initialization error for one of the instances
-                        // requested. It should be tracked and made visible to the user.
-                        error!(%e, "Instantiating '{name}' failed.", name = check.name);
-                        if let Some(traceback) = e.traceback_bound(py) {
-                            error!("{}", traceback.format().expect("Could format traceback"));
+                        Err(e) => {
+                            // TODO: This represents an initialization error for one of the instances
+                            // requested. It should be tracked and made visible to the user.
+                            let mut py_traceback = String::new();
+                            if let Some(traceback) = e.traceback_bound(py) {
+                                py_traceback = traceback.format().expect("Could format traceback");
+                            }
+                            error!(%e, "Instantiating '{name}' failed. {py_traceback}", name = check.name);
+                            Err((e.into(), py_traceback))
                         }
-                        Err(e.into())
                     }
+                });
+
+            let pycheck_instance = match instantiate_result {
+                Ok(c) => c,
+                Err((e, py_traceback)) => {
+                    let mut status_detail = self.status_detail.lock().await;
+                    let check_status = status_detail.instance_statuses.entry(check_id.clone()).or_default();
+                    check_status.last_execution_result = Some("Error.".into());
+                    check_status.errors.push(format!("{e}\n{py_traceback}"));
+                    self.health
+                        .set_status_detail(serde_json::to_value(&*status_detail).expect("Can serialize"));
+                    return Err(e);
                 }
-            })?;
+            };
 
             self.tlm.check_instances_started.increment(1);
             let cloned_pycheck_instance = pycheck_instance.clone();
+            let status_detail = self.status_detail.clone();
+            let health = self.health.clone();
             let join_handle = tokio::task::spawn(async move {
                 let mut interval =
                     tokio::time::interval(Duration::from_millis(instance.min_collection_interval_ms().into()));
                 loop {
                     interval.tick().await;
-                    // create check
-                    pyo3::Python::with_gil(|py| {
-                        // 'run' method invokes 'check' with the instance we initialized with
-                        // ref https://github.com/DataDog/integrations-core/blob/bc3b1c3496e79aa1b75ebcc9ef1c2a2b26487ebd/datadog_checks_base/datadog_checks/base/checks/base.py#L1197
-                        let result = cloned_pycheck_instance
-                            .call_method_bound(py, "run", (), None)
-                            .expect("Can run check");
+                    let start_time = tokio::time::Instant::now();
+                    // 'run' method invokes 'check' with the instance we initialized with
+                    // ref https://github.com/DataDog/integrations-core/blob/bc3b1c3496e79aa1b75ebcc9ef1c2a2b26487ebd/datadog_checks_base/datadog_checks/base/checks/base.py#L1197
+                    let result =
+                        pyo3::Python::with_gil(|py| cloned_pycheck_instance.call_method_bound(py, "run", (), None));
+                    let duration = start_time.elapsed();
 
+                    {
+                        let mut status_detail = status_detail.lock().await;
+                        let check_status = status_detail.instance_statuses.entry(check_id.clone()).or_default();
+                        check_status.num_executions += 1;
+                        check_status.last_execution_duration_ms = Some(duration.as_millis() as u64);
+                        match result {
+                            Ok(_) => {
+                                check_status.last_execution_result = Some("Success".to_string());
+                            }
+                            Err(e) => {
+                                let error_message = e.to_string();
+                                check_status.last_execution_result = Some(format!("Error: {}", error_message));
+                                check_status.errors.push(error_message);
+                            }
+                        }
+                    }
+
+                    /*
+                    todo revive this if 'run' can return something interesting
                         let s: String = result
                             .extract(py)
                             .expect("Can't read the string result from the check execution");
 
                         trace!("Check execution returned {:?}", s);
-                    })
+                    */
+                    health
+                        .set_status_detail(serde_json::to_value(&*status_detail.lock().await).expect("Can serialize"));
                 }
             });
             let running_instance = RunningPythonInstance {
@@ -483,7 +517,7 @@ class MyCheck(AgentCheck):
 
         scheduler._register_check_module("my_check", py_source).unwrap();
 
-        scheduler.run_check(&check_request).unwrap();
+        scheduler.run_check(&check_request).await.unwrap();
         assert_eq!(scheduler.running.len(), 1);
         assert_eq!(scheduler.running.keys().next(), Some(&check_request));
 
@@ -517,7 +551,7 @@ class MyCheck(AgentCheck):
         let check_request = source.to_check_request().unwrap();
         scheduler._register_check_module("my_check", py_source).unwrap();
 
-        scheduler.run_check(&check_request).unwrap();
+        scheduler.run_check(&check_request).await.unwrap();
         assert_eq!(scheduler.running.len(), 1);
         assert_eq!(scheduler.running.keys().next(), Some(&check_request));
 
