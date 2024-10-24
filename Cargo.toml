@@ -122,6 +122,7 @@ hashbrown = { version = "0.15", default-features = false }
 quick_cache = { version = "0.6", default-features = false }
 crossbeam-queue = { version = "0.3", default-features = false }
 float-cmp = { version = "0.10", default-features = false }
+integer-encoding = { version = "4.0.2", default-features = false }
 
 [profile.release]
 lto = "thin"

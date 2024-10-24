@@ -5,6 +5,13 @@ use ddsketch_agent::DDSketch;
 use rand::SeedableRng;
 use rand_distr::{Distribution, Pareto};
 
+pub fn insert_single_points(ns: &[f64]) {
+    let mut sketch = DDSketch::default();
+    for i in ns {
+        sketch.insert(*i);
+    }
+}
+
 pub fn insert_single_and_serialize(ns: &[f64]) {
     let mut sketch = DDSketch::default();
     for i in ns {
