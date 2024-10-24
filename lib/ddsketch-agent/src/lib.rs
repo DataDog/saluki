@@ -131,13 +131,13 @@ pub struct BinMut {
 impl BinMut {
     /// Increments the count of the bin.
     pub fn increment(&mut self, n: u32) -> u32 {
-        let next = n + *self.n;
-        if next > MAX_BIN_WIDTH {
-            self.n.set(MAX_BIN_WIDTH);
-            next - MAX_BIN_WIDTH
-        } else {
-            self.n.set(next);
+        let result = n.checked_add(*self.n);
+        if let Some(n) = result {
+            self.n.set(n);
             0
+        } else {
+            self.n.set(MAX_BIN_WIDTH);
+            n.wrapping_add(*self.n)
         }
     }
 }
@@ -219,7 +219,7 @@ impl BinList {
     }
 
     /// Copy elements from a `BinMut` iterator and add them to the list.
-    pub fn extend_with_binmut<'b>(&mut self, bins: impl Iterator<Item = BinMut>) {
+    pub fn extend_with_binmut(&mut self, bins: impl Iterator<Item = BinMut>) {
         for BinMut { k, n } in bins {
             self.keys.push(k);
             self.counts.push(*n);
@@ -282,6 +282,15 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list().entries(self.iter()).finish()
+    }
+}
+
+impl<N> Default for VarIntList<N>
+where
+    N: VarInt,
+{
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -350,30 +359,34 @@ where
                         let old_length = bytes_read;
                         let new_length = value.required_space();
 
-                        if new_length == old_length {
-                            // Replace in place
-                            value.encode_var(&mut data[start..start + new_length]);
-                        } else if new_length < old_length {
-                            // Overwrite and shift left
-                            value.encode_var(&mut data[start..start + new_length]);
-                            let shift = old_length - new_length;
-                            let end = data.len();
-                            for i in start + new_length..end - shift {
-                                data[i] = data[i + shift];
+                        match new_length.cmp(&old_length) {
+                            Ordering::Equal => {
+                                // Replace in place
+                                value.encode_var(&mut data[start..start + new_length]);
                             }
-                            data.truncate(end - shift);
-                        } else {
-                            // new_length > old_length
-                            // Shift data right
-                            let shift = new_length - old_length;
-                            let end = data.len();
-                            data.reserve(shift);
-                            data.resize(end + shift, 0);
-                            for i in (start + old_length..end).rev() {
-                                data[i + shift] = data[i];
+                            Ordering::Less => {
+                                // Overwrite and shift left
+                                value.encode_var(&mut data[start..start + new_length]);
+                                let shift = old_length - new_length;
+                                let end = data.len();
+                                for i in start + new_length..end - shift {
+                                    data[i] = data[i + shift];
+                                }
+                                data.truncate(end - shift);
                             }
-                            // Insert new data
-                            value.encode_var(&mut data[start..start + new_length]);
+                            Ordering::Greater => {
+                                // new_length > old_length
+                                // Shift data right
+                                let shift = new_length - old_length;
+                                let end = data.len();
+                                data.reserve(shift);
+                                data.resize(end + shift, 0);
+                                for i in (start + old_length..end).rev() {
+                                    data[i + shift] = data[i];
+                                }
+                                // Insert new data
+                                value.encode_var(&mut data[start..start + new_length]);
+                            }
                         }
                         return;
                     } else {
@@ -511,9 +524,8 @@ where
     }
 }
 
-/// word
+/// Mutable iterator through values in a `VarIntList`.
 pub struct VarIntListMutIterator<N> {
-    // probably need to rewrite this to roll refcell (UnsafeCell) into the iterator
     data: *mut SmallVec<[u8; 8]>,
     position: usize,
     _numeric_type: std::marker::PhantomData<N>,
@@ -676,6 +688,7 @@ impl<N> VarIntEntry<N> {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct DDSketch {
+    /// The underlying bins for this sketch.
     bins: BinList,
 
     /// The number of observations within the sketch.
@@ -778,6 +791,7 @@ impl DDSketch {
             self.avg = self.avg + (v - self.avg) * f64::from(n) / f64::from(self.count);
         }
     }
+
     fn insert_key_counts(&mut self, mut counts: Vec<(i32, u32)>) {
         counts.sort_unstable_by(|(k1, _), (k2, _)| k1.cmp(k2));
 
@@ -811,7 +825,7 @@ impl DDSketch {
                     next_bin = bins.next();
                 }
                 Ordering::Equal => {
-                    generate_bins(&mut temp_bins, bin.k, u32::from(bin.n) + kn);
+                    generate_bins(&mut temp_bins, bin.k, bin.n + kn);
                     next_bin = bins.next();
                     key_idx += 1;
                 }
@@ -874,7 +888,7 @@ impl DDSketch {
                 }
                 Ordering::Equal => {
                     let kn = buf_count_leading_equal(&keys, key_idx);
-                    generate_bins(&mut temp_bins, bin.k, u32::from(bin.n) + kn);
+                    generate_bins(&mut temp_bins, bin.k, bin.n + kn);
                     next_bin = bins.next();
                     key_idx += kn as usize;
                 }
@@ -900,7 +914,7 @@ impl DDSketch {
         self.bins = temp_bins;
     }
 
-    /// word
+    /// Insert a single observation into the sketch
     pub fn insert(&mut self, v: f64) {
         self.adjust_basic_stats(v, 1);
 
@@ -1062,7 +1076,7 @@ impl DDSketch {
     #[allow(dead_code)]
     pub(crate) fn insert_raw_bin(&mut self, k: i32, n: u32) {
         let v = SKETCH_CONFIG.bin_lower_bound(k);
-        self.adjust_basic_stats(v, u32::from(n));
+        self.adjust_basic_stats(v, n);
         self.bins.push(Bin { k, n });
     }
 
@@ -1149,11 +1163,7 @@ impl DDSketch {
                     other_bin_opt = other_bin_iter.next();
                 }
                 Ordering::Equal => {
-                    generate_bins(
-                        &mut temp_bins,
-                        self_bin.k,
-                        u32::from(self_bin.n) + u32::from(other_bin.n),
-                    );
+                    generate_bins(&mut temp_bins, self_bin.k, self_bin.n + other_bin.n);
                     self_bin_opt = self_bin_iter.next();
                     other_bin_opt = other_bin_iter.next();
                 }
@@ -1188,8 +1198,8 @@ impl DDSketch {
         let mut n: Vec<u32> = Vec::with_capacity(self.bins.count());
 
         for bin in self.bins.iter() {
-            k.push(i32::from(bin.k));
-            n.push(u32::from(bin.n));
+            k.push(bin.k);
+            n.push(bin.n);
         }
 
         // let k: Vec<i32> = self.keys.iter().collect();
@@ -1298,22 +1308,25 @@ fn trim_left(bins: &mut BinList, bin_limit: u16) {
     }
 
     let num_to_remove = bins.count() - bin_limit;
-    let mut missing = 0;
+    let mut missing = 0u32;
     let mut overflow = BinList::new();
 
     let mut bin_iter = bins.iter_mut();
 
     for _ in 0..num_to_remove {
         let bin = bin_iter.next().expect("bin count is checked above");
-        missing += *bin.n;
+        let result = missing.checked_add(*bin.n);
 
-        if missing > MAX_BIN_WIDTH {
+        if let Some(val) = result {
+            missing = val;
+        } else {
+            // Todo: test coverage for u32 overflow cases is lacking. Either clamp bin counts to u32::MAX or add tests.
             overflow.push(Bin {
                 k: bin.k,
                 n: MAX_BIN_WIDTH,
             });
-
-            missing -= MAX_BIN_WIDTH;
+            let remainder = missing.wrapping_add(*bin.n);
+            missing = remainder;
         }
     }
 
@@ -1334,18 +1347,7 @@ fn trim_left(bins: &mut BinList, bin_limit: u16) {
 }
 
 fn generate_bins(bins: &mut BinList, k: i32, n: u32) {
-    if n < u32::from(MAX_BIN_WIDTH) {
-        bins.push(Bin { k, n });
-    } else {
-        let overflow = n % MAX_BIN_WIDTH;
-        if overflow != 0 {
-            bins.push(Bin { k, n: overflow });
-        }
-
-        for _ in 0..(n / MAX_BIN_WIDTH) {
-            bins.push(Bin { k, n: MAX_BIN_WIDTH });
-        }
-    }
+    bins.push(Bin { k, n });
 }
 
 #[cfg(test)]
@@ -1812,7 +1814,7 @@ mod tests {
             );
             compare_sketches(actual, &expected, case.allowed_err);
 
-            let actual_count: u32 = actual.bins.iter().map(|b| u32::from(b.n)).sum();
+            let actual_count: u32 = actual.bins.iter().map(|b| b.n).sum();
             assert_eq!(actual_count, case.count);
         };
 
