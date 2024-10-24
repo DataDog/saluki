@@ -103,28 +103,6 @@ impl CheckRequest {
     }
 }
 
-/// This exists mostly for unit tests at this point
-/// its useful to be able to specify literal code to run
-struct RunnableCheckRequest {
-    check_request: CheckRequest,
-    check_source_code: Option<String>,
-}
-
-impl Display for RunnableCheckRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Request: {}", self.check_request)
-    }
-}
-
-impl From<CheckRequest> for RunnableCheckRequest {
-    fn from(check_request: CheckRequest) -> Self {
-        Self {
-            check_request,
-            check_source_code: None,
-        }
-    }
-}
-
 #[derive(Debug, Deserialize)]
 struct YamlCheckConfiguration {
     name: Option<String>,
@@ -532,7 +510,7 @@ async fn process_listener(
 ) -> Result<(), GenericError> {
     let listener::DirCheckListenerContext {
         shutdown_handle,
-        submit_runnable_check_req,
+        submit_runnable_check_req: submit_check_req,
         submit_stop_check_req,
         mut listener,
     } = listener_context;
@@ -557,10 +535,7 @@ async fn process_listener(
                 }
             }
             Some(new_entity) = new_entities.recv() => {
-                let runnable_check_request: RunnableCheckRequest = new_entity.into();
-                info!("New Check request for {} received.", runnable_check_request.check_request.name);
-
-                match submit_runnable_check_req.send(runnable_check_request).await {
+                match submit_check_req.send(new_entity).await {
                     Ok(_) => {
                         trace!("Check request submitted to dispatcher");
                     }
@@ -583,8 +558,8 @@ async fn process_listener(
 }
 
 trait CheckScheduler {
-    fn can_run_check(&mut self, check_request: &RunnableCheckRequest) -> RunnableDecision;
-    fn run_check(&mut self, check_request: &RunnableCheckRequest) -> Result<(), GenericError>;
+    fn can_run_check(&mut self, check_request: &CheckRequest) -> RunnableDecision;
+    fn run_check(&mut self, check_request: &CheckRequest) -> Result<(), GenericError>;
     fn stop_check(&mut self, check_name: CheckRequest);
 }
 

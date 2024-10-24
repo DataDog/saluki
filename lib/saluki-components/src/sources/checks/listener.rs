@@ -145,7 +145,7 @@ impl DirCheckRequestListener {
 pub struct DirCheckListenerContext {
     pub shutdown_handle: DynamicShutdownHandle,
     pub listener: DirCheckRequestListener,
-    pub submit_runnable_check_req: mpsc::Sender<RunnableCheckRequest>,
+    pub submit_runnable_check_req: mpsc::Sender<CheckRequest>,
     pub submit_stop_check_req: mpsc::Sender<CheckRequest>,
 }
 

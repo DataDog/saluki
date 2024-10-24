@@ -49,6 +49,7 @@ pub struct PythonCheckScheduler {
     // A CheckSource will either appear in 'running'
     running: HashMap<CheckRequest, (PyCheckClassHandle, Vec<RunningPythonInstance>)>,
     agent_check_base_class: Py<PyAny>,
+    manually_registered_checks: HashMap<String, PyCheckClassHandle>,
 }
 
 impl PythonCheckScheduler {
@@ -128,32 +129,25 @@ impl PythonCheckScheduler {
             health,
             status_detail: StatusDetail::default(),
             running: HashMap::new(),
+            manually_registered_checks: HashMap::new(),
             agent_check_base_class: agent_check_base_class.expect("AgentCheck class should be present"),
         })
     }
 
-    // See `CheckRequest::to_runnable_request` for more TODO items here
     // Returns an opaque handle to the python class implementing the check
-    fn register_check(&mut self, check: &RunnableCheckRequest) -> Result<PyCheckClassHandle, GenericError> {
-        let check_handle = match self.register_check_impl(check) {
+    fn find_agentcheck(&mut self, check: &CheckRequest) -> Result<PyCheckClassHandle, GenericError> {
+        // Search manually registered checks first
+        if let Some(h) = self.manually_registered_checks.get(&check.name) {
+            return Ok(h.clone());
+        }
+        // Then attempt to find from imports
+        let check_handle = match self.find_agentcheck_import(check) {
             Ok(h) => h,
             Err(e) => {
-                error!(%e, "Could not register check {}", check.check_request.name);
+                error!(%e, "Could not register check {}", check.name);
                 return Err(e);
             }
         };
-        // TODO What 'init' is needed after grabbing a handle to the check class?
-        // See `rtloader/three/three.cpp::getCheck` for calls:
-        // - `AgentCheck.load_config(init_config)`
-        // - `AgentCheck.load_config(instance)`
-
-        // JK load_config is just yaml parsing -- str -> pyAny
-        // I assume my impl of CheckRequest::to_pydict makes this un-neccessary
-        // but TBD, could be some subtle differences between it and 'load_config'
-
-        // - set attr 'check_id' equal to the check id
-        // also parse out the attr `__version__` and record it somewhere
-        // ref PythonCheckLoader::Load in Agent
 
         Ok(check_handle)
     }
@@ -162,15 +156,12 @@ impl PythonCheckScheduler {
         vec![module_name.to_string(), format!("datadog_checks.{}", module_name)]
     }
 
-    fn register_check_impl(&mut self, check: &RunnableCheckRequest) -> Result<PyCheckClassHandle, GenericError> {
-        let check_module_name = &check.check_request.name;
-        // if there is a specific source, then this will populate into locals and can be found
-        if let Some(py_source) = &check.check_source_code {
-            return self.register_check_with_source(py_source.clone());
-        }
+    /// Given a check request, find a corresponding AgentCheck subclass from imports and return it
+    fn find_agentcheck_import(&self, check: &CheckRequest) -> Result<PyCheckClassHandle, GenericError> {
+        let check_module_name = &check.name;
         let mut load_errors = vec![];
         for import_str in self.possible_import_paths_for_module(check_module_name).iter() {
-            match self.register_check_from_imports(import_str) {
+            match self.find_agentcheck_from_import_path(import_str) {
                 Ok(handle) => return Ok(handle),
                 Err(e) => {
                     // Not an error yet, wait until all imports have been tried
@@ -189,7 +180,7 @@ impl PythonCheckScheduler {
     /// If the module is found, and a subclass of `AgentCheck` is found, return a handle to the class
     ///
     /// Returns: A handle to the class that is a subclass of `AgentCheck`
-    fn register_check_from_imports(&self, import_path: &str) -> Result<PyCheckClassHandle, GenericError> {
+    fn find_agentcheck_from_import_path(&self, import_path: &str) -> Result<PyCheckClassHandle, GenericError> {
         pyo3::Python::with_gil(|py| {
             let module = py.import_bound(import_path)?;
             let base_class = self.agent_check_base_class.bind(py);
@@ -228,7 +219,13 @@ impl PythonCheckScheduler {
         })
     }
 
-    fn register_check_with_source(&mut self, py_source: String) -> Result<PyCheckClassHandle, GenericError> {
+    /// Local Check Source Handling
+    /// The following two functions are used to handle checks that are provided as source code
+    /// This is currently only used for testing (hence the '_' prefix), but could be used to support custom checks
+
+    /// Given a check source code, find a subclass of `AgentCheck` in the local scope
+    /// Currently only used in tests
+    fn _find_agentcheck_local(&mut self, py_source: String) -> Result<PyCheckClassHandle, GenericError> {
         pyo3::Python::with_gil(|py| {
             debug!("Running provided check source and checking locals for subclasses of 'AgentCheck'");
             let locals = pyo3::types::PyDict::new_bound(py);
@@ -273,65 +270,67 @@ impl PythonCheckScheduler {
             Ok(PyCheckClassHandle(check_value.as_unbound().clone()))
         })
     }
+
+    /// When a check source code is found, it can be registered with the scheduler
+    /// to ensure check requests for the given 'module_name' will use the provided 'source'
+    /// Currently only used in tests, but is useful for supporting custom checks
+    /// TODO: Support loading check sources out of `checks.d` directory
+    fn _register_check_module(&mut self, module_name: &str, source: &str) -> Result<(), GenericError> {
+        let check_handle = self._find_agentcheck_local(source.to_string())?;
+
+        match self
+            .manually_registered_checks
+            .insert(module_name.to_string(), check_handle)
+        {
+            Some(_) => Err(generic_error!("Check already registered")),
+            None => Ok(()),
+        }
+    }
 }
 
 impl CheckScheduler for PythonCheckScheduler {
-    fn can_run_check(&mut self, check: &RunnableCheckRequest) -> RunnableDecision {
-        let attempted_import_paths = self.possible_import_paths_for_module(check.check_request.name.as_str());
-        let found_baseclass = attempted_import_paths
-            .iter()
-            .map(|module_name| {
-                let handle = self.register_check_from_imports(module_name);
-                trace!(
-                    "Checking if py module '{name}' can be run. Handle exists? {}",
-                    handle.is_ok(),
-                    name = module_name,
+    fn can_run_check(&mut self, check: &CheckRequest) -> RunnableDecision {
+        let ret = match self.find_agentcheck(check) {
+            Ok(_) => RunnableDecision::CanRun,
+            Err(e) => {
+                self.status_detail.check_request_failures.insert(
+                    check.name.clone(),
+                    json!({
+                        "error": e.to_string(),
+                    }),
                 );
+                RunnableDecision::CannotRun(format!("Could not find base class for check '{}'", check.name))
+            }
+        };
 
-                handle.is_ok()
-            })
-            .any(|x| x);
-
-        let mut ret = RunnableDecision::CanRun;
-        if !found_baseclass {
-            let paths_attempted = attempted_import_paths.join(", ");
-            self.status_detail.check_request_failures.insert(
-                check.check_request.name.clone(),
-                json!({
-                    "error": "Could not find base class for check",
-                    "attempted_import_paths": attempted_import_paths,
-                }),
-            );
-            ret = RunnableDecision::CannotRun(format!(
-                "Could not find base class for check '{}', attempted: [{paths_attempted}]",
-                check.check_request.name.as_str()
-            ));
-        }
         self.health
             .set_status_detail(serde_json::to_value(&self.status_detail).expect("Can serialize"));
         ret
     }
 
-    // This function does 3 things
-    // 1. Registers the check source code and gets a handle
-    // 2. Starts a local task for each instance that
-    //    queues a run of the check every min_collection_interval_ms
-    // 3. Stores the handles in the running hashmap
-    fn run_check(&mut self, check: &RunnableCheckRequest) -> Result<(), GenericError> {
-        let check_py_class = self.register_check(check)?;
+    /// This function does 3 things
+    /// 1. Registers the check source code and gets a handle
+    /// 2. Starts a local task for each instance that
+    ///    queues a run of the check every min_collection_interval_ms
+    /// 3. Stores the handles in the running hashmap
+    ///
+    /// Known Gaps:
+    /// - `__version__` not set correctyl. ref PythonCheckLoader::Load in Agent
+    fn run_check(&mut self, check: &CheckRequest) -> Result<(), GenericError> {
+        let check_py_class = self.find_agentcheck(check)?;
         let running_entry = self
             .running
-            .entry(check.check_request.clone())
+            .entry(check.clone())
             .or_insert((check_py_class.clone(), Vec::new()));
 
         info!(
             "Starting up check '{name}' with {num_instances} instances",
-            name = check.check_request.name,
-            num_instances = check.check_request.instances.len()
+            name = check.name,
+            num_instances = check.instances.len()
         );
-        for instance in check.check_request.instances.iter() {
+        for instance in check.instances.iter() {
             let instance = instance.clone();
-            let init_config = check.check_request.init_config.clone();
+            let init_config = check.init_config.clone();
 
             let check_py_class = check_py_class.clone();
             // create check
@@ -354,18 +353,18 @@ impl CheckScheduler for PythonCheckScheduler {
                     .set_item("instances", instance_list)
                     .expect("could not set instance list");
 
-                let check_id = build_check_id(&check.check_request.name, 0, &instance, &init_config);
+                let check_id = build_check_id(&check.name, 0, &instance, &init_config);
 
                 match check_py_class.0.call_bound(py, (), Some(&kwargs)) {
                     Ok(c) => {
                         // If check is successfully created, then set check_id
                         if let Err(e) = c.setattr(py, "check_id", &check_id) {
-                            error!(%e, "Could not set check_id on instance of check '{name}'", name = check.check_request.name);
+                            error!(%e, "Could not set check_id on instance of check '{name}'", name = check.name);
                         } else {
                             info!(
                                 "Set check_id to '{check_id}' on instance of check '{name}'",
                                 check_id = check_id,
-                                name = check.check_request.name
+                                name = check.name
                             );
                         }
 
@@ -374,7 +373,7 @@ impl CheckScheduler for PythonCheckScheduler {
                     Err(e) => {
                         // TODO: This represents an initialization error for one of the instances
                         // requested. It should be tracked and made visible to the user.
-                        error!(%e, "Instantiating '{name}' failed.", name = check.check_request.name);
+                        error!(%e, "Instantiating '{name}' failed.", name = check.name);
                         if let Some(traceback) = e.traceback_bound(py) {
                             error!("{}", traceback.format().expect("Could format traceback"));
                         }
@@ -456,7 +455,7 @@ class MyCheck(AgentCheck):
     def check(self, instance):
         pass
         "#;
-        let check_handle = scheduler.register_check_with_source(py_source.to_string()).unwrap();
+        let check_handle = scheduler._find_agentcheck_local(py_source.to_string()).unwrap();
         pyo3::Python::with_gil(|py| {
             let check_class_ref = check_handle.0.bind(py);
             assert!(check_class_ref.is_callable());
@@ -482,12 +481,9 @@ class MyCheck(AgentCheck):
         ));
         let check_request = source.to_check_request().unwrap();
 
-        let runnable_check_request = RunnableCheckRequest {
-            check_source_code: Some(py_source.to_string()),
-            check_request: check_request.clone(),
-        };
+        scheduler._register_check_module("my_check", py_source).unwrap();
 
-        scheduler.run_check(&runnable_check_request).unwrap();
+        scheduler.run_check(&check_request).unwrap();
         assert_eq!(scheduler.running.len(), 1);
         assert_eq!(scheduler.running.keys().next(), Some(&check_request));
 
@@ -519,13 +515,9 @@ class MyCheck(AgentCheck):
             Some(PathBuf::from("/tmp/my_check.yaml")),
         ));
         let check_request = source.to_check_request().unwrap();
+        scheduler._register_check_module("my_check", py_source).unwrap();
 
-        let runnable_check_request = RunnableCheckRequest {
-            check_source_code: Some(py_source.to_string()),
-            check_request: check_request.clone(),
-        };
-
-        scheduler.run_check(&runnable_check_request).unwrap();
+        scheduler.run_check(&check_request).unwrap();
         assert_eq!(scheduler.running.len(), 1);
         assert_eq!(scheduler.running.keys().next(), Some(&check_request));
 
