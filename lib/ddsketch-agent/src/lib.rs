@@ -2,10 +2,7 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 use core::panic;
-use std::{
-    cmp::Ordering,
-    sync::{Arc, Mutex},
-};
+use std::{cell::UnsafeCell, cmp::Ordering};
 
 use datadog_protos::metrics::Dogsketch;
 use float_cmp::ApproxEqRatio as _;
@@ -259,10 +256,24 @@ impl PartialEq for BinList {
 }
 
 /// A list of integers held in memory as variable-length numbers.
-#[derive(Clone)]
 pub struct VarIntList<N> {
-    data: Arc<Mutex<SmallVec<[u8; 8]>>>,
+    data: UnsafeCell<SmallVec<[u8; 8]>>,
     _numeric_type: std::marker::PhantomData<N>,
+}
+
+unsafe impl<N> Sync for VarIntList<N> where N: Sync {}
+
+impl<N> Clone for VarIntList<N> {
+    fn clone(&self) -> Self {
+        let data = unsafe {
+            let data = self.data.get();
+            SmallVec::clone(&*data)
+        };
+        Self {
+            data: UnsafeCell::new(data),
+            _numeric_type: std::marker::PhantomData,
+        }
+    }
 }
 
 impl<N> std::fmt::Debug for VarIntList<N>
@@ -281,14 +292,14 @@ where
     /// Creates a new VarIntList.
     pub fn new() -> Self {
         VarIntList {
-            data: Arc::new(Mutex::new(SmallVec::new())),
+            data: UnsafeCell::new(SmallVec::new()),
             _numeric_type: std::marker::PhantomData::<N>,
         }
     }
 
     /// Adds an integer to the list.
     pub fn push(&mut self, value: N) {
-        let mut data = self.data.lock().unwrap();
+        let data = self.data.get_mut();
         let original_len = data.len();
         let added_len = value.required_space();
         data.resize(original_len + added_len, 0);
@@ -297,13 +308,13 @@ where
 
     /// Clears the list.
     pub fn clear(&mut self) {
-        self.data.lock().unwrap().clear();
+        self.data.get_mut().clear();
     }
 
     /// Returns an iterator over the integers in the list.
     pub fn iter(&self) -> VarIntListIterator<N> {
         VarIntListIterator {
-            data: Arc::clone(&self.data),
+            data: &self.data,
             position: 0,
             _numeric_type: std::marker::PhantomData,
         }
@@ -312,7 +323,7 @@ where
     /// Returns a mutable iterator over the integers in the list.
     pub fn iter_mut(&self) -> VarIntListMutIterator<N> {
         VarIntListMutIterator {
-            data: self.data.clone(),
+            data: self.data.get(),
             position: 0,
             _numeric_type: std::marker::PhantomData,
         }
@@ -326,7 +337,7 @@ where
 
     /// Todo: replace with iter_mut
     pub fn set(&mut self, index: usize, value: N) {
-        let mut data = self.data.lock().unwrap();
+        let data = self.data.get_mut();
 
         let mut position = 0;
         let mut current_index = 0;
@@ -381,7 +392,7 @@ where
     /// Inserts an integer at the specified index.
     /// Panics if the index is out of bounds.
     pub fn insert(&mut self, index: usize, value: N) {
-        let mut data = self.data.lock().unwrap();
+        let data = self.data.get_mut();
         // Find the byte position corresponding to the index
         let mut position = 0; // byte position in data
         let mut current_index = 0;
@@ -421,24 +432,24 @@ where
         value.encode_var(&mut data[position..position + new_length]);
     }
 
-    /// Word
+    /// Extend the list with values from a slice.
     pub fn extend_from_slice(&mut self, slice: &[N]) {
         for &value in slice {
             self.push(value);
         }
     }
 
-    /// Word
+    /// Extend the list with values from an iterator.
     pub fn extend_from_iter(&mut self, iter: impl Iterator<Item = N>) {
         for value in iter {
             self.push(value);
         }
     }
 
-    /// Word
+    /// Truncate the list to the given length.
     pub fn truncate(&mut self, new_len: usize) {
         if new_len == 0 {
-            self.data.lock().unwrap().clear();
+            self.data.get_mut().clear();
             return;
         }
 
@@ -453,7 +464,7 @@ where
             }
         }
 
-        self.data.lock().unwrap().truncate(position);
+        self.data.get_mut().truncate(position);
     }
 }
 
@@ -469,30 +480,33 @@ where
 impl<N> Eq for VarIntList<N> where N: VarInt + Eq {}
 
 /// Iterates through i32 integers held in a `VarIntList`.
-pub struct VarIntListIterator<N> {
-    data: Arc<Mutex<SmallVec<[u8; 8]>>>,
+pub struct VarIntListIterator<'d, N> {
+    data: &'d UnsafeCell<SmallVec<[u8; 8]>>,
     position: usize,
     _numeric_type: std::marker::PhantomData<N>,
 }
 
-impl<N> Iterator for VarIntListIterator<N>
+impl<'d, N> Iterator for VarIntListIterator<'d, N>
 where
     N: VarInt,
 {
     type Item = N;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let data = self.data.lock().unwrap();
-        if self.position >= data.len() {
-            return None;
-        }
+        unsafe {
+            let data = &*self.data.get();
 
-        match N::decode_var(&data[self.position..]) {
-            Some((value, bytes_read)) => {
-                self.position += bytes_read;
-                Some(value)
+            if self.position >= data.len() {
+                return None;
             }
-            None => None,
+
+            match N::decode_var(&data[self.position..]) {
+                Some((value, bytes_read)) => {
+                    self.position += bytes_read;
+                    Some(value)
+                }
+                None => None,
+            }
         }
     }
 }
@@ -500,14 +514,14 @@ where
 /// word
 pub struct VarIntListMutIterator<N> {
     // probably need to rewrite this to roll refcell (UnsafeCell) into the iterator
-    data: Arc<Mutex<SmallVec<[u8; 8]>>>,
+    data: *mut SmallVec<[u8; 8]>,
     position: usize,
     _numeric_type: std::marker::PhantomData<N>,
 }
 
 /// A mutable entry in a `VarIntList`
 pub struct VarIntEntry<N> {
-    data: Arc<Mutex<SmallVec<[u8; 8]>>>,
+    data: *mut SmallVec<[u8; 8]>,
     value: N,
     start: usize,
     length: usize,
@@ -551,26 +565,28 @@ where
     type Item = VarIntEntry<N>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let data = self.data.lock().unwrap();
-        if self.position >= data.len() {
-            return None;
-        }
-
-        let start = self.position;
-
-        // Decode the next integer from the current position
-        match N::decode_var(&data[self.position..]) {
-            Some((value, bytes_read)) => {
-                let entry = VarIntEntry {
-                    data: Arc::clone(&self.data),
-                    value,
-                    start,
-                    length: bytes_read,
-                };
-                self.position += bytes_read;
-                Some(entry)
+        unsafe {
+            let data = &*self.data;
+            if self.position >= data.len() {
+                return None;
             }
-            None => None,
+
+            let start = self.position;
+
+            // Decode the next integer from the current position
+            match N::decode_var(&data[self.position..]) {
+                Some((value, bytes_read)) => {
+                    let entry = VarIntEntry {
+                        data: self.data,
+                        value,
+                        start,
+                        length: bytes_read,
+                    };
+                    self.position += bytes_read;
+                    Some(entry)
+                }
+                None => None,
+            }
         }
     }
 }
@@ -589,41 +605,43 @@ impl<N> VarIntEntry<N> {
     where
         N: VarInt,
     {
-        let mut data = self.data.lock().unwrap();
+        unsafe {
+            let data = &mut *self.data;
 
-        let old_length = self.length;
-        let new_length = new_value.required_space();
+            let old_length = self.length;
+            let new_length = new_value.required_space();
 
-        // Ensure capacity to avoid unnecessary allocations
-        let total_new_length = data.len() + new_length - old_length;
-        let additional_capacity = total_new_length.saturating_sub(data.len());
-        data.reserve(additional_capacity);
+            // Ensure capacity to avoid unnecessary allocations
+            let total_new_length = data.len() + new_length - old_length;
+            let additional_capacity = total_new_length.saturating_sub(data.len());
+            data.reserve(additional_capacity);
 
-        // Shift data to accommodate the new value's length
-        if new_length != old_length {
-            if new_length > old_length {
-                // Shift data to the right
-                let a_len = data.len();
-                data.resize(a_len + (new_length - old_length), 0);
-                let b_len = data.len();
-                data.copy_within(
-                    self.start + old_length..b_len - (new_length - old_length),
-                    self.start + new_length,
-                );
-            } else {
-                // Shift data to the left
-                data.copy_within(self.start + old_length.., self.start + new_length);
-                let c_len = data.len();
-                data.truncate(c_len - (old_length - new_length));
+            // Shift data to accommodate the new value's length
+            if new_length != old_length {
+                if new_length > old_length {
+                    // Shift data to the right
+                    let a_len = data.len();
+                    data.resize(a_len + (new_length - old_length), 0);
+                    let b_len = data.len();
+                    data.copy_within(
+                        self.start + old_length..b_len - (new_length - old_length),
+                        self.start + new_length,
+                    );
+                } else {
+                    // Shift data to the left
+                    data.copy_within(self.start + old_length.., self.start + new_length);
+                    let c_len = data.len();
+                    data.truncate(c_len - (old_length - new_length));
+                }
             }
+
+            // Insert the new encoded bytes
+            new_value.encode_var(&mut data[self.start..self.start + new_length]);
+
+            // Update the entry's value
+            self.length = new_length;
+            self.value = new_value;
         }
-
-        // Insert the new encoded bytes
-        new_value.encode_var(&mut data[self.start..self.start + new_length]);
-
-        // Update the entry's value
-        self.length = new_length;
-        self.value = new_value;
     }
 }
 
