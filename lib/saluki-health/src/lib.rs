@@ -55,10 +55,12 @@ pub struct Health {
 
 impl Health {
     pub fn noop() -> Self {
+        let (_, rq_ch) = mpsc::channel(1);
+        let (rsp_ch, _) = mpsc::channel(1);
         Self {
             ready: Arc::new(AtomicBool::new(true)),
-            request_rx: Arc::new(tokio::sync::Mutex::new(mpsc::channel(0).1)),
-            response_tx: mpsc::channel(0).0,
+            request_rx: Arc::new(tokio::sync::Mutex::new(rq_ch)),
+            response_tx: rsp_ch,
             status_detail: Arc::new(Mutex::new(serde_json::Value::Null)),
         }
     }
