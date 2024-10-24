@@ -1205,27 +1205,27 @@ impl DDSketch {
     }
 
     /// Merges this sketch into the `Dogsketch` Protocol Buffers representation.
-    pub fn merge_to_dogsketch(&self, dogsketch: &mut SendOnlyDogsketch) {
+    pub fn merge_to_dogsketch(&self, dogsketch: &mut Dogsketch) {
         dogsketch.set_cnt(i64::from(self.count));
         dogsketch.set_min(self.min);
         dogsketch.set_max(self.max);
         dogsketch.set_avg(self.avg);
         dogsketch.set_sum(self.sum);
 
-        dogsketch.set_encoded_k(self.bins.keys.get_raw_encoded());
-        dogsketch.set_encoded_n(self.bins.counts.get_raw_encoded());
+        dogsketch.set_encoded_k(self.bins.keys.get_raw_encoded().into());
+        dogsketch.set_encoded_n(self.bins.counts.get_raw_encoded().into());
     }
 
     /// Merges this sketch into the `Dogsketch` Protocol Buffers representation and then clears it.
-    pub fn clear_and_merge_to_dogsketch(&mut self, dogsketch: &mut SendOnlyDogsketch) {
+    pub fn clear_and_merge_to_dogsketch(&mut self, dogsketch: &mut Dogsketch) {
         dogsketch.set_cnt(i64::from(self.count));
         dogsketch.set_min(self.min);
         dogsketch.set_max(self.max);
         dogsketch.set_avg(self.avg);
         dogsketch.set_sum(self.sum);
 
-        dogsketch.set_encoded_k(self.bins.keys.clear_and_get_raw_encoded());
-        dogsketch.set_encoded_n(self.bins.counts.clear_and_get_raw_encoded());
+        dogsketch.set_encoded_k(self.bins.keys.clear_and_get_raw_encoded().into());
+        dogsketch.set_encoded_n(self.bins.counts.clear_and_get_raw_encoded().into());
         self.clear();
     }
 }
@@ -1266,28 +1266,30 @@ impl Eq for DDSketch {}
 impl TryFrom<Dogsketch> for DDSketch {
     type Error = &'static str;
 
-    fn try_from(value: Dogsketch) -> Result<Self, Self::Error> {
-        let mut sketch = DDSketch {
-            count: u32::try_from(value.cnt).map_err(|_| "sketch count overflows u32")?,
-            min: value.min,
-            max: value.max,
-            avg: value.avg,
-            sum: value.sum,
-            ..Default::default()
-        };
+    fn try_from(_value: Dogsketch) -> Result<Self, Self::Error> {
+        unimplemented!();
 
-        let k = value.k;
-        let n = value.n;
+        // let mut sketch = DDSketch {
+        //     count: u32::try_from(value.cnt).map_err(|_| "sketch count overflows u32")?,
+        //     min: value.min,
+        //     max: value.max,
+        //     avg: value.avg,
+        //     sum: value.sum,
+        //     ..Default::default()
+        // };
 
-        if k.len() != n.len() {
-            return Err("k and n bin vectors have differing lengths");
-        }
+        // let k = value.k;
+        // let n = value.n;
 
-        for (k, n) in k.into_iter().zip(n.into_iter()) {
-            sketch.bins.push(Bin { k, n });
-        }
+        // if k.len() != n.len() {
+        //     return Err("k and n bin vectors have differing lengths");
+        // }
 
-        Ok(sketch)
+        // for (k, n) in k.into_iter().zip(n.into_iter()) {
+        //     sketch.bins.push(Bin { k, n });
+        // }
+
+        // Ok(sketch)
     }
 }
 
@@ -1368,369 +1370,6 @@ fn trim_left(bins: &mut BinList, bin_limit: u16) {
 
 fn generate_bins(bins: &mut BinList, k: i32, n: u32) {
     bins.push(Bin { k, n });
-}
-
-// @@protoc_insertion_point(message:datadog.agentpayload.SketchPayload.Sketch.Dogsketch)
-#[derive(PartialEq, Clone, Default, Debug)]
-#[allow(missing_docs)]
-pub struct SendOnlyDogsketch {
-    // message fields
-    // @@protoc_insertion_point(field:datadog.agentpayload.SketchPayload.Sketch.Dogsketch.ts)
-    pub ts: i64,
-    // @@protoc_insertion_point(field:datadog.agentpayload.SketchPayload.Sketch.Dogsketch.cnt)
-    pub cnt: i64,
-    // @@protoc_insertion_point(field:datadog.agentpayload.SketchPayload.Sketch.Dogsketch.min)
-    pub min: f64,
-    // @@protoc_insertion_point(field:datadog.agentpayload.SketchPayload.Sketch.Dogsketch.max)
-    pub max: f64,
-    // @@protoc_insertion_point(field:datadog.agentpayload.SketchPayload.Sketch.Dogsketch.avg)
-    pub avg: f64,
-    // @@protoc_insertion_point(field:datadog.agentpayload.SketchPayload.Sketch.Dogsketch.sum)
-    pub sum: f64,
-    // @@protoc_insertion_point(field:datadog.agentpayload.SketchPayload.Sketch.Dogsketch.k)
-    /// pre-encoded list of i32
-    pub encoded_k: ::std::vec::Vec<u8>,
-    // @@protoc_insertion_point(field:datadog.agentpayload.SketchPayload.Sketch.Dogsketch.n)
-    /// pre-encoded list of u32
-    pub encoded_n: ::std::vec::Vec<u8>,
-    // special fields
-    // @@protoc_insertion_point(special_field:datadog.agentpayload.SketchPayload.Sketch.Dogsketch.special_fields)
-    pub special_fields: ::protobuf::SpecialFields,
-}
-
-impl<'a> ::std::default::Default for &'a SendOnlyDogsketch {
-    fn default() -> &'a SendOnlyDogsketch {
-        <SendOnlyDogsketch as ::protobuf::Message>::default_instance()
-    }
-}
-
-#[allow(missing_docs)]
-impl SendOnlyDogsketch {
-    pub fn new() -> SendOnlyDogsketch {
-        ::std::default::Default::default()
-    }
-
-    // int64 ts = 1;
-
-    pub fn ts(&self) -> i64 {
-        self.ts
-    }
-
-    pub fn clear_ts(&mut self) {
-        self.ts = 0;
-    }
-
-    // Param is passed by value, moved
-    pub fn set_ts(&mut self, v: i64) {
-        self.ts = v;
-    }
-
-    // int64 cnt = 2;
-
-    pub fn cnt(&self) -> i64 {
-        self.cnt
-    }
-
-    pub fn clear_cnt(&mut self) {
-        self.cnt = 0;
-    }
-
-    // Param is passed by value, moved
-    pub fn set_cnt(&mut self, v: i64) {
-        self.cnt = v;
-    }
-
-    // double min = 3;
-
-    pub fn min(&self) -> f64 {
-        self.min
-    }
-
-    pub fn clear_min(&mut self) {
-        self.min = 0.;
-    }
-
-    // Param is passed by value, moved
-    pub fn set_min(&mut self, v: f64) {
-        self.min = v;
-    }
-
-    // double max = 4;
-
-    pub fn max(&self) -> f64 {
-        self.max
-    }
-
-    pub fn clear_max(&mut self) {
-        self.max = 0.;
-    }
-
-    // Param is passed by value, moved
-    pub fn set_max(&mut self, v: f64) {
-        self.max = v;
-    }
-
-    // double avg = 5;
-
-    pub fn avg(&self) -> f64 {
-        self.avg
-    }
-
-    pub fn clear_avg(&mut self) {
-        self.avg = 0.;
-    }
-
-    // Param is passed by value, moved
-    pub fn set_avg(&mut self, v: f64) {
-        self.avg = v;
-    }
-
-    // double sum = 6;
-
-    pub fn sum(&self) -> f64 {
-        self.sum
-    }
-
-    pub fn clear_sum(&mut self) {
-        self.sum = 0.;
-    }
-
-    // Param is passed by value, moved
-    pub fn set_sum(&mut self, v: f64) {
-        self.sum = v;
-    }
-
-    // repeated sint32 k = 7;
-
-    pub fn encoded_k(&self) -> &[u8] {
-        &self.encoded_k
-    }
-
-    pub fn clear_encoded_k(&mut self) {
-        self.encoded_k.clear();
-    }
-
-    // Param is passed by value, moved
-    pub fn set_encoded_k(&mut self, v: ::std::vec::Vec<u8>) {
-        self.encoded_k = v;
-    }
-
-    // Mutable pointer to the field.
-    pub fn mut_k(&mut self) -> &mut ::std::vec::Vec<u8> {
-        &mut self.encoded_k
-    }
-
-    // Take field
-    pub fn take_k(&mut self) -> ::std::vec::Vec<u8> {
-        ::std::mem::replace(&mut self.encoded_k, ::std::vec::Vec::new())
-    }
-
-    // repeated uint32 n = 8;
-
-    pub fn encoded_n(&self) -> &[u8] {
-        &self.encoded_n
-    }
-
-    pub fn clear_n(&mut self) {
-        self.encoded_n.clear();
-    }
-
-    // Param is passed by value, moved
-    pub fn set_encoded_n(&mut self, v: ::std::vec::Vec<u8>) {
-        self.encoded_n = v;
-    }
-
-    // Mutable pointer to the field.
-    pub fn mut_encoded_n(&mut self) -> &mut ::std::vec::Vec<u8> {
-        &mut self.encoded_n
-    }
-
-    // Take field
-    pub fn take_encoded_n(&mut self) -> ::std::vec::Vec<u8> {
-        ::std::mem::replace(&mut self.encoded_n, ::std::vec::Vec::new())
-    }
-}
-
-impl ::protobuf::Message for SendOnlyDogsketch {
-    const NAME: &'static str = "Dogsketch";
-
-    fn is_initialized(&self) -> bool {
-        true
-    }
-
-    fn merge_from(&mut self, is: &mut ::protobuf::CodedInputStream<'_>) -> ::protobuf::Result<()> {
-        while let Some(tag) = is.read_raw_tag_or_eof()? {
-            match tag {
-                8 => {
-                    self.ts = is.read_int64()?;
-                }
-                16 => {
-                    self.cnt = is.read_int64()?;
-                }
-                25 => {
-                    self.min = is.read_double()?;
-                }
-                33 => {
-                    self.max = is.read_double()?;
-                }
-                41 => {
-                    self.avg = is.read_double()?;
-                }
-                49 => {
-                    self.sum = is.read_double()?;
-                }
-                58 => {
-                    todo!("implement protobuf merge for encoded_k");
-                    // is.read_repeated_packed_sint32_into(&mut self.encoded_k)?;
-                }
-                56 => {
-                    todo!("implement protobuf merge for encoded_k");
-                    // self.encoded_k.push(is.read_sint32()?);
-                }
-                66 => {
-                    todo!("implement protobuf merge for encoded_n");
-                    // is.read_repeated_packed_uint32_into(&mut self.encoded_n)?;
-                }
-                64 => {
-                    todo!("implement protobuf merge for encoded_n");
-                    // self.encoded_n.push(is.read_uint32()?);
-                }
-                tag => {
-                    ::protobuf::rt::read_unknown_or_skip_group(tag, is, self.special_fields.mut_unknown_fields())?;
-                }
-            };
-        }
-        ::std::result::Result::Ok(())
-    }
-
-    // Compute sizes of nested messages
-    #[allow(unused_variables)]
-    fn compute_size(&self) -> u64 {
-        let mut my_size = 0;
-        if self.ts != 0 {
-            my_size += ::protobuf::rt::int64_size(1, self.ts);
-        }
-        if self.cnt != 0 {
-            my_size += ::protobuf::rt::int64_size(2, self.cnt);
-        }
-        if self.min != 0. {
-            my_size += 1 + 8;
-        }
-        if self.max != 0. {
-            my_size += 1 + 8;
-        }
-        if self.avg != 0. {
-            my_size += 1 + 8;
-        }
-        if self.sum != 0. {
-            my_size += 1 + 8;
-        }
-        if !self.encoded_k.is_empty() {
-            // tag
-            my_size += 1;
-            // length field
-            my_size += ::protobuf::rt::compute_raw_varint64_size(self.encoded_k.len() as u64);
-            // data
-            my_size += self.encoded_k.len() as u64;
-        }
-        if !self.encoded_n.is_empty() {
-            my_size += 1;
-            my_size += ::protobuf::rt::compute_raw_varint64_size(self.encoded_n.len() as u64);
-            my_size += self.encoded_n.len() as u64;
-        }
-        my_size += ::protobuf::rt::unknown_fields_size(self.special_fields.unknown_fields());
-        self.special_fields.cached_size().set(my_size as u32);
-        my_size
-    }
-
-    fn write_to_with_cached_sizes(&self, os: &mut ::protobuf::CodedOutputStream<'_>) -> ::protobuf::Result<()> {
-        if self.ts != 0 {
-            os.write_int64(1, self.ts)?;
-        }
-        if self.cnt != 0 {
-            os.write_int64(2, self.cnt)?;
-        }
-        if self.min != 0. {
-            os.write_double(3, self.min)?;
-        }
-        if self.max != 0. {
-            os.write_double(4, self.max)?;
-        }
-        if self.avg != 0. {
-            os.write_double(5, self.avg)?;
-        }
-        if self.sum != 0. {
-            os.write_double(6, self.sum)?;
-        }
-
-        // `encoded_k` and `encoded_n` are pre-encoded lists of i32 and u32.
-        // These use packed encoding, which is the default in proto3 and is
-        // supported by proto2.
-        //
-        // Format is tag, LEN record, repeated values.
-        //
-        // WARNING: This is not compatible with proto versions before 2.1.0.
-        //
-        // On compatibility with proto 2.1.0 onwards:
-        // > Protocol buffer parsers must be able to parse repeated fields that
-        // > were compiled as packed as if they were not packed, and vice versa.
-        // > This permits adding [packed=true] to existing fields in a forward-
-        // > and backward-compatible way.
-        //
-        // Refs:
-        // https://protobuf.dev/programming-guides/encoding/#packed
-        // https://protobuf.dev/programming-guides/encoding/#length-types
-        //
-        os.write_tag(7, protobuf::rt::WireType::Varint)?;
-        os.write_uint64_no_tag(self.encoded_k.len().try_into().expect("word"))?;
-        os.write_raw_bytes(&self.encoded_k)?;
-
-        os.write_tag(8, protobuf::rt::WireType::Varint)?;
-        os.write_uint64_no_tag(self.encoded_n.len().try_into().expect("word"))?;
-        os.write_raw_bytes(&self.encoded_n)?;
-
-        os.write_unknown_fields(self.special_fields.unknown_fields())?;
-        ::std::result::Result::Ok(())
-    }
-
-    fn special_fields(&self) -> &::protobuf::SpecialFields {
-        &self.special_fields
-    }
-
-    fn mut_special_fields(&mut self) -> &mut ::protobuf::SpecialFields {
-        &mut self.special_fields
-    }
-
-    fn new() -> SendOnlyDogsketch {
-        SendOnlyDogsketch::new()
-    }
-
-    fn clear(&mut self) {
-        self.ts = 0;
-        self.cnt = 0;
-        self.min = 0.;
-        self.max = 0.;
-        self.avg = 0.;
-        self.sum = 0.;
-        self.encoded_k.clear();
-        self.encoded_n.clear();
-        self.special_fields.clear();
-    }
-
-    fn default_instance() -> &'static SendOnlyDogsketch {
-        static INSTANCE: SendOnlyDogsketch = SendOnlyDogsketch {
-            ts: 0,
-            cnt: 0,
-            min: 0.,
-            max: 0.,
-            avg: 0.,
-            sum: 0.,
-            encoded_k: ::std::vec::Vec::new(),
-            encoded_n: ::std::vec::Vec::new(),
-            special_fields: ::protobuf::SpecialFields::new(),
-        };
-        &INSTANCE
-    }
 }
 
 #[cfg(test)]
