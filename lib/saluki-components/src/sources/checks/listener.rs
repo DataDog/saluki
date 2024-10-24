@@ -92,12 +92,22 @@ impl DirCheckRequestListener {
             // 'metrics.yaml' is for JMX checks. we don't care about them here
             return None;
         }
+        if path.ends_with("auto_conf.yaml") || path.ends_with("auto_conf.yml") {
+            // Auto-conf files require extra processing to match the ad_identifier
+            // to running components.
+            // This will not be implemented in ADP, instead we will (eventually) use a gRPC API exposed by the agent.
+            return None;
+        }
         if extension == "yaml" || extension == "yml" {
             // is yaml file
             let check_name: String = provided_check_name
                 .unwrap_or_else(|| path.file_stem().unwrap_or_default().to_string_lossy().to_string());
             match fs::read_to_string(&original_path).await {
                 Ok(contents) => {
+                    if contents.contains("ad_identifiers") {
+                        // It's an auto-conf file; skip it
+                        return None;
+                    }
                     let check = YamlCheck::new(check_name, contents, Some(original_path.to_path_buf()));
                     Some(CheckSource::Yaml(check))
                 }

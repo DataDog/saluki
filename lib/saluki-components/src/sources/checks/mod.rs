@@ -454,7 +454,7 @@ impl Checks {
         loop {
             select! {
                 Some(check_metric) = check_metrics_rx.recv() => {
-                    info!("Received check metric: {:?}", check_metric);
+                    trace!("Received check metric: {:?}", check_metric);
                     let mut event_buffer = context.event_buffer_pool().acquire().await;
                     let event: Event = check_metric.try_into().expect("can't convert");
                     if let Some(_unsent) = event_buffer.try_push(event) {
