@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use pyo3::prelude::PyAnyMethods;
+use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use pyo3::types::PyList;
 use pyo3::types::PyType;
@@ -190,7 +190,24 @@ impl PythonCheckScheduler {
     /// Returns: A handle to the class that is a subclass of `AgentCheck`
     fn find_agentcheck_from_import_path(&self, import_path: &str) -> Result<PyCheckClassHandle, GenericError> {
         pyo3::Python::with_gil(|py| {
-            let module = py.import_bound(import_path)?;
+            let module = match py.import_bound(import_path) {
+                Ok(m) => m,
+                Err(e) => {
+                    if e.is_instance_of::<pyo3::exceptions::PyModuleNotFoundError>(py) {
+                        // This is the common case, and arguably should be handled even more specially
+                        // There is a tri-state result from this function, either it succeeded
+                        // or it failed because there is no module (common as we try multiple paths)
+                        // or it failed due to an error in the module (less common)
+                        return Err(e.into());
+                    }
+                    let mut py_traceback = String::new();
+                    error!(%e, "Could not import module '{import_path}'");
+                    if let Some(traceback) = e.traceback_bound(py) {
+                        py_traceback = traceback.format().expect("Could format traceback");
+                    }
+                    return Err(generic_error!("While importing module '{import_path}': {py_traceback}"));
+                }
+            };
             let base_class = self.agent_check_base_class.bind(py);
 
             let checks = module
