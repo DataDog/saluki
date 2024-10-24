@@ -10,7 +10,7 @@ fn insert_single_and_serialize(ns: &[f64]) {
     }
 
     let mut dogsketch = SendOnlyDogsketch::new();
-    sketch.merge_to_dogsketch(&mut dogsketch);
+    sketch.clear_and_merge_to_dogsketch(&mut dogsketch);
 }
 
 fn insert_many_and_serialize(ns: &[f64]) {
@@ -18,7 +18,7 @@ fn insert_many_and_serialize(ns: &[f64]) {
     sketch.insert_many(ns);
 
     let mut dogsketch = SendOnlyDogsketch::new();
-    sketch.merge_to_dogsketch(&mut dogsketch);
+    sketch.clear_and_merge_to_dogsketch(&mut dogsketch);
 }
 
 fn bench_sketch(c: &mut Criterion) {

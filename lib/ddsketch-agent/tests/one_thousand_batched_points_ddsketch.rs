@@ -19,8 +19,8 @@ fn test_one_thousand_batched_points_ddsketch() {
     insert_many_and_serialize(&points);
     let stats = dhat::HeapStats::get();
 
-    dhat::assert_eq!(stats.total_blocks, 14);
-    dhat::assert_eq!(stats.total_bytes, 6149);
+    dhat::assert_eq!(stats.total_blocks, 12);
+    dhat::assert_eq!(stats.total_bytes, 5504);
     dhat::assert_eq!(stats.max_blocks, 3);
     dhat::assert_eq!(stats.max_bytes, 4768);
     dhat::assert_eq!(stats.curr_blocks, 0);

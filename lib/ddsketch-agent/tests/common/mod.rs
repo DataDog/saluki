@@ -11,7 +11,7 @@ pub fn insert_single_and_serialize(ns: &[f64]) {
     }
 
     let mut dogsketch = SendOnlyDogsketch::new();
-    sketch.merge_to_dogsketch(&mut dogsketch);
+    sketch.clear_and_merge_to_dogsketch(&mut dogsketch);
 }
 
 pub fn insert_many_and_serialize(ns: &[f64]) {
@@ -19,7 +19,7 @@ pub fn insert_many_and_serialize(ns: &[f64]) {
     sketch.insert_many(ns);
 
     let mut dogsketch = SendOnlyDogsketch::new();
-    sketch.merge_to_dogsketch(&mut dogsketch);
+    sketch.clear_and_merge_to_dogsketch(&mut dogsketch);
 }
 
 pub fn make_points(size: usize) -> Vec<f64> {
