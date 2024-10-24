@@ -188,7 +188,7 @@ impl BinList {
     }
 
     /// Get an iterator over the bins in the sketch with mutable counts.
-    pub fn iter_mut<'b>(&'b mut self) -> impl Iterator<Item = BinMut<'b>> + '_ {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = BinMut<'_>> + '_ {
         self.keys
             .iter()
             .copied()
