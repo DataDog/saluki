@@ -2,7 +2,10 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 use core::panic;
-use std::{cell::RefCell, cmp::Ordering, rc::Rc};
+use std::{
+    cmp::Ordering,
+    sync::{Arc, Mutex},
+};
 
 use datadog_protos::metrics::Dogsketch;
 use float_cmp::ApproxEqRatio as _;
@@ -162,6 +165,9 @@ struct BinList {
 
     /// The counts of the bins within the sketch.
     counts: VarIntList<u32>,
+
+    /// Number of bins
+    count: usize,
 }
 
 impl BinList {
@@ -170,21 +176,24 @@ impl BinList {
         Self {
             keys: VarIntList::new(),
             counts: VarIntList::new(),
+            count: 0,
         }
     }
 
     /// Get the number of bins in the list.
     fn count(&self) -> usize {
-        self.keys.len()
+        self.count
     }
 
     /// Get an iterator over the bins in the sketch.
     pub fn iter(&self) -> impl Iterator<Item = Bin> + '_ {
+        // Todo: could do to add a size hint to this iterator
         self.keys.iter().zip(self.counts.iter()).map(|(k, n)| Bin { k, n })
     }
 
     /// Get an iterator over the bins in the sketch with mutable counts.
     pub fn iter_mut(&mut self) -> impl Iterator<Item = BinMut> + '_ {
+        // Todo: could do to add a size hint to this iterator
         self.keys
             .iter()
             .zip(self.counts.iter_mut())
@@ -195,19 +204,20 @@ impl BinList {
     pub fn push(&mut self, bin: Bin) {
         self.keys.push(bin.k);
         self.counts.push(bin.n);
+        self.count += 1;
     }
 
     /// Add a bin to the list.
     pub fn insert(&mut self, idx: usize, bin: Bin) {
         self.keys.insert(idx, bin.k);
         self.counts.insert(idx, bin.n);
+        self.count += 1;
     }
 
     /// Copy elements from an iterator and add them to the list.
     pub fn extend(&mut self, bins: impl Iterator<Item = Bin>) {
-        for Bin { k, n } in bins {
-            self.keys.push(k);
-            self.counts.push(n);
+        for bin in bins {
+            self.push(bin);
         }
     }
 
@@ -216,6 +226,7 @@ impl BinList {
         for BinMut { k, n } in bins {
             self.keys.push(k);
             self.counts.push(*n);
+            self.count += 1;
         }
     }
 
@@ -223,12 +234,17 @@ impl BinList {
     pub fn clear(&mut self) {
         self.keys.clear();
         self.counts.clear();
+        self.count = 0;
     }
 
     /// Truncate the list of bins to the given length.
     pub fn truncate(&mut self, len: usize) {
         self.keys.truncate(len);
         self.counts.truncate(len);
+
+        if len < self.count {
+            self.count = len;
+        }
     }
 }
 
@@ -245,7 +261,7 @@ impl PartialEq for BinList {
 /// A list of integers held in memory as variable-length numbers.
 #[derive(Clone)]
 pub struct VarIntList<N> {
-    data: Rc<RefCell<SmallVec<[u8; 8]>>>,
+    data: Arc<Mutex<SmallVec<[u8; 8]>>>,
     _numeric_type: std::marker::PhantomData<N>,
 }
 
@@ -265,36 +281,29 @@ where
     /// Creates a new VarIntList.
     pub fn new() -> Self {
         VarIntList {
-            data: Rc::new(RefCell::new(SmallVec::new())),
+            data: Arc::new(Mutex::new(SmallVec::new())),
             _numeric_type: std::marker::PhantomData::<N>,
         }
     }
 
     /// Adds an integer to the list.
     pub fn push(&mut self, value: N) {
-        let mut data = self.data.borrow_mut();
+        let mut data = self.data.lock().unwrap();
         let original_len = data.len();
         let added_len = value.required_space();
         data.resize(original_len + added_len, 0);
         value.encode_var(&mut data[original_len..]);
     }
 
-    /// Gets the number of integers in the list.
-    ///
-    /// Todo: This is real expensive right now. Improve.
-    pub fn len(&self) -> usize {
-        self.iter().count()
-    }
-
     /// Clears the list.
     pub fn clear(&mut self) {
-        self.data.borrow_mut().clear();
+        self.data.lock().unwrap().clear();
     }
 
     /// Returns an iterator over the integers in the list.
     pub fn iter(&self) -> VarIntListIterator<N> {
         VarIntListIterator {
-            data: Rc::clone(&self.data),
+            data: Arc::clone(&self.data),
             position: 0,
             _numeric_type: std::marker::PhantomData,
         }
@@ -317,7 +326,7 @@ where
 
     /// Todo: replace with iter_mut
     pub fn set(&mut self, index: usize, value: N) {
-        let mut data = self.data.borrow_mut();
+        let mut data = self.data.lock().unwrap();
 
         let mut position = 0;
         let mut current_index = 0;
@@ -372,7 +381,7 @@ where
     /// Inserts an integer at the specified index.
     /// Panics if the index is out of bounds.
     pub fn insert(&mut self, index: usize, value: N) {
-        let mut data = self.data.borrow_mut();
+        let mut data = self.data.lock().unwrap();
         // Find the byte position corresponding to the index
         let mut position = 0; // byte position in data
         let mut current_index = 0;
@@ -429,7 +438,7 @@ where
     /// Word
     pub fn truncate(&mut self, new_len: usize) {
         if new_len == 0 {
-            self.data.borrow_mut().clear();
+            self.data.lock().unwrap().clear();
             return;
         }
 
@@ -444,7 +453,7 @@ where
             }
         }
 
-        self.data.borrow_mut().truncate(position);
+        self.data.lock().unwrap().truncate(position);
     }
 }
 
@@ -461,8 +470,7 @@ impl<N> Eq for VarIntList<N> where N: VarInt + Eq {}
 
 /// Iterates through i32 integers held in a `VarIntList`.
 pub struct VarIntListIterator<N> {
-    // data: &'a [u8],
-    data: Rc<RefCell<SmallVec<[u8; 8]>>>,
+    data: Arc<Mutex<SmallVec<[u8; 8]>>>,
     position: usize,
     _numeric_type: std::marker::PhantomData<N>,
 }
@@ -474,7 +482,7 @@ where
     type Item = N;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let data = self.data.borrow();
+        let data = self.data.lock().unwrap();
         if self.position >= data.len() {
             return None;
         }
@@ -492,14 +500,14 @@ where
 /// word
 pub struct VarIntListMutIterator<N> {
     // probably need to rewrite this to roll refcell (UnsafeCell) into the iterator
-    data: Rc<RefCell<SmallVec<[u8; 8]>>>,
+    data: Arc<Mutex<SmallVec<[u8; 8]>>>,
     position: usize,
     _numeric_type: std::marker::PhantomData<N>,
 }
 
 /// A mutable entry in a `VarIntList`
 pub struct VarIntEntry<N> {
-    data: Rc<RefCell<SmallVec<[u8; 8]>>>,
+    data: Arc<Mutex<SmallVec<[u8; 8]>>>,
     value: N,
     start: usize,
     length: usize,
@@ -543,7 +551,7 @@ where
     type Item = VarIntEntry<N>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let data = self.data.borrow_mut();
+        let data = self.data.lock().unwrap();
         if self.position >= data.len() {
             return None;
         }
@@ -554,7 +562,7 @@ where
         match N::decode_var(&data[self.position..]) {
             Some((value, bytes_read)) => {
                 let entry = VarIntEntry {
-                    data: Rc::clone(&self.data),
+                    data: Arc::clone(&self.data),
                     value,
                     start,
                     length: bytes_read,
@@ -581,7 +589,7 @@ impl<N> VarIntEntry<N> {
     where
         N: VarInt,
     {
-        let mut data = self.data.borrow_mut();
+        let mut data = self.data.lock().unwrap();
 
         let old_length = self.length;
         let new_length = new_value.required_space();
