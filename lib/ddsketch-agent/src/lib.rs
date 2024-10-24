@@ -485,7 +485,7 @@ where
     /// The buffer returned by this function is suitable for populating a packed
     /// repeated field in a protobuf message.
     pub fn get_raw_encoded(&self) -> Vec<u8> {
-        unsafe { (&*self.data.get()).to_vec() }
+        unsafe { (*self.data.get()).to_vec() }
     }
 
     /// Get a proto-encoded representation of this list and clear the list.
