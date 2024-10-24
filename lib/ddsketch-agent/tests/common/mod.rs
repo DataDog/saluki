@@ -1,16 +1,8 @@
 #![allow(dead_code)]
 
-use datadog_protos::metrics::Dogsketch;
-use ddsketch_agent::DDSketch;
+use ddsketch_agent::{DDSketch, SendOnlyDogsketch};
 use rand::SeedableRng;
 use rand_distr::{Distribution, Pareto};
-
-pub fn insert_single_points(ns: &[f64]) {
-    let mut sketch = DDSketch::default();
-    for i in ns {
-        sketch.insert(*i);
-    }
-}
 
 pub fn insert_single_and_serialize(ns: &[f64]) {
     let mut sketch = DDSketch::default();
@@ -18,16 +10,16 @@ pub fn insert_single_and_serialize(ns: &[f64]) {
         sketch.insert(*i);
     }
 
-    let mut dogsketch = Dogsketch::new();
-    sketch.merge_to_dogsketch(&mut dogsketch);
+    let mut dogsketch = SendOnlyDogsketch::new();
+    sketch.clear_and_merge_to_dogsketch(&mut dogsketch);
 }
 
 pub fn insert_many_and_serialize(ns: &[f64]) {
     let mut sketch = DDSketch::default();
     sketch.insert_many(ns);
 
-    let mut dogsketch = Dogsketch::new();
-    sketch.merge_to_dogsketch(&mut dogsketch);
+    let mut dogsketch = SendOnlyDogsketch::new();
+    sketch.clear_and_merge_to_dogsketch(&mut dogsketch);
 }
 
 pub fn make_points(size: usize) -> Vec<f64> {

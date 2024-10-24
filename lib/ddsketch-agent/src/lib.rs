@@ -479,6 +479,24 @@ where
 
         self.data.get_mut().truncate(position);
     }
+
+    /// Get a proto-encoded representation of this list.
+    ///
+    /// The buffer returned by this function is suitable for populating a packed
+    /// repeated field in a protobuf message.
+    pub fn get_raw_encoded(&self) -> Vec<u8> {
+        unsafe { (*self.data.get()).to_vec() }
+    }
+
+    /// Get a proto-encoded representation of this list and clear the list.
+    ///
+    /// The buffer returned by this function is suitable for populating a packed
+    /// repeated field in a protobuf message.
+    pub fn clear_and_get_raw_encoded(&mut self) -> Vec<u8> {
+        let mut blank = UnsafeCell::new(SmallVec::new());
+        std::mem::swap(&mut self.data, &mut blank);
+        blank.into_inner().into_vec()
+    }
 }
 
 impl<N> PartialEq for VarIntList<N>
@@ -1194,19 +1212,21 @@ impl DDSketch {
         dogsketch.set_avg(self.avg);
         dogsketch.set_sum(self.sum);
 
-        let mut k: Vec<i32> = Vec::with_capacity(self.bins.count());
-        let mut n: Vec<u32> = Vec::with_capacity(self.bins.count());
+        dogsketch.set_encoded_k(self.bins.keys.get_raw_encoded().into());
+        dogsketch.set_encoded_n(self.bins.counts.get_raw_encoded().into());
+    }
 
-        for bin in self.bins.iter() {
-            k.push(bin.k);
-            n.push(bin.n);
-        }
+    /// Merges this sketch into the `Dogsketch` Protocol Buffers representation and then clears it.
+    pub fn clear_and_merge_to_dogsketch(&mut self, dogsketch: &mut Dogsketch) {
+        dogsketch.set_cnt(i64::from(self.count));
+        dogsketch.set_min(self.min);
+        dogsketch.set_max(self.max);
+        dogsketch.set_avg(self.avg);
+        dogsketch.set_sum(self.sum);
 
-        // let k: Vec<i32> = self.keys.iter().collect();
-        // let n: Vec<u32> = self.counts.iter().collect();
-
-        // dogsketch.set_k(k);
-        // dogsketch.set_n(n);
+        dogsketch.set_encoded_k(self.bins.keys.clear_and_get_raw_encoded().into());
+        dogsketch.set_encoded_n(self.bins.counts.clear_and_get_raw_encoded().into());
+        self.clear();
     }
 }
 
@@ -1246,28 +1266,30 @@ impl Eq for DDSketch {}
 impl TryFrom<Dogsketch> for DDSketch {
     type Error = &'static str;
 
-    fn try_from(value: Dogsketch) -> Result<Self, Self::Error> {
-        let mut sketch = DDSketch {
-            count: u32::try_from(value.cnt).map_err(|_| "sketch count overflows u32")?,
-            min: value.min,
-            max: value.max,
-            avg: value.avg,
-            sum: value.sum,
-            ..Default::default()
-        };
+    fn try_from(_value: Dogsketch) -> Result<Self, Self::Error> {
+        unimplemented!();
 
-        let k = value.k;
-        let n = value.n;
+        // let mut sketch = DDSketch {
+        //     count: u32::try_from(value.cnt).map_err(|_| "sketch count overflows u32")?,
+        //     min: value.min,
+        //     max: value.max,
+        //     avg: value.avg,
+        //     sum: value.sum,
+        //     ..Default::default()
+        // };
 
-        if k.len() != n.len() {
-            return Err("k and n bin vectors have differing lengths");
-        }
+        // let k = value.k;
+        // let n = value.n;
 
-        for (k, n) in k.into_iter().zip(n.into_iter()) {
-            sketch.bins.push(Bin { k, n });
-        }
+        // if k.len() != n.len() {
+        //     return Err("k and n bin vectors have differing lengths");
+        // }
 
-        Ok(sketch)
+        // for (k, n) in k.into_iter().zip(n.into_iter()) {
+        //     sketch.bins.push(Bin { k, n });
+        // }
+
+        // Ok(sketch)
     }
 }
 
