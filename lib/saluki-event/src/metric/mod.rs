@@ -157,3 +157,35 @@ impl Metric {
         }
     }
 }
+
+/// A sample rate.
+///
+/// Sample rates are used to indicate the rate at which a metric was sampled, and are represented by a value between 0.0
+/// and 1.0 (inclusive). For example, when handling a value with a sample rate of 0.25, this indicates the value is only
+/// being sent 25% of the time. This means it has a "weight" of 4: this single value should be considered to represent
+/// 4 actual samples with the same value.
+pub struct SampleRate(f64);
+
+impl SampleRate {
+    /// Returns the weight of the sample rate.
+    pub fn weight(&self) -> u64 {
+        (1.0 / self.0) as u64
+    }
+
+    /// Returns the weight of the sample rate as a raw floating-point value.
+    pub fn raw_weight(&self) -> f64 {
+        1.0 / self.0
+    }
+}
+
+impl TryFrom<f64> for SampleRate {
+    type Error = &'static str;
+
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
+        if value < 0.0 || value > 1.0 {
+            Err("sample rate must be between 0.0 and 1.0")
+        } else {
+            Ok(Self(value))
+        }
+    }
+}

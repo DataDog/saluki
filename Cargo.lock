@@ -3308,6 +3308,7 @@ dependencies = [
  "bytesize",
  "datadog-protos",
  "ddsketch-agent",
+ "float-cmp",
  "futures",
  "hashbrown 0.15.0",
  "http 1.1.0",

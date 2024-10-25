@@ -170,6 +170,7 @@ fn parse_dogstatsd_metric<'a>(
     // actual value itself.
     let (remaining, (metric_name, (metric_type, raw_metric_values))) =
         separated_pair(ascii_alphanum_and_seps, tag(":"), raw_metric_values)(input)?;
+    let dist_aggregation = get_dist_aggregation_mode(&metric_type);
 
     // At this point, we may have some of this additional data, and if so, we also then would have a pipe separator at
     // the very front, which we'd want to consume before going further.
@@ -245,10 +246,18 @@ fn parse_dogstatsd_metric<'a>(
             tags: maybe_tags.unwrap_or_else(TagSplitter::empty),
             values: metric_values,
             timestamp: maybe_timestamp,
-            sample_rate: maybe_sample_rate,
+            dist_aggregation,
             container_id: maybe_container_id,
         },
     ))
+}
+
+#[inline]
+fn get_dist_aggregation_mode(metric_type: &MetricType) -> DistributionAggregation {
+    match metric_type {
+        MetricType::Timer | MetricType::Histogram => DistributionAggregation::ClientSide,
+        _ => DistributionAggregation::ServerSide,
+    }
 }
 
 pub struct MetricPacket<'a> {
@@ -256,12 +265,14 @@ pub struct MetricPacket<'a> {
     pub tags: TagSplitter<'a>,
     pub values: MetricValues,
     pub timestamp: Option<u64>,
-    pub sample_rate: Option<f64>,
+    pub dist_aggregation: DistributionAggregation,
     pub container_id: Option<&'a str>,
 }
 
 pub fn build_metric_metadata_from_packet(packet: &MetricPacket<'_>, peer_addr: &ConnectionAddress) -> MetricMetadata {
-    let mut metric_metadata = MetricMetadata::default().with_origin(MetricOrigin::dogstatsd());
+    let mut metric_metadata = MetricMetadata::default()
+        .with_origin(MetricOrigin::dogstatsd())
+        .with_distribution_aggregation(packet.dist_aggregation);
 
     if let Some(container_id) = packet.container_id {
         metric_metadata.origin_entity_mut().set_container_id(container_id);
@@ -892,16 +903,26 @@ mod tests {
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
         check_basic_metric_eq(expected, actual);
 
-        // Special case where we check this for all three variants -- timers, histograms, and distributions -- since we
-        // treat them all the same when parsing.
-        let name = "my.distribution";
+        // Special case where we check this for both timers and histograms since we treat them both the same when
+        // parsing.
+        let name = "my.timer_or_histogram";
         let value = 3.0;
-        for kind in &["ms", "h", "d"] {
+        for kind in &["ms", "h"] {
             let raw = format!("{}:{}|{}", name, value, kind);
-            let expected = Metric::distribution(name, value);
+            let mut expected = Metric::distribution(name, value);
+            expected
+                .metadata_mut()
+                .set_distribution_aggregation(DistributionAggregation::ClientSide);
             let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
             check_basic_metric_eq(expected, actual);
         }
+
+        let distribution_name = "my.distribution";
+        let distribution_value = 3.0;
+        let distribution_raw = format!("{}:{}|d", distribution_name, distribution_value);
+        let distribution_expected = Metric::distribution(distribution_name, distribution_value);
+        let distribution_actual = parse_dsd_metric(distribution_raw.as_bytes()).expect("should not fail to parse");
+        check_basic_metric_eq(distribution_expected, distribution_actual);
 
         let set_name = "my.set";
         let set_value = "value";
@@ -1034,20 +1055,29 @@ mod tests {
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
         check_basic_metric_eq(expected, actual);
 
-        // Special case where we check this for all three variants -- timers, histograms, and distributions -- since we
-        // treat them all the same when parsing.
+        // Special case where we check this for both timers and histograms since we treat them both the same when
+        // parsing.
         //
         // Additionally, we have an optimization to return a single distribution metric from multi-value payloads, so we
         // also check here that only one metric is generated for multi-value timers/histograms/distributions.
-        let name = "my.distribution";
+        let name = "my.timer_or_histogram";
         let values = [27.5, 4.20, 80.085];
         let values_stringified = values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
-        for kind in &["ms", "h", "d"] {
+        for kind in &["ms", "h"] {
             let raw = format!("{}:{}|{}", name, values_stringified.join(":"), kind);
-            let expected = Metric::distribution(name, values);
+            let mut expected = Metric::distribution(name, values);
+            expected
+                .metadata_mut()
+                .set_distribution_aggregation(DistributionAggregation::ClientSide);
             let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
             check_basic_metric_eq(expected, actual);
         }
+
+        let name = "my.distribution";
+        let raw = format!("{}:{}|d", name, values_stringified.join(":"));
+        let expected = Metric::distribution(name, values);
+        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
+        check_basic_metric_eq(expected, actual);
     }
 
     #[test]

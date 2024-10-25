@@ -8,6 +8,28 @@ const ORIGIN_SUBPRODUCT_DOGSTATSD: u32 = 10;
 const ORIGIN_SUBPRODUCT_INTEGRATION: u32 = 11;
 const ORIGIN_PRODUCT_DETAIL_NONE: u32 = 0;
 
+/// Aggregation mode for distributions.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DistributionAggregation {
+    /// Aggregate distributions in a client-side manner.
+    ///
+    /// This mode is equivalent to client-side aggregation, where pre-configured statistics are calculated over
+    /// distributions, such as minimum, maximum, average, specific percentiles, and so on.
+    ///
+    /// For example, calculating summary statistics (minimum, maximum, average, medium, sum, count) and limited
+    /// percentiles (95th, 99th) and sending them as individual series to the Datadog metrics intake.
+    ClientSide,
+
+    /// Aggregate distributions in a server-side manner.
+    ///
+    /// This mode generally implies sending distributions in their raw form to any downstream system, such that they can
+    /// be aggregated in a globally accurate way.
+    ///
+    /// For example, sending distributions in their `DDSketch` form to the Datadog metrics intake.
+    #[default]
+    ServerSide,
+}
+
 /// The cardinality of tags associated with the origin entity.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(try_from = "String")]
@@ -161,30 +183,49 @@ impl OriginEntity {
 #[must_use]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MetricMetadata {
+    dist_aggregation: DistributionAggregation,
     hostname: Option<Arc<str>>,
     origin_entity: OriginEntity,
     origin: Option<MetricOrigin>,
 }
 
 impl MetricMetadata {
-    /// Gets the hostname.
+    /// Returns the distribution aggregation mode.
+    pub fn distribution_aggregation(&self) -> DistributionAggregation {
+        self.dist_aggregation
+    }
+
+    /// Returns the hostname.
     pub fn hostname(&self) -> Option<&str> {
         self.hostname.as_deref()
     }
 
-    /// Gets the origin entity.
+    /// Returns the origin entity.
     pub fn origin_entity(&self) -> &OriginEntity {
         &self.origin_entity
     }
 
-    /// Gets the metric origin.
+    /// Returns the metric origin.
     pub fn origin(&self) -> Option<&MetricOrigin> {
         self.origin.as_ref()
     }
 
-    /// Gets a mutable reference to the origin entity.
+    /// Returns a mutable reference to the origin entity.
     pub fn origin_entity_mut(&mut self) -> &mut OriginEntity {
         &mut self.origin_entity
+    }
+
+    /// Set the distribution aggregation mode.
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_distribution_aggregation(mut self, dist_aggregation: DistributionAggregation) -> Self {
+        self.set_distribution_aggregation(dist_aggregation);
+        self
+    }
+
+    /// Set the distribution aggregation mode.
+    pub fn set_distribution_aggregation(&mut self, dist_aggregation: DistributionAggregation) {
+        self.dist_aggregation = dist_aggregation;
     }
 
     /// Set the hostname where the metric originated from.

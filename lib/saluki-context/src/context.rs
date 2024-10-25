@@ -64,6 +64,22 @@ impl Context {
         }
     }
 
+    /// Clones this context, and uses the given name for the cloned context.
+    pub fn with_name<S: Into<MetaString>>(&self, name: S) -> Self {
+        let name = name.into();
+        let tags = self.inner.tags.clone();
+        let (hash, _) = hash_context(&name, &tags);
+
+        Self {
+            inner: Arc::new(ContextInner {
+                name,
+                tags,
+                hash,
+                active_count: Gauge::noop(),
+            }),
+        }
+    }
+
     pub(crate) fn from_inner(inner: ContextInner) -> Self {
         Self { inner: Arc::new(inner) }
     }
