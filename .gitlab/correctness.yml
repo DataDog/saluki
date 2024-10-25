@@ -52,7 +52,7 @@ build-millstone-image:
 
 run-ground-truth:
   stage: correctness
-  tags: ["runner:docker"]
+  tags: ["docker-in-docker:amd64"]
   needs:
     - build-adp-image
     - build-metrics-intake-image
