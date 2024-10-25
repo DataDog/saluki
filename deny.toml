@@ -31,3 +31,10 @@ expression = "MIT AND ISC AND OpenSSL"
 license-files = [
     { path = "LICENSE", hash = 0xbd0eed23 }
 ]
+
+[sources]
+allow-git = [
+    # Git dependency for `lading_payload`, which isn't published on crates.io. We use a tagged version, though, so this
+    # is reasonable from our perspective... especially considering the fact that we're the ones who own the repository.
+    "https://github.com/DataDog/lading",
+]
