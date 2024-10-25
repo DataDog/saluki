@@ -20,7 +20,10 @@ use saluki_io::{
     buf::{BytesBuffer, ChunkedBuffer, FixedSizeVec, ReadWriteIoBuffer},
     net::{
         client::{http::HttpClient, replay::ReplayBody},
-        util::retry::{ExponentialBackoff, RollingExponentialBackoffRetryPolicy, StandardHttpClassifier},
+        util::retry::{
+            ExponentialBackoff, RollingExponentialBackoffRetryPolicy, StandardHttpClassifier,
+            StandardHttpRetryLifecycle,
+        },
     },
 };
 use serde::Deserialize;
@@ -248,6 +251,7 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         let recovery_error_decrease_factor =
             (!self.request_recovery_reset).then_some(self.request_recovery_error_decrease_factor);
         let retry_policy = RollingExponentialBackoffRetryPolicy::new(StandardHttpClassifier, retry_backoff)
+            .with_retry_lifecycle(StandardHttpRetryLifecycle)
             .with_recovery_error_decrease_factor(recovery_error_decrease_factor);
 
         let service = ServiceBuilder::new()
