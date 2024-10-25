@@ -1,0 +1,76 @@
+build-metrics-intake-image:
+  stage: correctness
+  tags: ["arch:amd64"]
+  image: ${DOCKER_BUILD_IMAGE}
+  needs: []
+  variables:
+    # Compiling Rust is intensive. ¯\_(ツ)_/¯
+    KUBERNETES_CPU_REQUEST: "16"
+    KUBERNETES_MEMORY_REQUEST: "8Gi"
+    KUBERNETES_MEMORY_LIMIT: "12Gi"
+  script:
+    - docker buildx build
+      --platform linux/amd64,linux/arm64
+      --file ./docker/Dockerfile.metrics-intake
+      --tag ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${ADP_VERSION}
+      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
+      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
+      --build-arg BUILD_PROFILE=release
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --push
+      .
+
+build-millstone-image:
+  stage: correctness
+  tags: ["arch:amd64"]
+  image: ${DOCKER_BUILD_IMAGE}
+  needs: []
+  variables:
+    # Compiling Rust is intensive. ¯\_(ツ)_/¯
+    KUBERNETES_CPU_REQUEST: "16"
+    KUBERNETES_MEMORY_REQUEST: "8Gi"
+    KUBERNETES_MEMORY_LIMIT: "12Gi"
+  script:
+    - docker buildx build
+      --platform linux/amd64,linux/arm64
+      --file ./docker/Dockerfile.millstone
+      --tag ${SALUKI_IMAGE_REPO_BASE}/millstone:${ADP_VERSION}
+      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
+      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
+      --build-arg BUILD_PROFILE=release
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --push
+      .
+
+run-ground-truth:
+  stage: correctness
+  needs:
+    - build-adp-image
+    - build-metrics-intake-image
+    - build-millstone-image
+  allow_failure: true
+  image: "${SALUKI_SMP_CI_IMAGE}"
+  artifacts:
+    expire_in: 1 weeks
+    paths:
+      - /tmp/ground-truth  # for debugging
+    when: always
+  script:
+      make build-ground-truth
+      target/debug/ground-truth \
+        --millstone-image ${SALUKI_IMAGE_REPO_BASE}/millstone:${ADP_VERSION} \
+        --millstone-config-path test/correctness/millstone.yaml \
+        --metrics-intake-image ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${ADP_VERSION} \
+        --metrics-intake-config-path test/correctness/metrics-intake.yaml \
+        --dsd-image docker.io/datadog/dogstatsd:${DD_AGENT_TEST_VERSION} \
+        --dsd-config-path test/correctness/datadog.yaml \
+        --adp-image ${ADP_IMAGE_BASE}:${ADP_VERSION} \
+        --adp-config-path test/correctness/datadog.yaml
