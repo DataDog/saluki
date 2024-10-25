@@ -14,3 +14,4 @@ license-tool.toml
 README.md
 rustfmt.toml
 SECURITY.md
+static-analysis.datadog.yml

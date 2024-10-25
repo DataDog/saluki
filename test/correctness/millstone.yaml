@@ -1,0 +1,56 @@
+seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+target: "unixgram:///airlock/metrics.sock"
+volume: 10000
+corpus:
+  # TODO: This is a little confusing, because we're specifying the number of metrics to generate (which we _will_
+  # honor faithfully) but since we're specifying the contexts count in the payload definition, we might not
+  # actually generate 10,000 unique contexts, but instead somewhere below 3,000, where each of them is repeated a
+  # few times to reach the total count.
+  #
+  # We need to figure that out, since the intent is that specifying a fixed count should lead to that many metrics
+  # (and no more) being generated, such that you could depend on that for testing purposes.
+  size: 10000
+  payload:
+    dogstatsd:
+      contexts:
+        constant: 3000
+      name_length:
+        inclusive:
+          min: 1
+          max: 32
+      tag_length:
+        inclusive:
+          min: 3
+          max: 16
+      tags_per_msg:
+        inclusive:
+          min: 2
+          max: 8
+      value:
+        float_probability: 0.5
+        range:
+          inclusive:
+            min: -9999999
+            max: 9999999
+      multivalue_count:
+        inclusive:
+          min: 2
+          max: 32
+      multivalue_pack_probability: 0.08
+      kind_weights:
+        metric: 100
+        event: 0
+        service_check: 0
+      # Weights based on analyzing internal Datadog usage data of metric type for metrics sent to the Agent over DogStatsD.
+      metric_weights:
+        count: 208
+        gauge: 66
+        timer: 0
+        distribution: 72
+        # We specifically _don't_ want to generate sets, because we can't assert their correctness once they've been
+        # aggregated: a gauge is generated for each aggregator flush that represents the unique number of values in a
+        # given set, but in general, gauges are meant to be last-write-wins, so unless the metric names/tags can
+        # indicate that they're for a set, we can't know that it's safe for us to _aggregate_ the gauge values, and with
+        # our default behavior of taking the latest gauge value... we end up with non-deterministic results.
+        set: 0
+        histogram: 1

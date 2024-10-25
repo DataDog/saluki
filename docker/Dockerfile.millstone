@@ -27,28 +27,16 @@ RUN tar -C /usr/local -xzf /tmp/go-1.23.0.tar.gz
 COPY .ci/install-protoc.sh /
 RUN chmod +x /install-protoc.sh && /install-protoc.sh
 
-# Build ADP, and strip the binary to to optimize the size.
-WORKDIR /adp
-COPY . /adp
-RUN cargo build --profile ${BUILD_PROFILE}
+# Build millstone.
+WORKDIR /millstone
+COPY . /millstone
+RUN cargo build --profile ${BUILD_PROFILE} --bin millstone
 
 # Now stick our resulting binary in a clean image.
 FROM ${APP_IMAGE}
 
 ARG BUILD_PROFILE=release
 
-# Only install ca-certificates if the directory doesn't exist.
-#
-# We do this because we don't want to set the user to `root` in the application image, but we need `root` to use
-# `apt-get`... so if we're building in CI where CA certificates are already present, and the base image doesn't use the
-# `root` user, we skip this step.
-#
-# For local builds, the regular Ubuntu application image needs to have the CA certificates installed, but it also uses
-# the `root` user, so we can install them without issue.
-RUN test -d /usr/share/ca-certificates || (apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates=20240203~22.04.1 && \
-    apt-get clean)
-COPY --from=builder /adp/target/${BUILD_PROFILE}/agent-data-plane /usr/local/bin/agent-data-plane
-COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
+COPY --from=builder /millstone/target/${BUILD_PROFILE}/millstone /usr/local/bin/millstone
 
-ENTRYPOINT [ "/usr/local/bin/agent-data-plane" ]
+ENTRYPOINT [ "/usr/local/bin/millstone" ]
