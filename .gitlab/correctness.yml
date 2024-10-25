@@ -57,7 +57,7 @@ run-ground-truth:
     - build-metrics-intake-image
     - build-millstone-image
   allow_failure: true
-  image: "${SALUKI_SMP_CI_IMAGE}"
+  image: "${SALUKI_BUILD_CI_IMAGE}"
   artifacts:
     expire_in: 1 weeks
     paths:
