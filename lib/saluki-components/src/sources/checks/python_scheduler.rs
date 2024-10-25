@@ -82,7 +82,8 @@ impl PythonCheckScheduler {
             // https://github.com/DataDog/datadog-agent/blob/b039ea43d3168f521e8ea3e8356a0e84eec170d1/cmd/agent/common/common.go#L24-L33
             syspath.insert(0, Path::new("./dist/"))?; // path.GetDistPath()
             syspath.insert(0, Path::new("./dist/checks.d/"))?; // custom checks in checks.d subdir
-                                                               // syspath.insert(0, config.get('additional_checksd'))?; // config option not supported yet
+            syspath.insert(0, Path::new("/etc/datadog-agent/checks.d/"))?; // custom checks in checks.d subdir
+                                                                           // syspath.insert(0, config.get('additional_checksd'))?; // config option not supported yet
             info!("Python sys.path is: {:?}", syspath);
 
             // Initialize the aggregator module with the submission queue
