@@ -152,6 +152,7 @@ async-walkdir = "1.0.0"
 pyo3 = "0.22.5"
 tempfile = "3.10.1"
 tracing-test = "0.2.4"
+fnv = "1.0.7"
 
 [patch.crates-io]
 # Git dependency for `containerd-client` to:

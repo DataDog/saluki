@@ -15,7 +15,7 @@ bytes = { workspace = true }
 bytesize = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
-fnv = "1.0.7"
+fnv = { workspace = true }
 futures = { workspace = true }
 hashbrown = { workspace = true }
 http = { workspace = true }
@@ -51,8 +51,8 @@ saluki-core = { workspace = true }
 saluki-env = { workspace = true }
 saluki-error = { workspace = true }
 saluki-event = { workspace = true }
-saluki-io = { workspace = true }
 saluki-health = { workspace = true }
+saluki-io = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

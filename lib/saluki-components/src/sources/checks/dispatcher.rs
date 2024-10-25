@@ -1,6 +1,7 @@
-use super::*;
 use metrics::Counter;
 use serde_json::json;
+
+use super::*;
 
 #[derive(Clone)]
 pub struct ChecksTelemetry {
