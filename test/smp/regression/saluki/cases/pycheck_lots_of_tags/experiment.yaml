@@ -1,0 +1,35 @@
+optimization_goal: cpu
+erratic: false
+
+target:
+  # Lie to SMP and say we're working with datadog-agent to allow copying the
+  # datadog-agent folder through to /etc/datadog-agent
+  name: datadog-agent
+  command: /usr/local/bin/agent-data-plane
+
+  environment:
+    DD_API_KEY: foo00000001
+    DD_HOSTNAME: smp-regression
+    DD_DD_URL: http://127.0.0.1:9091
+
+    # Set the context limit in the aggregator to right above 3K, which matches the maximum number of contexts we expect
+    # to generate. We essentially don't want the aggregator to be a limiting factor.
+    DD_AGGREGATE_CONTEXT_LIMIT: "3100"
+
+    # Disables UDP and enables listening on UDS in SOCK_DGRAM mode.
+    DD_DOGSTATSD_PORT: "0"
+    DD_DOGSTATSD_SOCKET: /tmp/adp-dsd.sock
+
+    # Runs the workload provider in no-op mode, otherwise it would need to connect to a real
+    # Datadog Agent, which obviously we don't have available to us, and perhaps further, don't
+    # need for the purpose of this benchmark.
+    DD_ADP_USE_NOOP_WORKLOAD_PROVIDER: "true"
+
+    # Enable internal telemetry endpoint.
+    DD_TELEMETRY_ENABLED: "true"
+    DD_PROMETHEUS_LISTEN_ADDR: tcp://127.0.0.1:6000
+
+  profiling_environment:
+    DD_PROFILING_EXECUTION_TRACE_ENABLED: true
+    DD_PROFILING_EXECUTION_TRACE_PERIOD: 1m
+    DD_PROFILING_WAIT_PROFILE: true
