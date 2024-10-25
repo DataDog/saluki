@@ -16,11 +16,16 @@ ARG BUILD_PROFILE=release
 #
 # Our CI build image already installs `cmake3`, though, so we just need to handle the local development case here.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl ca-certificates unzip && \
+    apt-get install -y --no-install-recommends ca-certificates curl unzip && \
     (which cmake >/dev/null || apt-get install -y --no-install-recommends cmake)
 
 # ensure the ca-certs we just grabbed are installed before curling
 RUN update-ca-certificates
+
+# Saw in logs that curl is expecting ssl certs at `/etc/pki/tls/certs/ca-bundle.crt`,
+# but they're actually at `/etc/ssl/certs/ca-certificates.crt`
+ENV CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+
 
 # Install Go, which we need to build AWS-LC in FIPS-compliant mode.
 ENV PATH="/usr/local/go/bin:${PATH}"
