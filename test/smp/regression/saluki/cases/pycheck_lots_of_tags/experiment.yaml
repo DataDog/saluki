@@ -30,6 +30,8 @@ target:
     DD_PROMETHEUS_LISTEN_ADDR: tcp://127.0.0.1:6000
 
   profiling_environment:
+    DD_INTEGRATION_PROFILING: true
+    DD_TRACE_AGENT_URL: unix:///var/run/datadog/apm.socket
     DD_PROFILING_EXECUTION_TRACE_ENABLED: true
     DD_PROFILING_EXECUTION_TRACE_PERIOD: 1m
     DD_PROFILING_WAIT_PROFILE: true
