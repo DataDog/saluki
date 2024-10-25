@@ -30,11 +30,13 @@ build-adp-baseline-image:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
 
-    # Build baseline from `main`. A more correct approach here would be to check
-    # out all but the dockerfile for saluki from the branch point and build that
-    # way but this should be Good Enough for a while.
+    # Build baseline from `main`
     - git fetch --all
     - git switch main
+
+    # Preserve Dockerfiles and CI configuration files from the current branch
+    # Replace the paths below with the actual paths to your Dockerfiles and CI configs
+    - git checkout "${CI_COMMIT_BRANCH}" -- .gitlab-ci.yml .gitlab/**/*.yml docker/**/*.Dockerfile
 
     # Actually build
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
