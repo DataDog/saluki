@@ -6,7 +6,7 @@ license = { workspace = true }
 repository = { workspace = true }
 
 [features]
-default = [""]
+default = []
 fips = ["saluki-app/tls-fips"]
 
 [dependencies]
