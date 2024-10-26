@@ -158,14 +158,15 @@ impl TestRunner {
 
         // We've gotten our results back, so signal to any remaining containers that they can shutdown now.
         info!("Cleaning up remaining containers and resources...");
-
         self.cancel_token.cancel();
         self.coordinator.wait().await;
 
+        debug!("Cleaning up DogStatsD-related resources...");
         if let Err(e) = Driver::clean_related_resources(dsd_isolation_group_id).await {
             error!(error = %e, "Failed to clean up DogStatsD-related resources. Manual cleanup may be required.");
         }
 
+        debug!("Cleaning up Agent Data Plane-related resources...");
         if let Err(e) = Driver::clean_related_resources(adp_isolation_group_id).await {
             error!(error = %e, "Failed to clean up Agent Data Plane-related resources. Manual cleanup may be required.");
         }
@@ -343,6 +344,7 @@ impl ResultCollector {
     }
 
     async fn wait_for_results(self) -> Result<Vec<Metric>, GenericError> {
+        debug!("Waiting for millstone container to complete...");
         // Wait for millstone to complete, since that signals that all metrics have been _sent_ to the target.
         if let ExitStatus::Failed { code, error } = self.millstone_handle.wait().await {
             return Err(generic_error!("Failed to drive millstone to completion; process exited with non-zero exit code ({}). Error message: {}", code, error));
@@ -468,6 +470,8 @@ async fn spawn_driver_with_details(
 
         select! {
             result = driver.wait_for_container_exit() => {
+                debug!("Container exited.");
+
                 if let Err(e) = driver.cleanup().await {
                     error!(error = %e, "Failed to cleanup container.");
                 }
