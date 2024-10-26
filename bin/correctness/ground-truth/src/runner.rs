@@ -48,6 +48,8 @@ impl TestRunner {
     }
 
     async fn build_dsd_group_runner(&self, isolation_group_id: String) -> Result<GroupRunner, GenericError> {
+        debug!("Creating DSD group runner...");
+
         let mut group_runner = GroupRunner::new(
             isolation_group_id,
             "dsd",
@@ -70,6 +72,8 @@ impl TestRunner {
     }
 
     async fn build_adp_group_runner(&self, isolation_group_id: String) -> Result<GroupRunner, GenericError> {
+        debug!("Creating ADP group runner...");
+
         let mut group_runner = GroupRunner::new(
             isolation_group_id,
             "adp",
@@ -136,10 +140,10 @@ impl TestRunner {
         // monitoring the containers, as well as cleaning them up after failure and/or when we're done.
         let dsd_group_runner = self.build_dsd_group_runner(dsd_isolation_group_id.clone()).await?;
         let adp_group_runner = self.build_adp_group_runner(adp_isolation_group_id.clone()).await?;
-        info!("Spawning containers for DogStatsD and Agent Data Plane...");
 
         // Do the initial spawn of both group runners, which should get all relevant containers spawned and running in
         // the correct order, and so on.
+        info!("Spawning containers for DogStatsD and Agent Data Plane...");
         let dsd_spawn_result = run_in_background(dsd_group_runner.spawn());
         let adp_spawn_result = run_in_background(adp_group_runner.spawn());
 
@@ -281,6 +285,8 @@ impl GroupRunner {
 
         match maybe_spawn_error {
             Some(e) => {
+                debug!("Encountered error while spawning drivers. Cleaning up any successfully spawned drivers...");
+
                 // We encountered an error while spawning drivers, so we need to clean up any drivers that were successfully
                 // spawned before returning the error. We simply use our existing `SpawnedDrivers` to carry that out.
                 let driver_results = spawned_drivers.stop_and_wait().await;
@@ -452,7 +458,7 @@ async fn spawn_driver_with_details(
     let mgmt_task_span = info_span!("driver", driver_id = driver.driver_id());
     let _entered = mgmt_task_span.enter();
 
-    debug!("Starting container...");
+    debug!("Spawning container...");
 
     // Start the container and wait for it to become healthy.
     let details = driver.start().await?;
@@ -476,6 +482,8 @@ async fn spawn_driver_with_details(
                     error!(error = %e, "Failed to cleanup container.");
                 }
 
+                debug!("Container cleanup complete.");
+
                 match result {
                     Ok(exit_status) => exit_status,
                     Err(e) => ExitStatus::Failed { code: -1, error: format!("failed to wait for container exit: {}", e) },
@@ -486,6 +494,7 @@ async fn spawn_driver_with_details(
                 if let Err(e) = driver.cleanup().await {
                     error!(error = %e, "Failed to cleanup container.");
                 }
+                debug!("Container cleanup complete.");
 
                 ExitStatus::Success
             },
