@@ -64,6 +64,8 @@ run-ground-truth:
     paths:
       - /tmp/ground-truth  # for debugging
     when: always
+  variables:
+    DD_LOG_LEVEL: "debug"
   script:
     - make build-ground-truth
     - target/debug/ground-truth
