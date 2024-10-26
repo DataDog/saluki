@@ -267,11 +267,15 @@ impl GroupRunner {
         // up any drivers that were successfully spawned.
         let mut maybe_spawn_error = None;
         for driver in self.drivers {
+            let driver_id = driver.driver_id();
+            debug!(driver_id, "Spawning driver...");
             match spawn_driver_with_details(driver, &mut self.coordinator, self.cancel_token.child_token()).await {
                 Ok(handle) => {
+                    debug!(driver_id, "Driver spawned successfully.");
                     driver_handles.push(handle);
                 }
                 Err(e) => {
+                    debug!(driver_id, "Failed to spawn driver!");
                     maybe_spawn_error = Some(e);
                     break;
                 }
@@ -455,17 +459,14 @@ async fn spawn_driver_with_details(
     mut driver: Driver, coordinator: &mut Coordinator, cancel_token: CancellationToken,
 ) -> Result<DriverHandle, GenericError> {
     let driver_id = driver.driver_id();
-    let mgmt_task_span = info_span!("driver", driver_id = driver.driver_id());
-    let _entered = mgmt_task_span.enter();
-
-    debug!("Spawning container...");
+    debug!(driver_id, "Starting container...");
 
     // Start the container and wait for it to become healthy.
     let details = driver.start().await?;
-    debug!("Container started. Waiting for it to become healthy...");
+    debug!(driver_id, "Container started. Waiting for it to become healthy...");
 
     driver.wait_for_container_healthy().await?;
-    debug!("Container is healthy. Proceeding...");
+    debug!(driver_id, "Container is healthy. Proceeding...");
 
     // Spawn a management task that will ensure the container runs until the shutdown signal is received, or the
     // container stops, whichever comes first.
@@ -476,13 +477,13 @@ async fn spawn_driver_with_details(
 
         select! {
             result = driver.wait_for_container_exit() => {
-                debug!("Container exited.");
+                debug!(driver_id, "Container exited.");
 
                 if let Err(e) = driver.cleanup().await {
-                    error!(error = %e, "Failed to cleanup container.");
+                    error!(driver_id, error = %e, "Failed to cleanup container.");
                 }
 
-                debug!("Container cleanup complete.");
+                debug!(driver_id, "Container cleanup complete.");
 
                 match result {
                     Ok(exit_status) => exit_status,
@@ -490,11 +491,11 @@ async fn spawn_driver_with_details(
                 }
             },
             _ = cancel_token.cancelled() => {
-                debug!("Container stopping due to shutdown signal.");
+                debug!(driver_id, "Container stopping due to shutdown signal.");
                 if let Err(e) = driver.cleanup().await {
-                    error!(error = %e, "Failed to cleanup container.");
+                    error!(driver_id, error = %e, "Failed to cleanup container.");
                 }
-                debug!("Container cleanup complete.");
+                debug!(driver_id, "Container cleanup complete.");
 
                 ExitStatus::Success
             },
