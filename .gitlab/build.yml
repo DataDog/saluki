@@ -2,6 +2,7 @@ build-adp-image:
   stage: build
   tags: ["arch:amd64"]
   image: ${DOCKER_BUILD_IMAGE}
+  needs: []
   variables:
     # Compiling Rust is intensive. ¯\_(ツ)_/¯
     KUBERNETES_CPU_REQUEST: "16"
