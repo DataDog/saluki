@@ -19,7 +19,7 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stele::Metric;
 use tokio::{select, task::JoinHandle, time::sleep};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, info_span, Instrument as _};
+use tracing::{debug, error, info, info_span, Instrument as _, Span};
 
 use crate::{analysis::RawTestResults, config::Cli, sync::Coordinator};
 
@@ -29,8 +29,9 @@ pub struct TestRunner {
     metrics_intake_config: MetricsIntakeConfig,
     millstone_config: MillstoneConfig,
 
-    coordinator: Coordinator,
     cancel_token: CancellationToken,
+    dsd_coordinator: Coordinator,
+    adp_coordinator: Coordinator,
     log_base_dir: PathBuf,
 }
 
@@ -41,8 +42,9 @@ impl TestRunner {
             dsd_config: cli.dsd_config(),
             metrics_intake_config: cli.metrics_intake_config(),
             millstone_config: cli.millstone_config(),
-            coordinator: Coordinator::new(),
             cancel_token: CancellationToken::new(),
+            dsd_coordinator: Coordinator::new(),
+            adp_coordinator: Coordinator::new(),
             log_base_dir: PathBuf::from("/tmp/ground-truth"),
         }
     }
@@ -54,7 +56,7 @@ impl TestRunner {
             isolation_group_id,
             "dsd",
             self.log_base_dir.clone(),
-            self.coordinator.clone(),
+            self.dsd_coordinator.clone(),
             self.cancel_token.child_token(),
         );
 
@@ -78,7 +80,7 @@ impl TestRunner {
             isolation_group_id,
             "adp",
             self.log_base_dir.clone(),
-            self.coordinator.clone(),
+            self.adp_coordinator.clone(),
             self.cancel_token.child_token(),
         );
 
@@ -108,7 +110,8 @@ impl TestRunner {
             (maybe_dsd_error, maybe_adp_error) => {
                 // Trigger any spawned drivers to shutdown and cleanup, and wait for that to happen.
                 self.cancel_token.cancel();
-                self.coordinator.wait().await;
+                self.dsd_coordinator.wait().await;
+                self.adp_coordinator.wait().await;
 
                 // Figure out which side failed to initially spawn successfully, and return the appropriate
                 // error. If both failed, then we log both errors and return a generic error instead.
@@ -136,6 +139,9 @@ impl TestRunner {
         let dsd_isolation_group_id = generate_isolation_group_id();
         let adp_isolation_group_id = generate_isolation_group_id();
 
+        let dsd_runner_span = info_span!("runner", isolation_group_id = dsd_isolation_group_id.clone(), test_id = "dsd");
+        let adp_runner_span = info_span!("runner", isolation_group_id = adp_isolation_group_id.clone(), test_id = "adp");
+
         // Build a group runner for both DogStatsD and Agent Data Plane, which handles the complexities of spawning and
         // monitoring the containers, as well as cleaning them up after failure and/or when we're done.
         let dsd_group_runner = self.build_dsd_group_runner(dsd_isolation_group_id.clone()).await?;
@@ -144,8 +150,8 @@ impl TestRunner {
         // Do the initial spawn of both group runners, which should get all relevant containers spawned and running in
         // the correct order, and so on.
         info!("Spawning containers for DogStatsD and Agent Data Plane...");
-        let dsd_spawn_result = run_in_background(dsd_group_runner.spawn());
-        let adp_spawn_result = run_in_background(adp_group_runner.spawn());
+        let dsd_spawn_result = run_in_background(&dsd_runner_span, dsd_group_runner.spawn());
+        let adp_spawn_result = run_in_background(&adp_runner_span, adp_group_runner.spawn());
 
         // Everything is running, so just wait for the results (or an error) to come back from both group runners.
         let (dsd_result_collector, adp_result_collector) = self
@@ -153,8 +159,8 @@ impl TestRunner {
             .await?;
         info!("Containers spawned successfully. Waiting for results...");
 
-        let maybe_dsd_results = run_in_background(dsd_result_collector.wait_for_results());
-        let maybe_adp_results = run_in_background(adp_result_collector.wait_for_results());
+        let maybe_dsd_results = run_in_background(&dsd_runner_span, dsd_result_collector.wait_for_results());
+        let maybe_adp_results = run_in_background(&adp_runner_span, adp_result_collector.wait_for_results());
 
         let (dsd_results, adp_results) = self
             .unwrap_or_shutdown("collect_results", maybe_dsd_results.await, maybe_adp_results.await)
@@ -163,7 +169,8 @@ impl TestRunner {
         // We've gotten our results back, so signal to any remaining containers that they can shutdown now.
         info!("Cleaning up remaining containers and resources...");
         self.cancel_token.cancel();
-        self.coordinator.wait().await;
+        self.dsd_coordinator.wait().await;
+        self.adp_coordinator.wait().await;
 
         debug!("Cleaning up DogStatsD-related resources...");
         if let Err(e) = Driver::clean_related_resources(dsd_isolation_group_id).await {
@@ -181,12 +188,12 @@ impl TestRunner {
     }
 }
 
-fn run_in_background<F, T>(f: F) -> SpawnedResult<T>
+fn run_in_background<F, T>(span: &Span, f: F) -> SpawnedResult<T>
 where
     F: Future<Output = Result<T, GenericError>> + Send + 'static,
     T: Send + 'static,
 {
-    let handle = tokio::spawn(f);
+    let handle = tokio::spawn(f.instrument(span.clone()));
     SpawnedResult { handle }
 }
 
@@ -214,7 +221,6 @@ where
 /// Manages the lifecycle of a group of containers related to a specific SUT.
 struct GroupRunner {
     isolation_group_id: String,
-    test_id: &'static str,
     runner_log_dir: PathBuf,
     drivers: Vec<Driver>,
     coordinator: Coordinator,
@@ -229,14 +235,13 @@ impl GroupRunner {
         let runner_log_dir = log_base_dir.join(isolation_group_id.clone());
 
         info!(
-            "Creating test group runner for driver '{}'. Logs will be saved to {}.",
+            "Creating test group runner for test type '{}'. Logs will be saved to {}.",
             test_id,
             runner_log_dir.display()
         );
 
         Self {
             isolation_group_id,
-            test_id,
             runner_log_dir,
             drivers: Vec::new(),
             coordinator,
@@ -252,13 +257,6 @@ impl GroupRunner {
     }
 
     async fn spawn(mut self) -> Result<ResultCollector, GenericError> {
-        let runner_span = info_span!(
-            "group_runner",
-            isolation_group_id = self.isolation_group_id,
-            test_id = self.test_id
-        );
-        let _entered = runner_span.enter();
-
         let mut driver_handles = Vec::new();
 
         // Spawn all of our drivers, short-circuiting if any of them fail to start.
@@ -267,15 +265,12 @@ impl GroupRunner {
         // up any drivers that were successfully spawned.
         let mut maybe_spawn_error = None;
         for driver in self.drivers {
-            let driver_id = driver.driver_id();
-            debug!(driver_id, "Spawning driver...");
-            match spawn_driver_with_details(driver, &mut self.coordinator, self.cancel_token.child_token()).await {
+            let driver_token = self.cancel_token.child_token();
+            match spawn_driver_with_details(driver, &mut self.coordinator, driver_token).await {
                 Ok(handle) => {
-                    debug!(driver_id, "Driver spawned successfully.");
                     driver_handles.push(handle);
                 }
                 Err(e) => {
-                    debug!(driver_id, error = %e, "Failed to spawn driver!");
                     maybe_spawn_error = Some(e);
                     break;
                 }
@@ -300,6 +295,8 @@ impl GroupRunner {
                         error!(driver_id, %status, "Driver failed to stop cleanly.");
                     }
                 }
+
+                debug!("Successfully cleaned up any spawned drivers.");
 
                 Err(e)
             }
@@ -418,6 +415,8 @@ impl SpawnedDrivers {
     async fn stop_and_wait(mut self) -> DriverResults {
         // Trigger all drivers to stop and wait for them to complete.
         self.cancel_token.cancel();
+        debug!("Triggered shutdown signal. Waiting for drivers to stop...");
+
         self.coordinator.wait().await;
 
         // Go through and collect the return value of each driver's management task to see if they exited cleanly or not.
@@ -511,5 +510,5 @@ async fn spawn_driver_with_details(
 
 /// Generates a random 16-character alphanumeric string suitable for use as an isolation group ID.
 fn generate_isolation_group_id() -> String {
-    Alphanumeric.sample_string(&mut thread_rng(), 16)
+    Alphanumeric.sample_string(&mut thread_rng(), 8)
 }

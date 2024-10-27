@@ -72,8 +72,8 @@ run-ground-truth:
       --millstone-image ${SALUKI_IMAGE_REPO_BASE}/millstone:${ADP_VERSION}
       --millstone-config-path $(pwd)/test/correctness/millstone.yaml
       --metrics-intake-image ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${ADP_VERSION}
-      --metrics-intake-config-path $(pwd)test/correctness/metrics-intake.yaml
+      --metrics-intake-config-path $(pwd)/test/correctness/metrics-intake.yaml
       --dsd-image docker.io/datadog/dogstatsd:${DD_AGENT_TEST_VERSION}
-      --dsd-config-path $(pwd)test/correctness/datadog.yaml
+      --dsd-config-path $(pwd)/test/correctness/datadog.yaml
       --adp-image ${ADP_IMAGE_BASE}:${ADP_VERSION}
-      --adp-config-path $(pwd)test/correctness/datadog.yaml
+      --adp-config-path $(pwd)/test/correctness/datadog.yaml
