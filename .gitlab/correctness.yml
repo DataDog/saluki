@@ -62,7 +62,7 @@ run-ground-truth:
   artifacts:
     expire_in: 1 weeks
     paths:
-      - /tmp/ground-truth  # for debugging
+      - /tmp/ground-truth/  # for debugging
     when: always
   variables:
     DD_LOG_LEVEL: "ground_truth=debug,info"

@@ -275,7 +275,7 @@ impl GroupRunner {
                     driver_handles.push(handle);
                 }
                 Err(e) => {
-                    debug!(driver_id, "Failed to spawn driver!");
+                    debug!(driver_id, error = %e, "Failed to spawn driver!");
                     maybe_spawn_error = Some(e);
                     break;
                 }
