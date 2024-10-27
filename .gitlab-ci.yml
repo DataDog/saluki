@@ -4,6 +4,7 @@ include:
 stages:
   - test
   - build
+  - correctness
   - benchmark
   - internal
 
@@ -28,6 +29,13 @@ variables:
   DD_AGENT_VERSION: "7-57-0-rc-4-jmx"
   DD_AGENT_IMAGE_BASE: "${IMAGE_REGISTRY}/datadog-agent"
   DD_AGENT_IMAGE: "${DD_AGENT_IMAGE_BASE}:${DD_AGENT_VERSION}"
+
+  # Version of the Datadog Agent/standalone DogStatsD server that we'll use both when running SMP benchmarks
+  # as well as correctness tests, to ensure we're always running our various comparisons against the same version.
+  #
+  # TODO: We should unify this with `DD_AGENT_VERSION`, even if it means we have two versions of the variable
+  # to hold the dot-separated and dash-separated versions.
+  DD_AGENT_TEST_VERSION: "7.58.0"
 
 .setup-env: &setup-env
   - 'export ADP_VERSION="${ADP_VERSION_BASE}"'
