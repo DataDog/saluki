@@ -27,10 +27,10 @@ RUN tar -C /usr/local -xzf /tmp/go-1.23.0.tar.gz
 COPY .ci/install-protoc.sh /
 RUN chmod +x /install-protoc.sh && /install-protoc.sh
 
-# Build ADP, and strip the binary to to optimize the size.
+# Build ADP.
 WORKDIR /adp
 COPY . /adp
-RUN cargo build --profile ${BUILD_PROFILE}
+RUN cargo build --profile ${BUILD_PROFILE} --bin agent-data-plane
 
 # Now stick our resulting binary in a clean image.
 FROM ${APP_IMAGE}
