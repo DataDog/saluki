@@ -139,8 +139,16 @@ impl TestRunner {
         let dsd_isolation_group_id = generate_isolation_group_id();
         let adp_isolation_group_id = generate_isolation_group_id();
 
-        let dsd_runner_span = info_span!("runner", isolation_group_id = dsd_isolation_group_id.clone(), test_id = "dsd");
-        let adp_runner_span = info_span!("runner", isolation_group_id = adp_isolation_group_id.clone(), test_id = "adp");
+        let dsd_runner_span = info_span!(
+            "runner",
+            isolation_group_id = dsd_isolation_group_id.clone(),
+            test_id = "dsd"
+        );
+        let adp_runner_span = info_span!(
+            "runner",
+            isolation_group_id = adp_isolation_group_id.clone(),
+            test_id = "adp"
+        );
 
         // Build a group runner for both DogStatsD and Agent Data Plane, which handles the complexities of spawning and
         // monitoring the containers, as well as cleaning them up after failure and/or when we're done.
