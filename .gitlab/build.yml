@@ -9,6 +9,12 @@ build-adp-image:
     KUBERNETES_MEMORY_REQUEST: "8Gi"
     KUBERNETES_MEMORY_LIMIT: "12Gi"
   script:
+    # As it turns out, doing the multi-platform build in a single step means we're sacrificing build performance. For
+    # example, building the ARM64 image on an AMD64 runner is anywhere between 2-3x slower, which then slows downs
+    # things like the correctness test.
+    #
+    # We should consider bringing back the individual build steps, and then constructing the multi-image manifest
+    # ourselves.
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
