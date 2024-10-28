@@ -32,9 +32,10 @@ pub(crate) fn submit_metric(
     match module.getattr("SUBMISSION_QUEUE") {
         Ok(py_item) => match py_item.extract::<Py<python_scheduler::PythonSenderHolder>>() {
             Ok(q) => {
-                let res = pyo3::Python::with_gil(|py| q.bind_borrowed(py).borrow_mut().sender.clone());
+                let py = py_item.py();
+                let sender = &q.bind_borrowed(py).borrow_mut().sender;
 
-                match res.try_send(check_metric) {
+                match sender.try_send(check_metric) {
                     Ok(_) => { /* nothing to do, success! */ }
                     Err(e) => error!("Failed to send metric: {}", e),
                 }
