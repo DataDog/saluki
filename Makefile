@@ -480,10 +480,10 @@ fast-edit-test: ## Runs a lightweight format/lint/test pass
 .PHONY: emit-build-metadata
 emit-build-metadata: ## Emits build metadata shell variables suitable for use during image builds
 	@echo "APP_NAME=${APP_NAME}"
-	@echo "APP_SHORT_NAME="${APP_SHORT_NAME}"
-	@echo "APP_GIT_HASH="${APP_GIT_HASH}""
-	@echo "APP_VERSION="${APP_VERSION}"
-	@echo "APP_BUILD_TIME="${APP_BUILD_TIME}"
+	@echo "APP_SHORT_NAME=${APP_SHORT_NAME}"
+	@echo "APP_GIT_HASH=${APP_GIT_HASH}""
+	@echo "APP_VERSION=${APP_VERSION}"
+	@echo "APP_BUILD_TIME=${APP_BUILD_TIME}"
 
 ##@ Utility
 
