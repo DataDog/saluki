@@ -21,6 +21,7 @@ members = [
   "lib/saluki-event",
   "lib/saluki-health",
   "lib/saluki-io",
+  "lib/saluki-metadata",
   "lib/saluki-metrics",
   "lib/saluki-tls",
   "lib/stringtheory",
@@ -48,6 +49,7 @@ saluki-error = { path = "lib/saluki-error" }
 saluki-event = { path = "lib/saluki-event" }
 saluki-health = { path = "lib/saluki-health" }
 saluki-io = { path = "lib/saluki-io" }
+saluki-metadata = { path = "lib/saluki-metadata" }
 saluki-metrics = { path = "lib/saluki-metrics" }
 saluki-tls = { path = "lib/saluki-tls" }
 stele = { path = "bin/correctness/stele" }

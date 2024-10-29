@@ -41,6 +41,7 @@ dependencies = [
  "saluki-event",
  "saluki-health",
  "saluki-io",
+ "saluki-metadata",
  "serde",
  "stringtheory",
  "tokio",
@@ -3360,6 +3361,10 @@ dependencies = [
  "tracing",
  "url",
 ]
+
+[[package]]
+name = "saluki-metadata"
+version = "0.1.0"
 
 [[package]]
 name = "saluki-metrics"
