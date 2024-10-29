@@ -93,6 +93,11 @@ build-adp-image: ## Builds the ADP container image in release mode ('latest' tag
 		--tag local.dev/saluki-images/agent-data-plane:testing \
 		--build-arg BUILD_IMAGE=$(ADP_BUILD_IMAGE) \
 		--build-arg APP_IMAGE=$(ADP_APP_IMAGE) \
+		--build-arg APP_NAME=$(APP_NAME) \
+		--build-arg APP_SHORT_NAME=$(APP_SHORT_NAME) \
+		--build-arg APP_VERSION=$(APP_VERSION) \
+		--build-arg APP_GIT_HASH=$(APP_GIT_HASH) \
+		--build-arg APP_BUILD_TIME=$(APP_BUILD_TIME) \
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
 
