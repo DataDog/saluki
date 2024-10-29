@@ -33,9 +33,6 @@ use self::env_provider::ADPEnvironmentProvider;
 static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System> =
     memory_accounting::allocator::TrackingAllocator::new(std::alloc::System);
 
-const ADP_VERSION: &str = env!("ADP_VERSION");
-const ADP_BUILD_DESC: &str = env!("ADP_BUILD_DESC");
-
 #[tokio::main]
 async fn main() {
     let started = Instant::now();
@@ -66,9 +63,12 @@ async fn main() {
 }
 
 async fn run(started: Instant) -> Result<(), GenericError> {
+    let app_details = saluki_metadata::get_app_details();
     info!(
-        version = ADP_VERSION,
-        build_desc = ADP_BUILD_DESC,
+        version = app_details.version().raw(),
+        git_hash = app_details.git_hash(),
+        target_arch = app_details.target_arch(),
+        build_time = app_details.build_time(),
         "Agent Data Plane starting..."
     );
 

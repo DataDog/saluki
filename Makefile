@@ -4,6 +4,13 @@
 mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
 mkfile_dir := $(dir $(mkfile_path))
 
+# High-level settings that ultimately get passed down to build-specific targets.
+export APP_NAME ?= agent-data-plane
+export APP_SHORT_NAME ?= adp
+export APP_GIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
+export APP_VERSION ?= $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
+export APP_BUILD_TIME ?= $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
+
 # Override autoinstalling of tools. (Eg `cargo install`)
 export AUTOINSTALL ?= true
 # Override the container tool. Tries docker first and then tries podman.
