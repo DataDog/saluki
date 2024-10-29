@@ -1,3 +1,5 @@
+use std::io;
+
 use datadog_protos::metrics::{self as proto, Resource};
 use http::{Method, Request, Uri};
 use protobuf::CodedOutputStream;
@@ -9,7 +11,6 @@ use saluki_io::{
     compression::*,
 };
 use snafu::{ResultExt, Snafu};
-use std::io;
 use tokio::io::AsyncWriteExt as _;
 use tracing::{debug, trace};
 

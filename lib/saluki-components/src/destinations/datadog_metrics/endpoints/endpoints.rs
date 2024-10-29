@@ -1,7 +1,8 @@
+use std::collections::HashMap;
+
 use regex::Regex;
 use serde::{Deserialize, Deserializer};
 use snafu::{ResultExt, Snafu};
-use std::collections::HashMap;
 use url::Url;
 
 #[derive(Clone, Debug, Default)]
