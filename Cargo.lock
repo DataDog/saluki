@@ -3138,6 +3138,7 @@ dependencies = [
  "pin-project",
  "protobuf",
  "quanta",
+ "regex",
  "rustls",
  "saluki-config",
  "saluki-context",

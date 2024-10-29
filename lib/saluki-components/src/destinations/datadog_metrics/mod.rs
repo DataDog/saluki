@@ -1,7 +1,9 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use http::{Request, Uri};
+mod endpoints;
+use endpoints::endpoints::{create_single_domain_resolvers, AdditionalEndpoints, SingleDomainResolver};
+use http::{HeaderValue, Request, Uri};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper_rustls::HttpsConnector;
@@ -179,6 +181,16 @@ pub struct DatadogMetricsConfiguration {
     /// Defaults to false.
     #[serde(default = "default_request_recovery_reset", rename = "forwarder_recovery_reset")]
     request_recovery_reset: bool,
+
+    /// Enables sending data to multiple endpoints and/or with multiple API keys via dual shipping.
+    ///
+    /// Defaults to empty.
+    #[serde(default = "default_additional_endpoints", rename = "additional_endpoints")]
+    endpoints: AdditionalEndpoints,
+}
+
+fn default_additional_endpoints() -> AdditionalEndpoints {
+    AdditionalEndpoints::default()
 }
 
 fn default_request_timeout_secs() -> u64 {
@@ -220,7 +232,7 @@ impl DatadogMetricsConfiguration {
                 } else {
                     self.site.as_str()
                 };
-                let authority = format!("api.{}", site);
+                let authority = format!("app.{}", site);
 
                 Uri::builder()
                     .scheme("https")
@@ -277,10 +289,13 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         )
         .await?;
 
+        let resolvers = create_single_domain_resolvers(&self.endpoints)?;
+
         Ok(Box::new(DatadogMetrics {
             service,
             series_request_builder,
             sketches_request_builder,
+            resolvers,
         }))
     }
 }
@@ -338,6 +353,7 @@ where
     service: S,
     series_request_builder: RequestBuilder<O>,
     sketches_request_builder: RequestBuilder<O>,
+    resolvers: Vec<SingleDomainResolver>,
 }
 
 #[async_trait]
@@ -354,6 +370,7 @@ where
             mut series_request_builder,
             mut sketches_request_builder,
             service,
+            resolvers,
         } = *self;
 
         let mut health = context.take_health_handle();
@@ -362,7 +379,13 @@ where
         let (io_shutdown_tx, io_shutdown_rx) = oneshot::channel();
         let (requests_tx, requests_rx) = mpsc::channel(32);
         let metrics = Metrics::from_component_context(context.component_context());
-        spawn_traced(run_io_loop(requests_rx, io_shutdown_tx, service, metrics.clone()));
+        spawn_traced(run_io_loop(
+            requests_rx,
+            io_shutdown_tx,
+            service,
+            metrics.clone(),
+            resolvers,
+        ));
 
         health.mark_ready();
         debug!("Datadog Metrics destination started.");
@@ -489,7 +512,7 @@ where
 
 async fn run_io_loop<O, S>(
     mut requests_rx: mpsc::Receiver<(usize, Request<ReplayBody<ChunkedBuffer<O>>>)>,
-    io_shutdown_tx: oneshot::Sender<()>, mut service: S, metrics: Metrics,
+    io_shutdown_tx: oneshot::Sender<()>, mut service: S, metrics: Metrics, resolvers: Vec<SingleDomainResolver>,
 ) where
     O: ObjectPool + 'static,
     O::Item: ReadWriteIoBuffer,
@@ -499,6 +522,21 @@ async fn run_io_loop<O, S>(
 {
     // Loop and process all incoming requests.
     while let Some((metrics_count, request)) = requests_rx.recv().await {
+        let clone = request.clone();
+        let mut requests = vec![request];
+
+        for resolver in &resolvers {
+            for api_key in resolver.api_keys() {
+                let mut clone_req = clone.clone();
+                let uri = clone_req.uri_mut();
+                let mut parts = uri.clone().into_parts();
+                parts.authority = Some(resolver.domain().parse().expect("invalid authority"));
+                *uri = Uri::from_parts(parts).expect("Failed to construct new URI");
+                let headers = clone_req.headers_mut();
+                headers.insert("DD-API-KEY", HeaderValue::from_str(&api_key).unwrap());
+                requests.push(clone_req);
+            }
+        }
         // TODO: We should emit the number of bytes sent, which was trivial to do prior to adding retry support via
         // `ReplayBody<B>`. Even if we could delve into the inner body that is being wrapped, what we can't track is how
         // the number of bytes sent during retry.
@@ -506,32 +544,34 @@ async fn run_io_loop<O, S>(
         // This perhaps points to a need to more holistically capture bytes sent through the client itself, which not
         // only covers potential retries but also stuff like HTTP headers, and so on.
 
-        match service.call(request).await {
-            Ok(response) => {
-                let status = response.status();
-                if status.is_success() {
-                    debug!(%status, "Request sent.");
+        for request in requests {
+            match service.call(request).await {
+                Ok(response) => {
+                    let status = response.status();
+                    if status.is_success() {
+                        debug!(%status, "Request sent.");
 
-                    metrics.events_sent().increment(metrics_count as u64);
-                } else {
-                    metrics.http_failed_send().increment(1);
-                    metrics.events_dropped_http().increment(metrics_count as u64);
+                        metrics.events_sent().increment(metrics_count as u64);
+                    } else {
+                        metrics.http_failed_send().increment(1);
+                        metrics.events_dropped_http().increment(metrics_count as u64);
 
-                    match response.into_body().collect().await {
-                        Ok(body) => {
-                            let body = body.to_bytes();
-                            let body_str = String::from_utf8_lossy(&body[..]);
-                            error!(%status, "Received non-success response. Body: {}", body_str);
-                        }
-                        Err(e) => {
-                            error!(%status, error = %e, "Failed to read response body of non-success response.");
+                        match response.into_body().collect().await {
+                            Ok(body) => {
+                                let body = body.to_bytes();
+                                let body_str = String::from_utf8_lossy(&body[..]);
+                                error!(%status, "Received non-success response. Body: {}", body_str);
+                            }
+                            Err(e) => {
+                                error!(%status, error = %e, "Failed to read response body of non-success response.");
+                            }
                         }
                     }
                 }
-            }
-            Err(e) => {
-                let e: tower::BoxError = e.into();
-                error!(error = %e, error_source = ?e.source(), "Failed to send request.");
+                Err(e) => {
+                    let e: tower::BoxError = e.into();
+                    error!(error = %e, error_source = ?e.source(), "Failed to send request.");
+                }
             }
         }
     }
