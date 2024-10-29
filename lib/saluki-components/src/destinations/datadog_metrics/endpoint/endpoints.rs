@@ -6,7 +6,6 @@ use snafu::{ResultExt, Snafu};
 use url::Url;
 
 #[derive(Clone, Debug, Default)]
-#[allow(unused)]
 pub struct AdditionalEndpoints {
     pub endpoints: HashMap<String, Vec<String>>,
 }
@@ -17,7 +16,6 @@ pub enum EndpointError {
     Parse { source: url::ParseError, domain: String },
 }
 
-#[allow(unused)]
 #[derive(Default)]
 pub struct SingleDomainResolver {
     domain: String,
