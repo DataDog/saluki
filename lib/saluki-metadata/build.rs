@@ -9,12 +9,12 @@ fn main() {
 
     // This is really, really simple: we look for some specific environment variables, split one of them apart into
     // numbers if we find it, and then write the values to a file that will get imported by lib.rs. Ta-da.
-    let app_name = std::env::var("APP_NAME").unwrap_or("unknown".to_string());
-    let app_short_name = std::env::var("APP_SHORT_NAME").unwrap_or("unknown".to_string());
-    let app_git_hash = std::env::var("APP_GIT_HASH").unwrap_or("unknown".to_string());
-    let app_version = std::env::var("APP_VERSION").unwrap_or("0.0.0".to_string());
-    let app_build_time = std::env::var("APP_BUILD_TIME").unwrap_or("0000-00-00 00:00:00".to_string());
-    let target_arch = std::env::var("TARGET").unwrap_or("unknown-arch".to_string());
+    let app_name = get_env_var_or_default("APP_NAME", "unknown");
+    let app_short_name = get_env_var_or_default("APP_SHORT_NAME", "unknown");
+    let app_git_hash = get_env_var_or_default("APP_GIT_HASH", "unknown");
+    let app_version = get_env_var_or_default("APP_VERSION", "0.0.0");
+    let app_build_time = get_env_var_or_default("APP_BUILD_TIME", "0000-00-00 00:00:00");
+    let target_arch = get_env_var_or_default("TARGET", "unknown-arch");
 
     // Split the version string on periods to try and extract the major, minor, and patch numbers.
     //
@@ -49,4 +49,12 @@ fn main() {
         ),
     )
     .expect("failed to write details file");
+}
+
+/// Returns the value the given environment variable, or the default value if the environment variable is missing/empty.
+fn get_env_var_or_default(var_name: &str, default: &str) -> String {
+    std::env::var(var_name)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(default.to_string())
 }

@@ -470,6 +470,16 @@ endif
 fast-edit-test: fmt sync-licenses check-clippy check-deny check-licenses test-all
 fast-edit-test: ## Runs a lightweight format/lint/test pass
 
+##@ CI
+
+.PHONY: emit-build-metadata
+emit-build-metadata: ## Emits build metadata shell variables suitable for use during image builds
+	@echo "export APP_NAME=\"${APP_NAME}\""
+	@echo "export APP_SHORT_NAME=\"${APP_SHORT_NAME}\""
+	@echo "export APP_GIT_HASH=\"${APP_GIT_HASH}\""
+	@echo "export APP_VERSION=\"${APP_VERSION}\""
+	@echo "export APP_BUILD_TIME=\"${APP_BUILD_TIME}\""
+
 ##@ Utility
 
 .PHONY: clean
