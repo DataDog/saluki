@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 mod endpoint;
-use endpoint::endpoints::{create_single_domain_resolvers, AdditionalEndpoints, SingleDomainResolver};
+use endpoint::endpoints::{create_single_domain_resolvers, determine_base, AdditionalEndpoints, SingleDomainResolver};
 use http::{HeaderValue, Request, Uri};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
@@ -185,12 +185,8 @@ pub struct DatadogMetricsConfiguration {
     /// Enables sending data to multiple endpoints and/or with multiple API keys via dual shipping.
     ///
     /// Defaults to empty.
-    #[serde(default = "default_additional_endpoints", rename = "additional_endpoints")]
+    #[serde(default, rename = "additional_endpoints")]
     endpoints: AdditionalEndpoints,
-}
-
-fn default_additional_endpoints() -> AdditionalEndpoints {
-    AdditionalEndpoints::default()
 }
 
 fn default_request_timeout_secs() -> u64 {
@@ -224,24 +220,7 @@ impl DatadogMetricsConfiguration {
     }
 
     fn api_base(&self) -> Result<Uri, GenericError> {
-        match &self.dd_url {
-            Some(url) => Uri::try_from(url).map_err(Into::into),
-            None => {
-                let site = if self.site.is_empty() {
-                    DEFAULT_SITE
-                } else {
-                    self.site.as_str()
-                };
-                let authority = format!("app.{}", site);
-
-                Uri::builder()
-                    .scheme("https")
-                    .authority(authority.as_str())
-                    .path_and_query("/")
-                    .build()
-                    .map_err(Into::into)
-            }
-        }
+        determine_base(&self.dd_url, &self.site)
     }
 }
 
