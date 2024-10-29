@@ -27,6 +27,11 @@ build-adp-image:
     #
     # We should consider bringing back the individual build steps, and then constructing the multi-image manifest
     # ourselves.
+    - echo "app name is ${APP_NAME}"
+    - echo "app short name is ${APP_SHORT_NAME}"
+    - echo "app version is ${APP_VERSION}"
+    - echo "app git hash is ${APP_GIT_HASH}"
+    - echo "app build time is ${APP_BUILD_TIME}"
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
