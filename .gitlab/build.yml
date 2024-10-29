@@ -13,6 +13,8 @@ build-adp-image:
   stage: build
   tags: ["arch:amd64"]
   image: ${DOCKER_BUILD_IMAGE}
+  needs:
+    - calculate-build-metadata
   variables:
     # Compiling Rust is intensive. ¯\_(ツ)_/¯
     KUBERNETES_CPU_REQUEST: "16"
@@ -49,6 +51,8 @@ build-converged-adp-image:
   stage: build
   tags: ["arch:amd64"]
   image: ${DOCKER_BUILD_IMAGE}
+  needs:
+    - build-adp-image
   id_tokens:
     DDSIGN_ID_TOKEN:
       aud: image-integrity
@@ -69,5 +73,3 @@ build-converged-adp-image:
       --push
       .
     - ddsign sign ${IMAGE_TAG} --docker-metadata-file /tmp/build.metadata
-  needs:
-    - build-adp-image
