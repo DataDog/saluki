@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-mod endpoints;
-use endpoints::endpoints::{create_single_domain_resolvers, AdditionalEndpoints, SingleDomainResolver};
+mod endpoint;
+use endpoint::endpoints::{create_single_domain_resolvers, AdditionalEndpoints, SingleDomainResolver};
 use http::{HeaderValue, Request, Uri};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
@@ -533,7 +533,7 @@ async fn run_io_loop<O, S>(
                 parts.authority = Some(resolver.domain().parse().expect("invalid authority"));
                 *uri = Uri::from_parts(parts).expect("Failed to construct new URI");
                 let headers = clone_req.headers_mut();
-                headers.insert("DD-API-KEY", HeaderValue::from_str(&api_key).unwrap());
+                headers.insert("DD-API-KEY", HeaderValue::from_str(api_key).unwrap());
                 requests.push(clone_req);
             }
         }
