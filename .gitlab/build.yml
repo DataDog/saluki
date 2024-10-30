@@ -1,8 +1,20 @@
+calculate-build-metadata:
+  stage: build
+  tags: ["arch:amd64"]
+  image: ${SALUKI_BUILD_CI_IMAGE}
+  needs: []
+  script:
+    - make emit-build-metadata >> build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+
 build-adp-image:
   stage: build
   tags: ["arch:amd64"]
   image: ${DOCKER_BUILD_IMAGE}
-  needs: []
+  needs:
+    - calculate-build-metadata
   variables:
     # Compiling Rust is intensive. ¯\_(ツ)_/¯
     KUBERNETES_CPU_REQUEST: "16"
@@ -15,6 +27,11 @@ build-adp-image:
     #
     # We should consider bringing back the individual build steps, and then constructing the multi-image manifest
     # ourselves.
+    - echo "app name is ${APP_NAME}"
+    - echo "app short name is ${APP_SHORT_NAME}"
+    - echo "app version is ${APP_VERSION}"
+    - echo "app git hash is ${APP_GIT_HASH}"
+    - echo "app build time is ${APP_BUILD_TIME}"
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
@@ -22,6 +39,11 @@ build-adp-image:
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg BUILD_PROFILE=optimized-debug-release
+      --build-arg APP_NAME=${APP_NAME}
+      --build-arg APP_SHORT_NAME=${APP_SHORT_NAME}
+      --build-arg APP_VERSION=${APP_VERSION}
+      --build-arg APP_GIT_HASH=${APP_GIT_HASH}
+      --build-arg APP_BUILD_TIME=${APP_BUILD_TIME}
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
@@ -34,6 +56,8 @@ build-converged-adp-image:
   stage: build
   tags: ["arch:amd64"]
   image: ${DOCKER_BUILD_IMAGE}
+  needs:
+    - build-adp-image
   id_tokens:
     DDSIGN_ID_TOKEN:
       aud: image-integrity
@@ -54,5 +78,3 @@ build-converged-adp-image:
       --push
       .
     - ddsign sign ${IMAGE_TAG} --docker-metadata-file /tmp/build.metadata
-  needs:
-    - build-adp-image

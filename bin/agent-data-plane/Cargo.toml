@@ -23,6 +23,7 @@ saluki-error = { workspace = true }
 saluki-event = { workspace = true }
 saluki-health = { workspace = true }
 saluki-io = { workspace = true }
+saluki-metadata = { workspace = true }
 serde = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "signal"] }

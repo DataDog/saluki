@@ -4,6 +4,13 @@
 mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
 mkfile_dir := $(dir $(mkfile_path))
 
+# High-level settings that ultimately get passed down to build-specific targets.
+export APP_NAME ?= agent-data-plane
+export APP_SHORT_NAME ?= adp
+export APP_GIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
+export APP_VERSION ?= $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
+export APP_BUILD_TIME ?= $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
+
 # Override autoinstalling of tools. (Eg `cargo install`)
 export AUTOINSTALL ?= true
 # Override the container tool. Tries docker first and then tries podman.
@@ -86,6 +93,11 @@ build-adp-image: ## Builds the ADP container image in release mode ('latest' tag
 		--tag local.dev/saluki-images/agent-data-plane:testing \
 		--build-arg BUILD_IMAGE=$(ADP_BUILD_IMAGE) \
 		--build-arg APP_IMAGE=$(ADP_APP_IMAGE) \
+		--build-arg APP_NAME=$(APP_NAME) \
+		--build-arg APP_SHORT_NAME=$(APP_SHORT_NAME) \
+		--build-arg APP_VERSION=$(APP_VERSION) \
+		--build-arg APP_GIT_HASH=$(APP_GIT_HASH) \
+		--build-arg APP_BUILD_TIME=$(APP_BUILD_TIME) \
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
 
@@ -462,6 +474,16 @@ endif
 .PHONY: fast-edit-test
 fast-edit-test: fmt sync-licenses check-clippy check-deny check-licenses test-all
 fast-edit-test: ## Runs a lightweight format/lint/test pass
+
+##@ CI
+
+.PHONY: emit-build-metadata
+emit-build-metadata: ## Emits build metadata shell variables suitable for use during image builds
+	@echo "APP_NAME=${APP_NAME}"
+	@echo "APP_SHORT_NAME=${APP_SHORT_NAME}"
+	@echo "APP_GIT_HASH=${APP_GIT_HASH}"
+	@echo "APP_VERSION=${APP_VERSION}"
+	@echo "APP_BUILD_TIME=${APP_BUILD_TIME}"
 
 ##@ Utility
 
