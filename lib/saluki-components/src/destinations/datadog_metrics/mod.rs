@@ -29,7 +29,7 @@ use saluki_io::{
     },
 };
 use serde::Deserialize;
-use serde_with::serde_as;
+use serde_with::{serde_as, DisplayFromStr, PickFirst};
 use tokio::{
     select,
     sync::{mpsc, oneshot},
@@ -109,9 +109,9 @@ impl Metrics {
 /// - ability to configure either the basic site _or_ a specific endpoint (requires a full URI at the moment, even if
 ///   it's just something like `https`)
 /// - retries, timeouts, rate limiting (no Tower middleware stack yet)
+#[serde_as]
 #[derive(Deserialize)]
 #[allow(dead_code)]
-#[serde_as]
 pub struct DatadogMetricsConfiguration {
     /// The API key to use.
     api_key: String,
