@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use http::Uri;
 use regex::Regex;
 use saluki_error::GenericError;
+use saluki_metadata;
 use serde::{Deserialize, Deserializer};
 use snafu::{ResultExt, Snafu};
 use url::Url;
@@ -96,7 +97,15 @@ impl<'de> Deserialize<'de> for AdditionalEndpoints {
 
 /// Return the correct prefix for a domain.
 pub fn get_domain_prefix(app: String) -> String {
-    format!("0-1-0-{}.agent", app)
+    let app_details = saluki_metadata::get_app_details();
+    let version = app_details.version();
+    format!(
+        "{}-{}-{}-{}.agent",
+        version.major(),
+        version.minor(),
+        version.patch(),
+        app
+    )
 }
 
 /// Prefixes the domain with the ADP version.
@@ -133,11 +142,11 @@ pub fn add_adp_version_to_domain(domain: String) -> Result<String, EndpointError
 }
 
 /// Constructs the correct Uri based on DD_URL and site values.
-pub fn determine_base(dd_url: &Option<String>, site: &String) -> Result<Uri, GenericError> {
+pub fn determine_base(dd_url: &Option<String>, site: &str) -> Result<Uri, GenericError> {
     match &dd_url {
         Some(url) => Uri::try_from(url).map_err(Into::into),
         None => {
-            let site = if site.is_empty() { DEFAULT_SITE } else { site.as_str() };
+            let site = if site.is_empty() { DEFAULT_SITE } else { site };
             let authority = add_adp_version_to_domain(site.to_string())?;
 
             Uri::builder()
