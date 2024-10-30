@@ -29,7 +29,7 @@ use saluki_io::{
     },
 };
 use serde::Deserialize;
-use serde_with::{serde_as, DisplayFromStr};
+use serde_with::serde_as;
 use tokio::{
     select,
     sync::{mpsc, oneshot},
@@ -111,6 +111,7 @@ impl Metrics {
 /// - retries, timeouts, rate limiting (no Tower middleware stack yet)
 #[derive(Deserialize)]
 #[allow(dead_code)]
+#[serde_as]
 pub struct DatadogMetricsConfiguration {
     /// The API key to use.
     api_key: String,
@@ -186,8 +187,8 @@ pub struct DatadogMetricsConfiguration {
     /// Enables sending data to multiple endpoints and/or with multiple API keys via dual shipping.
     ///
     /// Defaults to empty.
-    #[serde(default, rename = "additional_endpoints")]
     #[serde_as(as = "PickFirst<(DisplayFromStr, _)>")]
+    #[serde(default, rename = "additional_endpoints")]
     endpoints: AdditionalEndpoints,
 }
 

@@ -13,14 +13,14 @@ use url::Url;
 
 use crate::destinations::datadog_metrics::DEFAULT_SITE;
 
-#[derive(Clone, Debug, Default, Deserialize)]
 /// AdditionalEndpoints holds the endpoints and api keys parsed
 /// from the user configuration.
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct AdditionalEndpoints(HashMap<String, Vec<String>>);
 
+/// Error type for invalid endpoints.
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
-/// Error type for invalid endpoints.
 pub enum EndpointError {
     Parse { source: url::ParseError, domain: String },
 }
