@@ -29,6 +29,7 @@ use saluki_io::{
     },
 };
 use serde::Deserialize;
+use serde_with::{serde_as, DisplayFromStr};
 use tokio::{
     select,
     sync::{mpsc, oneshot},
@@ -186,6 +187,7 @@ pub struct DatadogMetricsConfiguration {
     ///
     /// Defaults to empty.
     #[serde(default, rename = "additional_endpoints")]
+    #[serde_as(as = "PickFirst<(DisplayFromStr, _)>")]
     endpoints: AdditionalEndpoints,
 }
 

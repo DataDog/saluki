@@ -1,21 +1,22 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+};
 
 use http::Uri;
 use regex::Regex;
 use saluki_error::GenericError;
 use saluki_metadata;
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use snafu::{ResultExt, Snafu};
 use url::Url;
 
 use crate::destinations::datadog_metrics::DEFAULT_SITE;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Deserialize)]
 /// AdditionalEndpoints holds the endpoints and api keys parsed
 /// from the user configuration.
-pub struct AdditionalEndpoints {
-    pub endpoints: HashMap<String, Vec<String>>,
-}
+pub struct AdditionalEndpoints(HashMap<String, Vec<String>>);
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -57,7 +58,7 @@ pub fn create_single_domain_resolvers(
     endpoints: &AdditionalEndpoints,
 ) -> Result<Vec<SingleDomainResolver>, EndpointError> {
     let mut resolvers = Vec::new();
-    for (domain, api_keys) in &endpoints.endpoints {
+    for (domain, api_keys) in &endpoints.0 {
         let new_domain = add_adp_version_to_domain(domain.to_string())?;
         let mut seen = HashSet::new();
         let mut resolver = SingleDomainResolver::default();
@@ -77,21 +78,12 @@ pub fn create_single_domain_resolvers(
     Ok(resolvers)
 }
 
-impl AdditionalEndpoints {
-    fn from_string(s: &str) -> Self {
-        let endpoints: HashMap<String, Vec<String>> =
-            serde_json::from_str(s).expect("Failed to parse string as JSON HashMap");
-        AdditionalEndpoints { endpoints }
-    }
-}
+impl FromStr for AdditionalEndpoints {
+    type Err = serde_json::Error;
 
-impl<'de> Deserialize<'de> for AdditionalEndpoints {
-    fn deserialize<D>(deserializer: D) -> Result<AdditionalEndpoints, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s: String = Deserialize::deserialize(deserializer)?;
-        Ok(AdditionalEndpoints::from_string(&s))
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let endpoints: HashMap<String, Vec<String>> = serde_json::from_str(s)?;
+        Ok(AdditionalEndpoints(endpoints))
     }
 }
 

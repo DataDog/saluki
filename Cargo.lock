@@ -3151,6 +3151,7 @@ dependencies = [
  "saluki-metadata",
  "serde",
  "serde_json",
+ "serde_with",
  "slab",
  "smallvec",
  "snafu",
