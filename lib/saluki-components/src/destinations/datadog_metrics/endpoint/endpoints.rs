@@ -13,8 +13,9 @@ use url::Url;
 
 use crate::destinations::datadog_metrics::DEFAULT_SITE;
 
-/// AdditionalEndpoints holds the endpoints and api keys parsed
-/// from the user configuration.
+/// A set of additional API endpoints to forward metrics to.
+///
+/// Each endpoint can be associated with multiple API keys. Requests will be forwarded to each unique endpoint/API key pair.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct AdditionalEndpoints(HashMap<String, Vec<String>>);
 
@@ -24,21 +25,20 @@ pub struct AdditionalEndpoints(HashMap<String, Vec<String>>);
 pub enum EndpointError {
     Parse { source: url::ParseError, domain: String },
 }
-
+/// A single API endpoint and its associated API keys.
 #[derive(Default)]
-/// Holds the mapping between domains and their api keys.
 pub struct SingleDomainResolver {
     domain: String,
     api_keys: Vec<String>,
 }
 
 impl SingleDomainResolver {
-    /// The domain of the resolver.
+    /// Returns the domain of the resolver.
     pub fn domain(&self) -> &String {
         &self.domain
     }
 
-    /// The api keys associated with the domain.
+    /// Returns the API keys associated with the domain.
     pub fn api_keys(&self) -> &Vec<String> {
         &self.api_keys
     }
@@ -52,8 +52,7 @@ impl SingleDomainResolver {
     }
 }
 
-/// Converts AdditionalEndpoints into a list of SingleDomainResolvers with its
-/// destination domain and api keys.
+/// Converts [`AdditionalEndpoints`] into a list of [`SingleDomainResolver`]s.
 pub fn create_single_domain_resolvers(
     endpoints: &AdditionalEndpoints,
 ) -> Result<Vec<SingleDomainResolver>, EndpointError> {
@@ -104,33 +103,31 @@ pub fn get_domain_prefix(app: String) -> String {
 pub fn add_adp_version_to_domain(domain: String) -> Result<String, EndpointError> {
     let dd_url_regexp = Regex::new(r"^app(\.mrf)?(\.[a-z]{2}\d)?\.(datad(oghq|0g)\.(com|eu)|ddog-gov\.com)$").unwrap();
 
-    let mut new_domain = domain.clone();
+    let new_domain = if !domain.starts_with("https://") && !domain.starts_with("http://") {
+        format!("https://{}", domain)
+    } else {
+        domain.clone()
+    };
 
-    // Url::Parse doesnt work without this
-    if !domain.starts_with("https://") && !domain.starts_with("http://") {
-        new_domain = format!("https://{}", domain);
-    }
+    let url = Url::parse(&new_domain).with_context(|_| Parse { domain: domain.clone() })?;
 
-    let d = new_domain.clone();
-    let url = Url::parse(&new_domain).context(Parse { domain })?;
+    match url.host_str() {
+        Some(host) => {
+            // Do not update unknown URLs
+            if !dd_url_regexp.is_match(host) {
+                return Ok(host.to_string());
+            }
+            let subdomain = host.split('.').next().unwrap_or("");
+            let new_subdomain = get_domain_prefix("adp".to_string());
+            let new_host = host.replacen(subdomain, &new_subdomain, 1);
 
-    if let Some(host) = url.host_str() {
-        // Do not update unknown URLs
-        if !dd_url_regexp.is_match(host) {
-            return Ok(host.to_string());
+            Ok(new_host)
         }
-        let subdomain = host.split('.').next().unwrap_or("");
-
-        let new_subdomain = get_domain_prefix("adp".to_string());
-
-        let new_host = &host.replacen(subdomain, &new_subdomain, 1);
-
-        return Ok(new_host.to_string());
+        None => Err(EndpointError::Parse {
+            source: url::ParseError::EmptyHost,
+            domain,
+        }),
     }
-    Err(EndpointError::Parse {
-        source: url::ParseError::EmptyHost,
-        domain: d,
-    })
 }
 
 /// Constructs the correct Uri based on DD_URL and site values.

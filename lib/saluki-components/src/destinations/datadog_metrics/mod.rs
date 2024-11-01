@@ -3,7 +3,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 mod endpoint;
 use endpoint::endpoints::{create_single_domain_resolvers, determine_base, AdditionalEndpoints, SingleDomainResolver};
-use http::{HeaderValue, Request, Uri};
+use http::{HeaderValue, Method, Request, Uri};
+
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper_rustls::HttpsConnector;
@@ -504,19 +505,28 @@ async fn run_io_loop<O, S>(
 {
     // Loop and process all incoming requests.
     while let Some((metrics_count, request)) = requests_rx.recv().await {
-        let clone = request.clone();
+        let cloned_request = request.clone();
         let mut requests = vec![request];
-
         for resolver in &resolvers {
+            let mut parts = cloned_request.uri().clone().into_parts();
+            parts.authority = Some(resolver.domain().parse().expect("invalid authority"));
+            let new_uri = Uri::from_parts(parts).expect("Failed to construct new URI");
             for api_key in resolver.api_keys() {
-                let mut clone_req = clone.clone();
-                let uri = clone_req.uri_mut();
-                let mut parts = uri.clone().into_parts();
-                parts.authority = Some(resolver.domain().parse().expect("invalid authority"));
-                *uri = Uri::from_parts(parts).expect("Failed to construct new URI");
-                let headers = clone_req.headers_mut();
+                let mut headers = cloned_request.headers().clone();
                 headers.insert("DD-API-KEY", HeaderValue::from_str(api_key).unwrap());
-                requests.push(clone_req);
+                let mut new_request = Request::builder();
+                let body = cloned_request.body().clone();
+                for (key, value) in headers.iter() {
+                    new_request = new_request.header(key, value);
+                }
+                match new_request.method(Method::POST).uri(new_uri.clone()).body(body) {
+                    Ok(new_request) => {
+                        requests.push(new_request);
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Failed to build request for Domain: {}", resolver.domain());
+                    }
+                }
             }
         }
         // TODO: We should emit the number of bytes sent, which was trivial to do prior to adding retry support via
