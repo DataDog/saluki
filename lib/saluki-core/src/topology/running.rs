@@ -9,7 +9,7 @@ use tokio::{
     task::{Id, JoinError, JoinSet},
     time::{interval, sleep},
 };
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use super::{shutdown::ComponentShutdownCoordinator, ComponentId};
 
@@ -104,12 +104,12 @@ impl RunningTopology {
                     remaining_components.sort();
                     let remaining_time = shutdown_deadline.saturating_duration_since(Instant::now());
 
-                    info!("Waiting for the remaining components to stop: {}. {} seconds remaining.", remaining_components.join(", "), remaining_time.as_secs_f64().round() as u64);
+                    info!("Waiting for the remaining component(s) to stop: {}. {} seconds remaining.", remaining_components.join(", "), remaining_time.as_secs_f64().round() as u64);
                 },
 
                 // Shutdown timeout was reached.
                 _ = &mut shutdown_timeout => {
-                    warn!("Forcefully stopping topology after grace period.");
+                    warn!("Forcefully stopping topology after shutdown grace period.");
                     stopped_cleanly = false;
                     break;
                 },
@@ -139,7 +139,7 @@ fn handle_task_result(
                     if unexpected {
                         warn!(%component_id, "Component unexpectedly finished.");
                     } else {
-                        info!(%component_id, "Component stopped.");
+                        debug!(%component_id, "Component stopped.");
                     }
                     (id, true)
                 }
