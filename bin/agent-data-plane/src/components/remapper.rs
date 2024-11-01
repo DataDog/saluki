@@ -89,7 +89,7 @@ impl AgentTelemetryRemapper {
 
 #[async_trait]
 impl Transform for AgentTelemetryRemapper {
-    async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), ()> {
+    async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
         health.mark_ready();
 

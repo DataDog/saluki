@@ -106,7 +106,7 @@ struct Prometheus {
 
 #[async_trait]
 impl Destination for Prometheus {
-    async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), ()> {
+    async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
         let Self {
             listener,
             mut metrics,

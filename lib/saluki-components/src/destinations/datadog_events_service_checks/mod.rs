@@ -7,8 +7,8 @@ use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
-use saluki_core::{components::destinations::*, spawn_traced};
-use saluki_error::GenericError;
+use saluki_core::{components::destinations::*, task::spawn_traced};
+use saluki_error::{generic_error, GenericError};
 use saluki_event::{DataType, Event};
 use saluki_io::net::client::http::HttpClient;
 use serde::Deserialize;
@@ -130,7 +130,7 @@ pub struct DatadogEventsServiceChecks {
 
 #[async_trait]
 impl Destination for DatadogEventsServiceChecks {
-    async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), ()> {
+    async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
         let Self {
             http_client,
             mut events_request_builder,
@@ -166,8 +166,7 @@ impl Destination for DatadogEventsServiceChecks {
                                         match request_builder.create_request(json) {
                                             Ok(request) => {
                                                 if requests_tx.send((1, request)).await.is_err() {
-                                                    error!("Failed to send request to IO task: receiver dropped.");
-                                                    return Err(());
+                                                    return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
                                                 }
                                             }
                                             Err(e) => {
@@ -182,8 +181,7 @@ impl Destination for DatadogEventsServiceChecks {
                                         match request_builder.create_request(json) {
                                             Ok(request) => {
                                                 if requests_tx.send((1, request)).await.is_err() {
-                                                    error!("Failed to send request to IO task: receiver dropped.");
-                                                    return Err(());
+                                                    return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
                                                 }
                                             }
                                             Err(e) => {

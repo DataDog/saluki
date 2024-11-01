@@ -6,7 +6,10 @@ use memory_accounting::{
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_health::HealthRegistry;
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::mpsc,
+    task::{AbortHandle, JoinSet},
+};
 use tracing::{debug, error_span};
 
 use super::{
@@ -24,7 +27,7 @@ use crate::{
         ComponentContext,
     },
     pooling::ElasticObjectPool,
-    spawn_traced,
+    task::{spawn_traced, JoinSetExt as _},
 };
 
 /// A built topology.
@@ -120,19 +123,20 @@ impl BuiltTopology {
     ) -> Result<RunningTopology, GenericError> {
         let _guard = self.component_token.enter();
 
+        let mut component_tasks = JoinSet::new();
+        let mut component_task_map = HashMap::new();
+
         // Build our interconnects, which we'll grab from piecemeal as we spawn our components.
         let (event_buffer_pool, shrinker) = ElasticObjectPool::with_builder("global_event_buffers", 64, 512, || {
             FixedSizeEventBufferInner::with_capacity(1024)
         });
-        tokio::spawn(shrinker);
+        spawn_traced(shrinker);
 
         let (mut forwarders, mut event_streams) = self.create_component_interconnects(event_buffer_pool.clone());
 
         let mut shutdown_coordinator = ComponentShutdownCoordinator::default();
 
         // Spawn our sources.
-        let mut source_handles = Vec::new();
-
         for (component_id, source) in self.sources {
             let (source, component_registry) = source.into_parts();
 
@@ -145,7 +149,7 @@ impl BuiltTopology {
                 .register_component(format!("topology.sources.{}", component_id))
                 .expect("duplicate source component ID in health registry");
 
-            let component_context = ComponentContext::source(component_id);
+            let component_context = ComponentContext::source(component_id.clone());
             let context = SourceContext::new(
                 component_context,
                 shutdown_handle,
@@ -157,12 +161,11 @@ impl BuiltTopology {
                 health_registry.clone(),
             );
 
-            source_handles.push(spawn_source(source, context));
+            let task_handle = spawn_source(&mut component_tasks, source, context);
+            component_task_map.insert(task_handle.id(), component_id);
         }
 
         // Spawn our transforms.
-        let mut transform_handles = Vec::new();
-
         for (component_id, transform) in self.transforms {
             let (transform, component_registry) = transform.into_parts();
 
@@ -178,7 +181,7 @@ impl BuiltTopology {
                 .register_component(format!("topology.transforms.{}", component_id))
                 .expect("duplicate transform component ID in health registry");
 
-            let component_context = ComponentContext::transform(component_id);
+            let component_context = ComponentContext::transform(component_id.clone());
             let context = TransformContext::new(
                 component_context,
                 forwarder,
@@ -190,12 +193,11 @@ impl BuiltTopology {
                 health_registry.clone(),
             );
 
-            transform_handles.push(spawn_transform(transform, context));
+            let task_handle = spawn_transform(&mut component_tasks, transform, context);
+            component_task_map.insert(task_handle.id(), component_id);
         }
 
         // Spawn our destinations.
-        let mut destination_handles = Vec::new();
-
         for (component_id, destination) in self.destinations {
             let (destination, component_registry) = destination.into_parts();
 
@@ -207,7 +209,7 @@ impl BuiltTopology {
                 .register_component(format!("topology.destinations.{}", component_id))
                 .expect("duplicate destination component ID in health registry");
 
-            let component_context = ComponentContext::destination(component_id);
+            let component_context = ComponentContext::destination(component_id.clone());
             let context = DestinationContext::new(
                 component_context,
                 event_stream,
@@ -217,19 +219,21 @@ impl BuiltTopology {
                 health_registry.clone(),
             );
 
-            destination_handles.push(spawn_destination(destination, context));
+            let task_handle = spawn_destination(&mut component_tasks, destination, context);
+            component_task_map.insert(task_handle.id(), component_id);
         }
 
         Ok(RunningTopology::from_parts(
             shutdown_coordinator,
-            source_handles,
-            transform_handles,
-            destination_handles,
+            component_tasks,
+            component_task_map,
         ))
     }
 }
 
-fn spawn_source(source: Tracked<Box<dyn Source + Send>>, context: SourceContext) -> JoinHandle<Result<(), ()>> {
+fn spawn_source(
+    join_set: &mut JoinSet<Result<(), GenericError>>, source: Tracked<Box<dyn Source + Send>>, context: SourceContext,
+) -> AbortHandle {
     let component_span = error_span!(
         "component",
         "type" = context.component_context().component_type(),
@@ -241,12 +245,13 @@ fn spawn_source(source: Tracked<Box<dyn Source + Send>>, context: SourceContext)
     let _span = component_span.enter();
     let _guard = component_token.enter();
 
-    spawn_traced(async move { source.run(context).await })
+    join_set.spawn_traced(async move { source.run(context).await })
 }
 
 fn spawn_transform(
-    transform: Tracked<Box<dyn Transform + Send>>, context: TransformContext,
-) -> JoinHandle<Result<(), ()>> {
+    join_set: &mut JoinSet<Result<(), GenericError>>, transform: Tracked<Box<dyn Transform + Send>>,
+    context: TransformContext,
+) -> AbortHandle {
     let component_span = error_span!(
         "component",
         "type" = context.component_context().component_type(),
@@ -258,12 +263,13 @@ fn spawn_transform(
     let _span = component_span.enter();
     let _guard = component_token.enter();
 
-    spawn_traced(async move { transform.run(context).await })
+    join_set.spawn_traced(async move { transform.run(context).await })
 }
 
 fn spawn_destination(
-    destination: Tracked<Box<dyn Destination + Send>>, context: DestinationContext,
-) -> JoinHandle<Result<(), ()>> {
+    join_set: &mut JoinSet<Result<(), GenericError>>, destination: Tracked<Box<dyn Destination + Send>>,
+    context: DestinationContext,
+) -> AbortHandle {
     let component_span = error_span!(
         "component",
         "type" = context.component_context().component_type(),
@@ -275,7 +281,7 @@ fn spawn_destination(
     let _span = component_span.enter();
     let _guard = component_token.enter();
 
-    spawn_traced(async move { destination.run(context).await })
+    join_set.spawn_traced(async move { destination.run(context).await })
 }
 
 fn build_interconnect_channel() -> (mpsc::Sender<FixedSizeEventBuffer>, mpsc::Receiver<FixedSizeEventBuffer>) {

@@ -13,7 +13,7 @@ use hyper_util::{
     rt::{TokioExecutor, TokioIo},
     server::conn::auto::Builder,
 };
-use saluki_core::spawn_traced;
+use saluki_core::task::spawn_traced;
 use saluki_error::GenericError;
 use tokio::{select, sync::oneshot};
 use tracing::{debug, error, info};

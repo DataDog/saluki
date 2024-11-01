@@ -12,9 +12,9 @@ use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{destinations::*, ComponentContext, MetricsBuilder},
     pooling::{FixedSizeObjectPool, ObjectPool},
-    spawn_traced,
+    task::spawn_traced,
 };
-use saluki_error::GenericError;
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_event::DataType;
 use saluki_io::{
     buf::{BytesBuffer, ChunkedBuffer, FixedSizeVec, ReadWriteIoBuffer},
@@ -349,7 +349,7 @@ where
     S::Future: Send,
     S::Error: Send + Into<BoxError>,
 {
-    async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), ()> {
+    async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
         let Self {
             mut series_request_builder,
             mut sketches_request_builder,
@@ -399,23 +399,21 @@ where
 
                                     // Get the flushed request and enqueue it to be sent.
                                     match request_builder.flush().await {
-                                        Ok(Some((metrics_written, request))) => {
-                                            if requests_tx.send((metrics_written, request)).await.is_err() {
-                                                error!("Failed to send request to IO task: receiver dropped.");
-                                                return Err(());
+                                        Ok(Some(request)) => {
+                                            if requests_tx.send(request).await.is_err() {
+                                                return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
                                             }
                                         }
                                         Ok(None) => unreachable!(
                                             "request builder indicated required flush, but no request was given during flush"
                                         ),
                                         Err(e) => {
-                                            error!(error = %e, "Failed to flush request.");
                                             // TODO: Increment a counter here that metrics were dropped due to a flush failure.
                                             if e.is_recoverable() {
                                                 // If the error is recoverable, we'll hold on to the metric to retry it later.
                                                 continue;
                                             } else {
-                                                return Err(());
+                                                return Err(GenericError::from(e).context("Failed to flush request."));
                                             }
                                         }
                                     };
@@ -435,39 +433,29 @@ where
 
                         // Once we've encoded and written all metrics, we flush the request builders to generate a request with
                         // anything left over. Again, we'll  enqueue those requests to be sent immediately.
-                        match series_request_builder.flush().await {
-                            Ok(Some(request)) => {
+                        match series_request_builder.flush().await.error_context("Failed to flush request.")? {
+                            Some(request) => {
                                 debug!("Flushed request from series request builder. Sending to I/O task...");
                                 if requests_tx.send(request).await.is_err() {
-                                    error!("Failed to send request to IO task: receiver dropped.");
-                                    return Err(());
+                                    return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
                                 }
-                            }
-                            Ok(None) => {
+                            },
+                            None => {
                                 trace!("No flushed request from series request builder.");
-                            }
-                            Err(e) => {
-                                error!(error = %e, "Failed to flush request.");
-                                return Err(());
-                            }
-                        };
+                            },
+                        }
 
-                        match sketches_request_builder.flush().await {
-                            Ok(Some(request)) => {
+                        match sketches_request_builder.flush().await.error_context("Failed to flush request.")? {
+                           Some(request) => {
                                 debug!("Flushed request from sketches request builder. Sending to I/O task...");
                                 if requests_tx.send(request).await.is_err() {
-                                    error!("Failed to send request to IO task: receiver dropped.");
-                                    return Err(());
+                                    return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
                                 }
                             }
-                            Ok(None) => {
+                            None => {
                                 trace!("No flushed request from sketches request builder.");
                             }
-                            Err(e) => {
-                                error!(error = %e, "Failed to flush request.");
-                                return Err(());
-                            }
-                        };
+                        }
 
                         debug!("All flushed requests sent to I/O task. Waiting for next event buffer...");
                     },

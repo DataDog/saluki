@@ -1,6 +1,7 @@
 //! Source component basics.
 
 use async_trait::async_trait;
+use saluki_error::GenericError;
 
 mod builder;
 pub use self::builder::SourceBuilder;
@@ -24,5 +25,5 @@ pub trait Source {
     /// ## Errors
     ///
     /// If an unrecoverable error occurs while running, an error is returned.
-    async fn run(self: Box<Self>, context: SourceContext) -> Result<(), ()>;
+    async fn run(self: Box<Self>, context: SourceContext) -> Result<(), GenericError>;
 }

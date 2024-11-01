@@ -1,6 +1,7 @@
 //! Destination component basics.
 
 use async_trait::async_trait;
+use saluki_error::GenericError;
 
 mod builder;
 pub use self::builder::DestinationBuilder;
@@ -24,5 +25,5 @@ pub trait Destination {
     /// ## Errors
     ///
     /// If an unrecoverable error occurs while running, an error is returned.
-    async fn run(self: Box<Self>, context: DestinationContext) -> Result<(), ()>;
+    async fn run(self: Box<Self>, context: DestinationContext) -> Result<(), GenericError>;
 }

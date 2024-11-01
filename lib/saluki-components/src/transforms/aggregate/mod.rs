@@ -213,7 +213,7 @@ pub struct Aggregate {
 
 #[async_trait]
 impl Transform for Aggregate {
-    async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), ()> {
+    async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
 
         let mut state = AggregationState::new(
