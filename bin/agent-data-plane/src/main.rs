@@ -5,7 +5,10 @@
 
 #![deny(warnings)]
 #![deny(missing_docs)]
-use std::{future::pending, time::Instant};
+use std::{
+    future::pending,
+    time::{Duration, Instant},
+};
 
 use memory_accounting::ComponentRegistry;
 use saluki_app::{api::APIBuilder, prelude::*};
@@ -21,7 +24,8 @@ use saluki_core::topology::TopologyBlueprint;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use saluki_io::net::ListenAddress;
-use tracing::{error, info};
+use tokio::select;
+use tracing::{error, info, warn};
 
 mod components;
 use self::components::remapper::AgentTelemetryRemapperConfiguration;
@@ -107,7 +111,7 @@ async fn run(started: Instant) -> Result<(), GenericError> {
 
     // Bounds validation succeeded, so now we'll build and spawn the topology.
     let built_topology = blueprint.build().await?;
-    let running_topology = built_topology.spawn(&health_registry, memory_limiter).await?;
+    let mut running_topology = built_topology.spawn(&health_registry, memory_limiter).await?;
 
     // Spawn the health checker.
     health_registry.spawn().await?;
@@ -126,11 +130,28 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         "Topology running, waiting for interrupt..."
     );
 
-    tokio::signal::ctrl_c().await?;
+    let mut finished_with_error = false;
+    select! {
+        _ = running_topology.wait_for_unexpected_finish() => {
+            error!("Component unexpectedly finished. Shutting down...");
+            finished_with_error = true;
+        },
+        _ = tokio::signal::ctrl_c() => {
+            info!("Received SIGINT, shutting down...");
+        }
+    }
 
-    info!("Received SIGINT, shutting down...");
-
-    running_topology.shutdown().await
+    match running_topology.shutdown_with_timeout(Duration::from_secs(30)).await {
+        Ok(()) => {
+            if finished_with_error {
+                warn!("Topology shutdown complete despite error(s).")
+            } else {
+                info!("Topology shutdown successfully.")
+            }
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 fn create_topology(

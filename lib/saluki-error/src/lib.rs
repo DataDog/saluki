@@ -20,7 +20,7 @@ pub type GenericError = anyhow::Error;
 
 /// Macro for constructing a generic error.
 ///
-/// The resulting value evaulates to [`GenericError`], and can be construct from a string literal, a format string (with
+/// The resulting value evaluates to [`GenericError`], and can be construct from a string literal, a format string (with
 /// arguments accepted, in the same order as `std::format!`), or a value which implements `Debug` and `Display`, such as
 /// an existing error that implements `std::error::Error`.
 ///

@@ -11,7 +11,7 @@ use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::{
     components::{sources::*, MetricsBuilder},
     pooling::{FixedSizeObjectPool, ObjectPool as _},
-    spawn_traced,
+    task::spawn_traced,
     topology::{
         interconnect::FixedSizeEventBuffer,
         shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
@@ -406,7 +406,7 @@ impl MultitenantStrategy {
 
 #[async_trait]
 impl Source for DogStatsD {
-    async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), ()> {
+    async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
         let mut global_shutdown = context.take_shutdown_handle();
         let mut health = context.take_health_handle();
 

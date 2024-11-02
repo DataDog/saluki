@@ -74,7 +74,7 @@ pub struct Chained {
 
 #[async_trait]
 impl Transform for Chained {
-    async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), ()> {
+    async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
 
         debug!(
