@@ -37,7 +37,7 @@ pub struct InternalMetrics;
 
 #[async_trait]
 impl Source for InternalMetrics {
-    async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), ()> {
+    async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
         let mut global_shutdown = context.take_shutdown_handle();
         let mut health = context.take_health_handle();
 

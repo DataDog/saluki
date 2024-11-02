@@ -1,6 +1,7 @@
 //! Transform component basics.
 
 use async_trait::async_trait;
+use saluki_error::GenericError;
 
 use crate::topology::interconnect::FixedSizeEventBuffer;
 
@@ -28,7 +29,7 @@ pub trait Transform {
     /// ## Errors
     ///
     /// If an unrecoverable error occurs while running, an error is returned.
-    async fn run(self: Box<Self>, context: TransformContext) -> Result<(), ()>;
+    async fn run(self: Box<Self>, context: TransformContext) -> Result<(), GenericError>;
 }
 
 /// A synchronous transform.

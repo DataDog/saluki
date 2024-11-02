@@ -14,7 +14,7 @@ struct TestSource;
 
 #[async_trait]
 impl Source for TestSource {
-    async fn run(self: Box<Self>, _context: SourceContext) -> Result<(), ()> {
+    async fn run(self: Box<Self>, _context: SourceContext) -> Result<(), GenericError> {
         Ok(())
     }
 }
@@ -50,7 +50,7 @@ struct TestTransform;
 
 #[async_trait]
 impl Transform for TestTransform {
-    async fn run(self: Box<Self>, _context: TransformContext) -> Result<(), ()> {
+    async fn run(self: Box<Self>, _context: TransformContext) -> Result<(), GenericError> {
         Ok(())
     }
 }
@@ -106,7 +106,7 @@ struct TestDestination;
 
 #[async_trait]
 impl Destination for TestDestination {
-    async fn run(self: Box<Self>, _context: DestinationContext) -> Result<(), ()> {
+    async fn run(self: Box<Self>, _context: DestinationContext) -> Result<(), GenericError> {
         Ok(())
     }
 }

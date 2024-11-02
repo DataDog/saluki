@@ -37,7 +37,7 @@ struct Blackhole;
 
 #[async_trait]
 impl Destination for Blackhole {
-    async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), ()> {
+    async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
 
         let mut last_update = Instant::now();
