@@ -1,28 +1,29 @@
+use saluki_event::metric::HistogramSummary;
 use serde::Deserialize;
 use stringtheory::MetaString;
 
-/// A distribution statistic to calculate.
+/// A histogram statistic to calculate.
 #[derive(Clone)]
-pub enum DistributionStatistic {
-    /// Total count of values in the distribution.
+pub enum HistogramStatistic {
+    /// Total count of values in the histogram.
     Count,
 
-    /// Sum of all values in the distribution.
+    /// Sum of all values in the histogram.
     Sum,
 
-    /// Minimum value in the distribution.
+    /// Minimum value in the histogram.
     Minimum,
 
-    /// Maximum value in the distribution.
+    /// Maximum value in the histogram.
     Maximum,
 
-    /// Average value in the distribution.
+    /// Average value in the histogram.
     Average,
 
-    /// Median value in the distribution.
+    /// Median value in the histogram.
     Median,
 
-    /// Calculate the given percentile from the distribution.
+    /// Calculate the given percentile from the histogram.
     Percentile {
         /// Quantile value to calculate.
         q: f64,
@@ -34,23 +35,36 @@ pub enum DistributionStatistic {
     },
 }
 
-impl DistributionStatistic {
+impl HistogramStatistic {
     /// Returns the suffix to be used for metrics representing this statistic.
     pub fn suffix(&self) -> &str {
         match self {
-            DistributionStatistic::Count => "count",
-            DistributionStatistic::Sum => "sum",
-            DistributionStatistic::Minimum => "min",
-            DistributionStatistic::Maximum => "max",
-            DistributionStatistic::Average => "avg",
-            DistributionStatistic::Median => "median",
-            DistributionStatistic::Percentile { suffix, .. } => suffix,
+            HistogramStatistic::Count => "count",
+            HistogramStatistic::Sum => "sum",
+            HistogramStatistic::Minimum => "min",
+            HistogramStatistic::Maximum => "max",
+            HistogramStatistic::Average => "avg",
+            HistogramStatistic::Median => "median",
+            HistogramStatistic::Percentile { suffix, .. } => suffix,
         }
     }
 
     /// Returns `true` if this statistics should be represented as a rate.
     pub fn is_rate_statistic(&self) -> bool {
-        matches!(self, DistributionStatistic::Count)
+        matches!(self, HistogramStatistic::Count)
+    }
+
+    /// Returns the value of this statistic from the given histogram summary.
+    pub fn value_from_histogram(&self, summary: &HistogramSummary<'_>) -> f64 {
+        match self {
+            HistogramStatistic::Count => summary.count() as f64,
+            HistogramStatistic::Sum => summary.sum(),
+            HistogramStatistic::Minimum => summary.min().unwrap_or(0.0),
+            HistogramStatistic::Maximum => summary.max().unwrap_or(0.0),
+            HistogramStatistic::Average => summary.avg(),
+            HistogramStatistic::Median => summary.median().unwrap_or(0.0),
+            HistogramStatistic::Percentile { q, .. } => summary.quantile(*q).unwrap_or(0.0),
+        }
     }
 }
 
@@ -89,19 +103,19 @@ impl Default for RawHistogramConfiguration {
 #[derive(Clone, Deserialize)]
 #[serde(try_from = "RawHistogramConfiguration")]
 pub struct HistogramConfiguration {
-    statistics: Vec<DistributionStatistic>,
+    statistics: Vec<HistogramStatistic>,
 }
 
 impl HistogramConfiguration {
     #[cfg(test)]
-    pub fn from_statistics(statistics: &[DistributionStatistic]) -> Self {
+    pub fn from_statistics(statistics: &[HistogramStatistic]) -> Self {
         Self {
             statistics: statistics.to_vec(),
         }
     }
 
-    /// Returns the configured distributions statistics to calculate.
-    pub fn statistics(&self) -> &[DistributionStatistic] {
+    /// Returns the configured aggregate statistics to calculate.
+    pub fn statistics(&self) -> &[HistogramStatistic] {
         &self.statistics
     }
 }
@@ -110,11 +124,11 @@ impl Default for HistogramConfiguration {
     fn default() -> Self {
         Self {
             statistics: vec![
-                DistributionStatistic::Maximum,
-                DistributionStatistic::Median,
-                DistributionStatistic::Average,
-                DistributionStatistic::Count,
-                DistributionStatistic::Percentile {
+                HistogramStatistic::Maximum,
+                HistogramStatistic::Median,
+                HistogramStatistic::Average,
+                HistogramStatistic::Count,
+                HistogramStatistic::Percentile {
                     q: 0.95,
                     suffix: "95percentile".into(),
                 },
@@ -131,12 +145,12 @@ impl TryFrom<RawHistogramConfiguration> for HistogramConfiguration {
 
         for aggregate in raw.histogram_aggregates {
             match aggregate.as_str() {
-                "count" => statistics.push(DistributionStatistic::Count),
-                "sum" => statistics.push(DistributionStatistic::Sum),
-                "min" => statistics.push(DistributionStatistic::Minimum),
-                "max" => statistics.push(DistributionStatistic::Maximum),
-                "avg" => statistics.push(DistributionStatistic::Average),
-                "median" => statistics.push(DistributionStatistic::Median),
+                "count" => statistics.push(HistogramStatistic::Count),
+                "sum" => statistics.push(HistogramStatistic::Sum),
+                "min" => statistics.push(HistogramStatistic::Minimum),
+                "max" => statistics.push(HistogramStatistic::Maximum),
+                "avg" => statistics.push(HistogramStatistic::Average),
+                "median" => statistics.push(HistogramStatistic::Median),
                 _ => return Err(format!("Unknown histogram aggregate: {}", aggregate)),
             }
         }
@@ -155,7 +169,7 @@ impl TryFrom<RawHistogramConfiguration> for HistogramConfiguration {
             // rounding errors, such that you might get `28` when doing `(0.29 * 100) as u32`.
             let quantile = (quantile * 100.0).trunc() / 100.0;
             let suffix = format!("{}percentile", ((quantile * 1000.0) as u32 / 10)).into();
-            statistics.push(DistributionStatistic::Percentile { q: quantile, suffix });
+            statistics.push(HistogramStatistic::Percentile { q: quantile, suffix });
         }
 
         Ok(Self { statistics })

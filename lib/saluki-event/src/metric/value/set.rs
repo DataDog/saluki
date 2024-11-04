@@ -1,6 +1,9 @@
 use std::{collections::HashSet, num::NonZeroU64};
 
-use super::{iter::{PointsIter, PointsIterRef}, TimestampedValue, TimestampedValues};
+use super::{
+    iter::{PointsIter, PointsIterRef},
+    TimestampedValue, TimestampedValues,
+};
 
 /// A set of set points.
 ///
@@ -13,11 +16,11 @@ use super::{iter::{PointsIter, PointsIterRef}, TimestampedValue, TimestampedValu
 pub struct SetPoints(TimestampedValues<HashSet<String>, 1>);
 
 impl SetPoints {
-    pub(super) fn inner(&self) -> &TimestampedValues<HashSet<String>, 1>{
+    pub(super) fn inner(&self) -> &TimestampedValues<HashSet<String>, 1> {
         &self.0
     }
 
-    pub(super) fn inner_mut(&mut self) -> &mut TimestampedValues<HashSet<String>, 1>{
+    pub(super) fn inner_mut(&mut self) -> &mut TimestampedValues<HashSet<String>, 1> {
         &mut self.0
     }
 

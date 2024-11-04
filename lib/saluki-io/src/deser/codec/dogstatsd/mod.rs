@@ -2,7 +2,7 @@ use nom::{
     branch::alt,
     bytes::complete::{tag, take, take_while1},
     character::complete::{u32 as parse_u32, u64 as parse_u64, u8 as parse_u8},
-    combinator::{all_consuming, map},
+    combinator::{all_consuming, map, map_res},
     error::{Error, ErrorKind},
     number::complete::double,
     sequence::{delimited, preceded, separated_pair, terminated},
@@ -170,7 +170,6 @@ fn parse_dogstatsd_metric<'a>(
     // actual value itself.
     let (remaining, (metric_name, (metric_type, raw_metric_values))) =
         separated_pair(ascii_alphanum_and_seps, tag(":"), raw_metric_values)(input)?;
-    let dist_aggregation = get_dist_aggregation_mode(&metric_type);
 
     // At this point, we may have some of this additional data, and if so, we also then would have a pipe separator at
     // the very front, which we'd want to consume before going further.
@@ -194,7 +193,8 @@ fn parse_dogstatsd_metric<'a>(
                 // Sample rate: indicates client-side sampling of this metric which will need to be "reinflated" at some
                 // point downstream to calculate the true metric value.
                 b'@' => {
-                    let (_, sample_rate) = all_consuming(preceded(tag("@"), double))(chunk)?;
+                    let (_, sample_rate) =
+                        all_consuming(preceded(tag("@"), map_res(double, SampleRate::try_from)))(chunk)?;
                     maybe_sample_rate = Some(sample_rate);
                 }
                 // Tags: additional tags to be added to the metric.
@@ -246,18 +246,9 @@ fn parse_dogstatsd_metric<'a>(
             tags: maybe_tags.unwrap_or_else(TagSplitter::empty),
             values: metric_values,
             timestamp: maybe_timestamp,
-            dist_aggregation,
             container_id: maybe_container_id,
         },
     ))
-}
-
-#[inline]
-fn get_dist_aggregation_mode(metric_type: &MetricType) -> DistributionAggregation {
-    match metric_type {
-        MetricType::Timer | MetricType::Histogram => DistributionAggregation::ClientSide,
-        _ => DistributionAggregation::ServerSide,
-    }
 }
 
 pub struct MetricPacket<'a> {
@@ -265,14 +256,11 @@ pub struct MetricPacket<'a> {
     pub tags: TagSplitter<'a>,
     pub values: MetricValues,
     pub timestamp: Option<u64>,
-    pub dist_aggregation: DistributionAggregation,
     pub container_id: Option<&'a str>,
 }
 
 pub fn build_metric_metadata_from_packet(packet: &MetricPacket<'_>, peer_addr: &ConnectionAddress) -> MetricMetadata {
-    let mut metric_metadata = MetricMetadata::default()
-        .with_origin(MetricOrigin::dogstatsd())
-        .with_distribution_aggregation(packet.dist_aggregation);
+    let mut metric_metadata = MetricMetadata::default().with_origin(MetricOrigin::dogstatsd());
 
     if let Some(container_id) = packet.container_id {
         metric_metadata.origin_entity_mut().set_container_id(container_id);
@@ -559,7 +547,7 @@ fn raw_metric_values(input: &[u8]) -> IResult<&[u8], (MetricType, &[u8])> {
 
 #[inline]
 fn metric_values_from_raw(
-    input: &[u8], metric_type: MetricType, sample_rate: Option<f64>,
+    input: &[u8], metric_type: MetricType, sample_rate: Option<SampleRate>,
 ) -> Result<MetricValues, NomParserError<'_>> {
     let floats = FloatIter::new(input);
     match metric_type {
@@ -570,14 +558,8 @@ fn metric_values_from_raw(
             let value = unsafe { std::str::from_utf8_unchecked(input) };
             Ok(MetricValues::set(value.to_string()))
         }
-        // TODO: We're handling distributions 100% correctly, but we're taking a shortcut here by also handling
-        // timers/histograms directly as distributions.
-        //
-        // We need to figure out if this is OK or if we need to keep them separate and only convert up at the source
-        // level based on configuration or something.
-        MetricType::Timer | MetricType::Histogram | MetricType::Distribution => {
-            MetricValues::distribution_sampled_fallible(floats, sample_rate)
-        }
+        MetricType::Timer | MetricType::Histogram => MetricValues::histogram_sampled_fallible(floats, sample_rate),
+        MetricType::Distribution => MetricValues::distribution_sampled_fallible(floats, sample_rate),
     }
 }
 
@@ -909,10 +891,7 @@ mod tests {
         let value = 3.0;
         for kind in &["ms", "h"] {
             let raw = format!("{}:{}|{}", name, value, kind);
-            let mut expected = Metric::distribution(name, value);
-            expected
-                .metadata_mut()
-                .set_distribution_aggregation(DistributionAggregation::ClientSide);
+            let expected = Metric::histogram(name, value);
             let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
             check_basic_metric_eq(expected, actual);
         }
@@ -1065,10 +1044,7 @@ mod tests {
         let values_stringified = values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
         for kind in &["ms", "h"] {
             let raw = format!("{}:{}|{}", name, values_stringified.join(":"), kind);
-            let mut expected = Metric::distribution(name, values);
-            expected
-                .metadata_mut()
-                .set_distribution_aggregation(DistributionAggregation::ClientSide);
+            let expected = Metric::histogram(name, values);
             let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
             check_basic_metric_eq(expected, actual);
         }

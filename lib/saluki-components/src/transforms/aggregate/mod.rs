@@ -22,7 +22,7 @@ use tokio::{select, time::interval_at};
 use tracing::{debug, error, trace};
 
 mod config;
-use self::config::{DistributionStatistic, HistogramConfiguration};
+use self::config::HistogramConfiguration;
 
 const fn default_window_duration() -> Duration {
     Duration::from_secs(10)
@@ -545,28 +545,29 @@ impl AggregationState {
 }
 
 async fn transform_and_push_metric<O>(
-    context: Context, values: MetricValues, metadata: MetricMetadata, bucket_width_secs: u64,
+    context: Context, mut values: MetricValues, metadata: MetricMetadata, bucket_width_secs: u64,
     hist_config: &HistogramConfiguration, forwarder: &mut BufferedForwarder<'_, O>,
 ) -> Result<(), GenericError>
 where
     O: ObjectPool<Item = FixedSizeEventBuffer>,
 {
-    match (values, metadata.distribution_aggregation()) {
+    match values {
         // If we're dealing with a distribution and client-side aggregation is configured, we calculate a configured set
         // of aggregates/percentiles over the distribution, and emit them as individual metrics.
-        (MetricValues::Distribution(ref points), DistributionAggregation::ClientSide) => {
+        MetricValues::Histogram(ref mut points) => {
+            // We collect our histogram points in their "summary" view, which sorts the underlying samples allowing
+            // proper quantile queries to be answered, hence our "sorted" points. We do it this way because rather than
+            // sort every time we insert, or cloning the points, we only sort when a summary view is constructed, which
+            // requires mutable access to sort the samples in-place.
+            let mut sorted_points = Vec::new();
+            for (ts, h) in points {
+                sorted_points.push((ts, h.summary_view()));
+            }
+
             for statistic in hist_config.statistics() {
-                let new_points = points
-                    .into_iter()
-                    .map(|(ts, d)| match statistic {
-                        DistributionStatistic::Count => (ts, d.count() as f64),
-                        DistributionStatistic::Sum => (ts, d.sum().unwrap_or(0.0)),
-                        DistributionStatistic::Minimum => (ts, d.min().unwrap_or(0.0)),
-                        DistributionStatistic::Maximum => (ts, d.max().unwrap_or(0.0)),
-                        DistributionStatistic::Average => (ts, d.avg().unwrap_or(0.0)),
-                        DistributionStatistic::Median => (ts, d.quantile(0.5).unwrap_or(0.0)),
-                        DistributionStatistic::Percentile { q, .. } => (ts, d.quantile(*q).unwrap_or(0.0)),
-                    })
+                let new_points = sorted_points
+                    .iter()
+                    .map(|(ts, hs)| (*ts, statistic.value_from_histogram(hs)))
                     .collect::<ScalarPoints>();
 
                 let new_values = if statistic.is_rate_statistic() {
@@ -583,9 +584,9 @@ where
             Ok(())
         }
 
-        // If we don't have a distribution, or we're not in client-side aggregation mode for distributions, then all we
-        // need to worry about is converting counters to rates before forwarding our single, aggregated metric.
-        (values, _) => {
+        // If we're not dealing with a histogram, then all we need to worry about is converting counters to rates before
+        // forwarding our single, aggregated metric.
+        values => {
             let adjusted_values = match values {
                 MetricValues::Counter(values) => MetricValues::rate(values, Duration::from_secs(bucket_width_secs)),
                 values => values,
@@ -641,6 +642,7 @@ mod tests {
     };
     use tokio::sync::mpsc;
 
+    use super::config::HistogramStatistic;
     use super::*;
 
     const BUCKET_WIDTH_SECS: u64 = 10;
@@ -968,25 +970,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn distributions_client_side_aggregation() {
-        // We're testing that we properly emit individual metrics (min, max, sum, etc) for a distribution when it's
-        // configured to use client-side aggregation.
+    async fn histogram_statistics() {
+        // We're testing that we properly emit individual metrics (min, max, sum, etc) for a histogram.
         let hist_config = HistogramConfiguration::from_statistics(&[
-            DistributionStatistic::Count,
-            DistributionStatistic::Sum,
-            DistributionStatistic::Percentile {
+            HistogramStatistic::Count,
+            HistogramStatistic::Sum,
+            HistogramStatistic::Percentile {
                 q: 0.5,
                 suffix: "p50".into(),
             },
         ]);
         let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, hist_config);
 
-        // Create one multi-value distribution, with client-side aggregation, and insert it.
-        let mut input_metric = Metric::distribution("metric1", [1.0, 2.0, 3.0, 4.0, 5.0]);
-        input_metric
-            .metadata_mut()
-            .set_distribution_aggregation(DistributionAggregation::ClientSide);
-
+        // Create one multi-value histogram and insert it.
+        let input_metric = Metric::histogram("metric1", [1.0, 2.0, 3.0, 4.0, 5.0]);
         assert!(state.insert(insert_ts(1), input_metric.clone()));
 
         // Flush the aggregation state, and observe that we've emitted all of the configured distribution statistics in
@@ -1008,16 +1005,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn distributions_server_side_aggregation() {
-        // We're testing that we pass through distributions untouched when they're configured for server-side aggregation.
+    async fn distributions() {
+        // We're testing that we pass through distributions untouched.
         let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, HistogramConfiguration::default());
 
         // Create one multi-value distribution, with server-side aggregation, and insert it.
         let values = [1.0, 2.0, 3.0, 4.0, 5.0];
-        let mut input_metric = Metric::distribution("metric1", &values[..]);
-        input_metric
-            .metadata_mut()
-            .set_distribution_aggregation(DistributionAggregation::ServerSide);
+        let input_metric = Metric::distribution("metric1", &values[..]);
 
         assert!(state.insert(insert_ts(1), input_metric.clone()));
 

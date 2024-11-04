@@ -2,7 +2,10 @@ use std::num::NonZeroU64;
 
 use ordered_float::OrderedFloat;
 
-use super::{iter::{PointsIter, PointsIterRef}, TimestampedValue, TimestampedValues};
+use super::{
+    iter::{PointsIter, PointsIterRef},
+    TimestampedValue, TimestampedValues,
+};
 
 /// A set of scalar points.
 ///

@@ -8,7 +8,7 @@ use saluki_context::Context;
 pub use self::metadata::*;
 
 mod value;
-pub use self::value::{MetricValues, ScalarPoints, SetPoints, SketchPoints};
+pub use self::value::{HistogramPoints, HistogramSummary, MetricValues, ScalarPoints, SetPoints, SketchPoints};
 
 /// A metric.
 ///
@@ -98,6 +98,21 @@ impl Metric {
         }
     }
 
+    /// Creates a histogram metric from the given context and value(s).
+    ///
+    /// Default metadata will be used.
+    pub fn histogram<C, V>(context: C, values: V) -> Self
+    where
+        C: Into<Context>,
+        V: Into<HistogramPoints>,
+    {
+        Self {
+            context: context.into(),
+            values: MetricValues::histogram(values),
+            metadata: MetricMetadata::default(),
+        }
+    }
+
     /// Creates a distribution metric from the given context and value(s).
     ///
     /// Default metadata will be used.
@@ -164,9 +179,15 @@ impl Metric {
 /// and 1.0 (inclusive). For example, when handling a value with a sample rate of 0.25, this indicates the value is only
 /// being sent 25% of the time. This means it has a "weight" of 4: this single value should be considered to represent
 /// 4 actual samples with the same value.
+#[derive(Clone, Copy)]
 pub struct SampleRate(f64);
 
 impl SampleRate {
+    /// Creates a new sample rate indicating the metric was unsampled.
+    pub const fn unsampled() -> Self {
+        Self(1.0)
+    }
+
     /// Returns the weight of the sample rate.
     pub fn weight(&self) -> u64 {
         (1.0 / self.0) as u64
@@ -182,7 +203,7 @@ impl TryFrom<f64> for SampleRate {
     type Error = &'static str;
 
     fn try_from(value: f64) -> Result<Self, Self::Error> {
-        if value < 0.0 || value > 1.0 {
+        if !(0.0..=1.0).contains(&value) {
             Err("sample rate must be between 0.0 and 1.0")
         } else {
             Ok(Self(value))

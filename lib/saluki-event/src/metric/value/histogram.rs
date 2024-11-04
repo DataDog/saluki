@@ -1,9 +1,10 @@
+use std::num::NonZeroU64;
+
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 
+use super::{TimestampedValue, TimestampedValues};
 use crate::metric::SampleRate;
-
-use super::TimestampedValues;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct WeightedSample {
@@ -53,9 +54,10 @@ impl Histogram {
         }
     }
 
-    fn merge(&mut self, other: Histogram) {
+    /// Merges another histogram into this one.
+    pub fn merge(&mut self, other: &mut Histogram) {
         self.sum += other.sum;
-        self.samples.extend(other.samples.into_iter());
+        self.samples.extend(other.samples.drain(..));
     }
 }
 
@@ -113,7 +115,7 @@ impl<'a> HistogramSummary<'a> {
     ///
     /// If the histogram is empty, or if `quantile` is less than 0.0 or greater than 1.0, `None` will be returned.
     pub fn quantile(&self, quantile: f64) -> Option<f64> {
-        if quantile < 0.0 || quantile > 1.0 {
+        if !(0.0..=1.0).contains(&quantile) {
             return None;
         }
 
@@ -142,11 +144,11 @@ impl<'a> HistogramSummary<'a> {
 pub struct HistogramPoints(TimestampedValues<Histogram, 1>);
 
 impl HistogramPoints {
-    pub(super) fn inner(&self) -> &TimestampedValues<Histogram, 1>{
+    pub(super) fn inner(&self) -> &TimestampedValues<Histogram, 1> {
         &self.0
     }
 
-    pub(super) fn inner_mut(&mut self) -> &mut TimestampedValues<Histogram, 1>{
+    pub(super) fn inner_mut(&mut self) -> &mut TimestampedValues<Histogram, 1> {
         &mut self.0
     }
 
@@ -174,14 +176,14 @@ impl HistogramPoints {
     /// points will appended to the end of the set.
     pub fn merge(&mut self, other: Self) {
         let mut needs_sort = false;
-        for other_value in other.0.values {
+        for mut other_value in other.0.values {
             if let Some(existing_value) = self
                 .0
                 .values
                 .iter_mut()
                 .find(|value| value.timestamp == other_value.timestamp)
             {
-                existing_value.value.merge(other_value.value);
+                existing_value.value.merge(&mut other_value.value);
             } else {
                 self.0.values.push(other_value);
                 needs_sort = true;
@@ -191,5 +193,77 @@ impl HistogramPoints {
         if needs_sort {
             self.0.sort_by_timestamp();
         }
+    }
+}
+
+impl From<Histogram> for HistogramPoints {
+    fn from(value: Histogram) -> Self {
+        Self(TimestampedValue::from(value).into())
+    }
+}
+
+impl From<f64> for HistogramPoints {
+    fn from(value: f64) -> Self {
+        let mut histogram = Histogram::default();
+        histogram.insert(value, SampleRate::unsampled());
+
+        Self(TimestampedValue::from(histogram).into())
+    }
+}
+
+impl<const N: usize> From<[f64; N]> for HistogramPoints {
+    fn from(values: [f64; N]) -> Self {
+        let mut histogram = Histogram::default();
+        for value in values {
+            histogram.insert(value, SampleRate::unsampled());
+        }
+
+        Self(TimestampedValue::from(histogram).into())
+    }
+}
+
+impl IntoIterator for HistogramPoints {
+    type Item = (Option<NonZeroU64>, Histogram);
+    type IntoIter = HistogramIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        HistogramIter {
+            inner: self.0.values.into_iter(),
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a mut HistogramPoints {
+    type Item = (Option<NonZeroU64>, &'a mut Histogram);
+    type IntoIter = HistogramIterRefMut<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        HistogramIterRefMut {
+            inner: self.0.values.iter_mut(),
+        }
+    }
+}
+
+pub struct HistogramIter {
+    inner: smallvec::IntoIter<[TimestampedValue<Histogram>; 1]>,
+}
+
+impl Iterator for HistogramIter {
+    type Item = (Option<NonZeroU64>, Histogram);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|value| (value.timestamp, value.value))
+    }
+}
+
+pub struct HistogramIterRefMut<'a> {
+    inner: std::slice::IterMut<'a, TimestampedValue<Histogram>>,
+}
+
+impl<'a> Iterator for HistogramIterRefMut<'a> {
+    type Item = (Option<NonZeroU64>, &'a mut Histogram);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|value| (value.timestamp, &mut value.value))
     }
 }

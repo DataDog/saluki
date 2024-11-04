@@ -10,12 +10,15 @@ mod sketch;
 pub use self::sketch::SketchPoints;
 
 mod histogram;
+use self::histogram::Histogram;
+pub use self::histogram::{HistogramPoints, HistogramSummary};
 
 mod scalar;
 pub use self::scalar::ScalarPoints;
 
 mod set;
 pub use self::set::SetPoints;
+use super::SampleRate;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TimestampedValue<T> {
@@ -181,11 +184,21 @@ pub enum MetricValues {
     /// Sets represent a collection of unique values, such as the unique IP addresses that have connected to a service.
     Set(SetPoints),
 
+    /// A histogram.
+    ///
+    /// Histograms represent the distribution of a quantity, such as the response times for a service, with forced
+    /// client-side aggregation. Individual samples are stored locally, in full fidelity, and aggregate statistics
+    /// can be queried against the sample set, but the individual samples cannot be accessed.
+    Histogram(HistogramPoints),
+
     /// A distribution.
     ///
-    /// Distributions represent the distribution of a quantity, such as the response times for a service. By tracking
-    /// each individual measurement, statistics can be derived over the sample set to provide insight, such as minimum
-    /// and maximum value, how many of the values are above or below a specific threshold, and more.
+    /// Distributions represent the distribution of a quantity, such as the response times for a service, in such a way
+    /// that server-side aggregation is possible. Individual samples are stored in a sketch, which supports being merged
+    /// with other sketches server-side to facilitate global aggregation.
+    ///
+    /// Like histograms, sketches also provide the ability to be queried for aggregate statistics but the individual
+    /// samples cannot be accessed.
     Distribution(SketchPoints),
 }
 
@@ -202,15 +215,16 @@ impl MetricValues {
     ///
     /// If `sample_rate` is `None`, no values will be modified. Otherwise, each value will be scaled proportionally to
     /// the quotient of `1 / sample_rate`.
-    pub fn counter_sampled_fallible<I, E>(iter: I, sample_rate: Option<f64>) -> Result<Self, E>
+    pub fn counter_sampled_fallible<I, E>(iter: I, sample_rate: Option<SampleRate>) -> Result<Self, E>
     where
         I: Iterator<Item = Result<f64, E>>,
     {
-        let sample_rate_scaled = sample_rate.map(|rate| 1.0 / rate);
+        let sample_rate = sample_rate.unwrap_or(SampleRate::unsampled());
+
         let mut points = ScalarPoints::new();
         for value in iter {
             let value = value?;
-            points.add_point(None, sample_rate_scaled.map_or(value, |sr| value * sr));
+            points.add_point(None, value * sample_rate.raw_weight());
         }
         Ok(Self::Counter(points))
     }
@@ -243,6 +257,32 @@ impl MetricValues {
         Self::Set(values.into())
     }
 
+    /// Creates a set of histogram values from the given value(s).
+    pub fn histogram<V>(values: V) -> Self
+    where
+        V: Into<HistogramPoints>,
+    {
+        Self::Histogram(values.into())
+    }
+
+    /// Creates a set of histogram values from a fallible iterator of values, based on the given sample rate.
+    ///
+    /// If `sample_rate` is `None`, only the values present in the iterator will be used. Otherwise, each value will be
+    /// inserted at a scaled count of `1 / sample_rate`.
+    pub fn histogram_sampled_fallible<I, E>(iter: I, sample_rate: Option<SampleRate>) -> Result<Self, E>
+    where
+        I: Iterator<Item = Result<f64, E>>,
+    {
+        let sample_rate = sample_rate.unwrap_or(SampleRate::unsampled());
+
+        let mut histogram = Histogram::default();
+        for value in iter {
+            let value = value?;
+            histogram.insert(value, sample_rate);
+        }
+        Ok(Self::Histogram(histogram.into()))
+    }
+
     /// Creates a set of distribution values from the given value(s).
     pub fn distribution<V>(values: V) -> Self
     where
@@ -255,24 +295,20 @@ impl MetricValues {
     ///
     /// If `sample_rate` is `None`, only the values present in the iterator will be used. Otherwise, each value will be
     /// inserted at a scaled count of `1 / sample_rate`.
-    pub fn distribution_sampled_fallible<I, E>(iter: I, sample_rate: Option<f64>) -> Result<Self, E>
+    pub fn distribution_sampled_fallible<I, E>(iter: I, sample_rate: Option<SampleRate>) -> Result<Self, E>
     where
         I: Iterator<Item = Result<f64, E>>,
     {
-        let mut sketch = DDSketch::default();
-        match sample_rate {
-            Some(rate) => {
-                let n = (1.0 / rate) as u32;
+        let sample_rate = sample_rate.unwrap_or(SampleRate::unsampled());
+        let capped_sample_rate = u32::try_from(sample_rate.weight()).unwrap_or(u32::MAX);
 
-                for value in iter {
-                    let value = value?;
-                    sketch.insert_n(value, n);
-                }
-            }
-            None => {
-                for value in iter {
-                    sketch.insert(value?);
-                }
+        let mut sketch = DDSketch::default();
+        for value in iter {
+            let value = value?;
+            if capped_sample_rate == 1 {
+                sketch.insert(value);
+            } else {
+                sketch.insert_n(value, capped_sample_rate);
             }
         }
         Ok(Self::Distribution(sketch.into()))
@@ -291,6 +327,7 @@ impl MetricValues {
         match self {
             Self::Counter(points) | Self::Rate(points, _) | Self::Gauge(points) => points.is_empty(),
             Self::Set(points) => points.is_empty(),
+            Self::Histogram(points) => points.is_empty(),
             Self::Distribution(points) => points.is_empty(),
         }
     }
@@ -300,6 +337,7 @@ impl MetricValues {
         match self {
             Self::Counter(points) | Self::Rate(points, _) | Self::Gauge(points) => points.len(),
             Self::Set(points) => points.len(),
+            Self::Histogram(points) => points.len(),
             Self::Distribution(points) => points.len(),
         }
     }
@@ -309,6 +347,7 @@ impl MetricValues {
         match self {
             Self::Counter(points) | Self::Rate(points, _) | Self::Gauge(points) => points.inner().all_timestamped(),
             Self::Set(points) => points.inner().all_timestamped(),
+            Self::Histogram(points) => points.inner().all_timestamped(),
             Self::Distribution(points) => points.inner().all_timestamped(),
         }
     }
@@ -318,6 +357,7 @@ impl MetricValues {
         match self {
             Self::Counter(points) | Self::Rate(points, _) | Self::Gauge(points) => points.inner().any_timestamped(),
             Self::Set(points) => points.inner().any_timestamped(),
+            Self::Histogram(points) => points.inner().any_timestamped(),
             Self::Distribution(points) => points.inner().any_timestamped(),
         }
     }
@@ -328,8 +368,11 @@ impl MetricValues {
     /// timestamps will be cleared.
     pub fn set_timestamp(&mut self, timestamp: u64) {
         match self {
-            Self::Counter(points) | Self::Gauge(points) | Self::Rate(points, _) => points.inner_mut().set_timestamp(timestamp),
+            Self::Counter(points) | Self::Gauge(points) | Self::Rate(points, _) => {
+                points.inner_mut().set_timestamp(timestamp)
+            }
             Self::Set(points) => points.inner_mut().set_timestamp(timestamp),
+            Self::Histogram(points) => points.inner_mut().set_timestamp(timestamp),
             Self::Distribution(points) => points.inner_mut().set_timestamp(timestamp),
         }
     }
@@ -341,6 +384,7 @@ impl MetricValues {
             Self::Rate(points, interval) => Self::Rate(points.drain_timestamped(), *interval),
             Self::Gauge(points) => Self::Gauge(points.drain_timestamped()),
             Self::Set(points) => Self::Set(points.drain_timestamped()),
+            Self::Histogram(points) => Self::Histogram(points.drain_timestamped()),
             Self::Distribution(points) => Self::Distribution(points.drain_timestamped()),
         }
     }
@@ -355,6 +399,7 @@ impl MetricValues {
                 .map(|points| Self::Rate(points, *interval)),
             Self::Gauge(points) => points.split_at_timestamp(timestamp).map(Self::Gauge),
             Self::Set(points) => points.split_at_timestamp(timestamp).map(Self::Set),
+            Self::Histogram(points) => points.split_at_timestamp(timestamp).map(Self::Histogram),
             Self::Distribution(points) => points.split_at_timestamp(timestamp).map(Self::Distribution),
         }
     }
@@ -364,13 +409,24 @@ impl MetricValues {
     pub fn collapse_non_timestamped(&mut self, timestamp: u64) {
         match self {
             // Collapse by summing.
-            Self::Counter(points) => points.inner_mut().collapse_non_timestamped(timestamp, collapse_scalar_merge),
-            Self::Rate(points, _) => points.inner_mut().collapse_non_timestamped(timestamp, collapse_scalar_merge),
+            Self::Counter(points) => points
+                .inner_mut()
+                .collapse_non_timestamped(timestamp, collapse_scalar_merge),
+            Self::Rate(points, _) => points
+                .inner_mut()
+                .collapse_non_timestamped(timestamp, collapse_scalar_merge),
             // Collapse by keeping the last value.
-            Self::Gauge(points) => points.inner_mut().collapse_non_timestamped(timestamp, collapse_scalar_latest),
+            Self::Gauge(points) => points
+                .inner_mut()
+                .collapse_non_timestamped(timestamp, collapse_scalar_latest),
             // Collapse by merging.
             Self::Set(points) => points.inner_mut().collapse_non_timestamped(timestamp, collapse_set),
-            Self::Distribution(sketches) => sketches.inner_mut().collapse_non_timestamped(timestamp, collapse_sketch),
+            Self::Histogram(points) => points
+                .inner_mut()
+                .collapse_non_timestamped(timestamp, collapse_histogram),
+            Self::Distribution(sketches) => sketches
+                .inner_mut()
+                .collapse_non_timestamped(timestamp, collapse_sketch),
         }
     }
 
@@ -395,6 +451,7 @@ impl MetricValues {
             }
             (Self::Gauge(a), Self::Gauge(b)) => *a = b,
             (Self::Set(a), Self::Set(b)) => a.merge(b),
+            (Self::Histogram(a), Self::Histogram(b)) => a.merge(b),
             (Self::Distribution(a), Self::Distribution(b)) => a.merge(b),
 
             // Just override with whatever the incoming value is.
@@ -409,6 +466,7 @@ impl MetricValues {
             Self::Rate(_, _) => "rate",
             Self::Gauge(_) => "gauge",
             Self::Set(_) => "set",
+            Self::Histogram(_) => "histogram",
             Self::Distribution(_) => "distribution",
         }
     }
@@ -424,6 +482,10 @@ fn collapse_scalar_latest(dest: &mut OrderedFloat<f64>, src: &mut OrderedFloat<f
 
 fn collapse_set(dest: &mut HashSet<String>, src: &mut HashSet<String>) {
     dest.extend(src.drain());
+}
+
+fn collapse_histogram(dest: &mut Histogram, src: &mut Histogram) {
+    dest.merge(src);
 }
 
 fn collapse_sketch(dest: &mut DDSketch, src: &mut DDSketch) {
