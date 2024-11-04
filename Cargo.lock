@@ -1838,7 +1838,7 @@ dependencies = [
 [[package]]
 name = "lading-payload"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/lading?tag=v0.23.3#1d599e06a0e0da4cbbabc267f02b526aadea3091"
+source = "git+https://github.com/DataDog/lading?tag=v0.23.4#c717ca444098fa3342ae6285c0acc75bf7c1f25d"
 dependencies = [
  "byte-unit",
  "bytes",
