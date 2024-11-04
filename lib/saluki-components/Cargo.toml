@@ -32,6 +32,7 @@ paste = { workspace = true }
 pin-project = { workspace = true }
 protobuf = { workspace = true }
 quanta = { workspace = true }
+regex = { workspace = true }
 rustls = { workspace = true }
 saluki-config = { workspace = true }
 saluki-context = { workspace = true }
@@ -40,8 +41,10 @@ saluki-env = { workspace = true }
 saluki-error = { workspace = true }
 saluki-event = { workspace = true }
 saluki-io = { workspace = true }
+saluki-metadata = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_with = { workspace = true, features = ["alloc"] }
 slab = { workspace = true }
 smallvec = { workspace = true }
 snafu = { workspace = true }
