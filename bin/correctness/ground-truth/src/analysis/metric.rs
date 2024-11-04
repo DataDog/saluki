@@ -30,11 +30,6 @@ impl NormalizedMetricContext {
     pub fn name(&self) -> &str {
         &self.name
     }
-
-    /// Returns the tags of the metric.
-    pub fn tags(&self) -> &[String] {
-        &self.tags
-    }
 }
 
 impl fmt::Display for NormalizedMetricContext {
@@ -174,11 +169,6 @@ impl NormalizedMetrics {
             .with_error_context(|| "Failed to normalize metrics.")?;
 
         Ok(Self { metrics })
-    }
-
-    /// Returns `true` if the set of metrics is empty.
-    pub fn is_empty(&self) -> bool {
-        self.metrics.is_empty()
     }
 
     /// Returns the number of metrics in the set.
