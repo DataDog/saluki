@@ -1,13 +1,9 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-mod endpoint;
-use endpoint::endpoints::{create_single_domain_resolvers, determine_base, AdditionalEndpoints, SingleDomainResolver};
-use http::{HeaderValue, Method, Request, Uri};
+use http::{HeaderValue, Method, Request, Response, Uri};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
-use hyper_rustls::HttpsConnector;
-use hyper_util::client::legacy::connect::HttpConnector;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::Counter;
 use saluki_config::GenericConfiguration;
@@ -22,10 +18,7 @@ use saluki_io::{
     buf::{BytesBuffer, ChunkedBuffer, FixedSizeVec, ReadWriteIoBuffer},
     net::{
         client::{http::HttpClient, replay::ReplayBody},
-        util::retry::{
-            ExponentialBackoff, RollingExponentialBackoffRetryPolicy, StandardHttpClassifier,
-            StandardHttpRetryLifecycle,
-        },
+        util::retry::{DefaultHttpRetryPolicy, ExponentialBackoff},
     },
 };
 use serde::Deserialize;
@@ -34,8 +27,11 @@ use tokio::{
     select,
     sync::{mpsc, oneshot},
 };
-use tower::{retry::Retry, timeout::Timeout, BoxError, Service, ServiceBuilder};
+use tower::{BoxError, Service};
 use tracing::{debug, error, trace};
+
+mod endpoint;
+use self::endpoint::endpoints::{create_single_domain_resolvers, determine_base, AdditionalEndpoints, SingleDomainResolver};
 
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
@@ -234,8 +230,6 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
     }
 
     async fn build(&self) -> Result<Box<dyn Destination + Send>, GenericError> {
-        let http_client = HttpClient::builder().build()?;
-
         let retry_backoff = ExponentialBackoff::with_jitter(
             Duration::from_secs_f64(self.request_backoff_base),
             Duration::from_secs_f64(self.request_backoff_max),
@@ -244,14 +238,10 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
 
         let recovery_error_decrease_factor =
             (!self.request_recovery_reset).then_some(self.request_recovery_error_decrease_factor);
-        let retry_policy = RollingExponentialBackoffRetryPolicy::new(StandardHttpClassifier, retry_backoff)
-            .with_retry_lifecycle(StandardHttpRetryLifecycle)
+        let retry_policy = DefaultHttpRetryPolicy::with_backoff(retry_backoff)
             .with_recovery_error_decrease_factor(recovery_error_decrease_factor);
 
-        let service = ServiceBuilder::new()
-            .retry(retry_policy)
-            .timeout(Duration::from_secs(self.request_timeout_secs))
-            .service(http_client);
+        let service = HttpClient::builder().with_retry_policy(retry_policy).build()?;
 
         let api_base = self.api_base()?;
 
@@ -303,15 +293,7 @@ impl MemoryBounds for DatadogMetricsConfiguration {
             // TODO: This type signature is _ugly_, and it would be nice to improve it somehow.
             .with_single_value::<DatadogMetrics<
                 FixedSizeObjectPool<BytesBuffer>,
-                Retry<
-                    RollingExponentialBackoffRetryPolicy<StandardHttpClassifier>,
-                    Timeout<
-                        HttpClient<
-                            HttpsConnector<HttpConnector>,
-                            ReplayBody<ChunkedBuffer<FixedSizeObjectPool<BytesBuffer>>>,
-                        >,
-                    >,
-                >,
+                HttpClient<ReplayBody<ChunkedBuffer<FixedSizeObjectPool<BytesBuffer>>>>,
             >>()
             // Capture the size of our buffer pool and scratch buffer.
             .with_fixed_amount(rb_buffer_pool_size)
@@ -343,7 +325,7 @@ impl<O, S> Destination for DatadogMetrics<O, S>
 where
     O: ObjectPool + 'static,
     O::Item: ReadWriteIoBuffer,
-    S: Service<Request<ReplayBody<ChunkedBuffer<O>>>, Response = hyper::Response<Incoming>> + Send + 'static,
+    S: Service<Request<ReplayBody<ChunkedBuffer<O>>>, Response = Response<Incoming>> + Send + 'static,
     S::Future: Send,
     S::Error: Send + Into<BoxError>,
 {
