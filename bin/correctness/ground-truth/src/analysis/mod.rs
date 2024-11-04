@@ -25,16 +25,6 @@ impl RawTestResults {
         }
     }
 
-    /// Returns the raw metrics received from DogStatsD.
-    pub fn dsd_metrics(&self) -> &[Metric] {
-        &self.dsd_metrics
-    }
-
-    /// Returns the raw metrics received from Agent Data Plane.
-    pub fn adp_metrics(&self) -> &[Metric] {
-        &self.adp_metrics
-    }
-
     /// Analyzes the raw metrics from DogStatsD and Agent Data Plane, comparing them to one another.
     ///
     /// # Errors
