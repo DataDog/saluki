@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use clap::Parser as _;
 use saluki_app::prelude::*;
 use saluki_error::{generic_error, GenericError};

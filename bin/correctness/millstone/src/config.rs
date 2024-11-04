@@ -4,7 +4,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use bytesize::ByteSize;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 
@@ -45,29 +44,6 @@ impl TryFrom<String> for TargetAddress {
             }
         } else {
             Err(format!("invalid target address '{}': missing scheme", value))
-        }
-    }
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(try_from = "ByteSize")]
-pub struct NonZeroByteSize(ByteSize);
-
-impl NonZeroByteSize {
-    /// Returns the number of bytes represented by this value.
-    pub fn as_u64(&self) -> u64 {
-        self.0.as_u64()
-    }
-}
-
-impl TryFrom<ByteSize> for NonZeroByteSize {
-    type Error = String;
-
-    fn try_from(value: ByteSize) -> Result<Self, Self::Error> {
-        if value.as_u64() == 0 {
-            Err("value must be non-zero".to_string())
-        } else {
-            Ok(Self(value))
         }
     }
 }
