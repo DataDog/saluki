@@ -9,6 +9,7 @@ use saluki_error::GenericError;
 use saluki_metadata;
 use serde::Deserialize;
 use snafu::{ResultExt, Snafu};
+use tracing::debug;
 use url::Url;
 
 use crate::destinations::datadog_metrics::DEFAULT_SITE;
@@ -106,15 +107,18 @@ pub fn add_adp_version_to_domain(domain: String) -> Result<String, EndpointError
     let new_domain = if !domain.starts_with("https://") && !domain.starts_with("http://") {
         format!("https://{}", domain)
     } else {
-        domain.clone()
+        domain
     };
 
-    let url = Url::parse(&new_domain).with_context(|_| Parse { domain: domain.clone() })?;
+    let url = Url::parse(&new_domain).with_context(|_| Parse {
+        domain: new_domain.clone(),
+    })?;
 
     match url.host_str() {
         Some(host) => {
             // Do not update unknown URLs
             if !dd_url_regexp.is_match(host) {
+                debug!("Configured endpoint '{}' appears to be a non-Datadog endpoint. Utilizing endpoint without modification.", host);
                 return Ok(host.to_string());
             }
             let subdomain = host.split('.').next().unwrap_or("");
@@ -125,7 +129,7 @@ pub fn add_adp_version_to_domain(domain: String) -> Result<String, EndpointError
         }
         None => Err(EndpointError::Parse {
             source: url::ParseError::EmptyHost,
-            domain,
+            domain: new_domain.clone(),
         }),
     }
 }
@@ -144,6 +148,58 @@ pub fn determine_base(dd_url: &Option<String>, site: &str) -> Result<Uri, Generi
                 .path_and_query("/")
                 .build()
                 .map_err(Into::into)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_version() {
+        let urls = [
+            "https://app.datadoghq.com",     // US
+            "https://app.datadoghq.eu",      // EU
+            "app.ddog-gov.com",              // Gov
+            "app.us2.datadoghq.com",         // Additional Site
+            "https://app.xx9.datadoghq.com", // Arbitrary site
+        ];
+        let expected_urls = [
+            ".datadoghq.com",
+            ".datadoghq.eu",
+            ".ddog-gov.com",
+            ".us2.datadoghq.com",
+            ".xx9.datadoghq.com",
+        ];
+
+        for (url, expected_url) in urls.iter().zip(expected_urls) {
+            let prefix = get_domain_prefix("adp".to_string());
+            let actual = add_adp_version_to_domain(url.to_string()).expect("error adding version to domain");
+            assert_eq!(format!("{}{}", prefix, expected_url), actual);
+        }
+    }
+
+    #[test]
+    fn skip_version() {
+        let urls = [
+            "https://custom.datadoghq.com",       // Custom
+            "https://custom.agent.datadoghq.com", // Custom with 'agent' subdomain
+            "https://app.custom.datadoghq.com",   // Custom
+            "https://app.datadoghq.internal",     // Custom top-level domain
+            "https://app.myproxy.com",            // Proxy
+        ];
+        let expected_urls = [
+            "custom.datadoghq.com",
+            "custom.agent.datadoghq.com",
+            "app.custom.datadoghq.com",
+            "app.datadoghq.internal",
+            "app.myproxy.com",
+        ];
+
+        for (url, expected_url) in urls.iter().zip(expected_urls) {
+            let actual = add_adp_version_to_domain(url.to_string()).expect("error adding version to domain");
+            assert_eq!(format!("{}", expected_url), actual);
         }
     }
 }
