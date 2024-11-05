@@ -51,7 +51,7 @@ tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt", 
 tokio-util = { workspace = true }
 tower = { workspace = true, features = ["retry", "util"] }
 tracing = { workspace = true }
-url = { workspace = true }
+url = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 http-body-util = { workspace = true }
