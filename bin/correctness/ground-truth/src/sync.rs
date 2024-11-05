@@ -57,15 +57,6 @@ pub struct TaskToken {
     state: Arc<State>,
 }
 
-impl TaskToken {
-    /// Mark this task as done.
-    ///
-    /// If no other tasks are still running, this will wake up the waiting task, if any.
-    pub fn done(self) {
-        drop(self)
-    }
-}
-
 impl Drop for TaskToken {
     fn drop(&mut self) {
         // If we're the last worker attached to the coordinator, wake up the waiting task, if any.
