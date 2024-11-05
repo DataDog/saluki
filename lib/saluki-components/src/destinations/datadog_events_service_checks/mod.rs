@@ -1,5 +1,3 @@
-use std::error::Error as _;
-
 use async_trait::async_trait;
 use http::{Request, Uri};
 use http_body_util::BodyExt;
@@ -8,7 +6,7 @@ use saluki_config::GenericConfiguration;
 use saluki_core::{components::destinations::*, task::spawn_traced};
 use saluki_error::{generic_error, GenericError};
 use saluki_event::{DataType, Event};
-use saluki_io::net::client::http::{HttpClient, HttpsCapableConnector};
+use saluki_io::net::client::http::HttpClient;
 use serde::Deserialize;
 use tokio::{
     select,
@@ -121,7 +119,7 @@ impl MemoryBounds for DatadogEventsServiceChecksConfiguration {
 }
 
 pub struct DatadogEventsServiceChecks {
-    http_client: HttpClient<HttpsCapableConnector, String>,
+    http_client: HttpClient<String>,
     events_request_builder: RequestBuilder,
     service_checks_request_builder: RequestBuilder,
 }
@@ -214,7 +212,7 @@ impl Destination for DatadogEventsServiceChecks {
 
 async fn run_io_loop(
     mut requests_rx: mpsc::Receiver<(usize, Request<String>)>, io_shutdown_tx: oneshot::Sender<()>,
-    http_client: HttpClient<HttpsCapableConnector, String>,
+    mut http_client: HttpClient<String>,
 ) {
     // Loop and process all incoming requests.
     while let Some((_events_count, request)) = requests_rx.recv().await {
