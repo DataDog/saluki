@@ -234,6 +234,8 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
     }
 
     async fn build(&self) -> Result<Box<dyn Destination + Send>, GenericError> {
+        let http_client = HttpClient::builder().build()?;
+
         let retry_backoff = ExponentialBackoff::with_jitter(
             Duration::from_secs_f64(self.request_backoff_base),
             Duration::from_secs_f64(self.request_backoff_max),

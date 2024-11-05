@@ -3,45 +3,49 @@ use std::{future::Future, pin::Pin, task::Poll, time::Duration};
 use http::{Request, Response};
 use hyper::body::{Body, Incoming};
 use hyper_util::{
-    client::legacy::{connect::capture_connection, Builder},
+    client::legacy::{
+        connect::{capture_connection, Connect},
+        Builder, Client, Error,
+    },
     rt::{TokioExecutor, TokioTimer},
 };
 use saluki_error::GenericError;
 use saluki_tls::ClientTLSConfigBuilder;
-use tower::{
-    retry::Policy, timeout::TimeoutLayer, util::BoxCloneService, BoxError, Service, ServiceBuilder, ServiceExt as _,
-};
+use tower::{BoxError, Service};
 
-use super::conn::{check_connection_state, HttpsCapableConnectorBuilder};
-use crate::net::util::retry::NoopRetryPolicy;
+use super::{
+    conn::{check_connection_state, HttpsCapableConnectorBuilder},
+    HttpsCapableConnector,
+};
 
 /// An HTTP client.
 #[derive(Clone)]
-pub struct HttpClient<B = ()> {
-    inner: BoxCloneService<Request<B>, Response<Incoming>, BoxError>,
+pub struct HttpClient<C = (), B = ()> {
+    inner: Client<C, B>,
 }
 
-impl HttpClient<()> {
+impl HttpClient<(), ()> {
     /// Creates a new builder for configuring an HTTP client.
     pub fn builder() -> HttpClientBuilder {
         HttpClientBuilder::default()
     }
 }
 
-impl<B> HttpClient<B>
+impl<C, B> HttpClient<C, B>
 where
+    C: Connect + Clone + Send + Sync + 'static,
     B: Body + Clone + Send + Unpin + 'static,
     B::Data: Send,
-    B::Error: Into<BoxError>,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     /// Sends a request to the server, and waits for a response.
     ///
     /// # Errors
     ///
     /// If there was an error sending the request, an error will be returned.
-    pub async fn send(&mut self, mut req: Request<B>) -> Result<Response<Incoming>, BoxError> {
+    pub async fn send(&self, mut req: Request<B>) -> Result<Response<Incoming>, Error> {
         let captured_conn = capture_connection(&mut req);
-        let result = self.inner.ready().await?.call(req).await;
+        let result = self.inner.request(req).await;
 
         check_connection_state(captured_conn);
 
@@ -49,14 +53,15 @@ where
     }
 }
 
-impl<B> Service<Request<B>> for HttpClient<B>
+impl<C, B> Service<Request<B>> for HttpClient<C, B>
 where
+    C: Connect + Clone + Send + Sync + 'static,
     B: Body + Send + Unpin + 'static,
     B::Data: Send,
     B::Error: Into<BoxError>,
 {
-    type Response = Response<Incoming>;
-    type Error = BoxError;
+    type Response = hyper::Response<Incoming>;
+    type Error = Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
@@ -87,46 +92,24 @@ where
 ///
 /// - support for both HTTP and HTTPS (uses platform's root certificates for server certificate validation)
 /// - support for both HTTP/1.1 and HTTP/2 (automatically negotiated via ALPN)
-/// - non-infinite timeouts for various stages of the request lifecycle (30 second connect timeout, 60 second per-request timeout)
+/// - 30 second timeout when connecting to the remote host
 /// - connection pool for reusing connections (45 second idle connection timeout, and a maximum of 5 idle connections
 ///   per host)
 /// - support for FIPS-compliant cryptography (if the `fips` feature is enabled in the `saluki-tls` crate) via [AWS-LC][aws-lc]
 ///
 /// [aws-lc]: https://github.com/aws/aws-lc-rs
-pub struct HttpClientBuilder<P = NoopRetryPolicy> {
+pub struct HttpClientBuilder {
     connector_builder: HttpsCapableConnectorBuilder,
     hyper_builder: Builder,
     tls_builder: ClientTLSConfigBuilder,
-    retry_policy: P,
-    request_timeout: Option<Duration>,
 }
 
-impl<P> HttpClientBuilder<P> {
+impl HttpClientBuilder {
     /// Sets the timeout when connecting to the remote host.
     ///
     /// Defaults to 30 seconds.
     pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
         self.connector_builder = self.connector_builder.with_connect_timeout(timeout);
-        self
-    }
-
-    /// Sets the per-request timeout.
-    ///
-    /// The request timeout applies to each individual request made to the remote host, including each request made when
-    /// retrying a failed request.
-    ///
-    /// Defaults to 20 seconds.
-    pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
-        self.request_timeout = Some(timeout);
-        self
-    }
-
-    /// Allow requests to run indefinitely.
-    ///
-    /// This means there will be no overall timeout for the request, but the request still may be subject to other
-    /// configuration settings, such as the connect timeout or retry policy.
-    pub fn without_request_timeout(mut self) -> Self {
-        self.request_timeout = None;
         self
     }
 
@@ -163,21 +146,6 @@ impl<P> HttpClientBuilder<P> {
         self
     }
 
-    /// Sets the retry policy to use when sending requests.
-    ///
-    /// When set, the client will automatically retry requests that are classified as having failed.
-    ///
-    /// Defaults to no retry policy. (i.e. requests are not retried)
-    pub fn with_retry_policy<P2>(self, retry_policy: P2) -> HttpClientBuilder<P2> {
-        HttpClientBuilder {
-            connector_builder: self.connector_builder,
-            hyper_builder: self.hyper_builder,
-            tls_builder: self.tls_builder,
-            request_timeout: self.request_timeout,
-            retry_policy,
-        }
-    }
-
     /// Sets the TLS configuration.
     ///
     /// A TLS configuration builder is provided to allow for more advanced configuration of the TLS connection.
@@ -206,25 +174,17 @@ impl<P> HttpClientBuilder<P> {
     /// # Errors
     ///
     /// If there was an error building the TLS configuration for the client, an error will be returned.
-    pub fn build<B>(self) -> Result<HttpClient<B>, GenericError>
+    pub fn build<B>(self) -> Result<HttpClient<HttpsCapableConnector, B>, GenericError>
     where
         B: Body + Clone + Unpin + Send + 'static,
         B::Data: Send,
         B::Error: std::error::Error + Send + Sync,
-        P: Policy<Request<B>, Response<Incoming>, BoxError> + Send + Clone + 'static,
-        P::Future: Send,
     {
         let tls_config = self.tls_builder.build()?;
         let connector = self.connector_builder.build(tls_config);
         let client = self.hyper_builder.build(connector);
 
-        let inner = ServiceBuilder::new()
-            .retry(self.retry_policy)
-            .option_layer(self.request_timeout.map(TimeoutLayer::new))
-            .service(client.map_err(BoxError::from))
-            .boxed_clone();
-
-        Ok(HttpClient { inner })
+        Ok(HttpClient { inner: client })
     }
 }
 
@@ -240,8 +200,6 @@ impl Default for HttpClientBuilder {
             connector_builder: HttpsCapableConnectorBuilder::default(),
             hyper_builder,
             tls_builder: ClientTLSConfigBuilder::new(),
-            request_timeout: Some(Duration::from_secs(20)),
-            retry_policy: NoopRetryPolicy,
         }
     }
 }

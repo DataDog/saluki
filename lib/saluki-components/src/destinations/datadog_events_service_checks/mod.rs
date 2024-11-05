@@ -6,7 +6,7 @@ use saluki_config::GenericConfiguration;
 use saluki_core::{components::destinations::*, task::spawn_traced};
 use saluki_error::{generic_error, GenericError};
 use saluki_event::{DataType, Event};
-use saluki_io::net::client::http::HttpClient;
+use saluki_io::net::client::http::{HttpClient, HttpsCapableConnector};
 use serde::Deserialize;
 use tokio::{
     select,
@@ -119,7 +119,7 @@ impl MemoryBounds for DatadogEventsServiceChecksConfiguration {
 }
 
 pub struct DatadogEventsServiceChecks {
-    http_client: HttpClient<String>,
+    http_client: HttpClient<HttpsCapableConnector, String>,
     events_request_builder: RequestBuilder,
     service_checks_request_builder: RequestBuilder,
 }
@@ -212,7 +212,7 @@ impl Destination for DatadogEventsServiceChecks {
 
 async fn run_io_loop(
     mut requests_rx: mpsc::Receiver<(usize, Request<String>)>, io_shutdown_tx: oneshot::Sender<()>,
-    mut http_client: HttpClient<String>,
+    http_client: HttpClient<HttpsCapableConnector, String>,
 ) {
     // Loop and process all incoming requests.
     while let Some((_events_count, request)) = requests_rx.recv().await {
