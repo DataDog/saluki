@@ -31,7 +31,9 @@ use tower::{BoxError, Service};
 use tracing::{debug, error, trace};
 
 mod endpoint;
-use self::endpoint::endpoints::{create_single_domain_resolvers, determine_base, AdditionalEndpoints, SingleDomainResolver};
+use self::endpoint::endpoints::{
+    create_single_domain_resolvers, determine_base, AdditionalEndpoints, SingleDomainResolver,
+};
 
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
