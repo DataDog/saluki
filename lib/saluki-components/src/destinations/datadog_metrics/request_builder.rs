@@ -322,7 +322,7 @@ where
         let half_two = encoded_metrics.len() - half_one;
         let mut compressor_half_one = create_compressor(&self.buffer_pool).await;
         for scratch_buffer in &encoded_metrics[0..half_one] {
-            if let Err(e) = compressor_half_one.write_all(&self.scratch_buf).await.context(Io) {
+            if let Err(e) = compressor_half_one.write_all(&scratch_buffer).await.context(Io) {
                 requests.push(Err(e));
             }
         }
@@ -333,7 +333,7 @@ where
 
         let mut compressor_half_two = create_compressor(&self.buffer_pool).await;
         for scratch_buffer in &encoded_metrics[half_one..] {
-            if let Err(e) = compressor_half_two.write_all(&self.scratch_buf).await.context(Io) {
+            if let Err(e) = compressor_half_two.write_all(&scratch_buffer).await.context(Io) {
                 requests.push(Err(e));
             }
         }
