@@ -332,7 +332,7 @@ where
         }
 
         let mut compressor_half_two = create_compressor(&self.buffer_pool).await;
-        for scratch_buffer in &encoded_metrics[0..half_one] {
+        for scratch_buffer in &encoded_metrics[half_one..] {
             if let Err(e) = compressor_half_two.write_all(&self.scratch_buf).await.context(Io) {
                 requests.push(Err(e));
             }
