@@ -123,12 +123,13 @@ where
     compression_estimator: CompressionEstimator,
     uncompressed_len: usize,
     metrics_written: usize,
+    encoded_metrics: Vec<Vec<u8>>,
 }
 
 impl<O> RequestBuilder<O>
 where
     O: ObjectPool + 'static,
-    O::Item: ReadWriteIoBuffer,
+    O::Item: ReadWriteIoBuffer + Send + Sync,
 {
     /// Creates a new `RequestBuilder` for the given endpoint, using the specified API key and base URI.
     pub async fn new(
@@ -148,6 +149,7 @@ where
             compression_estimator: CompressionEstimator::default(),
             uncompressed_len: 0,
             metrics_written: 0,
+            encoded_metrics: Vec::new(),
         })
     }
 
@@ -176,6 +178,7 @@ where
         // payload before encoding additional metrics.
         let encoded_metric = encode_single_metric(&metric);
         encoded_metric.write(&mut self.scratch_buf)?;
+        self.encoded_metrics.push(self.scratch_buf.clone());
 
         // If the metric can't fit into the current request payload based on the uncompressed size limit, or isn't
         // likely to fit into the current request payload based on the estimated compressed size limit, then return it
@@ -226,6 +229,7 @@ where
     /// ## Errors
     ///
     /// If an error occurs while finalizing the compressor or creating the request, an error will be returned.
+    #[allow(unused)]
     pub async fn flush(
         &mut self,
     ) -> Result<Option<(usize, Request<ReplayBody<ChunkedBuffer<O>>>)>, RequestBuilderError> {
@@ -260,6 +264,99 @@ where
         debug!(endpoint = ?self.endpoint, uncompressed_len, compressed_len, "Flushing request.");
 
         self.create_request(buffer).map(|req| Some((metrics_written, req)))
+    }
+
+    #[allow(unused)]
+    #[allow(dead_code)]
+    /// flush that forces the request payload to split for testing purposes as of now
+    pub async fn flush_with_split(
+        &mut self,
+    ) -> Vec<Result<(usize, Request<ReplayBody<ChunkedBuffer<O>>>), RequestBuilderError>>
+    where
+        O: ObjectPool + Send + Sync,
+        O::Item: Send + Sync,
+    {
+        if self.uncompressed_len == 0 {
+            return vec![];
+        }
+
+        // Clear our internal state and finalize the compressor. We do it in this order so that if finalization fails,
+        // somehow, the request builder is in a default state and encoding can be attempted again.
+        let metrics_written = self.metrics_written;
+        self.metrics_written = 0;
+
+        let uncompressed_len = self.uncompressed_len;
+        self.uncompressed_len = 0;
+
+        self.compression_estimator.reset();
+
+        // clear encoded metrics
+        let encoded_metrics = std::mem::take(&mut self.encoded_metrics);
+
+        let new_compressor = create_compressor(&self.buffer_pool).await;
+        let mut compressor = std::mem::replace(&mut self.compressor, new_compressor);
+        if let Err(e) = compressor.shutdown().await.context(Io) {
+            return vec![Err(e)];
+        }
+        let buffer = compressor.into_inner();
+
+        let compressed_len = buffer.len();
+        let compressed_limit = self.endpoint.compressed_size_limit();
+        debug!(endpoint = ?self.endpoint, uncompressed_len, compressed_len, "Flushing request.");
+        // if compressed_len > compressed_limit {
+        return self.split_request(encoded_metrics).await;
+        // }
+
+        // vec![self.create_request(buffer).map(|req| (metrics_written, req))]
+    }
+
+    // Vec<Result<(usize, Request<...>), RequestBuilderError>>
+
+    #[allow(unused)]
+    #[allow(dead_code)]
+    async fn split_request(
+        &self, encoded_metrics: Vec<Vec<u8>>,
+    ) -> Vec<Result<(usize, Request<ReplayBody<ChunkedBuffer<O>>>), RequestBuilderError>> {
+        let mut requests = Vec::new();
+        let half_one = encoded_metrics.len() / 2;
+        let half_two = encoded_metrics.len() - half_one;
+        let mut compressor_half_one = create_compressor(&self.buffer_pool).await;
+        for scratch_buffer in &encoded_metrics[0..half_one] {
+            if let Err(e) = compressor_half_one.write_all(&self.scratch_buf).await.context(Io) {
+                requests.push(Err(e));
+            }
+        }
+        match self.finalize(compressor_half_one) {
+            Ok(buffer) => requests.push(self.create_request(buffer).map(|req| (half_one, req))),
+            Err(e) => requests.push(Err(e)),
+        }
+
+        let mut compressor_half_two = create_compressor(&self.buffer_pool).await;
+        for scratch_buffer in &encoded_metrics[0..half_one] {
+            if let Err(e) = compressor_half_two.write_all(&self.scratch_buf).await.context(Io) {
+                requests.push(Err(e));
+            }
+        }
+
+        match self.finalize(compressor_half_two) {
+            Ok(buffer) => requests.push(self.create_request(buffer).map(|req| (half_one, req))),
+            Err(e) => requests.push(Err(e)),
+        }
+
+        requests
+    }
+
+    fn finalize(&self, compressor: Compressor<ChunkedBuffer<O>>) -> Result<ChunkedBuffer<O>, RequestBuilderError> {
+        let buffer = compressor.into_inner();
+        let compressed_len = buffer.len();
+        let compressed_limit = self.endpoint.compressed_size_limit();
+        if compressed_len > compressed_limit {
+            return Err(RequestBuilderError::PayloadTooLarge {
+                compressed_size_bytes: compressed_len,
+                compressed_limit_bytes: compressed_limit,
+            });
+        }
+        Ok(buffer)
     }
 
     fn create_request(
