@@ -99,7 +99,7 @@ async fn run(started: Instant) -> Result<(), GenericError> {
     let primary_api_listen_address = configuration
         .try_get_typed("api_listen_address")
         .error_context("Failed to get API listen address.")?
-        .unwrap_or_else(|| ListenAddress::Tcp(([127, 0, 0, 1], 9999).into()));
+        .unwrap_or_else(|| ListenAddress::Tcp(([127, 0, 0, 1], 5100).into()));
 
     let primary_api = APIBuilder::new()
         .with_handler(health_registry.api_handler())

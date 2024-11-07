@@ -34,4 +34,4 @@ target:
 
     # Enable internal telemetry endpoint.
     DD_TELEMETRY_ENABLED: "true"
-    DD_PROMETHEUS_LISTEN_ADDR: tcp://127.0.0.1:6000
+    DD_PROMETHEUS_LISTEN_ADDR: tcp://127.0.0.1:5101
