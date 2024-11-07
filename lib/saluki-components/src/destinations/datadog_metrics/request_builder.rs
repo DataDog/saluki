@@ -298,11 +298,11 @@ where
         if let Err(e) = compressor.shutdown().await.context(Io) {
             return vec![Err(e)];
         }
-        let buffer = compressor.into_inner();
+        // let buffer = compressor.into_inner();
 
-        let compressed_len = buffer.len();
-        let compressed_limit = self.endpoint.compressed_size_limit();
-        debug!(endpoint = ?self.endpoint, uncompressed_len, compressed_len, "Flushing request.");
+        // let compressed_len = buffer.len();
+        // let compressed_limit = self.endpoint.compressed_size_limit();
+        // debug!(endpoint = ?self.endpoint, uncompressed_len, compressed_len, "Flushing request.");
         // if compressed_len > compressed_limit {
         return self.split_request(encoded_metrics).await;
         // }
@@ -310,43 +310,49 @@ where
         // vec![self.create_request(buffer).map(|req| (metrics_written, req))]
     }
 
-    // Vec<Result<(usize, Request<...>), RequestBuilderError>>
-
     #[allow(unused)]
     #[allow(dead_code)]
     async fn split_request(
         &self, encoded_metrics: Vec<Vec<u8>>,
     ) -> Vec<Result<(usize, Request<ReplayBody<ChunkedBuffer<O>>>), RequestBuilderError>> {
         let mut requests = Vec::new();
+
         let half_one = encoded_metrics.len() / 2;
-        let half_two = encoded_metrics.len() - half_one;
         let mut compressor_half_one = create_compressor(&self.buffer_pool).await;
-        for scratch_buffer in &encoded_metrics[0..half_one] {
-            if let Err(e) = compressor_half_one.write_all(&scratch_buffer).await.context(Io) {
-                requests.push(Err(e));
+        if !encoded_metrics.is_empty() {
+            for scratch_buffer in &encoded_metrics[0..=half_one] {
+                if !scratch_buffer.is_empty() {
+                    if let Err(e) = compressor_half_one.write_all(&scratch_buffer).await.context(Io) {
+                        requests.push(Err(e));
+                    }
+                }
             }
-        }
-        match self.finalize(compressor_half_one) {
-            Ok(buffer) => requests.push(self.create_request(buffer).map(|req| (half_one, req))),
-            Err(e) => requests.push(Err(e)),
+            match self.finalize(compressor_half_one).await {
+                Ok(buffer) => requests.push(self.create_request(buffer).map(|req| (1, req))),
+                Err(e) => requests.push(Err(e)),
+            }
         }
 
         let mut compressor_half_two = create_compressor(&self.buffer_pool).await;
-        for scratch_buffer in &encoded_metrics[half_one..] {
-            if let Err(e) = compressor_half_two.write_all(&scratch_buffer).await.context(Io) {
-                requests.push(Err(e));
+        if half_one + 1 < encoded_metrics.len() {
+            for scratch_buffer in &encoded_metrics[half_one + 1..] {
+                if let Err(e) = compressor_half_two.write_all(&scratch_buffer).await.context(Io) {
+                    requests.push(Err(e));
+                }
             }
-        }
-
-        match self.finalize(compressor_half_two) {
-            Ok(buffer) => requests.push(self.create_request(buffer).map(|req| (half_one, req))),
-            Err(e) => requests.push(Err(e)),
+            match self.finalize(compressor_half_two).await {
+                Ok(buffer) => requests.push(self.create_request(buffer).map(|req| (half_one, req))),
+                Err(e) => requests.push(Err(e)),
+            }
         }
 
         requests
     }
 
-    fn finalize(&self, compressor: Compressor<ChunkedBuffer<O>>) -> Result<ChunkedBuffer<O>, RequestBuilderError> {
+    async fn finalize(
+        &self, mut compressor: Compressor<ChunkedBuffer<O>>,
+    ) -> Result<ChunkedBuffer<O>, RequestBuilderError> {
+        compressor.shutdown().await.context(Io)?;
         let buffer = compressor.into_inner();
         let compressed_len = buffer.len();
         let compressed_limit = self.endpoint.compressed_size_limit();

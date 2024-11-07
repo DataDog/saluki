@@ -402,13 +402,13 @@ where
                                                 }
                                             },
                                             Err(e) => {
-                                            // TODO: Increment a counter here that metrics were dropped due to a flush failure.
-                                            if e.is_recoverable() {
-                                                // If the error is recoverable, we'll hold on to the metric to retry it later.
-                                                continue;
-                                            } else {
-                                                return Err(GenericError::from(e).context("Failed to flush request."));
-                                            }
+                                                // TODO: Increment a counter here that metrics were dropped due to a flush failure.
+                                                if e.is_recoverable() {
+                                                    // If the error is recoverable, we'll hold on to the metric to retry it later.
+                                                    continue;
+                                                } else {
+                                                    return Err(GenericError::from(e).context("Failed to flush request."));
+                                                }
                                             }
                                         }
                                     }
@@ -450,26 +450,15 @@ where
 
                         // Once we've encoded and written all metrics, we flush the request builders to generate a request with
                         // anything left over. Again, we'll  enqueue those requests to be sent immediately.
-                        // match series_request_builder.flush().await.error_context("Failed to flush request.")? {
-                        //     Some(request) => {
-                        //         debug!("Flushed request from series request builder. Sending to I/O task...");
-                        //         if requests_tx.send(request).await.is_err() {
-                        //             return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
-                        //         }
-                        //     },
-                        //     None => {
-                        //         trace!("No flushed request from series request builder.");
-                        //     },
+                        let maybe_series_requests = series_request_builder.flush_with_split().await;
+                        // if maybe_series_requests.is_empty() {
+                        //     panic!("builder told us to flush, but gave us nothing");
                         // }
 
-                        let maybe_requests = series_request_builder.flush_with_split().await;
-                        if maybe_requests.is_empty() {
-                            panic!("builder told us to flush, but gave us nothing");
-                        }
-
-                        for maybe_request in maybe_requests {
+                        for maybe_request in maybe_series_requests {
                             match maybe_request {
                                 Ok(request) => {
+                                    debug!("Flushed request from series request builder. Sending to I/O task...");
                                     if requests_tx.send(request).await.is_err() {
                                         return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
                                     }
@@ -486,17 +475,30 @@ where
                             }
                         }
 
-                        // match sketches_request_builder.flush().await.error_context("Failed to flush request.")? {
-                        //    Some(request) => {
-                        //         debug!("Flushed request from sketches request builder. Sending to I/O task...");
-                        //         if requests_tx.send(request).await.is_err() {
-                        //             return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
-                        //         }
-                        //     }
-                        //     None => {
-                        //         trace!("No flushed request from sketches request builder.");
-                        //     }
+                        let maybe_sketches_requests = sketches_request_builder.flush_with_split().await;
+                        // if maybe_sketches_requests.is_empty() {
+                        //     panic!("builder told us to flush, but gave us nothing");
                         // }
+
+                        for maybe_request in maybe_sketches_requests {
+                            match maybe_request {
+                                Ok(request) => {
+                                debug!("Flushed request from sketches request builder. Sending to I/O task...");
+                                    if requests_tx.send(request).await.is_err() {
+                                        return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
+                                    }
+                                },
+                                Err(e) => {
+                                    // TODO: Increment a counter here that metrics were dropped due to a flush failure.
+                                    if e.is_recoverable() {
+                                        // If the error is recoverable, we'll hold on to the metric to retry it later.
+                                        continue;
+                                    } else {
+                                        return Err(GenericError::from(e).context("Failed to flush request."));
+                                    }
+                                }
+                            }
+                        }
 
                         debug!("All flushed requests sent to I/O task. Waiting for next event buffer...");
                     },
