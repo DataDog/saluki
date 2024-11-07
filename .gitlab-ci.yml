@@ -6,6 +6,7 @@ stages:
   - build
   - correctness
   - benchmark
+  - release
   - internal
 
 variables:
@@ -24,11 +25,13 @@ variables:
   ADP_VERSION_BASE: "0.1.0"
   ADP_IMAGE_BASE: "${SALUKI_IMAGE_REPO_BASE}/agent-data-plane"
 
-  # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image
-  # used internally for testing.
-  DD_AGENT_VERSION: "7-57-0-rc-4-jmx"
-  DD_AGENT_IMAGE_BASE: "${IMAGE_REGISTRY}/datadog-agent"
-  DD_AGENT_IMAGE: "${DD_AGENT_IMAGE_BASE}:${DD_AGENT_VERSION}"
+  # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image, both for
+  # internal and public releases.
+  INTERNAL_DD_AGENT_VERSION: "7-59-0-jmx"
+  INTERNAL_DD_AGENT_IMAGE_BASE: "${IMAGE_REGISTRY}/datadog-agent"
+  INTERNAL_DD_AGENT_IMAGE: "${INTERNAL_DD_AGENT_IMAGE_BASE}:${INTERNAL_DD_AGENT_VERSION}"
+  PUBLIC_DD_AGENT_VERSION: "7.59.0"
+  PUBLIC_DD_AGENT_IMAGE: "gcr.io/datadoghq/agent:${PUBLIC_DD_AGENT_VERSION}"
 
   # Version of the Datadog Agent/standalone DogStatsD server that we'll use both when running SMP benchmarks
   # as well as correctness tests, to ensure we're always running our various comparisons against the same version.
@@ -47,3 +50,8 @@ default:
   tags: ["arch:amd64"]
   before_script:
     - *setup-env
+
+# Run a job on official releases (i.e. tagged)
+.on_official_release:
+  rules:
+    if: $CI_COMMIT_TAG
