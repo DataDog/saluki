@@ -1,0 +1,96 @@
+build-release-adp-image:
+  stage: release
+  tags: ["arch:amd64"]
+  image: ${DOCKER_BUILD_IMAGE}
+  needs: []
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+      when: manual
+    - when: never
+  variables:
+    # Compiling Rust is intensive. ¯\_(ツ)_/¯
+    KUBERNETES_CPU_REQUEST: "16"
+    KUBERNETES_MEMORY_REQUEST: "8Gi"
+    KUBERNETES_MEMORY_LIMIT: "12Gi"
+  script:
+    # We manually specify all of the build metadata (app name, Git hash, etc) instead of using the Make target, just to
+    # better insulate ourselves and make sure that we have a little more determinism: all of these values are either
+    # static or come from the GitLab CI environment, which we can work backwards from... but to use the Make target, we
+    # have to push it through a job artifact, which gets cleared after a period of time, and so on.
+    - docker buildx build
+      --platform linux/amd64,linux/arm64
+      --file ./docker/Dockerfile.agent-data-plane
+      --tag ${ADP_IMAGE_BASE}:${CI_COMMIT_TAG}-release
+      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
+      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
+      --build-arg BUILD_PROFILE=optimized-release
+      --build-arg APP_NAME=agent-data-plane
+      --build-arg APP_SHORT_NAME=adp
+      --build-arg APP_VERSION=${CI_COMMIT_TAG}
+      --build-arg APP_GIT_HASH=${CI_COMMIT_TAG}
+      --build-arg APP_BUILD_TIME=${CI_PIPELINE_CREATED_AT}
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --push
+      .
+
+build-bundled-agent-adp-image:
+  stage: release
+  tags: ["arch:amd64"]
+  image: ${DOCKER_BUILD_IMAGE}
+  needs:
+    - build-release-adp-image
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+      when: manual
+    - when: never
+  variables:
+    # TODO: What do we need to tag the image as before actually publishing it to the public container registries?
+    IMAGE_TAG: ${INTERNAL_DD_AGENT_IMAGE_BASE}:${PUBLIC_DD_AGENT_VERSION}-v${CI_COMMIT_TAG}-adp
+  script:
+    # TODO: What labels do we need here? Do we want these CI ones? etc.
+    - docker buildx build
+      --platform linux/amd64,linux/arm64
+      --file ./docker/Dockerfile.datadog-agent
+      --build-arg "DD_AGENT_IMAGE=${PUBLIC_DD_AGENT_IMAGE}"
+      --build-arg "ADP_IMAGE=${ADP_IMAGE_BASE}:${CI_COMMIT_TAG}-release"
+      --tag ${IMAGE_TAG}
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --push
+      .
+
+build-bundled-agent-adp-jmx-image:
+  stage: release
+  tags: ["arch:amd64"]
+  image: ${DOCKER_BUILD_IMAGE}
+  needs:
+    - build-release-adp-image
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+      when: manual
+    - when: never
+  variables:
+    # TODO: What do we need to tag the image as before actually publishing it to the public container registries?
+    IMAGE_TAG: ${INTERNAL_DD_AGENT_IMAGE_BASE}:${PUBLIC_DD_AGENT_VERSION}-v${CI_COMMIT_TAG}-adp-jmx
+  script:
+    # TODO: What labels do we need here? Do we want these CI ones? etc.
+    - docker buildx build
+      --platform linux/amd64,linux/arm64
+      --file ./docker/Dockerfile.datadog-agent
+      --build-arg "DD_AGENT_IMAGE=${PUBLIC_DD_AGENT_IMAGE}-jmx"
+      --build-arg "ADP_IMAGE=${ADP_IMAGE_BASE}:${CI_COMMIT_TAG}-release"
+      --tag ${IMAGE_TAG}
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --push
+      .
