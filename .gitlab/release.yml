@@ -63,7 +63,7 @@ build-bundled-agent-adp-image:
       .
 
 build-bundled-agent-adp-jmx-image:
-  stage: build
+  stage: release
   tags: ["arch:amd64"]
   image: ${DOCKER_BUILD_IMAGE}
   needs:
