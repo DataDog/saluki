@@ -13,6 +13,6 @@ FROM ${DD_AGENT_IMAGE}
 
 # Copy the ADP binary and all of the required licensing bits.
 COPY --from=adp /usr/local/bin/agent-data-plane /opt/datadog-agent/embedded/bin/agent-data-plane
-COPY --from=adp /opt/datadog/agent-data-plane /opt/datadog/
+COPY --from=adp /opt/datadog/agent-data-plane /opt/datadog/agent-data-plane
 
 # Everything else we'll leave at the defaults of the Datadog Agent image.
