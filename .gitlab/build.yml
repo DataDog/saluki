@@ -63,7 +63,7 @@ build-converged-adp-image:
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.datadog-agent
       --metadata-file	/tmp/build.metadata
-      --build-arg "DD_AGENT_IMAGE=${DD_AGENT_IMAGE}"
+      --build-arg "DD_AGENT_IMAGE=${INTERNAL_DD_AGENT_IMAGE}"
       --build-arg "ADP_IMAGE=${ADP_IMAGE_BASE}:${ADP_VERSION}"
       --tag "${IMAGE_TAG}"
       --label git.repository=${CI_PROJECT_NAME}
