@@ -4,7 +4,8 @@ generate-build-ci-image:
   image: ${DOCKER_BUILD_IMAGE}
   needs: []
   rules:
-    - when: manual
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
       allow_failure: true
   before_script:
     - export RUST_VERSION=$(grep channel rust-toolchain.toml | cut -d '"' -f 2)
@@ -30,7 +31,8 @@ generate-general-ci-image:
   image: ${DOCKER_BUILD_IMAGE}
   needs: []
   rules:
-    - when: manual
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
       allow_failure: true
   script:
     - docker buildx build
@@ -52,7 +54,8 @@ generate-smp-ci-image:
   image: ${DOCKER_BUILD_IMAGE}
   needs: []
   rules:
-    - when: manual
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
       allow_failure: true
   script:
     - docker buildx build
