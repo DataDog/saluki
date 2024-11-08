@@ -43,6 +43,10 @@ build-bundled-agent-adp-image:
   image: ${DOCKER_BUILD_IMAGE}
   needs:
     - build-release-adp-image
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+      when: manual
+    - when: never
   variables:
     # TODO: What do we need to tag the image as before actually publishing it to the public container registries?
     IMAGE_TAG: ${INTERNAL_DD_AGENT_IMAGE_BASE}:${PUBLIC_DD_AGENT_VERSION}-v${CI_COMMIT_TAG}-adp
@@ -68,6 +72,10 @@ build-bundled-agent-adp-jmx-image:
   image: ${DOCKER_BUILD_IMAGE}
   needs:
     - build-release-adp-image
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+      when: manual
+    - when: never
   variables:
     # TODO: What do we need to tag the image as before actually publishing it to the public container registries?
     IMAGE_TAG: ${INTERNAL_DD_AGENT_IMAGE_BASE}:${PUBLIC_DD_AGENT_VERSION}-v${CI_COMMIT_TAG}-adp-jmx
