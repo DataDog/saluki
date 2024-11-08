@@ -27,11 +27,6 @@ build-adp-image:
     #
     # We should consider bringing back the individual build steps, and then constructing the multi-image manifest
     # ourselves.
-    - echo "app name is ${APP_NAME}"
-    - echo "app short name is ${APP_SHORT_NAME}"
-    - echo "app version is ${APP_VERSION}"
-    - echo "app git hash is ${APP_GIT_HASH}"
-    - echo "app build time is ${APP_BUILD_TIME}"
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
@@ -58,18 +53,19 @@ build-converged-adp-image:
   image: ${DOCKER_BUILD_IMAGE}
   needs:
     - build-adp-image
+  variables:
+    IMAGE_TAG: "${INTERNAL_DD_AGENT_IMAGE}-adp-${ADP_VERSION}"
   id_tokens:
     DDSIGN_ID_TOKEN:
       aud: image-integrity
   script:
-    - export IMAGE_TAG=${DD_AGENT_IMAGE_BASE}:${DD_AGENT_VERSION}-adp-${ADP_VERSION}
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.datadog-agent
       --metadata-file	/tmp/build.metadata
-      --build-arg "DD_AGENT_IMAGE=${DD_AGENT_IMAGE}"
+      --build-arg "DD_AGENT_IMAGE=${INTERNAL_DD_AGENT_IMAGE}"
       --build-arg "ADP_IMAGE=${ADP_IMAGE_BASE}:${ADP_VERSION}"
-      --tag ${IMAGE_TAG}
+      --tag "${IMAGE_TAG}"
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
