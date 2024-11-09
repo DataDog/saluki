@@ -93,9 +93,11 @@ impl MetricsEndpoint {
     /// Gets the endpoint for the given metric.
     pub fn from_metric(metric: &Metric) -> Self {
         match metric.values() {
-            MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..) => {
-                Self::Series
-            }
+            MetricValues::Counter(..)
+            | MetricValues::Rate(..)
+            | MetricValues::Gauge(..)
+            | MetricValues::Set(..)
+            | MetricValues::Histogram(..) => Self::Series,
             MetricValues::Distribution(..) => Self::Sketches,
         }
     }
@@ -349,9 +351,11 @@ impl EncodedMetric {
 
 fn encode_single_metric(metric: &Metric) -> EncodedMetric {
     match metric.values() {
-        MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..) => {
-            EncodedMetric::Series(encode_series_metric(metric))
-        }
+        MetricValues::Counter(..)
+        | MetricValues::Rate(..)
+        | MetricValues::Gauge(..)
+        | MetricValues::Set(..)
+        | MetricValues::Histogram(..) => EncodedMetric::Series(encode_series_metric(metric)),
         MetricValues::Distribution(..) => EncodedMetric::Sketch(encode_sketch_metric(metric)),
     }
 }

@@ -1,9 +1,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-mod endpoint;
-use endpoint::endpoints::{create_single_domain_resolvers, determine_base, AdditionalEndpoints, SingleDomainResolver};
-use http::{HeaderValue, Method, Request, Uri};
+use http::{HeaderValue, Method, Request, Response, Uri};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -234,8 +232,6 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
     }
 
     async fn build(&self) -> Result<Box<dyn Destination + Send>, GenericError> {
-        let http_client = HttpClient::builder().build()?;
-
         let retry_backoff = ExponentialBackoff::with_jitter(
             Duration::from_secs_f64(self.request_backoff_base),
             Duration::from_secs_f64(self.request_backoff_max),
