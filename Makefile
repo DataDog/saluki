@@ -407,7 +407,7 @@ test-correctness: ## Runs the metrics correctness (ground-truth) suite
 		--metrics-intake-image saluki-images/metrics-intake:latest \
 		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
 		--dsd-image docker.io/datadog/dogstatsd:7.58.0 \
-		--dsd-config-path $(shell pwd)test/correctness/datadog.yaml \
+		--dsd-config-path $(shell pwd)/test/correctness/datadog.yaml \
 		--adp-image saluki-images/agent-data-plane:latest \
 		--adp-config-path $(shell pwd)/test/correctness/datadog.yaml \
 		--adp-env-arg DD_LOG_LEVEL=debug
@@ -522,7 +522,7 @@ sync-licenses: ## Synchronizes the third-party license file with the current cra
 	@$(HOME)/.cargo/bin/dd-rust-license-tool write
 
 .PHONY: cargo-preinstall
-cargo-preinstall: cargo-install-dd-rust-license-tool cargo-install-cargo-deny cargo-install-cargo-hack 
+cargo-preinstall: cargo-install-dd-rust-license-tool cargo-install-cargo-deny cargo-install-cargo-hack
 cargo-preinstall: cargo-install-cargo-nextest cargo-install-cargo-autoinherit cargo-install-cargo-sort
 cargo-preinstall: ## Pre-installs all necessary Cargo tools (used for CI)
 	@echo "[*] Pre-installed all necessary Cargo tools!"
