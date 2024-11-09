@@ -43,14 +43,14 @@ corpus:
         service_check: 0
       # Weights based on analyzing internal Datadog usage data of metric type for metrics sent to the Agent over DogStatsD.
       metric_weights:
-        count: 208
-        gauge: 66
+        count: 0 # 208
+        gauge: 0 # 66
         timer: 0
-        distribution: 72
+        distribution: 0 # 72
         # We specifically _don't_ want to generate sets, because we can't assert their correctness once they've been
         # aggregated: a gauge is generated for each aggregator flush that represents the unique number of values in a
         # given set, but in general, gauges are meant to be last-write-wins, so unless the metric names/tags can
         # indicate that they're for a set, we can't know that it's safe for us to _aggregate_ the gauge values, and with
         # our default behavior of taking the latest gauge value... we end up with non-deterministic results.
         set: 0
-        histogram: 1
+        histogram: 100
