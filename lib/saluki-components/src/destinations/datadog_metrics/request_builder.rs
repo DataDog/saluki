@@ -123,7 +123,6 @@ where
     compression_estimator: CompressionEstimator,
     uncompressed_len: usize,
     metrics_written: usize,
-    encoded_metrics: Vec<Vec<u8>>,
     scratch_buf_lens: Vec<usize>,
 }
 
@@ -150,7 +149,6 @@ where
             compression_estimator: CompressionEstimator::default(),
             uncompressed_len: 0,
             metrics_written: 0,
-            encoded_metrics: Vec::new(),
             scratch_buf_lens: Vec::new(),
         })
     }
@@ -182,7 +180,6 @@ where
         let before = self.scratch_buf.len();
         encoded_metric.write(&mut self.scratch_buf)?;
         let delta = self.scratch_buf.len() - before;
-        self.encoded_metrics.push(self.scratch_buf.clone());
         self.scratch_buf_lens.push(delta);
 
         // If the metric can't fit into the current request payload based on the uncompressed size limit, or isn't
@@ -192,7 +189,7 @@ where
         // TODO: Use of the estimated compressed size limit is a bit of a stopgap to avoid having to do full incremental
         // request building. We can still improve it, but the only sure-fire way to not exceed the (un)compressed
         // payload size limits is to be able to re-do the encoding/compression process in smaller chunks.
-        let encoded_len = self.scratch_buf.len();
+        let encoded_len = delta;
         let new_uncompressed_len = self.uncompressed_len + encoded_len;
         if new_uncompressed_len > self.endpoint.uncompressed_size_limit()
             || self
@@ -235,52 +232,12 @@ where
     /// This resets the internal state and prepares the request builder for further encoding. If there is no data to
     /// flush, this method will return `Ok(None)`.
     ///
+    /// This attempts to split the request payload into two smaller payloads if the original request payload is too large.
+    ///
     /// ## Errors
     ///
     /// If an error occurs while finalizing the compressor or creating the request, an error will be returned.
-    #[allow(unused)]
-    pub async fn flush(
-        &mut self,
-    ) -> Result<Option<(usize, Request<ReplayBody<ChunkedBuffer<O>>>)>, RequestBuilderError> {
-        if self.uncompressed_len == 0 {
-            return Ok(None);
-        }
-
-        // Clear our internal state and finalize the compressor. We do it in this order so that if finalization fails,
-        // somehow, the request builder is in a default state and encoding can be attempted again.
-        let metrics_written = self.metrics_written;
-        self.metrics_written = 0;
-
-        let uncompressed_len = self.uncompressed_len;
-        self.uncompressed_len = 0;
-
-        self.compression_estimator.reset();
-
-        let new_compressor = create_compressor(&self.buffer_pool).await;
-        let mut compressor = std::mem::replace(&mut self.compressor, new_compressor);
-        compressor.shutdown().await.context(Io)?;
-        let buffer = compressor.into_inner();
-
-        let compressed_len = buffer.len();
-        let compressed_limit = self.endpoint.compressed_size_limit();
-        if compressed_len > compressed_limit {
-            return Err(RequestBuilderError::PayloadTooLarge {
-                compressed_size_bytes: compressed_len,
-                compressed_limit_bytes: compressed_limit,
-            });
-        }
-
-        debug!(endpoint = ?self.endpoint, uncompressed_len, compressed_len, "Flushing request.");
-
-        self.create_request(buffer).map(|req| Some((metrics_written, req)))
-    }
-
-    #[allow(unused)]
-    #[allow(dead_code)]
-    /// flush that forces the request payload to split for testing purposes as of now
-    pub async fn flush_with_split_efficient(
-        &mut self,
-    ) -> Vec<Result<(usize, Request<ReplayBody<ChunkedBuffer<O>>>), RequestBuilderError>>
+    pub async fn flush(&mut self) -> Vec<Result<(usize, Request<ReplayBody<ChunkedBuffer<O>>>), RequestBuilderError>>
     where
         O: ObjectPool + Send + Sync,
         O::Item: Send + Sync,
@@ -299,10 +256,8 @@ where
 
         self.compression_estimator.reset();
 
-        // clear encoded metrics
-        let encoded_metrics = std::mem::take(&mut self.encoded_metrics);
-
-        // clear scratch_buf_lens
+        // Clear scratch buf data.
+        let scratch_buf = std::mem::take(&mut self.scratch_buf);
         let scratch_buf_lens = std::mem::take(&mut self.scratch_buf_lens);
 
         let new_compressor = create_compressor(&self.buffer_pool).await;
@@ -310,13 +265,22 @@ where
         if let Err(e) = compressor.shutdown().await.context(Io) {
             return vec![Err(e)];
         }
-        return self.split_request_efficient(encoded_metrics, scratch_buf_lens).await;
+
+        let buffer = compressor.into_inner();
+
+        let compressed_len = buffer.len();
+        let compressed_limit = self.endpoint.compressed_size_limit();
+        if compressed_len > compressed_limit {
+            return self.split_request_efficient(scratch_buf, scratch_buf_lens).await;
+        }
+
+        debug!(endpoint = ?self.endpoint, uncompressed_len, compressed_len, "Flushing request.");
+
+        vec![self.create_request(buffer).map(|req| (metrics_written, req))]
     }
 
-    #[allow(unused)]
-    #[allow(dead_code)]
     async fn split_request_efficient(
-        &self, encoded_metrics: Vec<Vec<u8>>, scratch_buf_lens: Vec<usize>,
+        &self, scratch_buf: Vec<u8>, scratch_buf_lens: Vec<usize>,
     ) -> Vec<Result<(usize, Request<ReplayBody<ChunkedBuffer<O>>>), RequestBuilderError>> {
         let mut requests = Vec::new();
 
@@ -325,36 +289,38 @@ where
         }
 
         let pivot = scratch_buf_lens.len() / 2;
-        let first_half: usize = scratch_buf_lens.iter().take(pivot).sum();
-        let second_half: usize = scratch_buf_lens.iter().skip(pivot).sum();
+        let first_half: usize = scratch_buf_lens.iter().take(pivot + 1).sum();
 
         let mut compressor_half_one = create_compressor(&self.buffer_pool).await;
-        if let Err(e) = compressor_half_one
-            .write_all(&self.scratch_buf[0..first_half])
-            .await
-            .context(Io)
-        {
-            requests.push(Err(e));
-        }
-        match self.finalize(compressor_half_one).await {
-            Ok(buffer) => requests.push(self.create_request(buffer).map(|req| (1, req))),
-            Err(e) => requests.push(Err(e)),
+
+        if first_half <= scratch_buf.len() {
+            if let Err(e) = compressor_half_one
+                .write_all(&scratch_buf[0..first_half])
+                .await
+                .context(Io)
+            {
+                requests.push(Err(e));
+            }
+            match self.finalize(compressor_half_one).await {
+                Ok(buffer) => requests.push(self.create_request(buffer).map(|req| (1, req))),
+                Err(e) => requests.push(Err(e)),
+            }
         }
 
-        // let mut compressor_half_two = create_compressor(&self.buffer_pool).await;
-        // if first_half + 1 < self.scratch_buf.len() {
-        //     if let Err(e) = compressor_half_two
-        //         .write_all(&self.scratch_buf[first_half + 1..])
-        //         .await
-        //         .context(Io)
-        //     {
-        //         requests.push(Err(e));
-        //     }
-        //     match self.finalize(compressor_half_two).await {
-        //         Ok(buffer) => requests.push(self.create_request(buffer).map(|req| (1, req))),
-        //         Err(e) => requests.push(Err(e)),
-        //     }
-        // }
+        let mut compressor_half_two = create_compressor(&self.buffer_pool).await;
+        if first_half < scratch_buf.len() {
+            if let Err(e) = compressor_half_two
+                .write_all(&scratch_buf[first_half..])
+                .await
+                .context(Io)
+            {
+                requests.push(Err(e));
+            }
+            match self.finalize(compressor_half_two).await {
+                Ok(buffer) => requests.push(self.create_request(buffer).map(|req| (1, req))),
+                Err(e) => requests.push(Err(e)),
+            }
+        }
         requests
     }
 

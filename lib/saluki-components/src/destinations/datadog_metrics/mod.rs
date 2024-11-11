@@ -389,29 +389,29 @@ where
                                     };
 
 
-                                    // let maybe_requests = request_builder.flush_with_split().await;
-                                    // if maybe_requests.is_empty() {
-                                    //     panic!("builder told us to flush, but gave us nothing");
-                                    // }
+                                    let maybe_requests = request_builder.flush().await;
+                                    if maybe_requests.is_empty() {
+                                        panic!("builder told us to flush, but gave us nothing");
+                                    }
 
-                                    // for maybe_request in maybe_requests {
-                                    //     match maybe_request {
-                                    //         Ok(request) => {
-                                    //             if requests_tx.send(request).await.is_err() {
-                                    //                 return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
-                                    //             }
-                                    //         },
-                                    //         Err(e) => {
-                                    //             // TODO: Increment a counter here that metrics were dropped due to a flush failure.
-                                    //             if e.is_recoverable() {
-                                    //                 // If the error is recoverable, we'll hold on to the metric to retry it later.
-                                    //                 continue;
-                                    //             } else {
-                                    //                 return Err(GenericError::from(e).context("Failed to flush request."));
-                                    //             }
-                                    //         }
-                                    //     }
-                                    // }
+                                    for maybe_request in maybe_requests {
+                                        match maybe_request {
+                                            Ok(request) => {
+                                                if requests_tx.send(request).await.is_err() {
+                                                    return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
+                                                }
+                                            },
+                                            Err(e) => {
+                                                // TODO: Increment a counter here that metrics were dropped due to a flush failure.
+                                                if e.is_recoverable() {
+                                                    // If the error is recoverable, we'll hold on to the metric to retry it later.
+                                                    continue;
+                                                } else {
+                                                    return Err(GenericError::from(e).context("Failed to flush request."));
+                                                }
+                                            }
+                                        }
+                                    }
 
                                     // Now try to encode the metric again. If it fails again, we'll just log it because it shouldn't
                                     // be possible to fail at this point, otherwise we would have already caught that the first
@@ -428,11 +428,7 @@ where
 
                         // Once we've encoded and written all metrics, we flush the request builders to generate a request with
                         // anything left over. Again, we'll  enqueue those requests to be sent immediately.
-                        let maybe_series_requests = series_request_builder.flush_with_split_efficient().await;
-                        // if maybe_series_requests.is_empty() {
-                        //     panic!("builder told us to flush, but gave us nothing");
-                        // }
-
+                        let maybe_series_requests = series_request_builder.flush().await;
                         for maybe_request in maybe_series_requests {
                             match maybe_request {
                                 Ok(request) => {
@@ -453,30 +449,26 @@ where
                             }
                         }
 
-                        // let maybe_sketches_requests = sketches_request_builder.flush_with_split().await;
-                        // if maybe_sketches_requests.is_empty() {
-                        //     panic!("builder told us to flush, but gave us nothing");
-                        // }
-
-                        // for maybe_request in maybe_sketches_requests {
-                        //     match maybe_request {
-                        //         Ok(request) => {
-                        //         debug!("Flushed request from sketches request builder. Sending to I/O task...");
-                        //             if requests_tx.send(request).await.is_err() {
-                        //                 return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
-                        //             }
-                        //         },
-                        //         Err(e) => {
-                        //             // TODO: Increment a counter here that metrics were dropped due to a flush failure.
-                        //             if e.is_recoverable() {
-                        //                 // If the error is recoverable, we'll hold on to the metric to retry it later.
-                        //                 continue;
-                        //             } else {
-                        //                 return Err(GenericError::from(e).context("Failed to flush request."));
-                        //             }
-                        //         }
-                        //     }
-                        // }
+                        let maybe_sketches_requests = sketches_request_builder.flush().await;
+                        for maybe_request in maybe_sketches_requests {
+                            match maybe_request {
+                                Ok(request) => {
+                                debug!("Flushed request from sketches request builder. Sending to I/O task...");
+                                    if requests_tx.send(request).await.is_err() {
+                                        return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
+                                    }
+                                },
+                                Err(e) => {
+                                    // TODO: Increment a counter here that metrics were dropped due to a flush failure.
+                                    if e.is_recoverable() {
+                                        // If the error is recoverable, we'll hold on to the metric to retry it later.
+                                        continue;
+                                    } else {
+                                        return Err(GenericError::from(e).context("Failed to flush request."));
+                                    }
+                                }
+                            }
+                        }
 
                         debug!("All flushed requests sent to I/O task. Waiting for next event buffer...");
                     },
