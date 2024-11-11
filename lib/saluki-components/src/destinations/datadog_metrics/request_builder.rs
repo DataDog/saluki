@@ -124,6 +124,7 @@ where
     uncompressed_len: usize,
     metrics_written: usize,
     encoded_metrics: Vec<Vec<u8>>,
+    scratch_buf_lens: Vec<usize>,
 }
 
 impl<O> RequestBuilder<O>
@@ -150,6 +151,7 @@ where
             uncompressed_len: 0,
             metrics_written: 0,
             encoded_metrics: Vec::new(),
+            scratch_buf_lens: Vec::new(),
         })
     }
 
@@ -177,8 +179,11 @@ where
         // If not, we return the original metric, signaling to the caller that they need to flush the current request
         // payload before encoding additional metrics.
         let encoded_metric = encode_single_metric(&metric);
+        let before = self.scratch_buf.len();
         encoded_metric.write(&mut self.scratch_buf)?;
+        let delta = self.scratch_buf.len() - before;
         self.encoded_metrics.push(self.scratch_buf.clone());
+        self.scratch_buf_lens.push(delta);
 
         // If the metric can't fit into the current request payload based on the uncompressed size limit, or isn't
         // likely to fit into the current request payload based on the estimated compressed size limit, then return it
@@ -204,11 +209,15 @@ where
             return Ok(Some(metric));
         }
 
+        let start = self.scratch_buf.len().saturating_sub(delta);
+
         // Write the scratch buffer to the compressor.
-        self.compressor.write_all(&self.scratch_buf).await.context(Io)?;
-        self.compression_estimator
-            .track_write(&self.compressor, self.scratch_buf.len());
-        self.uncompressed_len += self.scratch_buf.len();
+        self.compressor
+            .write_all(&self.scratch_buf[start..])
+            .await
+            .context(Io)?;
+        self.compression_estimator.track_write(&self.compressor, delta);
+        self.uncompressed_len += delta;
         self.metrics_written += 1;
 
         trace!(
@@ -269,7 +278,7 @@ where
     #[allow(unused)]
     #[allow(dead_code)]
     /// flush that forces the request payload to split for testing purposes as of now
-    pub async fn flush_with_split(
+    pub async fn flush_with_split_efficient(
         &mut self,
     ) -> Vec<Result<(usize, Request<ReplayBody<ChunkedBuffer<O>>>), RequestBuilderError>>
     where
@@ -293,59 +302,59 @@ where
         // clear encoded metrics
         let encoded_metrics = std::mem::take(&mut self.encoded_metrics);
 
+        // clear scratch_buf_lens
+        let scratch_buf_lens = std::mem::take(&mut self.scratch_buf_lens);
+
         let new_compressor = create_compressor(&self.buffer_pool).await;
         let mut compressor = std::mem::replace(&mut self.compressor, new_compressor);
         if let Err(e) = compressor.shutdown().await.context(Io) {
             return vec![Err(e)];
         }
-        // let buffer = compressor.into_inner();
-
-        // let compressed_len = buffer.len();
-        // let compressed_limit = self.endpoint.compressed_size_limit();
-        // debug!(endpoint = ?self.endpoint, uncompressed_len, compressed_len, "Flushing request.");
-        // if compressed_len > compressed_limit {
-        return self.split_request(encoded_metrics).await;
-        // }
-
-        // vec![self.create_request(buffer).map(|req| (metrics_written, req))]
+        return self.split_request_efficient(encoded_metrics, scratch_buf_lens).await;
     }
 
     #[allow(unused)]
     #[allow(dead_code)]
-    async fn split_request(
-        &self, encoded_metrics: Vec<Vec<u8>>,
+    async fn split_request_efficient(
+        &self, encoded_metrics: Vec<Vec<u8>>, scratch_buf_lens: Vec<usize>,
     ) -> Vec<Result<(usize, Request<ReplayBody<ChunkedBuffer<O>>>), RequestBuilderError>> {
         let mut requests = Vec::new();
 
-        let half_one = encoded_metrics.len() / 2;
+        if scratch_buf_lens.is_empty() {
+            return requests;
+        }
+
+        let pivot = scratch_buf_lens.len() / 2;
+        let first_half: usize = scratch_buf_lens.iter().take(pivot).sum();
+        let second_half: usize = scratch_buf_lens.iter().skip(pivot).sum();
+
         let mut compressor_half_one = create_compressor(&self.buffer_pool).await;
-        if !encoded_metrics.is_empty() {
-            for scratch_buffer in &encoded_metrics[0..=half_one] {
-                if !scratch_buffer.is_empty() {
-                    if let Err(e) = compressor_half_one.write_all(&scratch_buffer).await.context(Io) {
-                        requests.push(Err(e));
-                    }
-                }
-            }
-            match self.finalize(compressor_half_one).await {
-                Ok(buffer) => requests.push(self.create_request(buffer).map(|req| (1, req))),
-                Err(e) => requests.push(Err(e)),
-            }
+        if let Err(e) = compressor_half_one
+            .write_all(&self.scratch_buf[0..first_half])
+            .await
+            .context(Io)
+        {
+            requests.push(Err(e));
+        }
+        match self.finalize(compressor_half_one).await {
+            Ok(buffer) => requests.push(self.create_request(buffer).map(|req| (1, req))),
+            Err(e) => requests.push(Err(e)),
         }
 
-        let mut compressor_half_two = create_compressor(&self.buffer_pool).await;
-        if half_one + 1 < encoded_metrics.len() {
-            for scratch_buffer in &encoded_metrics[half_one + 1..] {
-                if let Err(e) = compressor_half_two.write_all(&scratch_buffer).await.context(Io) {
-                    requests.push(Err(e));
-                }
-            }
-            match self.finalize(compressor_half_two).await {
-                Ok(buffer) => requests.push(self.create_request(buffer).map(|req| (half_one, req))),
-                Err(e) => requests.push(Err(e)),
-            }
-        }
-
+        // let mut compressor_half_two = create_compressor(&self.buffer_pool).await;
+        // if first_half + 1 < self.scratch_buf.len() {
+        //     if let Err(e) = compressor_half_two
+        //         .write_all(&self.scratch_buf[first_half + 1..])
+        //         .await
+        //         .context(Io)
+        //     {
+        //         requests.push(Err(e));
+        //     }
+        //     match self.finalize(compressor_half_two).await {
+        //         Ok(buffer) => requests.push(self.create_request(buffer).map(|req| (1, req))),
+        //         Err(e) => requests.push(Err(e)),
+        //     }
+        // }
         requests
     }
 
@@ -430,8 +439,6 @@ impl EncodedMetric {
     }
 
     fn write(&self, buf: &mut Vec<u8>) -> Result<(), RequestBuilderError> {
-        buf.clear();
-
         let mut output_stream = CodedOutputStream::vec(buf);
 
         // Write the field tag.
