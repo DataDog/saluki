@@ -177,10 +177,10 @@ where
         // If not, we return the original metric, signaling to the caller that they need to flush the current request
         // payload before encoding additional metrics.
         let encoded_metric = encode_single_metric(&metric);
-        let before = self.scratch_buf.len();
+        let previous_len = self.scratch_buf.len();
         encoded_metric.write(&mut self.scratch_buf)?;
-        let delta = self.scratch_buf.len() - before;
-        self.scratch_buf_lens.push(delta);
+        let encoded_len = self.scratch_buf.len() - previous_len;
+        self.scratch_buf_lens.push(encoded_len);
 
         // If the metric can't fit into the current request payload based on the uncompressed size limit, or isn't
         // likely to fit into the current request payload based on the estimated compressed size limit, then return it
@@ -189,7 +189,6 @@ where
         // TODO: Use of the estimated compressed size limit is a bit of a stopgap to avoid having to do full incremental
         // request building. We can still improve it, but the only sure-fire way to not exceed the (un)compressed
         // payload size limits is to be able to re-do the encoding/compression process in smaller chunks.
-        let encoded_len = delta;
         let new_uncompressed_len = self.uncompressed_len + encoded_len;
         if new_uncompressed_len > self.endpoint.uncompressed_size_limit()
             || self
@@ -206,15 +205,15 @@ where
             return Ok(Some(metric));
         }
 
-        let start = self.scratch_buf.len().saturating_sub(delta);
+        let start = self.scratch_buf.len().saturating_sub(encoded_len);
 
         // Write the scratch buffer to the compressor.
         self.compressor
             .write_all(&self.scratch_buf[start..])
             .await
             .context(Io)?;
-        self.compression_estimator.track_write(&self.compressor, delta);
-        self.uncompressed_len += delta;
+        self.compression_estimator.track_write(&self.compressor, encoded_len);
+        self.uncompressed_len += encoded_len;
         self.metrics_written += 1;
 
         trace!(
@@ -256,13 +255,10 @@ where
 
         self.compression_estimator.reset();
 
-        // Clear scratch buf data.
-        let scratch_buf = std::mem::take(&mut self.scratch_buf);
-        let scratch_buf_lens = std::mem::take(&mut self.scratch_buf_lens);
-
         let new_compressor = create_compressor(&self.buffer_pool).await;
         let mut compressor = std::mem::replace(&mut self.compressor, new_compressor);
         if let Err(e) = compressor.shutdown().await.context(Io) {
+            self.clear_scratch_buffer();
             return vec![Err(e)];
         }
 
@@ -271,56 +267,65 @@ where
         let compressed_len = buffer.len();
         let compressed_limit = self.endpoint.compressed_size_limit();
         if compressed_len > compressed_limit {
-            return self.split_request_efficient(scratch_buf, scratch_buf_lens).await;
+            // Single metric is unable to be split.
+            if self.scratch_buf_lens.len() == 1 {
+                return vec![Err(RequestBuilderError::PayloadTooLarge {
+                    compressed_size_bytes: compressed_len,
+                    compressed_limit_bytes: compressed_limit,
+                })];
+            }
+
+            return self.split_request().await;
         }
 
         debug!(endpoint = ?self.endpoint, uncompressed_len, compressed_len, "Flushing request.");
 
+        self.clear_scratch_buffer();
         vec![self.create_request(buffer).map(|req| (metrics_written, req))]
     }
 
-    async fn split_request_efficient(
-        &self, scratch_buf: Vec<u8>, scratch_buf_lens: Vec<usize>,
+    fn clear_scratch_buffer(&mut self) {
+        self.scratch_buf.clear();
+        self.scratch_buf_lens.clear();
+    }
+
+    async fn split_request(
+        &mut self,
     ) -> Vec<Result<(usize, Request<ReplayBody<ChunkedBuffer<O>>>), RequestBuilderError>> {
         let mut requests = Vec::new();
 
-        if scratch_buf_lens.is_empty() {
+        if self.scratch_buf_lens.is_empty() {
             return requests;
         }
 
-        let pivot = scratch_buf_lens.len() / 2;
-        let first_half: usize = scratch_buf_lens.iter().take(pivot + 1).sum();
+        let lens_pivot = self.scratch_buf_lens.len() / 2;
+        let first_half_metrics_len = self.scratch_buf_lens.len() - lens_pivot;
+
+        let scratch_buf_pivot = self.scratch_buf_lens.iter().take(first_half_metrics_len).sum();
+        assert!(scratch_buf_pivot < self.scratch_buf.len());
+
+        let first_half_scratch_buf = &self.scratch_buf[0..scratch_buf_pivot];
+        let second_half_scratch_buf = &self.scratch_buf[scratch_buf_pivot..];
 
         let mut compressor_half_one = create_compressor(&self.buffer_pool).await;
 
-        if first_half <= scratch_buf.len() {
-            if let Err(e) = compressor_half_one
-                .write_all(&scratch_buf[0..first_half])
-                .await
-                .context(Io)
-            {
-                requests.push(Err(e));
-            }
-            match self.finalize(compressor_half_one).await {
-                Ok(buffer) => requests.push(self.create_request(buffer).map(|req| (1, req))),
-                Err(e) => requests.push(Err(e)),
-            }
+        if let Err(e) = compressor_half_one.write_all(first_half_scratch_buf).await.context(Io) {
+            requests.push(Err(e));
+        }
+        match self.finalize(compressor_half_one).await {
+            Ok(buffer) => requests.push(self.create_request(buffer).map(|req| (1, req))),
+            Err(e) => requests.push(Err(e)),
         }
 
         let mut compressor_half_two = create_compressor(&self.buffer_pool).await;
-        if first_half < scratch_buf.len() {
-            if let Err(e) = compressor_half_two
-                .write_all(&scratch_buf[first_half..])
-                .await
-                .context(Io)
-            {
-                requests.push(Err(e));
-            }
-            match self.finalize(compressor_half_two).await {
-                Ok(buffer) => requests.push(self.create_request(buffer).map(|req| (1, req))),
-                Err(e) => requests.push(Err(e)),
-            }
+        if let Err(e) = compressor_half_two.write_all(second_half_scratch_buf).await.context(Io) {
+            requests.push(Err(e));
         }
+        match self.finalize(compressor_half_two).await {
+            Ok(buffer) => requests.push(self.create_request(buffer).map(|req| (1, req))),
+            Err(e) => requests.push(Err(e)),
+        }
+        self.clear_scratch_buffer();
         requests
     }
 
@@ -574,4 +579,68 @@ fn origin_metadata_to_proto_metadata(product: u32, subproduct: u32, product_deta
     proto_origin.set_origin_category(subproduct);
     proto_origin.set_origin_service(product_detail);
     metadata
+}
+
+#[cfg(test)]
+#[allow(unused)]
+
+mod tests {
+    use saluki_context::{Context, TagSet};
+    use tracing::error;
+
+    use super::super::create_request_builder_buffer_pool;
+    use super::*;
+
+    #[tokio::test]
+    async fn encode() {
+        let rb_buffer_pool = create_request_builder_buffer_pool();
+        let mut request_builder = RequestBuilder::new(
+            "".to_string(),
+            Uri::from_static("https://api.datadoghq.com"),
+            MetricsEndpoint::Series,
+            rb_buffer_pool.clone(),
+        )
+        .await
+        .expect("failed to create request builder");
+
+        let point = ScalarPoints::from(1.2);
+        let metadata = MetricMetadata::default();
+        let mut tag_set = TagSet::with_capacity(100000);
+        for i in 0..45000 {
+            tag_set.insert_tag(format!("tag_{}", i));
+        }
+        let context = Context::from_parts("test", tag_set);
+
+        // base metric used for all clones
+        let metric = Metric::from_parts(context, MetricValues::Gauge(point), metadata);
+
+        let metric_a = metric.clone();
+        request_builder.encode(metric_a).await.expect("failed to encode");
+
+        let requests = request_builder.flush().await;
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].is_ok());
+
+        let metric_b = metric.clone();
+        request_builder.encode(metric_b).await.expect("failed to encode");
+
+        let requests = request_builder.flush().await;
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].is_ok());
+
+        // encode both metrics
+        let metric_a = metric.clone();
+        let metric_b = metric.clone();
+        request_builder.encode(metric_a).await.expect("failed to encode");
+        if let Some(m) = request_builder.encode(metric_b).await.expect("failed to encode") {
+        } else {
+            error!("should have gotten metric back");
+        }
+        let requests = request_builder.flush().await;
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests.iter().all(|result| result.is_ok()),
+            "error creating request(s)"
+        );
+    }
 }
