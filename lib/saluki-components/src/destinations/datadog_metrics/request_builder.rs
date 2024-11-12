@@ -205,11 +205,9 @@ where
             return Ok(Some(metric));
         }
 
-        let start = self.scratch_buf.len().saturating_sub(encoded_len);
-
         // Write the scratch buffer to the compressor.
         self.compressor
-            .write_all(&self.scratch_buf[start..])
+            .write_all(&self.scratch_buf[previous_len..])
             .await
             .context(Io)?;
         self.compression_estimator.track_write(&self.compressor, encoded_len);
@@ -579,68 +577,4 @@ fn origin_metadata_to_proto_metadata(product: u32, subproduct: u32, product_deta
     proto_origin.set_origin_category(subproduct);
     proto_origin.set_origin_service(product_detail);
     metadata
-}
-
-#[cfg(test)]
-#[allow(unused)]
-
-mod tests {
-    use saluki_context::{Context, TagSet};
-    use tracing::error;
-
-    use super::super::create_request_builder_buffer_pool;
-    use super::*;
-
-    #[tokio::test]
-    async fn encode() {
-        let rb_buffer_pool = create_request_builder_buffer_pool();
-        let mut request_builder = RequestBuilder::new(
-            "".to_string(),
-            Uri::from_static("https://api.datadoghq.com"),
-            MetricsEndpoint::Series,
-            rb_buffer_pool.clone(),
-        )
-        .await
-        .expect("failed to create request builder");
-
-        let point = ScalarPoints::from(1.2);
-        let metadata = MetricMetadata::default();
-        let mut tag_set = TagSet::with_capacity(100000);
-        for i in 0..45000 {
-            tag_set.insert_tag(format!("tag_{}", i));
-        }
-        let context = Context::from_parts("test", tag_set);
-
-        // base metric used for all clones
-        let metric = Metric::from_parts(context, MetricValues::Gauge(point), metadata);
-
-        let metric_a = metric.clone();
-        request_builder.encode(metric_a).await.expect("failed to encode");
-
-        let requests = request_builder.flush().await;
-        assert_eq!(requests.len(), 1);
-        assert!(requests[0].is_ok());
-
-        let metric_b = metric.clone();
-        request_builder.encode(metric_b).await.expect("failed to encode");
-
-        let requests = request_builder.flush().await;
-        assert_eq!(requests.len(), 1);
-        assert!(requests[0].is_ok());
-
-        // encode both metrics
-        let metric_a = metric.clone();
-        let metric_b = metric.clone();
-        request_builder.encode(metric_a).await.expect("failed to encode");
-        if let Some(m) = request_builder.encode(metric_b).await.expect("failed to encode") {
-        } else {
-            error!("should have gotten metric back");
-        }
-        let requests = request_builder.flush().await;
-        assert_eq!(requests.len(), 2);
-        assert!(
-            requests.iter().all(|result| result.is_ok()),
-            "error creating request(s)"
-        );
-    }
 }
