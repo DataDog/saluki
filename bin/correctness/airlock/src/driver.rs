@@ -527,7 +527,7 @@ impl Driver {
         );
 
         // We spin up a minimal Alpine container, chmod the directory bind-mounted to the shared volume, and that's it.
-        let image = "alpine:latest".to_string();
+        let image = "alpine:3.20".to_string();
         self.create_image_if_missing_inner(&image).await?;
 
         let container_name = format!("airlock-{}-volume-fix-up", self.isolation_group_id);
