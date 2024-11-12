@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use http::{HeaderValue, Method, Request, Response, Uri};
+use http::{HeaderValue, Method, Request, Uri};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -12,7 +12,7 @@ use saluki_core::{
     pooling::{FixedSizeObjectPool, ObjectPool},
     task::spawn_traced,
 };
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_error::{generic_error, GenericError};
 use saluki_event::DataType;
 use saluki_io::{
     buf::{BytesBuffer, ChunkedBuffer, FixedSizeVec, ReadWriteIoBuffer},
@@ -28,7 +28,7 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 use tower::{BoxError, Service};
-use tracing::{debug, error, trace};
+use tracing::{debug, error};
 
 mod endpoint;
 use self::endpoint::endpoints::{
@@ -280,14 +280,6 @@ impl MemoryBounds for DatadogMetricsConfiguration {
         // only count it once.
         let rb_buffer_pool_size = RB_BUFFER_POOL_COUNT * RB_BUFFER_POOL_BUF_SIZE;
 
-        // Each request builder has a scratch buffer for encoding.
-        //
-        // TODO: Since it's just a `Vec<u8>`, it could trivially be expanded/grown for encoding larger payloads... which
-        // we don't really have a good answer to here. Best thing would be to change the encoding logic to write
-        // directly to the compressor but we have the current intermediate step to cope with avoiding writing more than
-        // the (un)compressed payload limits and it will take a little work to eliminate that, I believe.
-        let scratch_buffer_size = request_builder::SCRATCH_BUF_CAPACITY * 2;
-
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
@@ -297,9 +289,11 @@ impl MemoryBounds for DatadogMetricsConfiguration {
                 FixedSizeObjectPool<BytesBuffer>,
                 HttpClient<ReplayBody<ChunkedBuffer<FixedSizeObjectPool<BytesBuffer>>>>,
             >>()
-            // Capture the size of our buffer pool and scratch buffer.
+            // Capture the size of our buffer pool.
             .with_fixed_amount(rb_buffer_pool_size)
-            .with_fixed_amount(scratch_buffer_size)
+            // Capture the size of the scratch buffer which may grow up to the uncompressed limit.
+            .with_fixed_amount(MetricsEndpoint::Series.uncompressed_size_limit())
+            .with_fixed_amount(MetricsEndpoint::Sketches.uncompressed_size_limit())
             // Capture the size of the requests channel.
             //
             // TODO: This type signature is _ugly_, and it would be nice to improve it somehow.
@@ -313,7 +307,7 @@ impl MemoryBounds for DatadogMetricsConfiguration {
 pub struct DatadogMetrics<O, S>
 where
     O: ObjectPool + 'static,
-    O::Item: ReadWriteIoBuffer,
+    O::Item: ReadWriteIoBuffer + Send + Sync,
     S: Service<Request<ReplayBody<ChunkedBuffer<O>>>> + 'static,
 {
     service: S,
@@ -322,12 +316,13 @@ where
     resolvers: Vec<SingleDomainResolver>,
 }
 
+#[allow(unused)]
 #[async_trait]
 impl<O, S> Destination for DatadogMetrics<O, S>
 where
     O: ObjectPool + 'static,
-    O::Item: ReadWriteIoBuffer,
-    S: Service<Request<ReplayBody<ChunkedBuffer<O>>>, Response = Response<Incoming>> + Send + 'static,
+    O::Item: ReadWriteIoBuffer + Send + Sync,
+    S: Service<Request<ReplayBody<ChunkedBuffer<O>>>, Response = hyper::Response<Incoming>> + Send + 'static,
     S::Future: Send,
     S::Error: Send + Into<BoxError>,
 {
@@ -368,6 +363,7 @@ where
 
                             for event in event_buffer {
                                 if let Some(metric) = event.try_into_metric() {
+
                                     let request_builder = match MetricsEndpoint::from_metric(&metric) {
                                         MetricsEndpoint::Series => &mut series_request_builder,
                                         MetricsEndpoint::Sketches => &mut sketches_request_builder,
@@ -386,26 +382,30 @@ where
                                         }
                                     };
 
-                                    // Get the flushed request and enqueue it to be sent.
-                                    match request_builder.flush().await {
-                                        Ok(Some(request)) => {
-                                            if requests_tx.send(request).await.is_err() {
-                                                return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
+
+                                    let maybe_requests = request_builder.flush().await;
+                                    if maybe_requests.is_empty() {
+                                        panic!("builder told us to flush, but gave us nothing");
+                                    }
+
+                                    for maybe_request in maybe_requests {
+                                        match maybe_request {
+                                            Ok(request) => {
+                                                if requests_tx.send(request).await.is_err() {
+                                                    return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
+                                                }
+                                            },
+                                            Err(e) => {
+                                                // TODO: Increment a counter here that metrics were dropped due to a flush failure.
+                                                if e.is_recoverable() {
+                                                    // If the error is recoverable, we'll hold on to the metric to retry it later.
+                                                    continue;
+                                                } else {
+                                                    return Err(GenericError::from(e).context("Failed to flush request."));
+                                                }
                                             }
                                         }
-                                        Ok(None) => unreachable!(
-                                            "request builder indicated required flush, but no request was given during flush"
-                                        ),
-                                        Err(e) => {
-                                            // TODO: Increment a counter here that metrics were dropped due to a flush failure.
-                                            if e.is_recoverable() {
-                                                // If the error is recoverable, we'll hold on to the metric to retry it later.
-                                                continue;
-                                            } else {
-                                                return Err(GenericError::from(e).context("Failed to flush request."));
-                                            }
-                                        }
-                                    };
+                                    }
 
                                     // Now try to encode the metric again. If it fails again, we'll just log it because it shouldn't
                                     // be possible to fail at this point, otherwise we would have already caught that the first
@@ -422,27 +422,45 @@ where
 
                         // Once we've encoded and written all metrics, we flush the request builders to generate a request with
                         // anything left over. Again, we'll  enqueue those requests to be sent immediately.
-                        match series_request_builder.flush().await.error_context("Failed to flush request.")? {
-                            Some(request) => {
-                                debug!("Flushed request from series request builder. Sending to I/O task...");
-                                if requests_tx.send(request).await.is_err() {
-                                    return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
-                                }
-                            },
-                            None => {
-                                trace!("No flushed request from series request builder.");
-                            },
-                        }
-
-                        match sketches_request_builder.flush().await.error_context("Failed to flush request.")? {
-                           Some(request) => {
-                                debug!("Flushed request from sketches request builder. Sending to I/O task...");
-                                if requests_tx.send(request).await.is_err() {
-                                    return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
+                        let maybe_series_requests = series_request_builder.flush().await;
+                        for maybe_request in maybe_series_requests {
+                            match maybe_request {
+                                Ok(request) => {
+                                    debug!("Flushed request from series request builder. Sending to I/O task...");
+                                    if requests_tx.send(request).await.is_err() {
+                                        return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
+                                    }
+                                },
+                                Err(e) => {
+                                    // TODO: Increment a counter here that metrics were dropped due to a flush failure.
+                                    if e.is_recoverable() {
+                                        // If the error is recoverable, we'll hold on to the metric to retry it later.
+                                        continue;
+                                    } else {
+                                        return Err(GenericError::from(e).context("Failed to flush request."));
+                                    }
                                 }
                             }
-                            None => {
-                                trace!("No flushed request from sketches request builder.");
+                        }
+
+                        let maybe_sketches_requests = sketches_request_builder.flush().await;
+                        for maybe_request in maybe_sketches_requests {
+                            match maybe_request {
+                                Ok(request) => {
+                                debug!("Flushed request from sketches request builder. Sending to I/O task...");
+                                    if requests_tx.send(request).await.is_err() {
+                                        return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
+                                    }
+                                },
+                                Err(e) => {
+                                    // TODO: Increment a counter here that metrics were dropped due to a flush failure.
+                                    if e.is_recoverable() {
+                                        // If the error is recoverable, we'll hold on to the metric to retry it later.
+                                        continue;
+                                    } else {
+                                        return Err(GenericError::from(e).context("Failed to flush request."));
+                                    }
+                                }
                             }
                         }
 
