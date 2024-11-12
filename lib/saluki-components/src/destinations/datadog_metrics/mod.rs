@@ -280,14 +280,6 @@ impl MemoryBounds for DatadogMetricsConfiguration {
         // only count it once.
         let rb_buffer_pool_size = RB_BUFFER_POOL_COUNT * RB_BUFFER_POOL_BUF_SIZE;
 
-        // Each request builder has a scratch buffer for encoding.
-        //
-        // TODO: Since it's just a `Vec<u8>`, it could trivially be expanded/grown for encoding larger payloads... which
-        // we don't really have a good answer to here. Best thing would be to change the encoding logic to write
-        // directly to the compressor but we have the current intermediate step to cope with avoiding writing more than
-        // the (un)compressed payload limits and it will take a little work to eliminate that, I believe.
-        let scratch_buffer_size = request_builder::SCRATCH_BUF_CAPACITY * 2;
-
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
@@ -297,9 +289,11 @@ impl MemoryBounds for DatadogMetricsConfiguration {
                 FixedSizeObjectPool<BytesBuffer>,
                 HttpClient<ReplayBody<ChunkedBuffer<FixedSizeObjectPool<BytesBuffer>>>>,
             >>()
-            // Capture the size of our buffer pool and scratch buffer.
+            // Capture the size of our buffer pool.
             .with_fixed_amount(rb_buffer_pool_size)
-            .with_fixed_amount(scratch_buffer_size)
+            // Capture the size of the scratch buffer which may grow up to the uncompressed limit.
+            .with_fixed_amount(MetricsEndpoint::Series.uncompressed_size_limit())
+            .with_fixed_amount(MetricsEndpoint::Sketches.uncompressed_size_limit())
             // Capture the size of the requests channel.
             //
             // TODO: This type signature is _ugly_, and it would be nice to improve it somehow.
