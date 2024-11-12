@@ -32,7 +32,7 @@ use tracing::{debug, error, trace};
 
 mod endpoint;
 use self::endpoint::endpoints::{
-    create_single_domain_resolvers, determine_base, AdditionalEndpoints, SingleDomainResolver,
+    calculate_api_endpoint, create_single_domain_resolvers, AdditionalEndpoints, SingleDomainResolver,
 };
 
 mod request_builder;
@@ -221,7 +221,7 @@ impl DatadogMetricsConfiguration {
     }
 
     fn api_base(&self) -> Result<Uri, GenericError> {
-        determine_base(&self.dd_url, &self.site)
+        calculate_api_endpoint(self.dd_url.as_deref(), &self.site)
     }
 }
 
