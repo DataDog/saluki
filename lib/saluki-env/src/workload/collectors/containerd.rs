@@ -72,10 +72,6 @@ impl MetadataCollector for ContainerdMetadataCollector {
 
         let mut operations_stream = select_all(watchers);
 
-        while let Some(operation) = operations_stream.next().await {
-            operations_tx.send(operation).await?;
-        }
-
         loop {
             select! {
                 _ = self.health.live() => {},
@@ -203,6 +199,8 @@ impl NamespaceWatcher {
 
             // Now watch for events.
             loop {
+                // TODO: We should be creating this stream -- and polling it! -- before we build our initial metadata
+                // operations in order to ensure that we have an overlap between new events and the initial scan.
                 let mut event_stream = match self.client.watch_events(CONTAINERD_WATCH_EVENTS, &self.namespace).await {
                     Ok(stream) => stream,
                     Err(e) => {
