@@ -28,7 +28,7 @@ use crate::workload::{
 };
 
 const DEFAULT_AGENT_IPC_ENDPOINT: &str = "https://127.0.0.1:5001";
-const DEFAULT_AGENT_AUTH_TOKEN_FILE_PATH: &str = "/etc/datadog-agent/auth/token";
+const DEFAULT_AGENT_AUTH_TOKEN_FILE_PATH: &str = "/etc/datadog-agent/auth_token";
 
 /// A workload provider that uses the remote tagger API from a Datadog Agent, or Datadog Cluster
 /// Agent, to provide workload information.
