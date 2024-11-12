@@ -1,6 +1,8 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 use saluki_error::GenericError;
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::sleep};
 use tracing::{debug, error};
 
 use super::metadata::MetadataOperation;
@@ -61,7 +63,9 @@ impl MetadataCollectorWorker {
         // prematurely but without a true _error_, so `Ok(())` is returned), we can just start watching again.
         loop {
             if let Err(e) = self.collector.watch(&mut operations_tx).await {
-                error!(error = %e, collector_name = self.collector.name(), "Failed to collect metadata.");
+                error!(error = %e, collector_name = self.collector.name(), "Failed to collect metadata. Sleeping for 5 seconds before retrying...");
+
+                sleep(Duration::from_secs(5)).await;
             }
         }
     }
