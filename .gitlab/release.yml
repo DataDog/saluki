@@ -84,7 +84,7 @@ publish-bundled-agent-adp-image:
     - job: build-bundled-agent-adp-image
       parallel:
         matrix:
-          - JMX: ""
+          - JMX: [""]
   trigger:
     project: DataDog/public-images
     branch: main
@@ -104,7 +104,7 @@ publish-bundled-agent-adp-image-imx:
     - job: build-bundled-agent-adp-image
       parallel:
         matrix:
-          - JMX: "-jmx"
+          - JMX: ["-jmx"]
   trigger:
     project: DataDog/public-images
     branch: main
