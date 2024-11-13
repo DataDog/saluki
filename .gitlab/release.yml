@@ -9,9 +9,9 @@ build-release-adp-image:
   stage: release
   tags: ["arch:amd64"]
   image: ${DOCKER_BUILD_IMAGE}
-  needs: []
   rules:
     - if: !reference [.on_official_release, rules, if]
+  needs: []
   extends: .setup-release-env
   variables:
     # Compiling Rust is intensive. ¯\_(ツ)_/¯
@@ -50,6 +50,8 @@ build-bundled-agent-adp-image:
   rules:
     - if: !reference [.on_official_release, rules, if]
   extends: .setup-release-env
+  needs:
+    - build-release-adp-image
   parallel:
     matrix:
       - JMX:
@@ -81,6 +83,11 @@ publish-bundled-agent-adp-image:
       when: manual
   extends: .setup-release-env
   needs:
+    - check-deny
+    - check-licenses
+    - unit-tests
+    - unit-tests-miri
+    - run-ground-truth
     - job: build-bundled-agent-adp-image
       parallel:
         matrix:
@@ -102,6 +109,11 @@ publish-bundled-agent-adp-image-jmx:
       when: manual
   extends: .setup-release-env
   needs:
+    - check-deny
+    - check-licenses
+    - unit-tests
+    - unit-tests-miri
+    - run-ground-truth
     - job: build-bundled-agent-adp-image
       parallel:
         matrix:
