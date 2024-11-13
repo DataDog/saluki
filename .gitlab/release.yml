@@ -12,7 +12,6 @@ build-release-adp-image:
   needs: []
   rules:
     - if: !reference [.on_official_release, rules, if]
-      when: manual
   extends: .setup-release-env
   variables:
     # Compiling Rust is intensive. ¯\_(ツ)_/¯
@@ -79,6 +78,7 @@ publish-bundled-agent-adp-image:
   stage: release
   rules:
     - if: !reference [.on_official_release, rules, if]
+      when: manual
   extends: .setup-release-env
   needs:
     - job: build-bundled-agent-adp-image
@@ -95,10 +95,11 @@ publish-bundled-agent-adp-image:
     IMG_DESTINATIONS: agent:${AGENT_ADP_BASE_IMAGE_TAG}
     IMG_SIGNING: "false"
 
-publish-bundled-agent-adp-image-imx:
+publish-bundled-agent-adp-image-jmx:
   stage: release
   rules:
     - if: !reference [.on_official_release, rules, if]
+      when: manual
   extends: .setup-release-env
   needs:
     - job: build-bundled-agent-adp-image
