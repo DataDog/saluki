@@ -31,7 +31,8 @@ variables:
   INTERNAL_DD_AGENT_IMAGE_BASE: "${IMAGE_REGISTRY}/datadog-agent"
   INTERNAL_DD_AGENT_IMAGE: "${INTERNAL_DD_AGENT_IMAGE_BASE}:${INTERNAL_DD_AGENT_VERSION}"
   PUBLIC_DD_AGENT_VERSION: "7.59.0"
-  PUBLIC_DD_AGENT_IMAGE: "gcr.io/datadoghq/agent:${PUBLIC_DD_AGENT_VERSION}"
+  PUBLIC_DD_AGENT_IMAGE_BASE: "gcr.io/datadoghq/agent"
+  PUBLIC_DD_AGENT_IMAGE: "${PUBLIC_DD_AGENT_IMAGE_BASE}:${PUBLIC_DD_AGENT_VERSION}"
 
   # Version of the Datadog Agent/standalone DogStatsD server that we'll use both when running SMP benchmarks
   # as well as correctness tests, to ensure we're always running our various comparisons against the same version.

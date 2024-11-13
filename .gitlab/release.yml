@@ -1,3 +1,10 @@
+.setup-release-env:
+  stage: release
+  variables:
+    SOURCE_ADP_RELEASE_IMAGE: "${ADP_IMAGE_BASE}:${CI_COMMIT_TAG}-release"
+    AGENT_ADP_BASE_IMAGE_TAG: "${PUBLIC_DD_AGENT_VERSION}-v${CI_COMMIT_TAG}-adp-beta"
+    AGENT_ADP_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/releases/agent:${AGENT_ADP_BASE_IMAGE_TAG}"
+
 build-release-adp-image:
   stage: release
   tags: ["arch:amd64"]
@@ -6,6 +13,7 @@ build-release-adp-image:
   rules:
     - if: !reference [.on_official_release, rules, if]
       when: manual
+  extends: .setup-release-env
   variables:
     # Compiling Rust is intensive. ¯\_(ツ)_/¯
     KUBERNETES_CPU_REQUEST: "16"
@@ -19,7 +27,7 @@ build-release-adp-image:
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
-      --tag ${ADP_IMAGE_BASE}:${CI_COMMIT_TAG}-release
+      --tag ${SOURCE_ADP_RELEASE_IMAGE}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg BUILD_PROFILE=optimized-release
@@ -42,50 +50,67 @@ build-bundled-agent-adp-image:
   image: ${DOCKER_BUILD_IMAGE}
   rules:
     - if: !reference [.on_official_release, rules, if]
-      needs: ["build-release-adp-image"]
-      when: manual
-  variables:
-    # TODO: What do we need to tag the image as before actually publishing it to the public container registries?
-    IMAGE_TAG: ${INTERNAL_DD_AGENT_IMAGE_BASE}:${PUBLIC_DD_AGENT_VERSION}-v${CI_COMMIT_TAG}-adp
+  extends: .setup-release-env
+  parallel:
+    matrix:
+      - JMX:
+        - ""
+        - "-jmx"
   script:
-    # TODO: What labels do we need here? Do we want these CI ones? etc.
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.datadog-agent
-      --build-arg "DD_AGENT_IMAGE=${PUBLIC_DD_AGENT_IMAGE}"
-      --build-arg "ADP_IMAGE=${ADP_IMAGE_BASE}:${CI_COMMIT_TAG}-release"
-      --tag ${IMAGE_TAG}
-      --label git.repository=${CI_PROJECT_NAME}
-      --label git.branch=${CI_COMMIT_REF_NAME}
-      --label git.commit=${CI_COMMIT_SHA}
-      --label ci.pipeline_id=${CI_PIPELINE_ID}
-      --label ci.job_id=${CI_JOB_ID}
+      --build-arg "DD_AGENT_IMAGE=${PUBLIC_DD_AGENT_IMAGE}${JMX}"
+      --build-arg "ADP_IMAGE=${SOURCE_ADP_RELEASE_IMAGE}"
+      --tag ${AGENT_ADP_IMAGE}${JMX}
+      --label "org.opencontainers.image.authors=Datadog <package@datadoghq.com>"
+      --label "org.opencontainers.image.base.name=${PUBLIC_DD_AGENT_IMAGE}${JMX}"
+      --label "org.opencontainers.image.created=${CI_PIPELINE_CREATED_AT}"
+      --label "org.opencontainers.image.ref.name=${PUBLIC_DD_AGENT_IMAGE_BASE}"
+      --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}"
+      --label "org.opencontainers.image.source=https://githic.com/DataDog/saluki"
+      --label "org.opencontainers.image.title=Datadog Agent (with ADP)"
+      --label "org.opencontainers.image.vendor=Datadog, Inc."
+      --label "org.opencontainers.image.version=${CI_COMMIT_TAG}"
       --push
       .
 
-build-bundled-agent-adp-jmx-image:
+publish-bundled-agent-adp-image:
   stage: release
-  tags: ["arch:amd64"]
-  image: ${DOCKER_BUILD_IMAGE}
   rules:
     - if: !reference [.on_official_release, rules, if]
-      needs: ["build-release-adp-image"]
-      when: manual
+  extends: .setup-release-env
+  needs:
+    - job: build-bundled-agent-adp-image
+      parallel:
+        matrix:
+          - JMX: [""]
+  trigger:
+    project: DataDog/public-images
+    branch: main
+    strategy: depend
   variables:
-    # TODO: What do we need to tag the image as before actually publishing it to the public container registries?
-    IMAGE_TAG: ${INTERNAL_DD_AGENT_IMAGE_BASE}:${PUBLIC_DD_AGENT_VERSION}-v${CI_COMMIT_TAG}-adp-jmx
-  script:
-    # TODO: What labels do we need here? Do we want these CI ones? etc.
-    - docker buildx build
-      --platform linux/amd64,linux/arm64
-      --file ./docker/Dockerfile.datadog-agent
-      --build-arg "DD_AGENT_IMAGE=${PUBLIC_DD_AGENT_IMAGE}-jmx"
-      --build-arg "ADP_IMAGE=${ADP_IMAGE_BASE}:${CI_COMMIT_TAG}-release"
-      --tag ${IMAGE_TAG}
-      --label git.repository=${CI_PROJECT_NAME}
-      --label git.branch=${CI_COMMIT_REF_NAME}
-      --label git.commit=${CI_COMMIT_SHA}
-      --label ci.pipeline_id=${CI_PIPELINE_ID}
-      --label ci.job_id=${CI_JOB_ID}
-      --push
-      .
+    IMG_REGISTRIES: public
+    IMG_SOURCES: ${AGENT_ADP_IMAGE}
+    IMG_DESTINATIONS: agent:${AGENT_ADP_BASE_IMAGE_TAG}
+    IMG_SIGNING: "false"
+
+publish-bundled-agent-adp-image-imx:
+  stage: release
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+  extends: .setup-release-env
+  needs:
+    - job: build-bundled-agent-adp-image
+      parallel:
+        matrix:
+          - JMX: ["-jmx"]
+  trigger:
+    project: DataDog/public-images
+    branch: main
+    strategy: depend
+  variables:
+    IMG_REGISTRIES: public
+    IMG_SOURCES: ${AGENT_ADP_IMAGE}-jmx
+    IMG_DESTINATIONS: agent:${AGENT_ADP_BASE_IMAGE_TAG}-jmx
+    IMG_SIGNING: "false"
