@@ -2,8 +2,10 @@
   stage: release
   variables:
     SOURCE_ADP_RELEASE_IMAGE: "${ADP_IMAGE_BASE}:${CI_COMMIT_TAG}-release"
-    AGENT_ADP_BASE_IMAGE_TAG: "${PUBLIC_DD_AGENT_VERSION}-v${CI_COMMIT_TAG}-adp-beta"
-    AGENT_ADP_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/releases/agent:${AGENT_ADP_BASE_IMAGE_TAG}"
+    AGENT_ADP_IMAGE_BASE: "${SALUKI_IMAGE_REPO_BASE}/releases/agent"
+    AGENT_ADP_IMAGE_TAG: "${PUBLIC_DD_AGENT_VERSION}-v${CI_COMMIT_TAG}-adp-beta"
+    AGENT_ADP_IMAGE: "${AGENT_ADP_IMAGE_BASE}:${AGENT_ADP_IMAGE_TAG}"
+    TARGET_AGENT_ADP_RELEASE_IMAGE: "agent:${AGENT_ADP_IMAGE_TAG}"
 
 build-release-adp-image:
   stage: release
@@ -99,7 +101,7 @@ publish-bundled-agent-adp-image:
   variables:
     IMG_REGISTRIES: agent-qa
     IMG_SOURCES: ${AGENT_ADP_IMAGE}
-    IMG_DESTINATIONS: agent:${AGENT_ADP_BASE_IMAGE_TAG}
+    IMG_DESTINATIONS: ${TARGET_AGENT_ADP_RELEASE_IMAGE}
     IMG_SIGNING: "false"
 
 publish-bundled-agent-adp-image-jmx:
@@ -125,5 +127,5 @@ publish-bundled-agent-adp-image-jmx:
   variables:
     IMG_REGISTRIES: agent-qa
     IMG_SOURCES: ${AGENT_ADP_IMAGE}-jmx
-    IMG_DESTINATIONS: agent:${AGENT_ADP_BASE_IMAGE_TAG}-jmx
+    IMG_DESTINATIONS: ${TARGET_AGENT_ADP_RELEASE_IMAGE}-jmx
     IMG_SIGNING: "false"
