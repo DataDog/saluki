@@ -527,7 +527,7 @@ impl Driver {
         );
 
         // We spin up a minimal Alpine container, chmod the directory bind-mounted to the shared volume, and that's it.
-        let image = "alpine:latest".to_string();
+        let image = get_alpine_container_image();
         self.create_image_if_missing_inner(&image).await?;
 
         let container_name = format!("airlock-{}-volume-fix-up", self.isolation_group_id);
@@ -930,6 +930,16 @@ impl Driver {
 
         Ok(())
     }
+}
+
+fn get_alpine_container_image() -> String {
+    // Normally, we would just use `alpine:latest` and let Docker figure out the registry to pull it from (i.e., Docker
+    // Hub) but in CI, we don't have Docker Hub available to us, so we need to use an internal registry.
+    //
+    // Rather than threading through this information from the top level, we simply look for an override environment
+    // variable here.. which lets us specify the right image reference to use in CI, while allowing normal users to just
+    // grab it from Docker Hub when running locally.
+    std::env::var("GROUND_TRUTH_ALPINE_IMAGE").unwrap_or_else(|_| "alpine:latest".to_string())
 }
 
 fn get_default_airlock_labels(isolation_group_id: &str) -> HashMap<String, String> {

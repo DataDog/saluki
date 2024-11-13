@@ -66,6 +66,7 @@ run-ground-truth:
     when: always
   variables:
     DD_LOG_LEVEL: "ground_truth=debug,info"
+    GROUND_TRUTH_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
   script:
     - make build-ground-truth
     - target/debug/ground-truth
@@ -73,7 +74,7 @@ run-ground-truth:
       --millstone-config-path $(pwd)/test/correctness/millstone.yaml
       --metrics-intake-image ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${ADP_VERSION}
       --metrics-intake-config-path $(pwd)/test/correctness/metrics-intake.yaml
-      --dsd-image docker.io/datadog/dogstatsd:${DD_AGENT_TEST_VERSION}
+      --dsd-image gcr.io/datadoghq/dogstatsd:${DD_AGENT_TEST_VERSION}
       --dsd-config-path $(pwd)/test/correctness/datadog.yaml
       --adp-image ${ADP_IMAGE_BASE}:${ADP_VERSION}
       --adp-config-path $(pwd)/test/correctness/datadog.yaml
