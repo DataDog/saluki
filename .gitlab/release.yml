@@ -90,7 +90,7 @@ publish-bundled-agent-adp-image:
     branch: main
     strategy: depend
   variables:
-    IMG_REGISTRIES: public
+    IMG_REGISTRIES: agent-qa
     IMG_SOURCES: ${AGENT_ADP_IMAGE}
     IMG_DESTINATIONS: agent:${AGENT_ADP_BASE_IMAGE_TAG}
     IMG_SIGNING: "false"
@@ -111,7 +111,7 @@ publish-bundled-agent-adp-image-jmx:
     branch: main
     strategy: depend
   variables:
-    IMG_REGISTRIES: public
+    IMG_REGISTRIES: agent-qa
     IMG_SOURCES: ${AGENT_ADP_IMAGE}-jmx
     IMG_DESTINATIONS: agent:${AGENT_ADP_BASE_IMAGE_TAG}-jmx
     IMG_SIGNING: "false"
