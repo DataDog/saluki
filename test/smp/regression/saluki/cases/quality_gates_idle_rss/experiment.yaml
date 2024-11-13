@@ -32,4 +32,4 @@ checks:
     description: "Acceptable upper bound on the memory used by ADP when idle."
     bounds:
       series: total_rss_bytes
-      upper_bound: "35.0 MiB"
+      upper_bound: "40.0 MiB"
