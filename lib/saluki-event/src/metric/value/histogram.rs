@@ -6,10 +6,19 @@ use smallvec::SmallVec;
 use super::{TimestampedValue, TimestampedValues};
 use crate::metric::SampleRate;
 
+/// A weighted sample.
+///
+/// A weighted sample contains a value and a weight. The weight corresponds to the sample rate of the value, where the
+/// value can be considered to be responsible for `weight` samples overall. For example, if a metric was emitted 10
+/// times with the same value, you could instead emit it once with a sample rate of 10%, which would be equivalent to a
+/// weight of 10 (1/0.1).
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct WeightedSample {
-    value: OrderedFloat<f64>,
-    weight: u64,
+pub struct WeightedSample {
+    /// The sample value.
+    pub value: OrderedFloat<f64>,
+
+    /// The sample weight.
+    pub weight: u64,
 }
 
 /// A basic histogram.
@@ -58,6 +67,11 @@ impl Histogram {
     pub fn merge(&mut self, other: &mut Histogram) {
         self.sum += other.sum;
         self.samples.extend(other.samples.drain(..));
+    }
+
+    /// Returns the raw weighted samples of the histogram.
+    pub fn samples(&self) -> &[WeightedSample] {
+        &self.samples
     }
 }
 
@@ -222,6 +236,28 @@ impl<const N: usize> From<[f64; N]> for HistogramPoints {
     }
 }
 
+impl<'a> From<&'a [f64]> for HistogramPoints {
+    fn from(values: &'a [f64]) -> Self {
+        let mut histogram = Histogram::default();
+        for value in values {
+            histogram.insert(*value, SampleRate::unsampled());
+        }
+
+        Self(TimestampedValue::from(histogram).into())
+    }
+}
+
+impl<'a, const N: usize> From<&'a [f64; N]> for HistogramPoints {
+    fn from(values: &'a [f64; N]) -> Self {
+        let mut histogram = Histogram::default();
+        for value in values {
+            histogram.insert(*value, SampleRate::unsampled());
+        }
+
+        Self(TimestampedValue::from(histogram).into())
+    }
+}
+
 impl IntoIterator for HistogramPoints {
     type Item = (Option<NonZeroU64>, Histogram);
     type IntoIter = HistogramIter;
@@ -229,6 +265,17 @@ impl IntoIterator for HistogramPoints {
     fn into_iter(self) -> Self::IntoIter {
         HistogramIter {
             inner: self.0.values.into_iter(),
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a HistogramPoints {
+    type Item = (Option<NonZeroU64>, &'a Histogram);
+    type IntoIter = HistogramIterRef<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        HistogramIterRef {
+            inner: self.0.values.iter(),
         }
     }
 }
@@ -253,6 +300,18 @@ impl Iterator for HistogramIter {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next().map(|value| (value.timestamp, value.value))
+    }
+}
+
+pub struct HistogramIterRef<'a> {
+    inner: std::slice::Iter<'a, TimestampedValue<Histogram>>,
+}
+
+impl<'a> Iterator for HistogramIterRef<'a> {
+    type Item = (Option<NonZeroU64>, &'a Histogram);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|value| (value.timestamp, &value.value))
     }
 }
 
