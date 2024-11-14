@@ -8,10 +8,10 @@
   - export COMPARISON_SALUKI_SHA="${CI_COMMIT_SHA}"
   - export BASELINE_SALUKI_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:${CI_PIPELINE_ID}-${BASELINE_SALUKI_SHA}"
   - export COMPARISON_SALUKI_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:${CI_PIPELINE_ID}-${COMPARISON_SALUKI_SHA}"
-  - export BASELINE_DSD_VERSION="${DD_AGENT_TEST_VERSION}"
-  - export COMPARISON_DSD_VERSION="${DD_AGENT_TEST_VERSION}"
-  - export BASELINE_DSD_IMG="public.ecr.aws/datadog/dogstatsd:${DD_AGENT_TEST_VERSION}"
-  - export COMPARISON_DSD_IMG="public.ecr.aws/datadog/dogstatsd:${DD_AGENT_TEST_VERSION}"
+  - export BASELINE_DSD_VERSION="${BASE_DD_AGENT_VERSION}"
+  - export COMPARISON_DSD_VERSION="${BASE_DD_AGENT_VERSION}"
+  - export BASELINE_DSD_IMG="public.ecr.aws/datadog/dogstatsd:${BASE_DD_AGENT_VERSION}"
+  - export COMPARISON_DSD_IMG="public.ecr.aws/datadog/dogstatsd:${BASE_DD_AGENT_VERSION}"
 
 build-adp-baseline-image:
   stage: benchmark

@@ -1,6 +1,5 @@
 calculate-build-metadata:
   stage: build
-  tags: ["arch:amd64"]
   image: ${SALUKI_BUILD_CI_IMAGE}
   needs: []
   script:
@@ -11,7 +10,6 @@ calculate-build-metadata:
 
 build-adp-image:
   stage: build
-  tags: ["arch:amd64"]
   image: ${DOCKER_BUILD_IMAGE}
   needs:
     - calculate-build-metadata
@@ -30,7 +28,7 @@ build-adp-image:
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
-      --tag ${ADP_IMAGE_BASE}:${ADP_VERSION}
+      --tag ${ADP_IMAGE_BASE}:${CI_COMMIT_SHA}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg BUILD_PROFILE=optimized-debug-release
@@ -49,12 +47,11 @@ build-adp-image:
 
 build-converged-adp-image:
   stage: build
-  tags: ["arch:amd64"]
   image: ${DOCKER_BUILD_IMAGE}
   needs:
     - build-adp-image
   variables:
-    IMAGE_TAG: "${INTERNAL_DD_AGENT_IMAGE}-adp-${ADP_VERSION}"
+    IMAGE_TAG: "${INTERNAL_DD_AGENT_IMAGE}-adp-${CI_COMMIT_SHA}"
   id_tokens:
     DDSIGN_ID_TOKEN:
       aud: image-integrity
@@ -64,7 +61,7 @@ build-converged-adp-image:
       --file ./docker/Dockerfile.datadog-agent
       --metadata-file	/tmp/build.metadata
       --build-arg "DD_AGENT_IMAGE=${INTERNAL_DD_AGENT_IMAGE}"
-      --build-arg "ADP_IMAGE=${ADP_IMAGE_BASE}:${ADP_VERSION}"
+      --build-arg "ADP_IMAGE=${ADP_IMAGE_BASE}:${CI_COMMIT_SHA}"
       --tag "${IMAGE_TAG}"
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}

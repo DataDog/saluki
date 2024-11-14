@@ -1,6 +1,5 @@
 build-metrics-intake-image:
   stage: correctness
-  tags: ["arch:amd64"]
   image: ${DOCKER_BUILD_IMAGE}
   needs: []
   variables:
@@ -12,7 +11,7 @@ build-metrics-intake-image:
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.metrics-intake
-      --tag ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${ADP_VERSION}
+      --tag ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg BUILD_PROFILE=release
@@ -26,7 +25,6 @@ build-metrics-intake-image:
 
 build-millstone-image:
   stage: correctness
-  tags: ["arch:amd64"]
   image: ${DOCKER_BUILD_IMAGE}
   needs: []
   variables:
@@ -38,7 +36,7 @@ build-millstone-image:
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.millstone
-      --tag ${SALUKI_IMAGE_REPO_BASE}/millstone:${ADP_VERSION}
+      --tag ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg BUILD_PROFILE=release
@@ -70,11 +68,11 @@ run-ground-truth:
   script:
     - make build-ground-truth
     - target/debug/ground-truth
-      --millstone-image ${SALUKI_IMAGE_REPO_BASE}/millstone:${ADP_VERSION}
+      --millstone-image ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
       --millstone-config-path $(pwd)/test/correctness/millstone.yaml
-      --metrics-intake-image ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${ADP_VERSION}
+      --metrics-intake-image ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
       --metrics-intake-config-path $(pwd)/test/correctness/metrics-intake.yaml
-      --dsd-image gcr.io/datadoghq/dogstatsd:${DD_AGENT_TEST_VERSION}
+      --dsd-image gcr.io/datadoghq/dogstatsd:${BASE_DD_AGENT_VERSION}
       --dsd-config-path $(pwd)/test/correctness/datadog.yaml
-      --adp-image ${ADP_IMAGE_BASE}:${ADP_VERSION}
+      --adp-image ${ADP_IMAGE_BASE}:${CI_COMMIT_SHA}
       --adp-config-path $(pwd)/test/correctness/datadog.yaml

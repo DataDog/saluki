@@ -2,3 +2,10 @@
 #
 # AML is also a major stakeholder and so has blanket ownership as well.
 * @DataDog/agent-processing-and-routing @DataDog/agent-metrics-logs
+
+# We publish public ADP-bundled Agent images based on CI triggered through this repository,
+# and the code ownership arrangement is to ensure that Agent Delivery has a stake in the configuration
+# on those CI jobs, such that any changes we make the image tags we're publishing, or how we build the
+# images, and so on, are reviewed by the Agent Delivery team to their satisfaction and in keeping with
+# any processes/requirements they have in place for the normal Datadog Agent releases.
+/.gitlab/release.yml @DataDog/agent-delivery
