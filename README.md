@@ -1,4 +1,4 @@
-# saluki
+# salami
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/DataDog/datadog-agent/blob/master/LICENSE)
 
 Saluki is an experimental toolkit for building telemetry data planes in Rust.
