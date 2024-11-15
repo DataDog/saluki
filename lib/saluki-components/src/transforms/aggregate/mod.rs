@@ -552,8 +552,8 @@ where
     O: ObjectPool<Item = FixedSizeEventBuffer>,
 {
     match values {
-        // If we're dealing with a distribution and client-side aggregation is configured, we calculate a configured set
-        // of aggregates/percentiles over the distribution, and emit them as individual metrics.
+        // If we're dealing with a histogram, we calculate a configured set of aggregates/percentiles from it, and emit
+        // them as individual metrics.
         MetricValues::Histogram(ref mut points) => {
             // We collect our histogram points in their "summary" view, which sorts the underlying samples allowing
             // proper quantile queries to be answered, hence our "sorted" points. We do it this way because rather than

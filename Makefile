@@ -409,8 +409,7 @@ test-correctness: ## Runs the metrics correctness (ground-truth) suite
 		--dsd-image docker.io/datadog/dogstatsd:7.58.0 \
 		--dsd-config-path $(shell pwd)/test/correctness/datadog.yaml \
 		--adp-image saluki-images/agent-data-plane:latest \
-		--adp-config-path $(shell pwd)/test/correctness/datadog.yaml \
-		--adp-env-arg DD_LOG_LEVEL=debug
+		--adp-config-path $(shell pwd)/test/correctness/datadog.yaml
 
 .PHONY: ensure-rust-miri
 ensure-rust-miri:

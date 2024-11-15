@@ -1,5 +1,6 @@
 seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
 target: "unixgram:///airlock/metrics.sock"
+aggregation_bucket_width_secs: 10
 volume: 10000
 corpus:
   # TODO: This is a little confusing, because we're specifying the number of metrics to generate (which we _will_
@@ -43,14 +44,14 @@ corpus:
         service_check: 0
       # Weights based on analyzing internal Datadog usage data of metric type for metrics sent to the Agent over DogStatsD.
       metric_weights:
-        count: 0 # 208
-        gauge: 0 # 66
+        count: 208
+        gauge: 66
         timer: 0
-        distribution: 0 # 72
+        distribution: 72
         # We specifically _don't_ want to generate sets, because we can't assert their correctness once they've been
         # aggregated: a gauge is generated for each aggregator flush that represents the unique number of values in a
         # given set, but in general, gauges are meant to be last-write-wins, so unless the metric names/tags can
         # indicate that they're for a set, we can't know that it's safe for us to _aggregate_ the gauge values, and with
         # our default behavior of taking the latest gauge value... we end up with non-deterministic results.
         set: 0
-        histogram: 100
+        histogram: 1
