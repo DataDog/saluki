@@ -235,7 +235,8 @@ impl AllocationGroupToken {
         Self { group_ptr }
     }
 
-    fn current() -> Self {
+    /// Returns an `AllocationGroupToken` for the current allocation group.
+    pub fn current() -> Self {
         CURRENT_GROUP.with(|current_group| {
             let group_ptr = current_group.borrow();
             Self::new(*group_ptr)
@@ -270,6 +271,10 @@ impl AllocationGroupToken {
 
 // SAFETY: There's nothing inherently thread-specific about the token.
 unsafe impl Send for AllocationGroupToken {}
+
+// SAFETY: There's nothing unsafe about sharing the token between threads, as it's safe to enter the same token on
+// multiple threads at the same time, and the token itself has no internal state or interior mutability.
+unsafe impl Sync for AllocationGroupToken {}
 
 /// A guard representing an allocation group which has been entered.
 ///

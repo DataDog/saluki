@@ -13,6 +13,7 @@ use std::{
     time::Duration,
 };
 
+use memory_accounting::allocator::AllocationGroupToken;
 use pin_project::pin_project;
 use tokio::{sync::Semaphore, time::sleep};
 use tokio_util::sync::PollSemaphore;
@@ -105,6 +106,7 @@ struct ElasticStrategy<T: Poolable> {
     on_demand_allocs: AtomicUsize,
     min_capacity: usize,
     max_capacity: usize,
+    alloc_group: AllocationGroupToken,
     metrics: PoolMetrics,
 }
 
@@ -133,6 +135,7 @@ impl<T: Poolable> ElasticStrategy<T> {
             on_demand_allocs: AtomicUsize::new(0),
             min_capacity,
             max_capacity,
+            alloc_group: AllocationGroupToken::current(),
             metrics,
         }
     }
@@ -208,7 +211,10 @@ where
                     continue;
                 }
 
-                let new_item = (strategy.builder)();
+                let new_item = {
+                    let _entered = strategy.alloc_group.enter();
+                    (strategy.builder)()
+                };
                 let strategy = this.strategy.take().unwrap();
 
                 strategy.on_demand_allocs.fetch_add(1, Relaxed);
