@@ -180,6 +180,7 @@ fn parse_dogstatsd_metric<'a>(
     let mut maybe_tags = None;
     let mut maybe_container_id = None;
     let mut maybe_timestamp = None;
+    let mut maybe_external_data = None;
 
     let remaining = if !remaining.is_empty() {
         let (mut remaining, _) = tag("|")(remaining)?;
@@ -212,6 +213,11 @@ fn parse_dogstatsd_metric<'a>(
                         let (_, timestamp) = all_consuming(preceded(tag("T"), unix_timestamp))(chunk)?;
                         maybe_timestamp = Some(timestamp);
                     }
+                }
+                // External Data: client-provided metadata about the originating entity of the metric.
+                b'e' if chunk.len() > 1 && chunk[1] == b':' => {
+                    let (_, external_data) = all_consuming(preceded(tag("e:"), external_data))(chunk)?;
+                    maybe_external_data = Some(external_data);
                 }
                 _ => {
                     // We don't know what this is, so we just skip it.
@@ -247,6 +253,7 @@ fn parse_dogstatsd_metric<'a>(
             timestamp: maybe_timestamp,
             sample_rate: maybe_sample_rate,
             container_id: maybe_container_id,
+            external_data: maybe_external_data,
         },
     ))
 }
@@ -258,6 +265,7 @@ pub struct MetricPacket<'a> {
     pub timestamp: Option<u64>,
     pub sample_rate: Option<f64>,
     pub container_id: Option<&'a str>,
+    pub external_data: Option<&'a str>,
 }
 
 pub fn build_metric_metadata_from_packet(packet: &MetricPacket<'_>, peer_addr: &ConnectionAddress) -> MetricMetadata {
@@ -267,9 +275,10 @@ pub fn build_metric_metadata_from_packet(packet: &MetricPacket<'_>, peer_addr: &
         metric_metadata.origin_entity_mut().set_container_id(container_id);
     }
 
-    // We do one optional enrichment step here, which is to add the client's socket credentials as a tag
-    // on each metric, if they came over UDS. This would then be utilized downstream in the pipeline by
-    // origin enrichment, if present.
+    if let Some(external_data) = packet.external_data {
+        metric_metadata.origin_entity_mut().set_external_data(external_data);
+    }
+
     if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
         metric_metadata.origin_entity_mut().set_process_id(creds.pid as u32);
     }
@@ -599,6 +608,19 @@ fn container_id(input: &[u8]) -> IResult<&[u8], &str> {
     // cases, the inode number of the cgroup controller that contains the container sending the metrics, where the value
     // will look like `in-<integer value>`.
     let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b'-';
+    map(take_while1(valid_char), |b| {
+        // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
+        // interpret the bytes directly as UTF-8.
+        unsafe { std::str::from_utf8_unchecked(b) }
+    })(input)
+}
+
+#[inline]
+fn external_data(input: &[u8]) -> IResult<&[u8], &str> {
+    // External Data is a semi-structured extension field that contains a list of comma-separated key/value pairs, where
+    // the key and value are separated by a hyphen. We check here to make sure the string data consists only of
+    // alphanumeric characters, hyphens, and commas.
+    let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b'-' || c == b',';
     map(take_while1(valid_char), |b| {
         // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
         // interpret the bytes directly as UTF-8.

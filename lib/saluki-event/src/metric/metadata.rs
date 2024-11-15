@@ -87,6 +87,11 @@ pub struct OriginEntity {
     /// This is generally only used in Kubernetes environments to uniquely identify the pod. UIDs are equivalent to UUIDs.
     pod_uid: MetaString,
 
+    /// Free-form string data used to look up the origin entity.
+    ///
+    /// Also referred to as External Data.
+    external_data: MetaString,
+
     /// Desired cardinality of any tags associated with the entity.
     ///
     /// This controls the cardinality of the tags added to this metric when enriching based on the available entity IDs.
@@ -117,6 +122,14 @@ impl OriginEntity {
         self.pod_uid = pod_uid.into();
     }
 
+    /// Sets the External Data of the sender.
+    pub fn set_external_data<S>(&mut self, external_data: S)
+    where
+        S: Into<MetaString>,
+    {
+        self.external_data = external_data.into();
+    }
+
     /// Sets the desired cardinality of any tags associated with the entity.
     pub fn set_cardinality<S>(&mut self, cardinality: S)
     where
@@ -145,6 +158,15 @@ impl OriginEntity {
             None
         } else {
             Some(&self.pod_uid)
+        }
+    }
+
+    /// Gets the External Data of the sender.
+    pub fn external_data(&self) -> Option<&str> {
+        if self.external_data.is_empty() {
+            None
+        } else {
+            Some(&self.external_data)
         }
     }
 
