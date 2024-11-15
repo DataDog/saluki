@@ -397,7 +397,7 @@ test-loom: ## Runs all Loom-specific unit tests
 test-all: ## Test everything
 test-all: test test-docs test-miri test-loom
 
-.PHONY: test-correctnes
+.PHONY: test-correctness
 test-correctness: build-ground-truth
 test-correctness: ## Runs the metrics correctness (ground-truth) suite
 	@echo "[*] Running correctness suite..."
