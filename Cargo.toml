@@ -23,7 +23,7 @@ members = [
   "lib/saluki-io",
   "lib/saluki-metadata",
   "lib/saluki-metrics",
-  "lib/saluki-tls",
+  "lib/saluki-tls", "lib/saluki-util",
   "lib/stringtheory",
 ]
 resolver = "2"
@@ -138,6 +138,7 @@ governor = { version = "0.6", default-features = false }
 lading-payload = { git = "https://github.com/DataDog/lading", tag = "v0.24.0" }
 serde_yaml = { version = "0.9", default-features = false }
 serde_with = { version = "3.11.0", default-features = false, features = ["macros"] }
+stream-vbyte = { version = "0.4.1", default-features = false }
 
 [profile.release]
 lto = "thin"

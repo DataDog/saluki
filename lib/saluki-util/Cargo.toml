@@ -1,0 +1,22 @@
+[package]
+name = "saluki-util"
+version = "0.1.0"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+saluki-error = { workspace = true }
+vortex-alp = { version = "0.19.0" }
+vortex-array = { version = "0.19.0" }
+vortex-file = { version = "0.19.0" }
+vortex-io = { version = "0.19.0" }
+vortex-sampling-compressor = { version = "0.19.0" }
+
+[dev-dependencies]
+proptest = { workspace = true, features = ["std"] }
+rand = { workspace = true, features = ["std", "std_rng"] }
+tokio = { workspace = true, features = ["full"]}
+
+[lints]
+workspace = true
