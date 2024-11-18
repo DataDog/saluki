@@ -2,14 +2,15 @@ use std::fmt;
 
 use saluki_context::{Tag, TagSet};
 use saluki_event::metric::OriginTagCardinality;
+use stringtheory::MetaString;
 
 use super::{entity::EntityId, helpers::OneOrMany};
 
 /// A metadata operation.
 ///
 /// Operations involve a number of actions to perform in the context of the given entity. Such actions typically include
-/// setting tags or establish ancestry links.
-#[derive(Debug)]
+/// setting tags or establishing ancestry links.
+#[derive(Clone, Debug)]
 pub struct MetadataOperation {
     /// The entity ID this operation is associated with.
     pub entity_id: EntityId,
@@ -63,9 +64,26 @@ impl MetadataOperation {
             }),
         }
     }
+
+    /// Creates a new `MetadataOperation` that adds an alias to an entity.
+    pub fn add_alias(entity_id: EntityId, alias: &str) -> Self {
+        Self {
+            entity_id,
+            actions: OneOrMany::One(MetadataAction::AddAlias { alias: alias.into() }),
+        }
+    }
+
+    /// Creates a new `MetadataOperation` that removes an alias from an entity.
+    pub fn delete_alias(entity_id: EntityId, alias: &str) -> Self {
+        Self {
+            entity_id,
+            actions: OneOrMany::One(MetadataAction::DeleteAlias { alias: alias.into() }),
+        }
+    }
 }
 
 /// A metadata action.
+#[derive(Clone)]
 pub enum MetadataAction {
     /// Delete all metadata for the entity.
     Delete,
@@ -120,6 +138,21 @@ pub enum MetadataAction {
         /// Tags to set.
         tags: TagSet,
     },
+
+    /// Adds an alias to the entity.
+    ///
+    /// This can be used to attach free-form string identifiers to an entity, which can be used to reference the entity
+    /// in various situations.
+    AddAlias {
+        /// Alias to add to the entity.
+        alias: MetaString,
+    },
+
+    /// Removes an alias from the entity.
+    DeleteAlias {
+        /// Alias to remove from the entity.
+        alias: MetaString,
+    },
 }
 
 impl fmt::Debug for MetadataAction {
@@ -131,6 +164,8 @@ impl fmt::Debug for MetadataAction {
             Self::AddTag { cardinality, tag } => write!(f, "AddTag(cardinality={:?}, tag={:?})", cardinality, tag),
             Self::AddTags { cardinality, tags } => write!(f, "AddTags(cardinality={:?}, tags={:?})", cardinality, tags),
             Self::SetTags { cardinality, tags } => write!(f, "SetTags(cardinality={:?}, tags={:?})", cardinality, tags),
+            Self::AddAlias { alias } => write!(f, "AddAlias({:?})", alias),
+            Self::DeleteAlias { alias } => write!(f, "DeleteAlias({:?})", alias),
         }
     }
 }

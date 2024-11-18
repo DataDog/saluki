@@ -1,12 +1,14 @@
-use std::{collections::VecDeque, num::NonZeroUsize};
+use std::{collections::VecDeque, num::NonZeroUsize, sync::Arc};
 
 use ahash::{AHashMap, AHashSet};
+use arc_swap::ArcSwap;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_context::TagSet;
 use saluki_event::metric::OriginTagCardinality;
 use tracing::debug;
 
 use super::{
+    aggregator::ConsumingStore,
     entity::EntityId,
     metadata::{MetadataAction, MetadataOperation},
 };
@@ -27,6 +29,8 @@ use super::{
 /// all of the information necessary to compute the "unified" tag set of an entity based on combining the tags of the
 /// entity itself and its ancestors.
 pub struct TagStore {
+    snapshot: Arc<ArcSwap<TagSnapshot>>,
+
     entity_limit: NonZeroUsize,
     active_entities: AHashSet<EntityId>,
 
@@ -48,6 +52,7 @@ impl TagStore {
     /// reached, new entities will not be added to the store.
     pub fn with_entity_limit(entity_limit: NonZeroUsize) -> Self {
         Self {
+            snapshot: Arc::new(ArcSwap::new(Arc::new(TagSnapshot::default()))),
             entity_limit,
             active_entities: AHashSet::new(),
             entity_hierarchy_mappings: AHashMap::new(),
@@ -76,36 +81,6 @@ impl TagStore {
 
         let _ = self.active_entities.insert(entity_id.clone());
         true
-    }
-
-    /// Processes a metadata operation.
-    ///
-    /// When necessary, the unified tag set of the given entity will be updated, along with any other entities who are
-    /// descendents of the entity in the operation.
-    pub fn process_operation(&mut self, operation: MetadataOperation) {
-        debug!(?operation, "Processing metadata operation.");
-
-        let entity_id = operation.entity_id;
-        for action in operation.actions {
-            match action {
-                MetadataAction::Delete => self.delete_entity(entity_id.clone()),
-                MetadataAction::LinkAncestor { ancestor_entity_id } => {
-                    self.add_hierarchy_mapping(entity_id.clone(), ancestor_entity_id)
-                }
-                MetadataAction::LinkDescendant { descendant_entity_id } => {
-                    self.add_hierarchy_mapping(descendant_entity_id, entity_id.clone())
-                }
-                MetadataAction::AddTag { cardinality, tag } => {
-                    self.add_entity_tags(entity_id.clone(), tag.into(), cardinality)
-                }
-                MetadataAction::AddTags { cardinality, tags } => {
-                    self.add_entity_tags(entity_id.clone(), tags, cardinality)
-                }
-                MetadataAction::SetTags { cardinality, tags } => {
-                    self.set_entity_tags(entity_id.clone(), tags, cardinality)
-                }
-            }
-        }
     }
 
     fn delete_entity(&mut self, entity_id: EntityId) {
@@ -341,12 +316,55 @@ impl TagStore {
         unified_tags
     }
 
-    /// Returns a snapshot of the current state of the tag store.
-    pub fn snapshot(&self) -> TagSnapshot {
-        TagSnapshot {
+    /// Returns a `TagSnapshotter` that can be used to concurrently query the tag store.
+    pub fn snapshotter(&self) -> TagSnapshotter {
+        TagSnapshotter {
+            snapshot: Arc::clone(&self.snapshot),
+        }
+    }
+}
+
+impl ConsumingStore for TagStore {
+    fn store_name(&self) -> &'static str {
+        "tag_store"
+    }
+
+    fn process_operation(&mut self, operation: MetadataOperation) {
+        debug!(?operation, "Processing metadata operation.");
+
+        // TODO: Maybe come up with a better pattern for doing "only clone for the first N-1 actions, don't clone for the
+        // Nth" since we're needlessly cloning a lot with this current approach.
+        let entity_id = operation.entity_id;
+        for action in operation.actions {
+            match action {
+                MetadataAction::Delete => self.delete_entity(entity_id.clone()),
+                MetadataAction::LinkAncestor { ancestor_entity_id } => {
+                    self.add_hierarchy_mapping(entity_id.clone(), ancestor_entity_id)
+                }
+                MetadataAction::LinkDescendant { descendant_entity_id } => {
+                    self.add_hierarchy_mapping(descendant_entity_id.clone(), entity_id.clone())
+                }
+                MetadataAction::AddTag { cardinality, tag } => {
+                    self.add_entity_tags(entity_id.clone(), tag.clone().into(), cardinality)
+                }
+                MetadataAction::AddTags { cardinality, tags } => {
+                    self.add_entity_tags(entity_id.clone(), tags, cardinality)
+                }
+                MetadataAction::SetTags { cardinality, tags } => {
+                    self.set_entity_tags(entity_id.clone(), tags, cardinality)
+                }
+                // We don't handle/care about entity aliases.
+                MetadataAction::AddAlias { .. } | MetadataAction::DeleteAlias { .. } => {}
+            }
+        }
+
+        // Update the snapshot.
+        let snapshot = Arc::new(TagSnapshot {
             low_cardinality_entity_tags: self.unified_low_cardinality_entity_tags.clone(),
             high_cardinality_entity_tags: self.unified_high_cardinality_entity_tags.clone(),
-        }
+        });
+
+        self.snapshot.store(snapshot);
     }
 }
 
@@ -384,22 +402,29 @@ impl MemoryBounds for TagStore {
     }
 }
 
-/// A point-in-time snapshot of the unified
-#[derive(Debug, Default)]
-pub struct TagSnapshot {
+#[derive(Default)]
+struct TagSnapshot {
     low_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
     high_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
 }
 
-impl TagSnapshot {
+/// A snapshotter that supports concurrently querying the tag store.
+#[derive(Clone)]
+pub struct TagSnapshotter {
+    snapshot: Arc<ArcSwap<TagSnapshot>>,
+}
+
+impl TagSnapshotter {
     /// Gets the tags for an entity at the given cardinality.
     ///
     /// If no tags can be found for the entity, or at the given cardinality, `None` is returned.
     pub fn get_entity_tags(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<TagSet> {
+        let snapshot = self.snapshot.load();
+
         match cardinality {
-            OriginTagCardinality::Low => self.low_cardinality_entity_tags.get(entity_id).cloned(),
-            OriginTagCardinality::Orchestrator => self.high_cardinality_entity_tags.get(entity_id).cloned(),
-            OriginTagCardinality::High => self.high_cardinality_entity_tags.get(entity_id).cloned(),
+            OriginTagCardinality::Low => snapshot.low_cardinality_entity_tags.get(entity_id).cloned(),
+            OriginTagCardinality::Orchestrator => snapshot.high_cardinality_entity_tags.get(entity_id).cloned(),
+            OriginTagCardinality::High => snapshot.high_cardinality_entity_tags.get(entity_id).cloned(),
         }
     }
 }
@@ -415,6 +440,7 @@ mod tests {
     use saluki_event::metric::OriginTagCardinality;
 
     use crate::workload::{
+        aggregator::ConsumingStore as _,
         entity::EntityId,
         helpers::OneOrMany,
         metadata::{MetadataAction, MetadataOperation},
@@ -471,9 +497,11 @@ mod tests {
             store.process_operation(operation);
         }
 
-        let snapshot = store.snapshot();
+        let snapshotter = store.snapshotter();
 
-        let unified_tags = snapshot.get_entity_tags(&entity_id, OriginTagCardinality::Low).unwrap();
+        let unified_tags = snapshotter
+            .get_entity_tags(&entity_id, OriginTagCardinality::Low)
+            .unwrap();
         assert_eq!(unified_tags, expected_tags);
     }
 
@@ -495,12 +523,14 @@ mod tests {
             store.process_operation(operation);
         }
 
-        let snapshot = store.snapshot();
+        let snapshotter = store.snapshotter();
 
-        let low_card_unified_tags = snapshot.get_entity_tags(&entity_id, OriginTagCardinality::Low).unwrap();
+        let low_card_unified_tags = snapshotter
+            .get_entity_tags(&entity_id, OriginTagCardinality::Low)
+            .unwrap();
         assert_eq!(low_card_unified_tags.as_sorted(), low_card_expected_tags.as_sorted());
 
-        let high_card_unified_tags = snapshot
+        let high_card_unified_tags = snapshotter
             .get_entity_tags(&entity_id, OriginTagCardinality::High)
             .unwrap();
         assert_eq!(high_card_unified_tags.as_sorted(), high_card_expected_tags.as_sorted());
@@ -525,14 +555,14 @@ mod tests {
             store.process_operation(operation);
         }
 
-        let snapshot = store.snapshot();
+        let snapshotter = store.snapshotter();
 
-        let global_unified_tags = snapshot
+        let global_unified_tags = snapshotter
             .get_entity_tags(&global_entity_id, OriginTagCardinality::Low)
             .unwrap();
         assert_eq!(global_unified_tags.as_sorted(), global_expected_tags.as_sorted());
 
-        let unified_tags = snapshot
+        let unified_tags = snapshotter
             .get_entity_tags(&entity_id, OriginTagCardinality::High)
             .unwrap();
         assert_eq!(unified_tags.as_sorted(), expected_tags.as_sorted());
@@ -574,19 +604,19 @@ mod tests {
         store.process_operation(link_ancestor(&container_entity_id, &pod_entity_id));
         store.process_operation(link_ancestor(&container_pid_entity_id, &container_entity_id));
 
-        let snapshot = store.snapshot();
+        let snapshotter = store.snapshotter();
 
-        let pod_unified_tags = snapshot
+        let pod_unified_tags = snapshotter
             .get_entity_tags(&pod_entity_id, OriginTagCardinality::Low)
             .unwrap();
         assert_eq!(pod_unified_tags.as_sorted(), pod_expected_tags.as_sorted());
 
-        let container_unified_tags = snapshot
+        let container_unified_tags = snapshotter
             .get_entity_tags(&container_entity_id, OriginTagCardinality::Low)
             .unwrap();
         assert_eq!(container_unified_tags.as_sorted(), container_expected_tags.as_sorted());
 
-        let container_pid_unified_tags = snapshot
+        let container_pid_unified_tags = snapshotter
             .get_entity_tags(&container_pid_entity_id, OriginTagCardinality::Low)
             .unwrap();
         assert_eq!(
@@ -605,9 +635,11 @@ mod tests {
             store.process_operation(operation);
         }
 
-        let snapshot = store.snapshot();
+        let snapshotter = store.snapshotter();
 
-        let unified_tags = snapshot.get_entity_tags(&entity_id, OriginTagCardinality::Low).unwrap();
+        let unified_tags = snapshotter
+            .get_entity_tags(&entity_id, OriginTagCardinality::Low)
+            .unwrap();
         assert_eq!(unified_tags.as_sorted(), expected_tags.clone().as_sorted());
 
         // Create a new set of metadata entries to add an additional tag, and observe that processing the entry updates
@@ -619,9 +651,11 @@ mod tests {
             store.process_operation(operation);
         }
 
-        let snapshot = store.snapshot();
+        let snapshotter = store.snapshotter();
 
-        let new_unified_tags = snapshot.get_entity_tags(&entity_id, OriginTagCardinality::Low).unwrap();
+        let new_unified_tags = snapshotter
+            .get_entity_tags(&entity_id, OriginTagCardinality::Low)
+            .unwrap();
         assert_eq!(new_unified_tags.as_sorted(), new_expected_tags.as_sorted());
     }
 
@@ -647,14 +681,14 @@ mod tests {
 
         store.process_operation(link_ancestor(&container_entity_id, &pod_entity_id));
 
-        let snapshot = store.snapshot();
+        let snapshotter = store.snapshotter();
 
-        let pod_unified_tags = snapshot
+        let pod_unified_tags = snapshotter
             .get_entity_tags(&pod_entity_id, OriginTagCardinality::Low)
             .unwrap();
         assert_eq!(pod_unified_tags.as_sorted(), pod_expected_tags.clone().as_sorted());
 
-        let container_unified_tags = snapshot
+        let container_unified_tags = snapshotter
             .get_entity_tags(&container_entity_id, OriginTagCardinality::Low)
             .unwrap();
         assert_eq!(
@@ -673,14 +707,14 @@ mod tests {
             store.process_operation(operation);
         }
 
-        let snapshot = store.snapshot();
+        let snapshotter = store.snapshotter();
 
-        let new_pod_unified_tags = snapshot
+        let new_pod_unified_tags = snapshotter
             .get_entity_tags(&pod_entity_id, OriginTagCardinality::Low)
             .unwrap();
         assert_eq!(new_pod_unified_tags.as_sorted(), new_pod_expected_tags.as_sorted());
 
-        let container_unified_tags = snapshot
+        let container_unified_tags = snapshotter
             .get_entity_tags(&container_entity_id, OriginTagCardinality::Low)
             .unwrap();
         assert_eq!(container_unified_tags.as_sorted(), container_expected_tags.as_sorted());
@@ -711,15 +745,15 @@ mod tests {
         }
 
         // At this point, we should have tags for the pod, and container #1, but not container #2.
-        let snapshot = store.snapshot();
+        let snapshotter = store.snapshotter();
 
-        assert!(snapshot
+        assert!(snapshotter
             .get_entity_tags(&pod_entity_id, OriginTagCardinality::Low)
             .is_some());
-        assert!(snapshot
+        assert!(snapshotter
             .get_entity_tags(&container1_entity_id, OriginTagCardinality::Low)
             .is_some());
-        assert!(snapshot
+        assert!(snapshotter
             .get_entity_tags(&container2_entity_id, OriginTagCardinality::Low)
             .is_none());
 
@@ -732,15 +766,15 @@ mod tests {
             store.process_operation(operation);
         }
 
-        let snapshot = store.snapshot();
+        let snapshotter = store.snapshotter();
 
-        assert!(snapshot
+        assert!(snapshotter
             .get_entity_tags(&pod_entity_id, OriginTagCardinality::Low)
             .is_some());
-        assert!(snapshot
+        assert!(snapshotter
             .get_entity_tags(&container1_entity_id, OriginTagCardinality::Low)
             .is_none());
-        assert!(snapshot
+        assert!(snapshotter
             .get_entity_tags(&container2_entity_id, OriginTagCardinality::Low)
             .is_some());
     }

@@ -23,8 +23,6 @@ use async_trait::async_trait;
 use saluki_context::TagSet;
 use saluki_event::metric::OriginTagCardinality;
 
-pub use self::store::{TagSnapshot, TagStore};
-
 /// Provides information about workloads running on the process host.
 #[async_trait]
 pub trait WorkloadProvider {
