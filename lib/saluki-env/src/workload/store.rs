@@ -353,8 +353,6 @@ impl ConsumingStore for TagStore {
                 MetadataAction::SetTags { cardinality, tags } => {
                     self.set_entity_tags(entity_id.clone(), tags, cardinality)
                 }
-                // We don't handle/care about entity aliases.
-                MetadataAction::AddAlias { .. } | MetadataAction::DeleteAlias { .. } => {}
             }
         }
 
