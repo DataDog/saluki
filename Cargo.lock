@@ -318,9 +318,9 @@ dependencies = [
 
 [[package]]
 name = "axum"
-version = "0.7.7"
+version = "0.7.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "504e3947307ac8326a5437504c517c4b56716c9d98fac0028c2acc7ca47d70ae"
+checksum = "edca88bc138befd0323b20752846e6587272d3b03b0343c8ea28a6f819e6e71f"
 dependencies = [
  "async-trait",
  "axum-core 0.4.5",
@@ -2134,7 +2134,7 @@ dependencies = [
 name = "metrics-intake"
 version = "0.1.0"
 dependencies = [
- "axum 0.7.7",
+ "axum 0.7.9",
  "datadog-protos",
  "protobuf",
  "saluki-app",
@@ -3270,7 +3270,7 @@ checksum = "f3cb5ba0dc43242ce17de99c180e96db90b235b8a9fdc9543c96d2209116bd9f"
 name = "saluki-api"
 version = "0.1.0"
 dependencies = [
- "axum 0.7.7",
+ "axum 0.7.9",
  "http 1.1.0",
 ]
 
@@ -3278,7 +3278,7 @@ dependencies = [
 name = "saluki-app"
 version = "0.1.0"
 dependencies = [
- "axum 0.7.7",
+ "axum 0.7.9",
  "bytesize",
  "memory-accounting",
  "metrics",
@@ -3505,7 +3505,7 @@ dependencies = [
  "async-compression",
  "async-trait",
  "average",
- "axum 0.7.7",
+ "axum 0.7.9",
  "bitmask-enum",
  "bytes",
  "datadog-protos",
@@ -4291,7 +4291,7 @@ checksum = "877c5b330756d856ffcc4553ab34a5684481ade925ecc54bcd1bf02b1d0d4d52"
 dependencies = [
  "async-stream",
  "async-trait",
- "axum 0.7.7",
+ "axum 0.7.9",
  "base64 0.22.1",
  "bytes",
  "h2 0.4.6",
