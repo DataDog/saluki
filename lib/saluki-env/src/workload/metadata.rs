@@ -2,7 +2,6 @@ use std::fmt;
 
 use saluki_context::{Tag, TagSet};
 use saluki_event::metric::OriginTagCardinality;
-use stringtheory::MetaString;
 
 use super::{entity::EntityId, helpers::OneOrMany};
 
