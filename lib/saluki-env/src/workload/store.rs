@@ -8,7 +8,7 @@ use saluki_event::metric::OriginTagCardinality;
 use tracing::debug;
 
 use super::{
-    aggregator::ConsumingStore,
+    aggregator::MetadataStore,
     entity::EntityId,
     metadata::{MetadataAction, MetadataOperation},
 };
@@ -316,16 +316,16 @@ impl TagStore {
         unified_tags
     }
 
-    /// Returns a `TagSnapshotter` that can be used to concurrently query the tag store.
-    pub fn snapshotter(&self) -> TagSnapshotter {
-        TagSnapshotter {
+    /// Returns a `TagStoreQuerier` that can be used to concurrently query the tag store.
+    pub fn querier(&self) -> TagStoreQuerier {
+        TagStoreQuerier {
             snapshot: Arc::clone(&self.snapshot),
         }
     }
 }
 
-impl ConsumingStore for TagStore {
-    fn store_name(&self) -> &'static str {
+impl MetadataStore for TagStore {
+    fn name(&self) -> &'static str {
         "tag_store"
     }
 
@@ -406,13 +406,13 @@ struct TagSnapshot {
     high_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
 }
 
-/// A snapshotter that supports concurrently querying the tag store.
+/// A handle for querying entity tags from a `TagStore`.
 #[derive(Clone)]
-pub struct TagSnapshotter {
+pub struct TagStoreQuerier {
     snapshot: Arc<ArcSwap<TagSnapshot>>,
 }
 
-impl TagSnapshotter {
+impl TagStoreQuerier {
     /// Gets the tags for an entity at the given cardinality.
     ///
     /// If no tags can be found for the entity, or at the given cardinality, `None` is returned.
@@ -438,7 +438,7 @@ mod tests {
     use saluki_event::metric::OriginTagCardinality;
 
     use crate::workload::{
-        aggregator::ConsumingStore as _,
+        aggregator::MetadataStore as _,
         entity::EntityId,
         helpers::OneOrMany,
         metadata::{MetadataAction, MetadataOperation},
@@ -495,11 +495,9 @@ mod tests {
             store.process_operation(operation);
         }
 
-        let snapshotter = store.snapshotter();
+        let querier = store.querier();
 
-        let unified_tags = snapshotter
-            .get_entity_tags(&entity_id, OriginTagCardinality::Low)
-            .unwrap();
+        let unified_tags = querier.get_entity_tags(&entity_id, OriginTagCardinality::Low).unwrap();
         assert_eq!(unified_tags, expected_tags);
     }
 
@@ -521,16 +519,12 @@ mod tests {
             store.process_operation(operation);
         }
 
-        let snapshotter = store.snapshotter();
+        let querier = store.querier();
 
-        let low_card_unified_tags = snapshotter
-            .get_entity_tags(&entity_id, OriginTagCardinality::Low)
-            .unwrap();
+        let low_card_unified_tags = querier.get_entity_tags(&entity_id, OriginTagCardinality::Low).unwrap();
         assert_eq!(low_card_unified_tags.as_sorted(), low_card_expected_tags.as_sorted());
 
-        let high_card_unified_tags = snapshotter
-            .get_entity_tags(&entity_id, OriginTagCardinality::High)
-            .unwrap();
+        let high_card_unified_tags = querier.get_entity_tags(&entity_id, OriginTagCardinality::High).unwrap();
         assert_eq!(high_card_unified_tags.as_sorted(), high_card_expected_tags.as_sorted());
     }
 
@@ -553,16 +547,14 @@ mod tests {
             store.process_operation(operation);
         }
 
-        let snapshotter = store.snapshotter();
+        let querier = store.querier();
 
-        let global_unified_tags = snapshotter
+        let global_unified_tags = querier
             .get_entity_tags(&global_entity_id, OriginTagCardinality::Low)
             .unwrap();
         assert_eq!(global_unified_tags.as_sorted(), global_expected_tags.as_sorted());
 
-        let unified_tags = snapshotter
-            .get_entity_tags(&entity_id, OriginTagCardinality::High)
-            .unwrap();
+        let unified_tags = querier.get_entity_tags(&entity_id, OriginTagCardinality::High).unwrap();
         assert_eq!(unified_tags.as_sorted(), expected_tags.as_sorted());
     }
 
@@ -602,19 +594,19 @@ mod tests {
         store.process_operation(link_ancestor(&container_entity_id, &pod_entity_id));
         store.process_operation(link_ancestor(&container_pid_entity_id, &container_entity_id));
 
-        let snapshotter = store.snapshotter();
+        let querier = store.querier();
 
-        let pod_unified_tags = snapshotter
+        let pod_unified_tags = querier
             .get_entity_tags(&pod_entity_id, OriginTagCardinality::Low)
             .unwrap();
         assert_eq!(pod_unified_tags.as_sorted(), pod_expected_tags.as_sorted());
 
-        let container_unified_tags = snapshotter
+        let container_unified_tags = querier
             .get_entity_tags(&container_entity_id, OriginTagCardinality::Low)
             .unwrap();
         assert_eq!(container_unified_tags.as_sorted(), container_expected_tags.as_sorted());
 
-        let container_pid_unified_tags = snapshotter
+        let container_pid_unified_tags = querier
             .get_entity_tags(&container_pid_entity_id, OriginTagCardinality::Low)
             .unwrap();
         assert_eq!(
@@ -633,11 +625,9 @@ mod tests {
             store.process_operation(operation);
         }
 
-        let snapshotter = store.snapshotter();
+        let querier = store.querier();
 
-        let unified_tags = snapshotter
-            .get_entity_tags(&entity_id, OriginTagCardinality::Low)
-            .unwrap();
+        let unified_tags = querier.get_entity_tags(&entity_id, OriginTagCardinality::Low).unwrap();
         assert_eq!(unified_tags.as_sorted(), expected_tags.clone().as_sorted());
 
         // Create a new set of metadata entries to add an additional tag, and observe that processing the entry updates
@@ -649,11 +639,9 @@ mod tests {
             store.process_operation(operation);
         }
 
-        let snapshotter = store.snapshotter();
+        let querier = store.querier();
 
-        let new_unified_tags = snapshotter
-            .get_entity_tags(&entity_id, OriginTagCardinality::Low)
-            .unwrap();
+        let new_unified_tags = querier.get_entity_tags(&entity_id, OriginTagCardinality::Low).unwrap();
         assert_eq!(new_unified_tags.as_sorted(), new_expected_tags.as_sorted());
     }
 
@@ -679,14 +667,14 @@ mod tests {
 
         store.process_operation(link_ancestor(&container_entity_id, &pod_entity_id));
 
-        let snapshotter = store.snapshotter();
+        let querier = store.querier();
 
-        let pod_unified_tags = snapshotter
+        let pod_unified_tags = querier
             .get_entity_tags(&pod_entity_id, OriginTagCardinality::Low)
             .unwrap();
         assert_eq!(pod_unified_tags.as_sorted(), pod_expected_tags.clone().as_sorted());
 
-        let container_unified_tags = snapshotter
+        let container_unified_tags = querier
             .get_entity_tags(&container_entity_id, OriginTagCardinality::Low)
             .unwrap();
         assert_eq!(
@@ -705,14 +693,14 @@ mod tests {
             store.process_operation(operation);
         }
 
-        let snapshotter = store.snapshotter();
+        let querier = store.querier();
 
-        let new_pod_unified_tags = snapshotter
+        let new_pod_unified_tags = querier
             .get_entity_tags(&pod_entity_id, OriginTagCardinality::Low)
             .unwrap();
         assert_eq!(new_pod_unified_tags.as_sorted(), new_pod_expected_tags.as_sorted());
 
-        let container_unified_tags = snapshotter
+        let container_unified_tags = querier
             .get_entity_tags(&container_entity_id, OriginTagCardinality::Low)
             .unwrap();
         assert_eq!(container_unified_tags.as_sorted(), container_expected_tags.as_sorted());
@@ -743,15 +731,15 @@ mod tests {
         }
 
         // At this point, we should have tags for the pod, and container #1, but not container #2.
-        let snapshotter = store.snapshotter();
+        let querier = store.querier();
 
-        assert!(snapshotter
+        assert!(querier
             .get_entity_tags(&pod_entity_id, OriginTagCardinality::Low)
             .is_some());
-        assert!(snapshotter
+        assert!(querier
             .get_entity_tags(&container1_entity_id, OriginTagCardinality::Low)
             .is_some());
-        assert!(snapshotter
+        assert!(querier
             .get_entity_tags(&container2_entity_id, OriginTagCardinality::Low)
             .is_none());
 
@@ -764,15 +752,15 @@ mod tests {
             store.process_operation(operation);
         }
 
-        let snapshotter = store.snapshotter();
+        let querier = store.querier();
 
-        assert!(snapshotter
+        assert!(querier
             .get_entity_tags(&pod_entity_id, OriginTagCardinality::Low)
             .is_some());
-        assert!(snapshotter
+        assert!(querier
             .get_entity_tags(&container1_entity_id, OriginTagCardinality::Low)
             .is_none());
-        assert!(snapshotter
+        assert!(querier
             .get_entity_tags(&container2_entity_id, OriginTagCardinality::Low)
             .is_some());
     }

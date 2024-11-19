@@ -17,7 +17,7 @@ use crate::{
         aggregator::MetadataAggregator,
         collectors::{ContainerdMetadataCollector, RemoteAgentMetadataCollector},
         entity::EntityId,
-        store::{TagSnapshotter, TagStore},
+        store::{TagStore, TagStoreQuerier},
     },
     WorkloadProvider,
 };
@@ -46,7 +46,7 @@ const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = unsafe { NonZeroUsize::
 /// remote tagger API does not stream us these mappings itself and only deals with resolved container IDs.
 #[derive(Clone)]
 pub struct RemoteAgentWorkloadProvider {
-    tag_snapshotter: TagSnapshotter,
+    tag_querier: TagStoreQuerier,
 }
 
 impl RemoteAgentWorkloadProvider {
@@ -117,23 +117,23 @@ impl RemoteAgentWorkloadProvider {
 
         // Create and attach the tag store to the aggregator.
         let tag_store = TagStore::with_entity_limit(DEFAULT_TAG_STORE_ENTITY_LIMIT);
-        let tag_snapshotter = tag_store.snapshotter();
+        let tag_querier = tag_store.querier();
 
-        aggregator.add_consuming_store(tag_store);
+        aggregator.add_store(tag_store);
 
         // With the aggregator configured, update the memory bounds and spawn the aggregator.
         provider_bounds.with_subcomponent("aggregator", &aggregator);
 
         tokio::spawn(aggregator.run());
 
-        Ok(Self { tag_snapshotter })
+        Ok(Self { tag_querier })
     }
 }
 
 #[async_trait]
 impl WorkloadProvider for RemoteAgentWorkloadProvider {
     fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<TagSet> {
-        self.tag_snapshotter.get_entity_tags(entity_id, cardinality)
+        self.tag_querier.get_entity_tags(entity_id, cardinality)
     }
 }
 
