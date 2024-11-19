@@ -1,13 +1,12 @@
-use std::{num::NonZeroUsize, sync::Arc};
+use std::{future::Future, num::NonZeroUsize};
 
-use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use memory_accounting::ComponentRegistry;
+use memory_accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::TagSet;
 use saluki_error::{generic_error, GenericError};
 use saluki_event::metric::OriginTagCardinality;
-use saluki_health::HealthRegistry;
+use saluki_health::{Health, HealthRegistry};
 use stringtheory::interning::GenericMapInterner;
 
 #[cfg(target_os = "linux")]
@@ -18,10 +17,15 @@ use crate::{
         aggregator::MetadataAggregator,
         collectors::{ContainerdMetadataCollector, RemoteAgentMetadataCollector},
         entity::EntityId,
-        store::TagSnapshot,
+        store::{TagStore, TagStoreQuerier},
     },
     WorkloadProvider,
 };
+
+// TODO: Make these configurable.
+
+// SAFETY: The value is demonstrably not zero.
+const DEFAULT_TAG_STORE_ENTITY_LIMIT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(2000) };
 
 // SAFETY: We know the value is not zero.
 const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(512 * 1024) }; // 512KB.
@@ -42,7 +46,7 @@ const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = unsafe { NonZeroUsize::
 /// remote tagger API does not stream us these mappings itself and only deals with resolved container IDs.
 #[derive(Clone)]
 pub struct RemoteAgentWorkloadProvider {
-    shared_tags: Arc<ArcSwap<TagSnapshot>>,
+    tag_querier: TagStoreQuerier,
 }
 
 impl RemoteAgentWorkloadProvider {
@@ -73,19 +77,16 @@ impl RemoteAgentWorkloadProvider {
                 )
             })?;
         let mut aggregator = MetadataAggregator::new(aggregator_health);
-        provider_bounds.with_subcomponent("aggregator", &aggregator);
 
         let mut collector_bounds = provider_bounds.subcomponent("collectors");
 
         // Add the containerd collector if the feature is available.
         let feature_detector = FeatureDetector::automatic(config);
         if feature_detector.is_feature_available(Feature::Containerd) {
-            let collector_health = health_registry.register_component("env_provider.workload.remote_agent.collector.containerd")
-                .ok_or_else(|| generic_error!("Component 'env_provider.workload.remote_agent.collector.containerd' already registered in health registry."))?;
-            let cri_collector =
-                ContainerdMetadataCollector::from_configuration(config, collector_health, string_interner.clone())
-                    .await?;
-            collector_bounds.with_subcomponent("containerd", &cri_collector);
+            let cri_collector = build_collector("containerd", health_registry, &mut collector_bounds, |health| {
+                ContainerdMetadataCollector::from_configuration(config, health, string_interner.clone())
+            })
+            .await?;
 
             aggregator.add_collector(cri_collector);
         }
@@ -93,41 +94,70 @@ impl RemoteAgentWorkloadProvider {
         // Add the cgroups collector if the feature if we're on Linux.
         #[cfg(target_os = "linux")]
         {
-            let collector_health = health_registry.register_component("env_provider.workload.remote_agent.collector.cgroups")
-                .ok_or_else(|| generic_error!("Component 'env_provider.workload.remote_agent.collector.cgroups' already registered in health registry."))?;
-            let cgroups_collector = CgroupsMetadataCollector::from_configuration(
-                config,
-                feature_detector,
-                collector_health,
-                string_interner.clone(),
-            )
+            let cgroups_collector = build_collector("cgroups", health_registry, &mut collector_bounds, |health| {
+                CgroupsMetadataCollector::from_configuration(
+                    config,
+                    feature_detector.clone(),
+                    health,
+                    string_interner.clone(),
+                )
+            })
             .await?;
-            collector_bounds.with_subcomponent("cgroups", &cgroups_collector);
 
             aggregator.add_collector(cgroups_collector);
         }
 
         // Finally, add the Remote Agent collector.
-        let collector_health = health_registry.register_component("env_provider.workload.remote_agent.collector.remote-agent")
-                .ok_or_else(|| generic_error!("Component 'env_provider.workload.remote_agent.collector.remote-agent' already registered in health registry."))?;
-        let ra_collector =
-            RemoteAgentMetadataCollector::from_configuration(config, collector_health, string_interner).await?;
-        collector_bounds.with_subcomponent("remote-agent", &ra_collector);
+        let cgroups_collector = build_collector("remote-agent", health_registry, &mut collector_bounds, |health| {
+            RemoteAgentMetadataCollector::from_configuration(config, health, string_interner.clone())
+        })
+        .await?;
 
-        aggregator.add_collector(ra_collector);
+        aggregator.add_collector(cgroups_collector);
 
-        // Attach the aggregator's tag store to the provider, and spawn the aggregator.
-        let shared_tags = aggregator.tags();
+        // Create and attach the tag store to the aggregator.
+        let tag_store = TagStore::with_entity_limit(DEFAULT_TAG_STORE_ENTITY_LIMIT);
+        let tag_querier = tag_store.querier();
+
+        aggregator.add_store(tag_store);
+
+        // With the aggregator configured, update the memory bounds and spawn the aggregator.
+        provider_bounds.with_subcomponent("aggregator", &aggregator);
 
         tokio::spawn(aggregator.run());
 
-        Ok(Self { shared_tags })
+        Ok(Self { tag_querier })
     }
 }
 
 #[async_trait]
 impl WorkloadProvider for RemoteAgentWorkloadProvider {
     fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<TagSet> {
-        self.shared_tags.load().get_entity_tags(entity_id, cardinality)
+        self.tag_querier.get_entity_tags(entity_id, cardinality)
     }
+}
+
+async fn build_collector<F, Fut, O>(
+    collector_name: &str, health_registry: &HealthRegistry, bounds_builder: &mut MemoryBoundsBuilder<'_>, build: F,
+) -> Result<O, GenericError>
+where
+    F: FnOnce(Health) -> Fut,
+    Fut: Future<Output = Result<O, GenericError>>,
+    O: MemoryBounds,
+{
+    let health = health_registry
+        .register_component(format!(
+            "env_provider.workload.remote_agent.collector.{}",
+            collector_name
+        ))
+        .ok_or_else(|| {
+            generic_error!(
+                "Component 'env_provider.workload.remote_agent.collector.{}' already registered in health registry.",
+                collector_name
+            )
+        })?;
+    let collector = build(health).await?;
+    bounds_builder.with_subcomponent(collector_name, &collector);
+
+    Ok(collector)
 }
