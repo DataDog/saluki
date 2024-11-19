@@ -74,22 +74,25 @@ impl MemoryBoundsConfiguration {
             .as_typed::<Self>()
             .error_context("Failed to parse memory bounds configuration.")?;
 
+        if config.memory_limit.is_none() {
+            // Try to pull configured memory limit from Cgroup if running in a containerized environment.
+            if let Ok(value) = env::var("DOCKER_DD_AGENT") {
+                if !value.is_empty() {
+                    let cgroup_memory_reader = CgroupMemoryParser {};
+                    let read_memory = cgroup_memory_reader.parse();
+                    if let Some(memory) = read_memory {
+                        config.memory_limit = Some(memory);
+                    }
+                }
+            }
+        }
+
         // Try constructing the initial grant based on the configuration as a smoke test to validate the values.
         if let Some(limit) = config.memory_limit {
             let _ = MemoryGrant::with_slop_factor(limit.as_u64() as usize, config.memory_slop_factor)
                 .error_context("Given memory limit and/or slop factor invalid.")?;
         }
 
-        // Try to pull configured memory limit from Cgroup if running in a containerized environment.
-        if let Ok(value) = env::var("DOCKER_DD_AGENT") {
-            if !value.is_empty() {
-                let cgroup_memory_reader = CgroupMemoryParser {};
-                let read_memory = cgroup_memory_reader.parse();
-                if let Some(memory) = read_memory {
-                    config.memory_limit = Some(memory);
-                }
-            }
-        }
         Ok(config)
     }
 
