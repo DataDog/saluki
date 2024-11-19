@@ -12,7 +12,7 @@ use tracing::warn;
 /// - `cn-<container_name>`: The container name associated with the entity.
 ///
 /// `ExternalData` represents an owned variant of this data. For parsing external data strings without allocating, see [`ExternalDataRef`].
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExternalData {
     pod_uid: MetaString,
     container_name: MetaString,
@@ -28,9 +28,16 @@ impl ExternalData {
     }
 }
 
-impl<'a> Equivalent<ExternalDataRef<'a>> for ExternalData {
-    fn equivalent(&self, other: &ExternalDataRef<'a>) -> bool {
-        self.pod_uid == other.pod_uid && self.container_name == other.container_name
+impl std::hash::Hash for ExternalData {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (*self.pod_uid).hash(state);
+        (*self.container_name).hash(state);
+    }
+}
+
+impl<'a> Equivalent<ExternalData> for ExternalDataRef<'a> {
+    fn equivalent(&self, other: &ExternalData) -> bool {
+        self.pod_uid == &*other.pod_uid && self.container_name == &*other.container_name
     }
 }
 
@@ -39,7 +46,6 @@ impl<'a> Equivalent<ExternalDataRef<'a>> for ExternalData {
 /// This is a borrowed version of `ExternalData` that is used to parse external data strings without needing to allocate
 /// backing storage for any of the fields, and can be used to look up map entries (such as when using `HashMap`) when
 /// the key is [`ExternalData`].
-#[derive(Eq, Hash, PartialEq)]
 pub struct ExternalDataRef<'a> {
     pod_uid: &'a str,
     container_name: &'a str,
@@ -86,5 +92,45 @@ impl<'a> ExternalDataRef<'a> {
         }
 
         Some(data)
+    }
+}
+
+impl<'a> std::hash::Hash for ExternalDataRef<'a> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.pod_uid.hash(state);
+        self.container_name.hash(state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::hash_map::DefaultHasher,
+        hash::{Hash as _, Hasher as _},
+    };
+
+    use proptest::prelude::*;
+
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn property_test_identical_hash_impls(pod_uid in "[a-z0-9]{1,64}", container_name in "[a-z0-9]{1,64}") {
+            let external_data = ExternalData::new(pod_uid.clone().into(), container_name.clone().into());
+            let external_data_ref = ExternalDataRef {
+                pod_uid: &pod_uid,
+                container_name: &container_name,
+            };
+
+            let mut hasher = DefaultHasher::new();
+            external_data.hash(&mut hasher);
+            let external_data_hash = hasher.finish();
+
+            let mut hasher = DefaultHasher::new();
+            external_data_ref.hash(&mut hasher);
+            let external_data_ref_hash = hasher.finish();
+
+            assert_eq!(external_data_hash, external_data_ref_hash);
+        }
     }
 }

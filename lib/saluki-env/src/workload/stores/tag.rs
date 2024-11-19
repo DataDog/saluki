@@ -1,16 +1,18 @@
 use std::{collections::VecDeque, num::NonZeroUsize, sync::Arc};
 
-use ahash::{AHashMap, AHashSet};
 use arc_swap::ArcSwap;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_context::TagSet;
 use saluki_event::metric::OriginTagCardinality;
 use tracing::debug;
 
-use super::{
-    aggregator::MetadataStore,
-    entity::EntityId,
-    metadata::{MetadataAction, MetadataOperation},
+use crate::{
+    prelude::*,
+    workload::{
+        aggregator::MetadataStore,
+        entity::EntityId,
+        metadata::{MetadataAction, MetadataOperation},
+    },
 };
 
 // TODO: This will be very slow if we deliver metadata operations one-by-one, especially when collectors will likely be
@@ -32,40 +34,40 @@ pub struct TagStore {
     snapshot: Arc<ArcSwap<TagSnapshot>>,
 
     entity_limit: NonZeroUsize,
-    active_entities: AHashSet<EntityId>,
+    active_entities: FastHashSet<EntityId>,
 
-    entity_hierarchy_mappings: AHashMap<EntityId, EntityId>,
+    entity_hierarchy_mappings: FastHashMap<EntityId, EntityId>,
 
-    low_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
-    orchestrator_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
-    high_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
+    low_cardinality_entity_tags: FastHashMap<EntityId, TagSet>,
+    orchestrator_cardinality_entity_tags: FastHashMap<EntityId, TagSet>,
+    high_cardinality_entity_tags: FastHashMap<EntityId, TagSet>,
 
-    unified_low_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
-    unified_orchestrator_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
-    unified_high_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
+    unified_low_cardinality_entity_tags: FastHashMap<EntityId, TagSet>,
+    unified_orchestrator_cardinality_entity_tags: FastHashMap<EntityId, TagSet>,
+    unified_high_cardinality_entity_tags: FastHashMap<EntityId, TagSet>,
 }
 
 impl TagStore {
     /// Creates a new `TagStore` with the given entity limit.
     ///
-    /// The entity limit is the maximum number of entities that can be stored in the tag store. Once the limit is
-    /// reached, new entities will not be added to the store.
+    /// The entity limit is the maximum number of unique entities that can be stored. Once the limit is reached, new
+    /// entities will not be added to the store.
     pub fn with_entity_limit(entity_limit: NonZeroUsize) -> Self {
         Self {
             snapshot: Arc::new(ArcSwap::new(Arc::new(TagSnapshot::default()))),
             entity_limit,
-            active_entities: AHashSet::new(),
-            entity_hierarchy_mappings: AHashMap::new(),
-            low_cardinality_entity_tags: AHashMap::new(),
-            orchestrator_cardinality_entity_tags: AHashMap::new(),
-            high_cardinality_entity_tags: AHashMap::new(),
-            unified_low_cardinality_entity_tags: AHashMap::new(),
-            unified_orchestrator_cardinality_entity_tags: AHashMap::new(),
-            unified_high_cardinality_entity_tags: AHashMap::new(),
+            active_entities: FastHashSet::default(),
+            entity_hierarchy_mappings: FastHashMap::default(),
+            low_cardinality_entity_tags: FastHashMap::default(),
+            orchestrator_cardinality_entity_tags: FastHashMap::default(),
+            high_cardinality_entity_tags: FastHashMap::default(),
+            unified_low_cardinality_entity_tags: FastHashMap::default(),
+            unified_orchestrator_cardinality_entity_tags: FastHashMap::default(),
+            unified_high_cardinality_entity_tags: FastHashMap::default(),
         }
     }
 
-    /// Gets the entity limit of the tag store.
+    /// Returns the maximum number of unique entities that can be tracked by the store at any given time.
     pub fn entity_limit(&self) -> usize {
         self.entity_limit.get()
     }
@@ -75,7 +77,7 @@ impl TagStore {
             return true;
         }
 
-        if self.active_entities.len() >= self.entity_limit.get() {
+        if self.active_entities.len() >= self.entity_limit() {
             return false;
         }
 
@@ -404,8 +406,8 @@ impl MemoryBounds for TagStore {
 
 #[derive(Default)]
 struct TagSnapshot {
-    low_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
-    high_cardinality_entity_tags: AHashMap<EntityId, TagSet>,
+    low_cardinality_entity_tags: FastHashMap<EntityId, TagSet>,
+    high_cardinality_entity_tags: FastHashMap<EntityId, TagSet>,
 }
 
 /// A handle for querying entity tags from a `TagStore`.
