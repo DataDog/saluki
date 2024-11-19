@@ -619,6 +619,12 @@ impl PartialEq<str> for MetaString {
     }
 }
 
+impl PartialEq<&str> for MetaString {
+    fn eq(&self, other: &&str) -> bool {
+        self.deref() == *other
+    }
+}
+
 impl PartialEq<MetaString> for MetaString {
     fn eq(&self, other: &MetaString) -> bool {
         self.deref() == other.deref()

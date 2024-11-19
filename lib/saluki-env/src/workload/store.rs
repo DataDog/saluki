@@ -353,6 +353,8 @@ impl MetadataStore for TagStore {
                 MetadataAction::SetTags { cardinality, tags } => {
                     self.set_entity_tags(entity_id.clone(), tags, cardinality)
                 }
+                // We don't care about External Data.
+                MetadataAction::AttachExternalData { .. } => {}
             }
         }
 
@@ -437,13 +439,8 @@ mod tests {
     use saluki_context::TagSet;
     use saluki_event::metric::OriginTagCardinality;
 
-    use crate::workload::{
-        aggregator::MetadataStore as _,
-        entity::EntityId,
-        helpers::OneOrMany,
-        metadata::{MetadataAction, MetadataOperation},
-        store::TagStore,
-    };
+    use super::*;
+    use crate::workload::helpers::OneOrMany;
 
     const DEFAULT_ENTITY_LIMIT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(10) };
 
