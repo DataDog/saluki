@@ -4,6 +4,7 @@
 #![deny(missing_docs)]
 
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{get, post},
     Router,
 };
@@ -55,8 +56,10 @@ async fn run() -> Result<(), GenericError> {
         .route("/intake/", post(handle_intake))
         .route("/api/v2/series", post(handle_series_v2))
         .route("/api/beta/sketches", post(handle_sketch_beta))
-        .route_layer(RequestDecompressionLayer::new())
+        .route_layer(RequestDecompressionLayer::new().deflate(true).zstd(true))
         .route_layer(CompressionLayer::new().zstd(true))
+        // Decompressed metrics payloads can be large (~62MB for sketches).
+        .route_layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(intake_state);
 
     let listener = TcpListener::bind("0.0.0.0:2049").await.unwrap();

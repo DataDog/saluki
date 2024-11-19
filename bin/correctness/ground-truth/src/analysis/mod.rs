@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stele::{Metric, MetricValue};
 use tracing::{error, info, warn};
@@ -52,10 +50,6 @@ impl RawTestResults {
 
         // Filter out internal telemetry metrics.
         filter_internal_telemetry_metrics(&mut dsd_metrics, &mut adp_metrics);
-
-        // Filter out histogram metrics, since we don't currently emit them the same way in ADP as we do in DSD, so
-        // there's no reason to compare them yet.
-        filter_histogram_metrics(&mut dsd_metrics, &mut adp_metrics);
 
         // Make sure both DSD and ADP emitted the same unique set of metrics. We don't yet care about the _values_ of
         // those metrics, just that both sides are emitting the same contexts.
@@ -123,48 +117,8 @@ fn filter_internal_telemetry_metrics(dsd_metrics: &mut NormalizedMetrics, adp_me
     info!("Filtered {} internal telemetry metric(s) from DogStatsD, and {} internal telemetry metric(s) from Agent Data Plane.", dsd_filtered_metrics.len(), adp_filtered_metrics.len());
 }
 
-fn filter_histogram_metrics(dsd_metrics: &mut NormalizedMetrics, adp_metrics: &mut NormalizedMetrics) {
-    // First, we do the raw filtering of histogram metrics.
-    let dsd_filtered_metrics = dsd_metrics.remove_matching(is_histogram_metric);
-    let adp_filtered_metrics = adp_metrics.remove_matching(is_histogram_metric);
-
-    if !adp_filtered_metrics.is_empty() {
-        panic!("Found histogram metrics in Agent Data Plane. This is unexpected, as we don't currently emit histogram metrics in ADP.");
-    }
-
-    // Next, we examine the metrics we filtered from the DSD side to find the unique metric context once the
-    // histogram-specific suffix is removed. Since the same metrics are going into DSD and ADP, we want to find the
-    // corresponding metric on the ADP side and remove it.
-    //
-    // Essentially, we may find `foo_metric.avg`, `foo_metric.min`, and so on, when filtering from DSD. We would then
-    // expect to see `foo_metric` in the ADP metrics... and that's what we want to remove.
-    let histogram_metric_base_names = dsd_filtered_metrics
-        .iter()
-        .filter_map(|metric| metric.context().name().rsplit_once('.').map(|(base_name, _)| base_name))
-        .collect::<HashSet<_>>();
-
-    let adp_filtered_metrics =
-        adp_metrics.remove_matching(|metric| histogram_metric_base_names.contains(metric.context().name()));
-
-    info!(
-        "Filtered {} histogram metric(s) from DogStatsD, and {} histogram metric(s) from Agent Data Plane.",
-        dsd_filtered_metrics.len(),
-        adp_filtered_metrics.len()
-    );
-}
-
 fn is_internal_telemetry(metric: &NormalizedMetric) -> bool {
     metric.context().name().starts_with("datadog.") || metric.context().name().starts_with("n_o_i_n_d_e_x")
-}
-
-fn is_histogram_metric(metric: &NormalizedMetric) -> bool {
-    metric.context().name().ends_with(".min")
-        || metric.context().name().ends_with(".max")
-        || metric.context().name().ends_with(".avg")
-        || metric.context().name().ends_with(".median")
-        || metric.context().name().ends_with(".count")
-        || metric.context().name().ends_with(".sum")
-        || metric.context().name().ends_with(".95percentile")
 }
 
 fn get_formatted_metric_values(metric: &NormalizedMetric, value: &MetricValue) -> String {

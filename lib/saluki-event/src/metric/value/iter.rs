@@ -1,75 +1,8 @@
 use std::{collections::HashSet, num::NonZeroU64};
 
-use ddsketch_agent::DDSketch;
 use ordered_float::OrderedFloat;
 
-use super::{ScalarPoints, SetPoints, SketchPoints, TimestampedValue};
-
-impl IntoIterator for ScalarPoints {
-    type Item = (Option<NonZeroU64>, f64);
-    type IntoIter = PointsIter;
-
-    fn into_iter(self) -> Self::IntoIter {
-        PointsIter {
-            inner: PointsIterInner::Scalar(self.0.values.into_iter()),
-        }
-    }
-}
-
-impl<'a> IntoIterator for &'a ScalarPoints {
-    type Item = (Option<NonZeroU64>, f64);
-    type IntoIter = PointsIterRef<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        PointsIterRef {
-            inner: PointsIterRefInner::Scalar(self.0.values.iter()),
-        }
-    }
-}
-
-impl IntoIterator for SketchPoints {
-    type Item = (Option<NonZeroU64>, DDSketch);
-    type IntoIter = SketchesIter;
-
-    fn into_iter(self) -> Self::IntoIter {
-        SketchesIter {
-            inner: self.0.values.into_iter(),
-        }
-    }
-}
-
-impl<'a> IntoIterator for &'a SketchPoints {
-    type Item = (Option<NonZeroU64>, &'a DDSketch);
-    type IntoIter = SketchesIterRef<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        SketchesIterRef {
-            inner: self.0.values.iter(),
-        }
-    }
-}
-
-impl IntoIterator for SetPoints {
-    type Item = (Option<NonZeroU64>, f64);
-    type IntoIter = PointsIter;
-
-    fn into_iter(self) -> Self::IntoIter {
-        PointsIter {
-            inner: PointsIterInner::Set(self.0.values.into_iter()),
-        }
-    }
-}
-
-impl<'a> IntoIterator for &'a SetPoints {
-    type Item = (Option<NonZeroU64>, f64);
-    type IntoIter = PointsIterRef<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        PointsIterRef {
-            inner: PointsIterRefInner::Set(self.0.values.iter()),
-        }
-    }
-}
+use super::TimestampedValue;
 
 enum PointsIterInner {
     Scalar(smallvec::IntoIter<[TimestampedValue<OrderedFloat<f64>>; 4]>),
@@ -78,6 +11,20 @@ enum PointsIterInner {
 
 pub struct PointsIter {
     inner: PointsIterInner,
+}
+
+impl PointsIter {
+    pub(super) fn scalar(values: smallvec::IntoIter<[TimestampedValue<OrderedFloat<f64>>; 4]>) -> Self {
+        Self {
+            inner: PointsIterInner::Scalar(values),
+        }
+    }
+
+    pub(super) fn set(values: smallvec::IntoIter<[TimestampedValue<HashSet<String>>; 1]>) -> Self {
+        Self {
+            inner: PointsIterInner::Set(values),
+        }
+    }
 }
 
 impl Iterator for PointsIter {
@@ -100,6 +47,20 @@ pub struct PointsIterRef<'a> {
     inner: PointsIterRefInner<'a>,
 }
 
+impl<'a> PointsIterRef<'a> {
+    pub(super) fn scalar(values: std::slice::Iter<'a, TimestampedValue<OrderedFloat<f64>>>) -> Self {
+        Self {
+            inner: PointsIterRefInner::Scalar(values),
+        }
+    }
+
+    pub(super) fn set(values: std::slice::Iter<'a, TimestampedValue<HashSet<String>>>) -> Self {
+        Self {
+            inner: PointsIterRefInner::Set(values),
+        }
+    }
+}
+
 impl<'a> Iterator for PointsIterRef<'a> {
     type Item = (Option<NonZeroU64>, f64);
 
@@ -108,29 +69,5 @@ impl<'a> Iterator for PointsIterRef<'a> {
             PointsIterRefInner::Scalar(iter) => iter.next().map(|value| (value.timestamp, value.value.into_inner())),
             PointsIterRefInner::Set(iter) => iter.next().map(|value| (value.timestamp, value.value.len() as f64)),
         }
-    }
-}
-
-pub struct SketchesIter {
-    inner: smallvec::IntoIter<[TimestampedValue<DDSketch>; 1]>,
-}
-
-impl Iterator for SketchesIter {
-    type Item = (Option<NonZeroU64>, DDSketch);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|value| (value.timestamp, value.value))
-    }
-}
-
-pub struct SketchesIterRef<'a> {
-    inner: std::slice::Iter<'a, TimestampedValue<DDSketch>>,
-}
-
-impl<'a> Iterator for SketchesIterRef<'a> {
-    type Item = (Option<NonZeroU64>, &'a DDSketch);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|value| (value.timestamp, &value.value))
     }
 }

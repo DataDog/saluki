@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime};
 
 use bytesize::ByteSize;
 use saluki_error::{ErrorContext as _, GenericError};
@@ -43,6 +43,24 @@ impl Driver {
         let mut partial_sends = 0;
 
         let max_payloads = self.config.volume.get();
+
+        // If we're trying to align to an aggregation bucket's start, figure out how long we need to wait and then add 1
+        // second to that just to ensure we don't start sending until we're within the bucket window.
+        if let Some(aggregation_bucket_width_secs) = self.config.aggregation_bucket_width_secs {
+            let now_secs = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let next_bucket_boundary_secs = aggregation_bucket_width_secs - (now_secs % aggregation_bucket_width_secs);
+
+            info!(
+                "Waiting for next aggregation bucket boundary in {} seconds.",
+                next_bucket_boundary_secs
+            );
+
+            std::thread::sleep(Duration::from_secs(next_bucket_boundary_secs + 1));
+        }
+
         let start = Instant::now();
 
         loop {

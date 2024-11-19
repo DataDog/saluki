@@ -1,6 +1,7 @@
-use std::io;
+use std::{io, num::NonZeroU64};
 
 use datadog_protos::metrics::{self as proto, Resource};
+use ddsketch_agent::DDSketch;
 use http::{Method, Request, Uri};
 use protobuf::CodedOutputStream;
 use saluki_core::pooling::ObjectPool;
@@ -96,7 +97,7 @@ impl MetricsEndpoint {
             MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..) => {
                 Self::Series
             }
-            MetricValues::Distribution(..) => Self::Sketches,
+            MetricValues::Histogram(..) | MetricValues::Distribution(..) => Self::Sketches,
         }
     }
 
@@ -431,7 +432,9 @@ fn encode_single_metric(metric: &Metric) -> EncodedMetric {
         MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..) => {
             EncodedMetric::Series(encode_series_metric(metric))
         }
-        MetricValues::Distribution(..) => EncodedMetric::Sketch(encode_sketch_metric(metric)),
+        MetricValues::Histogram(..) | MetricValues::Distribution(..) => {
+            EncodedMetric::Sketch(encode_sketch_metric(metric))
+        }
     }
 }
 
@@ -549,22 +552,38 @@ fn encode_sketch_metric(metric: &Metric) -> proto::Sketch {
         ));
     }
 
-    let sketches = match metric.values() {
-        MetricValues::Distribution(sketches) => sketches,
+    match metric.values() {
+        MetricValues::Distribution(sketches) => {
+            for (timestamp, value) in sketches {
+                // Distributions already have sketch points natively, so we just write them as-is.
+                write_ddsketch_to_proto_sketch(timestamp, value, &mut sketch);
+            }
+        }
+        MetricValues::Histogram(points) => {
+            for (timestamp, histogram) in points {
+                // We convert histograms to sketches to be able to write them out in the payload.
+                let mut ddsketch = DDSketch::default();
+                for sample in histogram.samples() {
+                    ddsketch.insert_n(sample.value.into_inner(), sample.weight as u32);
+                }
+
+                write_ddsketch_to_proto_sketch(timestamp, &ddsketch, &mut sketch);
+            }
+        }
         _ => unreachable!(),
-    };
-
-    for (timestamp, value) in sketches {
-        let timestamp = timestamp.map(|ts| ts.get()).unwrap_or(0) as i64;
-
-        let mut dogsketch = proto::Dogsketch::new();
-        dogsketch.set_ts(timestamp);
-        value.merge_to_dogsketch(&mut dogsketch);
-
-        sketch.mut_dogsketches().push(dogsketch);
     }
 
     sketch
+}
+
+fn write_ddsketch_to_proto_sketch(timestamp: Option<NonZeroU64>, sketch: &DDSketch, proto_sketch: &mut proto::Sketch) {
+    let timestamp = timestamp.map(|ts| ts.get()).unwrap_or(0) as i64;
+
+    let mut dogsketch = proto::Dogsketch::new();
+    dogsketch.set_ts(timestamp);
+    sketch.merge_to_dogsketch(&mut dogsketch);
+
+    proto_sketch.mut_dogsketches().push(dogsketch);
 }
 
 fn origin_metadata_to_proto_metadata(product: u32, subproduct: u32, product_detail: u32) -> proto::Metadata {
@@ -577,4 +596,28 @@ fn origin_metadata_to_proto_metadata(product: u32, subproduct: u32, product_deta
     proto_origin.set_origin_category(subproduct);
     proto_origin.set_origin_service(product_detail);
     metadata
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_event::metric::Metric;
+
+    use super::encode_sketch_metric;
+
+    #[test]
+    fn histogram_vs_sketch_identical_payload() {
+        // For the same exact set of points, we should be able to construct either a histogram or distribution from
+        // those points, and when encoded as a sketch payload, end up with the same exact payload.
+        //
+        // They should be identical because the goal is that we convert histograms into sketches in the same way we
+        // would have originally constructed a sketch based on the same samples.
+        let samples = &[1.0, 2.0, 3.0, 4.0, 5.0];
+        let histogram = Metric::histogram("simple_samples", samples);
+        let distribution = Metric::distribution("simple_samples", samples);
+
+        let histogram_payload = encode_sketch_metric(&histogram);
+        let distribution_payload = encode_sketch_metric(&distribution);
+
+        assert_eq!(histogram_payload, distribution_payload);
+    }
 }
