@@ -2,6 +2,8 @@
 
 use std::{
     collections::{HashMap, VecDeque},
+    fs,
+    io::Read,
     sync::atomic::{AtomicBool, Ordering::Relaxed},
     time::Duration,
 };
@@ -68,7 +70,7 @@ impl MemoryBoundsConfiguration {
     ///
     /// If an error occurs during deserialization, an error will be returned.
     pub fn try_from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let config = config
+        let mut config = config
             .as_typed::<Self>()
             .error_context("Failed to parse memory bounds configuration.")?;
 
@@ -78,6 +80,11 @@ impl MemoryBoundsConfiguration {
                 .error_context("Given memory limit and/or slop factor invalid.")?;
         }
 
+        let cgroup_memory_reader = CgroupMemoryParser {};
+        let read_memory = cgroup_memory_reader.parse();
+        if let Some(memory) = read_memory {
+            config.memory_limit = Some(memory);
+        }
         Ok(config)
     }
 
@@ -254,4 +261,72 @@ pub async fn initialize_allocator_telemetry() -> Result<(), GenericError> {
     });
 
     Ok(())
+}
+
+struct CgroupMemoryParser {}
+
+impl CgroupMemoryParser {
+    fn parse(self) -> Option<ByteSize> {
+        if let Ok(mut file) = fs::File::open("/proc/self/cgroup") {
+            let mut contents = String::new();
+            if let Ok(_) = file.read_to_string(&mut contents) {
+                let parts: Vec<&str> = contents.trim().split("\n").collect();
+                // CgroupV2 has unified controllers.
+                if parts.len() == 1 {
+                    return self.parse_controller_v2(parts[0]);
+                }
+                for line in contents.lines() {
+                    if line.contains(":memory:") {
+                        return self.parse_controller_v1(line);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Parse memory limit when CgroupV1 is in use.
+    ///
+    /// Defaults to None if any error is encountered.
+    fn parse_controller_v1(self, controller: &str) -> Option<ByteSize> {
+        if let Some(path) = controller.split(":").nth(2) {
+            let memory_path = format!("/sys/fs/cgroup/memory{}/memory.limit_in_bytes", path);
+            let memory_file_maybe = fs::File::open(memory_path).ok();
+            if let Some(mut memory_file) = memory_file_maybe {
+                let mut memory = String::new();
+                if let Ok(_) = memory_file.read_to_string(&mut memory) {
+                    let mut s = String::new();
+                    if let Ok(_) = memory_file.read_to_string(&mut s) {
+                        return self.convert_to_bytesize(&s);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Parse memory limit when CgroupV2 is in use.
+    ///
+    /// Defaults to None if any error is encountered.
+    fn parse_controller_v2(self, controller: &str) -> Option<ByteSize> {
+        if let Some(path) = controller.split(":").nth(2) {
+            let memory_path = format!("/sys/fs/cgroup{}/memory.max", path);
+            let memory_file_maybe = fs::File::open(memory_path).ok();
+            if let Some(mut memory_file) = memory_file_maybe {
+                let mut s = String::new();
+                if let Ok(_) = memory_file.read_to_string(&mut s) {
+                    return self.convert_to_bytesize(&s);
+                }
+            }
+        }
+        None
+    }
+
+    fn convert_to_bytesize(self, s: &str) -> Option<ByteSize> {
+        let memory = s.trim().to_string();
+        if memory == "max" {
+            return None;
+        }
+        memory.parse::<ByteSize>().ok()
+    }
 }
