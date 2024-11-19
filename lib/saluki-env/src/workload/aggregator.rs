@@ -113,7 +113,11 @@ impl MemoryBounds for MetadataAggregator {
     }
 }
 
+/// A store which receives a stream of metadata operations.
 pub trait MetadataStore: MemoryBounds {
+    /// Returns the name of the store.
     fn name(&self) -> &'static str;
+
+    /// Process a metadata operation.
     fn process_operation(&mut self, operation: MetadataOperation);
 }
