@@ -3,7 +3,6 @@
 use std::{
     collections::{HashMap, VecDeque},
     env, fs,
-    io::Read,
     sync::atomic::{AtomicBool, Ordering::Relaxed},
     time::Duration,
 };
@@ -78,9 +77,8 @@ impl MemoryBoundsConfiguration {
             // Try to pull configured memory limit from Cgroup if running in a containerized environment.
             if let Ok(value) = env::var("DOCKER_DD_AGENT") {
                 if !value.is_empty() {
-                    let cgroup_memory_reader = CgroupMemoryParser {};
-                    let read_memory = cgroup_memory_reader.parse();
-                    if let Some(memory) = read_memory {
+                    let cgroup_memory_reader = CgroupMemoryParser;
+                    if let Some(memory) = cgroup_memory_reader.parse() {
                         config.memory_limit = Some(memory);
                     }
                 }
@@ -271,60 +269,42 @@ pub async fn initialize_allocator_telemetry() -> Result<(), GenericError> {
     Ok(())
 }
 
-struct CgroupMemoryParser {}
+struct CgroupMemoryParser;
 
 impl CgroupMemoryParser {
+    /// Parse memory limit from memory controller.
+    ///
+    /// `parse_controller_v2` is called if a unified controller is found in /proc/self/cgroup.
+    /// `parse_controller_v1` is called on the controller with ":memory:" present.
+    ///
+    /// Returns `None` if memory limit is set to max or if an error is encountered while parsing.
     fn parse(self) -> Option<ByteSize> {
-        if let Ok(mut file) = fs::File::open("/proc/self/cgroup") {
-            let mut contents = String::new();
-            if file.read_to_string(&mut contents).is_ok() {
-                let parts: Vec<&str> = contents.trim().split("\n").collect();
-                // CgroupV2 has unified controllers.
-                if parts.len() == 1 {
-                    return self.parse_controller_v2(parts[0]);
-                }
-                for line in contents.lines() {
-                    if line.contains(":memory:") {
-                        return self.parse_controller_v1(line);
-                    }
-                }
+        let contents = fs::read_to_string("/proc/self/cgroup").ok()?;
+        let parts: Vec<&str> = contents.trim().split("\n").collect();
+        // CgroupV2 has unified controllers.
+        if parts.len() == 1 {
+            return self.parse_controller_v2(parts[0]);
+        }
+        for line in parts {
+            if line.contains(":memory:") {
+                return self.parse_controller_v1(line);
             }
         }
         None
     }
 
-    /// Parse memory limit when CgroupV1 is in use.
-    ///
-    /// Defaults to None if any error is encountered.
     fn parse_controller_v1(self, controller: &str) -> Option<ByteSize> {
-        if let Some(path) = controller.split(":").nth(2) {
-            let memory_path = format!("/sys/fs/cgroup/memory{}/memory.limit_in_bytes", path);
-            let memory_file_maybe = fs::File::open(memory_path).ok();
-            if let Some(mut memory_file) = memory_file_maybe {
-                let mut s = String::new();
-                if memory_file.read_to_string(&mut s).is_ok() {
-                    return self.convert_to_bytesize(&s);
-                }
-            }
-        }
-        None
+        let path = controller.split(":").nth(2)?;
+        let memory_path = format!("/sys/fs/cgroup/memory{}/memory.limit_in_bytes", path);
+        let raw_memory_limit = fs::read_to_string(memory_path).ok()?;
+        self.convert_to_bytesize(&raw_memory_limit)
     }
 
-    /// Parse memory limit when CgroupV2 is in use.
-    ///
-    /// Defaults to None if any error is encountered.
     fn parse_controller_v2(self, controller: &str) -> Option<ByteSize> {
-        if let Some(path) = controller.split(":").nth(2) {
-            let memory_path = format!("/sys/fs/cgroup{}/memory.max", path);
-            let memory_file_maybe = fs::File::open(memory_path).ok();
-            if let Some(mut memory_file) = memory_file_maybe {
-                let mut s = String::new();
-                if memory_file.read_to_string(&mut s).is_ok() {
-                    return self.convert_to_bytesize(&s);
-                }
-            }
-        }
-        None
+        let path = controller.split(":").nth(2)?;
+        let memory_path = format!("/sys/fs/cgroup{}/memory.max", path);
+        let raw_memory_limit = fs::read_to_string(memory_path).ok()?;
+        self.convert_to_bytesize(&raw_memory_limit)
     }
 
     fn convert_to_bytesize(self, s: &str) -> Option<ByteSize> {
