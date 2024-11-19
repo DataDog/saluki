@@ -74,57 +74,26 @@ impl fmt::Display for OriginTagCardinality {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct OriginEntity {
     /// Process ID of the sender.
-    process_id: Option<NonZeroU32>,
+    pub process_id: Option<NonZeroU32>,
 
     /// Container ID of the sender.
     ///
     /// This will generally be the typical long hexadecimal string that is used by container runtimes like `containerd`,
     /// but may sometimes also be a different form, such as the container's cgroups inode.
-    container_id: MetaString,
+    pub container_id: Option<MetaString>,
 
     /// Pod UID of the sender.
     ///
     /// This is generally only used in Kubernetes environments to uniquely identify the pod. UIDs are equivalent to UUIDs.
-    pod_uid: MetaString,
+    pub pod_uid: Option<MetaString>,
 
     /// Desired cardinality of any tags associated with the entity.
     ///
     /// This controls the cardinality of the tags added to this metric when enriching based on the available entity IDs.
-    cardinality: Option<OriginTagCardinality>,
+    pub cardinality: Option<OriginTagCardinality>,
 }
 
 impl OriginEntity {
-    /// Sets the process ID of the sender.
-    ///
-    /// Must be a non-zero value. If the value is zero, it is silently ignored.
-    pub fn set_process_id(&mut self, process_id: u32) {
-        self.process_id = NonZeroU32::new(process_id);
-    }
-
-    /// Sets the container ID of the sender.
-    pub fn set_container_id<S>(&mut self, container_id: S)
-    where
-        S: Into<MetaString>,
-    {
-        self.container_id = container_id.into();
-    }
-
-    /// Sets the pod UID of the sender.
-    pub fn set_pod_uid<S>(&mut self, pod_uid: S)
-    where
-        S: Into<MetaString>,
-    {
-        self.pod_uid = pod_uid.into();
-    }
-
-    /// Sets the desired cardinality of any tags associated with the entity.
-    pub fn set_cardinality<S>(&mut self, cardinality: S)
-    where
-        S: Into<Option<OriginTagCardinality>>,
-    {
-        self.cardinality = cardinality.into();
-    }
-
     /// Gets the process ID of the sender.
     pub fn process_id(&self) -> Option<u32> {
         self.process_id.map(NonZeroU32::get)
@@ -132,20 +101,12 @@ impl OriginEntity {
 
     /// Gets the container ID of the sender.
     pub fn container_id(&self) -> Option<&str> {
-        if self.container_id.is_empty() {
-            None
-        } else {
-            Some(&self.container_id)
-        }
+        self.container_id.as_deref()
     }
 
     /// Gets the pod UID of the sender.
     pub fn pod_uid(&self) -> Option<&str> {
-        if self.pod_uid.is_empty() {
-            None
-        } else {
-            Some(&self.pod_uid)
-        }
+        self.pod_uid.as_deref()
     }
 
     /// Gets the desired cardinality of any tags associated with the entity.
@@ -161,9 +122,15 @@ impl OriginEntity {
 #[must_use]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MetricMetadata {
-    hostname: Option<Arc<str>>,
-    origin_entity: OriginEntity,
-    origin: Option<MetricOrigin>,
+    /// The hostname where the metric originated from.
+    pub hostname: Option<Arc<str>>,
+
+    /// The origin entity.
+    pub origin_entity: OriginEntity,
+
+    /// The metric origin.
+    // TODO: only optional so we can default? seems like we always have one
+    pub origin: Option<MetricOrigin>,
 }
 
 impl MetricMetadata {

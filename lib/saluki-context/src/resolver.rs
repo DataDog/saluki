@@ -286,7 +286,10 @@ impl ContextResolver {
         self
     }
 
-    fn intern(&self, s: &str) -> Option<MetaString> {
+    /// Attempt to intern the given string using the resolver's string interner.
+    ///
+    /// This will try to store the string inline, intern it, or fall back to allocating a new `MetaString`.
+    pub fn intern(&self, s: &str) -> Option<MetaString> {
         // First we'll see if we can inline the string, and if we can't, then we try to actually intern it. If interning
         // fails, then we just fall back to allocating a new `MetaString` instance.
         MetaString::try_inline(s)
