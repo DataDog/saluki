@@ -80,12 +80,12 @@ pub struct OriginEntity {
     ///
     /// This will generally be the typical long hexadecimal string that is used by container runtimes like `containerd`,
     /// but may sometimes also be a different form, such as the container's cgroups inode.
-    pub container_id: Option<MetaString>,
+    pub container_id: MetaString,
 
     /// Pod UID of the sender.
     ///
     /// This is generally only used in Kubernetes environments to uniquely identify the pod. UIDs are equivalent to UUIDs.
-    pub pod_uid: Option<MetaString>,
+    pub pod_uid: MetaString,
 
     /// Desired cardinality of any tags associated with the entity.
     ///
@@ -101,12 +101,20 @@ impl OriginEntity {
 
     /// Gets the container ID of the sender.
     pub fn container_id(&self) -> Option<&str> {
-        self.container_id.as_deref()
+        if self.container_id.is_empty() {
+            None
+        } else {
+            Some(&self.container_id)
+        }
     }
 
     /// Gets the pod UID of the sender.
     pub fn pod_uid(&self) -> Option<&str> {
-        self.pod_uid.as_deref()
+        if self.pod_uid.is_empty() {
+            None
+        } else {
+            Some(&self.pod_uid)
+        }
     }
 
     /// Gets the desired cardinality of any tags associated with the entity.

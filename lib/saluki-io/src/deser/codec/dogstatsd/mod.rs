@@ -777,8 +777,8 @@ mod tests {
             hostname: None,
             origin_entity: OriginEntity {
                 process_id: None,
-                container_id: packet.container_id.map(MetaString::from),
-                pod_uid: packet.pod_uid.map(MetaString::from),
+                container_id: MetaString::from(packet.container_id.unwrap_or("")),
+                pod_uid: MetaString::from(packet.pod_uid.unwrap_or("")),
                 cardinality: packet.cardinality,
             },
             origin: Some(
@@ -960,7 +960,7 @@ mod tests {
         let raw = format!("{}:{}|c|c:{}", name, value, container_id);
         let mut expected = Metric::counter(name, value);
         let oe = expected.metadata_mut().origin_entity_mut();
-        oe.container_id = Some(MetaString::from(container_id));
+        oe.container_id = MetaString::from(container_id);
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
         check_basic_metric_eq(expected, actual);
@@ -1000,7 +1000,7 @@ mod tests {
         let value_sample_rate_adjusted = value * (1.0 / sample_rate);
         let mut expected = Metric::counter((name, &tags[..]), value_sample_rate_adjusted);
         let oe = expected.metadata_mut().origin_entity_mut();
-        oe.container_id = Some(MetaString::from(container_id));
+        oe.container_id = MetaString::from(container_id);
         expected.values_mut().set_timestamp(timestamp);
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
