@@ -79,6 +79,10 @@ impl MemoryBoundsConfiguration {
                 if !value.is_empty() {
                     let cgroup_memory_reader = CgroupMemoryParser;
                     if let Some(memory) = cgroup_memory_reader.parse() {
+                        info!(
+                            "Setting memory limit to {} based on detected cgroups limit.",
+                            memory.to_string_as(true)
+                        );
                         config.memory_limit = Some(memory);
                     }
                 }
@@ -273,9 +277,6 @@ struct CgroupMemoryParser;
 
 impl CgroupMemoryParser {
     /// Parse memory limit from memory controller.
-    ///
-    /// `parse_controller_v2` is called if a unified controller is found in /proc/self/cgroup.
-    /// `parse_controller_v1` is called on the controller with ":memory:" present.
     ///
     /// Returns `None` if memory limit is set to max or if an error is encountered while parsing.
     fn parse(self) -> Option<ByteSize> {
