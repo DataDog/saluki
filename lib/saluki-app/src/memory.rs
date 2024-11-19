@@ -2,7 +2,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    fs,
+    env, fs,
     io::Read,
     sync::atomic::{AtomicBool, Ordering::Relaxed},
     time::Duration,
@@ -80,10 +80,15 @@ impl MemoryBoundsConfiguration {
                 .error_context("Given memory limit and/or slop factor invalid.")?;
         }
 
-        let cgroup_memory_reader = CgroupMemoryParser {};
-        let read_memory = cgroup_memory_reader.parse();
-        if let Some(memory) = read_memory {
-            config.memory_limit = Some(memory);
+        // Try to pull configured memory limit from Cgroup if running in a containerized environment.
+        if let Ok(value) = env::var("DOCKER_DD_AGENT") {
+            if !value.is_empty() {
+                let cgroup_memory_reader = CgroupMemoryParser {};
+                let read_memory = cgroup_memory_reader.parse();
+                if let Some(memory) = read_memory {
+                    config.memory_limit = Some(memory);
+                }
+            }
         }
         Ok(config)
     }
@@ -269,7 +274,7 @@ impl CgroupMemoryParser {
     fn parse(self) -> Option<ByteSize> {
         if let Ok(mut file) = fs::File::open("/proc/self/cgroup") {
             let mut contents = String::new();
-            if let Ok(_) = file.read_to_string(&mut contents) {
+            if file.read_to_string(&mut contents).is_ok() {
                 let parts: Vec<&str> = contents.trim().split("\n").collect();
                 // CgroupV2 has unified controllers.
                 if parts.len() == 1 {
@@ -293,12 +298,9 @@ impl CgroupMemoryParser {
             let memory_path = format!("/sys/fs/cgroup/memory{}/memory.limit_in_bytes", path);
             let memory_file_maybe = fs::File::open(memory_path).ok();
             if let Some(mut memory_file) = memory_file_maybe {
-                let mut memory = String::new();
-                if let Ok(_) = memory_file.read_to_string(&mut memory) {
-                    let mut s = String::new();
-                    if let Ok(_) = memory_file.read_to_string(&mut s) {
-                        return self.convert_to_bytesize(&s);
-                    }
+                let mut s = String::new();
+                if memory_file.read_to_string(&mut s).is_ok() {
+                    return self.convert_to_bytesize(&s);
                 }
             }
         }
@@ -314,7 +316,7 @@ impl CgroupMemoryParser {
             let memory_file_maybe = fs::File::open(memory_path).ok();
             if let Some(mut memory_file) = memory_file_maybe {
                 let mut s = String::new();
-                if let Ok(_) = memory_file.read_to_string(&mut s) {
+                if memory_file.read_to_string(&mut s).is_ok() {
                     return self.convert_to_bytesize(&s);
                 }
             }
