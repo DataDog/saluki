@@ -1,6 +1,3 @@
-use std::{num::NonZeroUsize, sync::Arc};
-
-use arc_swap::ArcSwap;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_health::Health;
 use tokio::{select, sync::mpsc};
@@ -9,12 +6,9 @@ use tracing::debug;
 use super::{
     collectors::{MetadataCollector, MetadataCollectorWorker},
     metadata::MetadataOperation,
-    store::{TagSnapshot, TagStore},
 };
 
 // TODO: Make this configurable.
-// SAFETY: The value is demonstrably not zero.
-const DEFAULT_ENTITY_LIMIT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(2000) };
 const OPERATIONS_CHANNEL_SIZE: usize = 128;
 
 /// Aggregates the metadata from multiple collectors.
@@ -28,8 +22,7 @@ const OPERATIONS_CHANNEL_SIZE: usize = 128;
 /// to the most up-to-date, consistent view of the tag store. This tag snapshot can be used to query for entity tags
 /// directly, with an equivalent API to [`WorkloadProvider`].
 pub struct MetadataAggregator {
-    tag_store: TagStore,
-    shared_tags: Arc<ArcSwap<TagSnapshot>>,
+    stores: Vec<Box<dyn MetadataStore + Send>>,
     operations_tx: mpsc::Sender<MetadataOperation>,
     operations_rx: mpsc::Receiver<MetadataOperation>,
     health: Health,
@@ -40,8 +33,7 @@ impl MetadataAggregator {
     pub fn new(health: Health) -> Self {
         let (operations_tx, operations_rx) = mpsc::channel(OPERATIONS_CHANNEL_SIZE);
         Self {
-            tag_store: TagStore::with_entity_limit(DEFAULT_ENTITY_LIMIT),
-            shared_tags: Arc::new(ArcSwap::new(Arc::new(TagSnapshot::default()))),
+            stores: Vec::new(),
             operations_tx,
             operations_rx,
             health,
@@ -57,12 +49,15 @@ impl MetadataAggregator {
         tokio::spawn(worker.run(self.operations_tx.clone()));
     }
 
-    /// Gets a shared reference to the latest tag store snapshot.
+    /// Adds a metadata store to the aggregator.
     ///
-    /// This can be used to query for the tags of a specific entity, and is updated as workload changes are observed and
-    /// processed.
-    pub fn tags(&self) -> Arc<ArcSwap<TagSnapshot>> {
-        Arc::clone(&self.shared_tags)
+    /// This store will receive a copy of every metadata operation that is emitted from the configured metadata
+    /// collectors.
+    pub fn add_store<S>(&mut self, store: S)
+    where
+        S: MetadataStore + Send + 'static,
+    {
+        self.stores.push(Box::new(store));
     }
 
     /// Runs the aggregator.
@@ -80,11 +75,16 @@ impl MetadataAggregator {
                 _ = self.health.live() => {},
                 maybe_operation = self.operations_rx.recv() => match maybe_operation {
                     Some(operation) => {
-                        self.tag_store.process_operation(operation);
+                        // Send the operation to all stores, taking care to only clone the operation if we have two or
+                        // more stores configured.
+                        let stores_to_clone_for = self.stores.len().saturating_sub(1);
+                        for store in self.stores.iter_mut().take(stores_to_clone_for) {
+                            store.process_operation(operation.clone());
+                        }
 
-                        // Update the shared tag state.
-                        let tags = self.tag_store.snapshot();
-                        self.shared_tags.store(Arc::new(tags));
+                        if let Some(last_store) = self.stores.last_mut() {
+                            last_store.process_operation(operation);
+                        }
                     },
                     None => {
                         debug!("Metadata aggregator operations channel closed. Stopping...");
@@ -107,6 +107,17 @@ impl MemoryBounds for MetadataAggregator {
             // Operations channel.
             .with_array::<MetadataOperation>(OPERATIONS_CHANNEL_SIZE);
 
-        builder.with_subcomponent("tag_store", &self.tag_store);
+        for store in &self.stores {
+            builder.with_subcomponent(store.name(), store);
+        }
     }
+}
+
+/// A store which receives a stream of metadata operations.
+pub trait MetadataStore: MemoryBounds {
+    /// Returns the name of the store.
+    fn name(&self) -> &'static str;
+
+    /// Process a metadata operation.
+    fn process_operation(&mut self, operation: MetadataOperation);
 }

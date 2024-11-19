@@ -8,8 +8,8 @@ use super::{entity::EntityId, helpers::OneOrMany};
 /// A metadata operation.
 ///
 /// Operations involve a number of actions to perform in the context of the given entity. Such actions typically include
-/// setting tags or establish ancestry links.
-#[derive(Debug)]
+/// setting tags or establishing ancestry links.
+#[derive(Clone, Debug)]
 pub struct MetadataOperation {
     /// The entity ID this operation is associated with.
     pub entity_id: EntityId,
@@ -66,6 +66,7 @@ impl MetadataOperation {
 }
 
 /// A metadata action.
+#[derive(Clone)]
 pub enum MetadataAction {
     /// Delete all metadata for the entity.
     Delete,
