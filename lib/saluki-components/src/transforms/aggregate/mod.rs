@@ -21,6 +21,9 @@ use smallvec::SmallVec;
 use tokio::{select, time::interval_at};
 use tracing::{debug, error, trace};
 
+mod config;
+use self::config::HistogramConfiguration;
+
 const fn default_window_duration() -> Duration {
     Duration::from_secs(10)
 }
@@ -136,6 +139,13 @@ pub struct AggregateConfiguration {
         default = "default_forward_timestamped_metrics"
     )]
     forward_timestamped_metrics: bool,
+
+    /// Histogram aggregation configuration.
+    ///
+    /// Controls the aggregates/percentiles that are generated for distributions in "histogram" mode (client-side
+    /// distribution aggregation).
+    #[serde(flatten)]
+    hist_config: HistogramConfiguration,
 }
 
 impl AggregateConfiguration {
@@ -153,6 +163,7 @@ impl AggregateConfiguration {
             flush_open_windows: false,
             counter_expiry_seconds: default_counter_expiry_seconds(),
             forward_timestamped_metrics: default_forward_timestamped_metrics(),
+            hist_config: HistogramConfiguration::default(),
         }
     }
 }
@@ -167,6 +178,7 @@ impl TransformBuilder for AggregateConfiguration {
             flush_open_windows: self.flush_open_windows,
             counter_expiry_seconds: self.counter_expiry_seconds,
             forward_timestamped_metrics: self.forward_timestamped_metrics,
+            hist_config: self.hist_config.clone(),
         }))
     }
 
@@ -209,6 +221,7 @@ pub struct Aggregate {
     flush_open_windows: bool,
     counter_expiry_seconds: Option<u64>,
     forward_timestamped_metrics: bool,
+    hist_config: HistogramConfiguration,
 }
 
 #[async_trait]
@@ -220,6 +233,7 @@ impl Transform for Aggregate {
             self.window_duration,
             self.context_limit,
             self.counter_expiry_seconds.filter(|s| *s != 0).map(Duration::from_secs),
+            self.hist_config,
         );
 
         let mut flush = interval_at(tokio::time::Instant::now() + self.flush_interval, self.flush_interval);
@@ -358,10 +372,14 @@ struct AggregationState {
     bucket_width_secs: u64,
     counter_expire_secs: Option<NonZeroU64>,
     last_flush: u64,
+    hist_config: HistogramConfiguration,
 }
 
 impl AggregationState {
-    fn new(bucket_width: Duration, context_limit: usize, counter_expiration: Option<Duration>) -> Self {
+    fn new(
+        bucket_width: Duration, context_limit: usize, counter_expiration: Option<Duration>,
+        hist_config: HistogramConfiguration,
+    ) -> Self {
         let counter_expire_secs = counter_expiration.map(|d| d.as_secs()).and_then(NonZeroU64::new);
 
         Self {
@@ -371,6 +389,7 @@ impl AggregationState {
             bucket_width_secs: bucket_width.as_secs(),
             counter_expire_secs,
             last_flush: 0,
+            hist_config,
         }
     }
 
@@ -503,6 +522,7 @@ impl AggregationState {
                     closed_bucket_values,
                     am.metadata.clone(),
                     bucket_width_secs,
+                    &self.hist_config,
                     forwarder,
                 )
                 .await?;
@@ -525,20 +545,57 @@ impl AggregationState {
 }
 
 async fn transform_and_push_metric<O>(
-    context: Context, values: MetricValues, metadata: MetricMetadata, bucket_width_secs: u64,
-    forwarder: &mut BufferedForwarder<'_, O>,
+    context: Context, mut values: MetricValues, metadata: MetricMetadata, bucket_width_secs: u64,
+    hist_config: &HistogramConfiguration, forwarder: &mut BufferedForwarder<'_, O>,
 ) -> Result<(), GenericError>
 where
     O: ObjectPool<Item = FixedSizeEventBuffer>,
 {
-    // If we're dealing with a counter, convert it to a rate metric now that it's been aggregated.
-    let values = match values {
-        MetricValues::Counter(values) => MetricValues::rate(values, Duration::from_secs(bucket_width_secs)),
-        _ => values,
-    };
+    match values {
+        // If we're dealing with a histogram, we calculate a configured set of aggregates/percentiles from it, and emit
+        // them as individual metrics.
+        MetricValues::Histogram(ref mut points) => {
+            // We collect our histogram points in their "summary" view, which sorts the underlying samples allowing
+            // proper quantile queries to be answered, hence our "sorted" points. We do it this way because rather than
+            // sort every time we insert, or cloning the points, we only sort when a summary view is constructed, which
+            // requires mutable access to sort the samples in-place.
+            let mut sorted_points = Vec::new();
+            for (ts, h) in points {
+                sorted_points.push((ts, h.summary_view()));
+            }
 
-    let metric = Metric::from_parts(context, values, metadata);
-    forwarder.push(Event::Metric(metric)).await
+            for statistic in hist_config.statistics() {
+                let new_points = sorted_points
+                    .iter()
+                    .map(|(ts, hs)| (*ts, statistic.value_from_histogram(hs)))
+                    .collect::<ScalarPoints>();
+
+                let new_values = if statistic.is_rate_statistic() {
+                    MetricValues::rate(new_points, Duration::from_secs(bucket_width_secs))
+                } else {
+                    MetricValues::gauge(new_points)
+                };
+
+                let new_context = context.with_name(format!("{}.{}", context.name(), statistic.suffix()));
+                let new_metric = Metric::from_parts(new_context, new_values, metadata.clone());
+                forwarder.push(Event::Metric(new_metric)).await?;
+            }
+
+            Ok(())
+        }
+
+        // If we're not dealing with a histogram, then all we need to worry about is converting counters to rates before
+        // forwarding our single, aggregated metric.
+        values => {
+            let adjusted_values = match values {
+                MetricValues::Counter(values) => MetricValues::rate(values, Duration::from_secs(bucket_width_secs)),
+                values => values,
+            };
+
+            let metric = Metric::from_parts(context, adjusted_values, metadata);
+            forwarder.push(Event::Metric(metric)).await
+        }
+    }
 }
 
 const fn align_to_bucket_start(timestamp: u64, bucket_width_secs: u64) -> u64 {
@@ -574,6 +631,7 @@ const fn is_bucket_closed(
 // then we run it to make sure that we are always generating sequential timestamps for data points, etc.
 #[cfg(test)]
 mod tests {
+    use float_cmp::ApproxEqRatio as _;
     use saluki_core::{
         components::ComponentContext,
         pooling::ElasticObjectPool,
@@ -584,6 +642,7 @@ mod tests {
     };
     use tokio::sync::mpsc;
 
+    use super::config::HistogramStatistic;
     use super::*;
 
     const BUCKET_WIDTH_SECS: u64 = 10;
@@ -648,14 +707,84 @@ mod tests {
         }
     }
 
-    macro_rules! assert_flushed_counter_metric {
+    macro_rules! compare_points {
+        (scalar, $expected:expr, $actual:expr, $error_ratio:literal) => {
+            for (idx, (expected_value, actual_value)) in $expected.into_iter().zip($actual.into_iter()).enumerate() {
+                let (expected_ts, expected_point) = expected_value;
+                let (actual_ts, actual_point) = actual_value;
+
+                assert_eq!(
+                    expected_ts, actual_ts,
+                    "timestamp for value #{} does not match: {:?} (expected) vs {:?} (actual)",
+                    idx, expected_ts, actual_ts
+                );
+                assert!(
+                    expected_point.approx_eq_ratio(&actual_point, $error_ratio),
+                    "point for value #{} does not match: {} (expected) vs {} actual",
+                    idx,
+                    expected_point,
+                    actual_point
+                );
+            }
+        };
+        (distribution, $expected:expr, $actual:expr) => {
+            for (idx, (expected_value, actual_value)) in $expected.into_iter().zip($actual.into_iter()).enumerate() {
+                let (expected_ts, expected_sketch) = expected_value;
+                let (actual_ts, actual_sketch) = actual_value;
+
+                assert_eq!(
+                    expected_ts, actual_ts,
+                    "timestamp for value #{} does not match: {:?} (expected) vs {:?} (actual)",
+                    idx, expected_ts, actual_ts
+                );
+                assert_eq!(
+                    expected_sketch, actual_sketch,
+                    "sketch for value #{} does not match: {:?} (expected) vs {:?} (actual)",
+                    idx, expected_sketch, actual_sketch
+                );
+            }
+        };
+    }
+
+    macro_rules! assert_flushed_scalar_metric {
         ($original:expr, $actual:expr, [$($ts:expr => $value:expr),+]) => {
+            assert_flushed_scalar_metric!($original, $actual, [$($ts => $value),+], error_ratio => 0.000001);
+        };
+        ($original:expr, $actual:expr, [$($ts:expr => $value:expr),+], error_ratio => $error_ratio:literal) => {
+            let actual_metric = $actual;
+
+            assert_eq!($original.context(), actual_metric.context(), "expected context ({}) and actual context ({}) do not match", $original.context(), actual_metric.context());
+
+            let expected_points = ScalarPoints::from([$(($ts, $value)),+]);
+
+            match actual_metric.values() {
+                MetricValues::Counter(ref actual_points) | MetricValues::Gauge(ref actual_points) | MetricValues::Rate(ref actual_points, _) => {
+                    assert_eq!(expected_points.len(), actual_points.len(), "expected and actual values have different number of points");
+                    compare_points!(scalar, expected_points, actual_points, $error_ratio);
+                },
+                _ => panic!("only counters, rates, and gauges are supported in assert_flushed_scalar_metric"),
+            }
+        };
+    }
+
+    macro_rules! assert_flushed_distribution_metric {
+        ($original:expr, $actual:expr, [$($ts:expr => $value:expr),+]) => {
+            assert_flushed_distribution_metric!($original, $actual, [$($ts => $value),+], error_ratio => 0.000001);
+        };
+        ($original:expr, $actual:expr, [$($ts:expr => $value:expr),+], error_ratio => $error_ratio:literal) => {
             let actual_metric = $actual;
 
             assert_eq!($original.context(), actual_metric.context());
 
-            let expected_values = MetricValues::rate([$(($ts, $value)),+], BUCKET_WIDTH);
-            assert_eq!(&expected_values, actual_metric.values());
+            match actual_metric.values() {
+                MetricValues::Distribution(ref actual_points) => {
+                    let expected_points = SketchPoints::from([$(($ts, $value)),+]);
+                    assert_eq!(expected_points.len(), actual_points.len(), "expected and actual values have different number of points");
+
+                    compare_points!(distribution, &expected_points, actual_points);
+                },
+                _ => panic!("only distributions are supported in assert_flushed_distribution_metric"),
+            }
         };
     }
 
@@ -698,142 +827,198 @@ mod tests {
     #[tokio::test]
     async fn context_limit() {
         // Create our aggregation state with a context limit of 2.
-        let mut state = AggregationState::new(BUCKET_WIDTH, 2, COUNTER_EXPIRE);
+        let mut state = AggregationState::new(BUCKET_WIDTH, 2, COUNTER_EXPIRE, HistogramConfiguration::default());
 
         // Create four unique gauges, and insert all of them. The third and fourth should fail because we've reached
         // the context limit.
-        let metric1 = Metric::gauge("metric1", 1.0);
-        let metric2 = Metric::gauge("metric2", 2.0);
-        let metric3 = Metric::gauge("metric3", 3.0);
-        let metric4 = Metric::gauge("metric4", 4.0);
+        let input_metrics = vec![
+            Metric::gauge("metric1", 1.0),
+            Metric::gauge("metric2", 2.0),
+            Metric::gauge("metric3", 3.0),
+            Metric::gauge("metric4", 4.0),
+        ];
 
-        assert!(state.insert(insert_ts(1), metric1.clone()));
-        assert!(state.insert(insert_ts(1), metric2.clone()));
-        assert!(!state.insert(insert_ts(1), metric3.clone()));
-        assert!(!state.insert(insert_ts(1), metric4.clone()));
+        assert!(state.insert(insert_ts(1), input_metrics[0].clone()));
+        assert!(state.insert(insert_ts(1), input_metrics[1].clone()));
+        assert!(!state.insert(insert_ts(1), input_metrics[2].clone()));
+        assert!(!state.insert(insert_ts(1), input_metrics[3].clone()));
 
         // We should only see the first two gauges after flushing.
-        let metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
-        assert_eq!(metrics.len(), 2);
-        assert_eq!(metrics[0].context(), metric1.context());
-        assert_eq!(metrics[1].context(), metric2.context());
+        let flushed_metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
+        assert_eq!(flushed_metrics.len(), 2);
+        assert_eq!(input_metrics[0].context(), flushed_metrics[0].context());
+        assert_eq!(input_metrics[1].context(), flushed_metrics[1].context());
 
         // We should be able to insert the third and fourth gauges now as the first two have been flushed, and along
         // with them, their contexts should no longer be tracked in the aggregation state:
-        assert!(state.insert(insert_ts(2), metric3.clone()));
-        assert!(state.insert(insert_ts(2), metric4.clone()));
+        assert!(state.insert(insert_ts(2), input_metrics[2].clone()));
+        assert!(state.insert(insert_ts(2), input_metrics[3].clone()));
 
-        let metrics = get_flushed_metrics(flush_ts(2), &mut state).await;
-        assert_eq!(metrics.len(), 2);
-        assert_eq!(metrics[0].context(), metric3.context());
-        assert_eq!(metrics[1].context(), metric4.context());
+        let flushed_metrics = get_flushed_metrics(flush_ts(2), &mut state).await;
+        assert_eq!(flushed_metrics.len(), 2);
+        assert_eq!(input_metrics[2].context(), flushed_metrics[0].context());
+        assert_eq!(input_metrics[3].context(), flushed_metrics[1].context());
     }
 
     #[tokio::test]
     async fn context_limit_with_zero_value_counters() {
         // We test here to ensure that zero-value counters contribute to the context limit.
-        let mut state = AggregationState::new(BUCKET_WIDTH, 2, COUNTER_EXPIRE);
+        let mut state = AggregationState::new(BUCKET_WIDTH, 2, COUNTER_EXPIRE, HistogramConfiguration::default());
 
-        // Create two unique counters, and insert both of them.
-        let metric1 = Metric::counter("metric1", 1.0);
-        let metric2 = Metric::counter("metric2", 2.0);
+        // Create our input metrics.
+        let input_metrics = vec![
+            Metric::counter("metric1", 1.0),
+            Metric::counter("metric2", 2.0),
+            Metric::counter("metric3", 3.0),
+        ];
 
-        assert!(state.insert(insert_ts(1), metric1.clone()));
-        assert!(state.insert(insert_ts(1), metric2.clone()));
+        assert!(state.insert(insert_ts(1), input_metrics[0].clone()));
+        assert!(state.insert(insert_ts(1), input_metrics[1].clone()));
 
         // Flush the aggregation state, and observe they're both present.
-        let mut metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
-        assert_eq!(metrics.len(), 2);
-        assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(1) => 1.0]);
-        assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(1) => 2.0]);
+        let flushed_metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
+        assert_eq!(flushed_metrics.len(), 2);
+        assert_flushed_scalar_metric!(&input_metrics[0], &flushed_metrics[0], [bucket_ts(1) => 1.0]);
+        assert_flushed_scalar_metric!(&input_metrics[1], &flushed_metrics[1], [bucket_ts(1) => 2.0]);
 
         // Flush _again_ to ensure that we then emit zero-value variants for both counters.
-        let mut metrics = get_flushed_metrics(flush_ts(2), &mut state).await;
-        assert_eq!(metrics.len(), 2);
-        assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(2) => 0.0]);
-        assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(2) => 0.0]);
+        let flushed_metrics = get_flushed_metrics(flush_ts(2), &mut state).await;
+        assert_eq!(flushed_metrics.len(), 2);
+        assert_flushed_scalar_metric!(&input_metrics[0], &flushed_metrics[0], [bucket_ts(2) => 0.0]);
+        assert_flushed_scalar_metric!(&input_metrics[1], &flushed_metrics[1], [bucket_ts(2) => 0.0]);
 
         // Now try to insert a third counter, which should fail because we've reached the context limit.
-        let metric3 = Metric::counter("metric3", 3.0);
-        assert!(!state.insert(insert_ts(3), metric3.clone()));
+        assert!(!state.insert(insert_ts(3), input_metrics[2].clone()));
 
         // Flush the aggregation state, and observe that we only see the two original counters.
-        let mut metrics = get_flushed_metrics(flush_ts(3), &mut state).await;
-        assert_eq!(metrics.len(), 2);
-        assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(3) => 0.0]);
-        assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(3) => 0.0]);
+        let flushed_metrics = get_flushed_metrics(flush_ts(3), &mut state).await;
+        assert_eq!(flushed_metrics.len(), 2);
+        assert_flushed_scalar_metric!(&input_metrics[0], &flushed_metrics[0], [bucket_ts(3) => 0.0]);
+        assert_flushed_scalar_metric!(&input_metrics[1], &flushed_metrics[1], [bucket_ts(3) => 0.0]);
 
         // With a fourth flush interval, the two counters should now have expired, and thus be dropped and no longer
         // contributing to the context limit.
-        let metrics = get_flushed_metrics(flush_ts(4), &mut state).await;
-        assert_eq!(metrics.len(), 0);
+        let flushed_metrics = get_flushed_metrics(flush_ts(4), &mut state).await;
+        assert_eq!(flushed_metrics.len(), 0);
 
         // Now we should be able to insert the third counter, and it should be the only one present after flushing.
-        assert!(state.insert(insert_ts(5), metric3.clone()));
+        assert!(state.insert(insert_ts(5), input_metrics[2].clone()));
 
-        let mut metrics = get_flushed_metrics(flush_ts(5), &mut state).await;
-        assert_eq!(metrics.len(), 1);
-        assert_flushed_counter_metric!(&metric3, metrics.remove(0), [bucket_ts(5) => 3.0]);
+        let flushed_metrics = get_flushed_metrics(flush_ts(5), &mut state).await;
+        assert_eq!(flushed_metrics.len(), 1);
+        assert_flushed_scalar_metric!(&input_metrics[2], &flushed_metrics[0], [bucket_ts(5) => 3.0]);
     }
 
     #[tokio::test]
     async fn zero_value_counters() {
         // We're testing that we properly emit and expire zero-value counters in all relevant scenarios.
-        let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE);
+        let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, HistogramConfiguration::default());
 
         // Create two unique counters, and insert both of them.
-        let metric1 = Metric::counter("metric1", 1.0);
-        let metric2 = Metric::counter("metric2", 2.0);
+        let input_metrics = vec![Metric::counter("metric1", 1.0), Metric::counter("metric2", 2.0)];
 
-        assert!(state.insert(insert_ts(1), metric1.clone()));
-        assert!(state.insert(insert_ts(1), metric2.clone()));
+        assert!(state.insert(insert_ts(1), input_metrics[0].clone()));
+        assert!(state.insert(insert_ts(1), input_metrics[1].clone()));
 
         // Flush the aggregation state, and observe they're both present.
-        let mut metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
-        assert_eq!(metrics.len(), 2);
-        assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(1) => 1.0]);
-        assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(1) => 2.0]);
+        let flushed_metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
+        assert_eq!(flushed_metrics.len(), 2);
+        assert_flushed_scalar_metric!(&input_metrics[0], &flushed_metrics[0], [bucket_ts(1) => 1.0]);
+        assert_flushed_scalar_metric!(&input_metrics[1], &flushed_metrics[1], [bucket_ts(1) => 2.0]);
 
         // Perform our second flush, which should have them as zero-value counters.
-        let mut metrics = get_flushed_metrics(flush_ts(2), &mut state).await;
-        assert_eq!(metrics.len(), 2);
-        assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(2) => 0.0]);
-        assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(2) => 0.0]);
+        let flushed_metrics = get_flushed_metrics(flush_ts(2), &mut state).await;
+        assert_eq!(flushed_metrics.len(), 2);
+        assert_flushed_scalar_metric!(&input_metrics[0], &flushed_metrics[0], [bucket_ts(2) => 0.0]);
+        assert_flushed_scalar_metric!(&input_metrics[1], &flushed_metrics[1], [bucket_ts(2) => 0.0]);
 
         // Now, we'll pretend to skip a flush period and add updates to them again after that.
-        assert!(state.insert(insert_ts(4), metric1.clone()));
-        assert!(state.insert(insert_ts(4), metric2.clone()));
+        assert!(state.insert(insert_ts(4), input_metrics[0].clone()));
+        assert!(state.insert(insert_ts(4), input_metrics[1].clone()));
 
         // Flush the aggregation state, and observe that we have two zero-value counters for the flush period we
         // skipped, but that we see them appear again in the fourth flush period.
-        let mut metrics = get_flushed_metrics(flush_ts(4), &mut state).await;
-        assert_eq!(metrics.len(), 2);
-        assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(3) => 0.0, bucket_ts(4) => 1.0]);
-        assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(3) => 0.0, bucket_ts(4) => 2.0]);
+        let flushed_metrics = get_flushed_metrics(flush_ts(4), &mut state).await;
+        assert_eq!(flushed_metrics.len(), 2);
+        assert_flushed_scalar_metric!(&input_metrics[0], &flushed_metrics[0], [bucket_ts(3) => 0.0, bucket_ts(4) => 1.0]);
+        assert_flushed_scalar_metric!(&input_metrics[1], &flushed_metrics[1], [bucket_ts(3) => 0.0, bucket_ts(4) => 2.0]);
 
         // Now we'll skip multiple flush periods and ensure that we emit zero-value counters up until the point they
         // expire. As our zero-value counter expiration is 20 seconds, this is two flush periods, so we skip by three
         // flush periods, and we should only see the counters emitted for the first two.
-        let mut metrics = get_flushed_metrics(flush_ts(7), &mut state).await;
-        assert_eq!(metrics.len(), 2);
-        assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(5) => 0.0, bucket_ts(6) => 0.0]);
-        assert_flushed_counter_metric!(&metric2, metrics.remove(0), [bucket_ts(5) => 0.0, bucket_ts(6) => 0.0]);
+        let flushed_metrics = get_flushed_metrics(flush_ts(7), &mut state).await;
+        assert_eq!(flushed_metrics.len(), 2);
+        assert_flushed_scalar_metric!(&input_metrics[0], &flushed_metrics[0], [bucket_ts(5) => 0.0, bucket_ts(6) => 0.0]);
+        assert_flushed_scalar_metric!(&input_metrics[1], &flushed_metrics[1], [bucket_ts(5) => 0.0, bucket_ts(6) => 0.0]);
     }
 
     #[tokio::test]
     async fn merge_identical_timestamped_values_on_flush() {
         // We're testing that we properly emit and expire zero-value counters in all relevant scenarios.
-        let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE);
+        let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, HistogramConfiguration::default());
 
         // Create one multi-value counter, and insert it.
-        let metric1 = Metric::counter("metric1", [1.0, 2.0, 3.0, 4.0, 5.0]);
+        let input_metric = Metric::counter("metric1", [1.0, 2.0, 3.0, 4.0, 5.0]);
 
-        assert!(state.insert(insert_ts(1), metric1.clone()));
+        assert!(state.insert(insert_ts(1), input_metric.clone()));
 
         // Flush the aggregation state, and observe the metric is present _and_ that we've properly merged all of the
         // values within the same timestamp.
-        let mut metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
-        assert_eq!(metrics.len(), 1);
-        assert_flushed_counter_metric!(&metric1, metrics.remove(0), [bucket_ts(1) => 15.0]);
+        let flushed_metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
+        assert_eq!(flushed_metrics.len(), 1);
+        assert_flushed_scalar_metric!(&input_metric, &flushed_metrics[0], [bucket_ts(1) => 15.0]);
+    }
+
+    #[tokio::test]
+    async fn histogram_statistics() {
+        // We're testing that we properly emit individual metrics (min, max, sum, etc) for a histogram.
+        let hist_config = HistogramConfiguration::from_statistics(&[
+            HistogramStatistic::Count,
+            HistogramStatistic::Sum,
+            HistogramStatistic::Percentile {
+                q: 0.5,
+                suffix: "p50".into(),
+            },
+        ]);
+        let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, hist_config);
+
+        // Create one multi-value histogram and insert it.
+        let input_metric = Metric::histogram("metric1", [1.0, 2.0, 3.0, 4.0, 5.0]);
+        assert!(state.insert(insert_ts(1), input_metric.clone()));
+
+        // Flush the aggregation state, and observe that we've emitted all of the configured distribution statistics in
+        // the form of three metrics: count, sum, and p50.
+        let flushed_metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
+        assert_eq!(flushed_metrics.len(), 3);
+
+        // Create versions of the metric for each of the statistics we're expecting to emit. The values themselves don't
+        // matter here, but we do need a `Metric` for it to compare the context to.
+        let count_metric = Metric::rate("metric1.count", 0.0, Duration::from_secs(BUCKET_WIDTH_SECS));
+        let sum_metric = Metric::gauge("metric1.sum", 0.0);
+        let p50_metric = Metric::gauge("metric1.p50", 0.0);
+
+        // We use a less strict error ratio (how much the expected vs actual) for the percentile check, as we generally
+        // expect the value to be somewhat off the exact value due to the lossy nature of `DDSketch`.
+        assert_flushed_scalar_metric!(count_metric, &flushed_metrics[0], [bucket_ts(1) => 5.0]);
+        assert_flushed_scalar_metric!(p50_metric, &flushed_metrics[1], [bucket_ts(1) => 3.0], error_ratio => 0.0025);
+        assert_flushed_scalar_metric!(sum_metric, &flushed_metrics[2], [bucket_ts(1) => 15.0]);
+    }
+
+    #[tokio::test]
+    async fn distributions() {
+        // We're testing that we pass through distributions untouched.
+        let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, HistogramConfiguration::default());
+
+        // Create one multi-value distribution, with server-side aggregation, and insert it.
+        let values = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let input_metric = Metric::distribution("metric1", &values[..]);
+
+        assert!(state.insert(insert_ts(1), input_metric.clone()));
+
+        // Flush the aggregation state, and observe that we've emitted the original distribution.
+        let flushed_metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
+        assert_eq!(flushed_metrics.len(), 1);
+
+        assert_flushed_distribution_metric!(&input_metric, &flushed_metrics[0], [bucket_ts(1) => &values[..]]);
     }
 }

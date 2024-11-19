@@ -30,7 +30,7 @@ Currently, the correctness tests are hardcoded: we run a single test, against a 
 DogStatsD server, a specific version of Agent Data Plane, with a fixed `millstone` configuration. Customizing this test,
 or running multiple variations, etc, is left as an exercise to the reader.
 
-To run the correctness tests, you must first the related container images (`metrics-intake`, `millstone`, and ADP
+To run the correctness tests, you must first build the related container images (`metrics-intake`, `millstone`, and ADP
 itself) before you can run the tests. This can be done simply by running `make build-metrics-intake-image
 build-millstone-image build-adp-image`. Once this is done, you can run the correctness test itself by running `make
 test-correctness`.

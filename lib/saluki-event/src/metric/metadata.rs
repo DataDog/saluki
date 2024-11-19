@@ -167,22 +167,22 @@ pub struct MetricMetadata {
 }
 
 impl MetricMetadata {
-    /// Gets the hostname.
+    /// Returns the hostname.
     pub fn hostname(&self) -> Option<&str> {
         self.hostname.as_deref()
     }
 
-    /// Gets the origin entity.
+    /// Returns the origin entity.
     pub fn origin_entity(&self) -> &OriginEntity {
         &self.origin_entity
     }
 
-    /// Gets the metric origin.
+    /// Returns the metric origin.
     pub fn origin(&self) -> Option<&MetricOrigin> {
         self.origin.as_ref()
     }
 
-    /// Gets a mutable reference to the origin entity.
+    /// Returns a mutable reference to the origin entity.
     pub fn origin_entity_mut(&mut self) -> &mut OriginEntity {
         &mut self.origin_entity
     }

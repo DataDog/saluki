@@ -93,6 +93,17 @@ pub struct Config {
     /// generated no matter how many times the application is run.
     pub seed: [u8; 32],
 
+    /// Width of the target's aggregation buckets, in seconds.
+    ///
+    /// In some cases, correctness of certain metric types can only be asserted if they're all present within a single
+    /// aggregation bucket, as the way they are emitted makes it impossible to compensate for after the fact. When this
+    /// value is set, Millstone will delay sending payloads until crossing over the next aggregation bucket boundary,
+    /// which is calculated by taking the modulo of the current time using this value.
+    ///
+    /// For example, when this value is set to 10, and the current time is 14, the result of `14 % 10` is 4, which means
+    /// Millstone would wait 6 seconds, until the current time was 20 (20 % 10 == 0) before starting to send.
+    pub aggregation_bucket_width_secs: Option<u64>,
+
     /// The target to send payloads to.
     pub target: TargetAddress,
 

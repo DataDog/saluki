@@ -2,7 +2,7 @@ use nom::{
     branch::alt,
     bytes::complete::{tag, take, take_while1},
     character::complete::{u32 as parse_u32, u64 as parse_u64, u8 as parse_u8},
-    combinator::{all_consuming, map},
+    combinator::{all_consuming, map, map_res},
     error::{Error, ErrorKind},
     number::complete::double,
     sequence::{delimited, preceded, separated_pair, terminated},
@@ -193,7 +193,8 @@ fn parse_dogstatsd_metric<'a>(
                 // Sample rate: indicates client-side sampling of this metric which will need to be "reinflated" at some
                 // point downstream to calculate the true metric value.
                 b'@' => {
-                    let (_, sample_rate) = all_consuming(preceded(tag("@"), double))(chunk)?;
+                    let (_, sample_rate) =
+                        all_consuming(preceded(tag("@"), map_res(double, SampleRate::try_from)))(chunk)?;
                     maybe_sample_rate = Some(sample_rate);
                 }
                 // Tags: additional tags to be added to the metric.
@@ -245,7 +246,6 @@ fn parse_dogstatsd_metric<'a>(
             tags: maybe_tags.unwrap_or_else(TagSplitter::empty),
             values: metric_values,
             timestamp: maybe_timestamp,
-            sample_rate: maybe_sample_rate,
             container_id: maybe_container_id,
         },
     ))
@@ -256,7 +256,6 @@ pub struct MetricPacket<'a> {
     pub tags: TagSplitter<'a>,
     pub values: MetricValues,
     pub timestamp: Option<u64>,
-    pub sample_rate: Option<f64>,
     pub container_id: Option<&'a str>,
 }
 
@@ -548,7 +547,7 @@ fn raw_metric_values(input: &[u8]) -> IResult<&[u8], (MetricType, &[u8])> {
 
 #[inline]
 fn metric_values_from_raw(
-    input: &[u8], metric_type: MetricType, sample_rate: Option<f64>,
+    input: &[u8], metric_type: MetricType, sample_rate: Option<SampleRate>,
 ) -> Result<MetricValues, NomParserError<'_>> {
     let floats = FloatIter::new(input);
     match metric_type {
@@ -559,14 +558,8 @@ fn metric_values_from_raw(
             let value = unsafe { std::str::from_utf8_unchecked(input) };
             Ok(MetricValues::set(value.to_string()))
         }
-        // TODO: We're handling distributions 100% correctly, but we're taking a shortcut here by also handling
-        // timers/histograms directly as distributions.
-        //
-        // We need to figure out if this is OK or if we need to keep them separate and only convert up at the source
-        // level based on configuration or something.
-        MetricType::Timer | MetricType::Histogram | MetricType::Distribution => {
-            MetricValues::distribution_sampled_fallible(floats, sample_rate)
-        }
+        MetricType::Timer | MetricType::Histogram => MetricValues::histogram_sampled_fallible(floats, sample_rate),
+        MetricType::Distribution => MetricValues::distribution_sampled_fallible(floats, sample_rate),
     }
 }
 
@@ -892,16 +885,23 @@ mod tests {
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
         check_basic_metric_eq(expected, actual);
 
-        // Special case where we check this for all three variants -- timers, histograms, and distributions -- since we
-        // treat them all the same when parsing.
-        let name = "my.distribution";
+        // Special case where we check this for both timers and histograms since we treat them both the same when
+        // parsing.
+        let name = "my.timer_or_histogram";
         let value = 3.0;
-        for kind in &["ms", "h", "d"] {
+        for kind in &["ms", "h"] {
             let raw = format!("{}:{}|{}", name, value, kind);
-            let expected = Metric::distribution(name, value);
+            let expected = Metric::histogram(name, value);
             let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
             check_basic_metric_eq(expected, actual);
         }
+
+        let distribution_name = "my.distribution";
+        let distribution_value = 3.0;
+        let distribution_raw = format!("{}:{}|d", distribution_name, distribution_value);
+        let distribution_expected = Metric::distribution(distribution_name, distribution_value);
+        let distribution_actual = parse_dsd_metric(distribution_raw.as_bytes()).expect("should not fail to parse");
+        check_basic_metric_eq(distribution_expected, distribution_actual);
 
         let set_name = "my.set";
         let set_value = "value";
@@ -1034,20 +1034,26 @@ mod tests {
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
         check_basic_metric_eq(expected, actual);
 
-        // Special case where we check this for all three variants -- timers, histograms, and distributions -- since we
-        // treat them all the same when parsing.
+        // Special case where we check this for both timers and histograms since we treat them both the same when
+        // parsing.
         //
         // Additionally, we have an optimization to return a single distribution metric from multi-value payloads, so we
         // also check here that only one metric is generated for multi-value timers/histograms/distributions.
-        let name = "my.distribution";
+        let name = "my.timer_or_histogram";
         let values = [27.5, 4.20, 80.085];
         let values_stringified = values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
-        for kind in &["ms", "h", "d"] {
+        for kind in &["ms", "h"] {
             let raw = format!("{}:{}|{}", name, values_stringified.join(":"), kind);
-            let expected = Metric::distribution(name, values);
+            let expected = Metric::histogram(name, values);
             let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
             check_basic_metric_eq(expected, actual);
         }
+
+        let name = "my.distribution";
+        let raw = format!("{}:{}|d", name, values_stringified.join(":"));
+        let expected = Metric::distribution(name, values);
+        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
+        check_basic_metric_eq(expected, actual);
     }
 
     #[test]
