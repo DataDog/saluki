@@ -127,7 +127,7 @@ impl BuiltTopology {
         let mut component_task_map = HashMap::new();
 
         // Build our interconnects, which we'll grab from piecemeal as we spawn our components.
-        let (event_buffer_pool, shrinker) = ElasticObjectPool::with_builder("global_event_buffers", 64, 512, || {
+        let (event_buffer_pool, shrinker) = ElasticObjectPool::with_builder("global_event_buffers", 32, 512, || {
             FixedSizeEventBufferInner::with_capacity(1024)
         });
         spawn_traced(shrinker);
