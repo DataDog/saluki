@@ -721,8 +721,9 @@ fn handle_metric_packet(
         hostname: None,
         origin_entity: OriginEntity {
             process_id,
-            container_id: packet.container_id.and_then(|s| context_resolver.intern(s)),
-            pod_uid: packet.pod_uid.and_then(|s| context_resolver.intern(s)),
+            // TODO: Handle interning failure in some more useful way
+            container_id: context_resolver.intern(packet.container_id.unwrap_or(""))?,
+            pod_uid: context_resolver.intern(packet.pod_uid.unwrap_or(""))?,
             cardinality: packet.cardinality,
         },
         // TODO: We always default this, but field is optional
