@@ -48,6 +48,8 @@ All remaining crates are part of Saluki itself, and all have a name with the pre
 - `lib/saluki-health`: lightweight library for defining components and checking/exposing the health of those components
 - `lib/saluki-io`: core I/O primitives for networking (TCP/UDP/UDS), serialization (codecs and framers), compression,
   I/O-specific buffers, as well as some common codec implementations (e.g. DogStatsD)
+- `lib/saluki-metadata`: basic crate for currying build-time information about the top-level binary into subcrates to
+  support customization (e.g., getting the binary name/version in a generic way)
 - `lib/saluki-metrics`: helper macros for generating statically-defined metric structs to ease creating/holding
   registered metric handles
 - `lib/saluki-tls`: lightweight library for initializing global TLS primitives, as well as build client/server TLS
