@@ -24,7 +24,7 @@ ENV APP_BUILD_TIME=${APP_BUILD_TIME}
 #
 # Our CI build image already installs `cmake3`, though, so we just need to handle the local development case here.
 
-# no-dd-sa: We don't care abput pinning package versions in the build stage.
+# no-dd-sa: We don't care about pinning package versions in the build stage.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates unzip && \
     (which cmake >/dev/null || apt-get install -y --no-install-recommends cmake)
