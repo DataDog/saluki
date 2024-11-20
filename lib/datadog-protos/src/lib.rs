@@ -30,4 +30,5 @@ pub mod agent {
     pub use super::agent_include::datadog::api::v1::agent_client::AgentClient;
     pub use super::agent_include::datadog::api::v1::agent_secure_client::AgentSecureClient;
     pub use super::agent_include::datadog::model::v1::*;
+    pub use super::agent_include::datadog::workloadmeta::*;
 }

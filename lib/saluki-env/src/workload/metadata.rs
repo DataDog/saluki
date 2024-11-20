@@ -3,7 +3,7 @@ use std::fmt;
 use saluki_context::{Tag, TagSet};
 use saluki_event::metric::OriginTagCardinality;
 
-use super::{entity::EntityId, helpers::OneOrMany};
+use super::{entity::EntityId, external_data::ExternalData, helpers::OneOrMany};
 
 /// A metadata operation.
 ///
@@ -61,6 +61,14 @@ impl MetadataOperation {
                 cardinality,
                 tags: tags.into_iter().map(Into::into).collect(),
             }),
+        }
+    }
+
+    /// Creates a new `MetadataOperation` that attaches External Data to an entity.
+    pub fn attach_external_data(entity_id: EntityId, external_data: ExternalData) -> Self {
+        Self {
+            entity_id,
+            actions: OneOrMany::One(MetadataAction::AttachExternalData { external_data }),
         }
     }
 }
@@ -121,6 +129,16 @@ pub enum MetadataAction {
         /// Tags to set.
         tags: TagSet,
     },
+
+    /// Attaches External Data to the entity.
+    ///
+    /// External Data is free-form string data that is attached to entities from external systems to allow resolving the
+    /// entity's ID when it cannot be passed directly to the entity such that the entity can provide it in telemetry
+    /// payloads itself.
+    AttachExternalData {
+        /// External Data to attach.
+        external_data: ExternalData,
+    },
 }
 
 impl fmt::Debug for MetadataAction {
@@ -132,6 +150,7 @@ impl fmt::Debug for MetadataAction {
             Self::AddTag { cardinality, tag } => write!(f, "AddTag(cardinality={:?}, tag={:?})", cardinality, tag),
             Self::AddTags { cardinality, tags } => write!(f, "AddTags(cardinality={:?}, tags={:?})", cardinality, tags),
             Self::SetTags { cardinality, tags } => write!(f, "SetTags(cardinality={:?}, tags={:?})", cardinality, tags),
+            Self::AttachExternalData { external_data } => write!(f, "AttachExternalData({:?})", external_data),
         }
     }
 }

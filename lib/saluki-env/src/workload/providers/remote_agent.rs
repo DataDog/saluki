@@ -15,7 +15,9 @@ use crate::{
     features::{Feature, FeatureDetector},
     workload::{
         aggregator::MetadataAggregator,
-        collectors::{ContainerdMetadataCollector, RemoteAgentMetadataCollector},
+        collectors::{
+            ContainerdMetadataCollector, RemoteAgentTaggerMetadataCollector, RemoteAgentWorkloadMetadataCollector,
+        },
         entity::EntityId,
         store::{TagStore, TagStoreQuerier},
     },
@@ -107,13 +109,22 @@ impl RemoteAgentWorkloadProvider {
             aggregator.add_collector(cgroups_collector);
         }
 
-        // Finally, add the Remote Agent collector.
-        let cgroups_collector = build_collector("remote-agent", health_registry, &mut collector_bounds, |health| {
-            RemoteAgentMetadataCollector::from_configuration(config, health, string_interner.clone())
-        })
-        .await?;
+        // Finally, add the Remote Agent collectors: one for the tagger, and one for workloadmeta.
+        let ra_tags_collector =
+            build_collector("remote-agent-tags", health_registry, &mut collector_bounds, |health| {
+                RemoteAgentTaggerMetadataCollector::from_configuration(config, health, string_interner.clone())
+            })
+            .await?;
 
-        aggregator.add_collector(cgroups_collector);
+        aggregator.add_collector(ra_tags_collector);
+
+        let ra_wmeta_collector =
+            build_collector("remote-agent-wmeta", health_registry, &mut collector_bounds, |health| {
+                RemoteAgentWorkloadMetadataCollector::from_configuration(config, health, string_interner.clone())
+            })
+            .await?;
+
+        aggregator.add_collector(ra_wmeta_collector);
 
         // Create and attach the tag store to the aggregator.
         let tag_store = TagStore::with_entity_limit(DEFAULT_TAG_STORE_ENTITY_LIMIT);
