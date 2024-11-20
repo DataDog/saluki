@@ -11,6 +11,8 @@ mod collectors;
 mod entity;
 pub use self::entity::EntityId;
 
+mod external_data;
+
 mod helpers;
 
 mod metadata;
