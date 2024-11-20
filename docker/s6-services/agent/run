@@ -1,0 +1,4 @@
+#!/usr/bin/execlineb -P
+
+foreground { /initlog.sh "starting agent" }
+s6-envdir -I /run/agent/env agent run

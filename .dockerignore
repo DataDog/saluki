@@ -2,7 +2,7 @@
 /.gitlab
 /.git
 /.vscode
-/docker
+/docker/Dockerfile.*
 /target
 /test
 /tooling
