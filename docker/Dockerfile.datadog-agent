@@ -5,11 +5,11 @@ ARG ADP_IMAGE=saluki-images/agent-data-plane:latest
 # Reference the ADP image so we can copy the relevant bits out of it.
 FROM ${ADP_IMAGE} AS adp
 
-LABEL org.opencontainers.image.source="https://github.com/DataDog/saluki"
-LABEL target="prod"
-
 # Build off of the official Datadog Agent image.
 FROM ${DD_AGENT_IMAGE}
+
+LABEL org.opencontainers.image.source="https://github.com/DataDog/saluki"
+LABEL target="prod"
 
 # Copy the ADP binary and all of the required licensing bits.
 COPY --from=adp /usr/local/bin/agent-data-plane /opt/datadog-agent/embedded/bin/agent-data-plane
