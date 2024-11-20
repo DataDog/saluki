@@ -10,6 +10,9 @@ target:
     DD_HOSTNAME: smp-regression
     DD_DD_URL: http://127.0.0.1:9091
 
+    # Sets the context resolver's string interner size to 10MiB.
+    DD_DOGSTATSD_STRING_INTERNER_SIZE: "10MiB"
+
     # Set the context limit in the aggregator to right above 250K, which matches the maximum number of contexts we
     # expect to generate. We essentially don't want the aggregator to be a limiting factor.
     DD_AGGREGATE_CONTEXT_LIMIT: "250100"
