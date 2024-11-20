@@ -97,7 +97,6 @@ build-adp-image: ## Builds the ADP container image in release mode ('latest' tag
 		--build-arg APP_SHORT_NAME=$(APP_SHORT_NAME) \
 		--build-arg APP_VERSION=$(APP_VERSION) \
 		--build-arg APP_GIT_HASH=$(APP_GIT_HASH) \
-		--build-arg APP_BUILD_TIME=$(APP_BUILD_TIME) \
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
 
