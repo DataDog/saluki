@@ -2,7 +2,7 @@ use std::{num::NonZeroUsize, sync::Arc};
 
 use arc_swap::ArcSwap;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::{
     prelude::*,
@@ -59,7 +59,11 @@ impl ExternalDataStore {
 
     fn add_mapping(&mut self, external_data: ExternalData, entity_id: EntityId) {
         if !self.track_entity(&entity_id) {
-            // TODO: Emit a warning log and/or a metric here.
+            trace!(
+                entity_limit = self.entity_limit(),
+                %entity_id,
+                "Entity limit reached, not adding mapping."
+            );
             return;
         }
 

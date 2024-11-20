@@ -4,7 +4,7 @@ use arc_swap::ArcSwap;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_context::TagSet;
 use saluki_event::metric::OriginTagCardinality;
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::{
     prelude::*,
@@ -122,7 +122,11 @@ impl TagStore {
 
     fn add_entity_tags(&mut self, entity_id: EntityId, tags: TagSet, cardinality: OriginTagCardinality) {
         if !self.track_entity(&entity_id) {
-            // TODO: Emit a warning log and/or a metric here.
+            trace!(
+                entity_limit = self.entity_limit(),
+                %entity_id,
+                "Entity limit reached, not adding tags for entity."
+            );
             return;
         }
 
@@ -141,7 +145,11 @@ impl TagStore {
 
     fn set_entity_tags(&mut self, entity_id: EntityId, tags: TagSet, cardinality: OriginTagCardinality) {
         if !self.track_entity(&entity_id) {
-            // TODO: Emit a warning log and/or a metric here.
+            trace!(
+                entity_limit = self.entity_limit(),
+                %entity_id,
+                "Entity limit reached, not setting tags for entity."
+            );
             return;
         }
 
