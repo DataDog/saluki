@@ -1,3 +1,5 @@
+#![allow(warnings)]
+
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
@@ -9,6 +11,7 @@ use regex::Regex;
 use saluki_error::GenericError;
 use saluki_metadata;
 use serde::Deserialize;
+use serde_with::{serde_as, DisplayFromStr, OneOrMany, PickFirst};
 use snafu::{ResultExt, Snafu};
 use tracing::debug;
 use url::Url;
@@ -18,11 +21,34 @@ use crate::destinations::datadog_metrics::DEFAULT_SITE;
 static DD_URL_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^app(\.mrf)?(\.[a-z]{2}\d)?\.(datad(oghq|0g)\.(com|eu)|ddog-gov\.com)$").unwrap());
 
+#[serde_as]
+#[derive(Clone, Debug, Default, Deserialize)]
+struct APIKeys(#[serde_as(as = "OneOrMany<_>")] Vec<String>);
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct MappedAPIKeys(HashMap<String, APIKeys>);
+
+impl MappedAPIKeys {
+    fn mappings(&self) -> impl Iterator<Item = (&str, &APIKeys)> {
+        self.0.iter().map(|(k, v)| (k.as_str(), v))
+    }
+}
+
+impl FromStr for MappedAPIKeys {
+    type Err = serde_json::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let inner = serde_json::from_str(s)?;
+        Ok(Self(inner))
+    }
+}
+
 /// A set of additional API endpoints to forward metrics to.
 ///
 /// Each endpoint can be associated with multiple API keys. Requests will be forwarded to each unique endpoint/API key pair.
+#[serde_as]
 #[derive(Clone, Debug, Default, Deserialize)]
-pub struct AdditionalEndpoints(HashMap<String, Vec<String>>);
+pub struct AdditionalEndpoints(#[serde_as(as = "PickFirst<(DisplayFromStr, _)>")] MappedAPIKeys);
 
 /// Error type for invalid endpoints.
 #[derive(Debug, Snafu)]
@@ -63,11 +89,11 @@ pub fn create_single_domain_resolvers(
     endpoints: &AdditionalEndpoints,
 ) -> Result<Vec<SingleDomainResolver>, EndpointError> {
     let mut resolvers = Vec::new();
-    for (domain, api_keys) in &endpoints.0 {
+    for (domain, api_keys) in endpoints.0.mappings() {
         let new_domain = add_adp_version_to_domain(domain.to_string())?;
         let mut seen = HashSet::new();
         let mut resolver = SingleDomainResolver::default();
-        for api_key in api_keys {
+        for api_key in &api_keys.0 {
             let trimmed_api_key = api_key.trim();
             if trimmed_api_key.is_empty() || seen.contains(trimmed_api_key) {
                 continue;
@@ -81,15 +107,6 @@ pub fn create_single_domain_resolvers(
         }
     }
     Ok(resolvers)
-}
-
-impl FromStr for AdditionalEndpoints {
-    type Err = serde_json::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let endpoints: HashMap<String, Vec<String>> = serde_json::from_str(s)?;
-        Ok(AdditionalEndpoints(endpoints))
-    }
 }
 
 /// Returns a specialized domain prefix based on the versioning of the current application.
@@ -177,6 +194,77 @@ pub fn calculate_api_endpoint(dd_url: Option<&str>, site: &str) -> Result<Uri, G
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn additional_endpoints_to_sorted_strings(endpoints: &AdditionalEndpoints) -> Vec<String> {
+        let mut flattened = endpoints
+            .0
+            .mappings()
+            .flat_map(|(domain, api_keys)| {
+                let domain = domain.clone();
+                api_keys.0.iter().map(move |api_key| format!("{}:{}", domain, api_key))
+            })
+            .collect::<Vec<String>>();
+        flattened.sort();
+        flattened
+    }
+
+    #[test]
+    fn deser_additional_endpoints_json_direct_mapping() {
+        let raw_input = r#""{\"app.datadoghq.com\":\"fake-api-key-1\",\"app.datadoghq.eu\":\"fake-api-key-2\"}""#;
+
+        let result = serde_yaml::from_str::<AdditionalEndpoints>(raw_input)
+            .expect("should not fail to deserialize AdditionalEndpoints from JSON string");
+
+        let expected = vec!["app.datadoghq.com:fake-api-key-1", "app.datadoghq.eu:fake-api-key-2"];
+        let actual = additional_endpoints_to_sorted_strings(&result);
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn deser_additional_endpoints_json_multiple_api_keys() {
+        let raw_input = r#""{\"app.datadoghq.com\":[\"fake-api-key-1a\",\"fake-api-key-1b\"],\"app.datadoghq.eu\":[\"fake-api-key-2a\",\"fake-api-key-2b\"]}""#;
+
+        let result = serde_yaml::from_str::<AdditionalEndpoints>(raw_input)
+            .expect("should not fail to deserialize AdditionalEndpoints from JSON string");
+
+        let expected = vec![
+            "app.datadoghq.com:fake-api-key-1a",
+            "app.datadoghq.com:fake-api-key-1b",
+            "app.datadoghq.eu:fake-api-key-2a",
+            "app.datadoghq.eu:fake-api-key-2b",
+        ];
+        let actual = additional_endpoints_to_sorted_strings(&result);
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn deser_additional_endpoints_direct_mapping() {
+        let raw_input = "app.datadoghq.com: fake-api-key-1\napp.datadoghq.eu: fake-api-key-2";
+
+        let result = serde_yaml::from_str::<AdditionalEndpoints>(raw_input)
+            .expect("should not fail to deserialize AdditionalEndpoints from YAML string");
+
+        let expected = vec!["app.datadoghq.com:fake-api-key-1", "app.datadoghq.eu:fake-api-key-2"];
+        let actual = additional_endpoints_to_sorted_strings(&result);
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn deser_additional_endpoints_multiple_api_keys() {
+        let raw_input = "app.datadoghq.com:\n  - fake-api-key-1a\n  - fake-api-key-1b\napp.datadoghq.eu:\n  - fake-api-key-2a\n  - fake-api-key-2b";
+
+        let result = serde_yaml::from_str::<AdditionalEndpoints>(raw_input)
+            .expect("should not fail to deserialize AdditionalEndpoints from YAML string");
+
+        let expected = vec![
+            "app.datadoghq.com:fake-api-key-1a",
+            "app.datadoghq.com:fake-api-key-1b",
+            "app.datadoghq.eu:fake-api-key-2a",
+            "app.datadoghq.eu:fake-api-key-2b",
+        ];
+        let actual = additional_endpoints_to_sorted_strings(&result);
+        assert_eq!(expected, actual);
+    }
 
     #[test]
     fn add_version() {
