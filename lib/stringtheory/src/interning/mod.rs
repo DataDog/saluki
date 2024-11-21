@@ -246,10 +246,6 @@ impl ReclaimedEntries {
         Some(found_entry)
     }
 
-    fn remove(&mut self, entry: &ReclaimedEntry) {
-        self.0.remove(entry);
-    }
-
     #[cfg(test)]
     fn iter(&self) -> impl Iterator<Item = &ReclaimedEntry> {
         self.0.iter()
