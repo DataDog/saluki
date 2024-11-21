@@ -233,11 +233,16 @@ impl EntryHeader {
 struct InternerShardState {
     // Direct pieces of our buffer allocation.
     ptr: NonNull<u8>,
-    len: usize,
+    offset: usize,
     capacity: NonZeroUsize,
 
     // Number of active entries (strings) in the interner.
     entries: usize,
+
+    // Length of all active entries, in bytes.
+    //
+    // This is equivalent to `self.offset` minus the total size of all reclaimed entries.
+    len: usize,
 
     // Markers for entries that can be reused.
     reclaimed: ReclaimedEntries,
@@ -264,16 +269,17 @@ impl InternerShardState {
 
         Self {
             ptr,
-            len: 0,
+            offset: 0,
             capacity,
             entries: 0,
+            len: 0,
             reclaimed: ReclaimedEntries::new(),
         }
     }
 
     /// Returns the total number of unused bytes that are available for interning.
     fn available(&self) -> usize {
-        self.capacity.get() - self.len
+        self.capacity.get() - self.offset
     }
 
     fn get_entry_ptr(&self, offset: usize) -> NonNull<EntryHeader> {
@@ -295,7 +301,7 @@ impl InternerShardState {
     fn find_entry(&self, hash: u64, s: &str) -> Option<NonNull<EntryHeader>> {
         let mut offset = 0;
 
-        while offset < self.len {
+        while offset < self.offset {
             // Construct a pointer to the entry at `offset`, and get a reference to the header value.
             let header_ptr = self.get_entry_ptr(offset);
             let header = unsafe { header_ptr.as_ref() };
@@ -331,6 +337,7 @@ impl InternerShardState {
         );
 
         let entry_ptr = self.get_entry_ptr(offset);
+        let entry_len = entry_header.entry_len();
 
         // Write the entry header.
         unsafe { entry_ptr.as_ptr().write(entry_header) };
@@ -345,8 +352,9 @@ impl InternerShardState {
         };
         entry_s_buf.copy_from_slice(s_buf);
 
-        // Update the number of entries we have.
+        // Update our internal statistics.
         self.entries += 1;
+        self.len += entry_len;
 
         entry_ptr
     }
@@ -355,8 +363,8 @@ impl InternerShardState {
         let entry_header = EntryHeader::from_string(s_hash, s);
 
         // Write the entry to the end of the data buffer.
-        let entry_offset = self.len;
-        self.len += entry_header.entry_len();
+        let entry_offset = self.offset;
+        self.offset += entry_header.entry_len();
 
         self.write_entry(entry_offset, entry_header, s)
     }
@@ -391,16 +399,26 @@ impl InternerShardState {
 
         let header = unsafe { header_ptr.as_ref() };
 
-        let reclaimed_entry = ReclaimedEntry::new(entry_offset as usize, header.entry_len());
-        self.add_reclaimed(reclaimed_entry);
+        let entry = ReclaimedEntry::new(entry_offset as usize, header.entry_len());
+        self.len -= entry.capacity();
+        self.add_reclaimed(entry);
     }
 
-    fn add_reclaimed(&mut self, current_entry: ReclaimedEntry) {
+    fn add_reclaimed(&mut self, entry: ReclaimedEntry) {
         // Reclamation is a two-step process: first, we have to actually keep track of the reclaimed entry, which
         // potentially involves merging adjacent reclaimed entries, and then once all of that has happened, we tombstone
         // the entry (whether merged or not).
-        let merged_current_entry = self.reclaimed.insert(current_entry);
-        self.write_entry_tombstone(merged_current_entry);
+        //
+        // However, if the merged reclaimed entry immediately precedes any available capacity, we can skip tombstoning
+        // it, since we can just wind back `offset` to reclaim the space.
+        let merged_entry = self.reclaimed.insert(entry);
+        if merged_entry.offset() + merged_entry.capacity() == self.offset {
+            self.offset -= merged_entry.capacity();
+            self.reclaimed.remove(&merged_entry);
+            return;
+        }
+
+        self.clear_reclaimed_entry(merged_entry);
     }
 
     fn mark_for_reclamation(&mut self, header_ptr: NonNull<EntryHeader>) {
@@ -421,7 +439,7 @@ impl InternerShardState {
         }
     }
 
-    fn write_entry_tombstone(&mut self, entry: ReclaimedEntry) {
+    fn clear_reclaimed_entry(&mut self, entry: ReclaimedEntry) {
         let entry_ptr = self.get_entry_ptr(entry.offset);
 
         // Write the entry tombstone itself, which clears out the hash and sets the reference count to zero.
@@ -549,7 +567,7 @@ impl<const SHARD_FACTOR: usize> InternerState<SHARD_FACTOR> {
     }
 
     fn len_bytes(&self) -> usize {
-        self.shards.iter().map(|shard| shard.lock().unwrap().len).sum()
+        self.shards.iter().map(|shard| shard.lock().unwrap().offset).sum()
     }
 
     fn capacity_bytes(&self) -> usize {
@@ -819,19 +837,18 @@ mod tests {
         let shard = create_shard(NonZeroUsize::new(1024).unwrap());
 
         let s1 = intern_for_shard(&shard, "hello").expect("should not fail to intern");
-        let s1_reclaimed_expected = get_reclaimed_entry_for_string(&s1);
+        let s1_entry_len = entry_len(&s1);
 
         assert_eq!(shard_entries(&shard), 1);
+        assert_eq!(shard_available(&shard), 1024 - s1_entry_len);
         assert_eq!(shard_reclaimed_len(&shard), 0);
 
         // Drop the interned string, which should decrement the reference count to zero and then reclaim the entry.
         drop(s1);
 
         assert_eq!(shard_entries(&shard), 0);
-        assert_eq!(shard_reclaimed_len(&shard), 1);
-
-        let s1_reclaimed = shard_first_reclaimed_entry(&shard);
-        assert_eq!(s1_reclaimed_expected, s1_reclaimed);
+        assert_eq!(shard_available(&shard), 1024);
+        assert_eq!(shard_reclaimed_len(&shard), 0);
     }
 
     #[test]
@@ -894,83 +911,122 @@ mod tests {
 
     #[test]
     fn has_reclaimed_entries_string_fits_exactly() {
-        // The shard is large enough for one "hello world!"/"hello, world", but not two of them.
-        let shard = create_shard(NonZeroUsize::new(64).unwrap());
+        // The shard is large enough to fit two of the identically-sized strings, but not all three. We show that when we drop
+        // an entry and it is reclaimed, a string of identical size should always be able to reuse that reclaimed entry.
+        const S1_VALUE: &str = "hello world!";
+        const S2_VALUE: &str = "hello, world";
+        const S3_VALUE: &str = "hello--world";
 
-        // Intern the first string, which should fit without issue.
-        let s1 = intern_for_shard(&shard, "hello world!").expect("should not fail to intern");
+        let shard = create_shard(NonZeroUsize::new(80).unwrap());
+
+        // Intern the first two strings, which should fit without issue.
+        let s1 = intern_for_shard(&shard, S1_VALUE).expect("should not fail to intern");
         let s1_reclaimed_expected = get_reclaimed_entry_for_string(&s1);
+        let _s2 = intern_for_shard(&shard, S2_VALUE).expect("should not fail to intern");
 
-        assert_eq!(shard_entries(&shard), 1);
+        assert_eq!(shard_entries(&shard), 2);
         assert_eq!(shard_reclaimed_len(&shard), 0);
 
-        // Try to intern the second string, which should fail as we don't have the space.
-        let s2 = intern_for_shard(&shard, "hello, world");
-        assert_eq!(s2, None);
+        // Try to intern the third string, which should fail as we don't have the space.
+        let s3 = intern_for_shard(&shard, S3_VALUE);
+        assert_eq!(s3, None);
 
         // Drop the first string, which should decrement the reference count to zero and then reclaim the entry.
         drop(s1);
 
-        assert_eq!(shard_entries(&shard), 0);
+        assert_eq!(shard_entries(&shard), 1);
         assert_eq!(shard_reclaimed_len(&shard), 1);
 
         let s1_reclaimed = shard_first_reclaimed_entry(&shard);
         assert_eq!(s1_reclaimed_expected, s1_reclaimed);
 
-        // Try again to intern the second string, which should now succeed and take over the reclaimed entry entirely
+        // Try again to intern the third string, which should now succeed and take over the reclaimed entry entirely
         // as the strings are identical in length.
-        let _s2 = intern_for_shard(&shard, "hello, world").expect("should not fail to intern");
+        let _s3 = intern_for_shard(&shard, S3_VALUE).expect("should not fail to intern");
 
-        assert_eq!(shard_entries(&shard), 1);
+        assert_eq!(shard_entries(&shard), 2);
         assert_eq!(shard_reclaimed_len(&shard), 0);
     }
 
     #[test]
     fn reclaimed_entry_reuse_split_too_small() {
-        // Create a shard that's big enough to fit either string individually, but not at the same time.
-        let shard = create_shard(NonZeroUsize::new(72).unwrap());
+        // This situation is slightly contrived, but: we want to test that when there's a reclaimed entry of a certain
+        // size, reusing that reclaimed entry won't lead to it being split if the resulting split entry would be too
+        // "small": unable to hold another minimum-sized entry.
+        //
+        // We have to intern three strings to do this because we only track reclaimed entries when they're followed by
+        // in-use entries, and the string we drop to create a reclaimed entry has to be big enough, but not _too_ big,
+        // to hold the string we want to intern after it.
+        let shard = create_shard(NonZeroUsize::new(128).unwrap());
 
         // Declare our strings to intern and just check some preconditions by hand.
         let s_one = "a horse, a horse, my kingdom for a horse!";
         let s_one_entry_len = entry_len(s_one);
-        let s_two = "hello there, world!";
+        let s_two = "why hello there, beautiful";
         let s_two_entry_len = entry_len(s_two);
+        let s_three = "real gs move in silence like lasagna";
+        let s_three_entry_len = entry_len(s_three);
 
         assert!(s_one_entry_len <= shard_capacity(&shard));
         assert!(s_two_entry_len <= shard_capacity(&shard));
-        assert!(s_one_entry_len + s_two_entry_len > shard_capacity(&shard));
-        assert!(s_one_entry_len > s_two_entry_len && (s_one_entry_len - s_two_entry_len) < MINIMUM_ENTRY_LEN);
+        assert!(s_one_entry_len + s_two_entry_len + s_three_entry_len > shard_capacity(&shard));
+        assert!(s_one_entry_len > s_two_entry_len);
+        assert!(s_three_entry_len > s_two_entry_len);
+        assert!((s_one_entry_len - s_three_entry_len) < MINIMUM_ENTRY_LEN);
 
-        // Intern the first string, which should fit without issue.
+        // Intern the first two strings, which should fit without issue.
         let s1 = intern_for_shard(&shard, s_one).expect("should not fail to intern");
         let s1_reclaimed_expected = get_reclaimed_entry_for_string(&s1);
+        let _s2 = intern_for_shard(&shard, s_two).expect("should not fail to intern");
 
-        assert_eq!(shard_entries(&shard), 1);
+        assert_eq!(shard_entries(&shard), 2);
         assert_eq!(shard_reclaimed_len(&shard), 0);
 
-        // Try to intern the second string, which should fail as we don't have the space.
-        let s2 = intern_for_shard(&shard, s_two);
-        assert_eq!(s2, None);
+        // Try to intern the third string, which should fail as we don't have the space.
+        let s3 = intern_for_shard(&shard, s_three);
+        assert_eq!(s3, None);
 
         // Drop the first string, which should decrement the reference count to zero and then reclaim the entry.
         drop(s1);
 
-        assert_eq!(shard_entries(&shard), 0);
+        assert_eq!(shard_entries(&shard), 1);
         assert_eq!(shard_reclaimed_len(&shard), 1);
 
         let s1_reclaimed = shard_first_reclaimed_entry(&shard);
         assert_eq!(s1_reclaimed_expected, s1_reclaimed);
 
-        // Try again to intern the second string, which should now succeed and take over the reclaimed entry, but since
-        // the remainder of the reclaimed entry after taking the necessary capacity for `s_two` is not large enough
-        // (`MINIMUM_ENTRY_LEN`), we shouldn't end up splitting the reclaimed entry, and instead, `s2` should consume
+        // Try again to intern the third string, which should now succeed and take over the reclaimed entry, but since
+        // the remainder of the reclaimed entry after taking the necessary capacity for `s_three` is not large enough
+        // (`MINIMUM_ENTRY_LEN`), we shouldn't end up splitting the reclaimed entry, and instead, `s3` should consume
         // the entire reclaimed entry.
-        let s2 = intern_for_shard(&shard, s_two).expect("should not fail to intern");
-        let s2_reclaimed_expected = get_reclaimed_entry_for_string(&s2);
+        let s3 = intern_for_shard(&shard, s_three).expect("should not fail to intern");
+        let s3_reclaimed_expected = get_reclaimed_entry_for_string(&s3);
 
-        assert_eq!(shard_entries(&shard), 1);
+        assert_eq!(shard_entries(&shard), 2);
         assert_eq!(shard_reclaimed_len(&shard), 0);
-        assert_eq!(s1_reclaimed_expected, s2_reclaimed_expected);
+        assert_eq!(s1_reclaimed_expected, s3_reclaimed_expected);
+    }
+
+    #[test]
+    fn reclaimed_entry_adjacent_to_spare_capacity() {
+        let shard = create_shard(NonZeroUsize::new(128).unwrap());
+
+        // Intern two smallish strings that fit without issue.
+        let s1 = intern_for_shard(&shard, "hello, world!").expect("should not fail to intern");
+        let s2 = intern_for_shard(&shard, "cheeeeeehooooo!").expect("should not fail to intern");
+        let s1_entry_len = entry_len(&s1);
+        let s2_entry_len = entry_len(&s2);
+
+        assert_eq!(shard_reclaimed_len(&shard), 0);
+        assert_eq!(shard_available(&shard), 128 - s1_entry_len - s2_entry_len);
+
+        drop(s2);
+        assert_eq!(shard_reclaimed_len(&shard), 0);
+        assert_eq!(shard_available(&shard), 128 - s1_entry_len);
+
+        drop(s1);
+        assert_eq!(shard_reclaimed_len(&shard), 0);
+        assert_eq!(shard_available(&shard), 128);
     }
 
     proptest! {

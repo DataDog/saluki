@@ -202,6 +202,11 @@ impl ReclaimedEntries {
         Some(found_entry)
     }
 
+    /// Removes the given entry from the set, if it exists.
+    pub fn remove(&mut self, entry: &ReclaimedEntry) {
+        self.0.remove(entry);
+    }
+
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.0.len()
