@@ -214,6 +214,8 @@ fn default_request_recovery_reset() -> bool {
 impl DatadogMetricsConfiguration {
     /// Creates a new `DatadogMetricsConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        debug!("Configuration as passed to component: {:?}", config);
+
         Ok(config.as_typed()?)
     }
 
@@ -261,6 +263,7 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         .await?;
 
         let resolvers = create_single_domain_resolvers(&self.endpoints)?;
+        debug!("Created {} single domain resolvers: {:?}", resolvers.len(), resolvers);
 
         Ok(Box::new(DatadogMetrics {
             service,

@@ -58,7 +58,7 @@ pub enum EndpointError {
 }
 
 /// A single API endpoint and its associated API keys.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct SingleDomainResolver {
     domain: String,
     api_keys: Vec<String>,
