@@ -124,7 +124,7 @@ impl Resolver {
         Ok(Self { config })
     }
 
-    async fn resolve(&self, secrets: HashMap<KeyPath, String>) -> Result<HashMap<KeyPath, String>, Error> {
+    async fn resolve(&self, secrets: HashMap<String, String>) -> Result<HashMap<String, String>, Error> {
         // Extract a list of the secret refs that we need to resolve.
         let mut secret_refs = Vec::new();
         for value in secrets.values() {
@@ -235,7 +235,7 @@ impl Provider {
         let resolved_secrets = resolver.resolve(secret_refs).await?;
 
         for (key, value) in resolved_secrets {
-            set_nested_dict_entry(&mut self.secrets, key, value);
+            set_nested_dict_entry(&mut self.secrets, key.as_str(), value);
         }
 
         // Update our metadata source based on the resolver we used.
@@ -261,36 +261,9 @@ impl figment::Provider for Provider {
     }
 }
 
-#[derive(Eq, Hash, PartialEq)]
-struct KeyPath {
-    segments: Vec<String>,
-}
-
-impl KeyPath {
-    fn root() -> Self {
-        Self { segments: Vec::new() }
-    }
-}
-
-impl KeyPath {
-    fn push(&self, segment: &str) -> Self {
-        Self {
-            segments: {
-                let mut segments = self.segments.clone();
-                segments.push(segment.to_string());
-                segments
-            },
-        }
-    }
-
-    fn into_segments(self) -> Vec<String> {
-        self.segments
-    }
-}
-
-fn set_nested_dict_entry(dict: &mut Dict, key: KeyPath, value: String) {
-    fn get_or_create(dict: &mut Dict, key: String) -> Option<&mut Dict> {
-        let entry = dict.entry(key).or_insert_with(|| Dict::default().into());
+fn set_nested_dict_entry(dict: &mut Dict, key: &str, value: String) {
+    fn get_or_create<'a>(dict: &'a mut Dict, key: &str) -> Option<&'a mut Dict> {
+        let entry = dict.entry(key.to_string()).or_insert_with(|| Dict::default().into());
         if let Value::Dict(_, dict) = entry {
             Some(dict)
         } else {
@@ -298,28 +271,26 @@ fn set_nested_dict_entry(dict: &mut Dict, key: KeyPath, value: String) {
         }
     }
 
+    let mut parts = key.split('.').collect::<Vec<_>>();
     let mut current_dict = dict;
-    let mut segments = key.into_segments();
 
-    for segment in segments.drain(..segments.len() - 1) {
-        match get_or_create(current_dict, segment) {
+    for intermediate_key in parts.drain(..parts.len() - 1) {
+        match get_or_create(current_dict, intermediate_key) {
             Some(dict) => current_dict = dict,
             None => return,
         }
     }
 
-    let leaf_key = segments
-        .pop()
-        .expect("parts should always have at least one element left");
-    current_dict.insert(leaf_key, value.into());
+    let leaf_key = parts.pop().expect("parts should always have at least one element left");
+    current_dict.insert(leaf_key.to_string(), value.into());
 }
 
-fn extract_secret_refs(source: &Figment) -> HashMap<KeyPath, String> {
+fn extract_secret_refs(source: &Figment) -> HashMap<String, String> {
     let mut secrets = HashMap::new();
 
     match source.extract::<Value>() {
         Ok(value) => match value.as_dict() {
-            Some(dict) => extract_secret_refs_inner(KeyPath::root(), dict, &mut secrets),
+            Some(dict) => extract_secret_refs_inner("", dict, &mut secrets),
             None => {
                 error!("Failed to extract configuration values as a dictionary during secrets resolution. No secrets will be resolved.");
             }
@@ -334,17 +305,17 @@ fn extract_secret_refs(source: &Figment) -> HashMap<KeyPath, String> {
     secrets
 }
 
-fn extract_secret_refs_inner(parent_path: KeyPath, dict: &Dict, secrets: &mut HashMap<KeyPath, String>) {
+fn extract_secret_refs_inner(prefix: &str, dict: &Dict, secrets: &mut HashMap<String, String>) {
     for (key, value) in dict.iter() {
-        let current_path = parent_path.push(key);
+        let prefixed_key = format!("{}{}", prefix, key);
 
         match value {
             Value::String(_, value) => {
                 if let Some(secret_ref) = parse_secret_ref(value) {
-                    secrets.insert(current_path, secret_ref.to_string());
+                    secrets.insert(prefixed_key, secret_ref.to_string());
                 }
             }
-            Value::Dict(_, dict) => extract_secret_refs_inner(current_path, dict, secrets),
+            Value::Dict(_, dict) => extract_secret_refs_inner(&format!("{}.", prefixed_key), dict, secrets),
             _ => {}
         }
     }
