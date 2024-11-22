@@ -4,6 +4,9 @@
 mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
 mkfile_dir := $(dir $(mkfile_path))
 
+export TARGET_ARCH ?= $(shell uname -m | sed s/x86_64/amd64/ | sed s/aarch64/arm64/)
+export TARGET_TRIPLE ?= $(shell command -v rustc 1>/dev/null && rustc -vV | sed -n 's|host: ||p')
+
 # High-level settings that ultimately get passed down to build-specific targets.
 export APP_NAME ?= agent-data-plane
 export APP_SHORT_NAME ?= adp
@@ -33,13 +36,16 @@ export GO_APP_IMAGE ?= ubuntu:22.04
 export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
 export GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
 
-# Specific versions of various Rust tools we use.
+# Specific versions of various tools we use.
 export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.3
 export CARGO_TOOL_VERSION_cargo-deny ?= 0.15.0
 export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
 export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.72
 export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
 export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
+export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
+export DDPROF_VERSION ?= 0.19.0
+export LADING_VERSION ?= 0.23.3
 
 FMT_YELLOW = \033[0;33m
 FMT_BLUE = \033[0;36m
@@ -97,7 +103,6 @@ build-adp-image: ## Builds the ADP container image in release mode ('latest' tag
 		--build-arg APP_SHORT_NAME=$(APP_SHORT_NAME) \
 		--build-arg APP_VERSION=$(APP_VERSION) \
 		--build-arg APP_GIT_HASH=$(APP_GIT_HASH) \
-		--build-arg APP_BUILD_TIME=$(APP_BUILD_TIME) \
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
 
@@ -423,14 +428,30 @@ endif
 
 ##@ Profiling
 
+.PHONY: profile-run-blackhole
+profile-run-blackhole: cargo-install-dummyhttp
+profile-run-blackhole: ## Runs a blackhole HTTP server for use by ADP
+	@echo "[*] Running blackhole HTTP server at localhost:9095..."
+	@dummyhttp -v -c 202 -p 9095
+
+.PHONY: profile-run-adp
+profile-run-adp: build-adp-release
+profile-run-adp: ## Runs ADP locally for profiling
+	@echo "[*] Running ADP..."
+	@DD_API_KEY=00000001adp DD_HOSTNAME=adp-profiling DD_DD_URL=http://127.0.0.1:9095 \
+	DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_SOCKET=/tmp/adp-dsd.sock DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true \
+	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5101 \
+	DD_DOGSTATSD_EXPIRY_SECONDS=30 \
+	target/release/agent-data-plane
+
 .PHONY: profile-run-adp-ddprof
-profile-run-adp-ddprof: ensure-ddprof build-adp
-profile-run-adp-ddprof: ## Runs ADP under ddprof locally
+profile-run-adp-ddprof: ensure-ddprof build-adp-release
+profile-run-adp-ddprof: ## Runs ADP locally for profiling (via ddprof)
 ifeq ($(shell test -S /var/run/datadog/apm.socket || echo not-found), not-found)
 	$(error "APM socket at /var/run/datadog/apm.socket not found. Is the Datadog Agent running?")
 endif
 	@echo "[*] Running ADP under ddprof (service: adp, environment: local, version: $(GIT_COMMIT))..."
-	@DD_API_KEY=00000001adp DD_HOSTNAME=adp-profiling DD_DD_URL=http://127.0.0.1:9091 \
+	@DD_API_KEY=00000001adp DD_HOSTNAME=adp-profiling DD_DD_URL=http://127.0.0.1:9095 \
 	DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_SOCKET=/tmp/adp-dsd.sock DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5101 \
 	DD_DOGSTATSD_EXPIRY_SECONDS=30 \
@@ -452,8 +473,8 @@ endif
 .PHONY: ensure-ddprof
 ensure-ddprof:
 ifeq ($(shell test -f test/ddprof/bin/ddprof || echo not-found), not-found)
-	@echo "[*] Downloading ddprof v0.17.1..."
-	@curl -q -L -o /tmp/ddprof.tar.xz https://github.com/DataDog/ddprof/releases/download/v0.17.1/ddprof-0.17.1-amd64-linux.tar.xz
+	@echo "[*] Downloading ddprof v$(DDPROF_VERSION)..."
+	@curl -q -L -o /tmp/ddprof.tar.xz https://github.com/DataDog/ddprof/releases/download/v$(DDPROF_VERSION)/ddprof-$(DDPROF_VERSION)-$(TARGET_ARCH)-linux.tar.xz
 	@tar -C test -xf /tmp/ddprof.tar.xz
 	@rm -f /tmp/ddprof.tar.xz
 endif
@@ -461,8 +482,8 @@ endif
 .PHONY: ensure-lading
 ensure-lading:
 ifeq ($(shell test -f test/lading/bin/lading || echo not-found), not-found)
-	@echo "[*] Downloading lading v0.23.0..."
-	@curl -q -L -o /tmp/lading.tar.gz https://github.com/DataDog/lading/releases/download/v0.23.0/lading-x86_64-unknown-linux-gnu.tar.gz
+	@echo "[*] Downloading lading v$(LADING_VERSION)..."
+	@curl -q -L -o /tmp/lading.tar.gz https://github.com/DataDog/lading/releases/download/v$(LADING_VERSION)/lading-$(TARGET_TRIPLE).tar.gz
 	@mkdir -p test/lading/bin
 	@tar -C test/lading/bin -xf /tmp/lading.tar.gz
 	@rm -f /tmp/lading.tar.gz

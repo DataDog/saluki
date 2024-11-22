@@ -57,7 +57,7 @@ impl TopologyBlueprint {
         // having to change it in all places that need to do these manual minimum/firm calculations.
         const GLOBAL_EVENT_BUFFER_SIZE: usize =
             std::mem::size_of::<FixedSizeEventBufferInner>() + (1024 * std::mem::size_of::<Event>());
-        const GLOBAL_EVENT_BUFFER_POOL_SIZE_MIN: usize = 64 * GLOBAL_EVENT_BUFFER_SIZE;
+        const GLOBAL_EVENT_BUFFER_POOL_SIZE_MIN: usize = 32 * GLOBAL_EVENT_BUFFER_SIZE;
         const GLOBAL_EVENT_BUFFER_POOL_SIZE_FIRM: usize =
             (512 * GLOBAL_EVENT_BUFFER_SIZE) - GLOBAL_EVENT_BUFFER_POOL_SIZE_MIN;
 

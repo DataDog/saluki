@@ -30,6 +30,12 @@ fn main() {
     tonic_build::configure()
         .build_server(false)
         .include_file("api.mod.rs")
-        .compile_protos(&["proto/datadog/api/v1/api.proto"], &["proto"])
+        .compile_protos(
+            &[
+                "proto/datadog/api/v1/api.proto",
+                "proto/datadog/workloadmeta/workloadmeta.proto",
+            ],
+            &["proto"],
+        )
         .expect("failed to build gRPC service definitions for DCA")
 }
