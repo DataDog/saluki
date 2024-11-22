@@ -84,7 +84,7 @@ impl From<figment::Error> for ConfigurationError {
     }
 }
 
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Debug, Eq, Hash, PartialEq)]
 enum LookupSource {
     /// The configuration key is looked up in a form suitable for environment variables.
     Environment { prefix: String },
@@ -338,6 +338,7 @@ impl ConfigurationLoader {
 ///
 /// Querying for the value of `a.b.c` would return `"value"`, and querying for `a.b` would return the nested object `{
 /// "c": "value" }`.
+#[derive(Debug)]
 pub struct GenericConfiguration {
     inner: Value,
     lookup_sources: HashSet<LookupSource>,
