@@ -214,8 +214,6 @@ fn default_request_recovery_reset() -> bool {
 impl DatadogMetricsConfiguration {
     /// Creates a new `DatadogMetricsConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        debug!("Configuration as passed to component: {:?}", config);
-
         Ok(config.as_typed()?)
     }
 
