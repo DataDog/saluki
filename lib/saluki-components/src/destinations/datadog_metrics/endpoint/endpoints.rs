@@ -1,5 +1,3 @@
-#![allow(warnings)]
-
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
@@ -199,10 +197,7 @@ mod tests {
         let mut flattened = endpoints
             .0
             .mappings()
-            .flat_map(|(domain, api_keys)| {
-                let domain = domain.clone();
-                api_keys.0.iter().map(move |api_key| format!("{}:{}", domain, api_key))
-            })
+            .flat_map(|(domain, api_keys)| api_keys.0.iter().map(move |api_key| format!("{}:{}", domain, api_key)))
             .collect::<Vec<String>>();
         flattened.sort();
         flattened
