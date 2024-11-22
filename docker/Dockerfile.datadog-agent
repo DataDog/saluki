@@ -5,14 +5,20 @@ ARG ADP_IMAGE=saluki-images/agent-data-plane:latest
 # Reference the ADP image so we can copy the relevant bits out of it.
 FROM ${ADP_IMAGE} AS adp
 
-LABEL org.opencontainers.image.source="https://github.com/DataDog/saluki"
-LABEL target="prod"
-
 # Build off of the official Datadog Agent image.
 FROM ${DD_AGENT_IMAGE}
+
+LABEL org.opencontainers.image.source="https://github.com/DataDog/saluki"
+LABEL target="prod"
 
 # Copy the ADP binary and all of the required licensing bits.
 COPY --from=adp /usr/local/bin/agent-data-plane /opt/datadog-agent/embedded/bin/agent-data-plane
 COPY --from=adp /opt/datadog/agent-data-plane /opt/datadog/agent-data-plane
+
+# Add the s6 service files for Agent Data Plane.
+#
+# ADP will only run when the `DD_ADP_ENABLED` environment variable is set to `true`.
+COPY docker/cont-init.d /etc/cont-init.d/
+COPY docker/s6-services /etc/services.d/
 
 # Everything else we'll leave at the defaults of the Datadog Agent image.

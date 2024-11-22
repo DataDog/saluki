@@ -3,9 +3,11 @@ use std::{fmt, slice, vec};
 #[cfg(target_os = "linux")]
 pub mod cgroups;
 pub mod containerd;
+pub mod remote_agent;
 pub mod tonic;
 
 /// Container that can hold one or many values of a given type.
+#[derive(Clone)]
 pub enum OneOrMany<T> {
     /// Single value.
     One(T),

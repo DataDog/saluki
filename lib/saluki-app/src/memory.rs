@@ -2,6 +2,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
+    env, fs,
     sync::atomic::{AtomicBool, Ordering::Relaxed},
     time::Duration,
 };
@@ -68,9 +69,25 @@ impl MemoryBoundsConfiguration {
     ///
     /// If an error occurs during deserialization, an error will be returned.
     pub fn try_from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let config = config
+        let mut config = config
             .as_typed::<Self>()
             .error_context("Failed to parse memory bounds configuration.")?;
+
+        if config.memory_limit.is_none() {
+            // Try to pull configured memory limit from Cgroup if running in a containerized environment.
+            if let Ok(value) = env::var("DOCKER_DD_AGENT") {
+                if !value.is_empty() {
+                    let cgroup_memory_reader = CgroupMemoryParser;
+                    if let Some(memory) = cgroup_memory_reader.parse() {
+                        info!(
+                            "Setting memory limit to {} based on detected cgroups limit.",
+                            memory.to_string_as(true)
+                        );
+                        config.memory_limit = Some(memory);
+                    }
+                }
+            }
+        }
 
         // Try constructing the initial grant based on the configuration as a smoke test to validate the values.
         if let Some(limit) = config.memory_limit {
@@ -254,4 +271,48 @@ pub async fn initialize_allocator_telemetry() -> Result<(), GenericError> {
     });
 
     Ok(())
+}
+
+struct CgroupMemoryParser;
+
+impl CgroupMemoryParser {
+    /// Parse memory limit from memory controller.
+    ///
+    /// Returns `None` if memory limit is set to max or if an error is encountered while parsing.
+    fn parse(self) -> Option<ByteSize> {
+        let contents = fs::read_to_string("/proc/self/cgroup").ok()?;
+        let parts: Vec<&str> = contents.trim().split("\n").collect();
+        // CgroupV2 has unified controllers.
+        if parts.len() == 1 {
+            return self.parse_controller_v2(parts[0]);
+        }
+        for line in parts {
+            if line.contains(":memory:") {
+                return self.parse_controller_v1(line);
+            }
+        }
+        None
+    }
+
+    fn parse_controller_v1(self, controller: &str) -> Option<ByteSize> {
+        let path = controller.split(":").nth(2)?;
+        let memory_path = format!("/sys/fs/cgroup/memory{}/memory.limit_in_bytes", path);
+        let raw_memory_limit = fs::read_to_string(memory_path).ok()?;
+        self.convert_to_bytesize(&raw_memory_limit)
+    }
+
+    fn parse_controller_v2(self, controller: &str) -> Option<ByteSize> {
+        let path = controller.split(":").nth(2)?;
+        let memory_path = format!("/sys/fs/cgroup{}/memory.max", path);
+        let raw_memory_limit = fs::read_to_string(memory_path).ok()?;
+        self.convert_to_bytesize(&raw_memory_limit)
+    }
+
+    fn convert_to_bytesize(self, s: &str) -> Option<ByteSize> {
+        let memory = s.trim().to_string();
+        if memory == "max" {
+            return None;
+        }
+        memory.parse::<ByteSize>().ok()
+    }
 }

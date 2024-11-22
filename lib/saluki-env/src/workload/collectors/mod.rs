@@ -16,7 +16,7 @@ mod containerd;
 pub use self::containerd::ContainerdMetadataCollector;
 
 mod remote_agent;
-pub use self::remote_agent::RemoteAgentMetadataCollector;
+pub use self::remote_agent::{RemoteAgentTaggerMetadataCollector, RemoteAgentWorkloadMetadataCollector};
 
 /// A metadata collector.
 ///

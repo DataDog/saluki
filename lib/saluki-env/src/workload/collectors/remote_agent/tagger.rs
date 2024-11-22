@@ -1,45 +1,32 @@
-use std::time::Duration;
-
 use async_trait::async_trait;
-use datadog_protos::agent::{
-    AgentSecureClient, EntityId as RemoteEntityId, EventType, FetchEntityRequest, StreamTagsRequest,
-    TagCardinality as RemoteTagCardinality,
-};
+use datadog_protos::agent::{EntityId as RemoteEntityId, EventType, TagCardinality as RemoteTagCardinality};
+use futures::StreamExt as _;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{Tag, TagSet};
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_error::GenericError;
 use saluki_event::metric::OriginTagCardinality;
 use saluki_health::Health;
 use stringtheory::interning::GenericMapInterner;
-use tokio::{pin, select, sync::mpsc};
-use tonic::{
-    service::interceptor::InterceptedService,
-    transport::{Channel, Endpoint, Uri},
-    Code,
-};
+use tokio::{select, sync::mpsc};
 use tracing::{debug, trace, warn};
 
-use super::MetadataCollector;
 use crate::workload::{
-    helpers::tonic::{build_self_signed_https_connector, BearerAuthInterceptor},
+    collectors::MetadataCollector,
+    helpers::remote_agent::RemoteAgentClient,
     metadata::{MetadataAction, MetadataOperation},
     EntityId,
 };
 
-const DEFAULT_AGENT_IPC_ENDPOINT: &str = "https://127.0.0.1:5001";
-const DEFAULT_AGENT_AUTH_TOKEN_FILE_PATH: &str = "/etc/datadog-agent/auth_token";
-
-/// A workload provider that uses the remote tagger API from a Datadog Agent, or Datadog Cluster
-/// Agent, to provide workload information.
-pub struct RemoteAgentMetadataCollector {
-    agent_client: AgentSecureClient<InterceptedService<Channel, BearerAuthInterceptor>>,
+/// A workload provider that uses the remote tagger API from a Datadog Agent to provide workload information.
+pub struct RemoteAgentTaggerMetadataCollector {
+    client: RemoteAgentClient,
     tag_interner: GenericMapInterner,
     health: Health,
 }
 
-impl RemoteAgentMetadataCollector {
-    /// Creates a new `RemoteAgentMetadataCollector` from the given configuration.
+impl RemoteAgentTaggerMetadataCollector {
+    /// Creates a new `RemoteAgentTaggerMetadataCollector` from the given configuration.
     ///
     /// ## Errors
     ///
@@ -48,58 +35,10 @@ impl RemoteAgentMetadataCollector {
     pub async fn from_configuration(
         config: &GenericConfiguration, health: Health, tag_interner: GenericMapInterner,
     ) -> Result<Self, GenericError> {
-        let raw_ipc_endpoint = config
-            .try_get_typed::<String>("agent_ipc_endpoint")?
-            .unwrap_or_else(|| DEFAULT_AGENT_IPC_ENDPOINT.to_string());
-
-        let ipc_endpoint = match Uri::from_maybe_shared(raw_ipc_endpoint.clone()) {
-            Ok(uri) => uri,
-            Err(_) => {
-                return Err(generic_error!(
-                    "Failed to parse configured IPC endpoint for Datadog Agent: {}",
-                    raw_ipc_endpoint
-                ))
-            }
-        };
-
-        let token_path = config
-            .try_get_typed::<String>("auth_token_file_path")?
-            .unwrap_or_else(|| DEFAULT_AGENT_AUTH_TOKEN_FILE_PATH.to_string());
-
-        let bearer_token_interceptor =
-            BearerAuthInterceptor::from_file(&token_path)
-                .await
-                .with_error_context(|| {
-                    format!(
-                        "Failed to read Datadog Agent authentication token from '{}'",
-                        token_path
-                    )
-                })?;
-
-        // TODO: We need to write a Tower middleware service that allows applying a backoff between failed calls,
-        // specifically so that we can throttle reconnection attempts.
-        //
-        // When the remote Agent endpoint is not available -- Agent isn't running, etc -- the gRPC client will
-        // essentially freewheel, trying to reconnect as quickly as possible, which spams the logs, wastes resources, so
-        // on and so forth. We would want to essentially apply a backoff like any other client would for the RPC calls
-        // themselves, but use it with the _connector_ instead.
-        //
-        // We could potentially just use a retry middleware, but Tonic does have its own reconnection logic, so we'd
-        // have to test it out to make sure it behaves sensibly.
-        let channel = Endpoint::from(ipc_endpoint)
-            .connect_timeout(Duration::from_secs(2))
-            //.timeout(Duration::from_secs(2))
-            .connect_with_connector(build_self_signed_https_connector())
-            .await
-            .with_error_context(|| format!("Failed to connect to Datadog Agent IPC endpoint '{}'", raw_ipc_endpoint))?;
-
-        let mut agent_client = AgentSecureClient::with_interceptor(channel, bearer_token_interceptor);
-
-        // Try and do a basic health check to make sure we can connect and that our authentication token is valid.
-        try_query_agent_api(&mut agent_client).await?;
+        let client = RemoteAgentClient::from_configuration(config).await?;
 
         Ok(Self {
-            agent_client,
+            client,
             tag_interner,
             health,
         })
@@ -117,45 +56,22 @@ impl RemoteAgentMetadataCollector {
 }
 
 #[async_trait]
-impl MetadataCollector for RemoteAgentMetadataCollector {
+impl MetadataCollector for RemoteAgentTaggerMetadataCollector {
     fn name(&self) -> &'static str {
-        "remote-agent"
+        "remote-agent-tags"
     }
 
     async fn watch(&mut self, operations_tx: &mut mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {
         self.health.mark_ready();
 
-        let mut client = self.agent_client.clone();
-
-        let request = StreamTagsRequest {
-            cardinality: RemoteTagCardinality::High.into(),
-            ..Default::default()
-        };
-
-        // A little trickery here to allow marking liveness of the component while we establish the initial streaming
-        // response.
-        //
-        // Essentially, until the very first message is received, the call to `tagger_stream_entities` won't return,
-        // which can happen if there's actually nothing yet in the remote tagger to send back to us. This is, IMO, an
-        // issue with the gRPC client/server bits here, and it feels like it should really act more like a socket
-        // connection/"OK, we're ready to receive streaming messages", sort of thing... but we have to cope with it
-        // as-is for now.
-        let stream_fut = client.tagger_stream_entities(request);
-        pin!(stream_fut);
-
-        let mut stream = loop {
-            select! {
-                _ = self.health.live() => continue,
-                stream_result = &mut stream_fut => break stream_result?.into_inner(),
-            }
-        };
+        let mut entity_stream = self.client.get_tagger_stream(RemoteTagCardinality::High);
         debug!("Established tagger entity stream.");
 
         loop {
             select! {
                 _ = self.health.live() => {},
-                result = stream.message() => match result {
-                    Ok(Some(response)) => {
+                result = entity_stream.next() => match result {
+                    Some(Ok(response)) => {
                         trace!("Received tagger stream event.");
 
                         for event in response.events {
@@ -224,8 +140,8 @@ impl MetadataCollector for RemoteAgentMetadataCollector {
 
                         trace!("Processed tagger stream event.");
                     },
-                    Ok(None) => break,
-                    Err(e) => return Err(e.into()),
+                    Some(Err(e)) => return Err(e.into()),
+                    None => break,
                 }
             }
         }
@@ -236,7 +152,7 @@ impl MetadataCollector for RemoteAgentMetadataCollector {
     }
 }
 
-impl MemoryBounds for RemoteAgentMetadataCollector {
+impl MemoryBounds for RemoteAgentTaggerMetadataCollector {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         // TODO: Kind of a throwaway calculation because nothing about the gRPC client can really be bounded at the
         // moment.
@@ -261,26 +177,5 @@ fn remote_entity_id_to_entity_id(remote_entity_id: RemoteEntityId) -> Option<Ent
             warn!("Unhandled entity ID prefix: {}", other);
             None
         }
-    }
-}
-
-async fn try_query_agent_api(
-    client: &mut AgentSecureClient<InterceptedService<Channel, BearerAuthInterceptor>>,
-) -> Result<(), GenericError> {
-    let noop_fetch_request = FetchEntityRequest {
-        id: Some(RemoteEntityId {
-            prefix: "container_id".to_string(),
-            uid: "nonexistent".to_string(),
-        }),
-        cardinality: RemoteTagCardinality::High.into(),
-    };
-    match client.tagger_fetch_entity(noop_fetch_request).await {
-        Ok(_) => Ok(()),
-        Err(e) => match e.code() {
-            Code::Unauthenticated => Err(generic_error!(
-                "Failed to authenticate to Datadog Agent API. Check that the configured authentication token is correct."
-            )),
-            _ => Err(e.into()),
-        },
     }
 }
