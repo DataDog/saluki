@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use http::{HeaderValue, Method, Request, Uri};
@@ -6,7 +6,7 @@ use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::Counter;
-use saluki_config::GenericConfiguration;
+use saluki_config::{ConfigRefresher, GenericConfiguration};
 use saluki_core::{
     components::{destinations::*, ComponentContext, MetricsBuilder},
     pooling::{FixedSizeObjectPool, ObjectPool},
@@ -188,6 +188,9 @@ pub struct DatadogMetricsConfiguration {
     #[serde_as(as = "PickFirst<(DisplayFromStr, _)>")]
     #[serde(default, rename = "additional_endpoints")]
     endpoints: AdditionalEndpoints,
+
+    #[serde(skip)]
+    config_refresher: Arc<ConfigRefresher>,
 }
 
 fn default_request_timeout_secs() -> u64 {
@@ -223,6 +226,11 @@ impl DatadogMetricsConfiguration {
     fn api_base(&self) -> Result<Uri, GenericError> {
         calculate_api_endpoint(self.dd_url.as_deref(), &self.site)
     }
+
+    /// Add option to refresh config with a remote source
+    pub fn set_config_refresher(&mut self, refresher: Arc<ConfigRefresher>) {
+        self.config_refresher = refresher;
+    }
 }
 
 #[async_trait]
@@ -253,6 +261,7 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
             api_base.clone(),
             MetricsEndpoint::Series,
             rb_buffer_pool.clone(),
+            self.config_refresher.clone(),
         )
         .await?;
         let sketches_request_builder = RequestBuilder::new(
@@ -260,6 +269,7 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
             api_base,
             MetricsEndpoint::Sketches,
             rb_buffer_pool,
+            self.config_refresher.clone(),
         )
         .await?;
 

@@ -7,6 +7,7 @@
 #![deny(missing_docs)]
 use std::{
     future::pending,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -19,7 +20,7 @@ use saluki_components::{
         AggregateConfiguration, ChainedConfiguration, HostEnrichmentConfiguration, OriginEnrichmentConfiguration,
     },
 };
-use saluki_config::{ConfigurationLoader, GenericConfiguration};
+use saluki_config::{ConfigRefresher, ConfigRefresherConfiguration, ConfigurationLoader, GenericConfiguration};
 use saluki_core::topology::TopologyBlueprint;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
@@ -174,8 +175,14 @@ fn create_topology(
         .with_transform_builder(host_enrichment_config)
         .with_transform_builder(origin_enrichment_config);
     let internal_metrics_remap_config = AgentTelemetryRemapperConfiguration::new();
-    let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
+
+    let config_refresher_configuration = ConfigRefresherConfiguration::from_configuration(&configuration)?;
+    let config_refresher: Arc<ConfigRefresher> = Arc::new(config_refresher_configuration.build()?);
+    config_refresher.clone().spawn_refresh_task();
+
+    let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Metrics destination.")?;
+    dd_metrics_config.set_config_refresher(config_refresher);
     let events_service_checks_config = DatadogEventsServiceChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Events/Service Checks destination.")?;
 

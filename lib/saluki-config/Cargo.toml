@@ -7,6 +7,9 @@ repository = { workspace = true }
 
 [dependencies]
 figment = { workspace = true, features = ["env", "json", "yaml"] }
+http = { workspace = true }
+reqwest = { workspace = true , features = ["default-tls", "json"]}
+saluki-io = { workspace = true }
 saluki-error = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
