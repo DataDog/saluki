@@ -6,9 +6,12 @@ use http::{Method, Request, Uri};
 use protobuf::CodedOutputStream;
 use saluki_core::pooling::ObjectPool;
 use saluki_event::metric::*;
-use saluki_io::net::client::replay::ReplayBody;
 use saluki_io::{
-    buf::{ChunkedBuffer, ChunkedBufferObjectPool, ReadWriteIoBuffer},
+    buf::{BytesBuffer, FrozenChunkedBytesBuffer},
+    net::client::replay::ReplayBody,
+};
+use saluki_io::{
+    buf::{ChunkedBytesBuffer, ChunkedBytesBufferObjectPool},
     compression::*,
 };
 use snafu::{ResultExt, Snafu};
@@ -112,15 +115,14 @@ impl MetricsEndpoint {
 
 pub struct RequestBuilder<O>
 where
-    O: ObjectPool + 'static,
-    O::Item: ReadWriteIoBuffer,
+    O: ObjectPool<Item = BytesBuffer> + 'static,
 {
     api_key: String,
     api_uri: Uri,
     endpoint: MetricsEndpoint,
-    buffer_pool: ChunkedBufferObjectPool<O>,
+    buffer_pool: ChunkedBytesBufferObjectPool<O>,
     scratch_buf: Vec<u8>,
-    compressor: Compressor<ChunkedBuffer<O>>,
+    compressor: Compressor<ChunkedBytesBuffer<O>>,
     compression_estimator: CompressionEstimator,
     uncompressed_len: usize,
     metrics_written: usize,
@@ -129,14 +131,13 @@ where
 
 impl<O> RequestBuilder<O>
 where
-    O: ObjectPool + 'static,
-    O::Item: ReadWriteIoBuffer + Send + Sync,
+    O: ObjectPool<Item = BytesBuffer> + 'static,
 {
     /// Creates a new `RequestBuilder` for the given endpoint, using the specified API key and base URI.
     pub async fn new(
         api_key: String, api_base_uri: Uri, endpoint: MetricsEndpoint, buffer_pool: O,
     ) -> Result<Self, RequestBuilderError> {
-        let chunked_buffer_pool = ChunkedBufferObjectPool::new(buffer_pool);
+        let chunked_buffer_pool = ChunkedBytesBufferObjectPool::new(buffer_pool);
         let compressor = create_compressor(&chunked_buffer_pool).await;
         let api_uri = build_uri_for_endpoint(api_base_uri, endpoint)?;
 
@@ -235,11 +236,9 @@ where
     /// ## Errors
     ///
     /// If an error occurs while finalizing the compressor or creating the request, an error will be returned.
-    pub async fn flush(&mut self) -> Vec<Result<(usize, Request<ReplayBody<ChunkedBuffer<O>>>), RequestBuilderError>>
-    where
-        O: ObjectPool + Send + Sync,
-        O::Item: Send + Sync,
-    {
+    pub async fn flush(
+        &mut self,
+    ) -> Vec<Result<(usize, Request<ReplayBody<FrozenChunkedBytesBuffer>>), RequestBuilderError>> {
         if self.uncompressed_len == 0 {
             return vec![];
         }
@@ -261,7 +260,7 @@ where
             return vec![Err(e)];
         }
 
-        let buffer = compressor.into_inner();
+        let buffer = compressor.into_inner().freeze();
 
         let compressed_len = buffer.len();
         let compressed_limit = self.endpoint.compressed_size_limit();
@@ -290,7 +289,7 @@ where
 
     async fn split_request(
         &mut self,
-    ) -> Vec<Result<(usize, Request<ReplayBody<ChunkedBuffer<O>>>), RequestBuilderError>> {
+    ) -> Vec<Result<(usize, Request<ReplayBody<FrozenChunkedBytesBuffer>>), RequestBuilderError>> {
         let mut requests = Vec::new();
 
         if self.scratch_buf_lens.is_empty() {
@@ -329,10 +328,10 @@ where
     }
 
     async fn finalize(
-        &self, mut compressor: Compressor<ChunkedBuffer<O>>,
-    ) -> Result<ChunkedBuffer<O>, RequestBuilderError> {
+        &self, mut compressor: Compressor<ChunkedBytesBuffer<O>>,
+    ) -> Result<FrozenChunkedBytesBuffer, RequestBuilderError> {
         compressor.shutdown().await.context(Io)?;
-        let buffer = compressor.into_inner();
+        let buffer = compressor.into_inner().freeze();
         let compressed_len = buffer.len();
         let compressed_limit = self.endpoint.compressed_size_limit();
         if compressed_len > compressed_limit {
@@ -345,8 +344,8 @@ where
     }
 
     fn create_request(
-        &self, buffer: ChunkedBuffer<O>,
-    ) -> Result<Request<ReplayBody<ChunkedBuffer<O>>>, RequestBuilderError> {
+        &self, buffer: FrozenChunkedBytesBuffer,
+    ) -> Result<Request<ReplayBody<FrozenChunkedBytesBuffer>>, RequestBuilderError> {
         match ReplayBody::try_new(buffer, self.endpoint.compressed_size_limit()) {
             Ok(body) => {
                 Request::builder()
@@ -382,10 +381,9 @@ fn build_uri_for_endpoint(api_base_uri: Uri, endpoint: MetricsEndpoint) -> Resul
     builder.build().context(Http)
 }
 
-async fn create_compressor<O>(buffer_pool: &ChunkedBufferObjectPool<O>) -> Compressor<ChunkedBuffer<O>>
+async fn create_compressor<O>(buffer_pool: &ChunkedBytesBufferObjectPool<O>) -> Compressor<ChunkedBytesBuffer<O>>
 where
-    O: ObjectPool + 'static,
-    O::Item: ReadWriteIoBuffer,
+    O: ObjectPool<Item = BytesBuffer> + 'static,
 {
     let write_buffer = buffer_pool.acquire().await;
     Compressor::from_scheme(CompressionScheme::zlib_default(), write_buffer)
