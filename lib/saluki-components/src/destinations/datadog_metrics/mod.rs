@@ -1,7 +1,11 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use http::{HeaderValue, Method, Request, Uri};
+use http::{
+    uri::{Authority, Scheme},
+    HeaderName, HeaderValue, Request, Uri,
+};
+use http_body::Body;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -12,27 +16,25 @@ use saluki_core::{
     pooling::{FixedSizeObjectPool, ObjectPool},
     task::spawn_traced,
 };
-use saluki_error::{generic_error, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_event::DataType;
 use saluki_io::{
-    buf::{BytesBuffer, ChunkedBytesBuffer, FixedSizeVec, FrozenChunkedBytesBuffer},
+    buf::{BytesBuffer, FixedSizeVec, FrozenChunkedBytesBuffer},
     net::{
-        client::{http::HttpClient, replay::ReplayBody},
+        client::http::HttpClient,
         util::retry::{DefaultHttpRetryPolicy, ExponentialBackoff},
     },
 };
 use serde::Deserialize;
 use tokio::{
     select,
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, Barrier},
 };
-use tower::{BoxError, Service};
+use tower::{BoxError, Service, ServiceBuilder};
 use tracing::{debug, error};
 
 mod endpoint;
-use self::endpoint::endpoints::{
-    calculate_api_endpoint, create_single_domain_resolvers, AdditionalEndpoints, SingleDomainResolver,
-};
+use self::endpoint::endpoints::{calculate_resolved_endpoint, AdditionalEndpoints, ResolvedEndpoint};
 
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
@@ -40,6 +42,9 @@ use self::request_builder::{MetricsEndpoint, RequestBuilder};
 const DEFAULT_SITE: &str = "datadoghq.com";
 const RB_BUFFER_POOL_COUNT: usize = 128;
 const RB_BUFFER_POOL_BUF_SIZE: usize = 32_768;
+
+static DD_AGENT_VERSION_HEADER: HeaderName = HeaderName::from_static("dd-agent-version");
+static DD_API_KEY_HEADER: HeaderName = HeaderName::from_static("dd-api-key");
 
 fn default_site() -> String {
     DEFAULT_SITE.to_owned()
@@ -184,7 +189,7 @@ pub struct DatadogMetricsConfiguration {
     ///
     /// Defaults to empty.
     #[serde(default, rename = "additional_endpoints")]
-    endpoints: AdditionalEndpoints,
+    additional_endpoints: AdditionalEndpoints,
 }
 
 fn default_request_timeout_secs() -> u64 {
@@ -216,10 +221,6 @@ impl DatadogMetricsConfiguration {
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
     }
-
-    fn api_base(&self) -> Result<Uri, GenericError> {
-        calculate_api_endpoint(self.dd_url.as_deref(), &self.site)
-    }
 }
 
 #[async_trait]
@@ -242,32 +243,28 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
 
         let service = HttpClient::builder().with_retry_policy(retry_policy).build()?;
 
-        let api_base = self.api_base()?;
+        // Resolve all endpoints that we'll be forwarding metrics to.
+        let primary_endpoint = calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, &self.api_key)
+            .error_context("Failed parsing/resolving the primary destination endpoint.")?;
 
+        let additional_endpoints = self
+            .additional_endpoints
+            .resolved_endpoints()
+            .error_context("Failed parsing/resolving the additional destination endpoints.")?;
+
+        let mut endpoints = additional_endpoints;
+        endpoints.insert(0, primary_endpoint);
+
+        // Create our request builders.
         let rb_buffer_pool = create_request_builder_buffer_pool();
-        let series_request_builder = RequestBuilder::new(
-            self.api_key.clone(),
-            api_base.clone(),
-            MetricsEndpoint::Series,
-            rb_buffer_pool.clone(),
-        )
-        .await?;
-        let sketches_request_builder = RequestBuilder::new(
-            self.api_key.clone(),
-            api_base,
-            MetricsEndpoint::Sketches,
-            rb_buffer_pool,
-        )
-        .await?;
-
-        let resolvers = create_single_domain_resolvers(&self.endpoints)?;
-        debug!("Created {} single domain resolvers: {:?}", resolvers.len(), resolvers);
+        let series_request_builder = RequestBuilder::new(MetricsEndpoint::Series, rb_buffer_pool.clone()).await?;
+        let sketches_request_builder = RequestBuilder::new(MetricsEndpoint::Sketches, rb_buffer_pool).await?;
 
         Ok(Box::new(DatadogMetrics {
             service,
             series_request_builder,
             sketches_request_builder,
-            resolvers,
+            endpoints,
         }))
     }
 }
@@ -285,7 +282,7 @@ impl MemoryBounds for DatadogMetricsConfiguration {
             // TODO: This type signature is _ugly_, and it would be nice to improve it somehow.
             .with_single_value::<DatadogMetrics<
                 FixedSizeObjectPool<BytesBuffer>,
-                HttpClient<ReplayBody<FrozenChunkedBytesBuffer>>,
+                HttpClient<FrozenChunkedBytesBuffer>,
             >>()
             // Capture the size of our buffer pool.
             .with_fixed_amount(rb_buffer_pool_size)
@@ -297,7 +294,7 @@ impl MemoryBounds for DatadogMetricsConfiguration {
             // TODO: This type signature is _ugly_, and it would be nice to improve it somehow.
             .with_array::<(
                 usize,
-                Request<ReplayBody<ChunkedBytesBuffer<FixedSizeObjectPool<BytesBuffer>>>>,
+                Request<FrozenChunkedBytesBuffer>,
             )>(32);
     }
 }
@@ -305,12 +302,12 @@ impl MemoryBounds for DatadogMetricsConfiguration {
 pub struct DatadogMetrics<O, S>
 where
     O: ObjectPool<Item = BytesBuffer> + 'static,
-    S: Service<Request<ReplayBody<FrozenChunkedBytesBuffer>>> + 'static,
+    S: Service<Request<FrozenChunkedBytesBuffer>> + 'static,
 {
     service: S,
     series_request_builder: RequestBuilder<O>,
     sketches_request_builder: RequestBuilder<O>,
-    resolvers: Vec<SingleDomainResolver>,
+    endpoints: Vec<ResolvedEndpoint>,
 }
 
 #[allow(unused)]
@@ -318,7 +315,7 @@ where
 impl<O, S> Destination for DatadogMetrics<O, S>
 where
     O: ObjectPool<Item = BytesBuffer> + 'static,
-    S: Service<Request<ReplayBody<FrozenChunkedBytesBuffer>>, Response = hyper::Response<Incoming>> + Send + 'static,
+    S: Service<Request<FrozenChunkedBytesBuffer>, Response = hyper::Response<Incoming>> + Clone + Send + 'static,
     S::Future: Send,
     S::Error: Send + Into<BoxError>,
 {
@@ -327,7 +324,7 @@ where
             mut series_request_builder,
             mut sketches_request_builder,
             service,
-            resolvers,
+            endpoints,
         } = *self;
 
         let mut health = context.take_health_handle();
@@ -341,7 +338,7 @@ where
             io_shutdown_tx,
             service,
             metrics.clone(),
-            resolvers,
+            endpoints,
         ));
 
         health.mark_ready();
@@ -478,81 +475,173 @@ where
     }
 }
 
-async fn run_io_loop<S>(
-    mut requests_rx: mpsc::Receiver<(usize, Request<ReplayBody<FrozenChunkedBytesBuffer>>)>,
-    io_shutdown_tx: oneshot::Sender<()>, mut service: S, metrics: Metrics, resolvers: Vec<SingleDomainResolver>,
+async fn run_io_loop<S, B>(
+    mut requests_rx: mpsc::Receiver<(usize, Request<B>)>, io_shutdown_tx: oneshot::Sender<()>, service: S,
+    metrics: Metrics, resolved_endpoints: Vec<ResolvedEndpoint>,
 ) where
-    S: Service<Request<ReplayBody<FrozenChunkedBytesBuffer>>, Response = hyper::Response<Incoming>> + Send + 'static,
+    S: Service<Request<B>, Response = hyper::Response<Incoming>> + Clone + Send + 'static,
     S::Future: Send,
     S::Error: Send + Into<BoxError>,
+    B: Body + Clone + Send + 'static,
 {
-    // Loop and process all incoming requests.
+    // Spawn an endpoint I/O task for each endpoint we're configured to send to.
+    //
+    // This gives us granularity at just the right level, since the places we expect there to be problems (and thus
+    // where concurrency can help make forward progress) are at the endpoint/API key level.
+    let mut endpoint_txs = Vec::new();
+    let task_barrier = Arc::new(Barrier::new(resolved_endpoints.len() + 1));
+
+    for resolved_endpoint in resolved_endpoints {
+        let endpoint_url = resolved_endpoint.endpoint().to_string();
+
+        let (endpoint_tx, endpoint_rx) = mpsc::channel(4);
+        let task_barrier = Arc::clone(&task_barrier);
+        spawn_traced(run_endpoint_io_loop(
+            endpoint_rx,
+            task_barrier,
+            service.clone(),
+            metrics.clone(),
+            resolved_endpoint,
+        ));
+
+        endpoint_txs.push((endpoint_url, endpoint_tx));
+    }
+
+    // Listen for requests to forward, and send a copy of each one to each endpoint I/O task.
     while let Some((metrics_count, request)) = requests_rx.recv().await {
-        let cloned_request = request.clone();
-        let mut requests = vec![request];
-        for resolver in &resolvers {
-            let mut parts = cloned_request.uri().clone().into_parts();
-            parts.authority = Some(resolver.domain().parse().expect("invalid authority"));
-            let new_uri = Uri::from_parts(parts).expect("Failed to construct new URI");
-            for api_key in resolver.api_keys() {
-                let mut headers = cloned_request.headers().clone();
-                headers.insert("DD-API-KEY", HeaderValue::from_str(api_key).unwrap());
-                let mut new_request = Request::builder();
-                let body = cloned_request.body().clone();
-                for (key, value) in headers.iter() {
-                    new_request = new_request.header(key, value);
-                }
-                match new_request.method(Method::POST).uri(new_uri.clone()).body(body) {
-                    Ok(new_request) => {
-                        requests.push(new_request);
-                    }
-                    Err(e) => {
-                        error!(error = %e, "Failed to build request for Domain: {}", resolver.domain());
-                    }
-                }
-            }
-        }
-        // TODO: We should emit the number of bytes sent, which was trivial to do prior to adding retry support via
-        // `ReplayBody<B>`. Even if we could delve into the inner body that is being wrapped, what we can't track is how
-        // the number of bytes sent during retry.
-        //
-        // This perhaps points to a need to more holistically capture bytes sent through the client itself, which not
-        // only covers potential retries but also stuff like HTTP headers, and so on.
-
-        for request in requests {
-            match service.call(request).await {
-                Ok(response) => {
-                    let status = response.status();
-                    if status.is_success() {
-                        debug!(%status, "Request sent.");
-
-                        metrics.events_sent().increment(metrics_count as u64);
-                    } else {
-                        metrics.http_failed_send().increment(1);
-                        metrics.events_dropped_http().increment(metrics_count as u64);
-
-                        match response.into_body().collect().await {
-                            Ok(body) => {
-                                let body = body.to_bytes();
-                                let body_str = String::from_utf8_lossy(&body[..]);
-                                error!(%status, "Received non-success response. Body: {}", body_str);
-                            }
-                            Err(e) => {
-                                error!(%status, error = %e, "Failed to read response body of non-success response.");
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    let e: tower::BoxError = e.into();
-                    error!(error = %e, error_source = ?e.source(), "Failed to send request.");
-                }
+        for (endpoint_url, endpoint_tx) in &endpoint_txs {
+            if endpoint_tx.try_send((metrics_count, request.clone())).is_err() {
+                error!(
+                    endpoint = endpoint_url,
+                    "Failed to send request to endpoint I/O task: receiver dropped."
+                );
             }
         }
     }
 
-    // Signal back to the main task that we've stopped.
+    debug!("Requests channel for main I/O task complete. Stopping endpoint I/O tasks and synchronizing on shutdown.");
+
+    // Drop our endpoint I/O task channels, which will cause them to shut down once they've processed all outstanding
+    // requests in their respective channel. We wait for that to happen by synchronizing on the task barrier.
+    //
+    // Once all tasks have completed, we signal back to the main component task that the I/O loop has shutdown.
+    drop(endpoint_txs);
+    task_barrier.wait().await;
+
+    debug!("All endpoint I/O tasks have stopped. Main I/O task shutting down.");
+
     let _ = io_shutdown_tx.send(());
+}
+
+async fn run_endpoint_io_loop<S, B>(
+    mut requests_rx: mpsc::Receiver<(usize, Request<B>)>, task_barrier: Arc<Barrier>, service: S, metrics: Metrics,
+    endpoint: ResolvedEndpoint,
+) where
+    S: Service<Request<B>, Response = hyper::Response<Incoming>> + Send + 'static,
+    S::Future: Send,
+    S::Error: Send + Into<BoxError>,
+    B: Body,
+{
+    let endpoint_url = endpoint.endpoint().to_string();
+    debug!(endpoint = endpoint_url, "Starting endpoint I/O task.");
+
+    // Build our endpoint service.
+    //
+    // This is where we'll modify the incoming request for our our specific endpoint, such as setting the host portion
+    // of the URI, adding the API key as a header, and so on.
+    let mut service = ServiceBuilder::new()
+        // Set the request's URI to the endpoint's URI, and add the API key as a header.
+        .map_request(for_resolved_endpoint::<B>(endpoint))
+        // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
+        .map_request(with_version_info::<B>())
+        .service(service);
+
+    // Process all requests until the channel is closed.
+    while let Some((metrics_count, request)) = requests_rx.recv().await {
+        match service.call(request).await {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success() {
+                    debug!(endpoint = endpoint_url, %status, "Request sent.");
+
+                    metrics.events_sent().increment(metrics_count as u64);
+                } else {
+                    metrics.http_failed_send().increment(1);
+                    metrics.events_dropped_http().increment(metrics_count as u64);
+
+                    match response.into_body().collect().await {
+                        Ok(body) => {
+                            let body = body.to_bytes();
+                            let body_str = String::from_utf8_lossy(&body[..]);
+                            error!(endpoint = endpoint_url, %status, "Received non-success response. Body: {}", body_str);
+                        }
+                        Err(e) => {
+                            error!(endpoint = endpoint_url, %status, error = %e, "Failed to read response body of non-success response.");
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                let e: tower::BoxError = e.into();
+                error!(endpoint = endpoint_url, error = %e, error_source = ?e.source(), "Failed to send request.");
+            }
+        }
+    }
+
+    debug!(
+        endpoint = endpoint_url,
+        "Requests channel for endpoint I/O task complete. Synchronizing on shutdown."
+    );
+
+    // Signal to the main I/O task that we've finished.
+    task_barrier.wait().await;
+}
+
+fn for_resolved_endpoint<B>(endpoint: ResolvedEndpoint) -> impl Fn(Request<B>) -> Request<B> + Clone {
+    let new_uri_authority = Authority::try_from(endpoint.endpoint().authority())
+        .expect("should not fail to construct new endpoint authority");
+    let new_uri_scheme =
+        Scheme::try_from(endpoint.endpoint().scheme()).expect("should not fail to construct new endpoint scheme");
+    let api_key_value =
+        HeaderValue::from_str(endpoint.api_key()).expect("should not fail to construct API key header value");
+
+    move |mut request| {
+        // Build an updated URI by taking the endpoint URL and slapping the request's URI path on the end of it.
+        let new_uri = Uri::builder()
+            .scheme(new_uri_scheme.clone())
+            .authority(new_uri_authority.clone())
+            .path_and_query(request.uri().path_and_query().expect("request path must exist").clone())
+            .build()
+            .expect("should not fail to construct new URI");
+
+        *request.uri_mut() = new_uri;
+
+        // Add the API key as a header.
+        request
+            .headers_mut()
+            .insert(DD_API_KEY_HEADER.clone(), api_key_value.clone());
+
+        request
+    }
+}
+
+fn with_version_info<B>() -> impl Fn(Request<B>) -> Request<B> + Clone {
+    let app_details = saluki_metadata::get_app_details();
+
+    let agent_version_header_value = HeaderValue::from_static(app_details.version().raw());
+    let raw_user_agent_header_value = format!("{}/{}", app_details.name(), app_details.version().raw());
+    let user_agent_header_value = HeaderValue::from_maybe_shared(raw_user_agent_header_value)
+        .expect("should not fail to construct User-Agent header value");
+
+    move |mut request| {
+        request
+            .headers_mut()
+            .insert(DD_AGENT_VERSION_HEADER.clone(), agent_version_header_value.clone());
+        request
+            .headers_mut()
+            .insert(http::header::USER_AGENT, user_agent_header_value.clone());
+        request
+    }
 }
 
 fn create_request_builder_buffer_pool() -> FixedSizeObjectPool<BytesBuffer> {
