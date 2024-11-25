@@ -1,18 +1,21 @@
+use std::{mem::ManuallyDrop, sync::Arc};
+
 use bytes::{buf::UninitSlice, Buf, BufMut};
-use saluki_core::pooling::{helpers::pooled_newtype, Clearable};
+use saluki_core::pooling::{helpers::pooled_newtype, Clearable, ReclaimStrategy};
+use triomphe::{Arc as TriompheArc, UniqueArc};
 
 use super::{ClearableIoBuffer, CollapsibleReadWriteIoBuffer, ReadIoBuffer};
 
-/// A fixed-size byte vector.
+/// A fixed-size bytes buffer.
 ///
-/// This is a simple wrapper around a `Vec<u8>` that provides fixed-size semantics by disallowing writes that extend
-/// beyond the initial capacity. `FixedSizeVec` cannot be used directly, and must be interacted with via the [`Buf`] and
-/// [`BufMut`] traits.
+/// This is a simple wrapper around a `BytesMut` that provides fixed-size semantics by disallowing writes that extend
+/// beyond the initial capacity. `FixedSizeVec` cannot be used directly, and must be interacted with via the
+/// [`Buf`] and [`BufMut`] traits.
 ///
 /// Additionally, it is designed for use in object pools (implements [`Clearable`]).
 pub struct FixedSizeVec {
+    data: UniqueArc<Vec<u8>>,
     read_idx: usize,
-    data: Vec<u8>,
 }
 
 impl FixedSizeVec {
@@ -21,22 +24,61 @@ impl FixedSizeVec {
     /// The vector will not grow once all available capacity has been consumed, and must be cleared to be reused.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
+            data: UniqueArc::new(Vec::with_capacity(capacity)),
             read_idx: 0,
-            data: Vec::with_capacity(capacity),
+        }
+    }
+
+    fn freeze(self) -> FrozenFixedSizeVec {
+        FrozenFixedSizeVec {
+            data: self.data.shareable(),
+            read_idx: self.read_idx,
         }
     }
 }
 
 impl Clearable for FixedSizeVec {
     fn clear(&mut self) {
-        self.read_idx = 0;
         self.data.clear();
+        self.read_idx = 0;
+    }
+}
+
+struct FrozenFixedSizeVec {
+    data: TriompheArc<Vec<u8>>,
+    read_idx: usize,
+}
+
+impl FrozenFixedSizeVec {
+    fn into_unique(self) -> Option<FixedSizeVec> {
+        TriompheArc::into_unique(self.data).map(|data| FixedSizeVec { data, read_idx: 0 })
+    }
+}
+
+impl Clone for FrozenFixedSizeVec {
+    fn clone(&self) -> Self {
+        Self {
+            data: self.data.clone(),
+            read_idx: 0,
+        }
     }
 }
 
 pooled_newtype! {
     outer => BytesBuffer,
     inner => FixedSizeVec,
+}
+
+impl BytesBuffer {
+    /// Consumes this buffer and returns a read-only version of it.
+    pub fn freeze(mut self) -> FrozenBytesBuffer {
+        let data = self.data.take().unwrap().freeze();
+
+        FrozenBytesBuffer {
+            strategy_ref: Arc::clone(&self.strategy_ref),
+            data: ManuallyDrop::new(data),
+        }
+    }
 }
 
 impl Buf for BytesBuffer {
@@ -105,6 +147,56 @@ impl CollapsibleReadWriteIoBuffer for BytesBuffer {
 impl ClearableIoBuffer for BytesBuffer {
     fn clear(&mut self) {
         self.data_mut().clear();
+    }
+}
+
+/// A frozen, read-only version of [`BytesBuffer`].
+///
+/// `FrozenBytesBuffer` can be cheaply cloned, and allows for sharing an underlying [`BytesBuffer`] among multiple
+/// tasks while still maintaining all of the original buffer's object pooling semantics.
+#[derive(Clone)]
+pub struct FrozenBytesBuffer {
+    strategy_ref: Arc<dyn ReclaimStrategy<BytesBuffer> + Send + Sync>,
+    data: ManuallyDrop<FrozenFixedSizeVec>,
+}
+
+impl FrozenBytesBuffer {
+    /// Returns `true` if the buffer is empty.
+    pub fn is_empty(&self) -> bool {
+        self.data.read_idx == self.data.data.len()
+    }
+
+    /// Returns the number of bytes remaining in the buffer.
+    pub fn len(&self) -> usize {
+        self.data.data.len() - self.data.read_idx
+    }
+}
+
+impl Buf for FrozenBytesBuffer {
+    fn remaining(&self) -> usize {
+        self.data.data.len() - self.data.read_idx
+    }
+
+    fn chunk(&self) -> &[u8] {
+        &self.data.data[self.data.read_idx..]
+    }
+
+    fn advance(&mut self, cnt: usize) {
+        assert!(self.data.read_idx + cnt <= self.data.data.len());
+        self.data.read_idx += cnt;
+    }
+}
+
+impl Drop for FrozenBytesBuffer {
+    fn drop(&mut self) {
+        // If we're the last reference to the buffer, we need to reconstitute it back to a `FixedSizeVec`, and reclaim
+        // it to the object pool.
+        //
+        // SAFETY: Nothing else can be using `self.data` since we're dropping.
+        let data = unsafe { ManuallyDrop::take(&mut self.data) };
+        if let Some(data) = data.into_unique() {
+            self.strategy_ref.reclaim(data);
+        }
     }
 }
 

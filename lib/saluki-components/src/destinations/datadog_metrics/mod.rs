@@ -15,7 +15,7 @@ use saluki_core::{
 use saluki_error::{generic_error, GenericError};
 use saluki_event::DataType;
 use saluki_io::{
-    buf::{BytesBuffer, ChunkedBuffer, FixedSizeVec, ReadWriteIoBuffer},
+    buf::{BytesBuffer, ChunkedBytesBuffer, FixedSizeVec, FrozenChunkedBytesBuffer},
     net::{
         client::{http::HttpClient, replay::ReplayBody},
         util::retry::{DefaultHttpRetryPolicy, ExponentialBackoff},
@@ -285,7 +285,7 @@ impl MemoryBounds for DatadogMetricsConfiguration {
             // TODO: This type signature is _ugly_, and it would be nice to improve it somehow.
             .with_single_value::<DatadogMetrics<
                 FixedSizeObjectPool<BytesBuffer>,
-                HttpClient<ReplayBody<ChunkedBuffer<FixedSizeObjectPool<BytesBuffer>>>>,
+                HttpClient<ReplayBody<FrozenChunkedBytesBuffer>>,
             >>()
             // Capture the size of our buffer pool.
             .with_fixed_amount(rb_buffer_pool_size)
@@ -297,16 +297,15 @@ impl MemoryBounds for DatadogMetricsConfiguration {
             // TODO: This type signature is _ugly_, and it would be nice to improve it somehow.
             .with_array::<(
                 usize,
-                Request<ReplayBody<ChunkedBuffer<FixedSizeObjectPool<BytesBuffer>>>>,
+                Request<ReplayBody<ChunkedBytesBuffer<FixedSizeObjectPool<BytesBuffer>>>>,
             )>(32);
     }
 }
 
 pub struct DatadogMetrics<O, S>
 where
-    O: ObjectPool + 'static,
-    O::Item: ReadWriteIoBuffer + Send + Sync,
-    S: Service<Request<ReplayBody<ChunkedBuffer<O>>>> + 'static,
+    O: ObjectPool<Item = BytesBuffer> + 'static,
+    S: Service<Request<ReplayBody<FrozenChunkedBytesBuffer>>> + 'static,
 {
     service: S,
     series_request_builder: RequestBuilder<O>,
@@ -318,9 +317,8 @@ where
 #[async_trait]
 impl<O, S> Destination for DatadogMetrics<O, S>
 where
-    O: ObjectPool + 'static,
-    O::Item: ReadWriteIoBuffer + Send + Sync,
-    S: Service<Request<ReplayBody<ChunkedBuffer<O>>>, Response = hyper::Response<Incoming>> + Send + 'static,
+    O: ObjectPool<Item = BytesBuffer> + 'static,
+    S: Service<Request<ReplayBody<FrozenChunkedBytesBuffer>>, Response = hyper::Response<Incoming>> + Send + 'static,
     S::Future: Send,
     S::Error: Send + Into<BoxError>,
 {
@@ -480,13 +478,11 @@ where
     }
 }
 
-async fn run_io_loop<O, S>(
-    mut requests_rx: mpsc::Receiver<(usize, Request<ReplayBody<ChunkedBuffer<O>>>)>,
+async fn run_io_loop<S>(
+    mut requests_rx: mpsc::Receiver<(usize, Request<ReplayBody<FrozenChunkedBytesBuffer>>)>,
     io_shutdown_tx: oneshot::Sender<()>, mut service: S, metrics: Metrics, resolvers: Vec<SingleDomainResolver>,
 ) where
-    O: ObjectPool + 'static,
-    O::Item: ReadWriteIoBuffer,
-    S: Service<Request<ReplayBody<ChunkedBuffer<O>>>, Response = hyper::Response<Incoming>> + Send + 'static,
+    S: Service<Request<ReplayBody<FrozenChunkedBytesBuffer>>, Response = hyper::Response<Incoming>> + Send + 'static,
     S::Future: Send,
     S::Error: Send + Into<BoxError>,
 {
