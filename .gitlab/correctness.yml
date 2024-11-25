@@ -67,6 +67,7 @@ run-ground-truth:
   variables:
     DD_LOG_LEVEL: "ground_truth=debug,info"
   script:
+    - sleep 3600
     - make build-ground-truth
     - target/debug/ground-truth
       --millstone-image ${SALUKI_IMAGE_REPO_BASE}/millstone:${ADP_VERSION}
