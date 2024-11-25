@@ -6,6 +6,8 @@ use saluki_error::GenericError;
 use serde::Deserialize;
 use tokio::time::{sleep, Duration};
 
+const DATADOG_AGENT_CONFIG_ENDPOINT: &str = "https://localhost:5004/config/v1/";
+
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct ConfigResponse {
@@ -61,18 +63,17 @@ impl ConfigRefresher {
     /// Query the datadog-agent config endpoint for the latest config
     #[allow(unused)]
     pub async fn query_agent(&self) -> Result<(), GenericError> {
-        let url = format!("https://localhost:5004/config/v1/");
         let client = reqwest::ClientBuilder::new()
             .danger_accept_invalid_certs(true) // Allow invalid certificates
             .build()?;
 
         let response = client
-            .get(&url) // Use the URL for the GET request
+            .get(DATADOG_AGENT_CONFIG_ENDPOINT)
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", self.token))
             .header("DD-Agent-Version", "0.1.0")
             .header("User-Agent", "agent-data-plane/0.1.0")
-            .send() // Send the request
+            .send()
             .await?;
 
         let config_response: ConfigResponse = response.json().await?;
