@@ -110,7 +110,7 @@ impl<'a> BorrowedTag<'a> {
     /// this is the value part of the tag, or `web` based on the example.
     pub fn value(&self) -> Option<&str> {
         match self.separator {
-            Some(idx) => Some(&self.raw[idx+1..]),
+            Some(idx) => Some(&self.raw[idx + 1..]),
             None => None,
         }
     }
@@ -120,7 +120,7 @@ impl<'a> BorrowedTag<'a> {
     /// For bare tags (e.g. `production`), this always returns `(Some(...), None)`.
     pub fn name_and_value(&self) -> (Option<&str>, Option<&str>) {
         match self.separator {
-            Some(idx) => (Some(&self.raw[..idx]), Some(&self.raw[idx+1..])),
+            Some(idx) => (Some(&self.raw[..idx]), Some(&self.raw[idx + 1..])),
             None => (Some(self.raw), None),
         }
     }
@@ -129,10 +129,7 @@ impl<'a> BorrowedTag<'a> {
 impl<'a> From<&'a str> for BorrowedTag<'a> {
     fn from(s: &'a str) -> Self {
         let separator = memchr::memchr(b':', s.as_bytes());
-        Self {
-            raw: s,
-            separator,
-        }
+        Self { raw: s, separator }
     }
 }
 
