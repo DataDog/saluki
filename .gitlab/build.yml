@@ -68,6 +68,7 @@ build-converged-adp-image:
       --label git.commit=${CI_COMMIT_SHA}
       --label ci.pipeline_id=${CI_PIPELINE_ID}
       --label ci.job_id=${CI_JOB_ID}
+      --label target=prod
       --push
       .
     - ddsign sign ${IMAGE_TAG} --docker-metadata-file /tmp/build.metadata
