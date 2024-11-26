@@ -154,6 +154,12 @@ impl ClearableIoBuffer for BytesBuffer {
 ///
 /// `FrozenBytesBuffer` can be cheaply cloned, and allows for sharing an underlying [`BytesBuffer`] among multiple
 /// tasks while still maintaining all of the original buffer's object pooling semantics.
+// TODO: it's not great that we're manually emulating the internal structure of `BytesBuffer`, since the whole point is
+// that those bits are auto-generated for us and meant to be functionally transparent to using `BytesBuffer` in the
+// first place... it'd be interesting to consider if we could make this more ergonomic, perhaps by having some sort of
+// convenience helper method for converting pooled objects of type T to U where the `Poolable::Data` is identical
+// between them, almost along lines of `CoerceUnsized` where the underlying data isn't changing, just the representation
+// of it.
 #[derive(Clone)]
 pub struct FrozenBytesBuffer {
     strategy_ref: Arc<dyn ReclaimStrategy<BytesBuffer> + Send + Sync>,
