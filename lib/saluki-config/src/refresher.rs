@@ -85,26 +85,6 @@ impl RefreshableConfiguration {
             }
         });
     }
-    /// Query the datadog-agent config endpoint for the latest config
-    pub async fn query_agent(&self) -> Result<(), GenericError> {
-        let client = reqwest::ClientBuilder::new()
-            .danger_accept_invalid_certs(true) // Allow invalid certificates
-            .build()?;
-
-        let response = client
-            .get(DATADOG_AGENT_CONFIG_ENDPOINT)
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", self.token))
-            .header("DD-Agent-Version", "0.1.0")
-            .header("User-Agent", "agent-data-plane/0.1.0")
-            .send()
-            .await?;
-
-        let config_response: Value = response.json().await?;
-        self.values.store(Arc::new(config_response));
-
-        Ok(())
-    }
 
     /// Gets a configuration value by key.
     ///
