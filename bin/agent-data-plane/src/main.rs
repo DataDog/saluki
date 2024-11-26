@@ -176,9 +176,8 @@ fn create_topology(
         .with_transform_builder(origin_enrichment_config);
     let internal_metrics_remap_config = AgentTelemetryRemapperConfiguration::new();
 
-    let refresher_configuration = RefresherConfiguration::from_configuration(&configuration)?;
-    let refreshable_configuration: Arc<RefreshableConfiguration> = Arc::new(refresher_configuration.build()?);
-    refreshable_configuration.clone().spawn_refresh_task();
+    let refresher_configuration = RefresherConfiguration::from_configuration(configuration)?;
+    let refreshable_configuration: Arc<RefreshableConfiguration> = refresher_configuration.build()?;
 
     let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Metrics destination.")?;

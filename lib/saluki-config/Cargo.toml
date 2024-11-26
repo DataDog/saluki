@@ -9,9 +9,9 @@ repository = { workspace = true }
 arc-swap = { workspace = true }
 figment = { workspace = true, features = ["env", "json", "yaml"] }
 http = { workspace = true }
-reqwest = { workspace = true , features = ["default-tls", "json"]}
-saluki-io = { workspace = true }
+reqwest = { workspace = true, features = ["default-tls", "json"] }
 saluki-error = { workspace = true }
+saluki-io = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 snafu = { workspace = true }

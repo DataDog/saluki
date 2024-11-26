@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use async_trait::async_trait;
 use http::{HeaderValue, Method, Request, Uri};
 use http_body_util::BodyExt;
@@ -21,8 +24,6 @@ use saluki_io::{
 };
 use serde::Deserialize;
 use serde_with::{serde_as, DisplayFromStr, PickFirst};
-use std::sync::Arc;
-use std::time::Duration;
 use tokio::{
     select,
     sync::{mpsc, oneshot},
@@ -227,7 +228,7 @@ impl DatadogMetricsConfiguration {
         calculate_api_endpoint(self.dd_url.as_deref(), &self.site)
     }
 
-    /// Add option to retrieve config values from a `RefreshableConfiguration`
+    /// Add option to retrieve configuration values from a `RefreshableConfiguration`.
     pub fn add_refreshable_configuration(&mut self, refresher: Arc<RefreshableConfiguration>) {
         self.config_refresher = refresher;
     }
