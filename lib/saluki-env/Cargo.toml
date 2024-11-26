@@ -43,3 +43,6 @@ tokio-util = { workspace = true, features = ["time"] }
 tonic = { workspace = true, features = ["transport"] }
 tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true, features = ["std"] }

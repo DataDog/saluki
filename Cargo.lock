@@ -3429,6 +3429,7 @@ dependencies = [
  "kube",
  "memory-accounting",
  "pin-project-lite",
+ "proptest",
  "prost 0.13.3",
  "prost-types 0.13.3",
  "regex",
