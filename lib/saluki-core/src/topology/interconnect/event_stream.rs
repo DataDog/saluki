@@ -32,8 +32,8 @@ impl EventStream {
 
         Self {
             inner,
-            events_received: metrics_builder.register_counter("component_events_received_total"),
-            events_received_size: metrics_builder.register_histogram("component_events_received_size"),
+            events_received: metrics_builder.register_debug_counter("component_events_received_total"),
+            events_received_size: metrics_builder.register_debug_histogram("component_events_received_size"),
         }
     }
 

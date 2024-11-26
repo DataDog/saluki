@@ -64,18 +64,18 @@ impl Metrics {
         let builder = MetricsBuilder::from_component_context(context);
 
         Self {
-            events_sent: builder.register_counter("component_events_sent_total"),
-            bytes_sent: builder.register_counter("component_bytes_sent_total"),
-            events_dropped_http: builder.register_counter_with_labels(
+            events_sent: builder.register_debug_counter("component_events_sent_total"),
+            bytes_sent: builder.register_debug_counter("component_bytes_sent_total"),
+            events_dropped_http: builder.register_debug_counter_with_labels(
                 "component_events_dropped_total",
                 &[("intentional", "false"), ("drop_reason", "http_failure")],
             ),
-            events_dropped_encoder: builder.register_counter_with_labels(
+            events_dropped_encoder: builder.register_debug_counter_with_labels(
                 "component_events_dropped_total",
                 &[("intentional", "false"), ("drop_reason", "encoder_failure")],
             ),
             http_failed_send: builder
-                .register_counter_with_labels("component_errors_total", &[("error_type", "http_send")]),
+                .register_debug_counter_with_labels("component_errors_total", &[("error_type", "http_send")]),
         }
     }
 

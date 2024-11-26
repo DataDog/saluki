@@ -36,9 +36,10 @@ impl ForwarderMetrics {
         let metrics_builder = MetricsBuilder::from_component_context(context);
 
         Self {
-            events_sent: metrics_builder.register_counter_with_labels("component_events_sent_total", output_labels),
+            events_sent: metrics_builder
+                .register_debug_counter_with_labels("component_events_sent_total", output_labels),
             forwarding_latency: metrics_builder
-                .register_histogram_with_labels("component_send_latency_seconds", output_labels),
+                .register_debug_histogram_with_labels("component_send_latency_seconds", output_labels),
         }
     }
 }

@@ -12,7 +12,7 @@ use memory_accounting::{
     allocator::{AllocationGroupRegistry, AllocationStats, AllocationStatsSnapshot},
     ComponentRegistry, MemoryGrant, MemoryLimiter, VerifiedBounds,
 };
-use metrics::{counter, gauge, Counter, Gauge};
+use metrics::{counter, gauge, Counter, Gauge, Level};
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
@@ -202,12 +202,12 @@ impl AllocationGroupMetrics {
     fn new(group_name: &str) -> Self {
         Self {
             totals: AllocationStatsSnapshot::empty(),
-            allocated_bytes_total: counter!("group_allocated_bytes_total", "group_id" => group_name.to_string()),
-            allocated_bytes_live: gauge!("group_allocated_bytes_live", "group_id" => group_name.to_string()),
-            allocated_objects_total: counter!("group_allocated_objects_total", "group_id" => group_name.to_string()),
-            allocated_objects_live: gauge!("group_allocated_objects_live", "group_id" => group_name.to_string()),
-            deallocated_bytes_total: counter!("group_deallocated_bytes_total", "group_id" => group_name.to_string()),
-            deallocated_objects_total: counter!("group_deallocated_objects_total", "group_id" => group_name.to_string()),
+            allocated_bytes_total: counter!(level: Level::DEBUG, "group_allocated_bytes_total", "group_id" => group_name.to_string()),
+            allocated_bytes_live: gauge!(level: Level::DEBUG, "group_allocated_bytes_live", "group_id" => group_name.to_string()),
+            allocated_objects_total: counter!(level: Level::DEBUG, "group_allocated_objects_total", "group_id" => group_name.to_string()),
+            allocated_objects_live: gauge!(level: Level::DEBUG, "group_allocated_objects_live", "group_id" => group_name.to_string()),
+            deallocated_bytes_total: counter!(level: Level::DEBUG, "group_deallocated_bytes_total", "group_id" => group_name.to_string()),
+            deallocated_objects_total: counter!(level: Level::DEBUG, "group_deallocated_objects_total", "group_id" => group_name.to_string()),
         }
     }
 
