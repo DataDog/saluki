@@ -77,17 +77,20 @@ where
 
 /// A borrowed metric tag.
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct BorrowedTag<'a>(&'a str);
+pub struct BorrowedTag<'a> {
+    raw: &'a str,
+    separator: Option<usize>,
+}
 
 impl<'a> BorrowedTag<'a> {
     /// Returns `true` if the tag is empty.
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.raw.is_empty()
     }
 
     /// Returns the length of the tag, in bytes.
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.raw.len()
     }
 
     /// Gets the name of the tag.
@@ -95,9 +98,9 @@ impl<'a> BorrowedTag<'a> {
     /// For bare tags (e.g. `production`), this is simply the tag value itself. For key/value-style tags (e.g.
     /// `service:web`), this is the key part of the tag, or `service` based on the example.
     pub fn name(&self) -> &str {
-        match self.0.split_once(':') {
-            Some((name, _)) => name,
-            None => self.0,
+        match self.separator {
+            Some(idx) => &self.raw[..idx],
+            None => self.raw,
         }
     }
 
@@ -106,23 +109,27 @@ impl<'a> BorrowedTag<'a> {
     /// For bare tags (e.g. `production`), this always returns `None`. For key/value-style tags (e.g. `service:web`),
     /// this is the value part of the tag, or `web` based on the example.
     pub fn value(&self) -> Option<&str> {
-        self.0.split_once(':').map(|(_, value)| value)
+        match self.separator {
+            Some(idx) => Some(&self.raw[idx + 1..]),
+            None => None,
+        }
     }
 
     /// Gets the name and value of the tag.
     ///
     /// For bare tags (e.g. `production`), this always returns `(Some(...), None)`.
     pub fn name_and_value(&self) -> (Option<&str>, Option<&str>) {
-        match self.0.split_once(':') {
-            Some((name, value)) => (Some(name), Some(value)),
-            None => (Some(self.0), None),
+        match self.separator {
+            Some(idx) => (Some(&self.raw[..idx]), Some(&self.raw[idx + 1..])),
+            None => (Some(self.raw), None),
         }
     }
 }
 
 impl<'a> From<&'a str> for BorrowedTag<'a> {
     fn from(s: &'a str) -> Self {
-        Self(s)
+        let separator = memchr::memchr(b':', s.as_bytes());
+        Self { raw: s, separator }
     }
 }
 
