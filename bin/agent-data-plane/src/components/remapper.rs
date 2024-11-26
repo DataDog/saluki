@@ -288,17 +288,20 @@ mod tests {
             rules: generate_remapper_rules(),
         };
 
-        let context = Context::from_static_parts("datadog.agent.adp.object_pool_acquired", &["pool_name:dsd_packet_bufs"]);
+        let context =
+            Context::from_static_parts("datadog.agent.adp.object_pool_acquired", &["pool_name:dsd_packet_bufs"]);
         let metric = Metric::counter(context, 1.0);
         let new_metric = remapper.try_remap_metric(&metric).expect("should have remapped");
         assert_eq!(new_metric.context().name(), "datadog.agent.dogstatsd.packet_pool_get");
 
-        let context = Context::from_static_parts("datadog.agent.adp.object_pool_released", &["pool_name:dsd_packet_bufs"]);
+        let context =
+            Context::from_static_parts("datadog.agent.adp.object_pool_released", &["pool_name:dsd_packet_bufs"]);
         let metric = Metric::counter(context, 1.0);
         let new_metric = remapper.try_remap_metric(&metric).expect("should have remapped");
         assert_eq!(new_metric.context().name(), "datadog.agent.dogstatsd.packet_pool_put");
 
-        let context = Context::from_static_parts("datadog.agent.adp.object_pool_in_use", &["pool_name:dsd_packet_bufs"]);
+        let context =
+            Context::from_static_parts("datadog.agent.adp.object_pool_in_use", &["pool_name:dsd_packet_bufs"]);
         let metric = Metric::gauge(context, 1.0);
         let new_metric = remapper.try_remap_metric(&metric).expect("should have remapped");
         assert_eq!(new_metric.context().name(), "datadog.agent.dogstatsd.packet_pool");
