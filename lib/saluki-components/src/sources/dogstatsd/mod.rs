@@ -679,10 +679,10 @@ fn handle_frame(
 ) -> Result<Option<Event>, ParseError> {
     let (events_received, event) = match codec.decode_packet(frame)? {
         ParsedPacket::Metric(metric_packet) => {
-            let values_len = metric_packet.values.len();
+            let events_len = metric_packet.num_points;
 
             match handle_metric_packet(metric_packet, multitenant_strategy, peer_addr) {
-                Some(metric) => (values_len, Event::Metric(metric)),
+                Some(metric) => (events_len, Event::Metric(metric)),
                 None => {
                     // We can only fail to get a metric back if we failed to resolve the context.
                     source_metrics.failed_context_resolve_total().increment(1);
@@ -694,7 +694,7 @@ fn handle_frame(
         ParsedPacket::ServiceCheck(service_check) => (1, Event::ServiceCheck(service_check)),
     };
 
-    source_metrics.events_received().increment(events_received as u64);
+    source_metrics.events_received().increment(events_received);
 
     Ok(Some(event))
 }
