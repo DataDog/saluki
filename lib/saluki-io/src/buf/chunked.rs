@@ -14,7 +14,7 @@ use saluki_core::pooling::ObjectPool;
 use tokio::io::AsyncWrite;
 use tokio_util::sync::ReusableBoxFuture;
 
-use super::{vec::FrozenBytesBuffer, BytesBuffer, ReadWriteIoBuffer};
+use super::{vec::FrozenBytesBuffer, BytesBuffer};
 
 enum PollObjectPool<O>
 where
@@ -83,7 +83,6 @@ where
 impl<O> ChunkedBytesBuffer<O>
 where
     O: ObjectPool<Item = BytesBuffer> + 'static,
-    BytesBuffer: ReadWriteIoBuffer,
 {
     /// Creates a new `ChunkedBytesBuffer` attached to the given buffer pool.
     pub fn new(buffer_pool: Arc<O>) -> Self {
@@ -109,19 +108,12 @@ where
         self.remaining_capacity += chunk.remaining_mut();
         self.chunks.push_back(chunk);
     }
-}
 
-impl<O> ChunkedBytesBuffer<O>
-where
-    O: ObjectPool<Item = BytesBuffer>,
-{
     /// Consumes this buffer and returns a read-only version of it.
     ///
     /// All existing chunks at the time of calling this method will be present in the read-only buffer.
     pub fn freeze(self) -> FrozenChunkedBytesBuffer {
         FrozenChunkedBytesBuffer {
-            // TODO: probably wrap this in an `Arc<T>` to make the cloning even cheaper for `FrozenChunkedBytesBuffer`
-            // since we're already allocating a new `VecDeque` here anyways
             chunks: self.chunks.into_iter().map(|chunk| chunk.freeze()).collect(),
         }
     }
@@ -130,7 +122,6 @@ where
 impl<O> AsyncWrite for ChunkedBytesBuffer<O>
 where
     O: ObjectPool<Item = BytesBuffer> + 'static,
-    BytesBuffer: ReadWriteIoBuffer,
 {
     fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
         while self.remaining_capacity < buf.len() {
