@@ -10,6 +10,7 @@ default = []
 fips = ["saluki-app/tls-fips"]
 
 [dependencies]
+arc-swap = { workspace = true }
 async-trait = { workspace = true }
 bytesize = { workspace = true }
 memory-accounting = { workspace = true }

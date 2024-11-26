@@ -1,49 +1,43 @@
 use std::sync::Arc;
 
-use crate::GenericConfiguration;
+use crate::{ConfigurationError, GenericConfiguration};
+use arc_swap::ArcSwap;
 use reqwest;
 use saluki_error::GenericError;
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
+use serde_json::Value;
 use tokio::time::{sleep, Duration};
 
 const DATADOG_AGENT_CONFIG_ENDPOINT: &str = "https://localhost:5004/config/v1/";
 
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct ConfigResponse {
-    api_key: String,
-}
-
-/// Configuration for setting up `ConfigRefresher`.
+/// Configuration for setting up `RefreshableConfiguration`.
 #[derive(Default, Deserialize)]
-pub struct ConfigRefresherConfiguration {
-    api_key: String,
+pub struct RefresherConfiguration {
     auth_token_file_path: String,
 }
 
 /// The most recent configuration retrieved from the datadog-agent.
 #[derive(Default)]
-pub struct ConfigRefresher {
+pub struct RefreshableConfiguration {
     token: String,
-    api_key: String,
+    values: ArcSwap<Value>,
 }
 
-#[allow(unused)]
-impl ConfigRefresherConfiguration {
+impl RefresherConfiguration {
     /// Creates a new `ConfigRefresherConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
     }
     /// Create `ConfigRefresher` from `ConfigRefresherConfiguration`
-    pub fn build(&self) -> Result<ConfigRefresher, GenericError> {
+    pub fn build(&self) -> Result<RefreshableConfiguration, GenericError> {
         let raw_bearer_token = std::fs::read_to_string(&self.auth_token_file_path)?;
-        Ok(ConfigRefresher {
+        Ok(RefreshableConfiguration {
             token: raw_bearer_token,
-            api_key: self.api_key.clone(),
+            values: ArcSwap::from_pointee(serde_json::Value::Null),
         })
     }
 }
-impl ConfigRefresher {
+impl RefreshableConfiguration {
     /// Start a task that queries the datadog-agent config endpoint every 15 seconds.
     pub fn spawn_refresh_task(self: Arc<Self>) {
         tokio::spawn(async move {
@@ -61,7 +55,6 @@ impl ConfigRefresher {
         });
     }
     /// Query the datadog-agent config endpoint for the latest config
-    #[allow(unused)]
     pub async fn query_agent(&self) -> Result<(), GenericError> {
         let client = reqwest::ClientBuilder::new()
             .danger_accept_invalid_certs(true) // Allow invalid certificates
@@ -76,15 +69,39 @@ impl ConfigRefresher {
             .send()
             .await?;
 
-        let config_response: ConfigResponse = response.json().await?;
-
-        // self.api_key = config_response.api_key;
+        let config_response: Value = response.json().await?;
+        self.values.store(Arc::new(config_response));
 
         Ok(())
     }
 
-    /// Most recent `api_key` retrieved from the datadog-agent.
-    pub fn api_key(&self) -> &str {
-        &self.api_key
+    /// Gets a configuration value by key.
+    ///
+    ///
+    /// ## Errors
+    ///
+    /// If the key does not exist in the configuration, or if the value could not be deserialized into `T`, an error
+    /// variant will be returned.
+    pub fn get_typed<'a, T>(&self, key: &str) -> Result<T, ConfigurationError>
+    where
+        T: DeserializeOwned,
+    {
+        let values = self.values.load();
+        match values.get(key) {
+            Some(value) => {
+                // Attempt to deserialize the value to type T
+                serde_json::from_value(value.clone()).map_err(|_| ConfigurationError::MissingField {
+                    help_text: format!(
+                        "RefreshableConfiguration could not convert key {} value into the proper type.",
+                        key
+                    ),
+                    field: format!("{}", key).into(),
+                })
+            }
+            None => Err(ConfigurationError::MissingField {
+                help_text: format!("RefreshableConfiguration missing key {}", key),
+                field: format!("{}", key).into(),
+            }),
+        }
     }
 }

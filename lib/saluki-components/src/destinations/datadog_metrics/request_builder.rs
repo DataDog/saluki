@@ -5,7 +5,7 @@ use datadog_protos::metrics::{self as proto, Resource};
 use ddsketch_agent::DDSketch;
 use http::{Method, Request, Uri};
 use protobuf::CodedOutputStream;
-use saluki_config::ConfigRefresher;
+use saluki_config::RefreshableConfiguration;
 use saluki_core::pooling::ObjectPool;
 use saluki_event::metric::*;
 use saluki_io::net::client::replay::ReplayBody;
@@ -49,6 +49,7 @@ pub enum RequestBuilderError {
         source: http::Error,
     },
     FailedToCreateReplayBody,
+    FailedToGetApiKey,
 }
 
 impl RequestBuilderError {
@@ -128,7 +129,7 @@ where
     uncompressed_len: usize,
     metrics_written: usize,
     scratch_buf_lens: Vec<usize>,
-    refresher: Arc<ConfigRefresher>,
+    refresher: Arc<RefreshableConfiguration>,
 }
 
 impl<O> RequestBuilder<O>
@@ -138,7 +139,8 @@ where
 {
     /// Creates a new `RequestBuilder` for the given endpoint, using the specified API key and base URI.
     pub async fn new(
-        api_key: String, api_base_uri: Uri, endpoint: MetricsEndpoint, buffer_pool: O, refresher: Arc<ConfigRefresher>,
+        api_key: String, api_base_uri: Uri, endpoint: MetricsEndpoint, buffer_pool: O,
+        refresher: Arc<RefreshableConfiguration>,
     ) -> Result<Self, RequestBuilderError> {
         let chunked_buffer_pool = ChunkedBufferObjectPool::new(buffer_pool);
         let compressor = create_compressor(&chunked_buffer_pool).await;
@@ -358,7 +360,12 @@ where
                     .uri(self.api_uri.clone())
                     .header("Content-Type", "application/x-protobuf")
                     .header("Content-Encoding", "deflate")
-                    .header("DD-API-KEY", self.refresher.api_key())
+                    .header(
+                        "DD-API-KEY",
+                        self.refresher
+                            .get_typed::<String>("api_key")
+                            .map_err(|_| RequestBuilderError::FailedToGetApiKey)?,
+                    )
                     // TODO: We can't access the version number of the package being built that _includes_ this library, so
                     // using CARGO_PKG_VERSION or something like that would always be the version of `saluki-components`, which
                     // isn't what we want... maybe we can figure out some way to shove it in a global somewhere or something?

@@ -15,7 +15,7 @@ mod provider;
 mod refresher;
 mod secrets;
 use self::provider::ResolvedProvider;
-pub use self::refresher::{ConfigRefresher, ConfigRefresherConfiguration};
+pub use self::refresher::{RefreshableConfiguration, RefresherConfiguration};
 
 /// A configuration error.
 #[derive(Debug, Snafu)]

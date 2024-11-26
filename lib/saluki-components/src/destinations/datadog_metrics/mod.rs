@@ -1,12 +1,10 @@
-use std::{sync::Arc, time::Duration};
-
 use async_trait::async_trait;
 use http::{HeaderValue, Method, Request, Uri};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::Counter;
-use saluki_config::{ConfigRefresher, GenericConfiguration};
+use saluki_config::{GenericConfiguration, RefreshableConfiguration};
 use saluki_core::{
     components::{destinations::*, ComponentContext, MetricsBuilder},
     pooling::{FixedSizeObjectPool, ObjectPool},
@@ -23,6 +21,8 @@ use saluki_io::{
 };
 use serde::Deserialize;
 use serde_with::{serde_as, DisplayFromStr, PickFirst};
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::{
     select,
     sync::{mpsc, oneshot},
@@ -190,7 +190,7 @@ pub struct DatadogMetricsConfiguration {
     endpoints: AdditionalEndpoints,
 
     #[serde(skip)]
-    config_refresher: Arc<ConfigRefresher>,
+    config_refresher: Arc<RefreshableConfiguration>,
 }
 
 fn default_request_timeout_secs() -> u64 {
@@ -228,7 +228,7 @@ impl DatadogMetricsConfiguration {
     }
 
     /// Add option to refresh config with a remote source
-    pub fn set_config_refresher(&mut self, refresher: Arc<ConfigRefresher>) {
+    pub fn set_config_refresher(&mut self, refresher: Arc<RefreshableConfiguration>) {
         self.config_refresher = refresher;
     }
 }

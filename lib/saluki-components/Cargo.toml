@@ -7,6 +7,7 @@ repository = { workspace = true }
 
 [dependencies]
 ahash = { workspace = true }
+arc-swap = { workspace = true }
 async-compression = { workspace = true, features = ["tokio", "zlib"] }
 async-trait = { workspace = true }
 bitmask-enum = { workspace = true }
