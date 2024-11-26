@@ -494,7 +494,7 @@ async fn run_io_loop<S, B>(
     for resolved_endpoint in resolved_endpoints {
         let endpoint_url = resolved_endpoint.endpoint().to_string();
 
-        let (endpoint_tx, endpoint_rx) = mpsc::channel(4);
+        let (endpoint_tx, endpoint_rx) = mpsc::channel(32);
         let task_barrier = Arc::clone(&task_barrier);
         spawn_traced(run_endpoint_io_loop(
             endpoint_rx,
