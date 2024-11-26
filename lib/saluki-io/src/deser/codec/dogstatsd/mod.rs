@@ -558,6 +558,8 @@ fn metric_values_from_raw(
         MetricType::Count => MetricValues::counter_sampled_fallible(floats, sample_rate)?,
         MetricType::Gauge => MetricValues::gauge_fallible(floats)?,
         MetricType::Set => {
+            num_points = 1;
+
             // SAFETY: We've already checked above that `input` is valid UTF-8.
             let value = unsafe { std::str::from_utf8_unchecked(input) };
             MetricValues::set(value.to_string())
