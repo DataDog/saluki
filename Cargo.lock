@@ -3357,6 +3357,7 @@ dependencies = [
  "ahash",
  "crossbeam-queue",
  "hashbrown 0.15.1",
+ "memchr",
  "metrics",
  "metrics-util",
  "quick_cache",
