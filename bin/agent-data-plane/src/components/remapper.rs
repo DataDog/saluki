@@ -132,62 +132,62 @@ fn generate_remapper_rules() -> Vec<RemapperRule> {
     vec![
         // Object pool.
         RemapperRule::by_name_and_tags(
-            "datadog.saluki.object_pool_acquired",
+            "datadog.agent.adp.object_pool_acquired",
             &["pool_name:dsd_packet_bufs"],
             "datadog.agent.dogstatsd.packet_pool_get",
         ),
         RemapperRule::by_name_and_tags(
-            "datadog.saluki.object_pool_released",
+            "datadog.agent.adp.object_pool_released",
             &["pool_name:dsd_packet_bufs"],
             "datadog.agent.dogstatsd.packet_pool_put",
         ),
         RemapperRule::by_name_and_tags(
-            "datadog.saluki.object_pool_in_use",
+            "datadog.agent.adp.object_pool_in_use",
             &["pool_name:dsd_packet_bufs"],
             "datadog.agent.dogstatsd.packet_pool",
         ),
         // DogStatsD source.
         RemapperRule::by_name_and_tags(
-            "datadog.saluki.component_packets_received_total",
+            "datadog.agent.adp.component_packets_received_total",
             &["component_id:dsd_in", "listener_type:udp"],
             "datadog.agent.dogstatsd.udp_packets",
         )
         .with_original_tags(["state"]),
         RemapperRule::by_name_and_tags(
-            "datadog.saluki.component_bytes_received_total",
+            "datadog.agent.adp.component_bytes_received_total",
             &["component_id:dsd_in", "listener_type:udp"],
             "datadog.agent.dogstatsd.udp_packet_bytes",
         ),
         RemapperRule::by_name_and_tags(
-            "datadog.saluki.component_packets_received_total",
+            "datadog.agent.adp.component_packets_received_total",
             &["component_id:dsd_in", "listener_type:unixgram"],
             "datadog.agent.dogstatsd.uds_packets",
         )
         .with_remapped_tags([("listener_type", "transport")])
         .with_original_tags(["state"]),
         RemapperRule::by_name_and_tags(
-            "datadog.saluki.component_bytes_received_total",
+            "datadog.agent.adp.component_bytes_received_total",
             &["component_id:dsd_in", "listener_type:unixgram"],
             "datadog.agent.dogstatsd.uds_packet_bytes",
         )
         .with_remapped_tags([("listener_type", "transport")])
         .with_original_tags(["state"]),
         RemapperRule::by_name_and_tags(
-            "datadog.saluki.component_packets_received_total",
+            "datadog.agent.adp.component_packets_received_total",
             &["component_id:dsd_in", "listener_type:unix"],
             "datadog.agent.dogstatsd.uds_packets",
         )
         .with_remapped_tags([("listener_type", "transport")])
         .with_original_tags(["state"]),
         RemapperRule::by_name_and_tags(
-            "datadog.saluki.component_bytes_received_total",
+            "datadog.agent.adp.component_bytes_received_total",
             &["component_id:dsd_in", "listener_type:unix"],
             "datadog.agent.dogstatsd.uds_packet_bytes",
         )
         .with_remapped_tags([("listener_type", "transport")])
         .with_original_tags(["state"]),
         RemapperRule::by_name_and_tags(
-            "datadog.saluki.component_connections_active",
+            "datadog.agent.adp.component_connections_active",
             &["component_id:dsd_in", "listener_type:unix"],
             "datadog.agent.dogstatsd.uds_connections",
         )
@@ -288,17 +288,20 @@ mod tests {
             rules: generate_remapper_rules(),
         };
 
-        let context = Context::from_static_parts("datadog.saluki.object_pool_acquired", &["pool_name:dsd_packet_bufs"]);
+        let context =
+            Context::from_static_parts("datadog.agent.adp.object_pool_acquired", &["pool_name:dsd_packet_bufs"]);
         let metric = Metric::counter(context, 1.0);
         let new_metric = remapper.try_remap_metric(&metric).expect("should have remapped");
         assert_eq!(new_metric.context().name(), "datadog.agent.dogstatsd.packet_pool_get");
 
-        let context = Context::from_static_parts("datadog.saluki.object_pool_released", &["pool_name:dsd_packet_bufs"]);
+        let context =
+            Context::from_static_parts("datadog.agent.adp.object_pool_released", &["pool_name:dsd_packet_bufs"]);
         let metric = Metric::counter(context, 1.0);
         let new_metric = remapper.try_remap_metric(&metric).expect("should have remapped");
         assert_eq!(new_metric.context().name(), "datadog.agent.dogstatsd.packet_pool_put");
 
-        let context = Context::from_static_parts("datadog.saluki.object_pool_in_use", &["pool_name:dsd_packet_bufs"]);
+        let context =
+            Context::from_static_parts("datadog.agent.adp.object_pool_in_use", &["pool_name:dsd_packet_bufs"]);
         let metric = Metric::gauge(context, 1.0);
         let new_metric = remapper.try_remap_metric(&metric).expect("should have remapped");
         assert_eq!(new_metric.context().name(), "datadog.agent.dogstatsd.packet_pool");
