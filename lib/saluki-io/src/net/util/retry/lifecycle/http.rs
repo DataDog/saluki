@@ -45,6 +45,11 @@ impl<'a> fmt::Display for SanitizedRequestUri<'a> {
             write!(f, "{}://{}", scheme, host)?;
         }
 
+        let maybe_port = self.0.port_u16();
+        if let Some(port) = maybe_port {
+            write!(f, ":{}", port)?;
+        }
+
         // Now print the request path, which is always present.
         write!(f, "{}", self.0.path())
     }
