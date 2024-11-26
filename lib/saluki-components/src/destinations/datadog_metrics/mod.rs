@@ -227,8 +227,8 @@ impl DatadogMetricsConfiguration {
         calculate_api_endpoint(self.dd_url.as_deref(), &self.site)
     }
 
-    /// Add option to refresh config with a remote source
-    pub fn set_config_refresher(&mut self, refresher: Arc<RefreshableConfiguration>) {
+    /// Add option to retrieve config values from a `RefreshableConfiguration`
+    pub fn add_refreshable_configuration(&mut self, refresher: Arc<RefreshableConfiguration>) {
         self.config_refresher = refresher;
     }
 }

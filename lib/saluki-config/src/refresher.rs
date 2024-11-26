@@ -24,11 +24,11 @@ pub struct RefreshableConfiguration {
 }
 
 impl RefresherConfiguration {
-    /// Creates a new `ConfigRefresherConfiguration` from the given configuration.
+    /// Creates a new `RefresherConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
     }
-    /// Create `ConfigRefresher` from `ConfigRefresherConfiguration`
+    /// Create `RefreshableConfiguration` from `RefresherConfiguration`
     pub fn build(&self) -> Result<RefreshableConfiguration, GenericError> {
         let raw_bearer_token = std::fs::read_to_string(&self.auth_token_file_path)?;
         Ok(RefreshableConfiguration {
