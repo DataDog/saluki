@@ -121,6 +121,7 @@ run-benchmarks-adp:
     # Run SMP against our converged Agent image.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
             job submit
+            --replicas 256
             --warmup-seconds 0
             --baseline-image ${BASELINE_SALUKI_IMG}
             --comparison-image ${COMPARISON_SALUKI_IMG}
