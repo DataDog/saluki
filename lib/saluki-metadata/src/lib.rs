@@ -4,8 +4,9 @@ mod details {
 }
 
 static VERSION_DETAILS: AppDetails = AppDetails {
-    name: details::DETECTED_APP_NAME,
+    full_name: details::DETECTED_APP_FULL_NAME,
     short_name: details::DETECTED_APP_SHORT_NAME,
+    identifier: details::DETECTED_APP_IDENTIFIER,
     git_hash: details::DETECTED_GIT_HASH,
     version: Version::new(
         details::DETECTED_APP_VERSION,
@@ -32,22 +33,24 @@ pub fn get_app_details() -> &'static AppDetails {
 /// This struct is generated at build time and contains information about the detected application name and version
 /// based on detected environment variables. The following environment variables are used:
 ///
-/// - `APP_NAME`: The name of the application. If this is not set, the default value is "unknown".
-/// - `APP_SHORT_NAME`: A short name for the application. If this is not set, the default value is "unknown".
-/// - `APP_VERSION`: The version of the application. If this is not set, the default value is "0.0.0".
-/// - `APP_GIT_HASH`: The Git hash of the application. If this is not set, the default value is "unknown".
-/// - `APP_BUILD_TIME`: The build time of the application. If this is not set, the default value is "0000-00-00 00:00:00".
-/// - `TARGET`: The target architecture of the application. If this is not set, the default value is "unknown-arch".
+/// - `APP_FULL_NAME`: Application's full name. If this is not set, the default value is "unknown".
+/// - `APP_SHORT_NAME`: Application's short name. If this is not set, the default value is "unknown".
+/// - `APP_IDENTIFIER`: Application's identifier. If this is not set, the default value is "unknown".
+/// - `APP_VERSION`: Version of the application. If this is not set, the default value is "0.0.0".
+/// - `APP_GIT_HASH`: Git hash of the application. If this is not set, the default value is "unknown".
+/// - `APP_BUILD_TIME`: Build time of the application. If this is not set, the default value is "0000-00-00 00:00:00".
+/// - `TARGET`: Target architecture of the application. If this is not set, the default value is "unknown-arch".
 ///
-/// Environmment variables prefixed with `APP_` are expected to be set by the build script/tooling, while others are
+/// Environment variables prefixed with `APP_` are expected to be set by the build script/tooling, while others are
 /// provided automatically by Cargo.
 ///
 /// The version string will be treated as a semantic version, and will be split on periods to extract the major, minor,
 /// and patch numbers. Additionally, the patch number will be split on hyphens to remove any pre-release or build
 /// metadata.
 pub struct AppDetails {
-    name: &'static str,
+    full_name: &'static str,
     short_name: &'static str,
+    identifier: &'static str,
     git_hash: &'static str,
     version: Version,
     build_time: &'static str,
@@ -55,43 +58,57 @@ pub struct AppDetails {
 }
 
 impl AppDetails {
-    /// Returns the detected application name.
+    /// Returns the application's full name.
     ///
-    /// This is typically the name of the binary or executable. If the name cannot be detected, this will return "unknown".
-    pub fn name(&self) -> &'static str {
-        self.name
+    /// This is typically a human-friendly/"pretty" name of the binary/executable, such as "Agent Data Plane".
+    ///
+    /// If the full name could not be detected, this will return "unknown".
+    pub fn full_name(&self) -> &'static str {
+        self.full_name
     }
 
-    /// Returns the detected application short name.
+    /// Returns the application's short name.
     ///
-    /// This is typically a shorter version of the name of the binary or executable, such as an acronym variant of the
-    /// full name. If the short name cannot be detected, this will return "unknown".
+    /// This is typically a shorter version of the name of the binary/executable, such as "Data Plane" or
+    /// "DATAPLANE".
+    ///
+    /// If the short name could not be detected, this will return "unknown".
     pub fn short_name(&self) -> &'static str {
         self.short_name
     }
 
-    /// Returns the detected Git hash.
+    /// Returns the application's identifier.
     ///
-    /// If the Git hash cannot be detected, this will return "unknown".
+    /// This is typically a very condensed form of the name of the binary/executable, like an acronym, such as "adp" or
+    /// "ADP".
+    ///
+    /// If the identifier could not be detected, this will return "unknown".
+    pub fn identifier(&self) -> &'static str {
+        self.identifier
+    }
+
+    /// Returns the Git hash used to build the application.
+    ///
+    /// If the Git hash could not be detected, this will return "unknown".
     pub fn git_hash(&self) -> &'static str {
         self.git_hash
     }
 
-    /// Returns the detected application version.
+    /// Returns the application's version.
     ///
-    /// If the version cannot be detected, this will return a version equivalent to `0.0.0`.
+    /// If the version could not be detected, this will return a version equivalent to `0.0.0`.
     pub fn version(&self) -> &Version {
         &self.version
     }
 
-    /// Returns the detected build time.
+    /// Returns the build time of the application.
     ///
-    /// If the build time cannot be detected, this will return "0000-00-00 00:00:00".
+    /// If the build time could not be detected, this will return "0000-00-00 00:00:00".
     pub fn build_time(&self) -> &'static str {
         self.build_time
     }
 
-    /// Returns the detected target architecture.
+    /// Returns the target architecture of the application.
     ///
     /// This returns a "target triple", which is a string that generally has _four_ components: the processor
     /// architecture (x86-64, ARM64, etc), the "vendor" ("apple", "pc", etc), the operating system ("linux", "windows",
@@ -100,7 +117,7 @@ impl AppDetails {
     /// The environment/ABI component can sometimes be omitted in scenarios where there are no meaningful distinctions
     /// for the given operating system.
     ///
-    /// If the target architecture cannot be detected, this will return "unknown-arch".
+    /// If the target architecture could not be detected, this will return "unknown-arch".
     pub fn target_arch(&self) -> &'static str {
         self.target_arch
     }
