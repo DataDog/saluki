@@ -11,14 +11,27 @@ use tracing::{debug, error};
 use crate::{ConfigurationError, GenericConfiguration};
 
 const DATADOG_AGENT_CONFIG_ENDPOINT: &str = "https://localhost:5004/config/v1/";
+const DEFAULT_AUTH_TOKEN_FILE_PATH: &str = "/etc/datadog-agent/auth_token";
 const DEFAULT_REFRESH_INTERVAL_SECONDS: u64 = 15;
 
 /// Configuration for setting up `RefreshableConfiguration`.
 #[derive(Default, Deserialize)]
 pub struct RefresherConfiguration {
+    /// The location of the auth token used by the datadog agent.
+    ///
+    /// Defaults to `/etc/datadog-agent/auth_token`.`
+    #[serde(default = "default_auth_token_file_path")]
     auth_token_file_path: String,
+
+    /// The amount of time betweeen each request in seconds.
+    ///
+    /// Defaults to 15 seconds.
     #[serde(default = "default_refresh_interval_seconds")]
     refresh_interval_seconds: u64,
+}
+
+fn default_auth_token_file_path() -> String {
+    DEFAULT_AUTH_TOKEN_FILE_PATH.to_owned()
 }
 
 fn default_refresh_interval_seconds() -> u64 {
