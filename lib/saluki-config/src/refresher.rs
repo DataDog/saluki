@@ -39,7 +39,7 @@ fn default_refresh_interval_seconds() -> u64 {
 }
 
 /// A configuration whose values are refreshed from a remote source at runtime.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct RefreshableConfiguration {
     token: String,
     values: Arc<ArcSwap<Value>>,
