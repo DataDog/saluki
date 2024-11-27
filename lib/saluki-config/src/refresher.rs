@@ -29,7 +29,7 @@ fn default_refresh_interval_seconds() -> u64 {
 #[derive(Default)]
 pub struct RefreshableConfiguration {
     token: String,
-    values: ArcSwap<Value>,
+    values: Arc<ArcSwap<Value>>,
     refresh_interval_seconds: u64,
 }
 
@@ -43,7 +43,7 @@ impl RefresherConfiguration {
         let raw_bearer_token = std::fs::read_to_string(&self.auth_token_file_path)?;
         let refreshable_configuration = Arc::new(RefreshableConfiguration {
             token: raw_bearer_token,
-            values: ArcSwap::from_pointee(serde_json::Value::Null),
+            values: Arc::new(ArcSwap::from_pointee(serde_json::Value::Null)),
             refresh_interval_seconds: self.refresh_interval_seconds,
         });
         refreshable_configuration.clone().spawn_refresh_task();
