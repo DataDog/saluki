@@ -94,6 +94,13 @@ pub struct OriginEntity {
 }
 
 impl OriginEntity {
+    /// Sets the process ID of the sender.
+    ///
+    /// Must be a non-zero value. If the value is zero, it is silently ignored.
+    pub fn set_process_id(&mut self, process_id: u32) {
+        self.process_id = NonZeroU32::new(process_id);
+    }
+
     /// Gets the process ID of the sender.
     pub fn process_id(&self) -> Option<u32> {
         self.process_id.map(NonZeroU32::get)

@@ -198,19 +198,19 @@ macro_rules! pooled_newtype {
             #[doc = "Poolable version of `" $inner_ty "`."]
             pub struct $name {
                 strategy_ref: ::std::sync::Arc<dyn $crate::pooling::ReclaimStrategy<$name> + Send + Sync>,
-                data: ::std::mem::ManuallyDrop<$inner_ty>,
+                data: ::std::option::Option<$inner_ty>,
             }
         }
 
         impl $name {
             /// Gets a reference to the inner data.
             pub fn data(&self) -> &$inner_ty {
-                &self.data
+                self.data.as_ref().unwrap()
             }
 
             /// Gets a mutable reference to the inner data.
             pub fn data_mut(&mut self) -> &mut $inner_ty {
-                &mut self.data
+                self.data.as_mut().unwrap()
             }
         }
 
@@ -223,7 +223,7 @@ macro_rules! pooled_newtype {
             ) -> Self {
                 Self {
                     strategy_ref,
-                    data: ::std::mem::ManuallyDrop::new(data),
+                    data: ::std::option::Option::Some(data),
                 }
             }
         }
@@ -231,8 +231,10 @@ macro_rules! pooled_newtype {
         impl Drop for $name {
             fn drop(&mut self) {
                 // SAFETY: We never use `self.data` again since we're already dropping `self`.
-                let data = unsafe { ::std::mem::ManuallyDrop::take(&mut self.data) };
-                self.strategy_ref.reclaim(data);
+
+                if let ::std::option::Option::Some(data) = self.data.take() {
+                    self.strategy_ref.reclaim(data);
+                }
             }
         }
     };

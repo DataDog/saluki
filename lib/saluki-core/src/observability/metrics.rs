@@ -153,16 +153,26 @@ async fn flush_metrics(flush_interval: Duration) {
         for (key, counter) in counters {
             let context = context_from_key(&mut context_resolver, key);
             let value = counter.swap(0, Ordering::Relaxed) as f64;
-            metrics.push(Event::Metric(Metric::counter(context, value)));
+
+            let mut metric = Metric::counter(context, value);
+            set_metric_metadata(&mut metric);
+
+            metrics.push(Event::Metric(metric));
         }
 
         for (key, gauge) in gauges {
             let context = context_from_key(&mut context_resolver, key);
             let value = f64::from_bits(gauge.load(Ordering::Relaxed));
-            metrics.push(Event::Metric(Metric::gauge(context, value)));
+
+            let mut metric = Metric::gauge(context, value);
+            set_metric_metadata(&mut metric);
+
+            metrics.push(Event::Metric(metric));
         }
 
         for (key, histogram) in histograms {
+            let context = context_from_key(&mut context_resolver, key);
+
             // Collect all of the samples from the histogram.
             //
             // If the histogram was empty, skip emitting a metric for this histogram entirely. Empty sketches don't make
@@ -174,13 +184,36 @@ async fn flush_metrics(flush_interval: Duration) {
                 continue;
             }
 
-            let context = context_from_key(&mut context_resolver, key);
-            metrics.push(Event::Metric(Metric::distribution(context, &distribution_samples[..])));
+            let mut metric = Metric::distribution(context, &distribution_samples[..]);
+            set_metric_metadata(&mut metric);
+
+            metrics.push(Event::Metric(metric));
         }
 
         let shared = Arc::new(metrics);
         let _ = state.flush_tx.send(shared);
     }
+}
+
+fn set_metric_metadata(metric: &mut Metric) {
+    // Set the origin entity if process ID is available.
+    metric
+        .metadata_mut()
+        .origin_entity_mut()
+        .set_process_id(self_process_id());
+
+    // Set the origin data to reflect the internal nature of the metric.
+    //
+    // TODO: This should be more like "Agent Internal" but I don't see an obvious combo of product/subproduct/subproduct
+    // detail to indicate as such... gotta talk to some people and see.
+    metric.metadata_mut().set_origin(MetricOrigin::dogstatsd());
+}
+
+fn self_process_id() -> u32 {
+    // We cache the process ID here just to insulate ourselves. On Linux, with glibc, the underlying `getpid` call
+    // should be cached (since it goes through a syscall), but who knows what happens with musl, Windows, Darwin, etc.
+    static PROCESS_ID: OnceLock<u32> = OnceLock::new();
+    *PROCESS_ID.get_or_init(std::process::id)
 }
 
 fn context_from_key(context_resolver: &mut ContextResolver, key: Key) -> Context {

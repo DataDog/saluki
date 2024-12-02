@@ -367,26 +367,26 @@ fn build_metrics(listen_addr: &ListenAddress, builder: MetricsBuilder) -> Metric
 
     Metrics {
         events_received: builder
-            .register_counter_with_labels("component_events_received_total", &[("listener_type", listener_type)]),
+            .register_debug_counter_with_labels("component_events_received_total", &[("listener_type", listener_type)]),
         bytes_received: builder
-            .register_counter_with_labels("component_bytes_received_total", &[("listener_type", listener_type)]),
+            .register_debug_counter_with_labels("component_bytes_received_total", &[("listener_type", listener_type)]),
         bytes_received_size: builder
-            .register_histogram_with_labels("component_bytes_received_size", &[("listener_type", listener_type)]),
-        decoder_errors: builder.register_counter_with_labels(
+            .register_debug_histogram_with_labels("component_bytes_received_size", &[("listener_type", listener_type)]),
+        decoder_errors: builder.register_debug_counter_with_labels(
             "component_errors_total",
             &[("listener_type", listener_type), ("error_type", "decode")],
         ),
         connections_active: builder
-            .register_gauge_with_labels("component_connections_active", &[("listener_type", listener_type)]),
-        packet_receive_success: builder.register_counter_with_labels(
+            .register_debug_gauge_with_labels("component_connections_active", &[("listener_type", listener_type)]),
+        packet_receive_success: builder.register_debug_counter_with_labels(
             "component_packets_received_total",
             &[("listener_type", listener_type), ("state", "ok")],
         ),
-        packet_receive_failure: builder.register_counter_with_labels(
+        packet_receive_failure: builder.register_debug_counter_with_labels(
             "component_packets_received_total",
             &[("listener_type", listener_type), ("state", "error")],
         ),
-        failed_context_resolve_total: builder.register_counter("component_failed_context_resolve_total"),
+        failed_context_resolve_total: builder.register_debug_counter("component_failed_context_resolve_total"),
     }
 }
 
@@ -681,10 +681,10 @@ fn handle_frame(
 ) -> Result<Option<Event>, ParseError> {
     let (events_received, event) = match codec.decode_packet(frame)? {
         ParsedPacket::Metric(metric_packet) => {
-            let values_len = metric_packet.values.len();
+            let events_len = metric_packet.num_points;
 
             match handle_metric_packet(metric_packet, multitenant_strategy, peer_addr) {
-                Some(metric) => (values_len, Event::Metric(metric)),
+                Some(metric) => (events_len, Event::Metric(metric)),
                 None => {
                     // We can only fail to get a metric back if we failed to resolve the context.
                     source_metrics.failed_context_resolve_total().increment(1);
@@ -696,7 +696,7 @@ fn handle_frame(
         ParsedPacket::ServiceCheck(service_check) => (1, Event::ServiceCheck(service_check)),
     };
 
-    source_metrics.events_received().increment(events_received as u64);
+    source_metrics.events_received().increment(events_received);
 
     Ok(Some(event))
 }
