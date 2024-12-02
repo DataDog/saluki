@@ -8,11 +8,7 @@
 // We might consider _something_ like a string pool in the future, but we can defer that until we have a better idea of
 // what the potential impact is in practice.
 
-use std::{
-    fmt,
-    str::FromStr as _,
-    sync::{Mutex, OnceLock},
-};
+use std::{fmt, str::FromStr as _, sync::OnceLock};
 
 use chrono::{
     format::{DelayedFormat, Item, StrftimeItems},
@@ -82,7 +78,6 @@ fn initialize_tracing_pretty(level_filter: EnvFilter) -> Result<(), Box<dyn std:
 
 struct AgentLikeFormatter {
     app_name: String,
-    s_buf: Mutex<String>,
 }
 
 impl AgentLikeFormatter {
@@ -97,10 +92,7 @@ impl AgentLikeFormatter {
             .replace("-", "")
             .replace(" ", "");
 
-        Self {
-            app_name,
-            s_buf: Mutex::new(String::with_capacity(4096)),
-        }
+        Self { app_name }
     }
 }
 
@@ -128,12 +120,9 @@ where
         }
 
         // Write the span fields, non-message event fields, and the message field itself:
-        {
-            let mut s_buf = self.s_buf.lock().unwrap();
-            let mut v = AgentLikeFieldVisitor::new(writer.by_ref(), &mut s_buf);
-            event.record(&mut v);
-            v.finish()?;
-        }
+        let mut v = AgentLikeFieldVisitor::new(writer.by_ref());
+        event.record(&mut v);
+        v.finish()?;
 
         writeln!(writer)
     }
@@ -160,18 +149,16 @@ where
 struct AgentLikeFieldVisitor<'writer> {
     writer: Writer<'writer>,
     fields_written: usize,
-    message: &'writer mut String,
+    message: String,
     last_result: fmt::Result,
 }
 
 impl<'writer> AgentLikeFieldVisitor<'writer> {
-    fn new(writer: Writer<'writer>, message: &'writer mut String) -> Self {
-        message.clear();
-
+    fn new(writer: Writer<'writer>) -> Self {
         Self {
             writer,
             fields_written: 0,
-            message,
+            message: String::new(),
             last_result: Ok(()),
         }
     }
