@@ -959,8 +959,8 @@ mod tests {
         let container_id = "abcdef123456";
         let raw = format!("{}:{}|c|c:{}", name, value, container_id);
         let mut expected = Metric::counter(name, value);
-        let oe = expected.metadata_mut().origin_entity_mut();
-        oe.container_id = MetaString::from(container_id);
+        let origin_entity = expected.metadata_mut().origin_entity_mut();
+        origin_entity.container_id = MetaString::from(container_id);
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
         check_basic_metric_eq(expected, actual);
@@ -999,8 +999,8 @@ mod tests {
 
         let value_sample_rate_adjusted = value * (1.0 / sample_rate);
         let mut expected = Metric::counter((name, &tags[..]), value_sample_rate_adjusted);
-        let oe = expected.metadata_mut().origin_entity_mut();
-        oe.container_id = MetaString::from(container_id);
+        let origin_entity = expected.metadata_mut().origin_entity_mut();
+        origin_entity.container_id = MetaString::from(container_id);
         expected.values_mut().set_timestamp(timestamp);
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
