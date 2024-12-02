@@ -6,13 +6,12 @@ use http::{
     HeaderName, HeaderValue, Request, Uri,
 };
 use http_body::Body;
-use http_body_util::BodyExt;
+use http_body_util::BodyExt as _;
 use hyper::body::Incoming;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use metrics::Counter;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
-    components::{destinations::*, ComponentContext, MetricsBuilder},
+    components::{destinations::*, ComponentContext},
     pooling::{FixedSizeObjectPool, ObjectPool},
     task::spawn_traced,
 };
@@ -21,7 +20,7 @@ use saluki_event::DataType;
 use saluki_io::{
     buf::{BytesBuffer, FixedSizeVec, FrozenChunkedBytesBuffer},
     net::{
-        client::http::HttpClient,
+        client::http::{EndpointTelemetryLayer, HttpClient},
         util::retry::{DefaultHttpRetryPolicy, ExponentialBackoff},
     },
 };
@@ -39,6 +38,9 @@ use self::endpoint::endpoints::{calculate_resolved_endpoint, AdditionalEndpoints
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
 
+mod telemetry;
+use self::telemetry::ComponentTelemetry;
+
 const DEFAULT_SITE: &str = "datadoghq.com";
 const RB_BUFFER_POOL_COUNT: usize = 128;
 const RB_BUFFER_POOL_BUF_SIZE: usize = 32_768;
@@ -48,57 +50,6 @@ static DD_API_KEY_HEADER: HeaderName = HeaderName::from_static("dd-api-key");
 
 fn default_site() -> String {
     DEFAULT_SITE.to_owned()
-}
-
-#[derive(Clone)]
-struct Metrics {
-    events_sent: Counter,
-    bytes_sent: Counter,
-    events_dropped_http: Counter,
-    events_dropped_encoder: Counter,
-    http_failed_send: Counter,
-}
-
-impl Metrics {
-    fn from_component_context(context: ComponentContext) -> Self {
-        let builder = MetricsBuilder::from_component_context(context);
-
-        Self {
-            events_sent: builder.register_debug_counter("component_events_sent_total"),
-            bytes_sent: builder.register_debug_counter("component_bytes_sent_total"),
-            events_dropped_http: builder.register_debug_counter_with_labels(
-                "component_events_dropped_total",
-                &[("intentional", "false"), ("drop_reason", "http_failure")],
-            ),
-            events_dropped_encoder: builder.register_debug_counter_with_labels(
-                "component_events_dropped_total",
-                &[("intentional", "false"), ("drop_reason", "encoder_failure")],
-            ),
-            http_failed_send: builder
-                .register_debug_counter_with_labels("component_errors_total", &[("error_type", "http_send")]),
-        }
-    }
-
-    fn events_sent(&self) -> &Counter {
-        &self.events_sent
-    }
-
-    #[allow(dead_code)]
-    fn bytes_sent(&self) -> &Counter {
-        &self.bytes_sent
-    }
-
-    fn events_dropped_http(&self) -> &Counter {
-        &self.events_dropped_http
-    }
-
-    fn events_dropped_encoder(&self) -> &Counter {
-        &self.events_dropped_encoder
-    }
-
-    fn http_failed_send(&self) -> &Counter {
-        &self.http_failed_send
-    }
 }
 
 /// Datadog Metrics destination.
@@ -332,12 +283,13 @@ where
         // Spawn our IO task to handle sending requests.
         let (io_shutdown_tx, io_shutdown_rx) = oneshot::channel();
         let (requests_tx, requests_rx) = mpsc::channel(32);
-        let metrics = Metrics::from_component_context(context.component_context());
+        let telemetry = ComponentTelemetry::from_component_context(context.component_context());
         spawn_traced(run_io_loop(
             requests_rx,
             io_shutdown_tx,
             service,
-            metrics.clone(),
+            telemetry.clone(),
+            context.component_context(),
             endpoints,
         ));
 
@@ -370,7 +322,7 @@ where
                                         Ok(Some(metric)) => metric,
                                         Err(e) => {
                                             error!(error = %e, "Failed to encode metric.");
-                                            metrics.events_dropped_encoder().increment(1);
+                                            telemetry.events_dropped_encoder().increment(1);
                                             continue;
                                         }
                                     };
@@ -405,7 +357,7 @@ where
                                     // time.
                                     if let Err(e) = request_builder.encode(metric_to_retry).await {
                                         error!(error = %e, "Failed to encode metric.");
-                                        metrics.events_dropped_encoder().increment(1);
+                                        telemetry.events_dropped_encoder().increment(1);
                                     }
                                 }
                             }
@@ -477,7 +429,7 @@ where
 
 async fn run_io_loop<S, B>(
     mut requests_rx: mpsc::Receiver<(usize, Request<B>)>, io_shutdown_tx: oneshot::Sender<()>, service: S,
-    metrics: Metrics, resolved_endpoints: Vec<ResolvedEndpoint>,
+    telemetry: ComponentTelemetry, component_context: ComponentContext, resolved_endpoints: Vec<ResolvedEndpoint>,
 ) where
     S: Service<Request<B>, Response = hyper::Response<Incoming>> + Clone + Send + 'static,
     S::Future: Send,
@@ -500,7 +452,8 @@ async fn run_io_loop<S, B>(
             endpoint_rx,
             task_barrier,
             service.clone(),
-            metrics.clone(),
+            telemetry.clone(),
+            component_context.clone(),
             resolved_endpoint,
         ));
 
@@ -534,8 +487,8 @@ async fn run_io_loop<S, B>(
 }
 
 async fn run_endpoint_io_loop<S, B>(
-    mut requests_rx: mpsc::Receiver<(usize, Request<B>)>, task_barrier: Arc<Barrier>, service: S, metrics: Metrics,
-    endpoint: ResolvedEndpoint,
+    mut requests_rx: mpsc::Receiver<(usize, Request<B>)>, task_barrier: Arc<Barrier>, service: S,
+    telemetry: ComponentTelemetry, context: ComponentContext, endpoint: ResolvedEndpoint,
 ) where
     S: Service<Request<B>, Response = hyper::Response<Incoming>> + Send + 'static,
     S::Future: Send,
@@ -554,6 +507,8 @@ async fn run_endpoint_io_loop<S, B>(
         .map_request(for_resolved_endpoint::<B>(endpoint))
         // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
         .map_request(with_version_info::<B>())
+        // Add telemetry about the requests.
+        .layer(EndpointTelemetryLayer::from_component_context(context).with_endpoint_name_fn(get_metrics_endpoint_name))
         .service(service);
 
     // Process all requests until the channel is closed.
@@ -564,10 +519,10 @@ async fn run_endpoint_io_loop<S, B>(
                 if status.is_success() {
                     debug!(endpoint = endpoint_url, %status, "Request sent.");
 
-                    metrics.events_sent().increment(metrics_count as u64);
+                    telemetry.events_sent().increment(metrics_count as u64);
                 } else {
-                    metrics.http_failed_send().increment(1);
-                    metrics.events_dropped_http().increment(metrics_count as u64);
+                    telemetry.http_failed_send().increment(1);
+                    telemetry.events_dropped_http().increment(metrics_count as u64);
 
                     match response.into_body().collect().await {
                         Ok(body) => {
@@ -641,6 +596,14 @@ fn with_version_info<B>() -> impl Fn(Request<B>) -> Request<B> + Clone {
             .headers_mut()
             .insert(http::header::USER_AGENT, user_agent_header_value.clone());
         request
+    }
+}
+
+fn get_metrics_endpoint_name(uri: &Uri) -> Option<&'static str> {
+    match uri.path() {
+        "/api/v2/series" => Some("series_v2"),
+        "/api/beta/sketches" => Some("sketches_v2"),
+        _ => None,
     }
 }
 
