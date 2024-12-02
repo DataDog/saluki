@@ -627,9 +627,14 @@ fn for_resolved_endpoint<B>(endpoint: ResolvedEndpoint) -> impl Fn(Request<B>) -
 
 fn with_version_info<B>() -> impl Fn(Request<B>) -> Request<B> + Clone {
     let app_details = saluki_metadata::get_app_details();
+    let formatted_full_name = app_details
+        .full_name()
+        .replace(" ", "-")
+        .replace("_", "-")
+        .to_lowercase();
 
     let agent_version_header_value = HeaderValue::from_static(app_details.version().raw());
-    let raw_user_agent_header_value = format!("{}/{}", app_details.name(), app_details.version().raw());
+    let raw_user_agent_header_value = format!("{}/{}", formatted_full_name, app_details.version().raw());
     let user_agent_header_value = HeaderValue::from_maybe_shared(raw_user_agent_header_value)
         .expect("should not fail to construct User-Agent header value");
 

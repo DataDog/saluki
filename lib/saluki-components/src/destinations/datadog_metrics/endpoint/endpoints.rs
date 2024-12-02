@@ -158,7 +158,7 @@ fn get_data_plane_version_prefix() -> String {
         version.major(),
         version.minor(),
         version.patch(),
-        app_details.short_name(),
+        app_details.identifier(),
     )
 }
 

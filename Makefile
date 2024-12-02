@@ -8,11 +8,11 @@ export TARGET_ARCH ?= $(shell uname -m | sed s/x86_64/amd64/ | sed s/aarch64/arm
 export TARGET_TRIPLE ?= $(shell command -v rustc 1>/dev/null && rustc -vV | sed -n 's|host: ||p')
 
 # High-level settings that ultimately get passed down to build-specific targets.
-export APP_NAME ?= agent-data-plane
-export APP_SHORT_NAME ?= adp
+export APP_FULL_NAME ?= Agent Data Plane
+export APP_SHORT_NAME ?= data-plane
+export APP_IDENTIFIER ?= adp
 export APP_GIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
 export APP_VERSION ?= $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
-export APP_BUILD_TIME ?= $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
 
 # Override autoinstalling of tools. (Eg `cargo install`)
 export AUTOINSTALL ?= true
@@ -97,12 +97,13 @@ build-adp-image: ## Builds the ADP container image in release mode ('latest' tag
 	@$(CONTAINER_TOOL) build \
 		--tag saluki-images/agent-data-plane:latest \
 		--tag local.dev/saluki-images/agent-data-plane:testing \
-		--build-arg BUILD_IMAGE=$(ADP_BUILD_IMAGE) \
-		--build-arg APP_IMAGE=$(ADP_APP_IMAGE) \
-		--build-arg APP_NAME=$(APP_NAME) \
-		--build-arg APP_SHORT_NAME=$(APP_SHORT_NAME) \
-		--build-arg APP_VERSION=$(APP_VERSION) \
-		--build-arg APP_GIT_HASH=$(APP_GIT_HASH) \
+		--build-arg "BUILD_IMAGE=$(ADP_BUILD_IMAGE)" \
+		--build-arg "APP_IMAGE=$(ADP_APP_IMAGE)" \
+		--build-arg "APP_FULL_NAME=$(APP_FULL_NAME)" \
+		--build-arg "APP_SHORT_NAME=$(APP_SHORT_NAME)" \
+		--build-arg "APP_IDENTIFIER=$(APP_IDENTIFIER)" \
+		--build-arg "APP_VERSION=$(APP_VERSION)" \
+		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
 
@@ -498,9 +499,11 @@ fast-edit-test: ## Runs a lightweight format/lint/test pass
 ##@ CI
 
 .PHONY: emit-build-metadata
+emit-build-metadata: override APP_BUILD_TIME = $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
 emit-build-metadata: ## Emits build metadata shell variables suitable for use during image builds
-	@echo "APP_NAME=${APP_NAME}"
+	@echo "APP_FULL_NAME=${APP_FULL_NAME}"
 	@echo "APP_SHORT_NAME=${APP_SHORT_NAME}"
+	@echo "APP_IDENTIFIER=${APP_IDENTIFIER}"
 	@echo "APP_GIT_HASH=${APP_GIT_HASH}"
 	@echo "APP_VERSION=${APP_VERSION}"
 	@echo "APP_BUILD_TIME=${APP_BUILD_TIME}"

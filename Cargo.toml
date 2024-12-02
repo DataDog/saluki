@@ -139,6 +139,8 @@ lading-payload = { git = "https://github.com/DataDog/lading", tag = "v0.24.0" }
 serde_yaml = { version = "0.9", default-features = false }
 serde_with = { version = "3.11.0", default-features = false, features = ["macros"] }
 triomphe = { git = "https://github.com/tobz/triomphe.git", branch = "tobz/arc-into-inner", default-features = false }
+chrono-tz = { version = "0.10", default-features = false }
+iana-time-zone = { version = "0.1", default-features = false }
 
 [profile.release]
 lto = "thin"
