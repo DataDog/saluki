@@ -239,8 +239,8 @@ impl Transform for Aggregate {
         let mut flush = interval_at(tokio::time::Instant::now() + self.flush_interval, self.flush_interval);
 
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
-        let events_dropped =
-            metrics_builder.register_counter_with_labels("component_events_dropped_total", &[("intentional", "true")]);
+        let events_dropped = metrics_builder
+            .register_debug_counter_with_labels("component_events_dropped_total", &[("intentional", "true")]);
 
         health.mark_ready();
         debug!("Aggregation transform started.");

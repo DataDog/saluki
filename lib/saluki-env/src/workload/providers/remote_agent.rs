@@ -19,7 +19,7 @@ use crate::{
             ContainerdMetadataCollector, RemoteAgentTaggerMetadataCollector, RemoteAgentWorkloadMetadataCollector,
         },
         entity::EntityId,
-        store::{TagStore, TagStoreQuerier},
+        stores::{ExternalDataStore, ExternalDataStoreResolver, TagStore, TagStoreQuerier},
     },
     WorkloadProvider,
 };
@@ -28,6 +28,9 @@ use crate::{
 
 // SAFETY: The value is demonstrably not zero.
 const DEFAULT_TAG_STORE_ENTITY_LIMIT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(2000) };
+
+// SAFETY: The value is demonstrably not zero.
+const DEFAULT_EXTERNAL_DATA_STORE_ENTITY_LIMIT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(2000) };
 
 // SAFETY: We know the value is not zero.
 const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(512 * 1024) }; // 512KB.
@@ -49,6 +52,7 @@ const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = unsafe { NonZeroUsize::
 #[derive(Clone)]
 pub struct RemoteAgentWorkloadProvider {
     tag_querier: TagStoreQuerier,
+    external_data_resolver: ExternalDataStoreResolver,
 }
 
 impl RemoteAgentWorkloadProvider {
@@ -126,18 +130,26 @@ impl RemoteAgentWorkloadProvider {
 
         aggregator.add_collector(ra_wmeta_collector);
 
-        // Create and attach the tag store to the aggregator.
+        // Create and attach the various metadata stores.
         let tag_store = TagStore::with_entity_limit(DEFAULT_TAG_STORE_ENTITY_LIMIT);
         let tag_querier = tag_store.querier();
 
         aggregator.add_store(tag_store);
+
+        let external_data_store = ExternalDataStore::with_entity_limit(DEFAULT_EXTERNAL_DATA_STORE_ENTITY_LIMIT);
+        let external_data_resolver = external_data_store.resolver();
+
+        aggregator.add_store(external_data_store);
 
         // With the aggregator configured, update the memory bounds and spawn the aggregator.
         provider_bounds.with_subcomponent("aggregator", &aggregator);
 
         tokio::spawn(aggregator.run());
 
-        Ok(Self { tag_querier })
+        Ok(Self {
+            tag_querier,
+            external_data_resolver,
+        })
     }
 }
 
@@ -145,6 +157,10 @@ impl RemoteAgentWorkloadProvider {
 impl WorkloadProvider for RemoteAgentWorkloadProvider {
     fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<TagSet> {
         self.tag_querier.get_entity_tags(entity_id, cardinality)
+    }
+
+    fn resolve_entity_id_from_external_data(&self, external_data: &str) -> Option<EntityId> {
+        self.external_data_resolver.resolve_entity_id(external_data)
     }
 }
 

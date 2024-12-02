@@ -51,6 +51,8 @@ tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt", 
 tokio-util = { workspace = true }
 tower = { workspace = true, features = ["retry", "timeout", "util"] }
 tracing = { workspace = true }
+# Adds support for `Arc::into_unique` to recover `UniqueArc` instances.
+triomphe = { workspace = true }
 url = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
