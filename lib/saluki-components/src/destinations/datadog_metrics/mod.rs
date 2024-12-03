@@ -140,11 +140,10 @@ pub struct DatadogMetricsConfiguration {
     ///
     /// Defaults to empty.
     #[serde(default, rename = "additional_endpoints")]
-    endpoints: AdditionalEndpoints,
+    additional_endpoints: AdditionalEndpoints,
 
     #[serde(skip)]
     config_refresher: Arc<RefreshableConfiguration>,
-    additional_endpoints: AdditionalEndpoints,
 }
 
 fn default_request_timeout_secs() -> u64 {
@@ -578,11 +577,12 @@ fn for_resolved_endpoint<B>(
         .expect("should not fail to construct new endpoint authority");
     let new_uri_scheme =
         Scheme::try_from(endpoint.endpoint().scheme()).expect("should not fail to construct new endpoint scheme");
-    let api_key_value =
-        HeaderValue::from_str(endpoint.api_key()).expect("should not fail to construct API key header value");
-    let api_key = refresher
-        .get_typed::<String>("api_key")
-        .expect("should not fail to retrieve API key from refreshable configuration");
+    let mut api_key: String;
+    if let Ok(refresher_api_key) = refresher.get_typed::<String>("api_key") {
+        api_key = refresher_api_key.clone();
+    } else {
+        api_key = endpoint.api_key().to_string();
+    }
     let api_key_value = HeaderValue::from_str(&api_key).expect("should not fail to construct API key header value");
     move |mut request| {
         // Build an updated URI by taking the endpoint URL and slapping the request's URI path on the end of it.
