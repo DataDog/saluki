@@ -1,9 +1,11 @@
-optimization_goal: memory
+optimization_goal: none
 erratic: false
 
 target:
   name: saluki
   command: /usr/local/bin/agent-data-plane
+  cpu_allotment: 8
+  memory_allotment: 42MiB
 
   environment:
     DD_API_KEY: foo00000001
