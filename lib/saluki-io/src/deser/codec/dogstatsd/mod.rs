@@ -21,7 +21,6 @@ use snafu::Snafu;
 
 mod message;
 use self::message::{parse_message_type, MessageType};
-use crate::net::ConnectionAddress;
 
 type NomParserError<'a> = nom::Err<nom::error::Error<&'a [u8]>>;
 
@@ -239,15 +238,41 @@ fn parse_dogstatsd_metric<'a>(
         metric_values.set_timestamp(timestamp);
     }
 
+    let tags = maybe_tags.unwrap_or_else(TagSplitter::empty);
+
+    let mut pod_uid = None;
+    let mut cardinality = None;
+    let mut jmx_check_name = None;
+    for tag in &tags {
+        let tag = BorrowedTag::from(tag);
+        match tag.name_and_value() {
+            (ENTITY_ID_TAG_KEY, Some(entity_id)) if entity_id != ENTITY_ID_IGNORE_VALUE => {
+                pod_uid = Some(entity_id);
+            }
+            (JMX_CHECK_NAME_TAG_KEY, Some(name)) => {
+                jmx_check_name = Some(name);
+            }
+            (CARDINALITY_TAG_KEY, Some(value)) => {
+                if let Ok(card) = OriginTagCardinality::try_from(value) {
+                    cardinality = Some(card);
+                }
+            }
+            _ => {}
+        }
+    }
+
     Ok((
         remaining,
         MetricPacket {
             metric_name,
-            tags: maybe_tags.unwrap_or_else(TagSplitter::empty),
+            tags,
             values: metric_values,
             num_points,
             timestamp: maybe_timestamp,
             container_id: maybe_container_id,
+            pod_uid,
+            cardinality,
+            jmx_check_name,
         },
     ))
 }
@@ -259,41 +284,9 @@ pub struct MetricPacket<'a> {
     pub num_points: u64,
     pub timestamp: Option<u64>,
     pub container_id: Option<&'a str>,
-}
-
-pub fn build_metric_metadata_from_packet(packet: &MetricPacket<'_>, peer_addr: &ConnectionAddress) -> MetricMetadata {
-    let mut metric_metadata = MetricMetadata::default().with_origin(MetricOrigin::dogstatsd());
-
-    if let Some(container_id) = packet.container_id {
-        metric_metadata.origin_entity_mut().set_container_id(container_id);
-    }
-
-    // We do one optional enrichment step here, which is to add the client's socket credentials as a tag
-    // on each metric, if they came over UDS. This would then be utilized downstream in the pipeline by
-    // origin enrichment, if present.
-    if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
-        metric_metadata.origin_entity_mut().set_process_id(creds.pid as u32);
-    }
-
-    // Update our metric metadata based on any tags we're configured to intercept.
-    for tag in &packet.tags {
-        let tag = BorrowedTag::from(tag);
-        match tag.name_and_value() {
-            (Some(ENTITY_ID_TAG_KEY), Some(entity_id)) if entity_id != ENTITY_ID_IGNORE_VALUE => {
-                metric_metadata.origin_entity_mut().set_pod_uid(entity_id)
-            }
-            (Some(JMX_CHECK_NAME_TAG_KEY), Some(jmx_check_name)) => {
-                metric_metadata.set_origin(MetricOrigin::jmx_check(jmx_check_name));
-            }
-            (Some(CARDINALITY_TAG_KEY), Some(value)) => {
-                if let Ok(cardinality) = OriginTagCardinality::try_from(value) {
-                    metric_metadata.origin_entity_mut().set_cardinality(cardinality);
-                }
-            }
-            _ => {}
-        }
-    }
-    metric_metadata
+    pub pod_uid: Option<&'a str>,
+    pub cardinality: Option<OriginTagCardinality>,
+    pub jmx_check_name: Option<&'a str>,
 }
 
 fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfiguration) -> IResult<&'a [u8], EventD> {
@@ -762,10 +755,8 @@ mod tests {
     use stringtheory::MetaString;
 
     use super::{
-        build_metric_metadata_from_packet, parse_dogstatsd_event, parse_dogstatsd_metric,
-        parse_dogstatsd_service_check, DogstatsdCodecConfiguration,
+        parse_dogstatsd_event, parse_dogstatsd_metric, parse_dogstatsd_service_check, DogstatsdCodecConfiguration,
     };
-    use crate::net::ConnectionAddress;
 
     type NomResult<'input, T> = Result<T, nom::Err<nom::error::Error<&'input [u8]>>>;
     type OptionalNomResult<'input, T> = Result<Option<T>, nom::Err<nom::error::Error<&'input [u8]>>>;
@@ -789,8 +780,22 @@ mod tests {
         input: &'input [u8], config: &DogstatsdCodecConfiguration, context_resolver: &mut ContextResolver,
     ) -> IResult<&'input [u8], Option<Metric>> {
         let (remaining, packet) = parse_dogstatsd_metric(input, config)?;
-        let metadata =
-            build_metric_metadata_from_packet(&packet, &ConnectionAddress::SocketLike("1.1.1.1:8080".parse().unwrap()));
+        // TODO: this is duplicative with `handle_metric_packet`, but it's not clear where we want the responsibility for metadata to live
+        let metadata = MetricMetadata {
+            hostname: None,
+            origin_entity: OriginEntity {
+                process_id: None,
+                container_id: MetaString::from(packet.container_id.unwrap_or("")),
+                pod_uid: MetaString::from(packet.pod_uid.unwrap_or("")),
+                cardinality: packet.cardinality,
+            },
+            origin: Some(
+                packet
+                    .jmx_check_name
+                    .map(MetricOrigin::jmx_check)
+                    .unwrap_or_else(MetricOrigin::dogstatsd),
+            ),
+        };
 
         let context_ref = context_resolver.create_context_ref(packet.metric_name, &packet.tags);
         let context = match context_resolver.resolve(context_ref) {
@@ -962,10 +967,8 @@ mod tests {
         let container_id = "abcdef123456";
         let raw = format!("{}:{}|c|c:{}", name, value, container_id);
         let mut expected = Metric::counter(name, value);
-        expected
-            .metadata_mut()
-            .origin_entity_mut()
-            .set_container_id(container_id);
+        let origin_entity = expected.metadata_mut().origin_entity_mut();
+        origin_entity.container_id = MetaString::from(container_id);
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
         check_basic_metric_eq(expected, actual);
@@ -1004,10 +1007,8 @@ mod tests {
 
         let value_sample_rate_adjusted = value * (1.0 / sample_rate);
         let mut expected = Metric::counter((name, &tags[..]), value_sample_rate_adjusted);
-        expected
-            .metadata_mut()
-            .origin_entity_mut()
-            .set_container_id(container_id);
+        let origin_entity = expected.metadata_mut().origin_entity_mut();
+        origin_entity.container_id = MetaString::from(container_id);
         expected.values_mut().set_timestamp(timestamp);
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");

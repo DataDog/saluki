@@ -1,3 +1,4 @@
+use std::num::NonZeroU32;
 use std::sync::LazyLock;
 use std::{num::NonZeroUsize, time::Duration};
 
@@ -19,6 +20,7 @@ use saluki_core::{
     },
 };
 use saluki_error::{generic_error, GenericError};
+use saluki_event::metric::{MetricMetadata, MetricOrigin};
 use saluki_event::{
     metric::{Metric, OriginEntity},
     DataType, Event,
@@ -27,7 +29,7 @@ use saluki_io::{
     buf::{BytesBuffer, CollapsibleReadWriteIoBuffer as _, FixedSizeVec},
     deser::{
         codec::{
-            dogstatsd::{build_metric_metadata_from_packet, MetricPacket, ParseError, ParsedPacket},
+            dogstatsd::{MetricPacket, ParseError, ParsedPacket},
             DogstatsdCodec, DogstatsdCodecConfiguration,
         },
         framing::FramerExt as _,
@@ -419,7 +421,7 @@ impl MultitenantStrategy {
         Self { context_resolver }
     }
 
-    fn get_context_resolver_for_origin(&mut self, _origin: &OriginEntity) -> &mut ContextResolver {
+    fn get_context_resolver(&mut self) -> &mut ContextResolver {
         &mut self.context_resolver
     }
 }
@@ -729,12 +731,34 @@ fn handle_frame(
 fn handle_metric_packet(
     packet: MetricPacket, multitenant_strategy: &mut MultitenantStrategy, peer_addr: &ConnectionAddress,
 ) -> Option<Metric> {
-    let metadata = build_metric_metadata_from_packet(&packet, peer_addr);
-    let context_resolver = multitenant_strategy.get_context_resolver_for_origin(metadata.origin_entity());
+    let context_resolver = multitenant_strategy.get_context_resolver();
 
     // Try resolving the context first, since we might need to bail if we can't.
     let context_ref = context_resolver.create_context_ref(packet.metric_name, &packet.tags);
     let context = context_resolver.resolve(context_ref)?;
+
+    let mut process_id = None;
+    if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
+        if let Some(pid) = NonZeroU32::new(creds.pid as u32) {
+            process_id = Some(pid);
+        }
+    }
+
+    let metadata = MetricMetadata {
+        hostname: None,
+        origin_entity: OriginEntity {
+            process_id,
+            container_id: context_resolver.intern(packet.container_id.unwrap_or(""))?,
+            pod_uid: context_resolver.intern(packet.pod_uid.unwrap_or(""))?,
+            cardinality: packet.cardinality,
+        },
+        origin: Some(
+            packet
+                .jmx_check_name
+                .map(MetricOrigin::jmx_check)
+                .unwrap_or_else(MetricOrigin::dogstatsd),
+        ),
+    };
 
     Some(Metric::from_parts(context, packet.values, metadata))
 }

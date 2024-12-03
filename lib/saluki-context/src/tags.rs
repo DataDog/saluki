@@ -97,7 +97,7 @@ impl<'a> BorrowedTag<'a> {
     ///
     /// For bare tags (e.g. `production`), this is simply the tag value itself. For key/value-style tags (e.g.
     /// `service:web`), this is the key part of the tag, or `service` based on the example.
-    pub fn name(&self) -> &str {
+    pub fn name(&self) -> &'a str {
         match self.separator {
             Some(idx) => &self.raw[..idx],
             None => self.raw,
@@ -108,7 +108,7 @@ impl<'a> BorrowedTag<'a> {
     ///
     /// For bare tags (e.g. `production`), this always returns `None`. For key/value-style tags (e.g. `service:web`),
     /// this is the value part of the tag, or `web` based on the example.
-    pub fn value(&self) -> Option<&str> {
+    pub fn value(&self) -> Option<&'a str> {
         match self.separator {
             Some(idx) => Some(&self.raw[idx + 1..]),
             None => None,
@@ -118,10 +118,10 @@ impl<'a> BorrowedTag<'a> {
     /// Gets the name and value of the tag.
     ///
     /// For bare tags (e.g. `production`), this always returns `(Some(...), None)`.
-    pub fn name_and_value(&self) -> (Option<&str>, Option<&str>) {
+    pub fn name_and_value(&self) -> (&'a str, Option<&'a str>) {
         match self.separator {
-            Some(idx) => (Some(&self.raw[..idx]), Some(&self.raw[idx + 1..])),
-            None => (Some(self.raw), None),
+            Some(idx) => (&self.raw[..idx], Some(&self.raw[idx + 1..])),
+            None => (self.raw, None),
         }
     }
 }
