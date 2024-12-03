@@ -130,7 +130,14 @@ impl Transform for AgentTelemetryRemapper {
 
 fn generate_remapper_rules() -> Vec<RemapperRule> {
     vec![
-        // Object pool.
+        // DogStatsD metrics.
+        //
+        // TODO: We need to add `datadog.agent.dogstatsd.processed`, but with `state:error`, which the Agent captures by
+        // metric type... but it's weird because it checks the prefix of the metric payload to determine metric vs event
+        // vs service check, and anything that isn't a service check or metric it just assumes is a "metric"... so you
+        // might have a bunch of "metric" type errors for straight up invalid payloads... and I guess it just feels
+        // weird to me to categorize pure gibberish as a "metrics"-related decode error instead of just "hey, we got an
+        // invalid payload". :shrug:
         RemapperRule::by_name_and_tags(
             "datadog.agent.adp.object_pool_acquired",
             &["pool_name:dsd_packet_bufs"],
@@ -146,7 +153,6 @@ fn generate_remapper_rules() -> Vec<RemapperRule> {
             &["pool_name:dsd_packet_bufs"],
             "datadog.agent.dogstatsd.packet_pool",
         ),
-        // DogStatsD source.
         RemapperRule::by_name_and_tags(
             "datadog.agent.adp.component_packets_received_total",
             &["component_id:dsd_in", "listener_type:udp"],
@@ -156,7 +162,7 @@ fn generate_remapper_rules() -> Vec<RemapperRule> {
         RemapperRule::by_name_and_tags(
             "datadog.agent.adp.component_bytes_received_total",
             &["component_id:dsd_in", "listener_type:udp"],
-            "datadog.agent.dogstatsd.udp_packet_bytes",
+            "datadog.agent.dogstatsd.udp_packets_bytes",
         ),
         RemapperRule::by_name_and_tags(
             "datadog.agent.adp.component_packets_received_total",
@@ -168,10 +174,9 @@ fn generate_remapper_rules() -> Vec<RemapperRule> {
         RemapperRule::by_name_and_tags(
             "datadog.agent.adp.component_bytes_received_total",
             &["component_id:dsd_in", "listener_type:unixgram"],
-            "datadog.agent.dogstatsd.uds_packet_bytes",
+            "datadog.agent.dogstatsd.uds_packets_bytes",
         )
-        .with_remapped_tags([("listener_type", "transport")])
-        .with_original_tags(["state"]),
+        .with_remapped_tags([("listener_type", "transport")]),
         RemapperRule::by_name_and_tags(
             "datadog.agent.adp.component_packets_received_total",
             &["component_id:dsd_in", "listener_type:unix"],
@@ -182,16 +187,57 @@ fn generate_remapper_rules() -> Vec<RemapperRule> {
         RemapperRule::by_name_and_tags(
             "datadog.agent.adp.component_bytes_received_total",
             &["component_id:dsd_in", "listener_type:unix"],
-            "datadog.agent.dogstatsd.uds_packet_bytes",
+            "datadog.agent.dogstatsd.uds_packets_bytes",
         )
-        .with_remapped_tags([("listener_type", "transport")])
-        .with_original_tags(["state"]),
+        .with_remapped_tags([("listener_type", "transport")]),
         RemapperRule::by_name_and_tags(
             "datadog.agent.adp.component_connections_active",
             &["component_id:dsd_in", "listener_type:unix"],
             "datadog.agent.dogstatsd.uds_connections",
         )
         .with_remapped_tags([("listener_type", "transport")]),
+        RemapperRule::by_name_and_tags(
+            "datadog.agent.adp.component_events_received_total",
+            &["component_id:dsd_in"],
+            "datadog.agent.dogstatsd.processed",
+        )
+        .with_original_tags(["message_type"])
+        .with_additional_tags(["state:ok"]),
+        // Aggregation metrics. (placeholder so we can have the below TODO)
+        //
+        // TODO: We need to add two new metrics to the DD Metrics destination to properly capture the intent of
+        // `datadog.agent.aggregator.flush`, which is the number of series/sketches that we managed to successfully
+        // serialize. The metric doesn't concern itself with whether or not those payloads actually make it anywhere,
+        // just if they were sent out of the aggregator and serialized correctly.
+
+        // Transaction metrics.
+        RemapperRule::by_name(
+            "datadog.agent.adp.network_http_requests_failed_total",
+            "datadog.agent.transactions.dropped",
+        )
+        .with_original_tags(["domain", "endpoint"]),
+        RemapperRule::by_name(
+            "datadog.agent.adp.network_http_requests_success_total",
+            "datadog.agent.transactions.success",
+        )
+        .with_original_tags(["domain", "endpoint"]),
+        RemapperRule::by_name(
+            "datadog.agent.adp.network_http_requests_success_sent_bytes_total",
+            "datadog.agent.transactions.success_bytes",
+        )
+        .with_original_tags(["domain", "endpoint"]),
+        RemapperRule::by_name_and_tags(
+            "datadog.agent.adp.network_http_requests_errors_total",
+            &["error_type:client_error"],
+            "datadog.agent.transactions.http_errors",
+        )
+        .with_original_tags(["domain", "endpoint", "code"])
+        .with_remapped_tags([("error_type", "status_code")]),
+        RemapperRule::by_name(
+            "datadog.agent.adp.network_http_requests_errors_total",
+            "datadog.agent.transactions.errors",
+        )
+        .with_original_tags(["domain", "endpoint", "error_type"]),
     ]
 }
 
@@ -200,9 +246,20 @@ struct RemapperRule {
     existing_tags: &'static [&'static str],
     new_name: &'static str,
     remapped_tags: Vec<(&'static str, &'static str)>,
+    additional_tags: Vec<MetaString>,
 }
 
 impl RemapperRule {
+    fn by_name(existing_name: &'static str, new_name: &'static str) -> Self {
+        Self {
+            existing_name,
+            existing_tags: &[],
+            new_name,
+            remapped_tags: Vec::new(),
+            additional_tags: Vec::new(),
+        }
+    }
+
     fn by_name_and_tags(
         existing_name: &'static str, existing_tags: &'static [&'static str], new_name: &'static str,
     ) -> Self {
@@ -211,6 +268,7 @@ impl RemapperRule {
             existing_tags,
             new_name,
             remapped_tags: Vec::new(),
+            additional_tags: Vec::new(),
         }
     }
 
@@ -228,6 +286,15 @@ impl RemapperRule {
     {
         self.remapped_tags
             .extend(original_tags.into_iter().map(|tag| (tag, tag)));
+        self
+    }
+
+    fn with_additional_tags<I>(mut self, additional_tags: I) -> Self
+    where
+        I: IntoIterator<Item = &'static str>,
+    {
+        self.additional_tags
+            .extend(additional_tags.into_iter().map(MetaString::from_static));
         self
     }
 
@@ -251,25 +318,27 @@ impl RemapperRule {
         // either a straight copy (take the tag as-is) or a rename (different tag name).
         let mut new_tags = vec![MetaString::from_static("emitted_by:adp")];
         for (original_tag_name, new_tag_name) in &self.remapped_tags {
-            if original_tag_name == new_tag_name {
-                // All we need to do is find the tag and clone it since the name isn't changing.
-                if let Some(tag) = metric_tags.get_single_tag(original_tag_name) {
-                    if original_tag_name == new_tag_name {
-                        // Just clone the tag since the name isn't changing.
-                        new_tags.push(tag.clone().into_inner());
-                    } else {
-                        // Build our new tag if this one has a value.
-                        match tag.value() {
-                            Some(value) => {
-                                new_tags.push(MetaString::from(format!("{}:{}", new_tag_name, value)));
-                            }
-                            None => {
-                                new_tags.push(MetaString::from(*new_tag_name));
-                            }
+            if let Some(tag) = metric_tags.get_single_tag(original_tag_name) {
+                if original_tag_name == new_tag_name {
+                    // Just clone the tag since the name isn't changing.
+                    new_tags.push(tag.clone().into_inner());
+                } else {
+                    // Build our new tag if this one has a value.
+                    match tag.value() {
+                        Some(value) => {
+                            new_tags.push(MetaString::from(format!("{}:{}", new_tag_name, value)));
+                        }
+                        None => {
+                            new_tags.push(MetaString::from(*new_tag_name));
                         }
                     }
                 }
             }
+        }
+
+        // Add any additional tags that we need to include.
+        for additional_tag in &self.additional_tags {
+            new_tags.push(additional_tag.clone());
         }
 
         let context_ref = context_resolver.create_context_ref(self.new_name, new_tags.as_slice().iter());

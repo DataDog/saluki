@@ -16,12 +16,16 @@ use super::ComponentContext;
 #[derive(Clone)]
 pub struct MetricsBuilder {
     context: ComponentContext,
+    labels: Vec<Label>,
 }
 
 impl MetricsBuilder {
     /// Creates a new `MetricsBuilder` with the given component context.
     pub fn from_component_context(context: ComponentContext) -> Self {
-        Self { context }
+        Self {
+            labels: get_component_labels(&context),
+            context,
+        }
     }
 
     fn with_labels<F, T, I, L>(&self, f: F, additional_labels: I) -> T
@@ -38,6 +42,24 @@ impl MetricsBuilder {
         }
 
         f(labels)
+    }
+
+    /// Sets a fixed set of labels to be applied to all metrics registered with this builder.
+    ///
+    /// These labels are in addition to the basic component labels (`component_id` and `component_type`) that are always
+    /// added to metrics registered with this builder.
+    pub fn with_fixed_labels<I, L>(mut self, fixed_labels: I) -> Self
+    where
+        I: IntoIterator<Item = L>,
+        L: Into<Label>,
+    {
+        let mut labels = get_component_labels(&self.context);
+        for fixed_label in fixed_labels.into_iter() {
+            labels.push(fixed_label.into());
+        }
+
+        self.labels = labels;
+        self
     }
 
     /// Registers a counter at debug verbosity.
@@ -113,4 +135,11 @@ impl MetricsBuilder {
             additional_labels,
         )
     }
+}
+
+fn get_component_labels(context: &ComponentContext) -> Vec<Label> {
+    vec![
+        Label::new("component_id", context.component_id().to_string()),
+        Label::from_static_parts("component_type", context.component_type()),
+    ]
 }
