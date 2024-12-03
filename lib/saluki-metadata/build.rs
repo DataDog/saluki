@@ -1,7 +1,8 @@
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-env-changed=APP_NAME");
+    println!("cargo:rerun-if-env-changed=APP_FULL_NAME");
     println!("cargo:rerun-if-env-changed=APP_SHORT_NAME");
+    println!("cargo:rerun-if-env-changed=APP_IDENTIFIER");
     println!("cargo:rerun-if-env-changed=APP_GIT_HASH");
     println!("cargo:rerun-if-env-changed=APP_VERSION");
     println!("cargo:rerun-if-env-changed=APP_BUILD_TIME");
@@ -9,8 +10,9 @@ fn main() {
 
     // This is really, really simple: we look for some specific environment variables, split one of them apart into
     // numbers if we find it, and then write the values to a file that will get imported by lib.rs. Ta-da.
-    let app_name = get_env_var_or_default("APP_NAME", "unknown");
+    let app_full_name = get_env_var_or_default("APP_FULL_NAME", "unknown");
     let app_short_name = get_env_var_or_default("APP_SHORT_NAME", "unknown");
+    let app_identifier = get_env_var_or_default("APP_IDENTIFIER", "unknown");
     let app_git_hash = get_env_var_or_default("APP_GIT_HASH", "unknown");
     let app_version = get_env_var_or_default("APP_VERSION", "0.0.0");
     let app_build_time = get_env_var_or_default("APP_BUILD_TIME", "0000-00-00 00:00:00");
@@ -35,17 +37,27 @@ fn main() {
         details_file,
         format!(
             r#"
-    pub const DETECTED_APP_NAME: &str = "{}";
-	pub const DETECTED_APP_SHORT_NAME: &str = "{}";
-  pub const DETECTED_GIT_HASH: &str = "{}";
-	pub const DETECTED_APP_VERSION: &str = "{}";
-	pub const DETECTED_APP_VERSION_MAJOR: u32 = {};
-	pub const DETECTED_APP_VERSION_MINOR: u32 = {};
-	pub const DETECTED_APP_VERSION_PATCH: u32 = {};
-  pub const DETECTED_APP_BUILD_TIME: &str = "{}";
-  pub const DETECTED_TARGET_ARCH: &str = "{}";
-			"#,
-            app_name, app_short_name, app_git_hash, app_version, major, minor, patch, app_build_time, target_arch,
+    pub const DETECTED_APP_FULL_NAME: &str = "{}";
+    pub const DETECTED_APP_SHORT_NAME: &str = "{}";
+    pub const DETECTED_APP_IDENTIFIER: &str = "{}";
+    pub const DETECTED_GIT_HASH: &str = "{}";
+    pub const DETECTED_APP_VERSION: &str = "{}";
+    pub const DETECTED_APP_VERSION_MAJOR: u32 = {};
+    pub const DETECTED_APP_VERSION_MINOR: u32 = {};
+    pub const DETECTED_APP_VERSION_PATCH: u32 = {};
+    pub const DETECTED_APP_BUILD_TIME: &str = "{}";
+    pub const DETECTED_TARGET_ARCH: &str = "{}";
+            "#,
+            app_full_name,
+            app_short_name,
+            app_identifier,
+            app_git_hash,
+            app_version,
+            major,
+            minor,
+            patch,
+            app_build_time,
+            target_arch,
         ),
     )
     .expect("failed to write details file");

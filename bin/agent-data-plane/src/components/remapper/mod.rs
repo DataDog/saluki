@@ -11,6 +11,9 @@ use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, error};
 
+mod rules;
+use self::rules::get_datadog_agent_remappings;
+
 /// Agent telemetry remapper transform.
 ///
 /// Remaps internal telemetry metrics in their generic Saluki form to the corresponding for used by the Datadog Agent
@@ -21,6 +24,9 @@ pub struct AgentTelemetryRemapperConfiguration {
 }
 
 impl AgentTelemetryRemapperConfiguration {
+    /// Creates a new `AgentTelemetryRemapperConfiguration` with a default configuration.
+    ///
+    /// Uses a context resolver with a string interner capacity of 512KiB.
     pub fn new() -> Self {
         Self {
             context_string_interner_bytes: ByteSize::kib(512),
@@ -49,7 +55,7 @@ impl TransformBuilder for AgentTelemetryRemapperConfiguration {
 
         Ok(Box::new(AgentTelemetryRemapper {
             context_resolver,
-            rules: generate_remapper_rules(),
+            rules: get_datadog_agent_remappings(),
         }))
     }
 }
@@ -66,6 +72,7 @@ impl MemoryBounds for AgentTelemetryRemapperConfiguration {
     }
 }
 
+/// Agent telemetry remapper transform.
 pub struct AgentTelemetryRemapper {
     context_resolver: ContextResolver,
     rules: Vec<RemapperRule>,
@@ -128,82 +135,33 @@ impl Transform for AgentTelemetryRemapper {
     }
 }
 
-fn generate_remapper_rules() -> Vec<RemapperRule> {
-    vec![
-        // Object pool.
-        RemapperRule::by_name_and_tags(
-            "datadog.saluki.object_pool_acquired",
-            &["pool_name:dsd_packet_bufs"],
-            "datadog.agent.dogstatsd.packet_pool_get",
-        ),
-        RemapperRule::by_name_and_tags(
-            "datadog.saluki.object_pool_released",
-            &["pool_name:dsd_packet_bufs"],
-            "datadog.agent.dogstatsd.packet_pool_put",
-        ),
-        RemapperRule::by_name_and_tags(
-            "datadog.saluki.object_pool_in_use",
-            &["pool_name:dsd_packet_bufs"],
-            "datadog.agent.dogstatsd.packet_pool",
-        ),
-        // DogStatsD source.
-        RemapperRule::by_name_and_tags(
-            "datadog.saluki.component_packets_received_total",
-            &["component_id:dsd_in", "listener_type:udp"],
-            "datadog.agent.dogstatsd.udp_packets",
-        )
-        .with_original_tags(["state"]),
-        RemapperRule::by_name_and_tags(
-            "datadog.saluki.component_bytes_received_total",
-            &["component_id:dsd_in", "listener_type:udp"],
-            "datadog.agent.dogstatsd.udp_packet_bytes",
-        ),
-        RemapperRule::by_name_and_tags(
-            "datadog.saluki.component_packets_received_total",
-            &["component_id:dsd_in", "listener_type:unixgram"],
-            "datadog.agent.dogstatsd.uds_packets",
-        )
-        .with_remapped_tags([("listener_type", "transport")])
-        .with_original_tags(["state"]),
-        RemapperRule::by_name_and_tags(
-            "datadog.saluki.component_bytes_received_total",
-            &["component_id:dsd_in", "listener_type:unixgram"],
-            "datadog.agent.dogstatsd.uds_packet_bytes",
-        )
-        .with_remapped_tags([("listener_type", "transport")])
-        .with_original_tags(["state"]),
-        RemapperRule::by_name_and_tags(
-            "datadog.saluki.component_packets_received_total",
-            &["component_id:dsd_in", "listener_type:unix"],
-            "datadog.agent.dogstatsd.uds_packets",
-        )
-        .with_remapped_tags([("listener_type", "transport")])
-        .with_original_tags(["state"]),
-        RemapperRule::by_name_and_tags(
-            "datadog.saluki.component_bytes_received_total",
-            &["component_id:dsd_in", "listener_type:unix"],
-            "datadog.agent.dogstatsd.uds_packet_bytes",
-        )
-        .with_remapped_tags([("listener_type", "transport")])
-        .with_original_tags(["state"]),
-        RemapperRule::by_name_and_tags(
-            "datadog.saluki.component_connections_active",
-            &["component_id:dsd_in", "listener_type:unix"],
-            "datadog.agent.dogstatsd.uds_connections",
-        )
-        .with_remapped_tags([("listener_type", "transport")]),
-    ]
-}
-
-struct RemapperRule {
+/// A metric remapping rule.
+///
+/// Rules define the basic matching behavior -- metric name, and optionally tags -- as well as how to remap the new copy
+/// of the metric. This can include copying tags as-is from the source metric, copying specific tags over with a new
+/// name, and adding an additional fixed set of tags to the new metric.
+pub struct RemapperRule {
     existing_name: &'static str,
     existing_tags: &'static [&'static str],
     new_name: &'static str,
     remapped_tags: Vec<(&'static str, &'static str)>,
+    additional_tags: Vec<MetaString>,
 }
 
 impl RemapperRule {
-    fn by_name_and_tags(
+    /// Creates a new `RemapperRule` that matches a source metric by name only.
+    pub fn by_name(existing_name: &'static str, new_name: &'static str) -> Self {
+        Self {
+            existing_name,
+            existing_tags: &[],
+            new_name,
+            remapped_tags: Vec::new(),
+            additional_tags: Vec::new(),
+        }
+    }
+
+    /// Creates a new `RemapperRule` that matches a source metric by name and tags.
+    pub fn by_name_and_tags(
         existing_name: &'static str, existing_tags: &'static [&'static str], new_name: &'static str,
     ) -> Self {
         Self {
@@ -211,10 +169,19 @@ impl RemapperRule {
             existing_tags,
             new_name,
             remapped_tags: Vec::new(),
+            additional_tags: Vec::new(),
         }
     }
 
-    fn with_remapped_tags<I>(mut self, remapped_tags: I) -> Self
+    /// Adds a set of tags to remap from the source metric by changing their name.
+    ///
+    /// Remapped tags must be given in the form of `(source_tag, destination_tag)`. If a tag by the name `source_tag` is
+    /// found in the source metric, it is copied to the remapped metric with a name of `destination_tag`.
+    ///
+    /// This method is additive, so it can be called multiple times to add more remapped tags. Tag remapping is
+    /// order-dependent, so if a tag is configured to be remapped, or copied, multiple times, then the first match will
+    /// take precedence.
+    pub fn with_remapped_tags<I>(mut self, remapped_tags: I) -> Self
     where
         I: IntoIterator<Item = (&'static str, &'static str)>,
     {
@@ -222,6 +189,14 @@ impl RemapperRule {
         self
     }
 
+    /// Adds a set of tags to remap from the source metric without changing their name.
+    ///
+    /// Remapped tags must be given in the form of `source_tag`. If a tag by the name `source_tag` is found in the
+    /// source metric, it is copied to the remapped metric with the same name.
+    ///
+    /// This method is additive, so it can be called multiple times to add more original tags. Tag remapping is
+    /// order-dependent, so if a tag is configured to be copied, or remapped, multiple times, then the first match will
+    /// take precedence.
     fn with_original_tags<I>(mut self, original_tags: I) -> Self
     where
         I: IntoIterator<Item = &'static str>,
@@ -231,7 +206,24 @@ impl RemapperRule {
         self
     }
 
-    fn try_match(&self, metric: &Metric, context_resolver: &mut ContextResolver) -> Option<Context> {
+    /// Adds a fixed set of tags to add to the remapped metric.
+    ///
+    /// Additional tags are given in the form of `tag`, which can be any valid tag value: bare or key/value.
+    ///
+    /// This method is additive, so it can be called multiple times to add more additional tags.
+    pub fn with_additional_tags<I>(mut self, additional_tags: I) -> Self
+    where
+        I: IntoIterator<Item = &'static str>,
+    {
+        self.additional_tags
+            .extend(additional_tags.into_iter().map(MetaString::from_static));
+        self
+    }
+
+    /// Attempts to match the given metric against this rule.
+    ///
+    /// If the rule is a match, `Some` is returned with the remapped metric. Otherwise, `None` is returned.
+    pub fn try_match(&self, metric: &Metric, context_resolver: &mut ContextResolver) -> Option<Context> {
         // See if the metric matches the name and, potentially, tags that we're looking for.
         if metric.context().name() != self.existing_name {
             return None;
@@ -251,25 +243,27 @@ impl RemapperRule {
         // either a straight copy (take the tag as-is) or a rename (different tag name).
         let mut new_tags = vec![MetaString::from_static("emitted_by:adp")];
         for (original_tag_name, new_tag_name) in &self.remapped_tags {
-            if original_tag_name == new_tag_name {
-                // All we need to do is find the tag and clone it since the name isn't changing.
-                if let Some(tag) = metric_tags.get_single_tag(original_tag_name) {
-                    if original_tag_name == new_tag_name {
-                        // Just clone the tag since the name isn't changing.
-                        new_tags.push(tag.clone().into_inner());
-                    } else {
-                        // Build our new tag if this one has a value.
-                        match tag.value() {
-                            Some(value) => {
-                                new_tags.push(MetaString::from(format!("{}:{}", new_tag_name, value)));
-                            }
-                            None => {
-                                new_tags.push(MetaString::from(*new_tag_name));
-                            }
+            if let Some(tag) = metric_tags.get_single_tag(original_tag_name) {
+                if original_tag_name == new_tag_name {
+                    // Just clone the tag since the name isn't changing.
+                    new_tags.push(tag.clone().into_inner());
+                } else {
+                    // Build our new tag if this one has a value.
+                    match tag.value() {
+                        Some(value) => {
+                            new_tags.push(MetaString::from(format!("{}:{}", new_tag_name, value)));
+                        }
+                        None => {
+                            new_tags.push(MetaString::from(*new_tag_name));
                         }
                     }
                 }
             }
+        }
+
+        // Add any additional tags that we need to include.
+        for additional_tag in &self.additional_tags {
+            new_tags.push(additional_tag.clone());
         }
 
         let context_ref = context_resolver.create_context_ref(self.new_name, new_tags.as_slice().iter());
@@ -285,20 +279,23 @@ mod tests {
     fn test_remap_object_pool_metrics() {
         let mut remapper = AgentTelemetryRemapper {
             context_resolver: ContextResolverBuilder::for_tests(),
-            rules: generate_remapper_rules(),
+            rules: get_datadog_agent_remappings(),
         };
 
-        let context = Context::from_static_parts("datadog.saluki.object_pool_acquired", &["pool_name:dsd_packet_bufs"]);
+        let context =
+            Context::from_static_parts("datadog.agent.adp.object_pool_acquired", &["pool_name:dsd_packet_bufs"]);
         let metric = Metric::counter(context, 1.0);
         let new_metric = remapper.try_remap_metric(&metric).expect("should have remapped");
         assert_eq!(new_metric.context().name(), "datadog.agent.dogstatsd.packet_pool_get");
 
-        let context = Context::from_static_parts("datadog.saluki.object_pool_released", &["pool_name:dsd_packet_bufs"]);
+        let context =
+            Context::from_static_parts("datadog.agent.adp.object_pool_released", &["pool_name:dsd_packet_bufs"]);
         let metric = Metric::counter(context, 1.0);
         let new_metric = remapper.try_remap_metric(&metric).expect("should have remapped");
         assert_eq!(new_metric.context().name(), "datadog.agent.dogstatsd.packet_pool_put");
 
-        let context = Context::from_static_parts("datadog.saluki.object_pool_in_use", &["pool_name:dsd_packet_bufs"]);
+        let context =
+            Context::from_static_parts("datadog.agent.adp.object_pool_in_use", &["pool_name:dsd_packet_bufs"]);
         let metric = Metric::gauge(context, 1.0);
         let new_metric = remapper.try_remap_metric(&metric).expect("should have remapped");
         assert_eq!(new_metric.context().name(), "datadog.agent.dogstatsd.packet_pool");

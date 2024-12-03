@@ -9,31 +9,31 @@ use std::{
 };
 
 use bytes::{Buf as _, BufMut as _};
-use http_body::{Body, Frame};
+use http_body::{Body, Frame, SizeHint};
 use saluki_core::pooling::ObjectPool;
 use tokio::io::AsyncWrite;
 use tokio_util::sync::ReusableBoxFuture;
 
-use super::ReadWriteIoBuffer;
+use super::{vec::FrozenBytesBuffer, BytesBuffer};
 
 enum PollObjectPool<O>
 where
-    O: ObjectPool,
+    O: ObjectPool<Item = BytesBuffer>,
 {
     Inconsistent,
-    CapacityAvailable(Arc<O>, ReusableBoxFuture<'static, (Arc<O>, O::Item)>),
-    WaitingForBuffer(ReusableBoxFuture<'static, (Arc<O>, O::Item)>),
+    CapacityAvailable(Arc<O>, ReusableBoxFuture<'static, (Arc<O>, BytesBuffer)>),
+    WaitingForBuffer(ReusableBoxFuture<'static, (Arc<O>, BytesBuffer)>),
 }
 
 impl<O> PollObjectPool<O>
 where
-    O: ObjectPool + 'static,
+    O: ObjectPool<Item = BytesBuffer> + 'static,
 {
     pub fn new(buffer_pool: Arc<O>) -> Self {
         Self::CapacityAvailable(buffer_pool, ReusableBoxFuture::new(acquire_buffer_from_pool(None)))
     }
 
-    pub fn poll_acquire(&mut self, cx: &mut Context<'_>) -> Poll<O::Item> {
+    pub fn poll_acquire(&mut self, cx: &mut Context<'_>) -> Poll<BytesBuffer> {
         loop {
             let state = std::mem::replace(self, Self::Inconsistent);
             *self = match state {
@@ -60,32 +60,31 @@ where
 
 /// A bytes buffer that write dynamically-sized payloads across multiple fixed-size chunks.
 ///
-/// `ChunkedBuffer` works in concert with [`ChunkedBufferObjectPool`], which is backed by any generic buffer
-/// pool that works with [`BytesBuffer`]. As callers write data to `ChunkedBuffer`, it will asynchronously acquire
+/// `ChunkedBytesBuffer` works in concert with [`ChunkedBytesBufferObjectPool`], which is backed by any generic buffer
+/// pool that works with [`BytesBuffer`]. As callers write data to `ChunkedBytesBuffer`, it will asynchronously acquire
 /// "chunks" (`BytesBuffer`) from the buffer pool as needed, and write the data across these chunks.
 ///
-/// `ChunkedBuffer` implements [`AsyncWrite`] and [`Body`], allowing it to be asynchronously written to and used as
+/// `ChunkedBytesBuffer` implements [`AsyncWrite`] and [`Body`], allowing it to be asynchronously written to and used as
 /// the body of an HTTP request without any additional allocations and copying/merging of data into a single buffer.
 ///
 /// ## Missing
 ///
 /// - `Buf` implementation to allow for general reading of the written data
-pub struct ChunkedBuffer<O>
+pub struct ChunkedBytesBuffer<O>
 where
-    O: ObjectPool,
+    O: ObjectPool<Item = BytesBuffer>,
 {
     buffer_pool: PollObjectPool<O>,
-    chunks: VecDeque<O::Item>,
+    chunks: VecDeque<BytesBuffer>,
     remaining_capacity: usize,
     write_chunk_idx: usize,
 }
 
-impl<O> ChunkedBuffer<O>
+impl<O> ChunkedBytesBuffer<O>
 where
-    O: ObjectPool + 'static,
-    O::Item: ReadWriteIoBuffer,
+    O: ObjectPool<Item = BytesBuffer> + 'static,
 {
-    /// Creates a new `ChunkedBuffer` attached to the given buffer pool.
+    /// Creates a new `ChunkedBytesBuffer` attached to the given buffer pool.
     pub fn new(buffer_pool: Arc<O>) -> Self {
         Self {
             buffer_pool: PollObjectPool::new(buffer_pool),
@@ -105,30 +104,24 @@ where
         self.chunks.iter().map(|chunk| chunk.remaining()).sum()
     }
 
-    fn register_chunk(&mut self, chunk: O::Item) {
+    fn register_chunk(&mut self, chunk: BytesBuffer) {
         self.remaining_capacity += chunk.remaining_mut();
         self.chunks.push_back(chunk);
     }
 
-    fn pop_chunk(&mut self) -> Option<O::Item> {
-        match self.chunks.pop_front() {
-            Some(chunk) => {
-                self.remaining_capacity -= chunk.remaining_mut();
-
-                // We do a saturating subtraction here so that when we pop the last chunk, we don't underflow. We just
-                // end up back at the default state, when the buffer has no initial chunks.
-                self.write_chunk_idx = self.write_chunk_idx.saturating_sub(1);
-                Some(chunk)
-            }
-            None => None,
+    /// Consumes this buffer and returns a read-only version of it.
+    ///
+    /// All existing chunks at the time of calling this method will be present in the read-only buffer.
+    pub fn freeze(self) -> FrozenChunkedBytesBuffer {
+        FrozenChunkedBytesBuffer {
+            chunks: self.chunks.into_iter().map(|chunk| chunk.freeze()).collect(),
         }
     }
 }
 
-impl<O> AsyncWrite for ChunkedBuffer<O>
+impl<O> AsyncWrite for ChunkedBytesBuffer<O>
 where
-    O: ObjectPool + 'static,
-    O::Item: ReadWriteIoBuffer,
+    O: ObjectPool<Item = BytesBuffer> + 'static,
 {
     fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
         while self.remaining_capacity < buf.len() {
@@ -178,24 +171,44 @@ where
     }
 }
 
-impl<O> Body for ChunkedBuffer<O>
-where
-    O: ObjectPool + 'static,
-    O::Item: ReadWriteIoBuffer,
-{
-    type Data = O::Item;
+/// A frozen, read-only version of [`ChunkedBytesBuffer`].
+///
+/// `FrozenChunkedBytesBuffer` can be cheaply cloned, and allows for sharing the underlying chunks among multiple tasks.
+#[derive(Clone)]
+pub struct FrozenChunkedBytesBuffer {
+    chunks: VecDeque<FrozenBytesBuffer>,
+}
+
+impl FrozenChunkedBytesBuffer {
+    /// Returns `true` if the buffer has no data.
+    pub fn is_empty(&self) -> bool {
+        self.chunks.is_empty()
+    }
+
+    /// Returns the number of bytes written to the buffer.
+    pub fn len(&self) -> usize {
+        self.chunks.iter().map(|chunk| chunk.len()).sum()
+    }
+}
+
+impl Body for FrozenChunkedBytesBuffer {
+    type Data = FrozenBytesBuffer;
     type Error = Infallible;
 
     fn poll_frame(
         mut self: Pin<&mut Self>, _: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        Poll::Ready(self.pop_chunk().map(|chunk| Ok(Frame::data(chunk))))
+        Poll::Ready(self.chunks.pop_front().map(|chunk| Ok(Frame::data(chunk))))
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::with_exact(self.len() as u64)
     }
 }
 
-async fn acquire_buffer_from_pool<O>(buffer_pool: Option<Arc<O>>) -> (Arc<O>, O::Item)
+async fn acquire_buffer_from_pool<O>(buffer_pool: Option<Arc<O>>) -> (Arc<O>, BytesBuffer)
 where
-    O: ObjectPool,
+    O: ObjectPool<Item = BytesBuffer>,
 {
     match buffer_pool {
         Some(buffer_pool) => {
@@ -206,32 +219,31 @@ where
     }
 }
 
-/// An object pool for `ChunkedBuffer`.
+/// An object pool for `ChunkedBytesBuffer`.
 #[derive(Clone)]
-pub struct ChunkedBufferObjectPool<O> {
+pub struct ChunkedBytesBufferObjectPool<O> {
     buffer_pool: Arc<O>,
 }
 
-impl<O> ChunkedBufferObjectPool<O> {
-    /// Creates a new `ChunkedBufferObjectPool` with the given buffer pool.
+impl<O> ChunkedBytesBufferObjectPool<O> {
+    /// Creates a new `ChunkedBytesBufferObjectPool` with the given buffer pool.
     pub fn new(buffer_pool: O) -> Self {
         let buffer_pool = Arc::new(buffer_pool);
         Self { buffer_pool }
     }
 }
 
-impl<O> ObjectPool for ChunkedBufferObjectPool<O>
+impl<O> ObjectPool for ChunkedBytesBufferObjectPool<O>
 where
-    O: ObjectPool + 'static,
-    O::Item: ReadWriteIoBuffer + Send,
+    O: ObjectPool<Item = BytesBuffer> + 'static,
 {
-    type Item = ChunkedBuffer<O>;
+    type Item = ChunkedBytesBuffer<O>;
 
     type AcquireFuture = Ready<Self::Item>;
 
     fn acquire(&self) -> Self::AcquireFuture {
         let buffer_pool = Arc::clone(&self.buffer_pool);
-        std::future::ready(ChunkedBuffer::new(buffer_pool))
+        std::future::ready(ChunkedBytesBuffer::new(buffer_pool))
     }
 }
 
@@ -264,9 +276,9 @@ mod tests {
     #[test]
     fn single_write_fits_within_single_chunk() {
         let (buffer_pool, total_capacity) = create_buffer_pool(1, TEST_CHUNK_SIZE);
-        let mut chunked_buffer = ChunkedBuffer::new(buffer_pool);
+        let mut chunked_buffer = ChunkedBytesBuffer::new(buffer_pool);
 
-        // Fits within a single buffer, so it should complete without blocking.
+        // Fits within a single buffer, so it should complete without blocking.i
         let mut fut = test_spawn(chunked_buffer.write(TEST_BUF_LESS_THAN_CHUNK_SIZED));
         let result = assert_ready!(fut.poll());
 
@@ -279,7 +291,7 @@ mod tests {
     #[test]
     fn single_write_fits_single_chunk_exactly() {
         let (buffer_pool, total_capacity) = create_buffer_pool(1, TEST_CHUNK_SIZE);
-        let mut chunked_buffer = ChunkedBuffer::new(buffer_pool);
+        let mut chunked_buffer = ChunkedBytesBuffer::new(buffer_pool);
 
         // Fits within a single buffer, so it should complete without blocking.
         let mut fut = test_spawn(chunked_buffer.write(TEST_BUF_CHUNK_SIZED));
@@ -294,7 +306,7 @@ mod tests {
     #[test]
     fn single_write_strides_two_chunks() {
         let (buffer_pool, total_capacity) = create_buffer_pool(2, TEST_CHUNK_SIZE);
-        let mut chunked_buffer = ChunkedBuffer::new(buffer_pool);
+        let mut chunked_buffer = ChunkedBytesBuffer::new(buffer_pool);
 
         // This won't fit in a single chunk, but should fit within two.
         let mut fut = test_spawn(chunked_buffer.write(TEST_BUF_GREATER_THAN_CHUNK_SIZED));
@@ -309,7 +321,7 @@ mod tests {
     #[test]
     fn two_writes_fit_two_chunks_exactly() {
         let (buffer_pool, _) = create_buffer_pool(2, TEST_CHUNK_SIZE);
-        let mut chunked_buffer = ChunkedBuffer::new(buffer_pool);
+        let mut chunked_buffer = ChunkedBytesBuffer::new(buffer_pool);
 
         // First write acquires one chunk, and fills it up entirely.
         let mut fut = test_spawn(chunked_buffer.write(TEST_BUF_CHUNK_SIZED));
@@ -342,7 +354,7 @@ mod tests {
         let second_buf = assert_ready!(buf_fut.poll());
 
         let buffer_pool = Arc::clone(&buffer_pool);
-        let mut chunked_buffer = ChunkedBuffer::new(buffer_pool);
+        let mut chunked_buffer = ChunkedBytesBuffer::new(buffer_pool);
         assert_eq!(chunked_buffer.chunks.len(), 0);
         assert_eq!(chunked_buffer.remaining_capacity, 0);
 
@@ -397,11 +409,11 @@ mod tests {
             };
 
         let (buffer_pool, total_capacity) = create_buffer_pool(required_chunks, TEST_CHUNK_SIZE);
-        let mut chunked_buffer = ChunkedBuffer::new(buffer_pool);
+        let mut chunked_buffer = ChunkedBytesBuffer::new(buffer_pool);
 
         // Do three writes, using the less than/exactly/greater than-sized test buffers.
         //
-        // We'll write these buffers, concatentated, to a single buffer that we'll use at the end to
+        // We'll write these buffers, concatenated, to a single buffer that we'll use at the end to
         // compare the collected `Body`-based output.
         let mut expected_aggregated_body = BytesMut::new();
         let test_bufs = &[
@@ -420,8 +432,10 @@ mod tests {
         assert_eq!(chunked_buffer.chunks.len(), required_chunks);
         assert_eq!(chunked_buffer.remaining_capacity, total_capacity - total_written);
 
+        let read_chunked_buffer = chunked_buffer.freeze();
+
         // We should now be able to collect the chunked buffer as a `Body`, into a single output buffer.
-        let actual_aggregated_body = chunked_buffer.collect().await.expect("cannot fail").to_bytes();
+        let actual_aggregated_body = read_chunked_buffer.collect().await.expect("cannot fail").to_bytes();
 
         assert_eq!(expected_aggregated_body.freeze(), actual_aggregated_body);
     }

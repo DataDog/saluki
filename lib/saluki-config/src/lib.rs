@@ -86,7 +86,7 @@ impl From<figment::Error> for ConfigurationError {
     }
 }
 
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Debug, Eq, Hash, PartialEq)]
 enum LookupSource {
     /// The configuration key is looked up in a form suitable for environment variables.
     Environment { prefix: String },
@@ -112,7 +112,7 @@ impl LookupSource {
 /// can be extracted from the configuration ([`into_typed`][Self::into_typed]), or the raw configuration data can be
 /// accessed via a generic API ([`into_generic`][Self::into_generic]).
 ///
-/// ## Supported sources
+/// # Supported sources
 ///
 /// - YAML file
 /// - JSON file
@@ -126,7 +126,7 @@ pub struct ConfigurationLoader {
 impl ConfigurationLoader {
     /// Loads the given YAML configuration file.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the file could not be read, or if the file is not valid YAML, an error will be returned.
     pub fn from_yaml<P>(mut self, path: P) -> Result<Self, ConfigurationError>
@@ -158,7 +158,7 @@ impl ConfigurationLoader {
 
     /// Loads the given JSON configuration file.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the file could not be read, or if the file is not valid JSON, an error will be returned.
     pub fn from_json<P>(mut self, path: P) -> Result<Self, ConfigurationError>
@@ -195,7 +195,7 @@ impl ConfigurationLoader {
     ///
     /// The prefix is case-insensitive.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the prefix is empty, an error will be returned.
     pub fn from_environment(mut self, prefix: &'static str) -> Result<Self, ConfigurationError> {
@@ -220,7 +220,7 @@ impl ConfigurationLoader {
     /// backend", which is a user-provided command that utilizes a simple JSON-based protocol to accept secrets to
     /// resolve, and return those resolved secrets, or the errors that occurred during resolving.
     ///
-    /// ## Configuration
+    /// # Configuration
     ///
     /// This method uses the existing configuration (see Caveats) to determine the secrets backend configuration. The
     /// following configuration settings are used:
@@ -228,7 +228,7 @@ impl ConfigurationLoader {
     /// - `secret_backend_command`: The executable to resolve secrets. (required)
     /// - `secret_backend_timeout`: The timeout for the secrets backend command, in seconds. (optional, default: 30)
     ///
-    /// ## Usage
+    /// # Usage
     ///
     /// For any value which should be resolved as a secret, the value should be a string in the format of
     /// `ENC[secret_reference]`. The `secret_reference` portion is the value that will be sent to the backend command
@@ -238,7 +238,7 @@ impl ConfigurationLoader {
     /// The entire configuration value must match this pattern, and cannot be used to replace only part of a value, so
     /// values such as `db-ENC[secret_reference]` would not be detected as secrets and thus would not be resolved.
     ///
-    /// ## Protocol
+    /// # Protocol
     ///
     /// The executable is expected to accept a JSON object on stdin, with the following format:
     ///
@@ -266,15 +266,15 @@ impl ConfigurationLoader {
     /// If any entry in the response has an `error` value that is anything but `null`, the overall resolution will be
     /// considered failed.
     ///
-    /// ## Caveats
+    /// # Caveats
     ///
-    /// ### Time of resolution
+    /// ## Time of resolution
     ///
     /// Secrets resolution happens at the time this method is called, and only resolves configuration values that are
     /// already present in the configuration, which means all calls to load configuration (`try_from_yaml`,
     /// `from_environment`, etc) must be made before calling this method.
     ///
-    /// ### Sensitive data in error output
+    /// ## Sensitive data in error output
     ///
     /// Care should be taken to not return sensitive information in either the error output (standard error) of the
     /// backend command or the `error` field in the JSON response, as these values are logged in order to aid debugging.
@@ -285,13 +285,14 @@ impl ConfigurationLoader {
             return Ok(self);
         }
 
-        let resolver_config = self.inner.extract::<secrets::ResolverConfiguration>()?;
-        let resolver = secrets::Resolver::from_configuration(resolver_config)
+        let resolver_config = self
+            .inner
+            .extract::<secrets::resolver::ExternalProcessResolverConfiguration>()?;
+        let resolver = secrets::resolver::ExternalProcessResolver::from_configuration(resolver_config)
             .await
             .context(Secrets)?;
 
-        let mut provider = secrets::Provider::new();
-        provider.resolve(&resolver, &self.inner).await.context(Secrets)?;
+        let provider = secrets::Provider::new(resolver, &self.inner).await.context(Secrets)?;
 
         self.inner = self.inner.admerge(provider);
         Ok(self)
@@ -340,6 +341,7 @@ impl ConfigurationLoader {
 ///
 /// Querying for the value of `a.b.c` would return `"value"`, and querying for `a.b` would return the nested object `{
 /// "c": "value" }`.
+#[derive(Debug)]
 pub struct GenericConfiguration {
     inner: Value,
     lookup_sources: HashSet<LookupSource>,

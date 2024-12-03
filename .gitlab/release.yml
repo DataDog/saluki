@@ -31,8 +31,9 @@ build-release-adp-image:
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg BUILD_PROFILE=optimized-release
-      --build-arg APP_NAME=agent-data-plane
-      --build-arg APP_SHORT_NAME=adp
+      --build-arg APP_FULL_NAME=agent-data-plane
+      --build-arg APP_SHORT_NAME=data-plane
+      --build-arg APP_IDENTIFIER=adp
       --build-arg APP_VERSION=${CI_COMMIT_TAG}
       --build-arg APP_GIT_HASH=${CI_COMMIT_TAG}
       --build-arg APP_BUILD_TIME=${CI_PIPELINE_CREATED_AT}

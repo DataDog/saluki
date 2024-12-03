@@ -46,7 +46,7 @@ async fn main() {
         fatal_and_exit(format!("failed to initialize logging: {}", e));
     }
 
-    if let Err(e) = initialize_metrics("datadog.saluki").await {
+    if let Err(e) = initialize_metrics("datadog.agent.adp").await {
         fatal_and_exit(format!("failed to initialize metrics: {}", e));
     }
 
@@ -61,6 +61,8 @@ async fn main() {
     match run(started).await {
         Ok(()) => info!("Agent Data Plane stopped."),
         Err(e) => {
+            // TODO: It'd be better to take the error cause chain and write it out as a list of errors, instead of
+            // having it be multi-line, since the multi-line bit messes with the log formatting.
             error!("{:?}", e);
             std::process::exit(1);
         }

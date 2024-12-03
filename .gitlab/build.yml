@@ -32,8 +32,9 @@ build-adp-image:
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg BUILD_PROFILE=optimized-debug-release
-      --build-arg APP_NAME=${APP_NAME}
+      --build-arg APP_FULL_NAME=${APP_FULLNAME}
       --build-arg APP_SHORT_NAME=${APP_SHORT_NAME}
+      --build-arg APP_IDENTIFIER=${APP_IDENTIFIER}
       --build-arg APP_VERSION=${APP_VERSION}
       --build-arg APP_GIT_HASH=${APP_GIT_HASH}
       --build-arg APP_BUILD_TIME=${APP_BUILD_TIME}
@@ -68,6 +69,7 @@ build-converged-adp-image:
       --label git.commit=${CI_COMMIT_SHA}
       --label ci.pipeline_id=${CI_PIPELINE_ID}
       --label ci.job_id=${CI_JOB_ID}
+      --label target=prod
       --push
       .
     - ddsign sign ${IMAGE_TAG} --docker-metadata-file /tmp/build.metadata

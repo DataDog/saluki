@@ -1,16 +1,13 @@
-use std::sync::Arc;
 use std::{io, num::NonZeroU64};
 
 use datadog_protos::metrics::{self as proto, Resource};
 use ddsketch_agent::DDSketch;
-use http::{Method, Request, Uri};
+use http::{uri::PathAndQuery, HeaderValue, Method, Request, Uri};
 use protobuf::CodedOutputStream;
-use saluki_config::RefreshableConfiguration;
 use saluki_core::pooling::ObjectPool;
 use saluki_event::metric::*;
-use saluki_io::net::client::replay::ReplayBody;
 use saluki_io::{
-    buf::{ChunkedBuffer, ChunkedBufferObjectPool, ReadWriteIoBuffer},
+    buf::{BytesBuffer, ChunkedBytesBuffer, ChunkedBytesBufferObjectPool, FrozenChunkedBytesBuffer},
     compression::*,
 };
 use snafu::{ResultExt, Snafu};
@@ -18,6 +15,9 @@ use tokio::io::AsyncWriteExt as _;
 use tracing::{debug, trace};
 
 pub(super) const SCRATCH_BUF_CAPACITY: usize = 8192;
+
+static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("application/x-protobuf");
+static CONTENT_ENCODING_DEFLATE: HeaderValue = HeaderValue::from_static("deflate");
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -28,9 +28,7 @@ pub enum RequestBuilderError {
         endpoint: MetricsEndpoint,
     },
     #[snafu(display("failed to encode/write payload: {}", source))]
-    FailedToEncode {
-        source: protobuf::Error,
-    },
+    FailedToEncode { source: protobuf::Error },
     #[snafu(display(
         "request payload was too large after compressing ({} > {})",
         compressed_size_bytes,
@@ -41,15 +39,9 @@ pub enum RequestBuilderError {
         compressed_limit_bytes: usize,
     },
     #[snafu(display("failed to write/compress payload: {}", source))]
-    Io {
-        source: io::Error,
-    },
+    Io { source: io::Error },
     #[snafu(display("error when building API endpoint/request: {}", source))]
-    Http {
-        source: http::Error,
-    },
-    FailedToCreateReplayBody,
-    FailedToGetApiKey,
+    Http { source: http::Error },
 }
 
 impl RequestBuilderError {
@@ -104,11 +96,11 @@ impl MetricsEndpoint {
         }
     }
 
-    /// Gets the path for this endpoint.
-    pub const fn endpoint_path(&self) -> &'static str {
+    /// Gets the relative URI for this endpoint.
+    pub fn endpoint_uri(&self) -> Uri {
         match self {
-            Self::Series => "/api/v2/series",
-            Self::Sketches => "/api/beta/sketches",
+            Self::Series => PathAndQuery::from_static("/api/v2/series").into(),
+            Self::Sketches => PathAndQuery::from_static("/api/beta/sketches").into(),
         }
     }
 }
@@ -116,39 +108,30 @@ impl MetricsEndpoint {
 #[allow(unused)]
 pub struct RequestBuilder<O>
 where
-    O: ObjectPool + 'static,
-    O::Item: ReadWriteIoBuffer,
+    O: ObjectPool<Item = BytesBuffer> + 'static,
 {
-    api_key: String,
-    api_uri: Uri,
     endpoint: MetricsEndpoint,
-    buffer_pool: ChunkedBufferObjectPool<O>,
+    endpoint_uri: Uri,
+    buffer_pool: ChunkedBytesBufferObjectPool<O>,
     scratch_buf: Vec<u8>,
-    compressor: Compressor<ChunkedBuffer<O>>,
+    compressor: Compressor<ChunkedBytesBuffer<O>>,
     compression_estimator: CompressionEstimator,
     uncompressed_len: usize,
     metrics_written: usize,
     scratch_buf_lens: Vec<usize>,
-    refresher: Arc<RefreshableConfiguration>,
 }
 
 impl<O> RequestBuilder<O>
 where
-    O: ObjectPool + 'static,
-    O::Item: ReadWriteIoBuffer + Send + Sync,
+    O: ObjectPool<Item = BytesBuffer> + 'static,
 {
     /// Creates a new `RequestBuilder` for the given endpoint, using the specified API key and base URI.
-    pub async fn new(
-        api_key: String, api_base_uri: Uri, endpoint: MetricsEndpoint, buffer_pool: O,
-        refresher: Arc<RefreshableConfiguration>,
-    ) -> Result<Self, RequestBuilderError> {
-        let chunked_buffer_pool = ChunkedBufferObjectPool::new(buffer_pool);
+    pub async fn new(endpoint: MetricsEndpoint, buffer_pool: O) -> Result<Self, RequestBuilderError> {
+        let chunked_buffer_pool = ChunkedBytesBufferObjectPool::new(buffer_pool);
         let compressor = create_compressor(&chunked_buffer_pool).await;
-        let api_uri = build_uri_for_endpoint(api_base_uri, endpoint)?;
         Ok(Self {
-            api_key,
-            api_uri,
             endpoint,
+            endpoint_uri: endpoint.endpoint_uri(),
             buffer_pool: chunked_buffer_pool,
             scratch_buf: Vec::with_capacity(SCRATCH_BUF_CAPACITY),
             compressor,
@@ -156,7 +139,6 @@ where
             uncompressed_len: 0,
             metrics_written: 0,
             scratch_buf_lens: Vec::new(),
-            refresher,
         })
     }
 
@@ -241,11 +223,7 @@ where
     /// ## Errors
     ///
     /// If an error occurs while finalizing the compressor or creating the request, an error will be returned.
-    pub async fn flush(&mut self) -> Vec<Result<(usize, Request<ReplayBody<ChunkedBuffer<O>>>), RequestBuilderError>>
-    where
-        O: ObjectPool + Send + Sync,
-        O::Item: Send + Sync,
-    {
+    pub async fn flush(&mut self) -> Vec<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError>> {
         if self.uncompressed_len == 0 {
             return vec![];
         }
@@ -267,7 +245,7 @@ where
             return vec![Err(e)];
         }
 
-        let buffer = compressor.into_inner();
+        let buffer = compressor.into_inner().freeze();
 
         let compressed_len = buffer.len();
         let compressed_limit = self.endpoint.compressed_size_limit();
@@ -294,9 +272,7 @@ where
         self.scratch_buf_lens.clear();
     }
 
-    async fn split_request(
-        &mut self,
-    ) -> Vec<Result<(usize, Request<ReplayBody<ChunkedBuffer<O>>>), RequestBuilderError>> {
+    async fn split_request(&mut self) -> Vec<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError>> {
         let mut requests = Vec::new();
 
         if self.scratch_buf_lens.is_empty() {
@@ -335,10 +311,10 @@ where
     }
 
     async fn finalize(
-        &self, mut compressor: Compressor<ChunkedBuffer<O>>,
-    ) -> Result<ChunkedBuffer<O>, RequestBuilderError> {
+        &self, mut compressor: Compressor<ChunkedBytesBuffer<O>>,
+    ) -> Result<FrozenChunkedBytesBuffer, RequestBuilderError> {
         compressor.shutdown().await.context(Io)?;
-        let buffer = compressor.into_inner();
+        let buffer = compressor.into_inner().freeze();
         let compressed_len = buffer.len();
         let compressed_limit = self.endpoint.compressed_size_limit();
         if compressed_len > compressed_limit {
@@ -351,52 +327,21 @@ where
     }
 
     fn create_request(
-        &self, buffer: ChunkedBuffer<O>,
-    ) -> Result<Request<ReplayBody<ChunkedBuffer<O>>>, RequestBuilderError> {
-        match ReplayBody::try_new(buffer, self.endpoint.compressed_size_limit()) {
-            Ok(body) => {
-                Request::builder()
-                    .method(Method::POST)
-                    .uri(self.api_uri.clone())
-                    .header("Content-Type", "application/x-protobuf")
-                    .header("Content-Encoding", "deflate")
-                    .header(
-                        "DD-API-KEY",
-                        self.refresher
-                            .get_typed::<String>("api_key")
-                            .map_err(|_| RequestBuilderError::FailedToGetApiKey)?,
-                    )
-                    // TODO: We can't access the version number of the package being built that _includes_ this library, so
-                    // using CARGO_PKG_VERSION or something like that would always be the version of `saluki-components`, which
-                    // isn't what we want... maybe we can figure out some way to shove it in a global somewhere or something?
-                    .header("DD-Agent-Version", "0.1.0")
-                    .header("User-Agent", "agent-data-plane/0.1.0")
-                    .body(body)
-                    .context(Http)
-            }
-            Err(_e) => Err(RequestBuilderError::FailedToCreateReplayBody),
-        }
+        &self, buffer: FrozenChunkedBytesBuffer,
+    ) -> Result<Request<FrozenChunkedBytesBuffer>, RequestBuilderError> {
+        Request::builder()
+            .method(Method::POST)
+            .uri(self.endpoint_uri.clone())
+            .header(http::header::CONTENT_TYPE, CONTENT_TYPE_PROTOBUF.clone())
+            .header(http::header::CONTENT_ENCODING, CONTENT_ENCODING_DEFLATE.clone())
+            .body(buffer)
+            .context(Http)
     }
 }
 
-fn build_uri_for_endpoint(api_base_uri: Uri, endpoint: MetricsEndpoint) -> Result<Uri, RequestBuilderError> {
-    let mut builder = Uri::builder().path_and_query(endpoint.endpoint_path());
-
-    if let Some(scheme) = api_base_uri.scheme() {
-        builder = builder.scheme(scheme.clone());
-    }
-
-    if let Some(authority) = api_base_uri.authority() {
-        builder = builder.authority(authority.clone());
-    }
-
-    builder.build().context(Http)
-}
-
-async fn create_compressor<O>(buffer_pool: &ChunkedBufferObjectPool<O>) -> Compressor<ChunkedBuffer<O>>
+async fn create_compressor<O>(buffer_pool: &ChunkedBytesBufferObjectPool<O>) -> Compressor<ChunkedBytesBuffer<O>>
 where
-    O: ObjectPool + 'static,
-    O::Item: ReadWriteIoBuffer,
+    O: ObjectPool<Item = BytesBuffer> + 'static,
 {
     let write_buffer = buffer_pool.acquire().await;
     Compressor::from_scheme(CompressionScheme::zlib_default(), write_buffer)

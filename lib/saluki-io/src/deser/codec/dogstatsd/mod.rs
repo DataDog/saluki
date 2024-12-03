@@ -232,7 +232,7 @@ fn parse_dogstatsd_metric<'a>(
         remaining
     };
 
-    let mut metric_values = metric_values_from_raw(raw_metric_values, metric_type, maybe_sample_rate)?;
+    let (num_points, mut metric_values) = metric_values_from_raw(raw_metric_values, metric_type, maybe_sample_rate)?;
 
     // If we got a timestamp, apply it to all metric values.
     if let Some(timestamp) = maybe_timestamp {
@@ -245,6 +245,7 @@ fn parse_dogstatsd_metric<'a>(
             metric_name,
             tags: maybe_tags.unwrap_or_else(TagSplitter::empty),
             values: metric_values,
+            num_points,
             timestamp: maybe_timestamp,
             container_id: maybe_container_id,
         },
@@ -255,6 +256,7 @@ pub struct MetricPacket<'a> {
     pub metric_name: &'a str,
     pub tags: TagSplitter<'a>,
     pub values: MetricValues,
+    pub num_points: u64,
     pub timestamp: Option<u64>,
     pub container_id: Option<&'a str>,
 }
@@ -548,19 +550,25 @@ fn raw_metric_values(input: &[u8]) -> IResult<&[u8], (MetricType, &[u8])> {
 #[inline]
 fn metric_values_from_raw(
     input: &[u8], metric_type: MetricType, sample_rate: Option<SampleRate>,
-) -> Result<MetricValues, NomParserError<'_>> {
-    let floats = FloatIter::new(input);
-    match metric_type {
-        MetricType::Count => MetricValues::counter_sampled_fallible(floats, sample_rate),
-        MetricType::Gauge => MetricValues::gauge_fallible(floats),
+) -> Result<(u64, MetricValues), NomParserError<'_>> {
+    let mut num_points = 0;
+    let floats = FloatIter::new(input).inspect(|_| num_points += 1);
+
+    let values = match metric_type {
+        MetricType::Count => MetricValues::counter_sampled_fallible(floats, sample_rate)?,
+        MetricType::Gauge => MetricValues::gauge_fallible(floats)?,
         MetricType::Set => {
+            num_points = 1;
+
             // SAFETY: We've already checked above that `input` is valid UTF-8.
             let value = unsafe { std::str::from_utf8_unchecked(input) };
-            Ok(MetricValues::set(value.to_string()))
+            MetricValues::set(value.to_string())
         }
-        MetricType::Timer | MetricType::Histogram => MetricValues::histogram_sampled_fallible(floats, sample_rate),
-        MetricType::Distribution => MetricValues::distribution_sampled_fallible(floats, sample_rate),
-    }
+        MetricType::Timer | MetricType::Histogram => MetricValues::histogram_sampled_fallible(floats, sample_rate)?,
+        MetricType::Distribution => MetricValues::distribution_sampled_fallible(floats, sample_rate)?,
+    };
+
+    Ok((num_points, values))
 }
 
 #[inline]
