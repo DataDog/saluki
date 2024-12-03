@@ -9,7 +9,7 @@ use std::{
 };
 
 use bytes::{Buf as _, BufMut as _};
-use http_body::{Body, Frame};
+use http_body::{Body, Frame, SizeHint};
 use saluki_core::pooling::ObjectPool;
 use tokio::io::AsyncWrite;
 use tokio_util::sync::ReusableBoxFuture;
@@ -199,6 +199,10 @@ impl Body for FrozenChunkedBytesBuffer {
         mut self: Pin<&mut Self>, _: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         Poll::Ready(self.chunks.pop_front().map(|chunk| Ok(Frame::data(chunk))))
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::with_exact(self.len() as u64)
     }
 }
 
