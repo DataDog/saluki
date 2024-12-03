@@ -7,7 +7,6 @@
 #![deny(missing_docs)]
 use std::{
     future::pending,
-    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -179,7 +178,7 @@ fn create_topology(
     let internal_metrics_remap_config = AgentTelemetryRemapperConfiguration::new();
 
     let refresher_configuration = RefresherConfiguration::from_configuration(configuration)?;
-    let refreshable_configuration: Arc<RefreshableConfiguration> = refresher_configuration.build()?;
+    let refreshable_configuration: RefreshableConfiguration = refresher_configuration.build()?;
 
     let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Metrics destination.")?;

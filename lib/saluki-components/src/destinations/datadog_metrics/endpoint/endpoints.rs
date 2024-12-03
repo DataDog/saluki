@@ -5,11 +5,12 @@ use std::{
 };
 
 use regex::Regex;
+use saluki_config::RefreshableConfiguration;
 use saluki_metadata;
 use serde::Deserialize;
 use serde_with::{serde_as, DisplayFromStr, OneOrMany, PickFirst};
 use snafu::{ResultExt, Snafu};
-use tracing::debug;
+use tracing::{debug, error};
 use url::Url;
 
 use crate::destinations::datadog_metrics::DEFAULT_SITE;
@@ -82,6 +83,7 @@ impl AdditionalEndpoints {
                 resolved.push(ResolvedEndpoint {
                     endpoint: endpoint.clone(),
                     api_key: trimmed_api_key.to_string(),
+                    config: None,
                 });
             }
         }
@@ -98,6 +100,7 @@ impl AdditionalEndpoints {
 pub struct ResolvedEndpoint {
     endpoint: Url,
     api_key: String,
+    config: Option<RefreshableConfiguration>,
 }
 
 impl ResolvedEndpoint {
@@ -113,7 +116,17 @@ impl ResolvedEndpoint {
         Ok(Self {
             endpoint,
             api_key: api_key.to_string(),
+            config: None,
         })
+    }
+
+    /// Creates a new  `ResolvedEndpoint` instance from an existing `ResolvedEndpoint`, adding an optional `RefreshableConfiguration`.
+    pub fn with_refreshable_configuration(self, config: Option<RefreshableConfiguration>) -> Self {
+        Self {
+            endpoint: self.endpoint,
+            api_key: self.api_key,
+            config,
+        }
     }
 
     /// Returns the endpoint of the resolver.
@@ -122,7 +135,23 @@ impl ResolvedEndpoint {
     }
 
     /// Returns the API key associated with the endpoint.
-    pub fn api_key(&self) -> &str {
+    pub fn api_key(&mut self) -> &str {
+        if let Some(config) = &self.config {
+            match config.try_get_typed::<String>("api_key") {
+                Ok(Some(api_key)) => {
+                    if !api_key.is_empty() && self.api_key != api_key {
+                        debug!("Refreshing api key.");
+                        self.api_key = api_key;
+                    }
+                }
+                Ok(None) => {
+                    debug!("Failed to retrieve api key from remote source. Falling back to last known api key.");
+                }
+                Err(_) => {
+                    error!("Failed to retrieve api key from remote source. Falling back to last known api key.");
+                }
+            }
+        }
         self.api_key.as_str()
     }
 }

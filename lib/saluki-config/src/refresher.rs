@@ -10,7 +10,6 @@ use tracing::{debug, error};
 
 use crate::{ConfigurationError, GenericConfiguration};
 
-const DATADOG_AGENT_CONFIG_ENDPOINT: &str = "https://localhost:5004/config/v1/";
 const DEFAULT_AGENT_IPC_HOST: &str = "localhost";
 const DEFAULT_AUTH_TOKEN_FILE_PATH: &str = "/etc/datadog-agent/auth_token";
 const DEFAULT_REFRESH_INTERVAL_SECONDS: u64 = 15;
@@ -60,7 +59,7 @@ fn default_agent_ipc_port() -> u64 {
 }
 
 /// A configuration whose values are refreshed from a remote source at runtime.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct RefreshableConfiguration {
     endpoint: String,
     token: String,
@@ -84,7 +83,7 @@ impl RefresherConfiguration {
             values: Arc::new(ArcSwap::from_pointee(serde_json::Value::Null)),
             refresh_interval_seconds: self.refresh_interval_seconds,
         };
-        refreshable_configuration.spawn_refresh_task();
+        refreshable_configuration.clone().spawn_refresh_task();
         Ok(refreshable_configuration)
     }
 }
@@ -152,9 +151,36 @@ impl RefreshableConfiguration {
                 })
             }
             None => Err(ConfigurationError::MissingField {
-                help_text: format!("Try validating remote source provides this field."),
+                help_text: "Try validating remote source provides this field.".to_string(),
                 field: key.to_string().into(),
             }),
+        }
+    }
+
+    /// Gets a configuration value by key, if it exists.
+    ///
+    /// If the key exists in the configuration, and can be deserialized, `Ok(Some(value))` is returned. Otherwise,
+    /// `Ok(None)` will be returned.
+    ///
+    /// ## Errors
+    ///
+    /// If the value could not be deserialized into `T`, an error will be returned.
+    pub fn try_get_typed<T>(&self, key: &str) -> Result<Option<T>, ConfigurationError>
+    where
+        T: DeserializeOwned,
+    {
+        let values = self.values.load();
+        match values.get(key) {
+            Some(value) => {
+                serde_json::from_value(value.clone())
+                    .map(Some)
+                    .map_err(|_| ConfigurationError::InvalidFieldType {
+                        field: key.to_string(),
+                        expected_ty: std::any::type_name::<T>().to_string(),
+                        actual_ty: serde_json_value_type_name(value).to_string(),
+                    })
+            }
+            None => Ok(None),
         }
     }
 }

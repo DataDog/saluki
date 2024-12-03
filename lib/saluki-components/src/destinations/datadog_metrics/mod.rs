@@ -143,7 +143,7 @@ pub struct DatadogMetricsConfiguration {
     additional_endpoints: AdditionalEndpoints,
 
     #[serde(skip)]
-    config_refresher: Arc<RefreshableConfiguration>,
+    config_refresher: Option<RefreshableConfiguration>,
 }
 
 fn default_request_timeout_secs() -> u64 {
@@ -177,8 +177,8 @@ impl DatadogMetricsConfiguration {
     }
 
     /// Add option to retrieve configuration values from a `RefreshableConfiguration`.
-    pub fn add_refreshable_configuration(&mut self, refresher: Arc<RefreshableConfiguration>) {
-        self.config_refresher = refresher;
+    pub fn add_refreshable_configuration(&mut self, refresher: RefreshableConfiguration) {
+        self.config_refresher = Some(refresher);
     }
 }
 
@@ -204,7 +204,8 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
 
         // Resolve all endpoints that we'll be forwarding metrics to.
         let primary_endpoint = calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, &self.api_key)
-            .error_context("Failed parsing/resolving the primary destination endpoint.")?;
+            .error_context("Failed parsing/resolving the primary destination endpoint.")?
+            .with_refreshable_configuration(self.config_refresher.clone());
 
         let additional_endpoints = self
             .additional_endpoints
@@ -270,7 +271,7 @@ where
     series_request_builder: RequestBuilder<O>,
     sketches_request_builder: RequestBuilder<O>,
     endpoints: Vec<ResolvedEndpoint>,
-    refresher: Arc<RefreshableConfiguration>,
+    refresher: Option<RefreshableConfiguration>,
 }
 
 #[allow(unused)]
@@ -304,7 +305,6 @@ where
             telemetry.clone(),
             context.component_context(),
             endpoints,
-            refresher,
         ));
 
         health.mark_ready();
@@ -444,7 +444,6 @@ where
 async fn run_io_loop<S, B>(
     mut requests_rx: mpsc::Receiver<(usize, Request<B>)>, io_shutdown_tx: oneshot::Sender<()>, service: S,
     telemetry: ComponentTelemetry, component_context: ComponentContext, resolved_endpoints: Vec<ResolvedEndpoint>,
-    refresher: Arc<RefreshableConfiguration>,
 ) where
     S: Service<Request<B>, Response = hyper::Response<Incoming>> + Clone + Send + 'static,
     S::Future: Send,
@@ -470,7 +469,6 @@ async fn run_io_loop<S, B>(
             telemetry.clone(),
             component_context.clone(),
             resolved_endpoint,
-            refresher.clone(),
         ));
 
         endpoint_txs.push((endpoint_url, endpoint_tx));
@@ -505,7 +503,6 @@ async fn run_io_loop<S, B>(
 async fn run_endpoint_io_loop<S, B>(
     mut requests_rx: mpsc::Receiver<(usize, Request<B>)>, task_barrier: Arc<Barrier>, service: S,
     telemetry: ComponentTelemetry, context: ComponentContext, endpoint: ResolvedEndpoint,
-    refresher: Arc<RefreshableConfiguration>,
 ) where
     S: Service<Request<B>, Response = hyper::Response<Incoming>> + Send + 'static,
     S::Future: Send,
@@ -521,7 +518,7 @@ async fn run_endpoint_io_loop<S, B>(
     // of the URI, adding the API key as a header, and so on.
     let mut service = ServiceBuilder::new()
         // Set the request's URI to the endpoint's URI, and add the API key as a header.
-        .map_request(for_resolved_endpoint::<B>(endpoint, refresher.clone()))
+        .map_request(for_resolved_endpoint::<B>(endpoint))
         // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
         .map_request(with_version_info::<B>())
         // Add telemetry about the requests.
@@ -569,20 +566,11 @@ async fn run_endpoint_io_loop<S, B>(
     task_barrier.wait().await;
 }
 
-fn for_resolved_endpoint<B>(
-    endpoint: ResolvedEndpoint, refresher: Arc<RefreshableConfiguration>,
-) -> impl Fn(Request<B>) -> Request<B> + Clone {
+fn for_resolved_endpoint<B>(mut endpoint: ResolvedEndpoint) -> impl FnMut(Request<B>) -> Request<B> + Clone {
     let new_uri_authority = Authority::try_from(endpoint.endpoint().authority())
         .expect("should not fail to construct new endpoint authority");
     let new_uri_scheme =
         Scheme::try_from(endpoint.endpoint().scheme()).expect("should not fail to construct new endpoint scheme");
-    let api_key: String;
-    if let Ok(refresher_api_key) = refresher.get_typed::<String>("api_key") {
-        api_key = refresher_api_key.clone();
-    } else {
-        api_key = endpoint.api_key().to_string();
-    }
-    let api_key_value = HeaderValue::from_str(&api_key).expect("should not fail to construct API key header value");
     move |mut request| {
         // Build an updated URI by taking the endpoint URL and slapping the request's URI path on the end of it.
         let new_uri = Uri::builder()
@@ -591,7 +579,8 @@ fn for_resolved_endpoint<B>(
             .path_and_query(request.uri().path_and_query().expect("request path must exist").clone())
             .build()
             .expect("should not fail to construct new URI");
-
+        let api_key = endpoint.api_key();
+        let api_key_value = HeaderValue::from_str(api_key).expect("should not fail to construct API key header value");
         *request.uri_mut() = new_uri;
 
         // Add the API key as a header.
