@@ -569,7 +569,6 @@ async fn run_endpoint_io_loop<S, B>(
     task_barrier.wait().await;
 }
 
-#[allow(unused)]
 fn for_resolved_endpoint<B>(
     endpoint: ResolvedEndpoint, refresher: Arc<RefreshableConfiguration>,
 ) -> impl Fn(Request<B>) -> Request<B> + Clone {
@@ -577,7 +576,7 @@ fn for_resolved_endpoint<B>(
         .expect("should not fail to construct new endpoint authority");
     let new_uri_scheme =
         Scheme::try_from(endpoint.endpoint().scheme()).expect("should not fail to construct new endpoint scheme");
-    let mut api_key: String;
+    let api_key: String;
     if let Ok(refresher_api_key) = refresher.get_typed::<String>("api_key") {
         api_key = refresher_api_key.clone();
     } else {

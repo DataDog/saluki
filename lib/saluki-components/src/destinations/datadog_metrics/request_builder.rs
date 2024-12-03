@@ -105,7 +105,6 @@ impl MetricsEndpoint {
     }
 }
 
-#[allow(unused)]
 pub struct RequestBuilder<O>
 where
     O: ObjectPool<Item = BytesBuffer> + 'static,

@@ -11,15 +11,16 @@ use tracing::{debug, error};
 use crate::{ConfigurationError, GenericConfiguration};
 
 const DATADOG_AGENT_CONFIG_ENDPOINT: &str = "https://localhost:5004/config/v1/";
+const DEFAULT_AGENT_IPC_HOST: &str = "localhost";
 const DEFAULT_AUTH_TOKEN_FILE_PATH: &str = "/etc/datadog-agent/auth_token";
 const DEFAULT_REFRESH_INTERVAL_SECONDS: u64 = 15;
 
 /// Configuration for setting up `RefreshableConfiguration`.
 #[derive(Default, Deserialize)]
 pub struct RefresherConfiguration {
-    /// The location of the auth token used by the datadog agent.
+    /// The location of the auth token used by the Datadog Agent.
     ///
-    /// Defaults to `/etc/datadog-agent/auth_token`.`
+    /// Defaults to `/etc/datadog-agent/auth_token`.
     #[serde(default = "default_auth_token_file_path")]
     auth_token_file_path: String,
 
@@ -28,6 +29,18 @@ pub struct RefresherConfiguration {
     /// Defaults to 15 seconds.
     #[serde(default = "default_refresh_interval_seconds")]
     refresh_interval_seconds: u64,
+
+    /// The IPC host used by the Datadog Agent.
+    ///
+    /// Defaults to `localhost`.
+    #[serde(default = "default_agent_ipc_host")]
+    agent_ipc_host: String,
+
+    /// The IPC port used by the Datadog Agent.
+    ///
+    /// Defaults to `0`.
+    #[serde(default = "default_agent_ipc_port")]
+    agent_ipc_port: u64,
 }
 
 fn default_auth_token_file_path() -> String {
@@ -38,9 +51,18 @@ fn default_refresh_interval_seconds() -> u64 {
     DEFAULT_REFRESH_INTERVAL_SECONDS
 }
 
+fn default_agent_ipc_host() -> String {
+    DEFAULT_AGENT_IPC_HOST.to_owned()
+}
+
+fn default_agent_ipc_port() -> u64 {
+    0
+}
+
 /// A configuration whose values are refreshed from a remote source at runtime.
 #[derive(Clone, Default)]
 pub struct RefreshableConfiguration {
+    endpoint: String,
     token: String,
     values: Arc<ArcSwap<Value>>,
     refresh_interval_seconds: u64,
@@ -51,21 +73,24 @@ impl RefresherConfiguration {
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
     }
+
     /// Create `RefreshableConfiguration` from `RefresherConfiguration`.
-    pub fn build(&self) -> Result<Arc<RefreshableConfiguration>, GenericError> {
+    pub fn build(&self) -> Result<RefreshableConfiguration, GenericError> {
         let raw_bearer_token = std::fs::read_to_string(&self.auth_token_file_path)?;
-        let refreshable_configuration = Arc::new(RefreshableConfiguration {
+        let endpoint = format!("https://{}:{}/config/v1", self.agent_ipc_host, self.agent_ipc_port);
+        let refreshable_configuration = RefreshableConfiguration {
+            endpoint,
             token: raw_bearer_token,
             values: Arc::new(ArcSwap::from_pointee(serde_json::Value::Null)),
             refresh_interval_seconds: self.refresh_interval_seconds,
-        });
-        refreshable_configuration.clone().spawn_refresh_task();
+        };
+        refreshable_configuration.spawn_refresh_task();
         Ok(refreshable_configuration)
     }
 }
 impl RefreshableConfiguration {
     /// Start a task that queries the datadog-agent config endpoint every 15 seconds.
-    fn spawn_refresh_task(self: Arc<Self>) {
+    fn spawn_refresh_task(self) {
         tokio::spawn(async move {
             let client = ClientBuilder::new()
                 .danger_accept_invalid_certs(true) // Allow invalid certificates
@@ -73,7 +98,7 @@ impl RefreshableConfiguration {
                 .expect("failed to create http client");
             loop {
                 let response = client
-                    .get(DATADOG_AGENT_CONFIG_ENDPOINT)
+                    .get(self.endpoint.clone())
                     .header("Content-Type", "application/json")
                     .header("Authorization", format!("Bearer {}", self.token))
                     .header("DD-Agent-Version", "0.1.0")
@@ -87,10 +112,16 @@ impl RefreshableConfiguration {
                             .await
                             .expect("failed to deserialize configuration into json");
                         self.values.store(Arc::new(config_response));
-                        debug!("Retrieved configuration from datadog-agent.");
+                        debug!(
+                            remote_endpoint = self.endpoint,
+                            "Retrieved configuration from remote source."
+                        );
                     }
                     Err(e) => {
-                        error!("Error retrieving configuration from datadog-agent: {}", e);
+                        error!(
+                            remote_endpoint = self.endpoint,
+                            "Failed to retrieve configuration from remote source: {}", e
+                        );
                     }
                 }
 
@@ -114,18 +145,27 @@ impl RefreshableConfiguration {
         match values.get(key) {
             Some(value) => {
                 // Attempt to deserialize the value to type T
-                serde_json::from_value(value.clone()).map_err(|_| ConfigurationError::MissingField {
-                    help_text: format!(
-                        "RefreshableConfiguration could not convert key {} value into the proper type.",
-                        key
-                    ),
-                    field: key.to_string().into(),
+                serde_json::from_value(value.clone()).map_err(|_| ConfigurationError::InvalidFieldType {
+                    field: key.to_string(),
+                    expected_ty: std::any::type_name::<T>().to_string(),
+                    actual_ty: serde_json_value_type_name(value).to_string(),
                 })
             }
             None => Err(ConfigurationError::MissingField {
-                help_text: format!("RefreshableConfiguration missing key {}", key),
+                help_text: format!("Try validating remote source provides this field."),
                 field: key.to_string().into(),
             }),
         }
+    }
+}
+
+fn serde_json_value_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
     }
 }
