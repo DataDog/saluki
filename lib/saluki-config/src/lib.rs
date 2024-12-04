@@ -12,8 +12,10 @@ use snafu::{ResultExt as _, Snafu};
 use tracing::debug;
 
 mod provider;
+mod refresher;
 mod secrets;
 use self::provider::ResolvedProvider;
+pub use self::refresher::{RefreshableConfiguration, RefresherConfiguration};
 
 /// A configuration error.
 #[derive(Debug, Snafu)]
