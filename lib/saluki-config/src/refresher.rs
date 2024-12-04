@@ -26,7 +26,10 @@ pub struct RefresherConfiguration {
     /// The amount of time betweeen each request in seconds.
     ///
     /// Defaults to 15 seconds.
-    #[serde(default = "default_refresh_interval_seconds")]
+    #[serde(
+        rename = "agent_config_refresh_internal_seconds",
+        default = "default_refresh_interval_seconds"
+    )]
     refresh_interval_seconds: u64,
 
     /// The IPC host used by the Datadog Agent.
@@ -68,7 +71,13 @@ pub struct RefreshableConfiguration {
 }
 
 impl RefresherConfiguration {
-    /// Creates a new `RefresherConfiguration` from the given configuration.
+    /// Builds a `RefreshableConfiguration`, spawning a background task to periodically pull
+    /// configuration data and update the configuration.
+    ///
+    /// # Errors
+    ///
+    /// If the authentication token be read from the configured authentication token file
+    /// path, an error will be returned.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
     }

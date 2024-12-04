@@ -220,14 +220,11 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         let series_request_builder = RequestBuilder::new(MetricsEndpoint::Series, rb_buffer_pool.clone()).await?;
         let sketches_request_builder = RequestBuilder::new(MetricsEndpoint::Sketches, rb_buffer_pool).await?;
 
-        let refresher = self.config_refresher.clone();
-
         Ok(Box::new(DatadogMetrics {
             service,
             series_request_builder,
             sketches_request_builder,
             endpoints,
-            refresher,
         }))
     }
 }
@@ -271,7 +268,6 @@ where
     series_request_builder: RequestBuilder<O>,
     sketches_request_builder: RequestBuilder<O>,
     endpoints: Vec<ResolvedEndpoint>,
-    refresher: Option<RefreshableConfiguration>,
 }
 
 #[allow(unused)]
@@ -289,7 +285,6 @@ where
             mut sketches_request_builder,
             service,
             endpoints,
-            refresher,
         } = *self;
 
         let mut health = context.take_health_handle();

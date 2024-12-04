@@ -182,7 +182,7 @@ fn create_topology(
 
     let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Metrics destination.")?;
-    dd_metrics_config.add_refreshable_configuration(refreshable_configuration.clone());
+    dd_metrics_config.add_refreshable_configuration(refreshable_configuration);
     let events_service_checks_config = DatadogEventsServiceChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Events/Service Checks destination.")?;
 

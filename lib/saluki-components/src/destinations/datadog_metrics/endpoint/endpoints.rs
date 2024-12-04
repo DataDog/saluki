@@ -10,7 +10,7 @@ use saluki_metadata;
 use serde::Deserialize;
 use serde_with::{serde_as, DisplayFromStr, OneOrMany, PickFirst};
 use snafu::{ResultExt, Snafu};
-use tracing::{debug, error};
+use tracing::debug;
 use url::Url;
 
 use crate::destinations::datadog_metrics::DEFAULT_SITE;
@@ -135,20 +135,20 @@ impl ResolvedEndpoint {
     }
 
     /// Returns the API key associated with the endpoint.
+    ///
+    /// If a refreshable configuration has been configured, the API key will be queried from the
+    /// configuration and stored if it has been updated since the last time `api_key` was called.
     pub fn api_key(&mut self) -> &str {
         if let Some(config) = &self.config {
             match config.try_get_typed::<String>("api_key") {
                 Ok(Some(api_key)) => {
                     if !api_key.is_empty() && self.api_key != api_key {
-                        debug!("Refreshing api key.");
+                        debug!(endpoint = %self.endpoint, "Refreshed API key.");
                         self.api_key = api_key;
                     }
                 }
-                Ok(None) => {
-                    debug!("Failed to retrieve api key from remote source. Falling back to last known api key.");
-                }
-                Err(_) => {
-                    error!("Failed to retrieve api key from remote source. Falling back to last known api key.");
+                Ok(None) | Err(_) => {
+                    debug!("Failed to retrieve API key from remote source (missing or wrong type). Continuing with last known valid API key.");
                 }
             }
         }

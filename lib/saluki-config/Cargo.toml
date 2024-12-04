@@ -9,7 +9,7 @@ repository = { workspace = true }
 arc-swap = { workspace = true }
 figment = { workspace = true, features = ["env", "json", "yaml"] }
 http = { workspace = true }
-reqwest = { workspace = true, features = ["rustls-tls", "json"] }
+reqwest = { workspace = true, features = ["rustls-tls-native-roots-no-provider", "json"] }
 saluki-error = { workspace = true }
 saluki-io = { workspace = true }
 serde = { workspace = true }
