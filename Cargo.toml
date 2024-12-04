@@ -141,6 +141,8 @@ serde_with = { version = "3.11.0", default-features = false, features = ["macros
 triomphe = { git = "https://github.com/tobz/triomphe.git", branch = "tobz/arc-into-inner", default-features = false }
 chrono-tz = { version = "0.10", default-features = false }
 iana-time-zone = { version = "0.1", default-features = false }
+backon = { version = "1", default-features = false }
+http-serde-ext = { version = "1", default-features = false }
 
 [profile.release]
 lto = "thin"
