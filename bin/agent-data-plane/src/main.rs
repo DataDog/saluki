@@ -187,7 +187,7 @@ fn create_topology(
         }
         Err(_) => {
             info!(
-                "Dynamic configuration refreshing will be unable due to failure to configure refresher configuration."
+                "Dynamic configuration refreshing will be unavailable due to failure to configure refresher configuration."
             )
         }
     }
