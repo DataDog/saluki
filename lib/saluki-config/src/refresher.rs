@@ -71,6 +71,11 @@ pub struct RefreshableConfiguration {
 }
 
 impl RefresherConfiguration {
+    /// Creates a new `RefresherConfiguration` from the given configuration.
+    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        Ok(config.as_typed()?)
+    }
+
     /// Builds a `RefreshableConfiguration`, spawning a background task to periodically pull
     /// configuration data and update the configuration.
     ///
@@ -78,11 +83,6 @@ impl RefresherConfiguration {
     ///
     /// If the authentication token be read from the configured authentication token file
     /// path, an error will be returned.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
-    }
-
-    /// Create `RefreshableConfiguration` from `RefresherConfiguration`.
     pub fn build(&self) -> Result<RefreshableConfiguration, GenericError> {
         let raw_bearer_token = std::fs::read_to_string(&self.auth_token_file_path)?;
         let endpoint = format!("https://{}:{}/config/v1", self.agent_ipc_host, self.agent_ipc_port);
