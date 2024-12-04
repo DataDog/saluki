@@ -37,6 +37,7 @@ pub mod agent {
     pub use super::agent_include::datadog::workloadmeta::*;
 }
 
+// RemoteAgent definitions.
 pub mod remoteagent {
     pub use super::remoteagent_include::datadog::remoteagent::*;
 }
