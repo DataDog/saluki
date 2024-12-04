@@ -4,7 +4,7 @@ use saluki_error::GenericError;
 use saluki_event::DataType;
 
 use super::{SynchronousTransform, Transform};
-use crate::topology::OutputDefinition;
+use crate::{components::ComponentContext, topology::OutputDefinition};
 
 /// A transform builder.
 ///
@@ -24,7 +24,7 @@ pub trait TransformBuilder: MemoryBounds {
     /// ## Errors
     ///
     /// If the transform cannot be built for any reason, an error is returned.
-    async fn build(&self) -> Result<Box<dyn Transform + Send>, GenericError>;
+    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError>;
 }
 
 /// A synchronous transform builder.

@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::{components::transforms::*, topology::OutputDefinition};
+use saluki_core::{
+    components::{transforms::*, ComponentContext},
+    topology::OutputDefinition,
+};
 use saluki_error::GenericError;
 use saluki_event::DataType;
 use tokio::select;
@@ -47,7 +50,7 @@ impl MemoryBounds for ChainedConfiguration {
 
 #[async_trait]
 impl TransformBuilder for ChainedConfiguration {
-    async fn build(&self) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let mut subtransforms = Vec::new();
         for (subtransform_id, subtransform_builder) in &self.subtransform_builders {
             let subtransform = subtransform_builder.build().await?;

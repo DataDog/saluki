@@ -12,6 +12,7 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{destinations::*, ComponentContext},
+    observability::ComponentMetricsExt as _,
     pooling::{FixedSizeObjectPool, ObjectPool},
     task::spawn_traced,
 };
@@ -20,11 +21,13 @@ use saluki_event::DataType;
 use saluki_io::{
     buf::{BytesBuffer, FixedSizeVec, FrozenChunkedBytesBuffer},
     net::{
-        client::http::{EndpointTelemetryLayer, HttpClient},
+        client::http::HttpClient,
         util::retry::{DefaultHttpRetryPolicy, ExponentialBackoff},
     },
 };
+use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
+use stringtheory::MetaString;
 use tokio::{
     select,
     sync::{mpsc, oneshot, Barrier},
@@ -180,7 +183,7 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         DataType::Metric
     }
 
-    async fn build(&self) -> Result<Box<dyn Destination + Send>, GenericError> {
+    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         let retry_backoff = ExponentialBackoff::with_jitter(
             Duration::from_secs_f64(self.request_backoff_base),
             Duration::from_secs_f64(self.request_backoff_max),
@@ -192,7 +195,12 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         let retry_policy = DefaultHttpRetryPolicy::with_backoff(retry_backoff)
             .with_recovery_error_decrease_factor(recovery_error_decrease_factor);
 
-        let service = HttpClient::builder().with_retry_policy(retry_policy).build()?;
+        let metrics_builder = MetricsBuilder::from_component_context(context);
+
+        let service = HttpClient::builder()
+            .with_retry_policy(retry_policy)
+            .with_endpoint_telemetry(metrics_builder, Some(get_metrics_endpoint_name))
+            .build()?;
 
         // Resolve all endpoints that we'll be forwarding metrics to.
         let primary_endpoint = calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, &self.api_key)
@@ -283,13 +291,12 @@ where
         // Spawn our IO task to handle sending requests.
         let (io_shutdown_tx, io_shutdown_rx) = oneshot::channel();
         let (requests_tx, requests_rx) = mpsc::channel(32);
-        let telemetry = ComponentTelemetry::from_component_context(context.component_context());
+        let telemetry = ComponentTelemetry::from_context(context.component_context());
         spawn_traced(run_io_loop(
             requests_rx,
             io_shutdown_tx,
             service,
             telemetry.clone(),
-            context.component_context(),
             endpoints,
         ));
 
@@ -308,7 +315,6 @@ where
 
                             for event in event_buffer {
                                 if let Some(metric) = event.try_into_metric() {
-
                                     let request_builder = match MetricsEndpoint::from_metric(&metric) {
                                         MetricsEndpoint::Series => &mut series_request_builder,
                                         MetricsEndpoint::Sketches => &mut sketches_request_builder,
@@ -429,7 +435,7 @@ where
 
 async fn run_io_loop<S, B>(
     mut requests_rx: mpsc::Receiver<(usize, Request<B>)>, io_shutdown_tx: oneshot::Sender<()>, service: S,
-    telemetry: ComponentTelemetry, component_context: ComponentContext, resolved_endpoints: Vec<ResolvedEndpoint>,
+    telemetry: ComponentTelemetry, resolved_endpoints: Vec<ResolvedEndpoint>,
 ) where
     S: Service<Request<B>, Response = hyper::Response<Incoming>> + Clone + Send + 'static,
     S::Future: Send,
@@ -453,7 +459,6 @@ async fn run_io_loop<S, B>(
             task_barrier,
             service.clone(),
             telemetry.clone(),
-            component_context.clone(),
             resolved_endpoint,
         ));
 
@@ -488,7 +493,7 @@ async fn run_io_loop<S, B>(
 
 async fn run_endpoint_io_loop<S, B>(
     mut requests_rx: mpsc::Receiver<(usize, Request<B>)>, task_barrier: Arc<Barrier>, service: S,
-    telemetry: ComponentTelemetry, context: ComponentContext, endpoint: ResolvedEndpoint,
+    telemetry: ComponentTelemetry, endpoint: ResolvedEndpoint,
 ) where
     S: Service<Request<B>, Response = hyper::Response<Incoming>> + Send + 'static,
     S::Future: Send,
@@ -507,8 +512,6 @@ async fn run_endpoint_io_loop<S, B>(
         .map_request(for_resolved_endpoint::<B>(endpoint))
         // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
         .map_request(with_version_info::<B>())
-        // Add telemetry about the requests.
-        .layer(EndpointTelemetryLayer::from_component_context(context).with_endpoint_name_fn(get_metrics_endpoint_name))
         .service(service);
 
     // Process all requests until the channel is closed.
@@ -604,10 +607,10 @@ fn with_version_info<B>() -> impl Fn(Request<B>) -> Request<B> + Clone {
     }
 }
 
-fn get_metrics_endpoint_name(uri: &Uri) -> Option<&'static str> {
+fn get_metrics_endpoint_name(uri: &Uri) -> Option<MetaString> {
     match uri.path() {
-        "/api/v2/series" => Some("series_v2"),
-        "/api/beta/sketches" => Some("sketches_v2"),
+        "/api/v2/series" => Some(MetaString::from_static("series_v2")),
+        "/api/beta/sketches" => Some(MetaString::from_static("sketches_v2")),
         _ => None,
     }
 }

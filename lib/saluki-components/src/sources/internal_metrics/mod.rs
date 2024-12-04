@@ -2,7 +2,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::{components::sources::*, observability::metrics::MetricsReceiver, topology::OutputDefinition};
+use saluki_core::{
+    components::{sources::*, ComponentContext},
+    observability::metrics::MetricsReceiver,
+    topology::OutputDefinition,
+};
 use saluki_error::GenericError;
 use saluki_event::DataType;
 use tokio::select;
@@ -15,7 +19,7 @@ pub struct InternalMetricsConfiguration;
 
 #[async_trait]
 impl SourceBuilder for InternalMetricsConfiguration {
-    async fn build(&self) -> Result<Box<dyn Source + Send>, GenericError> {
+    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
         Ok(Box::new(InternalMetrics))
     }
 

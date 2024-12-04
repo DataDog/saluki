@@ -2,6 +2,9 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
+mod builder;
+pub use self::builder::{MetricTag, MetricsBuilder};
+
 mod macros;
 
 #[doc(hidden)]

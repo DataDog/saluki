@@ -285,7 +285,7 @@ impl DiscriminantUnion {
 /// 1. Only used on 64-bit little-endian platforms. (checked at compile-time via _INVARIANTS_CHECK)
 /// 2. The data pointers for `String` and `&'static str` cannot  ever be null when the strings are non-empty.
 /// 3. Allocations can never be larger than `isize::MAX` (see [here][rust_isize_alloc_limit]), meaning that any
-///    length/capacity field for a string cannot ever be larger than `isize::MAX`, implying the 63rd bit (top-most bit)
+///    length/capacity field for a string cannot ever be larger than `isize::MAX`, implying the 64th bit (top-most bit)
 ///    for length/capacity should always be 0.
 /// 4. An inlined string can only hold up to 23 bytes of data, meaning that the length byte for that string can never
 ///    have a value greater than 23. (_We_ have to provide this invariant, which is handled in `Inner::try_inlined`.)

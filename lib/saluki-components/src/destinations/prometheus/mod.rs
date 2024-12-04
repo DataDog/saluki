@@ -8,7 +8,7 @@ use indexmap::IndexMap;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{Context, TagSet};
-use saluki_core::components::destinations::*;
+use saluki_core::components::{destinations::*, ComponentContext};
 use saluki_error::GenericError;
 use saluki_event::{
     metric::{Metric, MetricValues},
@@ -65,7 +65,7 @@ impl DestinationBuilder for PrometheusConfiguration {
         DataType::Metric
     }
 
-    async fn build(&self) -> Result<Box<dyn Destination + Send>, GenericError> {
+    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         Ok(Box::new(Prometheus {
             listener: ConnectionOrientedListener::from_listen_address(self.listen_addr.clone()).await?,
             metrics: IndexMap::new(),

@@ -1,18 +1,23 @@
 use std::{future::Future, pin::Pin, task::Poll, time::Duration};
 
-use http::{Request, Response};
+use http::{Request, Response, Uri};
 use hyper::body::{Body, Incoming};
 use hyper_util::{
     client::legacy::{connect::capture_connection, Builder},
     rt::{TokioExecutor, TokioTimer},
 };
 use saluki_error::GenericError;
+use saluki_metrics::MetricsBuilder;
 use saluki_tls::ClientTLSConfigBuilder;
+use stringtheory::MetaString;
 use tower::{
     retry::Policy, timeout::TimeoutLayer, util::BoxCloneService, BoxError, Service, ServiceBuilder, ServiceExt as _,
 };
 
-use super::conn::{check_connection_state, HttpsCapableConnectorBuilder};
+use super::{
+    conn::{check_connection_state, HttpsCapableConnectorBuilder},
+    EndpointTelemetryLayer,
+};
 use crate::net::util::retry::NoopRetryPolicy;
 
 /// An HTTP client.
@@ -99,6 +104,7 @@ pub struct HttpClientBuilder<P = NoopRetryPolicy> {
     tls_builder: ClientTLSConfigBuilder,
     retry_policy: P,
     request_timeout: Option<Duration>,
+    endpoint_telemetry: Option<EndpointTelemetryLayer>,
 }
 
 impl<P> HttpClientBuilder<P> {
@@ -175,7 +181,25 @@ impl<P> HttpClientBuilder<P> {
             tls_builder: self.tls_builder,
             request_timeout: self.request_timeout,
             retry_policy,
+            endpoint_telemetry: self.endpoint_telemetry,
         }
+    }
+
+    /// Enables per-endpoint telemetry for HTTP transactions.
+    ///
+    /// See [`EndpointTelemetryLayer`] for more information.
+    pub fn with_endpoint_telemetry<F>(mut self, metrics_builder: MetricsBuilder, endpoint_name_fn: Option<F>) -> Self
+    where
+        F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
+    {
+        let mut layer = EndpointTelemetryLayer::default().with_metrics_builder(metrics_builder);
+
+        if let Some(endpoint_name_fn) = endpoint_name_fn {
+            layer = layer.with_endpoint_name_fn(endpoint_name_fn);
+        }
+
+        self.endpoint_telemetry = Some(layer);
+        self
     }
 
     /// Sets the TLS configuration.
@@ -221,6 +245,7 @@ impl<P> HttpClientBuilder<P> {
         let inner = ServiceBuilder::new()
             .retry(self.retry_policy)
             .option_layer(self.request_timeout.map(TimeoutLayer::new))
+            .option_layer(self.endpoint_telemetry)
             .service(client.map_err(BoxError::from))
             .boxed_clone();
 
@@ -242,6 +267,7 @@ impl Default for HttpClientBuilder {
             tls_builder: ClientTLSConfigBuilder::new(),
             request_timeout: Some(Duration::from_secs(20)),
             retry_policy: NoopRetryPolicy,
+            endpoint_telemetry: None,
         }
     }
 }

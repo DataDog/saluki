@@ -3,7 +3,7 @@ use memory_accounting::MemoryBounds;
 use saluki_error::GenericError;
 
 use super::Source;
-use crate::topology::OutputDefinition;
+use crate::{components::ComponentContext, topology::OutputDefinition};
 
 /// A source builder.
 ///
@@ -19,5 +19,5 @@ pub trait SourceBuilder: MemoryBounds {
     /// ## Errors
     ///
     /// If the source cannot be built for any reason, an error is returned.
-    async fn build(&self) -> Result<Box<dyn Source + Send>, GenericError>;
+    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError>;
 }

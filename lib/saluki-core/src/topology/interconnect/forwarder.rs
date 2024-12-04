@@ -4,12 +4,14 @@ use ahash::AHashMap;
 use metrics::{Counter, Histogram, SharedString};
 use saluki_error::{generic_error, GenericError};
 use saluki_event::Event;
+use saluki_metrics::MetricsBuilder;
 use smallvec::SmallVec;
 use tokio::sync::mpsc;
 
 use super::FixedSizeEventBuffer;
 use crate::{
-    components::{ComponentContext, MetricsBuilder},
+    components::ComponentContext,
+    observability::ComponentMetricsExt as _,
     pooling::{ElasticObjectPool, ObjectPool},
     topology::OutputName,
 };
@@ -30,16 +32,13 @@ impl ForwarderMetrics {
 
     fn with_output_name<N>(context: ComponentContext, output_name: N) -> Self
     where
-        N: Into<SharedString> + Clone,
+        N: Into<SharedString>,
     {
-        let output_labels = &[("output", output_name)];
-        let metrics_builder = MetricsBuilder::from_component_context(context);
+        let metrics_builder = MetricsBuilder::from_component_context(context).add_default_tag(("output", output_name));
 
         Self {
-            events_sent: metrics_builder
-                .register_debug_counter_with_labels("component_events_sent_total", output_labels),
-            forwarding_latency: metrics_builder
-                .register_debug_histogram_with_labels("component_send_latency_seconds", output_labels),
+            events_sent: metrics_builder.register_debug_counter("component_events_sent_total"),
+            forwarding_latency: metrics_builder.register_debug_histogram("component_send_latency_seconds"),
         }
     }
 }

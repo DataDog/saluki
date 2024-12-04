@@ -10,7 +10,8 @@ use metrics::{Counter, Gauge, Histogram};
 use saluki_config::GenericConfiguration;
 use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::{
-    components::{sources::*, MetricsBuilder},
+    components::{sources::*, ComponentContext},
+    observability::ComponentMetricsExt as _,
     pooling::{FixedSizeObjectPool, ObjectPool as _},
     task::spawn_traced,
     topology::{
@@ -39,6 +40,7 @@ use saluki_io::{
         ConnectionAddress, ListenAddress, Stream,
     },
 };
+use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use snafu::{ResultExt as _, Snafu};
 use tokio::{
@@ -231,7 +233,7 @@ impl DogStatsDConfiguration {
 
 #[async_trait]
 impl SourceBuilder for DogStatsDConfiguration {
-    async fn build(&self) -> Result<Box<dyn Source + Send>, GenericError> {
+    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
         let listeners = self.build_listeners().await?;
         if listeners.is_empty() {
             return Err(Error::NoListenersConfigured.into());
@@ -367,7 +369,9 @@ impl Metrics {
     }
 }
 
-fn build_metrics(listen_addr: &ListenAddress, builder: MetricsBuilder) -> Metrics {
+fn build_metrics(listen_addr: &ListenAddress, context: ComponentContext) -> Metrics {
+    let builder = MetricsBuilder::from_component_context(context);
+
     let listener_type = match listen_addr {
         ListenAddress::Tcp(_) => unreachable!("TCP is not supported for DogStatsD"),
         ListenAddress::Udp(_) => "udp",
@@ -376,35 +380,35 @@ fn build_metrics(listen_addr: &ListenAddress, builder: MetricsBuilder) -> Metric
     };
 
     Metrics {
-        metrics_received: builder.register_debug_counter_with_labels(
+        metrics_received: builder.register_debug_counter_with_tags(
             "component_events_received_total",
-            &[("message_type", "metrics"), ("listener_type", listener_type)],
+            [("message_type", "metrics"), ("listener_type", listener_type)],
         ),
-        events_received: builder.register_debug_counter_with_labels(
+        events_received: builder.register_debug_counter_with_tags(
             "component_events_received_total",
-            &[("message_type", "events"), ("listener_type", listener_type)],
+            [("message_type", "events"), ("listener_type", listener_type)],
         ),
-        service_checks_received: builder.register_debug_counter_with_labels(
+        service_checks_received: builder.register_debug_counter_with_tags(
             "component_events_received_total",
-            &[("message_type", "service_checks"), ("listener_type", listener_type)],
+            [("message_type", "service_checks"), ("listener_type", listener_type)],
         ),
         bytes_received: builder
-            .register_debug_counter_with_labels("component_bytes_received_total", &[("listener_type", listener_type)]),
+            .register_debug_counter_with_tags("component_bytes_received_total", [("listener_type", listener_type)]),
         bytes_received_size: builder
-            .register_debug_histogram_with_labels("component_bytes_received_size", &[("listener_type", listener_type)]),
-        decoder_errors: builder.register_debug_counter_with_labels(
+            .register_debug_histogram_with_tags("component_bytes_received_size", [("listener_type", listener_type)]),
+        decoder_errors: builder.register_debug_counter_with_tags(
             "component_errors_total",
-            &[("listener_type", listener_type), ("error_type", "decode")],
+            [("listener_type", listener_type), ("error_type", "decode")],
         ),
         connections_active: builder
-            .register_debug_gauge_with_labels("component_connections_active", &[("listener_type", listener_type)]),
-        packet_receive_success: builder.register_debug_counter_with_labels(
+            .register_debug_gauge_with_tags("component_connections_active", [("listener_type", listener_type)]),
+        packet_receive_success: builder.register_debug_counter_with_tags(
             "component_packets_received_total",
-            &[("listener_type", listener_type), ("state", "ok")],
+            [("listener_type", listener_type), ("state", "ok")],
         ),
-        packet_receive_failure: builder.register_debug_counter_with_labels(
+        packet_receive_failure: builder.register_debug_counter_with_tags(
             "component_packets_received_total",
-            &[("listener_type", listener_type), ("state", "error")],
+            [("listener_type", listener_type), ("state", "error")],
         ),
         failed_context_resolve_total: builder.register_debug_counter("component_failed_context_resolve_total"),
     }
@@ -510,7 +514,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
                         framer: get_framer(&listen_addr),
                         codec: codec.clone(),
                         io_buffer_pool: io_buffer_pool.clone(),
-                        metrics: build_metrics(&listen_addr, MetricsBuilder::from_component_context(source_context.component_context())),
+                        metrics: build_metrics(&listen_addr, source_context.component_context()),
                         multitenant_strategy: multitenant_strategy.clone(),
                     };
                     spawn_traced(process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register()));

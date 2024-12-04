@@ -3394,6 +3394,7 @@ dependencies = [
  "saluki-event",
  "saluki-io",
  "saluki-metadata",
+ "saluki-metrics",
  "serde",
  "serde_json",
  "serde_with",
