@@ -3,7 +3,10 @@ use http::{Request, Uri};
 use http_body_util::BodyExt;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
-use saluki_core::{components::destinations::*, task::spawn_traced};
+use saluki_core::{
+    components::{destinations::*, ComponentContext},
+    task::spawn_traced,
+};
 use saluki_error::{generic_error, GenericError};
 use saluki_event::{DataType, Event};
 use saluki_io::net::client::http::HttpClient;
@@ -84,7 +87,7 @@ impl DestinationBuilder for DatadogEventsServiceChecksConfiguration {
         DataType::EventD | DataType::ServiceCheck
     }
 
-    async fn build(&self) -> Result<Box<dyn Destination + Send>, GenericError> {
+    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         let http_client = HttpClient::builder().build()?;
 
         let api_base = self.api_base()?;

@@ -43,6 +43,7 @@ saluki-error = { workspace = true }
 saluki-event = { workspace = true }
 saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }
+saluki-metrics = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true, features = ["alloc"] }

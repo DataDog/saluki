@@ -6,7 +6,8 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::Context;
 use saluki_core::{
-    components::{transforms::*, MetricsBuilder},
+    components::{transforms::*, ComponentContext},
+    observability::ComponentMetricsExt as _,
     pooling::ObjectPool,
     topology::{
         interconnect::{BufferedForwarder, FixedSizeEventBuffer},
@@ -16,6 +17,7 @@ use saluki_core::{
 use saluki_env::time::get_unix_timestamp;
 use saluki_error::GenericError;
 use saluki_event::{metric::*, DataType, Event};
+use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use smallvec::SmallVec;
 use tokio::{select, time::interval_at};
@@ -170,7 +172,7 @@ impl AggregateConfiguration {
 
 #[async_trait]
 impl TransformBuilder for AggregateConfiguration {
-    async fn build(&self) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         Ok(Box::new(Aggregate {
             window_duration: self.window_duration,
             flush_interval: self.flush_interval,
@@ -239,8 +241,8 @@ impl Transform for Aggregate {
         let mut flush = interval_at(tokio::time::Instant::now() + self.flush_interval, self.flush_interval);
 
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
-        let events_dropped = metrics_builder
-            .register_debug_counter_with_labels("component_events_dropped_total", &[("intentional", "true")]);
+        let events_dropped =
+            metrics_builder.register_debug_counter_with_tags("component_events_dropped_total", ["intentional:true"]);
 
         health.mark_ready();
         debug!("Aggregation transform started.");

@@ -8,6 +8,7 @@ use crate::components::{
     destinations::{Destination, DestinationBuilder, DestinationContext},
     sources::{Source, SourceBuilder, SourceContext},
     transforms::{Transform, TransformBuilder, TransformContext},
+    ComponentContext,
 };
 
 struct TestSource;
@@ -37,7 +38,7 @@ impl SourceBuilder for TestSourceBuilder {
         &self.outputs
     }
 
-    async fn build(&self) -> Result<Box<dyn Source + Send>, GenericError> {
+    async fn build(&self, _: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
         Ok(Box::new(TestSource))
     }
 }
@@ -93,7 +94,7 @@ impl TransformBuilder for TestTransformBuilder {
         &self.outputs
     }
 
-    async fn build(&self) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, _: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         Ok(Box::new(TestTransform))
     }
 }
@@ -127,7 +128,7 @@ impl DestinationBuilder for TestDestinationBuilder {
         self.input_data_ty
     }
 
-    async fn build(&self) -> Result<Box<dyn Destination + Send>, GenericError> {
+    async fn build(&self, _: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         Ok(Box::new(TestDestination))
     }
 }

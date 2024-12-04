@@ -4,7 +4,10 @@ use async_trait::async_trait;
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
-use saluki_core::{components::transforms::*, topology::OutputDefinition};
+use saluki_core::{
+    components::{transforms::*, ComponentContext},
+    topology::OutputDefinition,
+};
 use saluki_error::{generic_error, GenericError};
 use saluki_event::{metric::*, DataType, Event};
 use stringtheory::MetaString;
@@ -45,7 +48,7 @@ impl TransformBuilder for AgentTelemetryRemapperConfiguration {
         OUTPUTS
     }
 
-    async fn build(&self) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, _: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let context_string_interner_size = NonZeroUsize::new(self.context_string_interner_bytes.as_u64() as usize)
             .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
         let context_resolver = ContextResolverBuilder::from_name("agent_telemetry_remapper")

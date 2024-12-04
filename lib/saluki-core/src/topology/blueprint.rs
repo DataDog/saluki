@@ -11,7 +11,9 @@ use super::{
     interconnect::{FixedSizeEventBuffer, FixedSizeEventBufferInner},
     ComponentId, RegisteredComponent,
 };
-use crate::components::{destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder};
+use crate::components::{
+    destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder, ComponentContext,
+};
 
 /// A topology blueprint error.
 #[derive(Debug, Snafu)]
@@ -218,8 +220,9 @@ impl TopologyBlueprint {
             let allocation_token = component_registry.token();
 
             let _guard = allocation_token.enter();
+            let component_context = ComponentContext::source(id.clone());
             let source = builder
-                .build()
+                .build(component_context)
                 .await
                 .with_error_context(|| format!("Failed to build source '{}'.", id))?;
 
@@ -235,8 +238,9 @@ impl TopologyBlueprint {
             let allocation_token = component_registry.token();
 
             let _guard = allocation_token.enter();
+            let component_context = ComponentContext::transform(id.clone());
             let transform = builder
-                .build()
+                .build(component_context)
                 .await
                 .with_error_context(|| format!("Failed to build transform '{}'.", id))?;
 
@@ -252,8 +256,9 @@ impl TopologyBlueprint {
             let allocation_token = component_registry.token();
 
             let _guard = allocation_token.enter();
+            let component_context = ComponentContext::destination(id.clone());
             let destination = builder
-                .build()
+                .build(component_context)
                 .await
                 .with_error_context(|| format!("Failed to build destination '{}'.", id))?;
 

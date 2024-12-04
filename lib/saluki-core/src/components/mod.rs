@@ -2,10 +2,7 @@
 
 pub mod destinations;
 
-mod metrics;
 use std::fmt;
-
-pub use self::metrics::MetricsBuilder;
 
 pub mod sources;
 pub mod transforms;

@@ -1,10 +1,11 @@
 use std::{future::poll_fn, num::NonZeroUsize};
 
 use metrics::{Counter, Histogram};
+use saluki_metrics::MetricsBuilder;
 use tokio::sync::mpsc;
 
 use super::FixedSizeEventBuffer;
-use crate::components::{ComponentContext, MetricsBuilder};
+use crate::{components::ComponentContext, observability::ComponentMetricsExt as _};
 
 // Since we're dealing with event _buffers_, this becomes a multiplicative factor, so we might be receiving 128 (or
 // whatever the number is) event buffers of 128 events each. This is good for batching/efficiency but we don't want
