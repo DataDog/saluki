@@ -9,7 +9,7 @@ use http_body::Body;
 use http_body_util::BodyExt as _;
 use hyper::body::Incoming;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config::GenericConfiguration;
+use saluki_config::{GenericConfiguration, RefreshableConfiguration};
 use saluki_core::{
     components::{destinations::*, ComponentContext},
     observability::ComponentMetricsExt as _,
@@ -144,6 +144,9 @@ pub struct DatadogMetricsConfiguration {
     /// Defaults to empty.
     #[serde(default, rename = "additional_endpoints")]
     additional_endpoints: AdditionalEndpoints,
+
+    #[serde(skip)]
+    config_refresher: Option<RefreshableConfiguration>,
 }
 
 fn default_request_timeout_secs() -> u64 {
@@ -175,6 +178,11 @@ impl DatadogMetricsConfiguration {
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
     }
+
+    /// Add option to retrieve configuration values from a `RefreshableConfiguration`.
+    pub fn add_refreshable_configuration(&mut self, refresher: RefreshableConfiguration) {
+        self.config_refresher = Some(refresher);
+    }
 }
 
 #[async_trait]
@@ -204,7 +212,8 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
 
         // Resolve all endpoints that we'll be forwarding metrics to.
         let primary_endpoint = calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, &self.api_key)
-            .error_context("Failed parsing/resolving the primary destination endpoint.")?;
+            .error_context("Failed parsing/resolving the primary destination endpoint.")?
+            .with_refreshable_configuration(self.config_refresher.clone());
 
         let additional_endpoints = self
             .additional_endpoints
@@ -555,14 +564,11 @@ async fn run_endpoint_io_loop<S, B>(
     task_barrier.wait().await;
 }
 
-fn for_resolved_endpoint<B>(endpoint: ResolvedEndpoint) -> impl Fn(Request<B>) -> Request<B> + Clone {
+fn for_resolved_endpoint<B>(mut endpoint: ResolvedEndpoint) -> impl FnMut(Request<B>) -> Request<B> + Clone {
     let new_uri_authority = Authority::try_from(endpoint.endpoint().authority())
         .expect("should not fail to construct new endpoint authority");
     let new_uri_scheme =
         Scheme::try_from(endpoint.endpoint().scheme()).expect("should not fail to construct new endpoint scheme");
-    let api_key_value =
-        HeaderValue::from_str(endpoint.api_key()).expect("should not fail to construct API key header value");
-
     move |mut request| {
         // Build an updated URI by taking the endpoint URL and slapping the request's URI path on the end of it.
         let new_uri = Uri::builder()
@@ -571,7 +577,8 @@ fn for_resolved_endpoint<B>(endpoint: ResolvedEndpoint) -> impl Fn(Request<B>) -
             .path_and_query(request.uri().path_and_query().expect("request path must exist").clone())
             .build()
             .expect("should not fail to construct new URI");
-
+        let api_key = endpoint.api_key();
+        let api_key_value = HeaderValue::from_str(api_key).expect("should not fail to construct API key header value");
         *request.uri_mut() = new_uri;
 
         // Add the API key as a header.

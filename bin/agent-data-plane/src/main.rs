@@ -19,7 +19,7 @@ use saluki_components::{
         AggregateConfiguration, ChainedConfiguration, HostEnrichmentConfiguration, OriginEnrichmentConfiguration,
     },
 };
-use saluki_config::{ConfigurationLoader, GenericConfiguration};
+use saluki_config::{ConfigurationLoader, GenericConfiguration, RefreshableConfiguration, RefresherConfiguration};
 use saluki_core::topology::TopologyBlueprint;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
@@ -176,8 +176,22 @@ fn create_topology(
         .with_transform_builder(host_enrichment_config)
         .with_transform_builder(origin_enrichment_config);
     let internal_metrics_remap_config = AgentTelemetryRemapperConfiguration::new();
-    let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
+
+    let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Metrics destination.")?;
+
+    match RefresherConfiguration::from_configuration(configuration) {
+        Ok(refresher_configuration) => {
+            let refreshable_configuration: RefreshableConfiguration = refresher_configuration.build()?;
+            dd_metrics_config.add_refreshable_configuration(refreshable_configuration);
+        }
+        Err(_) => {
+            info!(
+                "Dynamic configuration refreshing will be unavailable due to failure to configure refresher configuration."
+            )
+        }
+    }
+
     let events_service_checks_config = DatadogEventsServiceChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Events/Service Checks destination.")?;
 

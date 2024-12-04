@@ -128,7 +128,6 @@ where
     pub async fn new(endpoint: MetricsEndpoint, buffer_pool: O) -> Result<Self, RequestBuilderError> {
         let chunked_buffer_pool = ChunkedBytesBufferObjectPool::new(buffer_pool);
         let compressor = create_compressor(&chunked_buffer_pool).await;
-
         Ok(Self {
             endpoint,
             endpoint_uri: endpoint.endpoint_uri(),
