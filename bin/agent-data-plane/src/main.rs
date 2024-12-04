@@ -177,12 +177,21 @@ fn create_topology(
         .with_transform_builder(origin_enrichment_config);
     let internal_metrics_remap_config = AgentTelemetryRemapperConfiguration::new();
 
-    let refresher_configuration = RefresherConfiguration::from_configuration(configuration)?;
-    let refreshable_configuration: RefreshableConfiguration = refresher_configuration.build()?;
-
     let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Metrics destination.")?;
-    dd_metrics_config.add_refreshable_configuration(refreshable_configuration);
+
+    match RefresherConfiguration::from_configuration(configuration) {
+        Ok(refresher_configuration) => {
+            let refreshable_configuration: RefreshableConfiguration = refresher_configuration.build()?;
+            dd_metrics_config.add_refreshable_configuration(refreshable_configuration);
+        }
+        Err(_) => {
+            info!(
+                "Dynamic configuration refreshing will be unable due to failure to configure refresher configuration."
+            )
+        }
+    }
+
     let events_service_checks_config = DatadogEventsServiceChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Events/Service Checks destination.")?;
 

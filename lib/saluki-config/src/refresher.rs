@@ -27,7 +27,7 @@ pub struct RefresherConfiguration {
     ///
     /// Defaults to 15 seconds.
     #[serde(
-        rename = "agent_config_refresh_internal_seconds",
+        rename = "agent_ipc_config_refresh_interval",
         default = "default_refresh_interval_seconds"
     )]
     refresh_interval_seconds: u64,
@@ -39,9 +39,6 @@ pub struct RefresherConfiguration {
     agent_ipc_host: String,
 
     /// The IPC port used by the Datadog Agent.
-    ///
-    /// Defaults to `0`.
-    #[serde(default = "default_agent_ipc_port")]
     agent_ipc_port: u64,
 }
 
@@ -55,10 +52,6 @@ fn default_refresh_interval_seconds() -> u64 {
 
 fn default_agent_ipc_host() -> String {
     DEFAULT_AGENT_IPC_HOST.to_owned()
-}
-
-fn default_agent_ipc_port() -> u64 {
-    0
 }
 
 /// A configuration whose values are refreshed from a remote source at runtime.
