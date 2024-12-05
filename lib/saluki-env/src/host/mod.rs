@@ -2,9 +2,8 @@
 //!
 //! This module provides the `HostProvider` trait, which deals with providing information about the process host itself.
 //!
-//! A default host provider implementation, based on the behavior of the Datadog Agent, is included.
+//! A default host provider implementation, based on the Datadog Agent, is included.
 
-pub(crate) mod hostname;
 pub mod providers;
 
 use async_trait::async_trait;
@@ -17,8 +16,8 @@ pub trait HostProvider {
 
     /// Gets the hostname of the process host.
     ///
-    /// ## Errors
+    /// # Errors
     ///
-    /// If an error occurs whike querying the hostname, an error is returned.
+    /// If an error occurs while querying the hostname, an error is returned.
     async fn get_hostname(&self) -> Result<String, Self::Error>;
 }
