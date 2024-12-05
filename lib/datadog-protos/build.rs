@@ -7,7 +7,7 @@ fn main() {
     println!("cargo:rerun-if-changed=proto/dd_metric.proto");
     println!("cargo:rerun-if-changed=proto/datadog/api/v1/api.proto");
     println!("cargo:rerun-if-changed=proto/datadog/workloadmeta/workloadmeta.proto");
-    println!("cargo:rerun-if-changed=proto/datadog/remoteagent.proto");
+    println!("cargo:rerun-if-changed=proto/datadog/remoteagent/remoteagent.proto");
 
     // Handle code generation for pure Protocol Buffers message types.
     let codegen_customize = protobuf_codegen::Customize::default()
