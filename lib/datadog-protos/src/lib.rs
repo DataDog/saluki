@@ -12,6 +12,10 @@ mod agent_include {
     include!(concat!(env!("OUT_DIR"), "/api.mod.rs"));
 }
 
+mod remoteagent_include {
+    include!(concat!(env!("OUT_DIR"), "/remoteagent.mod.rs"));
+}
+
 /// Metrics-related definitions.
 pub mod metrics {
     pub use super::include::dd_metric::metric_payload::*;
@@ -31,4 +35,9 @@ pub mod agent {
     pub use super::agent_include::datadog::api::v1::agent_secure_client::AgentSecureClient;
     pub use super::agent_include::datadog::model::v1::*;
     pub use super::agent_include::datadog::workloadmeta::*;
+}
+
+// RemoteAgent definitions.
+pub mod remoteagent {
+    pub use super::remoteagent_include::datadog::remoteagent::*;
 }
