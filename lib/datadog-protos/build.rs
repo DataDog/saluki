@@ -5,6 +5,9 @@ fn main() {
     println!("cargo:rerun-if-changed=proto/dd_trace.proto");
     println!("cargo:rerun-if-changed=proto/ddsketch_full.proto");
     println!("cargo:rerun-if-changed=proto/dd_metric.proto");
+    println!("cargo:rerun-if-changed=proto/api.proto");
+    println!("cargo:rerun-if-changed=proto/workloadmeta.proto");
+    println!("cargo:rerun-if-changed=proto/remoteagent.proto");
 
     // Handle code generation for pure Protocol Buffers message types.
     let codegen_customize = protobuf_codegen::Customize::default()
@@ -44,5 +47,5 @@ fn main() {
         .build_server(true)
         .include_file("remoteagent.mod.rs")
         .compile_protos(&["proto/datadog/remoteagent/remoteagent.proto"], &["proto"])
-        .expect("failed to build gRPC service definitions for DCA")
+        .expect("failed to build gRPC service definitions for RemoteAgent")
 }
