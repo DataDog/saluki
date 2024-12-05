@@ -11,11 +11,13 @@ use stringtheory::interning::GenericMapInterner;
 use tokio::{select, sync::mpsc};
 use tracing::{debug, trace, warn};
 
-use crate::workload::{
-    collectors::MetadataCollector,
+use crate::{
     helpers::remote_agent::RemoteAgentClient,
-    metadata::{MetadataAction, MetadataOperation},
-    EntityId,
+    workload::{
+        collectors::MetadataCollector,
+        metadata::{MetadataAction, MetadataOperation},
+        EntityId,
+    },
 };
 
 /// A workload provider that uses the remote tagger API from a Datadog Agent to provide workload information.

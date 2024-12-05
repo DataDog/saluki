@@ -9,9 +9,9 @@ use stringtheory::{interning::GenericMapInterner, MetaString};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, trace};
 
-use crate::workload::{
-    collectors::MetadataCollector, external_data::ExternalData, helpers::remote_agent::RemoteAgentClient,
-    metadata::MetadataOperation, EntityId,
+use crate::{
+    helpers::remote_agent::RemoteAgentClient,
+    workload::{collectors::MetadataCollector, external_data::ExternalData, metadata::MetadataOperation, EntityId},
 };
 
 /// A workload provider that uses the remote workload metadata API from a Datadog Agent to provide workload information.
