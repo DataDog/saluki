@@ -1,29 +1,93 @@
 use std::{
     future::Future,
+    path::PathBuf,
     pin::Pin,
     task::{ready, Context, Poll},
     time::Duration,
 };
 
+use backon::{BackoffBuilder, ConstantBuilder, Retryable as _};
 use datadog_protos::agent::{
-    AgentClient, AgentSecureClient, HostnameRequest, StreamTagsRequest, StreamTagsResponse, TagCardinality,
-    WorkloadmetaEventType, WorkloadmetaFilter, WorkloadmetaKind, WorkloadmetaSource, WorkloadmetaStreamRequest,
-    WorkloadmetaStreamResponse,
+    AgentClient, AgentSecureClient, EntityId, FetchEntityRequest, HostnameRequest, StreamTagsRequest,
+    StreamTagsResponse, TagCardinality, WorkloadmetaEventType, WorkloadmetaFilter, WorkloadmetaKind,
+    WorkloadmetaSource, WorkloadmetaStreamRequest, WorkloadmetaStreamResponse,
 };
 use futures::Stream;
 use pin_project_lite::pin_project;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use serde::Deserialize;
 use tonic::{
     service::interceptor::InterceptedService,
     transport::{Channel, Endpoint, Uri},
     Code, Response, Status, Streaming,
 };
+use tracing::warn;
 
 use crate::helpers::tonic::{build_self_signed_https_connector, BearerAuthInterceptor};
 
-const DEFAULT_AGENT_IPC_ENDPOINT: &str = "https://127.0.0.1:5001";
-const DEFAULT_AGENT_AUTH_TOKEN_FILE_PATH: &str = "/etc/datadog-agent/auth_token";
+fn default_agent_ipc_endpoint() -> Uri {
+    Uri::from_static("https://127.0.0.1:5001")
+}
+
+fn default_agent_auth_token_file_path() -> PathBuf {
+    PathBuf::from("/etc/datadog-agent/auth_token")
+}
+
+const fn default_connect_retry_attempts() -> usize {
+    10
+}
+
+const fn default_connect_retry_backoff() -> Duration {
+    Duration::from_secs(2)
+}
+
+#[derive(Deserialize)]
+struct RemoteAgentClientConfiguration {
+    /// Datadog Agent IPC endpoint to connect to.
+    ///
+    /// This is generally based on the configured `cmd_port` for the Datadog Agent, and must expose the `AgentSecure`
+    /// gRPC service.
+    ///
+    /// Defaults to `https://127.0.0.1:5001`.
+    #[serde(
+        rename = "agent_ipc_endpoint",
+        with = "http_serde_ext::uri",
+        default = "default_agent_ipc_endpoint"
+    )]
+    ipc_endpoint: Uri,
+
+    /// Path to the Agent authentication token file.
+    ///
+    /// The contents of the file are passed as a bearer token in RPC requests to the IPC endpoint.
+    ///
+    /// Defaults to `/etc/datadog-agent/auth_token`.
+    #[serde(default = "default_agent_auth_token_file_path")]
+    auth_token_file_path: PathBuf,
+
+    /// Number of allowed retry attempts when initially connecting.
+    ///
+    /// Defaults to `10`.
+    #[serde(default = "default_connect_retry_attempts")]
+    connect_retry_attempts: usize,
+
+    /// Amount of time to wait between connection attempts when initially connecting.
+    ///
+    /// Defaults to 2 seconds.
+    #[serde(default = "default_connect_retry_backoff")]
+    connect_retry_backoff: Duration,
+}
+
+impl<'a> BackoffBuilder for &'a RemoteAgentClientConfiguration {
+    type Backoff = <ConstantBuilder as BackoffBuilder>::Backoff;
+
+    fn build(self) -> Self::Backoff {
+        ConstantBuilder::default()
+            .with_delay(self.connect_retry_backoff)
+            .with_max_times(self.connect_retry_attempts)
+            .build()
+    }
+}
 
 /// A client for interacting with the Datadog Agent's internal gRPC-based API.
 #[derive(Clone)]
@@ -35,38 +99,14 @@ pub struct RemoteAgentClient {
 impl RemoteAgentClient {
     /// Creates a new `RemoteAgentClient` from the given configuration.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the Agent gRPC client cannot be created (invalid API endpoint, missing authentication token, etc), or if the
     /// authentication token is invalid, an error will be returned.
     pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let raw_ipc_endpoint = config
-            .try_get_typed::<String>("agent_ipc_endpoint")?
-            .unwrap_or_else(|| DEFAULT_AGENT_IPC_ENDPOINT.to_string());
-
-        let ipc_endpoint = match Uri::from_maybe_shared(raw_ipc_endpoint.clone()) {
-            Ok(uri) => uri,
-            Err(_) => {
-                return Err(generic_error!(
-                    "Failed to parse configured IPC endpoint for Datadog Agent: {}",
-                    raw_ipc_endpoint
-                ))
-            }
-        };
-
-        let token_path = config
-            .try_get_typed::<String>("auth_token_file_path")?
-            .unwrap_or_else(|| DEFAULT_AGENT_AUTH_TOKEN_FILE_PATH.to_string());
-
-        let bearer_token_interceptor =
-            BearerAuthInterceptor::from_file(&token_path)
-                .await
-                .with_error_context(|| {
-                    format!(
-                        "Failed to read Datadog Agent authentication token from '{}'",
-                        token_path
-                    )
-                })?;
+        let config = config
+            .as_typed::<RemoteAgentClientConfiguration>()
+            .error_context("Failed to parse configuration for Remote Agent client.")?;
 
         // TODO: We need to write a Tower middleware service that allows applying a backoff between failed calls,
         // specifically so that we can throttle reconnection attempts.
@@ -75,25 +115,43 @@ impl RemoteAgentClient {
         // essentially freewheel, trying to reconnect as quickly as possible, which spams the logs, wastes resources, so
         // on and so forth. We would want to essentially apply a backoff like any other client would for the RPC calls
         // themselves, but use it with the _connector_ instead.
-        //
+        //config
         // We could potentially just use a retry middleware, but Tonic does have its own reconnection logic, so we'd
         // have to test it out to make sure it behaves sensibly.
-        let channel = Endpoint::from(ipc_endpoint)
-            .connect_timeout(Duration::from_secs(2))
-            //.timeout(Duration::from_secs(2))
-            .connect_with_connector(build_self_signed_https_connector())
-            .await
-            .with_error_context(|| format!("Failed to connect to Datadog Agent IPC endpoint '{}'", raw_ipc_endpoint))?;
+        let service_builder = || async {
+            let interceptor = BearerAuthInterceptor::from_file(&config.auth_token_file_path)
+                .await
+                .with_error_context(|| {
+                    format!(
+                        "Failed to read API authentication token from file '{}'.",
+                        config.auth_token_file_path.display()
+                    )
+                })?;
 
-        // Build our regular and "secure" clients.
-        //
-        // Both are multiplexed on the same endpoint, have the same authentication requirements, and so on... but they
-        // _are_ different gRPC services, so we need to handle them separately.
-        let mut client = AgentClient::with_interceptor(channel.clone(), bearer_token_interceptor.clone());
-        let secure_client = AgentSecureClient::with_interceptor(channel, bearer_token_interceptor);
+            let channel = Endpoint::from(config.ipc_endpoint.clone())
+                .connect_timeout(Duration::from_secs(2))
+                .connect_with_connector(build_self_signed_https_connector())
+                .await
+                .with_error_context(|| {
+                    format!("Failed to connect to Datadog Agent API at '{}'.", config.ipc_endpoint)
+                })?;
+
+            Ok::<_, GenericError>(InterceptedService::new(channel, interceptor))
+        };
+
+        let service = service_builder
+            .retry(&config)
+            .notify(|e, delay| {
+                warn!(error = %e, "Failed to create Datadog Agent API client. Retrying in {:?}...", delay);
+            })
+            .await
+            .error_context("Failed to create Datadog Agent API client.")?;
+
+        let client = AgentClient::new(service.clone());
+        let mut secure_client = AgentSecureClient::new(service);
 
         // Try and do a basic health check to make sure we can connect and that our authentication token is valid.
-        try_query_agent_api(&mut client).await?;
+        try_query_agent_api(&mut secure_client).await?;
 
         Ok(Self { client, secure_client })
     }
@@ -212,9 +270,16 @@ impl<T> Stream for StreamingResponse<T> {
 }
 
 async fn try_query_agent_api(
-    client: &mut AgentClient<InterceptedService<Channel, BearerAuthInterceptor>>,
+    client: &mut AgentSecureClient<InterceptedService<Channel, BearerAuthInterceptor>>,
 ) -> Result<(), GenericError> {
-    match client.get_hostname(HostnameRequest {}).await {
+    let noop_fetch_request = FetchEntityRequest {
+        id: Some(EntityId {
+            prefix: "container_id".to_string(),
+            uid: "nonexistent".to_string(),
+        }),
+        cardinality: TagCardinality::High.into(),
+    };
+    match client.tagger_fetch_entity(noop_fetch_request).await {
         Ok(_) => Ok(()),
         Err(e) => match e.code() {
             Code::Unauthenticated => Err(generic_error!(
