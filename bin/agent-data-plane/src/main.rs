@@ -45,7 +45,7 @@ async fn main() {
         fatal_and_exit(format!("failed to initialize logging: {}", e));
     }
 
-    if let Err(e) = initialize_metrics("datadog.agent.adp").await {
+    if let Err(e) = initialize_metrics("adp").await {
         fatal_and_exit(format!("failed to initialize metrics: {}", e));
     }
 
