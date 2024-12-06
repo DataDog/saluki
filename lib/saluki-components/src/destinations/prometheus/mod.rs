@@ -1,4 +1,4 @@
-use std::{convert::Infallible, fmt::Write as _, sync::Arc};
+use std::{convert::Infallible, fmt::Write as _, num::NonZeroUsize, sync::Arc};
 
 use async_trait::async_trait;
 use ddsketch_agent::DDSketch;
@@ -20,7 +20,7 @@ use saluki_io::net::{
     ListenAddress,
 };
 use serde::Deserialize;
-use stringtheory::MetaString;
+use stringtheory::{interning::FixedSizeInterner, MetaString};
 use tokio::{select, sync::RwLock};
 use tracing::debug;
 
@@ -28,17 +28,21 @@ const CONTEXT_LIMIT: usize = 1000;
 const PAYLOAD_SIZE_LIMIT_BYTES: usize = 512 * 1024;
 const PAYLOAD_BUFFER_SIZE_LIMIT_BYTES: usize = 16384;
 const TAGS_BUFFER_SIZE_LIMIT_BYTES: usize = 1024;
+const NAME_NORMALIZATION_BUFFER_SIZE: usize = 512;
+
+// SAFETY: This is obviously not zero.
+const METRIC_NAME_STRING_INTERNER_BYTES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(65536) };
 
 /// Prometheus destination.
 ///
 /// Exposes a Prometheus scrape endpoint that emits metrics in the Prometheus exposition format.
 ///
-/// ## Limits
+/// # Limits
 ///
 /// - Number of contexts (unique series) is limited to 1000.
 /// - Maximum size of scrape payload response is ~512KB.
 ///
-/// ## Missing
+/// # Missing
 ///
 /// - no support for expiring metrics (which we don't really need because the only use for this destination at the
 ///   moment is internal metrics, which aren't dynamic since we don't use dynamic tags or have dynamic topology support,
@@ -69,10 +73,10 @@ impl DestinationBuilder for PrometheusConfiguration {
         Ok(Box::new(Prometheus {
             listener: ConnectionOrientedListener::from_listen_address(self.listen_addr.clone()).await?,
             metrics: IndexMap::new(),
-            contexts: 0,
             payload: Arc::new(RwLock::new(String::new())),
             payload_buffer: String::with_capacity(PAYLOAD_BUFFER_SIZE_LIMIT_BYTES),
             tags_buffer: String::with_capacity(TAGS_BUFFER_SIZE_LIMIT_BYTES),
+            interner: FixedSizeInterner::new(METRIC_NAME_STRING_INTERNER_BYTES),
         }))
     }
 }
@@ -82,7 +86,11 @@ impl MemoryBounds for PrometheusConfiguration {
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
-            .with_single_value::<Prometheus>();
+            .with_single_value::<Prometheus>()
+            // This isn't _really_ bounded since the string buffer could definitely grow larger if the metric name was
+            // larger, but the default buffer size is far beyond any typical metric name that it should almost never
+            // grow beyond this initially allocated size.
+            .with_fixed_amount(NAME_NORMALIZATION_BUFFER_SIZE);
         builder
             .firm()
             // Even though our context map is really the Prometheus context to a map of context/value pairs, we're just
@@ -98,10 +106,10 @@ impl MemoryBounds for PrometheusConfiguration {
 struct Prometheus {
     listener: ConnectionOrientedListener,
     metrics: IndexMap<PrometheusContext, IndexMap<Context, PrometheusValue>>,
-    contexts: usize,
     payload: Arc<RwLock<String>>,
     payload_buffer: String,
     tags_buffer: String,
+    interner: FixedSizeInterner<1>,
 }
 
 #[async_trait]
@@ -110,10 +118,10 @@ impl Destination for Prometheus {
         let Self {
             listener,
             mut metrics,
-            contexts,
             payload,
             mut payload_buffer,
             mut tags_buffer,
+            interner,
         } = *self;
 
         let mut health = context.take_health_handle();
@@ -123,6 +131,9 @@ impl Destination for Prometheus {
 
         debug!("Prometheus destination started.");
 
+        let mut contexts = 0;
+        let mut name_buf = String::with_capacity(NAME_NORMALIZATION_BUFFER_SIZE);
+
         loop {
             select! {
                 _ = health.live() => continue,
@@ -131,7 +142,12 @@ impl Destination for Prometheus {
                         // Process each metric event in the batch, either merging it with the existing value or
                         // inserting it for the first time.
                         for event in events {
-                            if let Some((prom_context, context, prom_value)) = event.try_into_metric().and_then(into_prometheus_metric) {
+                            if let Some(metric) = event.try_into_metric() {
+                                let (prom_context, context, prom_value) = match into_prometheus_metric(metric, &mut name_buf, &interner) {
+                                    Some(v) => v,
+                                    None => continue,
+                                };
+
                                 let existing_contexts = metrics.entry(prom_context).or_default();
                                 match existing_contexts.get_mut(&context) {
                                     Some(existing_prom_value) => existing_prom_value.merge(prom_value),
@@ -142,7 +158,7 @@ impl Destination for Prometheus {
                                         }
 
                                         existing_contexts.insert(context, prom_value);
-                                        self.contexts += 1;
+                                        contexts += 1;
                                     },
                                 }
                             }
@@ -261,7 +277,7 @@ fn write_metrics(
         match values {
             PrometheusValue::Counter(value) | PrometheusValue::Gauge(value) => {
                 // No metric type-specific tags for counters or gauges, so just write them straight out.
-                payload_buffer.push_str(context.name());
+                payload_buffer.push_str(&prom_context.metric_name);
                 if !tags_buffer.is_empty() {
                     payload_buffer.push('{');
                     payload_buffer.push_str(tags_buffer);
@@ -275,14 +291,14 @@ fn write_metrics(
                 for quantile in [0.1, 0.25, 0.5, 0.95, 0.99, 0.999] {
                     let q_value = sketch.quantile(quantile).unwrap_or_default();
 
-                    write!(payload_buffer, "{}{{{}", context.name(), tags_buffer).unwrap();
+                    write!(payload_buffer, "{}{{{}", &prom_context.metric_name, tags_buffer).unwrap();
                     if !tags_buffer.is_empty() {
                         payload_buffer.push(',');
                     }
                     writeln!(payload_buffer, "quantile=\"{}\"}} {}", quantile, q_value).unwrap();
                 }
 
-                write!(payload_buffer, "{}_sum", context.name(),).unwrap();
+                write!(payload_buffer, "{}_sum", &prom_context.metric_name).unwrap();
                 if !tags_buffer.is_empty() {
                     payload_buffer.push('{');
                     payload_buffer.push_str(tags_buffer);
@@ -290,7 +306,7 @@ fn write_metrics(
                 }
                 writeln!(payload_buffer, " {}", sketch.sum().unwrap_or_default()).unwrap();
 
-                write!(payload_buffer, "{}_count", context.name(),).unwrap();
+                write!(payload_buffer, "{}_count", &prom_context.metric_name).unwrap();
                 if !tags_buffer.is_empty() {
                     payload_buffer.push('{');
                     payload_buffer.push_str(tags_buffer);
@@ -377,8 +393,22 @@ impl PrometheusValue {
     }
 }
 
-fn into_prometheus_metric(metric: Metric) -> Option<(PrometheusContext, Context, PrometheusValue)> {
+fn into_prometheus_metric(
+    metric: Metric, name_buf: &mut String, interner: &FixedSizeInterner<1>,
+) -> Option<(PrometheusContext, Context, PrometheusValue)> {
     let (context, values, _) = metric.into_parts();
+
+    // Normalize the metric name first, since we might fail due to the interner being full.
+    let metric_name = match normalize_metric_name(context.name(), name_buf, interner) {
+        Some(name) => name,
+        None => {
+            debug!(
+                "Failed to intern normalized metric name. Skipping metric '{}'.",
+                context.name()
+            );
+            return None;
+        }
+    };
 
     let (metric_type, metric_value) = match values {
         MetricValues::Counter(points) => {
@@ -417,10 +447,43 @@ fn into_prometheus_metric(metric: Metric) -> Option<(PrometheusContext, Context,
 
     Some((
         PrometheusContext {
-            metric_name: context.name().clone(),
+            metric_name,
             metric_type,
         },
         context,
         metric_value,
     ))
+}
+
+fn normalize_metric_name(name: &str, name_buf: &mut String, interner: &FixedSizeInterner<1>) -> Option<MetaString> {
+    name_buf.clear();
+
+    // Normalize the metric name to a valid Prometheus metric name.
+    for (i, c) in name.chars().enumerate() {
+        if i == 0 && is_valid_name_start_char(c) || i != 0 && is_valid_name_char(c) {
+            name_buf.push(c);
+        } else {
+            // Convert periods to a set of two underscores, and anything else to a single underscore.
+            //
+            // This lets us ensure that the normal separators we use in metrics (periods) are converted in a way
+            // where they can be distinguished on the collector side to potentially reconstitute them back to their
+            // original form.
+            name_buf.push_str(if c == '.' { "__" } else { "_" });
+        }
+    }
+
+    // Now try and intern the normalized name.
+    interner.try_intern(name_buf).map(MetaString::from)
+}
+
+#[inline]
+fn is_valid_name_start_char(c: char) -> bool {
+    // Matches a regular expression of [a-zA-Z_:].
+    c.is_ascii_alphabetic() || c == '_' || c == ':'
+}
+
+#[inline]
+fn is_valid_name_char(c: char) -> bool {
+    // Matches a regular expression of [a-zA-Z0-9_:].
+    c.is_ascii_alphanumeric() || c == '_' || c == ':'
 }
