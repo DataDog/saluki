@@ -412,7 +412,7 @@ test-correctness: ## Runs the metrics correctness (ground-truth) suite
 		--millstone-config-path $(shell pwd)/test/correctness/millstone.yaml \
 		--metrics-intake-image saluki-images/metrics-intake:latest \
 		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
-		--dsd-image docker.io/datadog/dogstatsd:7.58.0 \
+		--dsd-image docker.io/datadog/dogstatsd:7.59.1 \
 		--dsd-config-path $(shell pwd)/test/correctness/datadog.yaml \
 		--adp-image saluki-images/agent-data-plane:latest \
 		--adp-config-path $(shell pwd)/test/correctness/datadog.yaml
