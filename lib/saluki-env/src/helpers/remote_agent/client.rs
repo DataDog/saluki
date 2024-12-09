@@ -7,10 +7,13 @@ use std::{
 };
 
 use backon::{BackoffBuilder, ConstantBuilder, Retryable as _};
-use datadog_protos::agent::{
-    AgentClient, AgentSecureClient, EntityId, FetchEntityRequest, HostnameRequest, StreamTagsRequest,
-    StreamTagsResponse, TagCardinality, WorkloadmetaEventType, WorkloadmetaFilter, WorkloadmetaKind,
-    WorkloadmetaSource, WorkloadmetaStreamRequest, WorkloadmetaStreamResponse,
+use datadog_protos::{
+    agent::{
+        AgentClient, AgentSecureClient, EntityId, FetchEntityRequest, HostnameRequest, StreamTagsRequest,
+        StreamTagsResponse, TagCardinality, WorkloadmetaEventType, WorkloadmetaFilter, WorkloadmetaKind,
+        WorkloadmetaSource, WorkloadmetaStreamRequest, WorkloadmetaStreamResponse,
+    },
+    remoteagent::RegisterRemoteAgentRequest,
 };
 use futures::Stream;
 use pin_project_lite::pin_project;
@@ -208,6 +211,16 @@ impl RemoteAgentClient {
                 })
                 .await
         })
+    }
+
+    /// TODO
+    pub async fn register_remote_agent_request(&mut self) {
+        let response = self.secure_client.register_remote_agent(RegisterRemoteAgentRequest {
+            id: todo!(),
+            display_name: todo!(),
+            api_endpoint: todo!(),
+            auth_token: todo!(),
+        });
     }
 }
 
