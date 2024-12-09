@@ -13,7 +13,10 @@ use std::{
 use memory_accounting::ComponentRegistry;
 use saluki_app::{api::APIBuilder, prelude::*};
 use saluki_components::{
-    destinations::{DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration, PrometheusConfiguration},
+    destinations::{
+        DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration, DatadogStatusConfiguration,
+        PrometheusConfiguration,
+    },
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
     transforms::{
         AggregateConfiguration, ChainedConfiguration, HostEnrichmentConfiguration, OriginEnrichmentConfiguration,
@@ -92,6 +95,8 @@ async fn run(started: Instant) -> Result<(), GenericError> {
 
     let env_provider =
         ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry).await?;
+
+    let _x = DatadogStatusConfiguration::from_configuration(&configuration).await?;
 
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
