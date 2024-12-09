@@ -42,3 +42,4 @@ tracing = { workspace = true, features = ["std"] }
 [dev-dependencies]
 similar-asserts = { workspace = true, features = ["unicode"] }
 tokio-test = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["fmt"] }
