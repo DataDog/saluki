@@ -97,11 +97,13 @@ macro_rules! pooled {
 
             impl $name {
                 /// Gets a reference to the inner data.
+                #[allow(dead_code)]
                 pub fn data(&self) -> &[<$name Inner>] {
                     &self.data
                 }
 
                 /// Gets a mutable reference to the inner data.
+                #[allow(dead_code)]
                 pub fn data_mut(&mut self) -> &mut [<$name Inner>] {
                     &mut self.data
                 }
@@ -204,11 +206,13 @@ macro_rules! pooled_newtype {
 
         impl $name {
             /// Gets a reference to the inner data.
+            #[allow(dead_code)]
             pub fn data(&self) -> &$inner_ty {
                 self.data.as_ref().unwrap()
             }
 
             /// Gets a mutable reference to the inner data.
+            #[allow(dead_code)]
             pub fn data_mut(&mut self) -> &mut $inner_ty {
                 self.data.as_mut().unwrap()
             }
