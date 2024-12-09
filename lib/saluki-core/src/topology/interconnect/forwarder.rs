@@ -454,6 +454,8 @@ impl Forwarder {
             .await
             .map_err(|_| generic_error!("Failed to send to output; {} events lost", buffer_len))?;
 
+        metrics.events_sent.increment(buffer_len as u64);
+
         Ok(())
     }
 }
