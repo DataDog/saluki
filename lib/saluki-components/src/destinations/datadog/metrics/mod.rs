@@ -32,11 +32,7 @@ use tokio::{
 use tower::{BoxError, Service, ServiceBuilder};
 use tracing::{debug, error};
 
-<<<<<<< HEAD
 use super::common::endpoints::{EndpointConfiguration, ResolvedEndpoint};
-=======
-use super::common::endpoints::{calculate_resolved_endpoint, AdditionalEndpoints, ResolvedEndpoint, DEFAULT_SITE};
->>>>>>> ec77d59 (chore: start factorizing out DD destination code)
 
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
