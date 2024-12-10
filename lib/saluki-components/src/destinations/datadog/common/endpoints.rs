@@ -13,10 +13,10 @@ use snafu::{ResultExt, Snafu};
 use tracing::debug;
 use url::Url;
 
-use crate::destinations::datadog_metrics::DEFAULT_SITE;
-
 static DD_URL_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^app(\.mrf)?(\.[a-z]{2}\d)?\.(datad(oghq|0g)\.(com|eu)|ddog-gov\.com)$").unwrap());
+
+pub const DEFAULT_SITE: &str = "datadoghq.com";
 
 /// Error type for invalid endpoints.
 #[derive(Debug, Snafu)]
