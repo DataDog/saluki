@@ -4,12 +4,12 @@ use http_body_util::BodyExt;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_core::{
-    components::{destinations::*, ComponentContext},
-    task::spawn_traced,
+    components::{destinations::*, ComponentContext}, observability::ComponentMetricsExt as _, task::spawn_traced
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_event::{DataType, Event};
 use saluki_io::net::client::http::HttpClient;
+use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use tokio::{
     select,
@@ -87,8 +87,12 @@ impl DestinationBuilder for DatadogEventsServiceChecksConfiguration {
         DataType::EventD | DataType::ServiceCheck
     }
 
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
-        let http_client = HttpClient::builder().build()?;
+    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context);
+
+        let http_client = HttpClient::builder()
+            .with_bytes_sent_counter(metrics_builder.register_debug_counter("component_bytes_sent_total"))
+            .build()?;
 
         let api_base = self.api_base()?;
 
