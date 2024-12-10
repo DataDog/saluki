@@ -145,9 +145,11 @@ impl Service<Uri> for HttpsCapableConnector {
         let bytes_sent = self.bytes_sent.clone();
         let conn_age_limit = self.conn_age_limit;
         Box::pin(async move {
-            inner
-                .await
-                .map(|inner| HttpsCapableConnection { inner, bytes_sent, conn_age_limit })
+            inner.await.map(|inner| HttpsCapableConnection {
+                inner,
+                bytes_sent,
+                conn_age_limit,
+            })
         })
     }
 }

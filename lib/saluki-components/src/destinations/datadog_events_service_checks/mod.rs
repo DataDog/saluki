@@ -4,7 +4,9 @@ use http_body_util::BodyExt;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_core::{
-    components::{destinations::*, ComponentContext}, observability::ComponentMetricsExt as _, task::spawn_traced
+    components::{destinations::*, ComponentContext},
+    observability::ComponentMetricsExt as _,
+    task::spawn_traced,
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_event::{DataType, Event};
