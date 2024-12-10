@@ -207,6 +207,7 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
 
         let service = HttpClient::builder()
             .with_retry_policy(retry_policy)
+            .with_bytes_sent_counter(metrics_builder.register_debug_counter("component_bytes_sent_total"))
             .with_endpoint_telemetry(metrics_builder, Some(get_metrics_endpoint_name))
             .build()?;
 

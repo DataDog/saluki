@@ -6,6 +6,7 @@ use hyper_util::{
     client::legacy::{connect::capture_connection, Builder},
     rt::{TokioExecutor, TokioTimer},
 };
+use metrics::Counter;
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
 use saluki_tls::ClientTLSConfigBuilder;
@@ -222,6 +223,17 @@ impl<P> HttpClientBuilder<P> {
         F: FnOnce(&mut Builder),
     {
         f(&mut self.hyper_builder);
+        self
+    }
+
+    /// Sets a counter that gets incremented with the number of bytes sent over the connection.
+    ///
+    /// This tracks bytes sent at the HTTP client level, which includes headers and body but does not include underlying
+    /// transport overhead, such as TLS handshaking, and so on.
+    ///
+    /// Defaults to unset.
+    pub fn with_bytes_sent_counter(mut self, counter: Counter) -> Self {
+        self.connector_builder = self.connector_builder.with_bytes_sent_counter(counter);
         self
     }
 
