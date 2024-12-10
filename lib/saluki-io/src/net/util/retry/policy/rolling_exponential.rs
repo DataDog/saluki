@@ -37,7 +37,7 @@ use crate::net::util::retry::{
 /// Essentially, setting a recovery error decrease factor allows the calculated backoff duration to increase/decrease
 /// more smoothly between failed requests that occur close together.
 ///
-/// ## Missing
+/// # Missing
 ///
 /// - Ability to set an upper bound on retry attempts before giving up.
 #[derive(Clone)]
