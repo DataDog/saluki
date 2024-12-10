@@ -2,4 +2,4 @@
 rustflags = ["--cfg", "tokio_unstable"]
 
 [env]
-JEMALLOC_SYS_WITH_MALLOC_CONF = "abort_conf:true,max_background_threads:2,narenas:2,tcache_max:1024,oversize_threshold:65536,dirty_decay_ms:1000,muzzy_decay_ms:1000"
+JEMALLOC_SYS_WITH_MALLOC_CONF = "abort_conf:true,max_background_threads:1,narenas:1,tcache:false,oversize_threshold:32768,dirty_decay_ms:1000,muzzy_decay_ms:1000"
