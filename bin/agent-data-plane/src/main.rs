@@ -79,9 +79,9 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         "Agent Data Plane starting..."
     );
 
-    /*
     info!("Built with jemalloc configuration: {}", tikv_jemalloc_ctl::config::malloc_conf::mib().unwrap().read().unwrap());
 
+    /*
     std::thread::spawn(|| {
         let mut stats_buf = Vec::with_capacity(128 * 1024);
         let mut options = tikv_jemalloc_ctl::stats_print::Options::default();
