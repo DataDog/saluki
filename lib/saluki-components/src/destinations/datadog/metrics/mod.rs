@@ -32,8 +32,7 @@ use tokio::{
 use tower::{BoxError, Service, ServiceBuilder};
 use tracing::{debug, error};
 
-mod endpoint;
-use self::endpoint::endpoints::{calculate_resolved_endpoint, AdditionalEndpoints, ResolvedEndpoint};
+use super::common::endpoints::{calculate_resolved_endpoint, AdditionalEndpoints, ResolvedEndpoint, DEFAULT_SITE};
 
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
@@ -41,7 +40,6 @@ use self::request_builder::{MetricsEndpoint, RequestBuilder};
 mod telemetry;
 use self::telemetry::ComponentTelemetry;
 
-const DEFAULT_SITE: &str = "datadoghq.com";
 const RB_BUFFER_POOL_COUNT: usize = 128;
 const RB_BUFFER_POOL_BUF_SIZE: usize = 32_768;
 
@@ -102,7 +100,7 @@ pub struct DatadogMetricsConfiguration {
     /// Enables sending data to multiple endpoints and/or with multiple API keys via dual shipping.
     ///
     /// Defaults to empty.
-    #[serde(default, rename = "additional_endpoints")]
+    #[serde(default)]
     additional_endpoints: AdditionalEndpoints,
 
     #[serde(skip)]
