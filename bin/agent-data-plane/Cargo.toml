@@ -28,9 +28,10 @@ serde = { workspace = true }
 stringtheory = { workspace = true }
 tikv-jemallocator = { version = "0.6", default-features = false, features = [
   "background_threads",
-  "unprefixed_malloc_on_supported_platforms"
+  "unprefixed_malloc_on_supported_platforms",
+  "stats",
 ] }
-tikv-jemalloc-ctl = { version = "0.6" }
+tikv-jemalloc-ctl = { version = "0.6", features = ["use_std"] }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "signal"] }
 tracing = { workspace = true }
 
