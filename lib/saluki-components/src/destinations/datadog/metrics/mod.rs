@@ -16,7 +16,7 @@ use saluki_core::{
     pooling::{FixedSizeObjectPool, ObjectPool},
     task::spawn_traced,
 };
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_error::{generic_error, GenericError};
 use saluki_event::DataType;
 use saluki_io::{
     buf::{BytesBuffer, FixedSizeVec, FrozenChunkedBytesBuffer},
@@ -32,7 +32,7 @@ use tokio::{
 use tower::{BoxError, Service, ServiceBuilder};
 use tracing::{debug, error};
 
-use super::common::endpoints::{calculate_resolved_endpoint, AdditionalEndpoints, ResolvedEndpoint, DEFAULT_SITE};
+use super::common::endpoints::{EndpointConfiguration, ResolvedEndpoint};
 
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
@@ -46,8 +46,8 @@ const RB_BUFFER_POOL_BUF_SIZE: usize = 32_768;
 static DD_AGENT_VERSION_HEADER: HeaderName = HeaderName::from_static("dd-agent-version");
 static DD_API_KEY_HEADER: HeaderName = HeaderName::from_static("dd-api-key");
 
-fn default_site() -> String {
-    DEFAULT_SITE.to_owned()
+fn default_request_timeout_secs() -> u64 {
+    20
 }
 
 /// Datadog Metrics destination.
@@ -63,27 +63,11 @@ fn default_site() -> String {
 #[derive(Deserialize)]
 #[allow(dead_code)]
 pub struct DatadogMetricsConfiguration {
-    /// The API key to use.
-    api_key: String,
-
-    /// The site to send metrics to.
+    /// Endpoint configuration settings
     ///
-    /// This is the base domain for the Datadog site in which the API key originates from. This will generally be a
-    /// portion of the domain used to access the Datadog UI, such as `datadoghq.com` or `us5.datadoghq.com`.
-    ///
-    /// Defaults to `datadoghq.com`.
-    #[serde(default = "default_site")]
-    site: String,
-
-    /// The full URL base to send metrics to.
-    ///
-    /// This takes precedence over `site`, and is not altered in any way. This can be useful to specifying the exact
-    /// endpoint used, such as when looking to change the scheme (e.g. `http` vs `https`) or specifying a custom port,
-    /// which are both useful when proxying traffic to an intermediate destination before forwarding to Datadog.
-    ///
-    /// Defaults to unset.
-    #[serde(default)]
-    dd_url: Option<String>,
+    /// See [`EndpointConfiguration`] for more information about the available settings.
+    #[serde(flatten)]
+    endpoint_config: EndpointConfiguration,
 
     /// The request timeout for forwarding metrics, in seconds.
     ///
@@ -97,18 +81,8 @@ pub struct DatadogMetricsConfiguration {
     #[serde(flatten)]
     retry_config: DatadogAgentForwarderRetryConfiguration,
 
-    /// Enables sending data to multiple endpoints and/or with multiple API keys via dual shipping.
-    ///
-    /// Defaults to empty.
-    #[serde(default)]
-    additional_endpoints: AdditionalEndpoints,
-
     #[serde(skip)]
     config_refresher: Option<RefreshableConfiguration>,
-}
-
-fn default_request_timeout_secs() -> u64 {
-    20
 }
 
 impl DatadogMetricsConfiguration {
@@ -139,17 +113,9 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
             .build()?;
 
         // Resolve all endpoints that we'll be forwarding metrics to.
-        let primary_endpoint = calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, &self.api_key)
-            .error_context("Failed parsing/resolving the primary destination endpoint.")?
-            .with_refreshable_configuration(self.config_refresher.clone());
-
-        let additional_endpoints = self
-            .additional_endpoints
-            .resolved_endpoints()
-            .error_context("Failed parsing/resolving the additional destination endpoints.")?;
-
-        let mut endpoints = additional_endpoints;
-        endpoints.insert(0, primary_endpoint);
+        let endpoints = self
+            .endpoint_config
+            .build_resolved_endpoints(self.config_refresher.clone())?;
 
         // Create our request builders.
         let rb_buffer_pool = create_request_builder_buffer_pool();
