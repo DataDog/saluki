@@ -10,9 +10,10 @@ use saluki_core::{
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_event::{DataType, Event};
-use saluki_io::net::client::http::HttpClient;
+use saluki_io::net::{client::http::HttpClient, util::retry::agent::DatadogAgentForwarderRetryConfiguration};
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
+use stringtheory::MetaString;
 use tokio::{
     select,
     sync::{mpsc, oneshot},
@@ -53,10 +54,16 @@ pub struct DatadogEventsServiceChecksConfiguration {
     /// Defaults to unset.
     #[serde(default)]
     dd_url: Option<String>,
+
+    /// Retry configuration settings.
+    ///
+    /// See [`DatadogAgentForwarderRetryConfiguration`] for more information about the available settings.
+    #[serde(flatten)]
+    retry_config: DatadogAgentForwarderRetryConfiguration,
 }
 
 impl DatadogEventsServiceChecksConfiguration {
-    /// Creates a new `DatadogEventsServieCheckConfiguration` from the given configuration.
+    /// Creates a new `DatadogEventsServiceCheckConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
     }
@@ -93,7 +100,9 @@ impl DestinationBuilder for DatadogEventsServiceChecksConfiguration {
         let metrics_builder = MetricsBuilder::from_component_context(context);
 
         let http_client = HttpClient::builder()
+            .with_retry_policy(self.retry_config.into_default_http_retry_policy())
             .with_bytes_sent_counter(metrics_builder.register_debug_counter("component_bytes_sent_total"))
+            .with_endpoint_telemetry(metrics_builder, Some(get_events_checks_endpoint_name))
             .build()?;
 
         let api_base = self.api_base()?;
@@ -252,4 +261,12 @@ async fn run_io_loop(
 
     // Signal back to the main task that we've stopped.
     let _ = io_shutdown_tx.send(());
+}
+
+fn get_events_checks_endpoint_name(uri: &Uri) -> Option<MetaString> {
+    match uri.path() {
+        "/api/v1/events" => Some(MetaString::from_static("events_v1")),
+        "/api/v1/check_run" => Some(MetaString::from_static("check_run_v1")),
+        _ => None,
+    }
 }
