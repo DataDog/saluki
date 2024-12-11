@@ -133,7 +133,7 @@ impl ConfigurationLoader {
     where
         P: AsRef<std::path::Path>,
     {
-        let resolved_provider = ResolvedProvider::from_yaml(&path)?;
+        let resolved_provider = ResolvedProvider::from_yaml(&path).context(Generic)?;
         self.inner = self.inner.admerge(resolved_provider);
         Ok(self)
     }
@@ -165,7 +165,7 @@ impl ConfigurationLoader {
     where
         P: AsRef<std::path::Path>,
     {
-        let resolved_provider = ResolvedProvider::from_json(&path)?;
+        let resolved_provider = ResolvedProvider::from_json(&path).context(Generic)?;
         self.inner = self.inner.admerge(resolved_provider);
         Ok(self)
     }
