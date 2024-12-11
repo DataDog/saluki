@@ -6,6 +6,7 @@ use std::{
 
 use regex::Regex;
 use saluki_config::RefreshableConfiguration;
+use saluki_error::{ErrorContext as _, GenericError};
 use saluki_metadata;
 use serde::Deserialize;
 use serde_with::{serde_as, DisplayFromStr, OneOrMany, PickFirst};
@@ -18,10 +19,14 @@ static DD_URL_REGEX: LazyLock<Regex> =
 
 pub const DEFAULT_SITE: &str = "datadoghq.com";
 
+fn default_site() -> String {
+    DEFAULT_SITE.to_owned()
+}
+
 /// Error type for invalid endpoints.
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
-pub enum EndpointError {
+enum EndpointError {
     Parse { source: url::ParseError, endpoint: String },
 }
 
@@ -52,7 +57,7 @@ impl FromStr for MappedAPIKeys {
 /// Each endpoint can be associated with multiple API keys. Requests will be forwarded to each unique endpoint/API key pair.
 #[serde_as]
 #[derive(Clone, Debug, Default, Deserialize)]
-pub struct AdditionalEndpoints(#[serde_as(as = "PickFirst<(DisplayFromStr, _)>")] MappedAPIKeys);
+struct AdditionalEndpoints(#[serde_as(as = "PickFirst<(DisplayFromStr, _)>")] MappedAPIKeys);
 
 impl AdditionalEndpoints {
     /// Returns the resolved endpoints from the additional endpoint configuration.
@@ -92,6 +97,70 @@ impl AdditionalEndpoints {
     }
 }
 
+/// Endpoint configuration for sending payloads to the Datadog platform.
+#[derive(Deserialize)]
+pub struct EndpointConfiguration {
+    /// The API key to use.
+    api_key: String,
+
+    /// The site to send metrics to.
+    ///
+    /// This is the base domain for the Datadog site in which the API key originates from. This will generally be a
+    /// portion of the domain used to access the Datadog UI, such as `datadoghq.com` or `us5.datadoghq.com`.
+    ///
+    /// Defaults to `datadoghq.com`.
+    #[serde(default = "default_site")]
+    site: String,
+
+    /// The full URL base to send metrics to.
+    ///
+    /// This takes precedence over `site`, and is not altered in any way. This can be useful to specifying the exact
+    /// endpoint used, such as when looking to change the scheme (e.g. `http` vs `https`) or specifying a custom port,
+    /// which are both useful when proxying traffic to an intermediate destination before forwarding to Datadog.
+    ///
+    /// Defaults to unset.
+    #[serde(default)]
+    dd_url: Option<String>,
+
+    /// Enables sending data to multiple endpoints and/or with multiple API keys via dual shipping.
+    ///
+    /// Defaults to empty.
+    #[serde(default)]
+    additional_endpoints: AdditionalEndpoints,
+}
+
+impl EndpointConfiguration {
+    /// Builds the resolved endpoints from the endpoint configuration.
+    ///
+    /// This will generate a `ResolvedEndpoint` for each unique endpoint/API key pair, which includes the "primary"
+    /// endpoint defined by `site`/`dd_url` and any additional endpoints defined in `additional_endpoints`.
+    ///
+    /// If a `RefreshableConfiguration` is provided, the API key for the primary resolved endpoint will be dynamically
+    /// fetched from the configuration.
+    ///
+    /// # Errors
+    ///
+    /// If any of the additional endpoints are not valid URLs, or a valid URL could not be constructed after applying
+    /// the necessary normalization / modifications to a particular endpoint, an error will be returned.
+    pub fn build_resolved_endpoints(
+        &self, maybe_refreshable_config: Option<RefreshableConfiguration>,
+    ) -> Result<Vec<ResolvedEndpoint>, GenericError> {
+        let primary_endpoint = calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, &self.api_key)
+            .error_context("Failed parsing/resolving the primary destination endpoint.")?
+            .with_refreshable_configuration(maybe_refreshable_config);
+
+        let additional_endpoints = self
+            .additional_endpoints
+            .resolved_endpoints()
+            .error_context("Failed parsing/resolving the additional destination endpoints.")?;
+
+        let mut endpoints = additional_endpoints;
+        endpoints.insert(0, primary_endpoint);
+
+        Ok(endpoints)
+    }
+}
+
 /// A single API endpoint and its associated API key.
 ///
 /// An endpoint is defined as a unique, fully-qualified domain name that metrics will be sent to, such as
@@ -111,7 +180,7 @@ impl ResolvedEndpoint {
     ///
     /// If the given endpoint is not a valid URL, or a valid URL could not be constructed after applying the necessary
     /// normalization / modifications, an error will be returned.
-    pub fn from_raw_endpoint(raw_endpoint: &str, api_key: &str) -> Result<Self, EndpointError> {
+    fn from_raw_endpoint(raw_endpoint: &str, api_key: &str) -> Result<Self, EndpointError> {
         let endpoint = parse_and_normalize_endpoint(raw_endpoint)?;
         Ok(Self {
             endpoint,
@@ -136,8 +205,8 @@ impl ResolvedEndpoint {
 
     /// Returns the API key associated with the endpoint.
     ///
-    /// If a refreshable configuration has been configured, the API key will be queried from the
-    /// configuration and stored if it has been updated since the last time `api_key` was called.
+    /// If a refreshable configuration has been configured, the API key will be queried from the configuration and
+    /// stored if it has been updated since the last time `api_key` was called.
     pub fn api_key(&mut self) -> &str {
         if let Some(config) = &self.config {
             match config.try_get_typed::<String>("api_key") {
@@ -239,7 +308,7 @@ fn add_data_plane_version_prefix(mut endpoint: Url) -> Result<Url, EndpointError
 ///
 /// If an override URL is provided and cannot be parsed, or if a valid endpoint cannot be constructed from the given
 /// site, an error will be returned.
-pub fn calculate_resolved_endpoint(
+fn calculate_resolved_endpoint(
     override_url: Option<&str>, site: &str, api_key: &str,
 ) -> Result<ResolvedEndpoint, EndpointError> {
     let raw_endpoint = match override_url {
