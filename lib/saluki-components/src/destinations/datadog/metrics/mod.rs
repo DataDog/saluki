@@ -1,10 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use http::{
-    uri::{Authority, Scheme},
-    HeaderName, HeaderValue, Request, Uri,
-};
+use http::{Request, Uri};
 use http_body::Body;
 use http_body_util::BodyExt as _;
 use hyper::body::Incoming;
@@ -32,7 +29,10 @@ use tokio::{
 use tower::{BoxError, Service, ServiceBuilder};
 use tracing::{debug, error};
 
-use super::common::endpoints::{EndpointConfiguration, ResolvedEndpoint};
+use super::common::{
+    endpoints::{EndpointConfiguration, ResolvedEndpoint},
+    middleware::{for_resolved_endpoint, with_version_info},
+};
 
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
@@ -42,9 +42,6 @@ use self::telemetry::ComponentTelemetry;
 
 const RB_BUFFER_POOL_COUNT: usize = 128;
 const RB_BUFFER_POOL_BUF_SIZE: usize = 32_768;
-
-static DD_AGENT_VERSION_HEADER: HeaderName = HeaderName::from_static("dd-agent-version");
-static DD_API_KEY_HEADER: HeaderName = HeaderName::from_static("dd-api-key");
 
 fn default_request_timeout_secs() -> u64 {
     20
@@ -456,56 +453,6 @@ async fn run_endpoint_io_loop<S, B>(
 
     // Signal to the main I/O task that we've finished.
     task_barrier.wait().await;
-}
-
-fn for_resolved_endpoint<B>(mut endpoint: ResolvedEndpoint) -> impl FnMut(Request<B>) -> Request<B> + Clone {
-    let new_uri_authority = Authority::try_from(endpoint.endpoint().authority())
-        .expect("should not fail to construct new endpoint authority");
-    let new_uri_scheme =
-        Scheme::try_from(endpoint.endpoint().scheme()).expect("should not fail to construct new endpoint scheme");
-    move |mut request| {
-        // Build an updated URI by taking the endpoint URL and slapping the request's URI path on the end of it.
-        let new_uri = Uri::builder()
-            .scheme(new_uri_scheme.clone())
-            .authority(new_uri_authority.clone())
-            .path_and_query(request.uri().path_and_query().expect("request path must exist").clone())
-            .build()
-            .expect("should not fail to construct new URI");
-        let api_key = endpoint.api_key();
-        let api_key_value = HeaderValue::from_str(api_key).expect("should not fail to construct API key header value");
-        *request.uri_mut() = new_uri;
-
-        // Add the API key as a header.
-        request
-            .headers_mut()
-            .insert(DD_API_KEY_HEADER.clone(), api_key_value.clone());
-
-        request
-    }
-}
-
-fn with_version_info<B>() -> impl Fn(Request<B>) -> Request<B> + Clone {
-    let app_details = saluki_metadata::get_app_details();
-    let formatted_full_name = app_details
-        .full_name()
-        .replace(" ", "-")
-        .replace("_", "-")
-        .to_lowercase();
-
-    let agent_version_header_value = HeaderValue::from_static(app_details.version().raw());
-    let raw_user_agent_header_value = format!("{}/{}", formatted_full_name, app_details.version().raw());
-    let user_agent_header_value = HeaderValue::from_maybe_shared(raw_user_agent_header_value)
-        .expect("should not fail to construct User-Agent header value");
-
-    move |mut request| {
-        request
-            .headers_mut()
-            .insert(DD_AGENT_VERSION_HEADER.clone(), agent_version_header_value.clone());
-        request
-            .headers_mut()
-            .insert(http::header::USER_AGENT, user_agent_header_value.clone());
-        request
-    }
 }
 
 fn get_metrics_endpoint_name(uri: &Uri) -> Option<MetaString> {
