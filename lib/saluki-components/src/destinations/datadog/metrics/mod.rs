@@ -32,13 +32,11 @@ use tracing::{debug, error};
 use super::common::{
     endpoints::{EndpointConfiguration, ResolvedEndpoint},
     middleware::{for_resolved_endpoint, with_version_info},
+    telemetry::ComponentTelemetry,
 };
 
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
-
-mod telemetry;
-use self::telemetry::ComponentTelemetry;
 
 const RB_BUFFER_POOL_COUNT: usize = 128;
 const RB_BUFFER_POOL_BUF_SIZE: usize = 32_768;
@@ -102,6 +100,7 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(context);
+        let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
 
         let service = HttpClient::builder()
             .with_retry_policy(self.retry_config.into_default_http_retry_policy())
@@ -121,6 +120,7 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
 
         Ok(Box::new(DatadogMetrics {
             service,
+            telemetry,
             series_request_builder,
             sketches_request_builder,
             endpoints,
@@ -164,6 +164,7 @@ where
     S: Service<Request<FrozenChunkedBytesBuffer>> + 'static,
 {
     service: S,
+    telemetry: ComponentTelemetry,
     series_request_builder: RequestBuilder<O>,
     sketches_request_builder: RequestBuilder<O>,
     endpoints: Vec<ResolvedEndpoint>,
@@ -183,6 +184,7 @@ where
             mut series_request_builder,
             mut sketches_request_builder,
             service,
+            telemetry,
             endpoints,
         } = *self;
 
@@ -191,7 +193,6 @@ where
         // Spawn our IO task to handle sending requests.
         let (io_shutdown_tx, io_shutdown_rx) = oneshot::channel();
         let (requests_tx, requests_rx) = mpsc::channel(32);
-        let telemetry = ComponentTelemetry::from_context(context.component_context());
         spawn_traced(run_io_loop(
             requests_rx,
             io_shutdown_tx,

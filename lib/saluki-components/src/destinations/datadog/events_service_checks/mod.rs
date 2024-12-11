@@ -26,6 +26,7 @@ use tracing::{debug, error};
 use super::common::{
     endpoints::{EndpointConfiguration, ResolvedEndpoint},
     middleware::{for_resolved_endpoint, with_version_info},
+    telemetry::ComponentTelemetry,
 };
 
 static CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/json");
@@ -71,6 +72,7 @@ impl DestinationBuilder for DatadogEventsServiceChecksConfiguration {
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(context);
+        let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
 
         let service = HttpClient::builder()
             .with_retry_policy(self.retry_config.into_default_http_retry_policy())
@@ -83,7 +85,11 @@ impl DestinationBuilder for DatadogEventsServiceChecksConfiguration {
             .endpoint_config
             .build_resolved_endpoints(self.config_refresher.clone())?;
 
-        Ok(Box::new(DatadogEventsServiceChecks { service, endpoints }))
+        Ok(Box::new(DatadogEventsServiceChecks {
+            service,
+            telemetry,
+            endpoints,
+        }))
     }
 }
 
@@ -100,13 +106,18 @@ impl MemoryBounds for DatadogEventsServiceChecksConfiguration {
 
 pub struct DatadogEventsServiceChecks {
     service: HttpClient<String>,
+    telemetry: ComponentTelemetry,
     endpoints: Vec<ResolvedEndpoint>,
 }
 
 #[async_trait]
 impl Destination for DatadogEventsServiceChecks {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
-        let Self { service, endpoints } = *self;
+        let Self {
+            service,
+            telemetry,
+            endpoints,
+        } = *self;
 
         let mut health = context.take_health_handle();
 
