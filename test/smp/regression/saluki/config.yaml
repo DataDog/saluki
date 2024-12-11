@@ -1,5 +1,5 @@
 lading:
-  version: 0.24.0
+  version: sha-de4a6388d67ac3b4a1faa862e60075f02a10817e
 
 target:
   cpu_allotment: 8
