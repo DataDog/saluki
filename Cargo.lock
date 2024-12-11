@@ -1069,8 +1069,6 @@ dependencies = [
  "atomic",
  "pear",
  "serde",
- "serde_json",
- "serde_yaml",
  "uncased",
  "version_check",
 ]
@@ -3448,6 +3446,7 @@ dependencies = [
  "saluki-io",
  "serde",
  "serde_json",
+ "serde_yaml",
  "snafu",
  "tokio",
  "tracing",

@@ -7,13 +7,14 @@ repository = { workspace = true }
 
 [dependencies]
 arc-swap = { workspace = true }
-figment = { workspace = true, features = ["env", "json", "yaml"] }
+figment = { workspace = true, features = ["env"] }
 http = { workspace = true }
 reqwest = { workspace = true, features = ["rustls-tls-native-roots-no-provider", "json"] }
 saluki-error = { workspace = true }
 saluki-io = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 snafu = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "process", "time"] }
 tracing = { workspace = true }
