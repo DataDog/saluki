@@ -3431,6 +3431,7 @@ dependencies = [
  "stringtheory",
  "tokio",
  "tokio-util",
+ "tonic 0.12.3",
  "tower 0.5.1",
  "tracing",
  "url",

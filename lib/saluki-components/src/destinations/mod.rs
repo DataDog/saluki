@@ -9,8 +9,8 @@ pub use self::datadog_events_service_checks::DatadogEventsServiceChecksConfigura
 mod datadog_metrics;
 pub use self::datadog_metrics::DatadogMetricsConfiguration;
 
-mod datadog_status;
-pub use self::datadog_status::DatadogStatusConfiguration;
+mod datadog_status_flare;
+pub use self::datadog_status_flare::DatadogStatusFlareConfiguration;
 
 mod prometheus;
 pub use self::prometheus::PrometheusConfiguration;
