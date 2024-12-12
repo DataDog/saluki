@@ -3,14 +3,9 @@
 mod blackhole;
 pub use self::blackhole::BlackholeConfiguration;
 
-mod datadog_events_service_checks;
-pub use self::datadog_events_service_checks::DatadogEventsServiceChecksConfiguration;
-
-mod datadog_metrics;
-pub use self::datadog_metrics::DatadogMetricsConfiguration;
-
-mod datadog_status_flare;
-pub use self::datadog_status_flare::DatadogStatusFlareConfiguration;
-
+mod datadog;
+pub use self::datadog::{
+    DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration, DatadogStatusFlareConfiguration,
+};
 mod prometheus;
 pub use self::prometheus::PrometheusConfiguration;

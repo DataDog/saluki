@@ -1,3 +1,5 @@
+pub mod agent;
+
 mod backoff;
 pub use self::backoff::ExponentialBackoff;
 

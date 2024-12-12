@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use http::{
@@ -16,14 +16,11 @@ use saluki_core::{
     pooling::{FixedSizeObjectPool, ObjectPool},
     task::spawn_traced,
 };
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_error::{generic_error, GenericError};
 use saluki_event::DataType;
 use saluki_io::{
     buf::{BytesBuffer, FixedSizeVec, FrozenChunkedBytesBuffer},
-    net::{
-        client::http::HttpClient,
-        util::retry::{DefaultHttpRetryPolicy, ExponentialBackoff},
-    },
+    net::{client::http::HttpClient, util::retry::agent::DatadogAgentForwarderRetryConfiguration},
 };
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
@@ -35,8 +32,7 @@ use tokio::{
 use tower::{BoxError, Service, ServiceBuilder};
 use tracing::{debug, error};
 
-mod endpoint;
-use self::endpoint::endpoints::{calculate_resolved_endpoint, AdditionalEndpoints, ResolvedEndpoint};
+use super::common::endpoints::{EndpointConfiguration, ResolvedEndpoint};
 
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
@@ -44,15 +40,14 @@ use self::request_builder::{MetricsEndpoint, RequestBuilder};
 mod telemetry;
 use self::telemetry::ComponentTelemetry;
 
-const DEFAULT_SITE: &str = "datadoghq.com";
 const RB_BUFFER_POOL_COUNT: usize = 128;
 const RB_BUFFER_POOL_BUF_SIZE: usize = 32_768;
 
 static DD_AGENT_VERSION_HEADER: HeaderName = HeaderName::from_static("dd-agent-version");
 static DD_API_KEY_HEADER: HeaderName = HeaderName::from_static("dd-api-key");
 
-fn default_site() -> String {
-    DEFAULT_SITE.to_owned()
+fn default_request_timeout_secs() -> u64 {
+    20
 }
 
 /// Datadog Metrics destination.
@@ -68,27 +63,11 @@ fn default_site() -> String {
 #[derive(Deserialize)]
 #[allow(dead_code)]
 pub struct DatadogMetricsConfiguration {
-    /// The API key to use.
-    api_key: String,
-
-    /// The site to send metrics to.
+    /// Endpoint configuration settings
     ///
-    /// This is the base domain for the Datadog site in which the API key originates from. This will generally be a
-    /// portion of the domain used to access the Datadog UI, such as `datadoghq.com` or `us5.datadoghq.com`.
-    ///
-    /// Defaults to `datadoghq.com`.
-    #[serde(default = "default_site")]
-    site: String,
-
-    /// The full URL base to send metrics to.
-    ///
-    /// This takes precedence over `site`, and is not altered in any way. This can be useful to specifying the exact
-    /// endpoint used, such as when looking to change the scheme (e.g. `http` vs `https`) or specifying a custom port,
-    /// which are both useful when proxying traffic to an intermediate destination before forwarding to Datadog.
-    ///
-    /// Defaults to unset.
-    #[serde(default)]
-    dd_url: Option<String>,
+    /// See [`EndpointConfiguration`] for more information about the available settings.
+    #[serde(flatten)]
+    endpoint_config: EndpointConfiguration,
 
     /// The request timeout for forwarding metrics, in seconds.
     ///
@@ -96,81 +75,14 @@ pub struct DatadogMetricsConfiguration {
     #[serde(default = "default_request_timeout_secs", rename = "forwarder_timeout")]
     request_timeout_secs: u64,
 
-    /// The minimum backoff factor to use when retrying requests.
+    /// Retry configuration settings.
     ///
-    /// Controls the the interval range that a calculated backoff duration can fall within, such that with a minimum
-    /// backoff factor of 2.0, calculated backoff durations will fall between `d/2` and `d`, where `d` is the calculated
-    /// backoff duration using a purely exponential growth strategy.
-    ///
-    /// Defaults to 2.
-    #[serde(default = "default_request_backoff_factor", rename = "forwarder_backoff_factor")]
-    request_backoff_factor: f64,
-
-    /// The base growth rate of the backoff duration when retrying requests, in seconds.
-    ///
-    /// Defaults to 2 seconds.
-    #[serde(default = "default_request_backoff_base", rename = "forwarder_backoff_base")]
-    request_backoff_base: f64,
-
-    /// The upper bound of the backoff duration when retrying requests, in seconds.
-    ///
-    /// Defaults to 64 seconds.
-    #[serde(default = "default_request_backoff_max", rename = "forwarder_backoff_max")]
-    request_backoff_max: f64,
-
-    /// The amount to decrease the error count by when a request is successful.
-    ///
-    /// This essentially controls how quickly we forget about the number of previous errors when calculating the next
-    /// backoff duration for a request that must be retried.
-    ///
-    /// Increasing this value should be done with caution, as it can lead to more retries being attempted in the same
-    /// period of time when downstream services are flapping.
-    ///
-    /// Defaults to 2.
-    #[serde(
-        default = "default_request_recovery_error_decrease_factor",
-        rename = "forwarder_recovery_interval"
-    )]
-    request_recovery_error_decrease_factor: u32,
-
-    /// Whether or not a successful request should completely the error count.
-    ///
-    /// Defaults to false.
-    #[serde(default = "default_request_recovery_reset", rename = "forwarder_recovery_reset")]
-    request_recovery_reset: bool,
-
-    /// Enables sending data to multiple endpoints and/or with multiple API keys via dual shipping.
-    ///
-    /// Defaults to empty.
-    #[serde(default, rename = "additional_endpoints")]
-    additional_endpoints: AdditionalEndpoints,
+    /// See [`DatadogAgentForwarderRetryConfiguration`] for more information about the available settings.
+    #[serde(flatten)]
+    retry_config: DatadogAgentForwarderRetryConfiguration,
 
     #[serde(skip)]
     config_refresher: Option<RefreshableConfiguration>,
-}
-
-fn default_request_timeout_secs() -> u64 {
-    20
-}
-
-fn default_request_backoff_factor() -> f64 {
-    2.0
-}
-
-fn default_request_backoff_base() -> f64 {
-    2.0
-}
-
-fn default_request_backoff_max() -> f64 {
-    64.0
-}
-
-fn default_request_recovery_error_decrease_factor() -> u32 {
-    2
-}
-
-fn default_request_recovery_reset() -> bool {
-    false
 }
 
 impl DatadogMetricsConfiguration {
@@ -192,36 +104,18 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
     }
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
-        let retry_backoff = ExponentialBackoff::with_jitter(
-            Duration::from_secs_f64(self.request_backoff_base),
-            Duration::from_secs_f64(self.request_backoff_max),
-            self.request_backoff_factor,
-        );
-
-        let recovery_error_decrease_factor =
-            (!self.request_recovery_reset).then_some(self.request_recovery_error_decrease_factor);
-        let retry_policy = DefaultHttpRetryPolicy::with_backoff(retry_backoff)
-            .with_recovery_error_decrease_factor(recovery_error_decrease_factor);
-
         let metrics_builder = MetricsBuilder::from_component_context(context);
 
         let service = HttpClient::builder()
-            .with_retry_policy(retry_policy)
+            .with_retry_policy(self.retry_config.into_default_http_retry_policy())
+            .with_bytes_sent_counter(metrics_builder.register_debug_counter("component_bytes_sent_total"))
             .with_endpoint_telemetry(metrics_builder, Some(get_metrics_endpoint_name))
             .build()?;
 
         // Resolve all endpoints that we'll be forwarding metrics to.
-        let primary_endpoint = calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, &self.api_key)
-            .error_context("Failed parsing/resolving the primary destination endpoint.")?
-            .with_refreshable_configuration(self.config_refresher.clone());
-
-        let additional_endpoints = self
-            .additional_endpoints
-            .resolved_endpoints()
-            .error_context("Failed parsing/resolving the additional destination endpoints.")?;
-
-        let mut endpoints = additional_endpoints;
-        endpoints.insert(0, primary_endpoint);
+        let endpoints = self
+            .endpoint_config
+            .build_resolved_endpoints(self.config_refresher.clone())?;
 
         // Create our request builders.
         let rb_buffer_pool = create_request_builder_buffer_pool();

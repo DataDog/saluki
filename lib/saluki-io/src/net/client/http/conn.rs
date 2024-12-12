@@ -12,6 +12,7 @@ use hyper_util::{
     client::legacy::connect::{CaptureConnection, Connected, Connection, HttpConnector},
     rt::TokioIo,
 };
+use metrics::Counter;
 use pin_project_lite::pin_project;
 use rustls::ClientConfig;
 use tokio::net::TcpStream;
@@ -51,6 +52,7 @@ pin_project! {
     pub struct HttpsCapableConnection {
         #[pin]
         inner: MaybeHttpsStream<TokioIo<TcpStream>>,
+        bytes_sent: Option<Counter>,
         conn_age_limit: Option<Duration>,
     }
 }
@@ -80,7 +82,15 @@ impl hyper::rt::Read for HttpsCapableConnection {
 impl hyper::rt::Write for HttpsCapableConnection {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
         let this = self.project();
-        this.inner.poll_write(cx, buf)
+        match this.inner.poll_write(cx, buf) {
+            Poll::Ready(Ok(n)) => {
+                if let Some(bytes_sent) = this.bytes_sent {
+                    bytes_sent.increment(n as u64);
+                }
+                Poll::Ready(Ok(n))
+            }
+            other => other,
+        }
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -101,7 +111,15 @@ impl hyper::rt::Write for HttpsCapableConnection {
         self: Pin<&mut Self>, cx: &mut Context<'_>, bufs: &[io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
         let this = self.project();
-        this.inner.poll_write_vectored(cx, bufs)
+        match this.inner.poll_write_vectored(cx, bufs) {
+            Poll::Ready(Ok(n)) => {
+                if let Some(bytes_sent) = this.bytes_sent {
+                    bytes_sent.increment(n as u64);
+                }
+                Poll::Ready(Ok(n))
+            }
+            other => other,
+        }
     }
 }
 
@@ -109,6 +127,7 @@ impl hyper::rt::Write for HttpsCapableConnection {
 #[derive(Clone)]
 pub struct HttpsCapableConnector {
     inner: HttpsConnector<HttpConnector>,
+    bytes_sent: Option<Counter>,
     conn_age_limit: Option<Duration>,
 }
 
@@ -123,11 +142,14 @@ impl Service<Uri> for HttpsCapableConnector {
 
     fn call(&mut self, dst: Uri) -> Self::Future {
         let inner = self.inner.call(dst);
+        let bytes_sent = self.bytes_sent.clone();
         let conn_age_limit = self.conn_age_limit;
         Box::pin(async move {
-            inner
-                .await
-                .map(|inner| HttpsCapableConnection { inner, conn_age_limit })
+            inner.await.map(|inner| HttpsCapableConnection {
+                inner,
+                bytes_sent,
+                conn_age_limit,
+            })
         })
     }
 }
@@ -136,6 +158,7 @@ impl Service<Uri> for HttpsCapableConnector {
 #[derive(Default)]
 pub struct HttpsCapableConnectorBuilder {
     connect_timeout: Option<Duration>,
+    bytes_sent: Option<Counter>,
     conn_age_limit: Option<Duration>,
 }
 
@@ -162,6 +185,17 @@ impl HttpsCapableConnectorBuilder {
         self
     }
 
+    /// Sets a counter that gets incremented with the number of bytes sent over the connection.
+    ///
+    /// This tracks bytes sent at the HTTP client level, which includes headers and body but does not include underlying
+    /// transport overhead, such as TLS handshaking, and so on.
+    ///
+    /// Defaults to unset.
+    pub fn with_bytes_sent_counter(mut self, counter: Counter) -> Self {
+        self.bytes_sent = Some(counter);
+        self
+    }
+
     /// Builds the `HttpsCapableConnector` from the given TLS configuration.
     pub fn build(self, tls_config: ClientConfig) -> HttpsCapableConnector {
         let connect_timeout = self.connect_timeout.unwrap_or(Duration::from_secs(30));
@@ -181,6 +215,7 @@ impl HttpsCapableConnectorBuilder {
 
         HttpsCapableConnector {
             inner: https_connector,
+            bytes_sent: self.bytes_sent,
             conn_age_limit: self.conn_age_limit,
         }
     }
