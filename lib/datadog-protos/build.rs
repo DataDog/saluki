@@ -31,21 +31,15 @@ fn main() {
 
     // Handle code generation for gRPC service definitions.
     tonic_build::configure()
-        .build_server(false)
+        .build_server(true)
         .include_file("api.mod.rs")
         .compile_protos(
             &[
                 "proto/datadog/api/v1/api.proto",
                 "proto/datadog/workloadmeta/workloadmeta.proto",
+                "proto/datadog/remoteagent/remoteagent.proto",
             ],
             &["proto"],
         )
         .expect("failed to build gRPC service definitions for DCA");
-
-    // Handle code generation for gRPC service definitions.
-    tonic_build::configure()
-        .build_server(true)
-        .include_file("remoteagent.mod.rs")
-        .compile_protos(&["proto/datadog/remoteagent/remoteagent.proto"], &["proto"])
-        .expect("failed to build gRPC service definitions for RemoteAgent")
 }
