@@ -1,6 +1,5 @@
 lading:
-  version: sha-de4a6388d67ac3b4a1faa862e60075f02a10817e
-
+  version: 0.24.0
 target:
-  cpu_allotment: 8
-  memory_allotment: 30g
+  cpu_allotment: 4
+  memory_allotment: 2g

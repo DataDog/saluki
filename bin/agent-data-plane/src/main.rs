@@ -26,7 +26,7 @@ use saluki_health::HealthRegistry;
 use saluki_io::net::ListenAddress;
 use tikv_jemallocator::Jemalloc;
 use tokio::select;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 mod components;
 use self::components::remapper::AgentTelemetryRemapperConfiguration;
@@ -79,35 +79,7 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         "Agent Data Plane starting..."
     );
 
-    info!("Built with jemalloc configuration: {}", tikv_jemalloc_ctl::config::malloc_conf::mib().unwrap().read().unwrap());
-
-    std::thread::spawn(|| {
-        let mut stats_buf = Vec::with_capacity(128 * 1024);
-        let mut options = tikv_jemalloc_ctl::stats_print::Options::default();
-        options.json_format = true;
-
-        let print_stats = std::env::var("DD_PRINT_JEMALLOC_STATS").is_ok();
-
-        loop {
-            std::thread::sleep(Duration::from_secs(5));
-            tikv_jemalloc_ctl::epoch::advance().unwrap();
-
-            stats_buf.clear();
-
-            tikv_jemalloc_ctl::stats_print::stats_print(&mut stats_buf, options.clone()).unwrap();
-
-            if print_stats {
-                info!("jemalloc stats: {}", String::from_utf8_lossy(&stats_buf));
-            } else {
-                match std::fs::write("jemalloc-stats.json", &stats_buf) {
-                    Ok(_) => info!("Wrote jemalloc stats output to 'jemalloc-stats.json'."),
-                    Err(e) => {
-                        error!("Failed to write jemalloc stats output: {}", e);
-                    }
-                }
-            }
-        }
-    });
+    debug!("Using jemalloc configuration: {}", tikv_jemalloc_ctl::config::malloc_conf::mib().unwrap().read().unwrap());
 
     // Load our configuration and create all high-level primitives (health registry, component registry, environment
     // provider, etc) that are needed to build the topology.
