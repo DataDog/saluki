@@ -33,6 +33,7 @@ paste = { workspace = true }
 pin-project = { workspace = true }
 protobuf = { workspace = true }
 quanta = { workspace = true }
+rand = { workspace = true }
 regex = { workspace = true }
 rustls = { workspace = true }
 saluki-config = { workspace = true }
@@ -58,3 +59,4 @@ tonic = { workspace = true }
 tower = { workspace = true, features = ["retry", "timeout", "util"] }
 tracing = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true, features = ["std", "v7"] }

@@ -1,5 +1,6 @@
 #[allow(unused)]
 use std::collections::HashMap;
+use std::time::Duration;
 
 use async_trait::async_trait;
 #[allow(unused)]
@@ -7,6 +8,8 @@ use datadog_protos::agent::{
     GetFlareFilesRequest, GetFlareFilesResponse, GetStatusDetailsRequest, GetStatusDetailsResponse, RemoteAgent,
 };
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use rand::distributions::Alphanumeric;
+use rand::{thread_rng, Rng};
 use saluki_config::GenericConfiguration;
 use saluki_core::components::{
     destinations::{Destination, DestinationBuilder, DestinationContext},
@@ -17,51 +20,49 @@ use saluki_error::GenericError;
 use saluki_event::DataType;
 use serde::Deserialize;
 use tracing::debug;
+use uuid::Uuid;
 
-const DEFAULT_ID: &str = "agent-data-plane";
-const DEFAULT_DISPLAY_NAME: &str = "Agent Data Plane";
-const DEFAULT_API_ENDPOINT: &str = "localhost:13580";
+const DEFAULT_API_ENDPOINT: u64 = 5102;
 
 /// TODO
 /// wrapped client inside an `Option` to fix Deserialization problems
 #[derive(Deserialize)]
 pub struct DatadogStatusFlareConfiguration {
-    #[serde(default = "default_id", rename = "remote_agent_id")]
+    #[serde(skip)]
     id: String,
 
-    #[serde(default = "default_display_name", rename = "remote_agent_display_name")]
+    #[serde(skip)]
     display_name: String,
 
-    #[serde(default = "default_api_endpoint", rename = "remote_agent_api_endpoint")]
-    api_endpoint: String,
-
-    #[serde(default = "default_auth_token", rename = "remote_agent_auth_token")]
-    auth_token: String,
+    #[serde(default = "default_api_port", rename = "remote_agent_api_port")]
+    api_port: u64,
 
     #[serde(skip)]
     client: Option<RemoteAgentClient>,
 }
 
-fn default_id() -> String {
-    DEFAULT_ID.to_owned()
-}
-
-fn default_display_name() -> String {
-    DEFAULT_DISPLAY_NAME.to_owned()
-}
-fn default_api_endpoint() -> String {
-    DEFAULT_API_ENDPOINT.to_owned()
-}
-
-fn default_auth_token() -> String {
-    "TODO".to_string()
+fn default_api_port() -> u64 {
+    DEFAULT_API_ENDPOINT
 }
 
 impl DatadogStatusFlareConfiguration {
     /// Creates a new `DatadogStatusConfiguration` from the given configuration.
     pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        // let client = RemoteAgentClient::from_configuration(config).await?;
-        Ok(config.as_typed()?)
+        let mut status_flare_configuration: DatadogStatusFlareConfiguration = config.as_typed()?;
+        let app_details = saluki_metadata::get_app_details();
+
+        let formatted_full_name = app_details
+            .full_name()
+            .replace(" ", "-")
+            .replace("_", "-")
+            .to_lowercase();
+
+        let id = Uuid::now_v7();
+        let agent_id = format!("{}-{}", formatted_full_name, id);
+        status_flare_configuration.id = agent_id;
+        status_flare_configuration.display_name = formatted_full_name;
+        status_flare_configuration.client = Some(RemoteAgentClient::from_configuration(config).await?);
+        Ok(status_flare_configuration)
     }
 
     ///  TODO
@@ -73,31 +74,16 @@ impl DatadogStatusFlareConfiguration {
 #[async_trait]
 impl DestinationBuilder for DatadogStatusFlareConfiguration {
     fn input_data_type(&self) -> DataType {
-        DataType::Metric
+        DataType::Metric | DataType::EventD | DataType::ServiceCheck
     }
 
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
-        let mut client = self.client.clone().unwrap();
-
-        match client
-            .register_remote_agent_request(&self.id, &self.display_name, &self.api_endpoint, &self.auth_token)
-            .await
-        {
-            Ok(_) => {
-                debug!("Registered as remote agent to Datadog Agent.");
-                Ok(Box::new(DatadogStatusFlare {
-                    id: self.id.clone(),
-                    display_name: self.display_name.clone(),
-                    api_endpoint: self.api_endpoint.clone(),
-                    auth_token: self.auth_token.clone(),
-                    client,
-                }))
-            }
-            Err(e) => {
-                debug!("Failed to register remote agent to Datadog Agent.");
-                Err(e)
-            }
-        }
+        Ok(Box::new(DatadogStatusFlare {
+            id: self.id.clone(),
+            display_name: self.display_name.clone(),
+            api_port: self.api_port,
+            client: self.client.clone().unwrap(),
+        }))
     }
 }
 
@@ -115,9 +101,7 @@ pub struct DatadogStatusFlare {
 
     display_name: String,
 
-    api_endpoint: String,
-
-    auth_token: String,
+    api_port: u64,
 
     client: RemoteAgentClient,
 }
@@ -128,19 +112,31 @@ impl Destination for DatadogStatusFlare {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
         let mut client = self.client.clone();
         tokio::spawn(async move {
-            match client
-                .register_remote_agent_request(&self.id, &self.display_name, &self.api_endpoint, &self.auth_token)
-                .await
-            {
-                Ok(resp) => {
-                    let refresh_interval = resp.into_inner().recommended_refresh_interval_secs;
-                    debug!("Refreshed registration with Core Agent");
-                }
-                Err(e) => {
-                    debug!("Failed to refresh registration with Core Agent.");
+            let auth_token: String = thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(64)
+                .map(char::from)
+                .collect();
+
+            loop {
+                match client
+                    .register_remote_agent_request(&self.id, &self.display_name, self.api_port, &auth_token)
+                    .await
+                {
+                    Ok(resp) => {
+                        let refresh_interval = resp.into_inner().recommended_refresh_interval_secs;
+                        tokio::time::sleep(Duration::from_secs(refresh_interval as u64)).await;
+                        debug!("Refreshed registration with Core Agent");
+                    }
+                    Err(e) => {
+                        debug!("Failed to refresh registration with Core Agent.");
+                    }
                 }
             }
-        });
+        })
+        .await;
+
+        /// TODO
         loop {}
         Ok(())
     }
