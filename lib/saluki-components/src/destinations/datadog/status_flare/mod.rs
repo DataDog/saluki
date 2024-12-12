@@ -51,7 +51,7 @@ fn default_api_port() -> u64 {
 }
 
 impl DatadogStatusFlareConfiguration {
-    /// Creates a new `DatadogStatusConfiguration` from the given configuration.
+    /// Creates a new `DatadogStatusFlareConfiguration` from the given configuration.
     pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let mut status_flare_configuration: DatadogStatusFlareConfiguration = config.as_typed()?;
         let app_details = saluki_metadata::get_app_details();
@@ -138,8 +138,7 @@ impl Destination for DatadogStatusFlare {
                     }
                 }
             }
-        })
-        .await;
+        });
 
         /// TODO
         loop {
