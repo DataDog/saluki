@@ -211,7 +211,10 @@ fn create_topology(
         .connect_component("enrich", ["dsd_agg"])?
         .connect_component("dd_metrics_out", ["enrich"])?
         .connect_component("dd_events_sc_out", ["dsd_in.events", "dsd_in.service_checks"])?
-        .connect_component("dd_status_flare_out", ["enrich", "dsd_in.events", "dsd_in.service_checks"])?;
+        .connect_component(
+            "dd_status_flare_out",
+            ["enrich", "dsd_in.events", "dsd_in.service_checks"],
+        )?;
 
     // Insert a Prometheus scrape destination if we've been instructed to enable internal telemetry.
     if configuration.get_typed_or_default::<bool>("telemetry_enabled") {

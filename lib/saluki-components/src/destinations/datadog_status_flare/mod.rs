@@ -24,8 +24,13 @@ use uuid::Uuid;
 
 const DEFAULT_API_ENDPOINT: u64 = 5102;
 
-/// TODO
-/// wrapped client inside an `Option` to fix Deserialization problems
+/// Datadog Status and Flare Destination
+///
+/// Registers ADP as a remote agent to the Core Agent.
+///
+/// ## Missing
+///
+/// - grpc server to respond to Core Agent
 #[derive(Deserialize)]
 pub struct DatadogStatusFlareConfiguration {
     #[serde(skip)]
@@ -137,7 +142,9 @@ impl Destination for DatadogStatusFlare {
         .await;
 
         /// TODO
-        loop {}
+        loop {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
         Ok(())
     }
 }
