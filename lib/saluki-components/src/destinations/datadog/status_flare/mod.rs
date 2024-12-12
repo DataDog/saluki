@@ -1,9 +1,7 @@
-#[allow(unused)]
 use std::collections::HashMap;
 use std::time::Duration;
 
 use async_trait::async_trait;
-#[allow(unused)]
 use datadog_protos::agent::{
     GetFlareFilesRequest, GetFlareFilesResponse, GetStatusDetailsRequest, GetStatusDetailsResponse, RemoteAgent,
 };
@@ -148,27 +146,27 @@ impl Destination for DatadogStatusFlare {
     }
 }
 
-// #[allow(unused)]
-// struct RemoteAgentImpl;
+#[allow(unused)]
+struct RemoteAgentImpl;
 
-// #[async_trait]
-// impl RemoteAgent for RemoteAgentImpl {
-//     async fn get_status_details(
-//         &self, _request: tonic::Request<GetStatusDetailsRequest>,
-//     ) -> std::result::Result<GetStatusDetailsResponse, tonic::Status> {
-//         let response = GetStatusDetailsResponse {
-//             main_section: None,
-//             named_sections: HashMap::new(),
-//         };
-//         Ok(response)
-//     }
+#[async_trait]
+impl RemoteAgent for RemoteAgentImpl {
+    async fn get_status_details(
+        &self, _request: tonic::Request<GetStatusDetailsRequest>,
+    ) -> std::result::Result<tonic::Response<GetStatusDetailsResponse>, tonic::Status> {
+        let response = GetStatusDetailsResponse {
+            main_section: None,
+            named_sections: HashMap::new(),
+        };
+        Ok(tonic::Response::new(response))
+    }
 
-//     async fn get_flare_files(
-//         &self, _request: tonic::Request<GetFlareFilesRequest>,
-//     ) -> std::result::Result<tonic::Response<GetFlareFilesResponse>, tonic::Status> {
-//         let response = GetFlareFilesResponse {
-//             files: HashMap::default(),
-//         };
-//         Ok(tonic::Response::new(response))
-//     }
-// }
+    async fn get_flare_files(
+        &self, _request: tonic::Request<GetFlareFilesRequest>,
+    ) -> std::result::Result<tonic::Response<GetFlareFilesResponse>, tonic::Status> {
+        let response = GetFlareFilesResponse {
+            files: HashMap::default(),
+        };
+        Ok(tonic::Response::new(response))
+    }
+}
