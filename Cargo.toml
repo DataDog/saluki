@@ -143,6 +143,8 @@ chrono-tz = { version = "0.10", default-features = false }
 iana-time-zone = { version = "0.1", default-features = false }
 backon = { version = "1", default-features = false }
 http-serde-ext = { version = "1", default-features = false }
+tikv-jemalloc-ctl = "0.6"
+tikv-jemallocator = { version = "0.6", default-features = false }
 
 [profile.release]
 lto = "thin"
