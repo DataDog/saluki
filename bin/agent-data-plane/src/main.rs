@@ -79,7 +79,10 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         "Agent Data Plane starting..."
     );
 
-    debug!("Using jemalloc configuration: {}", tikv_jemalloc_ctl::config::malloc_conf::mib().unwrap().read().unwrap());
+    debug!(
+        "Using jemalloc configuration: {}",
+        tikv_jemalloc_ctl::config::malloc_conf::mib().unwrap().read().unwrap()
+    );
 
     // Load our configuration and create all high-level primitives (health registry, component registry, environment
     // provider, etc) that are needed to build the topology.
