@@ -128,6 +128,7 @@ impl Destination for DatadogStatusFlare {
                     }
                     Err(e) => {
                         debug!("Failed to refresh registration with Core Agent.");
+                        tokio::time::sleep(Duration::from_secs(15)).await;
                     }
                 }
             }
