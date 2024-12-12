@@ -67,11 +67,6 @@ impl DatadogStatusFlareConfiguration {
         status_flare_configuration.client = Some(RemoteAgentClient::from_configuration(config).await?);
         Ok(status_flare_configuration)
     }
-
-    ///  TODO
-    pub fn set_remote_agent_client(&mut self, client: RemoteAgentClient) {
-        self.client = Some(client);
-    }
 }
 
 #[async_trait]

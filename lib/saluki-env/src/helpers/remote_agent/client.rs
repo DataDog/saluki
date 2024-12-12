@@ -215,7 +215,7 @@ impl RemoteAgentClient {
         &mut self, id: &str, display_name: &str, api_port: u64, auth_token: &str,
     ) -> Result<Response<RegisterRemoteAgentResponse>, GenericError> {
         let mut client = self.secure_client.clone();
-        let api_endpoint = format!("localhost:{}", api_port);
+        let api_endpoint = format!("0.0.0.0:{}", api_port);
         let response = client
             .register_remote_agent(RegisterRemoteAgentRequest {
                 id: id.to_string(),
