@@ -1,6 +1,5 @@
 lading:
   version: 0.24.0
-
 target:
-  cpu_allotment: 8
-  memory_allotment: 30g
+  cpu_allotment: 4
+  memory_allotment: 2g

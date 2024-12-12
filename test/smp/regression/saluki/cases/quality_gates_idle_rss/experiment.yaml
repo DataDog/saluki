@@ -29,6 +29,8 @@ target:
     DD_TELEMETRY_ENABLED: "true"
     DD_PROMETHEUS_LISTEN_ADDR: tcp://127.0.0.1:5101
 
+    DD_PRINT_JEMALLOC_STATS: "true"
+
 checks:
   - name: memory_usage
     description: "Acceptable upper bound on the memory used by ADP when idle."
