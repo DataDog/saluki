@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use metrics::{counter, gauge, histogram, Counter, Gauge, Histogram, Label, Level, SharedString};
 
 mod private {
@@ -59,7 +61,7 @@ where
 /// ensure consistent tagging across the board.
 #[derive(Clone, Default)]
 pub struct MetricsBuilder {
-    default_tags: Vec<Label>,
+    default_tags: Arc<Vec<Label>>,
 }
 
 impl MetricsBuilder {
@@ -75,7 +77,8 @@ impl MetricsBuilder {
     where
         T: MetricTag,
     {
-        self.default_tags.push(tag.into_label());
+        let default_tags = Arc::make_mut(&mut self.default_tags);
+        default_tags.push(tag.into_label());
         self
     }
 
@@ -83,8 +86,7 @@ impl MetricsBuilder {
     ///
     /// The counter will include the configured default tags for this builder.
     pub fn register_debug_counter(&self, metric_name: &'static str) -> Counter {
-        let tags = self.default_tags.clone();
-        counter!(level: Level::DEBUG, metric_name, tags)
+        counter!(level: Level::DEBUG, metric_name, self.default_tags.iter())
     }
 
     /// Registers a counter at debug verbosity with additional tags.
@@ -97,7 +99,7 @@ impl MetricsBuilder {
         I: IntoIterator<Item = T>,
         T: MetricTag,
     {
-        let mut tags = self.default_tags.clone();
+        let mut tags = (*self.default_tags).clone();
         tags.extend(additional_tags.into_iter().map(MetricTag::into_label));
 
         counter!(level: Level::DEBUG, metric_name, tags)
@@ -107,8 +109,7 @@ impl MetricsBuilder {
     ///
     /// The gauge will include the configured default tags for this builder.
     pub fn register_debug_gauge(&self, metric_name: &'static str) -> Gauge {
-        let tags = self.default_tags.clone();
-        gauge!(level: Level::DEBUG, metric_name, tags)
+        gauge!(level: Level::DEBUG, metric_name, self.default_tags.iter())
     }
 
     /// Registers a gauge at debug verbosity with additional tags.
@@ -121,7 +122,7 @@ impl MetricsBuilder {
         I: IntoIterator<Item = T>,
         T: MetricTag,
     {
-        let mut tags = self.default_tags.clone();
+        let mut tags = (*self.default_tags).clone();
         tags.extend(additional_tags.into_iter().map(MetricTag::into_label));
 
         gauge!(level: Level::DEBUG, metric_name, tags)
@@ -131,8 +132,7 @@ impl MetricsBuilder {
     ///
     /// The histogram will include the configured default tags for this builder.
     pub fn register_debug_histogram(&self, metric_name: &'static str) -> Histogram {
-        let tags = self.default_tags.clone();
-        histogram!(level: Level::DEBUG, metric_name, tags)
+        histogram!(level: Level::DEBUG, metric_name, self.default_tags.iter())
     }
 
     /// Registers a histogram at debug verbosity with additional tags.
@@ -145,7 +145,7 @@ impl MetricsBuilder {
         I: IntoIterator<Item = T>,
         T: MetricTag,
     {
-        let mut tags = self.default_tags.clone();
+        let mut tags = (*self.default_tags).clone();
         tags.extend(additional_tags.into_iter().map(MetricTag::into_label));
 
         histogram!(level: Level::DEBUG, metric_name, tags)
