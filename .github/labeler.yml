@@ -73,13 +73,21 @@
   - changed-files:
     - any-glob-to-any-file: ["lib/saluki-components/src/destinations/blackhole/**/*"]
 
-"destination/datadog-metrics":
+"destination/datadog":
   - changed-files:
-    - any-glob-to-any-file: ["lib/saluki-components/src/destinations/datadog_metrics/**/*"]
+    - any-glob-to-any-file: ["lib/saluki-components/src/destinations/datadog/**/*"]
 
 "destination/datadog-events-service-checks":
   - changed-files:
-    - any-glob-to-any-file: ["lib/saluki-components/src/destinations/datadog_events_service_checks/**/*"]
+    - any-glob-to-any-file: ["lib/saluki-components/src/destinations/datadog/events_service_checks/**/*"]
+
+"destination/datadog-metrics":
+  - changed-files:
+    - any-glob-to-any-file: ["lib/saluki-components/src/destinations/datadog/metrics/**/*"]
+
+"destination/datadog-events-service-checks":
+  - changed-files:
+    - any-glob-to-any-file: ["lib/saluki-components/src/destinations/datadog/events_service_checks/**/*"]
 
 "destination/prometheus":
   - changed-files:
