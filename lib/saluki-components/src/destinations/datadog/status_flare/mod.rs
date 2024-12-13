@@ -49,7 +49,7 @@ impl DatadogStatusFlareConfiguration {
             .replace(" ", "-")
             .replace("_", "-")
             .to_lowercase();
-        let api_port = config
+        let api_listen_port = config
             .try_get_typed::<NonZeroUsize>("remote_agent_api_listen_port")?
             .unwrap_or(DEFAULT_API_LISTEN_PORT);
         let client = RemoteAgentClient::from_configuration(config).await?;
@@ -57,7 +57,7 @@ impl DatadogStatusFlareConfiguration {
         Ok(Self {
             id: format!("{}-{}", formatted_full_name, Uuid::now_v7()),
             display_name: formatted_full_name,
-            api_listen_port: api_port,
+            api_listen_port,
             client,
         })
     }
