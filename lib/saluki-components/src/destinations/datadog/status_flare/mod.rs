@@ -104,7 +104,7 @@ impl Destination for DatadogStatusFlare {
             mut client,
         } = *self;
 
-        let api_endpoint = format!("0.0.0.0:{}", api_listen_port);
+        let api_endpoint = format!("127.0.0.1:{}", api_listen_port);
         let auth_token: String = thread_rng()
             .sample_iter(&Alphanumeric)
             .take(64)
@@ -129,6 +129,8 @@ impl Destination for DatadogStatusFlare {
                 },
 
                 // Time to (re)register with the Core Agent.
+                //
+                // TODO: Consider spawning the registration as a task so that the component can keep polling and not slow down the accepting of events and responding of health checks.
                 _ = register_agent.tick() => {
                     match client.register_remote_agent_request(&id, &display_name, &api_endpoint, &auth_token).await {
                         Ok(resp) => {
