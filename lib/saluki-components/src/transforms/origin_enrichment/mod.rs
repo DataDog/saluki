@@ -20,6 +20,10 @@ const fn default_tag_cardinality() -> OriginTagCardinality {
     OriginTagCardinality::Low
 }
 
+const fn default_origin_detection_optout() -> bool {
+    true
+}
+
 /// Origin Enrichment synchronous transform.
 ///
 /// Enriches metrics with tags based on the client origin of a metric. The "origin" referred to here is subtly different
@@ -29,12 +33,6 @@ const fn default_tag_cardinality() -> OriginTagCardinality {
 ///
 /// More specifically, client origin is used to drive tags which are added to the metric, whereas origin metadata is
 /// out-of-band data sent along in the payload to downstream systems if supported.
-///
-/// ## Missing
-///
-/// - support for External Data [1]
-///
-/// [1]: https://github.com/DataDog/datadog-agent/blob/6b4e6ec490148848c282ef304d6696cc910e5efc/comp/core/tagger/taggerimpl/tagger.go#L498-L535
 #[derive(Deserialize)]
 pub struct OriginEnrichmentConfiguration<E = ()> {
     #[serde(skip)]
@@ -65,6 +63,18 @@ pub struct OriginEnrichmentConfiguration<E = ()> {
     ///      was present or if `entity_id_precedence` is set to `false`.
     #[serde(rename = "dogstatsd_origin_detection_unified", default)]
     origin_detection_unified: bool,
+
+    /// Whether or not to opt out of origin detection for DogStatsD metrics.
+    ///
+    /// When set to `true`, and the metric explicitly denotes a cardinality of "none", origin enrichment will be
+    /// skipped. This is only applicable to DogStatsD metrics when unified origin detection behavior is not enabled.
+    ///
+    /// Defaults to `true`.
+    #[serde(
+        rename = "dogstatsd_origin_optout_enabled",
+        default = "default_origin_detection_optout"
+    )]
+    origin_detection_optout: bool,
 }
 
 impl OriginEnrichmentConfiguration<()> {
@@ -82,6 +92,7 @@ impl<E> OriginEnrichmentConfiguration<E> {
             entity_id_precedence: self.entity_id_precedence,
             tag_cardinality: self.tag_cardinality,
             origin_detection_unified: self.origin_detection_unified,
+            origin_detection_optout: self.origin_detection_optout,
         }
     }
 }
@@ -97,6 +108,7 @@ where
             entity_id_precedence: self.entity_id_precedence,
             origin_detection_unified: self.origin_detection_unified,
             tag_cardinality: self.tag_cardinality,
+            origin_detection_optout: self.origin_detection_optout,
         }))
     }
 }
@@ -113,6 +125,7 @@ pub struct OriginEnrichment<E> {
     entity_id_precedence: bool,
     origin_detection_unified: bool,
     tag_cardinality: OriginTagCardinality,
+    origin_detection_optout: bool,
 }
 
 impl<E> OriginEnrichment<E>
@@ -135,7 +148,12 @@ where
 
         let tag_cardinality = origin_entity.cardinality().unwrap_or(self.tag_cardinality);
 
-        if !self.origin_detection_unified {
+        if !self.origin_detection_unified && metric.metadata().origin().map_or(false, |origin| origin.is_dogstatsd()) {
+            if self.origin_detection_optout && tag_cardinality == OriginTagCardinality::None {
+                trace!("Skipping origin enrichment for DogStatsD metric with cardinality 'none'.");
+                return;
+            }
+
             // If we discovered an entity ID via origin detection, and no client-provided entity ID was provided (or it was,
             // but entity ID precedence is disabled), then try to get tags for the detected entity ID.
             if let Some(origin_pid) = maybe_origin_pid {
@@ -171,6 +189,11 @@ where
                 }
             }
         } else {
+            if tag_cardinality == OriginTagCardinality::None {
+                trace!("Skipping origin enrichment for metric with cardinality 'none'.");
+                return;
+            }
+
             // Try all possible detected entity IDs, enriching in the following order of precedence: origin PID,
             // then container ID, and finally the client-provided entity ID.
             let maybe_entity_ids = &[maybe_origin_pid, maybe_container_id, maybe_entity_id];
@@ -185,6 +208,28 @@ where
                         metric.context_mut().tags_mut().merge_missing(tags);
                     }
                     None => trace!(?entity_id, "No tags found for entity."),
+                }
+            }
+
+            // If the metric has External Data attached, try to resolve an entity ID from it and enrich the metric with
+            // any tags attached to that entity ID.
+            if let Some(external_data) = metric.metadata().origin_entity().external_data() {
+                if let Some(entity_id) = self
+                    .env_provider
+                    .workload()
+                    .resolve_entity_id_from_external_data(external_data)
+                {
+                    match self
+                        .env_provider
+                        .workload()
+                        .get_tags_for_entity(&entity_id, tag_cardinality)
+                    {
+                        Some(tags) => {
+                            trace!(?entity_id, tags_len = tags.len(), "Found tags for entity.");
+                            metric.context_mut().tags_mut().merge_missing(tags);
+                        }
+                        None => trace!(?entity_id, "No tags found for entity."),
+                    }
                 }
             }
         }

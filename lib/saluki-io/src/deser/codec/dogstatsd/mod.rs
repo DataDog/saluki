@@ -179,6 +179,7 @@ fn parse_dogstatsd_metric<'a>(
     let mut maybe_tags = None;
     let mut maybe_container_id = None;
     let mut maybe_timestamp = None;
+    let mut maybe_external_data = None;
 
     let remaining = if !remaining.is_empty() {
         let (mut remaining, _) = tag("|")(remaining)?;
@@ -212,6 +213,11 @@ fn parse_dogstatsd_metric<'a>(
                         let (_, timestamp) = all_consuming(preceded(tag("T"), unix_timestamp))(chunk)?;
                         maybe_timestamp = Some(timestamp);
                     }
+                }
+                // External Data: client-provided data used for resolving the entity ID that this metric originated from.
+                b'e' if chunk.len() > 1 && chunk[1] == b':' => {
+                    let (_, external_data) = all_consuming(preceded(tag("e:"), external_data))(chunk)?;
+                    maybe_external_data = Some(external_data);
                 }
                 _ => {
                     // We don't know what this is, so we just skip it.
@@ -270,6 +276,7 @@ fn parse_dogstatsd_metric<'a>(
             num_points,
             timestamp: maybe_timestamp,
             container_id: maybe_container_id,
+            external_data: maybe_external_data,
             pod_uid,
             cardinality,
             jmx_check_name,
@@ -284,6 +291,7 @@ pub struct MetricPacket<'a> {
     pub num_points: u64,
     pub timestamp: Option<u64>,
     pub container_id: Option<&'a str>,
+    pub external_data: Option<&'a str>,
     pub pod_uid: Option<&'a str>,
     pub cardinality: Option<OriginTagCardinality>,
     pub jmx_check_name: Option<&'a str>,
@@ -601,6 +609,22 @@ fn container_id(input: &[u8]) -> IResult<&[u8], &str> {
 }
 
 #[inline]
+fn external_data(input: &[u8]) -> IResult<&[u8], &str> {
+    // External Data is only meant to be able to represent origin information, which includes container names, pod UIDs,
+    // and the like... which are constrained by the RFC 1123 definition of a DNS label: lowercase ASCII letters,
+    // numbers, and hyphens.
+    //
+    // We don't go the full nine yards with enforcing the "starts with a letter and number" bit.. but we _do_ allow
+    // commas since individual items in the External Data string are comma-separated.
+    let valid_char = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b',';
+    map(take_while1(valid_char), |b| {
+        // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
+        // interpret the bytes directly as UTF-8.
+        unsafe { std::str::from_utf8_unchecked(b) }
+    })(input)
+}
+
+#[inline]
 fn limit_str_to_len(s: &str, limit: usize) -> &str {
     if limit >= s.len() {
         s
@@ -788,6 +812,7 @@ mod tests {
                 container_id: MetaString::from(packet.container_id.unwrap_or("")),
                 pod_uid: MetaString::from(packet.pod_uid.unwrap_or("")),
                 cardinality: packet.cardinality,
+                external_data: MetaString::from(packet.external_data.unwrap_or("")),
             },
             origin: Some(
                 packet
@@ -982,6 +1007,20 @@ mod tests {
         let raw = format!("{}:{}|c|T{}", name, value, timestamp);
         let mut expected = Metric::counter(name, value);
         expected.values_mut().set_timestamp(timestamp);
+
+        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
+        check_basic_metric_eq(expected, actual);
+    }
+
+    #[test]
+    fn metric_external_data() {
+        let name = "my.counter";
+        let value = 1.0;
+        let external_data = "it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183";
+        let raw = format!("{}:{}|c|e:{}", name, value, external_data);
+        let mut expected = Metric::counter(name, value);
+        let origin_entity = expected.metadata_mut().origin_entity_mut();
+        origin_entity.external_data = MetaString::from(external_data);
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
         check_basic_metric_eq(expected, actual);

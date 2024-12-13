@@ -755,6 +755,7 @@ fn handle_metric_packet(
             container_id: context_resolver.intern(packet.container_id.unwrap_or(""))?,
             pod_uid: context_resolver.intern(packet.pod_uid.unwrap_or(""))?,
             cardinality: packet.cardinality,
+            external_data: context_resolver.intern(packet.external_data.unwrap_or(""))?,
         },
         origin: Some(
             packet
