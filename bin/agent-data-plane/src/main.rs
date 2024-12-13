@@ -163,7 +163,7 @@ async fn run(started: Instant) -> Result<(), GenericError> {
 
 fn create_topology(
     configuration: &GenericConfiguration, env_provider: ADPEnvironmentProvider, component_registry: &ComponentRegistry,
-    _status_configuration: DatadogStatusFlareConfiguration,
+    status_configuration: DatadogStatusFlareConfiguration,
 ) -> Result<TopologyBlueprint, GenericError> {
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
@@ -198,35 +198,32 @@ fn create_topology(
     let events_service_checks_config = DatadogEventsServiceChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Events/Service Checks destination.")?;
 
+    let int_metrics_config = InternalMetricsConfiguration;
+    let int_metrics_remap_config = AgentTelemetryRemapperConfiguration::new();
+
     let topology_registry = component_registry.get_or_create("topology");
     let mut blueprint = TopologyBlueprint::from_component_registry(topology_registry);
     blueprint
         .add_source("dsd_in", dsd_config)?
+        .add_source("internal_metrics_in", int_metrics_config)?
+        .add_transform("internal_metrics_remap", int_metrics_remap_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
         .add_transform("enrich", enrich_config)?
         .add_destination("dd_metrics_out", dd_metrics_config)?
         .add_destination("dd_events_sc_out", events_service_checks_config)?
-        .add_destination("dd_status_flare_out", _status_configuration)?
+        .add_destination("dd_status_flare_out", status_configuration)?
         .connect_component("dsd_agg", ["dsd_in.metrics"])?
         .connect_component("enrich", ["dsd_agg"])?
         .connect_component("dd_metrics_out", ["enrich"])?
         .connect_component("dd_events_sc_out", ["dsd_in.events", "dsd_in.service_checks"])?
-        .connect_component(
-            "dd_status_flare_out",
-            ["enrich", "dsd_in.events", "dsd_in.service_checks"],
-        )?;
+        .connect_component("internal_metrics_remap", ["internal_metrics_in"])?
+        .connect_component("dd_status_flare_out", ["internal_metrics_remap"])?;
 
     // Insert a Prometheus scrape destination if we've been instructed to enable internal telemetry.
     if configuration.get_typed_or_default::<bool>("telemetry_enabled") {
-        let int_metrics_config = InternalMetricsConfiguration;
-        let int_metrics_remap_config = AgentTelemetryRemapperConfiguration::new();
         let prometheus_config = PrometheusConfiguration::from_configuration(configuration)?;
-
         blueprint
-            .add_source("internal_metrics_in", int_metrics_config)?
-            .add_transform("internal_metrics_remap", int_metrics_remap_config)?
             .add_destination("internal_metrics_out", prometheus_config)?
-            .connect_component("internal_metrics_remap", ["internal_metrics_in"])?
             .connect_component("internal_metrics_out", ["internal_metrics_remap"])?;
     }
 

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -6,8 +7,7 @@ use datadog_protos::agent::{
     GetFlareFilesRequest, GetFlareFilesResponse, GetStatusDetailsRequest, GetStatusDetailsResponse, RemoteAgent,
 };
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
+use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use saluki_config::GenericConfiguration;
 use saluki_core::components::{
     destinations::{Destination, DestinationBuilder, DestinationContext},
@@ -16,11 +16,12 @@ use saluki_core::components::{
 use saluki_env::helpers::remote_agent::RemoteAgentClient;
 use saluki_error::GenericError;
 use saluki_event::DataType;
-use serde::Deserialize;
+use tokio::select;
+use tokio::time::{interval, MissedTickBehavior};
 use tracing::debug;
 use uuid::Uuid;
 
-const DEFAULT_API_ENDPOINT: u64 = 5102;
+const DEFAULT_API_LISTEN_PORT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(5102) };
 
 /// Datadog Status and Flare Destination
 ///
@@ -29,43 +30,36 @@ const DEFAULT_API_ENDPOINT: u64 = 5102;
 /// ## Missing
 ///
 /// - grpc server to respond to Core Agent
-#[derive(Deserialize)]
 pub struct DatadogStatusFlareConfiguration {
-    #[serde(skip)]
     id: String,
 
-    #[serde(skip)]
     display_name: String,
 
-    #[serde(default = "default_api_port", rename = "remote_agent_api_port")]
-    api_port: u64,
+    api_listen_port: NonZeroUsize,
 
-    #[serde(skip)]
-    client: Option<RemoteAgentClient>,
-}
-
-fn default_api_port() -> u64 {
-    DEFAULT_API_ENDPOINT
+    client: RemoteAgentClient,
 }
 
 impl DatadogStatusFlareConfiguration {
     /// Creates a new `DatadogStatusFlareConfiguration` from the given configuration.
     pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut status_flare_configuration: DatadogStatusFlareConfiguration = config.as_typed()?;
         let app_details = saluki_metadata::get_app_details();
-
         let formatted_full_name = app_details
             .full_name()
             .replace(" ", "-")
             .replace("_", "-")
             .to_lowercase();
+        let api_port = config
+            .try_get_typed::<NonZeroUsize>("remote_agent_api_listen_port")?
+            .unwrap_or(DEFAULT_API_LISTEN_PORT);
+        let client = RemoteAgentClient::from_configuration(config).await?;
 
-        let id = Uuid::now_v7();
-        let agent_id = format!("{}-{}", formatted_full_name, id);
-        status_flare_configuration.id = agent_id;
-        status_flare_configuration.display_name = formatted_full_name;
-        status_flare_configuration.client = Some(RemoteAgentClient::from_configuration(config).await?);
-        Ok(status_flare_configuration)
+        Ok(Self {
+            id: format!("{}-{}", formatted_full_name, Uuid::now_v7()),
+            display_name: formatted_full_name,
+            api_listen_port: api_port,
+            client,
+        })
     }
 }
 
@@ -79,8 +73,8 @@ impl DestinationBuilder for DatadogStatusFlareConfiguration {
         Ok(Box::new(DatadogStatusFlare {
             id: self.id.clone(),
             display_name: self.display_name.clone(),
-            api_port: self.api_port,
-            client: self.client.clone().unwrap(),
+            api_listen_port: self.api_listen_port,
+            client: self.client.clone(),
         }))
     }
 }
@@ -99,7 +93,7 @@ pub struct DatadogStatusFlare {
 
     display_name: String,
 
-    api_port: u64,
+    api_listen_port: NonZeroUsize,
 
     client: RemoteAgentClient,
 }
@@ -108,41 +102,59 @@ pub struct DatadogStatusFlare {
 #[allow(unused)]
 impl Destination for DatadogStatusFlare {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
-        let mut client = self.client.clone();
-        tokio::spawn(async move {
-            let auth_token: String = thread_rng()
-                .sample_iter(&Alphanumeric)
-                .take(64)
-                .map(char::from)
-                .collect();
+        let Self {
+            id,
+            display_name,
+            api_listen_port,
+            mut client,
+        } = *self;
 
-            loop {
-                match client
-                    .register_remote_agent_request(&self.id, &self.display_name, self.api_port, &auth_token)
-                    .await
-                {
-                    Ok(resp) => {
-                        let refresh_interval = resp.into_inner().recommended_refresh_interval_secs;
-                        tokio::time::sleep(Duration::from_secs(refresh_interval as u64)).await;
-                        debug!("Refreshed registration with Core Agent");
-                    }
-                    Err(e) => {
-                        debug!("Failed to refresh registration with Core Agent.");
-                        tokio::time::sleep(Duration::from_secs(15)).await;
+        let mut health = context.take_health_handle();
+
+        health.mark_ready();
+
+        let mut register_agent = interval(Duration::from_secs(10));
+        register_agent.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        let api_endpoint = format!("0.0.0.0:{}", api_listen_port);
+        let auth_token: String = thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(64)
+            .map(char::from)
+            .collect();
+
+        loop {
+            select! {
+                _ = health.live() => continue,
+
+                result = context.events().next() => match result {
+                    Some(events) => {
+                    },
+                    None => break,
+                },
+
+                // Time to (re)register with the Core Agent.
+                _ = register_agent.tick() => {
+                    match client.register_remote_agent_request(&id, &display_name, &api_endpoint, &auth_token).await {
+                        Ok(resp) => {
+                            let new_refresh_interval = resp.into_inner().recommended_refresh_interval_secs;
+                            register_agent.reset_after(Duration::from_secs(new_refresh_interval as u64));
+                            debug!("Refreshed registration with Core Agent");
+                        }
+                        Err(e) => {
+                            debug!("Failed to refresh registration with Core Agent.");
+                        }
                     }
                 }
             }
-        });
-
-        /// TODO
-        loop {
-            tokio::time::sleep(Duration::from_secs(30)).await;
         }
+
         Ok(())
     }
 }
 
 #[allow(unused)]
+#[derive(Default)]
 struct RemoteAgentImpl;
 
 #[async_trait]
