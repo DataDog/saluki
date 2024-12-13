@@ -1,11 +1,7 @@
-use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use datadog_protos::agent::{
-    GetFlareFilesRequest, GetFlareFilesResponse, GetStatusDetailsRequest, GetStatusDetailsResponse, RemoteAgent,
-};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use saluki_config::GenericConfiguration;
@@ -99,7 +95,6 @@ pub struct DatadogStatusFlare {
 }
 
 #[async_trait]
-#[allow(unused)]
 impl Destination for DatadogStatusFlare {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
         let Self {
@@ -109,13 +104,6 @@ impl Destination for DatadogStatusFlare {
             mut client,
         } = *self;
 
-        let mut health = context.take_health_handle();
-
-        health.mark_ready();
-
-        let mut register_agent = interval(Duration::from_secs(10));
-        register_agent.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
         let api_endpoint = format!("0.0.0.0:{}", api_listen_port);
         let auth_token: String = thread_rng()
             .sample_iter(&Alphanumeric)
@@ -123,12 +111,19 @@ impl Destination for DatadogStatusFlare {
             .map(char::from)
             .collect();
 
+        let mut register_agent = interval(Duration::from_secs(10));
+        register_agent.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        let mut health = context.take_health_handle();
+        health.mark_ready();
+        debug!("Datadog Status and Flare destination started.");
+
         loop {
             select! {
                 _ = health.live() => continue,
 
                 result = context.events().next() => match result {
-                    Some(events) => {
+                    Some(_events) => {
                     },
                     None => break,
                 },
@@ -141,7 +136,7 @@ impl Destination for DatadogStatusFlare {
                             register_agent.reset_after(Duration::from_secs(new_refresh_interval as u64));
                             debug!("Refreshed registration with Core Agent");
                         }
-                        Err(e) => {
+                        Err(_) => {
                             debug!("Failed to refresh registration with Core Agent.");
                         }
                     }
@@ -149,32 +144,7 @@ impl Destination for DatadogStatusFlare {
             }
         }
 
+        debug!("Datadog Status Flare destination stopped.");
         Ok(())
-    }
-}
-
-#[allow(unused)]
-#[derive(Default)]
-struct RemoteAgentImpl;
-
-#[async_trait]
-impl RemoteAgent for RemoteAgentImpl {
-    async fn get_status_details(
-        &self, _request: tonic::Request<GetStatusDetailsRequest>,
-    ) -> std::result::Result<tonic::Response<GetStatusDetailsResponse>, tonic::Status> {
-        let response = GetStatusDetailsResponse {
-            main_section: None,
-            named_sections: HashMap::new(),
-        };
-        Ok(tonic::Response::new(response))
-    }
-
-    async fn get_flare_files(
-        &self, _request: tonic::Request<GetFlareFilesRequest>,
-    ) -> std::result::Result<tonic::Response<GetFlareFilesResponse>, tonic::Status> {
-        let response = GetFlareFilesResponse {
-            files: HashMap::default(),
-        };
-        Ok(tonic::Response::new(response))
     }
 }
