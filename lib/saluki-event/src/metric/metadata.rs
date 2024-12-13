@@ -12,6 +12,11 @@ const ORIGIN_PRODUCT_DETAIL_NONE: u32 = 0;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(try_from = "String")]
 pub enum OriginTagCardinality {
+    /// No cardinality.
+    ///
+    /// This implies that no tags should be added to the metric based on its origin.
+    None,
+
     /// Low cardinality.
     ///
     /// This generally covers tags which are static, or relatively slow to change, and generally results in a small
@@ -36,6 +41,7 @@ impl<'a> TryFrom<&'a str> for OriginTagCardinality {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value {
+            "none" => Ok(Self::None),
             "low" => Ok(Self::Low),
             "high" => Ok(Self::High),
             "orch" | "orchestrator" => Ok(Self::Orchestrator),
@@ -55,6 +61,7 @@ impl TryFrom<String> for OriginTagCardinality {
 impl fmt::Display for OriginTagCardinality {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::None => write!(f, "none"),
             Self::Low => write!(f, "low"),
             Self::Orchestrator => write!(f, "orchestrator"),
             Self::High => write!(f, "high"),
@@ -91,6 +98,11 @@ pub struct OriginEntity {
     ///
     /// This controls the cardinality of the tags added to this metric when enriching based on the available entity IDs.
     pub cardinality: Option<OriginTagCardinality>,
+
+    /// External Data of the sender.
+    ///
+    /// See [`ExternalData`][saluki_env::workload::ExternalData] for more information.
+    pub external_data: MetaString,
 }
 
 impl OriginEntity {
@@ -127,6 +139,15 @@ impl OriginEntity {
     /// Gets the desired cardinality of any tags associated with the entity.
     pub fn cardinality(&self) -> Option<OriginTagCardinality> {
         self.cardinality.as_ref().copied()
+    }
+
+    /// Gets the external data of the sender.
+    pub fn external_data(&self) -> Option<&str> {
+        if self.external_data.is_empty() {
+            None
+        } else {
+            Some(&self.external_data)
+        }
     }
 }
 
@@ -292,6 +313,11 @@ impl MetricOrigin {
             subproduct: ORIGIN_SUBPRODUCT_INTEGRATION,
             product_detail,
         }
+    }
+
+    /// Returns `true` if the origin of the metric is DogStatsD.
+    pub fn is_dogstatsd(&self) -> bool {
+        matches!(self, Self::OriginMetadata { subproduct, .. } if *subproduct == ORIGIN_SUBPRODUCT_DOGSTATSD)
     }
 }
 
