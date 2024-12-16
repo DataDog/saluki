@@ -12,6 +12,6 @@ pub fn get_aggregation_remappings() -> Vec<RemapperRule> {
             &["component_id:dsd_agg"],
             "aggregator.processed",
         )
-        .with_additional_tags(["data_type:dogstatsd_metrics"])
+        .with_additional_tags(["data_type:dogstatsd_metrics"]),
     ]
 }

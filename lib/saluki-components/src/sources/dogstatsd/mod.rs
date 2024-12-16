@@ -417,15 +417,27 @@ fn build_metrics(listen_addr: &ListenAddress, context: ComponentContext) -> Metr
         ),
         metric_decoder_errors: builder.register_debug_counter_with_tags(
             "component_errors_total",
-            [("listener_type", listener_type), ("error_type", "decode"), ("message_type", "metrics")],
+            [
+                ("listener_type", listener_type),
+                ("error_type", "decode"),
+                ("message_type", "metrics"),
+            ],
         ),
         event_decoder_errors: builder.register_debug_counter_with_tags(
             "component_errors_total",
-            [("listener_type", listener_type), ("error_type", "decode"), ("message_type", "events")],
+            [
+                ("listener_type", listener_type),
+                ("error_type", "decode"),
+                ("message_type", "events"),
+            ],
         ),
         service_check_decoder_errors: builder.register_debug_counter_with_tags(
             "component_errors_total",
-            [("listener_type", listener_type), ("error_type", "decode"), ("message_type", "service_checks")],
+            [
+                ("listener_type", listener_type),
+                ("error_type", "decode"),
+                ("message_type", "service_checks"),
+            ],
         ),
         connections_active: builder
             .register_debug_gauge_with_tags("component_connections_active", [("listener_type", listener_type)]),
@@ -725,14 +737,14 @@ fn handle_frame(
         Ok(parsed) => parsed,
         Err(e) => {
             // Try and determine what the message type was, if possible, to increment the correct error counter.
-            match parse_message_type(&frame) {
+            match parse_message_type(frame) {
                 MessageType::MetricSample => source_metrics.metric_decode_failed().increment(1),
                 MessageType::Event => source_metrics.event_decode_failed().increment(1),
                 MessageType::ServiceCheck => source_metrics.service_check_decode_failed().increment(1),
             }
 
-            return Err(e)
-        },
+            return Err(e);
+        }
     };
 
     let event = match parsed {
