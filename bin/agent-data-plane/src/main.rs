@@ -96,11 +96,9 @@ async fn run(started: Instant) -> Result<(), GenericError> {
     let env_provider =
         ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry).await?;
 
-    let status_configuration = DatadogStatusFlareConfiguration::from_configuration(&configuration).await?;
-
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
-    let blueprint = create_topology(&configuration, env_provider, &component_registry, status_configuration)?;
+    let blueprint = create_topology(&configuration, env_provider, &component_registry).await?;
 
     // Build our administrative API server.
     let primary_api_listen_address = configuration
@@ -161,9 +159,8 @@ async fn run(started: Instant) -> Result<(), GenericError> {
     }
 }
 
-fn create_topology(
+async fn create_topology(
     configuration: &GenericConfiguration, env_provider: ADPEnvironmentProvider, component_registry: &ComponentRegistry,
-    status_configuration: DatadogStatusFlareConfiguration,
 ) -> Result<TopologyBlueprint, GenericError> {
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
@@ -195,6 +192,8 @@ fn create_topology(
         }
     }
 
+    let status_configuration = DatadogStatusFlareConfiguration::from_configuration(configuration).await?;
+
     let events_service_checks_config = DatadogEventsServiceChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Events/Service Checks destination.")?;
 
@@ -216,7 +215,7 @@ fn create_topology(
         .connect_component("dd_events_sc_out", ["dsd_in.events", "dsd_in.service_checks"])?;
 
     let use_prometheus = configuration.get_typed_or_default::<bool>("telemetry_enabled");
-    let use_status_flare_component = !configuration.get_typed_or_default::<bool>("adp_agent_no_op");
+    let use_status_flare_component = !configuration.get_typed_or_default::<bool>("adp_standalone_mode");
 
     // Insert internal metrics source only if internal telemetry or status and flare component is enabled.
     if use_prometheus || use_status_flare_component {
