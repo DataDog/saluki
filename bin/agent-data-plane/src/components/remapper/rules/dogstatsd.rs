@@ -81,6 +81,7 @@ pub fn get_dogstatsd_remappings() -> Vec<RemapperRule> {
             "adp.component_send_latency_seconds",
             &["component_id:dsd_in"],
             "dogstatsd.channel_latency_secs",
-        ),
+        )
+        .with_remapped_tags([("output", "message_type")])
     ]
 }
