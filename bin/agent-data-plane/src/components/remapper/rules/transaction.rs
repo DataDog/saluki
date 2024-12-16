@@ -17,8 +17,7 @@ pub fn get_transaction_remappings() -> Vec<RemapperRule> {
             &["error_type:client_error"],
             "transactions.http_errors",
         )
-        .with_original_tags(["domain", "endpoint", "code"])
-        .with_remapped_tags([("error_type", "status_code")]),
+        .with_original_tags(["domain", "endpoint", "code"]),
         RemapperRule::by_name("adp.network_http_requests_errors_total", "transactions.errors").with_original_tags([
             "domain",
             "endpoint",
