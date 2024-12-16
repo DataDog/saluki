@@ -75,13 +75,12 @@ pub fn get_dogstatsd_remappings() -> Vec<RemapperRule> {
         )
         .with_original_tags(["message_type"])
         .with_additional_tags(["state:ok"]),
-
         // NOTE: The Agent-side metric does not have the `_secs` suffix, and is in nanoseconds, which is why we're
         // slightly deviating here.
         RemapperRule::by_name_and_tags(
             "adp.component_send_latency_seconds",
             &["component_id:dsd_in"],
             "dogstatsd.channel_latency_secs",
-        )
+        ),
     ]
 }
