@@ -117,7 +117,6 @@ impl PerEndpointTelemetry {
             domain.push(':');
             domain.push_str(port.as_str());
         }
-        domain.push('/');
 
         let builder = builder
             .add_default_tag(("domain", domain))
