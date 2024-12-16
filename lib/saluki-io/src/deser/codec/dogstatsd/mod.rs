@@ -20,7 +20,7 @@ use saluki_event::{
 use snafu::Snafu;
 
 mod message;
-use self::message::{parse_message_type, MessageType};
+pub use self::message::{parse_message_type, MessageType};
 
 type NomParserError<'a> = nom::Err<nom::error::Error<&'a [u8]>>;
 
