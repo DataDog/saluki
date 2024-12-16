@@ -203,24 +203,38 @@ fn create_topology(
 
     let topology_registry = component_registry.get_or_create("topology");
     let mut blueprint = TopologyBlueprint::from_component_registry(topology_registry);
+
     blueprint
         .add_source("dsd_in", dsd_config)?
-        .add_source("internal_metrics_in", int_metrics_config)?
-        .add_transform("internal_metrics_remap", int_metrics_remap_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
         .add_transform("enrich", enrich_config)?
         .add_destination("dd_metrics_out", dd_metrics_config)?
         .add_destination("dd_events_sc_out", events_service_checks_config)?
-        .add_destination("dd_status_flare_out", status_configuration)?
         .connect_component("dsd_agg", ["dsd_in.metrics"])?
         .connect_component("enrich", ["dsd_agg"])?
         .connect_component("dd_metrics_out", ["enrich"])?
-        .connect_component("dd_events_sc_out", ["dsd_in.events", "dsd_in.service_checks"])?
-        .connect_component("internal_metrics_remap", ["internal_metrics_in"])?
-        .connect_component("dd_status_flare_out", ["internal_metrics_remap"])?;
+        .connect_component("dd_events_sc_out", ["dsd_in.events", "dsd_in.service_checks"])?;
+
+    let use_prometheus = configuration.get_typed_or_default::<bool>("telemetry_enabled");
+    let use_status_flare_component = !configuration.get_typed_or_default::<bool>("adp_agent_no_op");
+
+    // Insert internal metrics source only if internal telemetry or status and flare component is enabled.
+    if use_prometheus || use_status_flare_component {
+        blueprint
+            .add_source("internal_metrics_in", int_metrics_config)?
+            .add_transform("internal_metrics_remap", int_metrics_remap_config)?
+            .connect_component("internal_metrics_remap", ["internal_metrics_in"])?;
+    }
+
+    // Insert a Datadog Status Flare destination if we've been instructed to not do a no-op.
+    if use_status_flare_component {
+        blueprint
+            .add_destination("dd_status_flare_out", status_configuration)?
+            .connect_component("dd_status_flare_out", ["internal_metrics_remap"])?;
+    }
 
     // Insert a Prometheus scrape destination if we've been instructed to enable internal telemetry.
-    if configuration.get_typed_or_default::<bool>("telemetry_enabled") {
+    if use_prometheus {
         let prometheus_config = PrometheusConfiguration::from_configuration(configuration)?;
         blueprint
             .add_destination("internal_metrics_out", prometheus_config)?
