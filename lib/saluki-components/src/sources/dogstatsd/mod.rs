@@ -30,7 +30,7 @@ use saluki_io::{
     buf::{BytesBuffer, CollapsibleReadWriteIoBuffer as _, FixedSizeVec},
     deser::{
         codec::{
-            dogstatsd::{MetricPacket, ParseError, ParsedPacket},
+            dogstatsd::{parse_message_type, MessageType, MetricPacket, ParseError, ParsedPacket},
             DogstatsdCodec, DogstatsdCodecConfiguration,
         },
         framing::FramerExt as _,
@@ -320,7 +320,10 @@ struct Metrics {
     service_checks_received: Counter,
     bytes_received: Counter,
     bytes_received_size: Histogram,
-    decoder_errors: Counter,
+    framing_errors: Counter,
+    metric_decoder_errors: Counter,
+    event_decoder_errors: Counter,
+    service_check_decoder_errors: Counter,
     failed_context_resolve_total: Counter,
     connections_active: Gauge,
     packet_receive_success: Counter,
@@ -348,8 +351,20 @@ impl Metrics {
         &self.bytes_received_size
     }
 
-    fn decoder_errors(&self) -> &Counter {
-        &self.decoder_errors
+    fn framing_errors(&self) -> &Counter {
+        &self.framing_errors
+    }
+
+    fn metric_decode_failed(&self) -> &Counter {
+        &self.metric_decoder_errors
+    }
+
+    fn event_decode_failed(&self) -> &Counter {
+        &self.event_decoder_errors
+    }
+
+    fn service_check_decode_failed(&self) -> &Counter {
+        &self.service_check_decoder_errors
     }
 
     fn failed_context_resolve_total(&self) -> &Counter {
@@ -396,9 +411,33 @@ fn build_metrics(listen_addr: &ListenAddress, context: ComponentContext) -> Metr
             .register_debug_counter_with_tags("component_bytes_received_total", [("listener_type", listener_type)]),
         bytes_received_size: builder
             .register_debug_histogram_with_tags("component_bytes_received_size", [("listener_type", listener_type)]),
-        decoder_errors: builder.register_debug_counter_with_tags(
+        framing_errors: builder.register_debug_counter_with_tags(
             "component_errors_total",
-            [("listener_type", listener_type), ("error_type", "decode")],
+            [("listener_type", listener_type), ("error_type", "framing")],
+        ),
+        metric_decoder_errors: builder.register_debug_counter_with_tags(
+            "component_errors_total",
+            [
+                ("listener_type", listener_type),
+                ("error_type", "decode"),
+                ("message_type", "metrics"),
+            ],
+        ),
+        event_decoder_errors: builder.register_debug_counter_with_tags(
+            "component_errors_total",
+            [
+                ("listener_type", listener_type),
+                ("error_type", "decode"),
+                ("message_type", "events"),
+            ],
+        ),
+        service_check_decoder_errors: builder.register_debug_counter_with_tags(
+            "component_errors_total",
+            [
+                ("listener_type", listener_type),
+                ("error_type", "decode"),
+                ("message_type", "service_checks"),
+            ],
         ),
         connections_active: builder
             .register_debug_gauge_with_tags("component_connections_active", [("listener_type", listener_type)]),
@@ -644,21 +683,12 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                                         // Simply continue on.
                                         continue
                                     },
-                                    Err(e) => {
-                                        error!(%listen_addr, error = %e, "Failed to parse frame.");
-                                        metrics.decoder_errors().increment(1);
-                                    }
+                                    Err(e) => error!(%listen_addr, error = %e, "Failed to parse frame."),
                                 }
                             }
                             Some(Err(e)) => {
                                 error!(error = %e, "Error decoding frame.");
-
-                                if buffer.remaining() == 8192 {
-                                    info!("Buffer contents: {:?}", buffer.chunk());
-                                    panic!("boom");
-                                }
-
-                                metrics.decoder_errors().increment(1);
+                                metrics.framing_errors().increment(1);
                                 break 'frame;
                             }
                             None => {
@@ -703,7 +733,21 @@ fn handle_frame(
     frame: &[u8], codec: &DogstatsdCodec, multitenant_strategy: &mut MultitenantStrategy, source_metrics: &Metrics,
     peer_addr: &ConnectionAddress,
 ) -> Result<Option<Event>, ParseError> {
-    let event = match codec.decode_packet(frame)? {
+    let parsed = match codec.decode_packet(frame) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            // Try and determine what the message type was, if possible, to increment the correct error counter.
+            match parse_message_type(frame) {
+                MessageType::MetricSample => source_metrics.metric_decode_failed().increment(1),
+                MessageType::Event => source_metrics.event_decode_failed().increment(1),
+                MessageType::ServiceCheck => source_metrics.service_check_decode_failed().increment(1),
+            }
+
+            return Err(e);
+        }
+    };
+
+    let event = match parsed {
         ParsedPacket::Metric(metric_packet) => {
             let events_len = metric_packet.num_points;
 
