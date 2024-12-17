@@ -7,4 +7,5 @@ repository = { workspace = true }
 
 [dependencies]
 axum = { workspace = true, features = ["http1", "tokio"] }
+axum-extra = { workspace = true, features = ["query"] }
 http = { workspace = true }

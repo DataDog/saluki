@@ -8,20 +8,38 @@
 // We might consider _something_ like a string pool in the future, but we can defer that until we have a better idea of
 // what the potential impact is in practice.
 
-use std::{fmt, str::FromStr as _, sync::OnceLock};
+use std::{
+    fmt,
+    str::FromStr as _,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use chrono::{
     format::{DelayedFormat, Item, StrftimeItems},
     Utc,
 };
 use chrono_tz::Tz;
-use tracing::{field, level_filters::LevelFilter, Event, Subscriber};
+use saluki_api::{
+    extract::{Query, State},
+    response::IntoResponse,
+    routing::{post, Router},
+    APIHandler, StatusCode,
+};
+use serde::Deserialize;
+use tokio::{select, sync::mpsc, time::sleep};
+use tracing::{error, field, info, level_filters::LevelFilter, Event, Subscriber};
 use tracing_subscriber::{
     field::VisitOutput,
     fmt::{format::Writer, FmtContext, FormatEvent, FormatFields},
+    layer::{Filter, SubscriberExt as _},
     registry::LookupSpan,
-    EnvFilter,
+    reload::{Handle, Layer as ReloadLayer},
+    util::SubscriberInitExt as _,
+    EnvFilter, Layer, Registry,
 };
+
+type SharedEnvFilter = Arc<dyn Filter<Registry> + Send + Sync>;
 
 /// Logs a message to standard error and exits the process with a non-zero exit code.
 pub fn fatal_and_exit(message: String) {
@@ -41,39 +59,251 @@ pub fn fatal_and_exit(message: String) {
 ///
 /// If the logging subsystem was already initialized, an error will be returned.
 pub fn initialize_logging(default_level: Option<LevelFilter>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if initialize_logging_inner(default_level, false)?.is_some() {
+        return Err("logging API handler should not be present when dynamic logging is disabled".into());
+    }
+
+    Ok(())
+}
+
+/// Initializes the logging subsystem for `tracing` with the ability to dynamically update the log filtering directives
+/// at runtime.
+///
+/// This function reads the `DD_LOG_LEVEL` environment variable to determine the log level to use. If the environment
+/// variable is not set, the default log level is `INFO`. Additionally, it reads the `DD_LOG_FORMAT_JSON` environment
+/// variable to determine which output format to use. If it is set to `json` (case insensitive), the logs will be
+/// formatted as JSON. If it is set to any other value, or not set at all, the logs will default to a rich, colored,
+/// human-readable format.
+///
+/// Additionally, the returned `LoggingAPIHandler` can be used to dynamically update the log filtering directives at
+/// runtime by installing API routes which allow for passing in the same values accepted by `DD_LOG_LEVEL`. See
+/// [`LoggingAPIHandler`] for more information about dynamic filtering.
+///
+/// ## Errors
+///
+/// If the logging subsystem was already initialized, an error will be returned.
+pub async fn initialize_dynamic_logging(
+    default_level: Option<LevelFilter>,
+) -> Result<LoggingAPIHandler, Box<dyn std::error::Error + Send + Sync>> {
+    // We go through this wrapped initialize approach so that we can mark `initialize_dynamic_logging` as `async`, which
+    // ensures we call it in an asynchronous context, thereby all but ensuring we're in a Tokio context when we try to
+    // spawn the background task that handles reloading the filtering layer.
+    initialize_logging_inner(default_level, true)?
+        .ok_or("logging API handler should be present when dynamic logging is enabled".into())
+}
+
+fn initialize_logging_inner(
+    default_level: Option<LevelFilter>, with_reload: bool,
+) -> Result<Option<LoggingAPIHandler>, Box<dyn std::error::Error + Send + Sync>> {
     let is_json = std::env::var("DD_LOG_FORMAT_JSON")
         .map(|s| s.trim().to_lowercase())
         .map(|s| s == "true" || s == "1")
         .unwrap_or(false);
 
+    // Load our level filtering directives from the environment, or fallback to INFO if the environment variable is not
+    // specified.
+    //
+    // We also do a little bit of a dance to get the filter into the right shape for use in the dynamic filter layer.
     let level_filter = EnvFilter::builder()
         .with_default_directive(default_level.unwrap_or(LevelFilter::INFO).into())
         .with_env_var("DD_LOG_LEVEL")
         .from_env_lossy();
 
-    if is_json {
-        initialize_tracing_json(level_filter)
+    let shared_level_filter = Arc::new(level_filter);
+    let (filter_layer, reload_handle) = ReloadLayer::new(into_shared_dyn_filter(Arc::clone(&shared_level_filter)));
+    let maybe_api_handler = if with_reload {
+        Some(LoggingAPIHandler::new(shared_level_filter, reload_handle))
     } else {
-        initialize_tracing_pretty(level_filter)
+        None
+    };
+
+    if is_json {
+        let json_layer = initialize_tracing_json();
+        tracing_subscriber::registry()
+            .with(json_layer.with_filter(filter_layer))
+            .try_init()?;
+    } else {
+        let pretty_layer = initialize_tracing_pretty();
+        tracing_subscriber::registry()
+            .with(pretty_layer.with_filter(filter_layer))
+            .try_init()?;
     }
+
+    Ok(maybe_api_handler)
 }
 
-fn initialize_tracing_json(level_filter: EnvFilter) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(level_filter)
+fn initialize_tracing_json<S>() -> impl Layer<S>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    tracing_subscriber::fmt::Layer::new()
+        .json()
+        .flatten_event(true)
         .with_target(true)
         .with_file(true)
         .with_line_number(true)
-        .json()
-        .flatten_event(true)
-        .try_init()
 }
 
-fn initialize_tracing_pretty(level_filter: EnvFilter) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(level_filter)
-        .event_format(AgentLikeFormatter::new())
-        .try_init()
+fn initialize_tracing_pretty<S>() -> impl Layer<S>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    tracing_subscriber::fmt::Layer::new().event_format(AgentLikeFormatter::new())
+}
+
+#[derive(Deserialize)]
+struct OverrideQueryParams {
+    time_secs: u64,
+}
+
+/// State used for the logging API handler.
+#[derive(Clone)]
+pub struct LoggingHandlerState {
+    override_tx: mpsc::Sender<Option<(Duration, Arc<EnvFilter>)>>,
+}
+
+/// An API handler for updating log filtering directives at runtime.
+///
+/// This handler exposes two main routes -- `/logging/override` and `/logging/reset` -- which allow for overriding the
+/// default log filtering directives (configured at startup) at runtime, and then resetting them once the override is no
+/// longer needed.
+///
+/// As this has the potential for incredibly verbose logging at runtime, the override is set with a specific duration in
+/// which it will apply. Once an override has been active for the configured duration, it will automatically be reset
+/// unless the override is refreshed before the duration elapses.
+///
+/// The maximum duration for an override is 10 minutes.
+pub struct LoggingAPIHandler {
+    state: LoggingHandlerState,
+}
+
+impl LoggingAPIHandler {
+    fn new(original_filter: Arc<EnvFilter>, reload_handle: Handle<SharedEnvFilter, Registry>) -> Self {
+        // Spawn our background task that will handle
+        let (override_tx, override_rx) = mpsc::channel(1);
+        tokio::spawn(process_override_requests(original_filter, reload_handle, override_rx));
+
+        Self {
+            state: LoggingHandlerState { override_tx },
+        }
+    }
+
+    async fn override_handler(
+        State(state): State<LoggingHandlerState>, params: Query<OverrideQueryParams>, body: String,
+    ) -> impl IntoResponse {
+        // Make sure the override length is within the acceptable range.
+        const MAXIMUM_OVERRIDE_LENGTH_SECS: u64 = 600;
+        if params.time_secs > MAXIMUM_OVERRIDE_LENGTH_SECS {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "override time cannot be greater than {} seconds",
+                    MAXIMUM_OVERRIDE_LENGTH_SECS
+                ),
+            );
+        }
+
+        // Parse the override duration and create a new filter from the body.
+        let duration = Duration::from_secs(params.time_secs);
+        let new_filter = match EnvFilter::try_new(body) {
+            Ok(filter) => filter,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("failed to parse override filter: {}", e),
+                )
+            }
+        };
+
+        // Instruct the override processor to apply the new log filtering directives for the given duration.
+        let _ = state.override_tx.send(Some((duration, Arc::new(new_filter)))).await;
+
+        (StatusCode::OK, "acknowledged".to_string())
+    }
+
+    async fn reset_handler(State(state): State<LoggingHandlerState>) {
+        // Instruct the override processor to immediately reset back to the original log filtering directives.
+        let _ = state.override_tx.send(None).await;
+    }
+}
+
+impl APIHandler for LoggingAPIHandler {
+    type State = LoggingHandlerState;
+
+    fn generate_initial_state(&self) -> Self::State {
+        self.state.clone()
+    }
+
+    fn generate_routes(&self) -> Router<Self::State> {
+        Router::new()
+            .route("/logging/override", post(Self::override_handler))
+            .route("/logging/reset", post(Self::reset_handler))
+    }
+}
+
+async fn process_override_requests(
+    original_filter: Arc<EnvFilter>, reload_handle: Handle<SharedEnvFilter, Registry>,
+    mut rx: mpsc::Receiver<Option<(Duration, Arc<EnvFilter>)>>,
+) {
+    let mut override_active = false;
+    let override_timeout = sleep(Duration::from_secs(3600));
+
+    tokio::pin!(override_timeout);
+
+    loop {
+        select! {
+            maybe_override = rx.recv() => match maybe_override {
+                Some(Some((duration, new_filter))) => {
+                    info!(directives = %new_filter, "Overriding existing log filtering directives for {} seconds...", duration.as_secs());
+
+                    match reload_handle.reload(into_shared_dyn_filter(new_filter)) {
+                        Ok(()) => {
+                            // We were able to successfully reload the filter, so mark ourselves as having an active
+                            // override and update the override timeout.
+                            override_active = true;
+                            override_timeout.as_mut().reset(tokio::time::Instant::now() + duration);
+                        },
+                        Err(e) => error!(error = %e, "Failed to override log filtering directives."),
+                    }
+                },
+
+                Some(None) => {
+                    // We've been instructed to immediately reset the filter back to the original one, so simply update
+                    // the override timeout to fire as soon as possible.
+                    override_timeout.as_mut().reset(tokio::time::Instant::now());
+                },
+
+                // Our sender has dropped, so there's no more override requests for us to handle.
+                None => break,
+            },
+            _ = &mut override_timeout => {
+                // Our override timeout has fired. If we have an active override, reset it back to the original filter.
+                //
+                // Otherwise, this just means that we've been running for a while without any overrides, so we can just
+                // reset the timeout with a long duration.
+                if override_active {
+                    override_active = false;
+
+                    if let Err(e) = reload_handle.reload(into_shared_dyn_filter(Arc::clone(&original_filter))) {
+                        error!(error = %e, "Failed to reset log filtering directives.");
+                    }
+
+                    info!(directives = %original_filter, "Restored original log filtering directives.");
+                }
+
+                override_timeout.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(3600));
+            }
+        }
+    }
+
+    // Reset our filter to the original one before we exit.
+    if let Err(e) = reload_handle.reload(into_shared_dyn_filter(original_filter)) {
+        error!(error = %e, "Failed to reset log filtering directives before override handler shutdown.");
+    }
+}
+
+fn into_shared_dyn_filter(filter: Arc<EnvFilter>) -> SharedEnvFilter {
+    filter
 }
 
 struct AgentLikeFormatter {
