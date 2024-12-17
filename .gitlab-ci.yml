@@ -26,8 +26,8 @@ variables:
 
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image, both for
   # internal and public releases.
-  BASE_DD_AGENT_VERSION: "7.61.0-rc.6"
-  BASE_DD_AGENT_VERSION_INTERNAL: "7-61-0-rc-6"
+  BASE_DD_AGENT_VERSION: "7.61.0-rc.7"
+  BASE_DD_AGENT_VERSION_INTERNAL: "7-61-0-rc-7"
 
   INTERNAL_DD_AGENT_IMAGE: "${IMAGE_REGISTRY}/datadog-agent:${BASE_DD_AGENT_VERSION_INTERNAL}-jmx"
   PUBLIC_DD_AGENT_IMAGE_BASE: "gcr.io/datadoghq/agent"
