@@ -7,6 +7,9 @@ pub use self::builder::{MetricTag, MetricsBuilder};
 
 mod macros;
 
+#[cfg(feature = "test")]
+pub mod test;
+
 #[doc(hidden)]
 pub mod reexport {
     pub use paste::paste;

@@ -57,3 +57,6 @@ tokio-util = { workspace = true }
 tower = { workspace = true, features = ["retry", "timeout", "util"] }
 tracing = { workspace = true }
 url = { workspace = true }
+
+[dev-dependencies]
+saluki-metrics = { workspace = true, features = ["test"] }
