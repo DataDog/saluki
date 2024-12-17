@@ -12,7 +12,7 @@ api = ["dep:axum", "dep:saluki-api", "dep:saluki-error", "dep:saluki-io", "dep:t
 logging = ["dep:chrono", "dep:chrono-tz", "dep:iana-time-zone", "dep:tracing", "dep:tracing-subscriber"]
 memory = ["metrics", "dep:bytesize", "dep:memory-accounting", "dep:saluki-config", "dep:saluki-error", "dep:serde", "dep:tokio", "dep:tracing"]
 metrics = ["dep:saluki-core", "dep:metrics", "dep:tokio"]
-tls = ["dep:saluki-error", "dep:saluki-tls"]
+tls = ["dep:rcgen", "dep:rustls", "dep:saluki-error", "dep:saluki-tls"]
 tls-fips = ["saluki-tls?/fips"]
 
 [dependencies]
@@ -24,6 +24,8 @@ iana-time-zone = { workspace = true, optional = true }
 memory-accounting = { workspace = true, optional = true }
 metrics = { workspace = true, optional = true }
 metrics-util = { workspace = true, features = ["handles", "recency", "registry"], optional = true }
+rcgen = { workspace = true, features = ["crypto", "aws_lc_rs"], optional = true }
+rustls = { workspace = true, optional = true }
 saluki-api = { workspace = true, optional = true }
 saluki-config = { workspace = true, optional = true }
 saluki-core = { workspace = true, optional = true }

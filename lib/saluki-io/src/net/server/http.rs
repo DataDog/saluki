@@ -3,6 +3,7 @@
 use std::{
     future::Future,
     pin::Pin,
+    sync::Arc,
     task::{ready, Context, Poll},
 };
 
@@ -13,9 +14,11 @@ use hyper_util::{
     rt::{TokioExecutor, TokioIo},
     server::conn::auto::Builder,
 };
+use rustls::ServerConfig;
 use saluki_core::task::spawn_traced;
 use saluki_error::GenericError;
 use tokio::{select, sync::oneshot};
+use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info};
 
 use crate::net::listener::ConnectionOrientedListener;
@@ -24,6 +27,7 @@ pub struct HttpServer<S> {
     listener: ConnectionOrientedListener,
     conn_builder: Builder<TokioExecutor>,
     service: S,
+    tls_config: Option<ServerConfig>,
 }
 
 impl<S> HttpServer<S> {
@@ -32,7 +36,13 @@ impl<S> HttpServer<S> {
             listener,
             conn_builder: Builder::new(TokioExecutor::new()),
             service,
+            tls_config: None,
         }
+    }
+
+    pub fn with_tls_config(mut self, config: ServerConfig) -> Self {
+        self.tls_config = Some(config);
+        self
     }
 }
 
@@ -53,11 +63,15 @@ where
             mut listener,
             conn_builder,
             service,
+            tls_config,
             ..
         } = self;
 
         spawn_traced(async move {
-            info!(listen_addr = %listener.listen_address(), "HTTP server started.");
+            let tls_enabled = tls_config.is_some();
+            let maybe_tls_acceptor = tls_config.map(|config| TlsAcceptor::from(Arc::new(config)));
+
+            info!(listen_addr = %listener.listen_address(), ?tls_enabled, "HTTP server started.");
 
             loop {
                 select! {
@@ -67,11 +81,30 @@ where
                             let conn_builder = conn_builder.clone();
                             let listen_addr = listener.listen_address().clone();
 
-                            spawn_traced(async move {
-                                if let Err(e) = conn_builder.serve_connection(TokioIo::new(stream), service).await {
-                                    error!(%listen_addr, error = %e, "Failed to serve HTTP connection.");
-                                }
-                            });
+                            match &maybe_tls_acceptor {
+                                Some(acceptor) => {
+                                    let tls_stream = match acceptor.accept(stream).await {
+                                        Ok(stream) => stream,
+                                        Err(e) => {
+                                            error!(%listen_addr, error = %e, "Failed to complete TLS handshake.");
+                                            continue
+                                        },
+                                    };
+
+                                    spawn_traced(async move {
+                                        if let Err(e) = conn_builder.serve_connection(TokioIo::new(tls_stream), service).await {
+                                            error!(%listen_addr, error = %e, "Failed to serve HTTP connection.");
+                                        }
+                                    });
+                                },
+                                None => {
+                                    spawn_traced(async move {
+                                        if let Err(e) = conn_builder.serve_connection(TokioIo::new(stream), service).await {
+                                            error!(%listen_addr, error = %e, "Failed to serve HTTP connection.");
+                                        }
+                                    });
+                                },
+                            }
                         },
                         Err(e) => {
                             let _ = error_tx.send(e.into());

@@ -144,6 +144,7 @@ iana-time-zone = { version = "0.1", default-features = false }
 backon = { version = "1", default-features = false }
 http-serde-ext = { version = "1", default-features = false }
 uuid = { version = "1.11.0", default-features = false }
+rcgen = { version = "0.13.1", default-features = false }
 
 [profile.release]
 lto = "thin"

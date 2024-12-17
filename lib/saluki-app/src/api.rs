@@ -3,6 +3,7 @@
 use std::future::Future;
 
 use axum::Router;
+use rustls::ServerConfig;
 use saluki_api::APIHandler;
 use saluki_error::GenericError;
 use saluki_io::net::{
@@ -24,6 +25,7 @@ use tracing::error;
 #[derive(Default)]
 pub struct APIBuilder {
     router: Router,
+    tls_config: Option<ServerConfig>,
 }
 
 impl APIBuilder {
@@ -31,7 +33,10 @@ impl APIBuilder {
     ///
     /// A fallback route will be provided that returns a 404 Not Found response for any route that isn't explicitly handled.
     pub fn new() -> Self {
-        Self { router: Router::new() }
+        Self {
+            router: Router::new(),
+            tls_config: None,
+        }
     }
 
     /// Adds the given handler to this builder.
@@ -45,6 +50,12 @@ impl APIBuilder {
         let handler_state = handler.generate_initial_state();
         self.router = self.router.merge(handler_router.with_state(handler_state));
 
+        self
+    }
+
+    /// Adds the given tls configuration to this builder.
+    pub fn with_tls_config(mut self, config: ServerConfig) -> Self {
+        self.tls_config = Some(config);
         self
     }
 
@@ -67,7 +78,10 @@ impl APIBuilder {
         let service = TowerToHyperService::new(self.router);
 
         // Create and spawn the HTTP server.
-        let http_server = HttpServer::from_listener(listener, service);
+        let mut http_server = HttpServer::from_listener(listener, service);
+        if let Some(tls_config) = self.tls_config {
+            http_server = http_server.with_tls_config(tls_config);
+        }
         let (shutdown_handle, error_handle) = http_server.listen();
 
         // Wait for our shutdown signal, which we'll forward to the listener to stop accepting new connections... or
