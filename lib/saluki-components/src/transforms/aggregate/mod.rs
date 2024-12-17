@@ -23,6 +23,9 @@ use smallvec::SmallVec;
 use tokio::{select, time::interval_at};
 use tracing::{debug, error, trace};
 
+mod telemetry;
+use self::telemetry::Telemetry;
+
 mod config;
 use self::config::HistogramConfiguration;
 
@@ -231,18 +234,21 @@ impl Transform for Aggregate {
     async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
 
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
+        let telemetry = Telemetry::new(&metrics_builder);
+
         let mut state = AggregationState::new(
             self.window_duration,
             self.context_limit,
             self.counter_expiry_seconds.filter(|s| *s != 0).map(Duration::from_secs),
             self.hist_config,
+            telemetry.clone(),
         );
 
         let mut flush = interval_at(tokio::time::Instant::now() + self.flush_interval, self.flush_interval);
 
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
-        let events_dropped =
-            metrics_builder.register_debug_counter_with_tags("component_events_dropped_total", ["intentional:true"]);
+        let telemetry = Telemetry::new(&metrics_builder);
 
         health.mark_ready();
         debug!("Aggregation transform started.");
@@ -293,7 +299,7 @@ impl Transform for Aggregate {
                                     // it's either the original metric because no values had timestamps _or_ it's a
                                     // modified version of the metric after all timestamped values were split out and
                                     // directly forwarded.
-                                    match handle_forward_timestamped_metric(metric, &mut forwarder).await {
+                                    match handle_forward_timestamped_metric(metric, &mut forwarder, &telemetry).await {
                                         Ok(None) => continue,
                                         Ok(Some(metric)) => metric,
                                         Err(e) => {
@@ -307,7 +313,7 @@ impl Transform for Aggregate {
 
                                 if !state.insert(current_time, metric) {
                                     trace!("Dropping metric due to context limit.");
-                                    events_dropped.increment(1);
+                                    telemetry.increment_events_dropped();
                                 }
                             }
                         }
@@ -337,7 +343,7 @@ impl Transform for Aggregate {
 }
 
 async fn handle_forward_timestamped_metric<O>(
-    mut metric: Metric, forwarder: &mut BufferedForwarder<'_, O>,
+    mut metric: Metric, forwarder: &mut BufferedForwarder<'_, O>, telemetry: &Telemetry,
 ) -> Result<Option<Metric>, GenericError>
 where
     O: ObjectPool<Item = FixedSizeEventBuffer>,
@@ -345,6 +351,9 @@ where
     if metric.values().all_timestamped() {
         // All the values are timestamped, so take and forward the metric as-is.
         forwarder.push(Event::Metric(metric)).await?;
+
+        telemetry.increment_passthrough_metrics();
+
         Ok(None)
     } else if metric.values().any_timestamped() {
         // Only _some_ of the values are timestamped, so split out those timestamped ones, forward them, and then hand
@@ -352,6 +361,8 @@ where
         let new_metric_values = metric.values_mut().split_timestamped();
         let new_metric = Metric::from_parts(metric.context().clone(), new_metric_values, metric.metadata().clone());
         forwarder.push(Event::Metric(new_metric)).await?;
+
+        telemetry.increment_passthrough_metrics();
 
         Ok(Some(metric))
     } else {
@@ -375,12 +386,13 @@ struct AggregationState {
     counter_expire_secs: Option<NonZeroU64>,
     last_flush: u64,
     hist_config: HistogramConfiguration,
+    telemetry: Telemetry,
 }
 
 impl AggregationState {
     fn new(
         bucket_width: Duration, context_limit: usize, counter_expiration: Option<Duration>,
-        hist_config: HistogramConfiguration,
+        hist_config: HistogramConfiguration, telemetry: Telemetry,
     ) -> Self {
         let counter_expire_secs = counter_expiration.map(|d| d.as_secs()).and_then(NonZeroU64::new);
 
@@ -392,6 +404,7 @@ impl AggregationState {
             counter_expire_secs,
             last_flush: 0,
             hist_config,
+            telemetry,
         }
     }
 
@@ -431,6 +444,8 @@ impl AggregationState {
                 aggregated.values.merge(values);
             }
             Entry::Vacant(entry) => {
+                self.telemetry.increment_contexts(&values);
+
                 entry.insert(AggregatedMetric {
                     values,
                     metadata,
@@ -531,6 +546,7 @@ impl AggregationState {
             }
 
             if am.values.is_empty() && should_expire_if_empty {
+                self.telemetry.decrement_contexts(&am.values);
                 self.contexts_remove_buf.push(context.clone());
             }
         }
@@ -642,6 +658,7 @@ mod tests {
             ComponentId, OutputName,
         },
     };
+    use saluki_metrics::test::TestRecorder;
     use tokio::sync::mpsc;
 
     use super::config::HistogramStatistic;
@@ -829,7 +846,13 @@ mod tests {
     #[tokio::test]
     async fn context_limit() {
         // Create our aggregation state with a context limit of 2.
-        let mut state = AggregationState::new(BUCKET_WIDTH, 2, COUNTER_EXPIRE, HistogramConfiguration::default());
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH,
+            2,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
 
         // Create four unique gauges, and insert all of them. The third and fourth should fail because we've reached
         // the context limit.
@@ -865,7 +888,13 @@ mod tests {
     #[tokio::test]
     async fn context_limit_with_zero_value_counters() {
         // We test here to ensure that zero-value counters contribute to the context limit.
-        let mut state = AggregationState::new(BUCKET_WIDTH, 2, COUNTER_EXPIRE, HistogramConfiguration::default());
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH,
+            2,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
 
         // Create our input metrics.
         let input_metrics = vec![
@@ -914,7 +943,13 @@ mod tests {
     #[tokio::test]
     async fn zero_value_counters() {
         // We're testing that we properly emit and expire zero-value counters in all relevant scenarios.
-        let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, HistogramConfiguration::default());
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH,
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
 
         // Create two unique counters, and insert both of them.
         let input_metrics = vec![Metric::counter("metric1", 1.0), Metric::counter("metric2", 2.0)];
@@ -957,7 +992,13 @@ mod tests {
     #[tokio::test]
     async fn merge_identical_timestamped_values_on_flush() {
         // We're testing that we properly emit and expire zero-value counters in all relevant scenarios.
-        let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, HistogramConfiguration::default());
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH,
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
 
         // Create one multi-value counter, and insert it.
         let input_metric = Metric::counter("metric1", [1.0, 2.0, 3.0, 4.0, 5.0]);
@@ -982,7 +1023,7 @@ mod tests {
                 suffix: "p50".into(),
             },
         ]);
-        let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, hist_config);
+        let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, hist_config, Telemetry::noop());
 
         // Create one multi-value histogram and insert it.
         let input_metric = Metric::histogram("metric1", [1.0, 2.0, 3.0, 4.0, 5.0]);
@@ -1009,7 +1050,13 @@ mod tests {
     #[tokio::test]
     async fn distributions() {
         // We're testing that we pass through distributions untouched.
-        let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, HistogramConfiguration::default());
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH,
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
 
         // Create one multi-value distribution, with server-side aggregation, and insert it.
         let values = [1.0, 2.0, 3.0, 4.0, 5.0];
@@ -1022,5 +1069,80 @@ mod tests {
         assert_eq!(flushed_metrics.len(), 1);
 
         assert_flushed_distribution_metric!(&input_metric, &flushed_metrics[0], [bucket_ts(1) => &values[..]]);
+    }
+
+    #[tokio::test]
+    async fn telemetry() {
+        // TODO: We don't check `component_events_dropped_total` or `aggregate_passthrough_metrics_total` here as
+        // they're set directly in the aggregate component future rather than `AggregationState`, which is harder to
+        // drive overall and would have required even more boilerplate.
+        //
+        // Leaving that as a future improvement.
+
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+
+        let builder = MetricsBuilder::default();
+        let telemetry = Telemetry::new(&builder);
+
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH,
+            2,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            telemetry,
+        );
+
+        // Make sure our telemetry is registered at default values.
+        assert_eq!(recorder.gauge("aggregate_active_contexts"), Some(0.0));
+        assert_eq!(recorder.counter("aggregate_passthrough_metrics_total"), Some(0));
+        assert_eq!(
+            recorder.counter(("component_events_dropped_total", &[("intentional", "true")])),
+            Some(0)
+        );
+        for metric_type in &["counter", "gauge", "rate", "set", "histogram", "distribution"] {
+            assert_eq!(
+                recorder.gauge(("aggregate_active_contexts_by_type", &[("metric_type", *metric_type)])),
+                Some(0.0)
+            );
+        }
+
+        // Insert a counter with a non-timestamped value.
+        assert!(state.insert(insert_ts(1), Metric::counter("metric1", 42.0)));
+        assert_eq!(recorder.gauge("aggregate_active_contexts"), Some(1.0));
+        assert_eq!(
+            recorder.gauge(("aggregate_active_contexts_by_type", &[("metric_type", "counter")])),
+            Some(1.0)
+        );
+        assert_eq!(recorder.counter("aggregate_passthrough_metrics_total"), Some(0));
+
+        // Insert a gauge with a timestamped value.
+        assert!(state.insert(insert_ts(1), Metric::gauge("metric2", (insert_ts(1), 42.0))));
+        assert_eq!(recorder.gauge("aggregate_active_contexts"), Some(2.0));
+        assert_eq!(
+            recorder.gauge(("aggregate_active_contexts_by_type", &[("metric_type", "gauge")])),
+            Some(1.0)
+        );
+
+        // We've reached our context limit at this point, so the next metric should not be inserted.
+        assert!(!state.insert(insert_ts(1), Metric::counter("metric3", 42.0)));
+        assert_eq!(recorder.gauge("aggregate_active_contexts"), Some(2.0));
+        assert_eq!(
+            recorder.gauge(("aggregate_active_contexts_by_type", &[("metric_type", "counter")])),
+            Some(1.0)
+        );
+
+        // Now let's flush the state which should flush the gauge entirely, reducing the context count, but not flush
+        // the counter, since it'll be in zero-value mode.
+        let _ = get_flushed_metrics(flush_ts(1), &mut state).await;
+        assert_eq!(recorder.gauge("aggregate_active_contexts"), Some(1.0));
+        assert_eq!(
+            recorder.gauge(("aggregate_active_contexts_by_type", &[("metric_type", "counter")])),
+            Some(1.0)
+        );
+        assert_eq!(
+            recorder.gauge(("aggregate_active_contexts_by_type", &[("metric_type", "gauge")])),
+            Some(0.0)
+        );
     }
 }
