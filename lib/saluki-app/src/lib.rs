@@ -23,7 +23,7 @@ pub mod tls;
 /// Common imports.
 pub mod prelude {
     #[cfg(feature = "logging")]
-    pub use super::logging::{fatal_and_exit, initialize_logging};
+    pub use super::logging::{fatal_and_exit, initialize_dynamic_logging, initialize_logging};
     #[cfg(feature = "memory")]
     pub use super::memory::{initialize_allocator_telemetry, initialize_memory_bounds, MemoryBoundsConfiguration};
     #[cfg(feature = "metrics")]

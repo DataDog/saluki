@@ -1,8 +1,12 @@
-pub use axum::extract;
 pub use axum::response;
 pub use axum::routing;
 use axum::Router;
 pub use http::StatusCode;
+
+pub mod extract {
+    pub use axum::extract::*;
+    pub use axum_extra::extract::*;
+}
 
 // An API handler.
 //
