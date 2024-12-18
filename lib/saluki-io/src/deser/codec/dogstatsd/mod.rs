@@ -36,12 +36,29 @@ enum MetricType {
 /// DogStatsD codec configuration.
 #[derive(Clone, Debug)]
 pub struct DogstatsdCodecConfiguration {
+    permissive: bool,
     maximum_tag_length: usize,
     maximum_tag_count: usize,
     timestamps: bool,
 }
 
 impl DogstatsdCodecConfiguration {
+    /// Sets whether or not the codec should operate in permissive mode.
+    ///
+    /// In permissive mode, the codec will attempt to parse as much of the input as possible, relying solely on
+    /// structural markers (specific delimiting characters) to determine the boundaries of different parts of the
+    /// payload. This allows for decoding payloads with invalid contents (e.g., characters that are valid UTF-8, but
+    /// aren't within ASCII bounds, etc) such that the data plane can attempt to process them further.
+    ///
+    /// Permissive mode does not allow for decoding payloads with structural errors (e.g., missing delimiters, etc) or
+    /// that cannot be safely handled internally (e.g., invalid UTF-8 characters for the metric name or tags).
+    ///
+    /// Defaults to `false`.
+    pub fn with_permissive_mode(mut self, permissive: bool) -> Self {
+        self.permissive = permissive;
+        self
+    }
+
     /// Sets the maximum tag length.
     ///
     /// This controls the number of bytes that are allowed for a single tag. If a tag exceeds this limit, it is
@@ -82,6 +99,7 @@ impl Default for DogstatsdCodecConfiguration {
             maximum_tag_length: usize::MAX,
             maximum_tag_count: usize::MAX,
             timestamps: true,
+            permissive: false,
         }
     }
 }
@@ -91,10 +109,6 @@ impl Default for DogstatsdCodecConfiguration {
 /// This codec is used to parse the DogStatsD protocol, which is a superset of the StatsD protocol. DogStatsD adds a
 /// number of additional features, such as the ability to specify tags, send histograms directly, send service checks
 /// and events (DataDog-specific), and more.
-///
-/// ## Missing
-///
-/// - Service checks and events are not currently supported.
 ///
 /// [dsd]: https://docs.datadoghq.com/developers/dogstatsd/
 #[derive(Clone, Debug)]
@@ -167,8 +181,13 @@ fn parse_dogstatsd_metric<'a>(
 ) -> IResult<&'a [u8], MetricPacket<'a>> {
     // We always parse the metric name and value(s) first, where value is both the kind (counter, gauge, etc) and the
     // actual value itself.
+    let metric_name_parser = if config.permissive {
+        permissive_metric_name
+    } else {
+        ascii_alphanum_and_seps
+    };
     let (remaining, (metric_name, (metric_type, raw_metric_values))) =
-        separated_pair(ascii_alphanum_and_seps, tag(":"), raw_metric_values)(input)?;
+        separated_pair(metric_name_parser, tag(":"), raw_metric_values)(input)?;
 
     // At this point, we may have some of this additional data, and if so, we also then would have a pipe separator at
     // the very front, which we'd want to consume before going further.
@@ -510,6 +529,17 @@ fn split_at_delimiter_inclusive(input: &[u8], delimiter: u8) -> Option<(&[u8], &
 #[inline]
 fn ascii_alphanum_and_seps(input: &[u8]) -> IResult<&[u8], &str> {
     let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b' ' || c == b'_' || c == b'-' || c == b'.';
+    map(take_while1(valid_char), |b| {
+        // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
+        // interpret the bytes directly as UTF-8.
+        unsafe { std::str::from_utf8_unchecked(b) }
+    })(input)
+}
+
+#[inline]
+fn permissive_metric_name(input: &[u8]) -> IResult<&[u8], &str> {
+    // Essentially, any ASCII character that is printable and isn't `:` is allowed here.
+    let valid_char = |c: u8| c > 31 && c < 128 && c != b':';
     map(take_while1(valid_char), |b| {
         // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
         // interpret the bytes directly as UTF-8.
@@ -1320,6 +1350,17 @@ mod tests {
             .with_tags(tags)
             .with_message(sc_message);
         check_basic_service_check_eq(expected, actual);
+    }
+
+    #[test]
+    fn permissive_mode() {
+        let payload = b"codeheap 'non-nmethods'.usage:0.3054|g|#env:dev,service:foobar,datacenter:localhost.dev";
+
+        let config = DogstatsdCodecConfiguration::default().with_permissive_mode(true);
+        match parse_dsd_metric_with_conf(payload, &config) {
+            Ok(result) => assert!(result.is_some(), "should not fail to materialize metric after decoding"),
+            Err(e) => panic!("should not have errored: {:?}", e),
+        }
     }
 
     proptest! {

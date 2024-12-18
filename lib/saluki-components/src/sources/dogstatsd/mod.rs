@@ -89,6 +89,10 @@ const fn default_context_string_interner_size() -> ByteSize {
     ByteSize::mib(2)
 }
 
+const fn default_dogstatsd_permissive_decoding() -> bool {
+    true
+}
+
 /// DogStatsD source.
 ///
 /// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format.
@@ -183,6 +187,18 @@ pub struct DogStatsDConfiguration {
         default = "default_context_string_interner_size"
     )]
     context_string_interner_bytes: ByteSize,
+
+    /// Whether or not to enable permissive mode in the decoder.
+    ///
+    /// Permissive mode allows the decoder to relax its strictness around the allowed payloads, which lets it match the
+    /// decoding behavior of the Datadog Agent.
+    ///
+    /// Defaults to `true`.
+    #[serde(
+        rename = "dogstatsd_permissive_decoding",
+        default = "default_dogstatsd_permissive_decoding"
+    )]
+    permissive_decoding: bool,
 }
 
 impl DogStatsDConfiguration {
@@ -250,7 +266,10 @@ impl SourceBuilder for DogStatsDConfiguration {
             .build();
         let multitenant_strategy = MultitenantStrategy::new(context_resolver);
 
-        let codec_config = DogstatsdCodecConfiguration::default().with_timestamps(self.no_aggregation_pipeline_support);
+        let codec_config = DogstatsdCodecConfiguration::default()
+            .with_timestamps(self.no_aggregation_pipeline_support)
+            .with_permissive_mode(self.permissive_decoding);
+
         let codec = DogstatsdCodec::from_configuration(codec_config);
 
         Ok(Box::new(DogStatsD {
