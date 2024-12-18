@@ -11,7 +11,6 @@ use std::{
 };
 
 use memory_accounting::ComponentRegistry;
-
 use saluki_app::{api::APIBuilder, prelude::*};
 use saluki_components::{
     destinations::{

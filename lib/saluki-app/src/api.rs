@@ -3,7 +3,9 @@
 use std::{future::Future, io::BufReader};
 
 use axum::Router;
+use rcgen::{generate_simple_self_signed, CertifiedKey};
 use rustls::ServerConfig;
+use rustls_pemfile::{certs, pkcs8_private_keys};
 use saluki_api::APIHandler;
 use saluki_error::GenericError;
 use saluki_io::net::{
@@ -11,9 +13,6 @@ use saluki_io::net::{
 };
 use tokio::select;
 use tracing::error;
-
-use rcgen::{generate_simple_self_signed, CertifiedKey};
-use rustls_pemfile::{certs, pkcs8_private_keys};
 
 /// An API builder.
 ///
