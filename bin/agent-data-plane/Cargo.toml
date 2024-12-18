@@ -13,9 +13,6 @@ fips = ["saluki-app/tls-fips"]
 async-trait = { workspace = true }
 bytesize = { workspace = true }
 memory-accounting = { workspace = true }
-rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
-rustls = { workspace = true }
-rustls-pemfile = { workspace = true }
 saluki-app = { workspace = true, features = ["full"] }
 saluki-components = { workspace = true }
 saluki-config = { workspace = true }

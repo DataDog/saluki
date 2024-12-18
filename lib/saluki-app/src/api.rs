@@ -1,6 +1,6 @@
 //! API server.
 
-use std::future::Future;
+use std::{future::Future, io::BufReader};
 
 use axum::Router;
 use rustls::ServerConfig;
@@ -11,6 +11,9 @@ use saluki_io::net::{
 };
 use tokio::select;
 use tracing::error;
+
+use rcgen::{generate_simple_self_signed, CertifiedKey};
+use rustls_pemfile::{certs, pkcs8_private_keys};
 
 /// An API builder.
 ///
@@ -57,6 +60,26 @@ impl APIBuilder {
     pub fn with_tls_config(mut self, config: ServerConfig) -> Self {
         self.tls_config = Some(config);
         self
+    }
+
+    /// Adds a self signed certificate to this builder.
+    pub fn with_self_signed_tls(self) -> Self {
+        let CertifiedKey { cert, key_pair } = generate_simple_self_signed(["localhost".to_owned()]).unwrap();
+        let cert_file = cert.pem();
+        let key_file = key_pair.serialize_pem();
+
+        let cert_file = &mut BufReader::new(cert_file.as_bytes());
+        let key_file = &mut BufReader::new(key_file.as_bytes());
+
+        let cert_chain = certs(cert_file).collect::<Result<Vec<_>, _>>().unwrap();
+        let mut keys = pkcs8_private_keys(key_file).collect::<Result<Vec<_>, _>>().unwrap();
+
+        let config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(cert_chain, rustls::pki_types::PrivateKeyDer::Pkcs8(keys.remove(0)))
+            .unwrap();
+
+        self.with_tls_config(config)
     }
 
     /// Serves the API on the given listen address until `shutdown` resolves.

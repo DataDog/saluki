@@ -7,15 +7,11 @@
 #![deny(missing_docs)]
 use std::{
     future::pending,
-    io::BufReader,
     time::{Duration, Instant},
 };
 
 use memory_accounting::ComponentRegistry;
-use rcgen::{generate_simple_self_signed, CertifiedKey};
-use rustls_pemfile::{certs, pkcs8_private_keys};
 
-use rustls::ServerConfig;
 use saluki_app::{api::APIBuilder, prelude::*};
 use saluki_components::{
     destinations::{
@@ -111,25 +107,10 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         .error_context("Failed to get API listen address.")?
         .unwrap_or_else(|| ListenAddress::Tcp(([0, 0, 0, 0], 5100).into()));
 
-    let CertifiedKey { cert, key_pair } = generate_simple_self_signed(["localhost".to_owned()]).unwrap();
-    let cert_file = cert.pem();
-    let key_file = key_pair.serialize_pem();
-
-    let cert_file = &mut BufReader::new(cert_file.as_bytes());
-    let key_file = &mut BufReader::new(key_file.as_bytes());
-
-    let cert_chain = certs(cert_file).collect::<Result<Vec<_>, _>>().unwrap();
-    let mut keys = pkcs8_private_keys(key_file).collect::<Result<Vec<_>, _>>().unwrap();
-
-    let config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(cert_chain, rustls::pki_types::PrivateKeyDer::Pkcs8(keys.remove(0)))
-        .unwrap();
-
     let primary_api = APIBuilder::new()
         .with_handler(health_registry.api_handler())
         .with_handler(component_registry.api_handler())
-        .with_tls_config(config);
+        .with_self_signed_tls();
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
     let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;
