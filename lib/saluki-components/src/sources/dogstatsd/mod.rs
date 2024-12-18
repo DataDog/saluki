@@ -47,7 +47,7 @@ use tokio::{
     select,
     time::{interval, MissedTickBehavior},
 };
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 mod framer;
 use self::framer::{get_framer, DsdFramer};
@@ -325,7 +325,7 @@ struct ListenerContext {
 }
 
 struct HandlerContext {
-    listen_addr: String,
+    listen_addr: ListenAddress,
     framer: DsdFramer,
     codec: DogstatsdCodec,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
@@ -568,7 +568,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
                     debug!(%listen_addr, "Spawning new stream handler.");
 
                     let handler_context = HandlerContext {
-                        listen_addr: listen_addr.to_string(),
+                        listen_addr: listen_addr.clone(),
                         framer: get_framer(&listen_addr),
                         codec: codec.clone(),
                         io_buffer_pool: io_buffer_pool.clone(),
@@ -621,16 +621,16 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
     // Set a buffer flush interval of 100ms, which will ensure we always flush buffered events at least every 100ms if
     // we're otherwise idle and not receiving packets from the client.
     let mut buffer_flush = interval(Duration::from_millis(100));
-    buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let mut event_buffer = source_context.event_buffer_pool().acquire().await;
     let mut buffer = io_buffer_pool.acquire().await;
     if !buffer.has_remaining_mut() {
-        error!("Newly acquired buffer has no capacity. This should never happen.");
+        error!(%listen_addr, "Newly acquired buffer has no capacity. This should never happen.");
         return;
     }
 
-    debug!(capacity = buffer.remaining_mut(), "Acquired buffer for decoding.");
+    debug!(%listen_addr, capacity = buffer.remaining_mut(), "Acquired buffer for decoding.");
 
     'read: loop {
         let mut eof = false;
@@ -668,12 +668,12 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                     // actually hit true EOF.
                     let reached_eof = eof || stream.is_connectionless();
 
-                    debug!(
-                        chunk_len = buffer.chunk().len(),
-                        chunk_cap = buffer.chunk_mut().len(),
+                    trace!(
                         buffer_len = buffer.remaining(),
                         buffer_cap = buffer.remaining_mut(),
                         eof = reached_eof,
+                        %listen_addr,
+                        %peer_addr,
                         "Received {} bytes from stream.",
                         bytes_read
                     );
@@ -682,16 +682,16 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                     'frame: loop {
                         match frames.next() {
                             Some(Ok(frame)) => {
-                                trace!(?frame, "Decoded frame.");
+                                trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
                                 match handle_frame(&frame[..], &codec, &mut multitenant_strategy, &metrics, &peer_addr) {
                                     Ok(Some(event)) => {
                                         if let Some(event) = event_buffer.try_push(event) {
-                                            debug!("Event buffer is full. Forwarding events.");
+                                            debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
                                             forward_events(&mut event_buffer, &source_context, &listen_addr).await;
 
                                             // Try to push the event again now that we have a new event buffer.
                                             if event_buffer.try_push(event).is_some() {
-                                                error!("Event buffer is full even after forwarding events. Dropping event.");
+                                                error!(%listen_addr, %peer_addr, "Event buffer is full even after forwarding events. Dropping event.");
                                             }
                                         }
                                     },
@@ -702,16 +702,24 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                                         // Simply continue on.
                                         continue
                                     },
-                                    Err(e) => error!(%listen_addr, error = %e, "Failed to parse frame."),
+                                    Err(e) => warn!(%listen_addr, %peer_addr, error = %e, "Failed to parse frame."),
                                 }
                             }
                             Some(Err(e)) => {
-                                error!(error = %e, "Error decoding frame.");
                                 metrics.framing_errors().increment(1);
-                                break 'frame;
+
+                                if stream.is_connectionless() {
+                                    // For connectionless streams, we don't want to shutdown the stream since we can just keep
+                                    // reading more packets.
+                                    warn!(%listen_addr, %peer_addr, error = %e, "Error decoding frame. Continuing stream.");
+                                    continue 'read;
+                                } else {
+                                    warn!(%listen_addr, %peer_addr, error = %e, "Error decoding frame. Stopping stream.");
+                                    break 'read;
+                                }
                             }
                             None => {
-                                debug!("Not enough data to decode another frame.");
+                                trace!(%listen_addr, %peer_addr, "Not enough data to decode another frame.");
                                 if eof && !stream.is_connectionless() {
                                     trace!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
                                     break 'read;
@@ -723,25 +731,29 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                     }
                 },
                 Err(e) => {
-                    error!(%listen_addr, %e, "I/O error while decoding. Stopping stream.");
                     metrics.packet_receive_failure().increment(1);
-                    continue 'read;
+
+                    if stream.is_connectionless() {
+                        // For connectionless streams, we don't want to shutdown the stream since we can just keep
+                        // reading more packets.
+                        warn!(%listen_addr, error = %e, "I/O error while decoding. Continuing stream.");
+                        continue 'read;
+                    } else {
+                        warn!(%listen_addr, error = %e, "I/O error while decoding. Stopping stream.");
+                        break 'read;
+                    }
                 }
             },
 
             _ = buffer_flush.tick() => {
                 if !event_buffer.is_empty() {
-                    debug!("Buffer flush triggered. Forwarding events.");
                     forward_events(&mut event_buffer, &source_context, &listen_addr).await;
-                } else {
-                    debug!("Buffer flush triggered, but no events to forward.");
                 }
             },
         }
     }
 
     if !event_buffer.is_empty() {
-        debug!("Stream finished. Forwarding remaining events.");
         forward_events(&mut event_buffer, &source_context, &listen_addr).await;
     }
 
@@ -830,8 +842,10 @@ fn handle_metric_packet(
     Some(Metric::from_parts(context, packet.values, metadata))
 }
 
-async fn forward_events(event_buffer: &mut FixedSizeEventBuffer, source_context: &SourceContext, listen_addr: &str) {
-    trace!(%listen_addr, events_len = event_buffer.len(), "Forwarding events.");
+async fn forward_events(
+    event_buffer: &mut FixedSizeEventBuffer, source_context: &SourceContext, listen_addr: &ListenAddress,
+) {
+    debug!(%listen_addr, events_len = event_buffer.len(), "Forwarding events.");
 
     // Acquire a new event buffer to replace the one we're about to forward, and swap them.
     let new_event_buffer = source_context.event_buffer_pool().acquire().await;
