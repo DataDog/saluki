@@ -1,7 +1,12 @@
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use datadog_protos::agent::{
+    GetFlareFilesRequest, GetFlareFilesResponse, GetStatusDetailsRequest, GetStatusDetailsResponse, RemoteAgent,
+    RemoteAgentServer,
+};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use saluki_config::GenericConfiguration;
@@ -14,6 +19,8 @@ use saluki_error::GenericError;
 use saluki_event::DataType;
 use tokio::select;
 use tokio::time::{interval, MissedTickBehavior};
+use tonic::transport::server::Router;
+use tonic::transport::Server;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -149,4 +156,35 @@ impl Destination for DatadogStatusFlare {
         debug!("Datadog Status Flare destination stopped.");
         Ok(())
     }
+}
+
+#[derive(Default)]
+struct RemoteAgentImpl;
+
+#[async_trait]
+impl RemoteAgent for RemoteAgentImpl {
+    async fn get_status_details(
+        &self, _request: tonic::Request<GetStatusDetailsRequest>,
+    ) -> std::result::Result<tonic::Response<GetStatusDetailsResponse>, tonic::Status> {
+        let response = GetStatusDetailsResponse {
+            main_section: None,
+            named_sections: HashMap::new(),
+        };
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn get_flare_files(
+        &self, _request: tonic::Request<GetFlareFilesRequest>,
+    ) -> std::result::Result<tonic::Response<GetFlareFilesResponse>, tonic::Status> {
+        let response = GetFlareFilesResponse {
+            files: HashMap::default(),
+        };
+        Ok(tonic::Response::new(response))
+    }
+}
+
+/// Create the RemoteAgent gRPC server.
+pub fn new_remote_agent_server() -> Result<Router, GenericError> {
+    let remote_agent = RemoteAgentImpl;
+    Ok(Server::builder().add_service(RemoteAgentServer::new(remote_agent)))
 }

@@ -12,6 +12,7 @@ use saluki_io::net::{
     listener::ConnectionOrientedListener, server::http::HttpServer, util::hyper::TowerToHyperService, ListenAddress,
 };
 use tokio::select;
+use tonic::transport::server::Router as TonicRouter;
 use tracing::error;
 
 /// An API builder.
@@ -28,6 +29,7 @@ use tracing::error;
 pub struct APIBuilder {
     router: Router,
     tls_config: Option<ServerConfig>,
+    grpc_router: Option<TonicRouter>,
 }
 
 impl APIBuilder {
@@ -38,6 +40,7 @@ impl APIBuilder {
         Self {
             router: Router::new(),
             tls_config: None,
+            grpc_router: None,
         }
     }
 
@@ -81,6 +84,14 @@ impl APIBuilder {
         self.with_tls_config(config)
     }
 
+    /// Adds a Tonic router to this builder.
+    ///
+    /// Currently this is only used for the remote agent server.
+    pub fn with_grpc_service(mut self, router: TonicRouter) -> Self {
+        self.grpc_router = Some(router);
+        self
+    }
+
     /// Serves the API on the given listen address until `shutdown` resolves.
     ///
     /// The listen address must be a connection-oriented address (TCP or Unix domain socket in SOCK_STREAM mode).
@@ -98,6 +109,10 @@ impl APIBuilder {
         // We have to convert this Tower-based `Service` to a Hyper-based `Service` to use it with `HttpServer`, since
         // the two traits are different from a semver perspective.
         let service = TowerToHyperService::new(self.router);
+
+        // NOTE:
+        // We will be multiplexing a gRPC service here for the remote agent server but what should we do in the case
+        // that ADP is running without an agent?
 
         // Create and spawn the HTTP server.
         let mut http_server = HttpServer::from_listener(listener, service);

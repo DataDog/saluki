@@ -14,8 +14,8 @@ use memory_accounting::ComponentRegistry;
 use saluki_app::{api::APIBuilder, prelude::*};
 use saluki_components::{
     destinations::{
-        DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration, DatadogStatusFlareConfiguration,
-        PrometheusConfiguration,
+        new_remote_agent_server, DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration,
+        DatadogStatusFlareConfiguration, PrometheusConfiguration,
     },
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
     transforms::{
@@ -106,9 +106,12 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         .error_context("Failed to get API listen address.")?
         .unwrap_or_else(|| ListenAddress::Tcp(([0, 0, 0, 0], 5100).into()));
 
+    let remote_agent_server = new_remote_agent_server()?;
+
     let primary_api = APIBuilder::new()
         .with_handler(health_registry.api_handler())
         .with_handler(component_registry.api_handler())
+        .with_grpc_service(remote_agent_server)
         .with_self_signed_tls();
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
