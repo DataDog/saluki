@@ -1,6 +1,6 @@
 //! API server.
 
-use std::{future::Future, io::BufReader};
+use std::{future::Future, io::BufReader, sync::Arc};
 
 use axum::Router;
 use rcgen::{generate_simple_self_signed, CertifiedKey};
@@ -9,7 +9,13 @@ use rustls_pemfile::{certs, pkcs8_private_keys};
 use saluki_api::APIHandler;
 use saluki_error::GenericError;
 use saluki_io::net::{
-    listener::ConnectionOrientedListener, server::http::HttpServer, util::hyper::TowerToHyperService, ListenAddress,
+    listener::ConnectionOrientedListener,
+    server::{
+        http::HttpServer,
+        multiplex_service::{self, MultiplexService},
+    },
+    util::hyper::TowerToHyperService,
+    ListenAddress,
 };
 use tokio::select;
 use tonic::transport::server::Router as TonicRouter;
@@ -108,14 +114,16 @@ impl APIBuilder {
 
         // We have to convert this Tower-based `Service` to a Hyper-based `Service` to use it with `HttpServer`, since
         // the two traits are different from a semver perspective.
-        let service = TowerToHyperService::new(self.router);
+        let http_service = TowerToHyperService::new(self.router);
+
+        let multiplexed_service = MultiplexService::new(http_service, Arc::new(self.grpc_router.unwrap()));
 
         // NOTE:
         // We will be multiplexing a gRPC service here for the remote agent server but what should we do in the case
         // that ADP is running without an agent?
 
         // Create and spawn the HTTP server.
-        let mut http_server = HttpServer::from_listener(listener, service);
+        let mut http_server = HttpServer::from_listener(listener, multiplexed_service);
         if let Some(tls_config) = self.tls_config {
             http_server = http_server.with_tls_config(tls_config);
         }

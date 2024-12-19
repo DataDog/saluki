@@ -9,7 +9,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures::{future::BoxFuture, ready};
-use http_body::Body;
+use hyper::body::Incoming;
 use tower::Service;
 
 pub struct MultiplexService<A, B> {
@@ -46,15 +46,14 @@ where
     }
 }
 
-impl<A, B, C> Service<Request<C>> for MultiplexService<A, B>
+impl<A, B> Service<Request<Incoming>> for MultiplexService<A, B>
 where
-    A: Service<Request<C>, Error = Infallible>,
+    A: Service<Request<Incoming>, Error = Infallible>,
     A::Response: IntoResponse,
     A::Future: Send + 'static,
-    B: Service<Request<C>>,
+    B: Service<Request<Incoming>>,
     B::Response: IntoResponse,
     B::Future: Send + 'static,
-    C: Body + Clone + Send + 'static,
 {
     type Response = Response;
     type Error = B::Error;
@@ -79,7 +78,7 @@ where
         }
     }
 
-    fn call(&mut self, req: Request<C>) -> Self::Future {
+    fn call(&mut self, req: Request<Incoming>) -> Self::Future {
         // require users to call `poll_ready` first, if they don't we're allowed to panic
         // as per the `tower::Service` contract
         assert!(
