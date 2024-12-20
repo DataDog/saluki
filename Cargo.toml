@@ -145,6 +145,9 @@ http-serde-ext = { version = "1", default-features = false }
 tikv-jemalloc-ctl = "0.6"
 tikv-jemallocator = { version = "0.6", default-features = false }
 
+[patch.crates-io]
+async-compression = { git = "https://github.com/tobz/async-compression.git", branch = "main" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 4
