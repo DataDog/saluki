@@ -1,5 +1,5 @@
 seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
-target: "unix:///tmp/adp-dsd.sock"
+target: "unix:///tmp/adp-dogstatsd-stream.sock"
 volume: 2
 corpus:
   # TODO: This is a little confusing, because we're specifying the number of metrics to generate (which we _will_
