@@ -114,7 +114,7 @@ where
             };
 
             // Try to get the next inner frame.
-            match self.inner.next_frame(outer_frame, is_eof)? {
+            match self.inner.next_frame(outer_frame, true)? {
                 Some(frame) => {
                     trace!(
                         buf_len = buf.remaining(),
