@@ -16,7 +16,7 @@ target:
 
     # Disables UDP and enables listening on UDS in SOCK_STREAM mode.
     DD_DOGSTATSD_PORT: "0"
-    DD_DOGSTATSD_STREAM_SOCKET: /tmp/adp-dsd.sock
+    DD_DOGSTATSD_STREAM_SOCKET: /tmp/adp-dogstatsd-stream.sock
 
     # Runs the workload provider in no-op mode, otherwise it would need to connect to a real Datadog Agent, which
     # obviously we don't have available to us, and perhaps further, don't need for the purpose of this benchmark.

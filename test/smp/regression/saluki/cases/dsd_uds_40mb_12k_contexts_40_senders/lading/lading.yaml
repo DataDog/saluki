@@ -2,7 +2,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -46,7 +46,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 132]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -90,7 +90,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 133]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -134,7 +134,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 134]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -178,7 +178,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 135]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -222,7 +222,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 136]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -266,7 +266,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 137]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -310,7 +310,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 138]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -354,7 +354,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 139]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -398,7 +398,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 140]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -442,7 +442,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 141]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -486,7 +486,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 142]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -530,7 +530,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 143]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -574,7 +574,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 144]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -618,7 +618,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 145]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -662,7 +662,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 146]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -706,7 +706,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 147]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -750,7 +750,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 148]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -794,7 +794,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 149]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -838,7 +838,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 150]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -882,7 +882,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 151]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -926,7 +926,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 152]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -970,7 +970,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 153]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -1014,7 +1014,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 154]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -1058,7 +1058,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 155]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -1102,7 +1102,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 156]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -1146,7 +1146,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 157]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -1190,7 +1190,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 158]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -1234,7 +1234,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 159]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -1278,7 +1278,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 160]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -1322,7 +1322,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 161]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -1366,7 +1366,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 162]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -1410,7 +1410,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 163]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -1454,7 +1454,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 164]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -1498,7 +1498,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 165]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -1542,7 +1542,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 166]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -1586,7 +1586,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 167]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -1630,7 +1630,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 168]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -1674,7 +1674,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 169]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
@@ -1718,7 +1718,7 @@ generator:
   - unix_stream:
       seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 170]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-stream.sock"
       block_cache_method: Fixed
       variant:
         dogstatsd:
