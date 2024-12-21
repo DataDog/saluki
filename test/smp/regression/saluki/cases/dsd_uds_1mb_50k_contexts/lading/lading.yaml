@@ -1,7 +1,7 @@
 generator:
   - unix_datagram:
       seed: [5, 15, 17, 20, 22, 24, 48, 52, 61, 65, 73, 81, 97, 104, 109, 119, 147, 149, 153, 156, 158, 168, 175, 186, 193, 201, 216, 219, 224, 230, 232, 249]
-      path: "/tmp/adp-dsd.sock"
+      path: "/tmp/adp-dogstatsd-dgram.sock"
       block_cache_method: Fixed
       variant: &variant
         dogstatsd:
