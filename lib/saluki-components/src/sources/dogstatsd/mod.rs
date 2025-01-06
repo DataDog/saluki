@@ -655,11 +655,18 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                         eof = true;
                     }
 
-                    if !eof {
-                        metrics.packet_receive_success().increment(1);
-                        metrics.bytes_received().increment(bytes_read as u64);
-                        metrics.bytes_received_size().record(bytes_read as f64);
-                    }
+                    // TODO: This is correct for UDP and UDS in SOCK_DGRAM mode, but not for UDS in SOCK_STREAM mode...
+                    // because to match the Datadog Agent, we would only want to increment the number of successful
+                    // packets for each length-delimited frame, but this is obviously being incremented before we do any
+                    // framing... and even further, with the nested framer, we don't have access to the signal that
+                    // we've gotten a full length-delimited outer frame, only each individual newline-delimited inner
+                    // frame.
+                    //
+                    // As such, we'll potentially be over-reporting this metric for UDS in SOCK_STREAM mode compared to
+                    // the Datadog Agent.
+                    metrics.packet_receive_success().increment(1);
+                    metrics.bytes_received().increment(bytes_read as u64);
+                    metrics.bytes_received_size().record(bytes_read as f64);
 
                     // When we're actually at EOF, or we're dealing with a connectionless stream, we try to decode in EOF mode.
                     //
