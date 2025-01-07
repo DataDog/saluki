@@ -98,7 +98,7 @@ impl AdditionalEndpoints {
 }
 
 /// Endpoint configuration for sending payloads to the Datadog platform.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct EndpointConfiguration {
     /// The API key to use.
     api_key: String,
