@@ -17,7 +17,7 @@ use saluki_error::{generic_error, GenericError};
 use saluki_event::DataType;
 use saluki_io::{
     buf::{BytesBuffer, FixedSizeVec, FrozenChunkedBytesBuffer},
-    net::{client::http::HttpClient, util::retry::agent::DatadogAgentForwarderRetryConfiguration},
+    net::{client::http::HttpClient, util::agent::DatadogAgentForwarderConfiguration},
 };
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
@@ -70,11 +70,11 @@ pub struct DatadogMetricsConfiguration {
     #[serde(default = "default_request_timeout_secs", rename = "forwarder_timeout")]
     request_timeout_secs: u64,
 
-    /// Retry configuration settings.
+    /// Forwarder configuration settings.
     ///
-    /// See [`DatadogAgentForwarderRetryConfiguration`] for more information about the available settings.
+    /// See [`DatadogAgentForwarderConfiguration`] for more information about the available settings.
     #[serde(flatten)]
-    retry_config: DatadogAgentForwarderRetryConfiguration,
+    forwarder_config: DatadogAgentForwarderConfiguration,
 
     #[serde(skip)]
     config_refresher: Option<RefreshableConfiguration>,
@@ -103,7 +103,7 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
 
         let service = HttpClient::builder()
-            .with_retry_policy(self.retry_config.into_default_http_retry_policy())
+            .with_retry_policy(self.forwarder_config.into_default_http_retry_policy())
             .with_bytes_sent_counter(metrics_builder.register_debug_counter("component_bytes_sent_total"))
             .with_endpoint_telemetry(metrics_builder, Some(get_metrics_endpoint_name))
             .build()?;
