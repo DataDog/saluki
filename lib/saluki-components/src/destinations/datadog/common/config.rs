@@ -8,6 +8,10 @@ const fn default_request_timeout_secs() -> u64 {
     20
 }
 
+const fn default_endpoint_buffer_size() -> usize {
+    100
+}
+
 /// Forwarder configuration based on the Datadog Agent's forwarder configuration.
 ///
 /// This adapter provides a simple way to utilize the existing configuration values that are passed to the Datadog
@@ -20,6 +24,12 @@ pub struct ForwarderConfiguration {
     /// Defaults to 20 seconds.
     #[serde(default = "default_request_timeout_secs", rename = "forwarder_timeout")]
     request_timeout_secs: u64,
+
+    /// Maximum number of pending requests for an individual endpoint.
+    ///
+    /// Defaults to 100.
+    #[serde(default = "default_endpoint_buffer_size", rename = "forwarder_high_prio_buffer_size")]
+    endpoint_buffer_size: usize,
 
     /// Endpoint configuration.
     #[serde(flatten)]
@@ -34,6 +44,11 @@ impl ForwarderConfiguration {
     /// Returns the request timeout.
     pub const fn request_timeout(&self) -> Duration {
         Duration::from_secs(self.request_timeout_secs)
+    }
+
+    /// Returns the maximum number of pending requests for an individual endpoint.
+    pub const fn endpoint_buffer_size(&self) -> usize {
+        self.endpoint_buffer_size
     }
 
     /// Returns a reference to the endpoint configuration.

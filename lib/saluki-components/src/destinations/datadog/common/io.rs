@@ -45,6 +45,7 @@ impl<B> Handle<B> {
 }
 
 pub struct TransactionForwarder<B> {
+    config: ForwarderConfiguration,
     telemetry: ComponentTelemetry,
     client: HttpClient<B>,
     endpoints: Vec<ResolvedEndpoint>,
@@ -57,23 +58,22 @@ where
     B::Error: std::error::Error + Send + Sync,
 {
     pub fn from_config<F>(
-        forwarder_config: ForwarderConfiguration, maybe_refreshable_config: Option<RefreshableConfiguration>,
-        endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
+        config: ForwarderConfiguration, maybe_refreshable_config: Option<RefreshableConfiguration>, endpoint_name: F,
+        telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
     ) -> Result<Self, GenericError>
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
     {
-        let endpoints = forwarder_config
-            .endpoint()
-            .build_resolved_endpoints(maybe_refreshable_config)?;
+        let endpoints = config.endpoint().build_resolved_endpoints(maybe_refreshable_config)?;
         let client = HttpClient::builder()
-            .with_request_timeout(forwarder_config.request_timeout())
-            .with_retry_policy(forwarder_config.retry().to_default_http_retry_policy())
+            .with_request_timeout(config.request_timeout())
+            .with_retry_policy(config.retry().to_default_http_retry_policy())
             .with_bytes_sent_counter(telemetry.bytes_sent().clone())
             .with_endpoint_telemetry(metrics_builder, Some(endpoint_name))
             .build()?;
 
         Ok(Self {
+            config,
             telemetry,
             client,
             endpoints,
@@ -85,12 +85,20 @@ where
         let (io_shutdown_tx, io_shutdown_rx) = oneshot::channel();
 
         let Self {
+            config,
             telemetry,
             client,
             endpoints,
         } = self;
 
-        spawn_traced(run_io_loop(requests_rx, io_shutdown_tx, client, telemetry, endpoints));
+        spawn_traced(run_io_loop(
+            requests_rx,
+            io_shutdown_tx,
+            config,
+            client,
+            telemetry,
+            endpoints,
+        ));
 
         Handle {
             requests_tx,
@@ -100,8 +108,9 @@ where
 }
 
 async fn run_io_loop<S, B>(
-    mut requests_rx: mpsc::Receiver<(usize, Request<B>)>, io_shutdown_tx: oneshot::Sender<()>, service: S,
-    telemetry: ComponentTelemetry, resolved_endpoints: Vec<ResolvedEndpoint>,
+    mut requests_rx: mpsc::Receiver<(usize, Request<B>)>, io_shutdown_tx: oneshot::Sender<()>,
+    config: ForwarderConfiguration, service: S, telemetry: ComponentTelemetry,
+    resolved_endpoints: Vec<ResolvedEndpoint>,
 ) where
     S: Service<Request<B>, Response = hyper::Response<Incoming>> + Clone + Send + 'static,
     S::Future: Send,
@@ -118,7 +127,7 @@ async fn run_io_loop<S, B>(
     for resolved_endpoint in resolved_endpoints {
         let endpoint_url = resolved_endpoint.endpoint().to_string();
 
-        let (endpoint_tx, endpoint_rx) = mpsc::channel(32);
+        let (endpoint_tx, endpoint_rx) = mpsc::channel(config.endpoint_buffer_size());
         let task_barrier = Arc::clone(&task_barrier);
         spawn_traced(run_endpoint_io_loop(
             endpoint_rx,
@@ -134,7 +143,7 @@ async fn run_io_loop<S, B>(
     // Listen for requests to forward, and send a copy of each one to each endpoint I/O task.
     while let Some((metrics_count, request)) = requests_rx.recv().await {
         for (endpoint_url, endpoint_tx) in &endpoint_txs {
-            if endpoint_tx.try_send((metrics_count, request.clone())).is_err() {
+            if endpoint_tx.send((metrics_count, request.clone())).await.is_err() {
                 error!(
                     endpoint = endpoint_url,
                     "Failed to send request to endpoint I/O task: receiver dropped."
