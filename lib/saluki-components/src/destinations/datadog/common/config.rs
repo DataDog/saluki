@@ -4,6 +4,10 @@ use serde::Deserialize;
 
 use super::{endpoints::EndpointConfiguration, retry::RetryConfiguration};
 
+const fn default_endpoint_concurrency() -> usize {
+    1
+}
+
 const fn default_request_timeout_secs() -> u64 {
     20
 }
@@ -19,6 +23,12 @@ const fn default_endpoint_buffer_size() -> usize {
 /// with existing primitives, as such retry policies in [`saluki_io::util::retry`].
 #[derive(Clone, Deserialize)]
 pub struct ForwarderConfiguration {
+    /// Maximum number of concurrent requests for an individual endpoint.
+    ///
+    /// Defaults to 1.
+    #[serde(default = "default_endpoint_concurrency", rename = "forwarder_num_workers")]
+    endpoint_concurrency: usize,
+
     /// Request timeout, in seconds.
     ///
     /// Defaults to 20 seconds.
@@ -41,6 +51,11 @@ pub struct ForwarderConfiguration {
 }
 
 impl ForwarderConfiguration {
+    /// Returns the maximum number of concurrent requests for an individual endpoint.
+    pub const fn endpoint_concurrency(&self) -> usize {
+        self.endpoint_concurrency
+    }
+
     /// Returns the request timeout.
     pub const fn request_timeout(&self) -> Duration {
         Duration::from_secs(self.request_timeout_secs)

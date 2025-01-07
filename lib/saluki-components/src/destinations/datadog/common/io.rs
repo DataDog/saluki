@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use futures::{stream::FuturesUnordered, FutureExt as _, StreamExt as _};
 use http::{Request, Uri};
 use http_body::Body;
 use http_body_util::BodyExt as _;
@@ -10,8 +11,11 @@ use saluki_error::{generic_error, GenericError};
 use saluki_io::net::client::http::HttpClient;
 use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
-use tokio::sync::{mpsc, oneshot, Barrier};
-use tower::{BoxError, Service, ServiceBuilder};
+use tokio::{
+    select,
+    sync::{mpsc, oneshot, Barrier},
+};
+use tower::{BoxError, Service, ServiceBuilder, ServiceExt as _};
 use tracing::{debug, error};
 
 use super::{config::ForwarderConfiguration, endpoints::ResolvedEndpoint, telemetry::ComponentTelemetry};
@@ -132,6 +136,7 @@ async fn run_io_loop<S, B>(
         spawn_traced(run_endpoint_io_loop(
             endpoint_rx,
             task_barrier,
+            config.clone(),
             service.clone(),
             telemetry.clone(),
             resolved_endpoint,
@@ -167,8 +172,8 @@ async fn run_io_loop<S, B>(
 }
 
 async fn run_endpoint_io_loop<S, B>(
-    mut requests_rx: mpsc::Receiver<(usize, Request<B>)>, task_barrier: Arc<Barrier>, service: S,
-    telemetry: ComponentTelemetry, endpoint: ResolvedEndpoint,
+    mut requests_rx: mpsc::Receiver<(usize, Request<B>)>, task_barrier: Arc<Barrier>, config: ForwarderConfiguration,
+    service: S, telemetry: ComponentTelemetry, endpoint: ResolvedEndpoint,
 ) where
     S: Service<Request<B>, Response = hyper::Response<Incoming>> + Send + 'static,
     S::Future: Send,
@@ -176,7 +181,11 @@ async fn run_endpoint_io_loop<S, B>(
     B: Body,
 {
     let endpoint_url = endpoint.endpoint().to_string();
-    debug!(endpoint = endpoint_url, "Starting endpoint I/O task.");
+    debug!(
+        endpoint = endpoint_url,
+        num_workers = config.endpoint_concurrency(),
+        "Starting endpoint I/O task."
+    );
 
     // Build our endpoint service.
     //
@@ -187,37 +196,64 @@ async fn run_endpoint_io_loop<S, B>(
         .map_request(for_resolved_endpoint::<B>(endpoint))
         // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
         .map_request(with_version_info::<B>())
+        .concurrency_limit(config.endpoint_concurrency())
         .service(service);
 
-    // Process all requests until the channel is closed.
-    while let Some((metrics_count, request)) = requests_rx.recv().await {
-        match service.call(request).await {
-            Ok(response) => {
-                let status = response.status();
-                if status.is_success() {
-                    debug!(endpoint = endpoint_url, %status, "Request sent.");
+    let mut in_flight = FuturesUnordered::new();
 
-                    telemetry.events_sent().increment(metrics_count as u64);
-                } else {
-                    telemetry.http_failed_send().increment(1);
-                    telemetry.events_dropped_http().increment(metrics_count as u64);
+    loop {
+        select! {
+            // While we're still receiving requests, wait for the service to become ready, and then take the next
+            // request, and send it to the service.
+            svc = service.ready(), if !requests_rx.is_closed() => match svc {
+                Ok(svc) => match requests_rx.recv().await {
+                    Some((events, request)) => {
+                        let fut = svc.call(request).map(move |result| (events, result));
+                        in_flight.push(fut);
+                    }
+                    None => continue,
+                },
+                Err(e) => {
+                    let e: tower::BoxError = e.into();
+                    error!(endpoint = endpoint_url, error = %e, error_source = ?e.source(), "Unexpected error when querying service for readiness.");
+                    break;
+                }
+            },
 
-                    match response.into_body().collect().await {
-                        Ok(body) => {
-                            let body = body.to_bytes();
-                            let body_str = String::from_utf8_lossy(&body[..]);
-                            error!(endpoint = endpoint_url, %status, "Received non-success response. Body: {}", body_str);
-                        }
-                        Err(e) => {
-                            error!(endpoint = endpoint_url, %status, error = %e, "Failed to read response body of non-success response.");
+            // Drive any in-flight requests to completion.
+            maybe_result = in_flight.next(), if !in_flight.is_empty() => {
+                let (events, result) = maybe_result.expect("in_flight not marked as empty");
+                match result {
+                    Ok(response) => {
+                        let status = response.status();
+                        if status.is_success() {
+                            debug!(endpoint = endpoint_url, %status, "Request sent.");
+
+                            telemetry.events_sent().increment(events as u64);
+                        } else {
+                            telemetry.http_failed_send().increment(1);
+                            telemetry.events_dropped_http().increment(events as u64);
+
+                            match response.into_body().collect().await {
+                                Ok(body) => {
+                                    let body = body.to_bytes();
+                                    let body_str = String::from_utf8_lossy(&body[..]);
+                                    error!(endpoint = endpoint_url, %status, "Received non-success response. Body: {}", body_str);
+                                }
+                                Err(e) => {
+                                    error!(endpoint = endpoint_url, %status, error = %e, "Failed to read response body of non-success response.");
+                                }
+                            }
                         }
                     }
+                    Err(e) => {
+                        let e: tower::BoxError = e.into();
+                        error!(endpoint = endpoint_url, error = %e, error_source = ?e.source(), "Failed to send request.");
+                    }
                 }
-            }
-            Err(e) => {
-                let e: tower::BoxError = e.into();
-                error!(endpoint = endpoint_url, error = %e, error_source = ?e.source(), "Failed to send request.");
-            }
+            },
+
+            else => break,
         }
     }
 
