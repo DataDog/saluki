@@ -1,6 +1,6 @@
-use std::sync::Arc;
+use std::{error::Error as _, sync::Arc};
 
-use futures::{stream::FuturesUnordered, FutureExt as _, StreamExt as _};
+use futures::FutureExt as _;
 use http::{Request, Uri};
 use http_body::Body;
 use http_body_util::BodyExt as _;
@@ -13,7 +13,7 @@ use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tokio::{
     select,
-    sync::{mpsc, oneshot, Barrier},
+    sync::{mpsc, oneshot, Barrier}, task::JoinSet,
 };
 use tower::{BoxError, Service, ServiceBuilder, ServiceExt as _};
 use tracing::{debug, error};
@@ -176,8 +176,8 @@ async fn run_endpoint_io_loop<S, B>(
     service: S, telemetry: ComponentTelemetry, endpoint: ResolvedEndpoint,
 ) where
     S: Service<Request<B>, Response = hyper::Response<Incoming>> + Send + 'static,
-    S::Future: Send,
-    S::Error: Send + Into<BoxError>,
+    S::Future: Send + 'static,
+    S::Error: Into<BoxError> + Send + 'static,
     B: Body,
 {
     let endpoint_url = endpoint.endpoint().to_string();
@@ -199,19 +199,23 @@ async fn run_endpoint_io_loop<S, B>(
         .concurrency_limit(config.endpoint_concurrency())
         .service(service);
 
-    let mut in_flight = FuturesUnordered::new();
+    let mut in_flight = JoinSet::new();
+    let mut done = false;
 
     loop {
         select! {
             // While we're still receiving requests, wait for the service to become ready, and then take the next
             // request, and send it to the service.
-            svc = service.ready(), if !requests_rx.is_closed() => match svc {
+            svc = service.ready(), if !done => match svc {
                 Ok(svc) => match requests_rx.recv().await {
                     Some((events, request)) => {
                         let fut = svc.call(request).map(move |result| (events, result));
-                        in_flight.push(fut);
+                        in_flight.spawn(fut);
                     }
-                    None => continue,
+                    None => {
+                        done = true;
+                        debug!(endpoint = endpoint_url, "Consumed all incoming requests for endpoint I/O task. Completing any in-flight requests...");
+                    },
                 },
                 Err(e) => {
                     let e: tower::BoxError = e.into();
@@ -221,10 +225,10 @@ async fn run_endpoint_io_loop<S, B>(
             },
 
             // Drive any in-flight requests to completion.
-            maybe_result = in_flight.next(), if !in_flight.is_empty() => {
-                let (events, result) = maybe_result.expect("in_flight not marked as empty");
-                match result {
-                    Ok(response) => {
+            maybe_result = in_flight.join_next(), if !in_flight.is_empty() => {
+                let task_result = maybe_result.expect("in_flight marked as not being empty");
+                match task_result {
+                    Ok((events, Ok(response))) => {
                         let status = response.status();
                         if status.is_success() {
                             debug!(endpoint = endpoint_url, %status, "Request sent.");
@@ -246,9 +250,12 @@ async fn run_endpoint_io_loop<S, B>(
                             }
                         }
                     }
-                    Err(e) => {
+                    Ok((_, Err(e))) => {
                         let e: tower::BoxError = e.into();
                         error!(endpoint = endpoint_url, error = %e, error_source = ?e.source(), "Failed to send request.");
+                    }
+                    Err(e) => {
+                        error!(endpoint = endpoint_url, error = %e, error_source = ?e.source(), "Request task failed to run to completion.");
                     }
                 }
             },
