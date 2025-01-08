@@ -102,8 +102,8 @@ struct Blocklist {
 }
 
 impl Blocklist {
-    fn new(data: &Vec<String>, match_prefix: bool) -> Self {
-        let mut data = data.clone();
+    fn new(data: &[String], match_prefix: bool) -> Self {
+        let mut data = data.to_owned();
         data.sort();
 
         if match_prefix && !data.is_empty() {
@@ -163,7 +163,7 @@ impl NameFilter {
         let metric_name = metric.context().name().deref();
         let mut new_metric_name = metric_name.to_string();
 
-        if !self.is_excluded(&metric_name) {
+        if !self.is_excluded(metric_name) {
             new_metric_name = format!("{}{}", self.metric_prefix, metric_name);
         }
 
