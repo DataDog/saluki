@@ -11,7 +11,7 @@ use saluki_core::{
     components::{destinations::*, ComponentContext},
     observability::ComponentMetricsExt as _,
     pooling::{FixedSizeObjectPool, ObjectPool},
-    task::spawn_traced,
+    task::spawn_traced, topology::interconnect::FixedSizeEventBuffer,
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_event::DataType;
@@ -201,6 +201,11 @@ where
             endpoints,
         ));
 
+
+        // Spawn our series and sketches request builder tasks on the global thread pool.
+        let (request_builder_tx, request_builder_rx) = mpsc::channel(8);
+        let request_builder_handle = context.global_thread_pool().spawn(run_request_builder(series_request_builder, sketches_request_builder, telemetry, request_builder_rx, requests_tx, io_shutdown_rx));
+
         health.mark_ready();
         debug!("Datadog Metrics destination started.");
 
@@ -208,130 +213,156 @@ where
             select! {
                 _ = health.live() => continue,
                 maybe_events = context.events().next_ready() => match maybe_events {
-                    Some(event_buffers) => {
-                        debug!(event_buffers_len = event_buffers.len(), "Received event buffers.");
-
-                        for event_buffer in event_buffers {
-                            debug!(events_len = event_buffer.len(), "Processing event buffer.");
-
-                            for event in event_buffer {
-                                if let Some(metric) = event.try_into_metric() {
-                                    let request_builder = match MetricsEndpoint::from_metric(&metric) {
-                                        MetricsEndpoint::Series => &mut series_request_builder,
-                                        MetricsEndpoint::Sketches => &mut sketches_request_builder,
-                                    };
-
-                                    // Encode the metric. If we get it back, that means the current request is full, and we need to
-                                    // flush it before we can try to encode the metric again... so we'll hold on to it in that case
-                                    // before flushing and trying to encode it again.
-                                    let metric_to_retry = match request_builder.encode(metric).await {
-                                        Ok(None) => continue,
-                                        Ok(Some(metric)) => metric,
-                                        Err(e) => {
-                                            error!(error = %e, "Failed to encode metric.");
-                                            telemetry.events_dropped_encoder().increment(1);
-                                            continue;
-                                        }
-                                    };
-
-
-                                    let maybe_requests = request_builder.flush().await;
-                                    if maybe_requests.is_empty() {
-                                        panic!("builder told us to flush, but gave us nothing");
-                                    }
-
-                                    for maybe_request in maybe_requests {
-                                        match maybe_request {
-                                            Ok(request) => {
-                                                if requests_tx.send(request).await.is_err() {
-                                                    return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
-                                                }
-                                            },
-                                            Err(e) => {
-                                                // TODO: Increment a counter here that metrics were dropped due to a flush failure.
-                                                if e.is_recoverable() {
-                                                    // If the error is recoverable, we'll hold on to the metric to retry it later.
-                                                    continue;
-                                                } else {
-                                                    return Err(GenericError::from(e).context("Failed to flush request."));
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // Now try to encode the metric again. If it fails again, we'll just log it because it shouldn't
-                                    // be possible to fail at this point, otherwise we would have already caught that the first
-                                    // time.
-                                    if let Err(e) = request_builder.encode(metric_to_retry).await {
-                                        error!(error = %e, "Failed to encode metric.");
-                                        telemetry.events_dropped_encoder().increment(1);
-                                    }
-                                }
-                            }
-                        }
-
-                        debug!("All event buffers processed.");
-
-                        // Once we've encoded and written all metrics, we flush the request builders to generate a request with
-                        // anything left over. Again, we'll  enqueue those requests to be sent immediately.
-                        let maybe_series_requests = series_request_builder.flush().await;
-                        for maybe_request in maybe_series_requests {
-                            match maybe_request {
-                                Ok(request) => {
-                                    debug!("Flushed request from series request builder. Sending to I/O task...");
-                                    if requests_tx.send(request).await.is_err() {
-                                        return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
-                                    }
-                                },
-                                Err(e) => {
-                                    // TODO: Increment a counter here that metrics were dropped due to a flush failure.
-                                    if e.is_recoverable() {
-                                        // If the error is recoverable, we'll hold on to the metric to retry it later.
-                                        continue;
-                                    } else {
-                                        return Err(GenericError::from(e).context("Failed to flush request."));
-                                    }
-                                }
-                            }
-                        }
-
-                        let maybe_sketches_requests = sketches_request_builder.flush().await;
-                        for maybe_request in maybe_sketches_requests {
-                            match maybe_request {
-                                Ok(request) => {
-                                debug!("Flushed request from sketches request builder. Sending to I/O task...");
-                                    if requests_tx.send(request).await.is_err() {
-                                        return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
-                                    }
-                                },
-                                Err(e) => {
-                                    // TODO: Increment a counter here that metrics were dropped due to a flush failure.
-                                    if e.is_recoverable() {
-                                        // If the error is recoverable, we'll hold on to the metric to retry it later.
-                                        continue;
-                                    } else {
-                                        return Err(GenericError::from(e).context("Failed to flush request."));
-                                    }
-                                }
-                            }
-                        }
-
-                        debug!("All flushed requests sent to I/O task. Waiting for next event buffer...");
-                    },
+                    Some(event_buffers) => request_builder_tx.send(event_buffers).await.expect("request builder task dropped"),
                     None => break,
                 }
             }
         }
 
-        // Drop the requests channel, which allows the IO task to naturally shut down once it has received and sent all
-        // requests. We then wait for it to signal back to us that it has stopped before exiting ourselves.
-        drop(requests_tx);
-        let _ = io_shutdown_rx.await;
+        // Drop the request builder channel, which allows the request builder task to naturally shut down once it has
+        // received and built all requests. We then wait for it to signal back to us that it has stopped before exiting
+        // ourselves.
+        drop(request_builder_tx);
+        match request_builder_handle.await {
+            Ok(Ok(())) => debug!("Request builder task stopped."),
+            Ok(Err(e)) => error!(error = %e, "Request builder task failed."),
+            Err(e) => error!(error = %e, "Request builder task panicked."),
+        }
 
         debug!("Datadog Metrics destination stopped.");
 
         Ok(())
     }
+}
+
+async fn run_request_builder<O>(
+    mut series_request_builder: RequestBuilder<O>,
+    mut sketches_request_builder: RequestBuilder<O>,
+    telemetry: ComponentTelemetry,
+    mut request_builder_rx: mpsc::Receiver<Vec<FixedSizeEventBuffer>>,
+    requests_tx: mpsc::Sender<(usize, Request<FrozenChunkedBytesBuffer>)>,
+    io_shutdown_rx: oneshot::Receiver<()>
+) -> Result<(), GenericError>
+where
+    O: ObjectPool<Item = BytesBuffer> + 'static,
+{
+    while let Some(event_buffers) = request_builder_rx.recv().await {
+        debug!(event_buffers_len = event_buffers.len(), "Received event buffers.");
+
+        for event_buffer in event_buffers {
+            debug!(events_len = event_buffer.len(), "Processing event buffer.");
+
+            for event in event_buffer {
+                if let Some(metric) = event.try_into_metric() {
+                    let request_builder = match MetricsEndpoint::from_metric(&metric) {
+                        MetricsEndpoint::Series => &mut series_request_builder,
+                        MetricsEndpoint::Sketches => &mut sketches_request_builder,
+                    };
+
+                    // Encode the metric. If we get it back, that means the current request is full, and we need to
+                    // flush it before we can try to encode the metric again... so we'll hold on to it in that case
+                    // before flushing and trying to encode it again.
+                    let metric_to_retry = match request_builder.encode(metric).await {
+                        Ok(None) => continue,
+                        Ok(Some(metric)) => metric,
+                        Err(e) => {
+                            error!(error = %e, "Failed to encode metric.");
+                            telemetry.events_dropped_encoder().increment(1);
+                            continue;
+                        }
+                    };
+
+
+                    let maybe_requests = request_builder.flush().await;
+                    if maybe_requests.is_empty() {
+                        panic!("builder told us to flush, but gave us nothing");
+                    }
+
+                    for maybe_request in maybe_requests {
+                        match maybe_request {
+                            Ok(request) => {
+                                if requests_tx.send(request).await.is_err() {
+                                    return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
+                                }
+                            },
+                            Err(e) => {
+                                // TODO: Increment a counter here that metrics were dropped due to a flush failure.
+                                if e.is_recoverable() {
+                                    // If the error is recoverable, we'll hold on to the metric to retry it later.
+                                    continue;
+                                } else {
+                                    return Err(GenericError::from(e).context("Failed to flush request."));
+                                }
+                            }
+                        }
+                    }
+
+                    // Now try to encode the metric again. If it fails again, we'll just log it because it shouldn't
+                    // be possible to fail at this point, otherwise we would have already caught that the first
+                    // time.
+                    if let Err(e) = request_builder.encode(metric_to_retry).await {
+                        error!(error = %e, "Failed to encode metric.");
+                        telemetry.events_dropped_encoder().increment(1);
+                    }
+                }
+            }
+        }
+
+        debug!("All event buffers processed.");
+
+        // Once we've encoded and written all metrics, we flush the request builders to generate a request with
+        // anything left over. Again, we'll  enqueue those requests to be sent immediately.
+        let maybe_series_requests = series_request_builder.flush().await;
+        for maybe_request in maybe_series_requests {
+            match maybe_request {
+                Ok(request) => {
+                    debug!("Flushed request from series request builder. Sending to I/O task...");
+                    if requests_tx.send(request).await.is_err() {
+                        return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
+                    }
+                },
+                Err(e) => {
+                    // TODO: Increment a counter here that metrics were dropped due to a flush failure.
+                    if e.is_recoverable() {
+                        // If the error is recoverable, we'll hold on to the metric to retry it later.
+                        continue;
+                    } else {
+                        return Err(GenericError::from(e).context("Failed to flush request."));
+                    }
+                }
+            }
+        }
+
+        let maybe_sketches_requests = sketches_request_builder.flush().await;
+        for maybe_request in maybe_sketches_requests {
+            match maybe_request {
+                Ok(request) => {
+                debug!("Flushed request from sketches request builder. Sending to I/O task...");
+                    if requests_tx.send(request).await.is_err() {
+                        return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
+                    }
+                },
+                Err(e) => {
+                    // TODO: Increment a counter here that metrics were dropped due to a flush failure.
+                    if e.is_recoverable() {
+                        // If the error is recoverable, we'll hold on to the metric to retry it later.
+                        continue;
+                    } else {
+                        return Err(GenericError::from(e).context("Failed to flush request."));
+                    }
+                }
+            }
+        }
+
+        debug!("All flushed requests sent to I/O task. Waiting for next event buffer...");
+    }
+
+    // Drop the requests channel, which allows the I/O task to naturally shut down once it has received and sent all
+    // requests. We then wait for it to signal back to us that it has stopped before exiting ourselves.
+    drop(requests_tx);
+    let _ = io_shutdown_rx.await;
+
+    Ok(())
 }
 
 async fn run_io_loop<S, B>(
