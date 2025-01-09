@@ -11,7 +11,7 @@ use std::{
 };
 
 use memory_accounting::ComponentRegistry;
-use saluki_app::{api::APIBuilder, prelude::*};
+use saluki_app::{api::APIBuilder, logging::LoggingAPIHandler, prelude::*};
 use saluki_components::{
     destinations::{DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration, PrometheusConfiguration},
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
@@ -42,9 +42,13 @@ static ALLOC: memory_accounting::allocator::TrackingAllocator<Jemalloc> =
 async fn main() {
     let started = Instant::now();
 
-    if let Err(e) = initialize_logging(None) {
-        fatal_and_exit(format!("failed to initialize logging: {}", e));
-    }
+    let logging_api_handler = match initialize_dynamic_logging(None).await {
+        Ok(handler) => handler,
+        Err(e) => {
+            fatal_and_exit(format!("failed to initialize logging: {}", e));
+            return;
+        }
+    };
 
     if let Err(e) = initialize_metrics("adp").await {
         fatal_and_exit(format!("failed to initialize metrics: {}", e));
@@ -58,7 +62,7 @@ async fn main() {
         fatal_and_exit(format!("failed to initialize TLS: {}", e));
     }
 
-    match run(started).await {
+    match run(started, logging_api_handler).await {
         Ok(()) => info!("Agent Data Plane stopped."),
         Err(e) => {
             // TODO: It'd be better to take the error cause chain and write it out as a list of errors, instead of
@@ -69,7 +73,7 @@ async fn main() {
     }
 }
 
-async fn run(started: Instant) -> Result<(), GenericError> {
+async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
     info!(
         version = app_details.version().raw(),
@@ -111,7 +115,8 @@ async fn run(started: Instant) -> Result<(), GenericError> {
 
     let primary_api = APIBuilder::new()
         .with_handler(health_registry.api_handler())
-        .with_handler(component_registry.api_handler());
+        .with_handler(component_registry.api_handler())
+        .with_handler(logging_api_handler);
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
     let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;
