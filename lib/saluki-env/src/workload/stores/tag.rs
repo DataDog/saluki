@@ -131,6 +131,8 @@ impl TagStore {
         }
 
         let existing_tags = match cardinality {
+            // We should never actually try to add tags at this cardinality.
+            OriginTagCardinality::None => return,
             OriginTagCardinality::Low => self.low_cardinality_entity_tags.entry(entity_id.clone()).or_default(),
             OriginTagCardinality::Orchestrator => self
                 .orchestrator_cardinality_entity_tags
@@ -154,6 +156,8 @@ impl TagStore {
         }
 
         let existing_tags = match cardinality {
+            // We should never actually try to add tags at this cardinality.
+            OriginTagCardinality::None => return,
             OriginTagCardinality::Low => self.low_cardinality_entity_tags.entry(entity_id.clone()).or_default(),
             OriginTagCardinality::Orchestrator => self
                 .orchestrator_cardinality_entity_tags
@@ -259,6 +263,7 @@ impl TagStore {
 
     fn get_raw_entity_tags(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<TagSet> {
         match cardinality {
+            OriginTagCardinality::None => None,
             OriginTagCardinality::Low => self.low_cardinality_entity_tags.get(entity_id).cloned(),
             OriginTagCardinality::Orchestrator => {
                 // First we'll get the low cardinality tags and then append the orchestrator cardinality tags to those.
@@ -432,6 +437,7 @@ impl TagStoreQuerier {
         let snapshot = self.snapshot.load();
 
         match cardinality {
+            OriginTagCardinality::None => None,
             OriginTagCardinality::Low => snapshot.low_cardinality_entity_tags.get(entity_id).cloned(),
             OriginTagCardinality::Orchestrator => snapshot.high_cardinality_entity_tags.get(entity_id).cloned(),
             OriginTagCardinality::High => snapshot.high_cardinality_entity_tags.get(entity_id).cloned(),
