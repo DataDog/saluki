@@ -106,6 +106,7 @@ impl Blocklist {
         let mut data = data.to_owned();
         data.sort();
 
+        // Only keep values with unique prefixes.
         if match_prefix && !data.is_empty() {
             let mut i = 0;
             for j in 1..data.len() {
@@ -114,30 +115,24 @@ impl Blocklist {
                     data[i] = data[j].clone(); // Move item to next position
                 }
             }
-            data.truncate(i + 1); // Only keep valid elements
+            data.truncate(i + 1);
         }
 
         Blocklist { data, match_prefix }
     }
 
-    fn test(&self, name: String) -> bool {
+    fn contains(&self, name: &str) -> bool {
         if self.data.is_empty() {
             return false;
         }
 
-        let i = self.data.binary_search(&name);
+        let i = self.data.binary_search(&name.to_string());
 
         // Check for prefix match when match_prefix is true
         if self.match_prefix {
-            if let Ok(index) = i {
-                if index > 0 && name.starts_with(&self.data[index - 1]) {
-                    return true;
-                }
-            } else if i.is_err() {
-                let index = i.unwrap_err();
-                if index > 0 && name.starts_with(&self.data[index - 1]) {
-                    return true;
-                }
+            let index = i.map_or_else(|idx| idx, |idx| idx);
+            if index > 0 && name.starts_with(&self.data[index - 1]) {
+                return true;
             }
         }
 
@@ -161,22 +156,30 @@ pub struct NameFilter {
 impl NameFilter {
     fn enrich_metric(&self, mut metric: Metric) -> Option<Metric> {
         let metric_name = metric.context().name().deref();
-        let mut new_metric_name = metric_name.to_string();
 
-        if !self.is_excluded(metric_name) {
-            new_metric_name = format!("{}{}", self.metric_prefix, metric_name);
+        if self.metric_prefix.is_empty() {
+            for s in &self.blocklist.data {
+                if s == metric_name {
+                    return None;
+                }
+            }
+        } else {
+            if self.is_excluded(metric_name) {
+                return None;
+            }
+
+            // Enrich metric with prefix and check if the blocklist contains the new name.
+            let new_metric_name = format!("{}{}", self.metric_prefix, metric_name);
+            if self.blocklist.contains(&new_metric_name) {
+                debug!("Metric {} excluded due to blocklist.", new_metric_name);
+                return None;
+            }
+
+            // Update metric with new name.
+            let new_context = metric.context().with_name(new_metric_name);
+            let existing_context = metric.context_mut();
+            *existing_context = new_context;
         }
-
-        if self.blocklist.test(new_metric_name.clone()) {
-            debug!("Metric {} excluded due to blocklist.", new_metric_name);
-            return None;
-        }
-
-        // Update metric with new name.
-        let new_context = metric.context().with_name(new_metric_name);
-        let existing_context = metric.context_mut();
-        *existing_context = new_context;
-
         Some(metric)
     }
 
@@ -206,17 +209,10 @@ impl Transform for NameFilter {
 
                         for event in events {
                             if let Some(metric) = event.try_into_metric() {
-                                if let Some(metric) = self.enrich_metric(metric) {
-
-                                let new_event = Metric::from_parts(
-                                    metric.context().clone(),
-                                    metric.values().clone(),
-                                    metric.metadata().clone(),
-                                );
-
-                                if let Err(e) = buffered_forwarder.push(saluki_event::Event::Metric(new_event)).await {
-                                    error!(error = %e, "Failed to forward event.");
-                                }
+                                if let Some(new_metric) = self.enrich_metric(metric) {
+                                    if let Err(e) = buffered_forwarder.push(saluki_event::Event::Metric(new_metric)).await {
+                                        error!(error = %e, "Failed to forward event.");
+                                    }
                                 }
                             }
                         }
