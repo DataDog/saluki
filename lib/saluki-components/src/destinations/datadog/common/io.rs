@@ -13,7 +13,8 @@ use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tokio::{
     select,
-    sync::{mpsc, oneshot, Barrier}, task::JoinSet,
+    sync::{mpsc, oneshot, Barrier},
+    task::JoinSet,
 };
 use tower::{BoxError, Service, ServiceBuilder, ServiceExt as _};
 use tracing::{debug, error};
