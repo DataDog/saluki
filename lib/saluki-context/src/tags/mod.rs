@@ -8,7 +8,7 @@ mod chained;
 pub use self::chained::ChainedTags;
 
 mod splitter;
-pub use self::splitter::RawTagsSplitter;
+pub use self::splitter::RawTags;
 
 mod tagset;
 pub use self::tagset::{SharedTagSet, TagSet};
