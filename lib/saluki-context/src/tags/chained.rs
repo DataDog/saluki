@@ -1,19 +1,19 @@
-use super::{splitter::RawTagsIter, BorrowedTag, RawTagsSplitter, SharedTagSet, Tag};
+use super::{splitter::RawTagsIter, RawTags, SharedTagSet, Tag};
 
 pub enum TagChunk<'a> {
-    RawTags(RawTagsSplitter<'a>),
+    RawTags(RawTags<'a>),
     SharedTags(SharedTagSet),
 }
 
-impl<'a> From<RawTagsSplitter<'a>> for TagChunk<'a> {
-    fn from(splitter: RawTagsSplitter<'a>) -> Self {
-        Self::RawTags(splitter)
+impl<'a> From<RawTags<'a>> for TagChunk<'a> {
+    fn from(raw: RawTags<'a>) -> Self {
+        Self::RawTags(raw)
     }
 }
 
 impl<'a> From<SharedTagSet> for TagChunk<'a> {
-    fn from(tag_set: SharedTagSet) -> Self {
-        Self::SharedTags(tag_set)
+    fn from(shared: SharedTagSet) -> Self {
+        Self::SharedTags(shared)
     }
 }
 
@@ -23,10 +23,10 @@ enum TagChunkIter<'a> {
 }
 
 impl<'a> TagChunkIter<'a> {
-    fn next(&mut self) -> Option<BorrowedTag<'a>> {
+    fn next(&mut self) -> Option<&'a str> {
         match self {
             Self::RawTags(iter) => iter.next(),
-            Self::SharedTags(iter) => iter.next().map(|tag| tag.as_borrowed()),
+            Self::SharedTags(iter) => iter.next().map(|tag| tag.as_str()),
         }
     }
 }
@@ -52,7 +52,7 @@ impl<'a> ChainedTags<'a> {
 }
 
 impl<'a> IntoIterator for &'a ChainedTags<'a> {
-    type Item = BorrowedTag<'a>;
+    type Item = &'a str;
     type IntoIter = ChainedTagsIter<'a>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -69,7 +69,7 @@ pub struct ChainedTagsIter<'a> {
 }
 
 impl<'a> Iterator for ChainedTagsIter<'a> {
-    type Item = BorrowedTag<'a>;
+    type Item = &'a str;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {

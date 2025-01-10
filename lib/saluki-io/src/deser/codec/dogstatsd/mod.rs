@@ -8,7 +8,7 @@ use nom::{
     sequence::{delimited, preceded, separated_pair, terminated},
     IResult,
 };
-use saluki_context::tags::RawTagsSplitter;
+use saluki_context::tags::{BorrowedTag, RawTags};
 use saluki_core::constants::datadog::{
     CARDINALITY_TAG_KEY, ENTITY_ID_IGNORE_VALUE, ENTITY_ID_TAG_KEY, JMX_CHECK_NAME_TAG_KEY,
 };
@@ -263,12 +263,13 @@ fn parse_dogstatsd_metric<'a>(
         metric_values.set_timestamp(timestamp);
     }
 
-    let tags = maybe_tags.unwrap_or_else(RawTagsSplitter::empty);
+    let tags = maybe_tags.unwrap_or_else(RawTags::empty);
 
     let mut pod_uid = None;
     let mut cardinality = None;
     let mut jmx_check_name = None;
     for tag in &tags {
+        let tag = BorrowedTag::from(tag);
         match tag.name_and_value() {
             (ENTITY_ID_TAG_KEY, Some(entity_id)) if entity_id != ENTITY_ID_IGNORE_VALUE => {
                 pod_uid = Some(entity_id);
@@ -304,7 +305,7 @@ fn parse_dogstatsd_metric<'a>(
 
 pub struct MetricPacket<'a> {
     pub metric_name: &'a str,
-    pub tags: RawTagsSplitter<'a>,
+    pub tags: RawTags<'a>,
     pub values: MetricValues,
     pub num_points: u64,
     pub timestamp: Option<u64>,
@@ -401,7 +402,7 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
                 // Tags: additional tags to be added to the event.
                 _ if chunk.starts_with(message::TAGS_PREFIX) => {
                     let (_, tags) = all_consuming(preceded(tag(message::TAGS_PREFIX), metric_tags(config)))(chunk)?;
-                    maybe_tags = Some(tags.into_iter().map(|tag| tag.into_string()).collect());
+                    maybe_tags = Some(tags.into_iter().map(|tag| tag.into()).collect());
                 }
                 _ => {
                     // We don't know what this is, so we just skip it.
@@ -472,7 +473,7 @@ fn parse_dogstatsd_service_check<'a>(
                 // Tags: additional tags to be added to the service check.
                 _ if chunk.starts_with(message::TAGS_PREFIX) => {
                     let (_, tags) = all_consuming(preceded(tag(message::TAGS_PREFIX), metric_tags(config)))(chunk)?;
-                    maybe_tags = Some(tags.into_iter().map(|tag| tag.into_string()).collect());
+                    maybe_tags = Some(tags.into_iter().map(|tag| tag.into()).collect());
                 }
                 // Message: A message describing the current state of the service check.
                 message::SERVICE_CHECK_MESSAGE_PREFIX => {
@@ -608,7 +609,7 @@ fn metric_values_from_raw(
 }
 
 #[inline]
-fn metric_tags(config: &DogstatsdCodecConfiguration) -> impl Fn(&[u8]) -> IResult<&[u8], RawTagsSplitter<'_>> {
+fn metric_tags(config: &DogstatsdCodecConfiguration) -> impl Fn(&[u8]) -> IResult<&[u8], RawTags<'_>> {
     let max_tag_count = config.maximum_tag_count;
     let max_tag_len = config.maximum_tag_length;
 
@@ -621,7 +622,7 @@ fn metric_tags(config: &DogstatsdCodecConfiguration) -> impl Fn(&[u8]) -> IResul
         match split_at_delimiter_inclusive(input, b'|') {
             Some((tags, remaining)) => {
                 // SAFETY: We've already checked above that `tags` is valid UTF-8.
-                let splitter = unsafe { RawTagsSplitter::new(tags, max_tag_count, max_tag_len) };
+                let splitter = unsafe { RawTags::new(tags, max_tag_count, max_tag_len) };
                 Ok((remaining, splitter))
             }
             None => Err(nom::Err::Error(Error::new(input, ErrorKind::TakeWhile1))),
