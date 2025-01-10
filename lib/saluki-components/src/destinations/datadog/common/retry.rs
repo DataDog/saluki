@@ -1,8 +1,7 @@
 use std::time::Duration;
 
+use saluki_io::net::util::retry::{DefaultHttpRetryPolicy, ExponentialBackoff};
 use serde::Deserialize;
-
-use super::{DefaultHttpRetryPolicy, ExponentialBackoff};
 
 const fn default_request_backoff_factor() -> f64 {
     2.0
@@ -24,13 +23,9 @@ const fn default_request_recovery_reset() -> bool {
     false
 }
 
-/// Retry policy configuration based on the Datadog Agent's forwarder retry configuration.
-///
-/// This adapter provides a simple way to utilize the existing configuration values that are passed to the Datadog
-/// Agent, which are used to control the retry behavior of its forwarder, with existing retry policies in
-/// [`saluki_io::util::retry`].
-#[derive(Deserialize)]
-pub struct DatadogAgentForwarderRetryConfiguration {
+/// Datadog Agent-specific forwarder retry configuration.
+#[derive(Clone, Deserialize)]
+pub struct RetryConfiguration {
     /// The minimum backoff factor to use when retrying requests.
     ///
     /// Controls the the interval range that a calculated backoff duration can fall within, such that with a minimum
@@ -75,9 +70,9 @@ pub struct DatadogAgentForwarderRetryConfiguration {
     recovery_reset: bool,
 }
 
-impl DatadogAgentForwarderRetryConfiguration {
-    /// Creates a new [`DefaultHttpRetryPolicy`] based on the forwarder retry configuration.
-    pub fn into_default_http_retry_policy(&self) -> DefaultHttpRetryPolicy {
+impl RetryConfiguration {
+    /// Creates a new [`DefaultHttpRetryPolicy`] based on the forwarder configuration.
+    pub fn to_default_http_retry_policy(&self) -> DefaultHttpRetryPolicy {
         let retry_backoff = ExponentialBackoff::with_jitter(
             Duration::from_secs_f64(self.backoff_base),
             Duration::from_secs_f64(self.backoff_max),
