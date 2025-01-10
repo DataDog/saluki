@@ -2,7 +2,7 @@ use std::{collections::VecDeque, num::NonZeroUsize, sync::Arc};
 
 use arc_swap::ArcSwap;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_context::TagSet;
+use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_event::metric::OriginTagCardinality;
 use tracing::{debug, trace};
 
@@ -42,9 +42,9 @@ pub struct TagStore {
     orchestrator_cardinality_entity_tags: FastHashMap<EntityId, TagSet>,
     high_cardinality_entity_tags: FastHashMap<EntityId, TagSet>,
 
-    unified_low_cardinality_entity_tags: FastHashMap<EntityId, TagSet>,
-    unified_orchestrator_cardinality_entity_tags: FastHashMap<EntityId, TagSet>,
-    unified_high_cardinality_entity_tags: FastHashMap<EntityId, TagSet>,
+    unified_low_cardinality_entity_tags: FastHashMap<EntityId, SharedTagSet>,
+    unified_orchestrator_cardinality_entity_tags: FastHashMap<EntityId, SharedTagSet>,
+    unified_high_cardinality_entity_tags: FastHashMap<EntityId, SharedTagSet>,
 }
 
 impl TagStore {
@@ -299,7 +299,7 @@ impl TagStore {
         }
     }
 
-    fn resolve_entity_tags(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> TagSet {
+    fn resolve_entity_tags(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> SharedTagSet {
         // Build the ancestry chain for the entity, starting with the entity itself.
         let mut entity_chain = VecDeque::new();
         entity_chain.push_back(entity_id);
@@ -328,7 +328,7 @@ impl TagStore {
             .unwrap_or_default();
         unified_tags.merge_missing(global_tags);
 
-        unified_tags
+        unified_tags.into_shared()
     }
 
     /// Returns a `TagStoreQuerier` that can be used to concurrently query the tag store.
@@ -376,6 +376,7 @@ impl MetadataStore for TagStore {
         // Update the snapshot.
         let snapshot = Arc::new(TagSnapshot {
             low_cardinality_entity_tags: self.unified_low_cardinality_entity_tags.clone(),
+            orchestrator_cardinality_entity_tags: self.unified_orchestrator_cardinality_entity_tags.clone(),
             high_cardinality_entity_tags: self.unified_high_cardinality_entity_tags.clone(),
         });
 
@@ -419,8 +420,9 @@ impl MemoryBounds for TagStore {
 
 #[derive(Default)]
 struct TagSnapshot {
-    low_cardinality_entity_tags: FastHashMap<EntityId, TagSet>,
-    high_cardinality_entity_tags: FastHashMap<EntityId, TagSet>,
+    low_cardinality_entity_tags: FastHashMap<EntityId, SharedTagSet>,
+    orchestrator_cardinality_entity_tags: FastHashMap<EntityId, SharedTagSet>,
+    high_cardinality_entity_tags: FastHashMap<EntityId, SharedTagSet>,
 }
 
 /// A handle for querying entity tags from a `TagStore`.
@@ -433,13 +435,13 @@ impl TagStoreQuerier {
     /// Gets the tags for an entity at the given cardinality.
     ///
     /// If no tags can be found for the entity, or at the given cardinality, `None` is returned.
-    pub fn get_entity_tags(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<TagSet> {
+    pub fn get_entity_tags(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
         let snapshot = self.snapshot.load();
 
         match cardinality {
             OriginTagCardinality::None => None,
             OriginTagCardinality::Low => snapshot.low_cardinality_entity_tags.get(entity_id).cloned(),
-            OriginTagCardinality::Orchestrator => snapshot.high_cardinality_entity_tags.get(entity_id).cloned(),
+            OriginTagCardinality::Orchestrator => snapshot.orchestrator_cardinality_entity_tags.get(entity_id).cloned(),
             OriginTagCardinality::High => snapshot.high_cardinality_entity_tags.get(entity_id).cloned(),
         }
     }
@@ -452,8 +454,9 @@ impl TagStoreQuerier {
 mod tests {
     use std::num::NonZeroUsize;
 
-    use saluki_context::TagSet;
+    use saluki_context::tags::TagSet;
     use saluki_event::metric::OriginTagCardinality;
+    use stringtheory::MetaString;
 
     use super::*;
     use crate::workload::helpers::OneOrMany;
@@ -498,6 +501,18 @@ mod tests {
 		}};
 	}
 
+    fn sorted_ts(tags: TagSet) -> Vec<MetaString> {
+        let mut tags = tags.into_iter().map(|t| t.into_inner()).collect::<Vec<_>>();
+        tags.sort();
+        tags
+    }
+
+    fn sorted_sts(tags: SharedTagSet) -> Vec<MetaString> {
+        let mut tags = tags.into_iter().map(|t| t.clone().into_inner()).collect::<Vec<_>>();
+        tags.sort();
+        tags
+    }
+
     #[test]
     fn basic_entity() {
         let entity_id = EntityId::Container("container-id".into());
@@ -535,10 +550,10 @@ mod tests {
         let querier = store.querier();
 
         let low_card_unified_tags = querier.get_entity_tags(&entity_id, OriginTagCardinality::Low).unwrap();
-        assert_eq!(low_card_unified_tags.as_sorted(), low_card_expected_tags.as_sorted());
+        assert_eq!(sorted_sts(low_card_unified_tags), sorted_ts(low_card_expected_tags));
 
         let high_card_unified_tags = querier.get_entity_tags(&entity_id, OriginTagCardinality::High).unwrap();
-        assert_eq!(high_card_unified_tags.as_sorted(), high_card_expected_tags.as_sorted());
+        assert_eq!(sorted_sts(high_card_unified_tags), sorted_ts(high_card_expected_tags));
     }
 
     #[test]
@@ -565,10 +580,10 @@ mod tests {
         let global_unified_tags = querier
             .get_entity_tags(&global_entity_id, OriginTagCardinality::Low)
             .unwrap();
-        assert_eq!(global_unified_tags.as_sorted(), global_expected_tags.as_sorted());
+        assert_eq!(sorted_sts(global_unified_tags), sorted_ts(global_expected_tags));
 
         let unified_tags = querier.get_entity_tags(&entity_id, OriginTagCardinality::High).unwrap();
-        assert_eq!(unified_tags.as_sorted(), expected_tags.as_sorted());
+        assert_eq!(sorted_sts(unified_tags), sorted_ts(expected_tags));
     }
 
     #[test]
@@ -612,19 +627,19 @@ mod tests {
         let pod_unified_tags = querier
             .get_entity_tags(&pod_entity_id, OriginTagCardinality::Low)
             .unwrap();
-        assert_eq!(pod_unified_tags.as_sorted(), pod_expected_tags.as_sorted());
+        assert_eq!(sorted_sts(pod_unified_tags), sorted_ts(pod_expected_tags));
 
         let container_unified_tags = querier
             .get_entity_tags(&container_entity_id, OriginTagCardinality::Low)
             .unwrap();
-        assert_eq!(container_unified_tags.as_sorted(), container_expected_tags.as_sorted());
+        assert_eq!(sorted_sts(container_unified_tags), sorted_ts(container_expected_tags));
 
         let container_pid_unified_tags = querier
             .get_entity_tags(&container_pid_entity_id, OriginTagCardinality::Low)
             .unwrap();
         assert_eq!(
-            container_pid_unified_tags.as_sorted(),
-            container_pid_expected_tags.as_sorted()
+            sorted_sts(container_pid_unified_tags),
+            sorted_ts(container_pid_expected_tags)
         );
     }
 
@@ -641,7 +656,7 @@ mod tests {
         let querier = store.querier();
 
         let unified_tags = querier.get_entity_tags(&entity_id, OriginTagCardinality::Low).unwrap();
-        assert_eq!(unified_tags.as_sorted(), expected_tags.clone().as_sorted());
+        assert_eq!(sorted_sts(unified_tags), sorted_ts(expected_tags.clone()));
 
         // Create a new set of metadata entries to add an additional tag, and observe that processing the entry updates
         // the resolved tags for our entity.
@@ -655,7 +670,7 @@ mod tests {
         let querier = store.querier();
 
         let new_unified_tags = querier.get_entity_tags(&entity_id, OriginTagCardinality::Low).unwrap();
-        assert_eq!(new_unified_tags.as_sorted(), new_expected_tags.as_sorted());
+        assert_eq!(sorted_sts(new_unified_tags), sorted_ts(new_expected_tags));
     }
 
     #[test]
@@ -685,14 +700,14 @@ mod tests {
         let pod_unified_tags = querier
             .get_entity_tags(&pod_entity_id, OriginTagCardinality::Low)
             .unwrap();
-        assert_eq!(pod_unified_tags.as_sorted(), pod_expected_tags.clone().as_sorted());
+        assert_eq!(sorted_sts(pod_unified_tags), sorted_ts(pod_expected_tags.clone()));
 
         let container_unified_tags = querier
             .get_entity_tags(&container_entity_id, OriginTagCardinality::Low)
             .unwrap();
         assert_eq!(
-            container_unified_tags.as_sorted(),
-            container_expected_tags.clone().as_sorted()
+            sorted_sts(container_unified_tags),
+            sorted_ts(container_expected_tags.clone())
         );
 
         // Create a new set of metadata entries to add an additional tag to the pod, and observe that processing the
@@ -711,12 +726,12 @@ mod tests {
         let new_pod_unified_tags = querier
             .get_entity_tags(&pod_entity_id, OriginTagCardinality::Low)
             .unwrap();
-        assert_eq!(new_pod_unified_tags.as_sorted(), new_pod_expected_tags.as_sorted());
+        assert_eq!(sorted_sts(new_pod_unified_tags), sorted_ts(new_pod_expected_tags));
 
         let container_unified_tags = querier
             .get_entity_tags(&container_entity_id, OriginTagCardinality::Low)
             .unwrap();
-        assert_eq!(container_unified_tags.as_sorted(), container_expected_tags.as_sorted());
+        assert_eq!(sorted_sts(container_unified_tags), sorted_ts(container_expected_tags));
     }
 
     #[test]

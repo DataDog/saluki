@@ -12,5 +12,4 @@ mod hash;
 mod resolver;
 pub use self::resolver::{ContextResolver, ContextResolverBuilder};
 
-mod tags;
-pub use self::tags::{BorrowedTag, Tag, TagSet};
+pub mod tags;
