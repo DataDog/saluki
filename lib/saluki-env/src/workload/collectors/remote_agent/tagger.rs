@@ -3,7 +3,7 @@ use datadog_protos::agent::{EntityId as RemoteEntityId, EventType, TagCardinalit
 use futures::StreamExt as _;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
-use saluki_context::{Tag, TagSet};
+use saluki_context::tags::{Tag, TagSet};
 use saluki_error::GenericError;
 use saluki_event::metric::OriginTagCardinality;
 use saluki_health::Health;

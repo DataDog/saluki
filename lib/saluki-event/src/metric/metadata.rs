@@ -1,7 +1,6 @@
-use std::{fmt, num::NonZeroU32, sync::Arc};
+use std::{fmt, sync::Arc};
 
 use serde::Deserialize;
-use stringtheory::MetaString;
 
 const ORIGIN_PRODUCT_AGENT: u32 = 10;
 const ORIGIN_SUBPRODUCT_DOGSTATSD: u32 = 10;
@@ -69,88 +68,6 @@ impl fmt::Display for OriginTagCardinality {
     }
 }
 
-/// The entity from which a metric originated from.
-///
-/// While "source type" and `MetricOrigin` describe the origin of a metric in high-level terms -- "this metric
-/// originated from the DogStatsD source", "this metric came from an integration check", etc -- the origin entity
-/// details the _specific_ sender of an individual metric in containerized environments.
-///
-/// The origin entity will generally be the process ID of the metric sender, or the container ID, both of which are then
-/// generally mapped to the relevant information for the metric, such as the orchestrator-level tags for the
-/// container/pod/deployment.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct OriginEntity {
-    /// Process ID of the sender.
-    pub process_id: Option<NonZeroU32>,
-
-    /// Container ID of the sender.
-    ///
-    /// This will generally be the typical long hexadecimal string that is used by container runtimes like `containerd`,
-    /// but may sometimes also be a different form, such as the container's cgroups inode.
-    pub container_id: MetaString,
-
-    /// Pod UID of the sender.
-    ///
-    /// This is generally only used in Kubernetes environments to uniquely identify the pod. UIDs are equivalent to UUIDs.
-    pub pod_uid: MetaString,
-
-    /// Desired cardinality of any tags associated with the entity.
-    ///
-    /// This controls the cardinality of the tags added to this metric when enriching based on the available entity IDs.
-    pub cardinality: Option<OriginTagCardinality>,
-
-    /// External Data of the sender.
-    ///
-    /// See [`ExternalData`][saluki_env::workload::ExternalData] for more information.
-    pub external_data: MetaString,
-}
-
-impl OriginEntity {
-    /// Sets the process ID of the sender.
-    ///
-    /// Must be a non-zero value. If the value is zero, it is silently ignored.
-    pub fn set_process_id(&mut self, process_id: u32) {
-        self.process_id = NonZeroU32::new(process_id);
-    }
-
-    /// Gets the process ID of the sender.
-    pub fn process_id(&self) -> Option<u32> {
-        self.process_id.map(NonZeroU32::get)
-    }
-
-    /// Gets the container ID of the sender.
-    pub fn container_id(&self) -> Option<&str> {
-        if self.container_id.is_empty() {
-            None
-        } else {
-            Some(&self.container_id)
-        }
-    }
-
-    /// Gets the pod UID of the sender.
-    pub fn pod_uid(&self) -> Option<&str> {
-        if self.pod_uid.is_empty() {
-            None
-        } else {
-            Some(&self.pod_uid)
-        }
-    }
-
-    /// Gets the desired cardinality of any tags associated with the entity.
-    pub fn cardinality(&self) -> Option<OriginTagCardinality> {
-        self.cardinality.as_ref().copied()
-    }
-
-    /// Gets the external data of the sender.
-    pub fn external_data(&self) -> Option<&str> {
-        if self.external_data.is_empty() {
-            None
-        } else {
-            Some(&self.external_data)
-        }
-    }
-}
-
 /// Metric metadata.
 ///
 /// Metadata includes all information that is not specifically related to the context or value of the metric itself,
@@ -160,9 +77,6 @@ impl OriginEntity {
 pub struct MetricMetadata {
     /// The hostname where the metric originated from.
     pub hostname: Option<Arc<str>>,
-
-    /// The origin entity.
-    pub origin_entity: OriginEntity,
 
     /// The metric origin.
     // TODO: only optional so we can default? seems like we always have one
@@ -175,19 +89,9 @@ impl MetricMetadata {
         self.hostname.as_deref()
     }
 
-    /// Returns the origin entity.
-    pub fn origin_entity(&self) -> &OriginEntity {
-        &self.origin_entity
-    }
-
     /// Returns the metric origin.
     pub fn origin(&self) -> Option<&MetricOrigin> {
         self.origin.as_ref()
-    }
-
-    /// Returns a mutable reference to the origin entity.
-    pub fn origin_entity_mut(&mut self) -> &mut OriginEntity {
-        &mut self.origin_entity
     }
 
     /// Set the hostname where the metric originated from.
