@@ -3,7 +3,7 @@ use std::{future::Future, num::NonZeroUsize};
 use async_trait::async_trait;
 use memory_accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
-use saluki_context::TagSet;
+use saluki_context::tags::SharedTagSet;
 use saluki_error::{generic_error, GenericError};
 use saluki_event::metric::OriginTagCardinality;
 use saluki_health::{Health, HealthRegistry};
@@ -155,7 +155,7 @@ impl RemoteAgentWorkloadProvider {
 
 #[async_trait]
 impl WorkloadProvider for RemoteAgentWorkloadProvider {
-    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<TagSet> {
+    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
         self.tag_querier.get_entity_tags(entity_id, cardinality)
     }
 

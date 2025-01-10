@@ -1,6 +1,6 @@
 use std::fmt;
 
-use saluki_context::{Tag, TagSet};
+use saluki_context::tags::{Tag, TagSet};
 use saluki_event::metric::OriginTagCardinality;
 
 use super::{entity::EntityId, external_data::ExternalData, helpers::OneOrMany};
