@@ -425,7 +425,7 @@ where
     O: ObjectPool<Item = BytesBuffer> + 'static,
 {
     let write_buffer = buffer_pool.acquire().await;
-    Compressor::from_scheme(CompressionScheme::zlib_default(), write_buffer)
+    Compressor::from_scheme(CompressionScheme::zstd_default(), write_buffer)
 }
 
 enum EncodedMetric {
