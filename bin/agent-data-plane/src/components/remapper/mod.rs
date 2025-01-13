@@ -3,7 +3,7 @@ use std::num::NonZeroUsize;
 use async_trait::async_trait;
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
+use saluki_context::{ConcreteResolvable, Context, ContextResolver, ContextResolverBuilder};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     topology::OutputDefinition,
@@ -269,8 +269,8 @@ impl RemapperRule {
             new_tags.push(additional_tag.clone());
         }
 
-        let context_ref = context_resolver.create_context_ref(self.new_name, new_tags.as_slice().iter());
-        context_resolver.resolve(context_ref)
+        let resolvable = ConcreteResolvable::new(self.new_name, new_tags.as_slice(), None);
+        context_resolver.resolve(resolvable)
     }
 }
 

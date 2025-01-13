@@ -1,5 +1,4 @@
-use saluki_context::tags::SharedTagSet;
-use saluki_event::metric::OriginTagCardinality;
+use saluki_context::{origin::OriginTagCardinality, tags::SharedTagSet};
 
 use crate::{workload::EntityId, WorkloadProvider};
 

@@ -39,7 +39,7 @@ impl<'a> RawTags<'a> {
         }
     }
 
-    /// Creates an empty `TagSplitter`.
+    /// Creates an empty `RawTags`.
     pub const fn empty() -> Self {
         Self {
             raw_tags: &[],
@@ -49,7 +49,7 @@ impl<'a> RawTags<'a> {
     }
 }
 
-impl<'a> IntoIterator for &RawTags<'a> {
+impl<'a> IntoIterator for RawTags<'a> {
     type Item = &'a str;
     type IntoIter = RawTagsIter<'a>;
 

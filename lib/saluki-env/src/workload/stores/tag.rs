@@ -2,8 +2,10 @@ use std::{collections::VecDeque, num::NonZeroUsize, sync::Arc};
 
 use arc_swap::ArcSwap;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_context::tags::{SharedTagSet, TagSet};
-use saluki_event::metric::OriginTagCardinality;
+use saluki_context::{
+    origin::OriginTagCardinality,
+    tags::{SharedTagSet, TagSet},
+};
 use tracing::{debug, trace};
 
 use crate::{
@@ -455,7 +457,6 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use saluki_context::tags::TagSet;
-    use saluki_event::metric::OriginTagCardinality;
     use stringtheory::MetaString;
 
     use super::*;

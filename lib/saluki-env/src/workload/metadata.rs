@@ -1,7 +1,9 @@
 use std::fmt;
 
-use saluki_context::tags::{Tag, TagSet};
-use saluki_event::metric::OriginTagCardinality;
+use saluki_context::{
+    origin::OriginTagCardinality,
+    tags::{Tag, TagSet},
+};
 
 use super::{entity::EntityId, external_data::ExternalData, helpers::OneOrMany};
 

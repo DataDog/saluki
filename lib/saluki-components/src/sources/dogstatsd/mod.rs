@@ -7,7 +7,7 @@ use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::{Counter, Gauge, Histogram};
 use saluki_config::GenericConfiguration;
-use saluki_context::{tags::ChainedTags, Context, ContextResolver, ContextResolverBuilder};
+use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::{
     components::{sources::*, ComponentContext},
     observability::ComponentMetricsExt as _,
@@ -50,7 +50,7 @@ mod framer;
 use self::framer::{get_framer, DsdFramer};
 
 mod origin;
-use self::origin::{OriginEnrichmentConfiguration, OriginEntityMetadata};
+use self::origin::{origin_info_from_metric_packet, OriginEnrichmentConfiguration, ResolvableMetricPacket};
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -287,14 +287,14 @@ where
 
         let context_string_interner_size = NonZeroUsize::new(self.context_string_interner_bytes.as_u64() as usize)
             .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
-        let base_context_resolver = ContextResolverBuilder::from_name("dogstatsd")
+        let context_resolver = ContextResolverBuilder::from_name("dogstatsd")
             .expect("resolver name is not empty")
             .with_interner_capacity_bytes(context_string_interner_size)
             .with_idle_context_expiration(Duration::from_secs(30))
             .with_expiration_interval(Duration::from_secs(1))
             .with_heap_allocations(self.allow_context_heap_allocations)
+            .with_origin_enricher(self.origin_enrichment.clone())
             .build();
-        let context_resolver = DogStatsDContextResolver::new(base_context_resolver, self.origin_enrichment.clone());
 
         let codec_config = DogstatsdCodecConfiguration::default()
             .with_timestamps(self.no_aggregation_pipeline_support)
@@ -330,7 +330,7 @@ impl<W> MemoryBounds for DogStatsDConfiguration<W> {
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
-            .with_single_value::<DogStatsD<W>>()
+            .with_single_value::<DogStatsD>()
             // We allocate our I/O buffers entirely up front.
             .with_fixed_amount(self.buffer_count * get_adjusted_buffer_size(self.buffer_size))
             // We also allocate the backing storage for the string interner up front, which is used by our context
@@ -339,28 +339,28 @@ impl<W> MemoryBounds for DogStatsDConfiguration<W> {
     }
 }
 
-pub struct DogStatsD<W> {
+pub struct DogStatsD {
     listeners: Vec<Listener>,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     codec: DogstatsdCodec,
-    context_resolver: DogStatsDContextResolver<W>,
+    context_resolver: ContextResolver,
 }
 
-struct ListenerContext<W> {
+struct ListenerContext {
     shutdown_handle: DynamicShutdownHandle,
     listener: Listener,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     codec: DogstatsdCodec,
-    context_resolver: DogStatsDContextResolver<W>,
+    context_resolver: ContextResolver,
 }
 
-struct HandlerContext<W> {
+struct HandlerContext {
     listen_addr: ListenAddress,
     framer: DsdFramer,
     codec: DogstatsdCodec,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     metrics: Metrics,
-    context_resolver: DogStatsDContextResolver<W>,
+    context_resolver: ContextResolver,
 }
 
 struct Metrics {
@@ -502,50 +502,8 @@ fn build_metrics(listen_addr: &ListenAddress, context: ComponentContext) -> Metr
     }
 }
 
-/// DogStatsD-specific context resolver.
-///
-/// Handles performing optimized context resolving for borrowed packet representations while leveraging origin
-/// enrichment data.
-#[derive(Clone)]
-struct DogStatsDContextResolver<W> {
-    context_resolver: ContextResolver,
-    origin_enrichment: OriginEnrichmentConfiguration<W>,
-}
-
-impl<W> DogStatsDContextResolver<W>
-where
-    W: WorkloadProvider,
-{
-    fn new(context_resolver: ContextResolver, origin_enrichment: OriginEnrichmentConfiguration<W>) -> Self {
-        Self {
-            context_resolver,
-            origin_enrichment,
-        }
-    }
-
-    fn try_resolve(
-        &mut self, packet: &MetricPacket<'_>, origin_entity_meta: &OriginEntityMetadata<'_>,
-    ) -> Option<Context> {
-        // Collect our packet tags, and then collect any enriched tags.
-        let mut chained_tags = ChainedTags::default();
-        chained_tags.push_tags(packet.tags.clone());
-
-        self.origin_enrichment
-            .gather_origin_tags(origin_entity_meta, &mut chained_tags);
-
-        // Build our context reference from all of our collected tags and then attempt to resolve the context.
-        let context_ref = self
-            .context_resolver
-            .create_context_ref(packet.metric_name, &chained_tags);
-        self.context_resolver.resolve(context_ref)
-    }
-}
-
 #[async_trait]
-impl<W> Source for DogStatsD<W>
-where
-    W: WorkloadProvider + Send + Clone + 'static,
-{
+impl Source for DogStatsD {
     async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
         let mut global_shutdown = context.take_shutdown_handle();
         let mut health = context.take_health_handle();
@@ -598,10 +556,7 @@ where
     }
 }
 
-async fn process_listener<W>(source_context: SourceContext, listener_context: ListenerContext<W>)
-where
-    W: WorkloadProvider + Send + Clone + 'static,
-{
+async fn process_listener(source_context: SourceContext, listener_context: ListenerContext) {
     let ListenerContext {
         shutdown_handle,
         mut listener,
@@ -649,12 +604,10 @@ where
     info!(%listen_addr, "DogStatsD listener stopped.");
 }
 
-async fn process_stream<W>(
-    stream: Stream, source_context: SourceContext, handler_context: HandlerContext<W>,
+async fn process_stream(
+    stream: Stream, source_context: SourceContext, handler_context: HandlerContext,
     shutdown_handle: DynamicShutdownHandle,
-) where
-    W: WorkloadProvider + Clone,
-{
+) {
     tokio::pin!(shutdown_handle);
 
     select! {
@@ -665,10 +618,7 @@ async fn process_stream<W>(
     }
 }
 
-async fn drive_stream<W>(mut stream: Stream, source_context: SourceContext, handler_context: HandlerContext<W>)
-where
-    W: WorkloadProvider,
-{
+async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler_context: HandlerContext) {
     let HandlerContext {
         listen_addr,
         mut framer,
@@ -831,13 +781,10 @@ where
     metrics.connections_active().decrement(1);
 }
 
-fn handle_frame<W>(
-    frame: &[u8], codec: &DogstatsdCodec, context_resolver: &mut DogStatsDContextResolver<W>, source_metrics: &Metrics,
+fn handle_frame(
+    frame: &[u8], codec: &DogstatsdCodec, context_resolver: &mut ContextResolver, source_metrics: &Metrics,
     peer_addr: &ConnectionAddress,
-) -> Result<Option<Event>, ParseError>
-where
-    W: WorkloadProvider,
-{
+) -> Result<Option<Event>, ParseError> {
     let parsed = match codec.decode_packet(frame) {
         Ok(parsed) => parsed,
         Err(e) => {
@@ -881,20 +828,18 @@ where
     Ok(Some(event))
 }
 
-fn handle_metric_packet<W>(
-    packet: MetricPacket, context_resolver: &mut DogStatsDContextResolver<W>, peer_addr: &ConnectionAddress,
-) -> Option<Metric>
-where
-    W: WorkloadProvider,
-{
-    // Gather any origin entity metadata before resolving.
-    let mut origin_entity_metadata = OriginEntityMetadata::from_metric_packet(&packet);
+fn handle_metric_packet(
+    packet: MetricPacket, context_resolver: &mut ContextResolver, peer_addr: &ConnectionAddress,
+) -> Option<Metric> {
+    // Capture the origin information from the packet, including any process ID information if we have it.
+    let mut origin_info = origin_info_from_metric_packet(&packet);
     if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
-        origin_entity_metadata.set_process_id(creds.pid as u32);
+        origin_info.set_process_id(creds.pid as u32);
     }
 
-    // Try resolving the context for the metric packet.
-    match context_resolver.try_resolve(&packet, &origin_entity_metadata) {
+    // Try to resolve the context for this metric.
+    let resolvable = ResolvableMetricPacket::new(&packet, origin_info);
+    match context_resolver.resolve(resolvable) {
         Some(context) => {
             let origin = packet
                 .jmx_check_name
@@ -981,14 +926,12 @@ mod tests {
     use std::net::SocketAddr;
 
     use saluki_context::ContextResolverBuilder;
-    use saluki_env::workload::providers::NoopWorkloadProvider;
     use saluki_io::{
         deser::codec::{dogstatsd::ParsedPacket, DogstatsdCodec, DogstatsdCodecConfiguration},
         net::ConnectionAddress,
     };
 
     use super::handle_metric_packet;
-    use crate::sources::dogstatsd::{origin::OriginEnrichmentConfiguration, DogStatsDContextResolver};
 
     #[test]
     fn no_metrics_when_interner_full_allocations_disallowed() {
@@ -1000,11 +943,7 @@ mod tests {
         // We set our metric name to be longer than 31 bytes (the inlining limit) to ensure this.
 
         let codec = DogstatsdCodec::from_configuration(DogstatsdCodecConfiguration::default());
-
-        let base_context_resolver = ContextResolverBuilder::for_tests().with_heap_allocations(false);
-        let origin_enrichment = OriginEnrichmentConfiguration::<NoopWorkloadProvider>::default();
-        let mut context_resolver = DogStatsDContextResolver::new(base_context_resolver, origin_enrichment);
-
+        let mut context_resolver = ContextResolverBuilder::for_tests().with_heap_allocations(false);
         let peer_addr = ConnectionAddress::from("1.1.1.1:1234".parse::<SocketAddr>().unwrap());
 
         let input = "big_metric_name_that_cant_possibly_be_inlined:1|c|#tag1:value1,tag2:value2,tag3:value3";

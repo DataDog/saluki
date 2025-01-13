@@ -3,9 +3,8 @@ use std::{future::Future, num::NonZeroUsize};
 use async_trait::async_trait;
 use memory_accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
-use saluki_context::tags::SharedTagSet;
+use saluki_context::{origin::OriginTagCardinality, tags::SharedTagSet};
 use saluki_error::{generic_error, GenericError};
-use saluki_event::metric::OriginTagCardinality;
 use saluki_health::{Health, HealthRegistry};
 use stringtheory::interning::GenericMapInterner;
 

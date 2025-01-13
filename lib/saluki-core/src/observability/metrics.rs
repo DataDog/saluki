@@ -7,7 +7,11 @@ use std::{
 
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SetRecorderError, SharedString, Unit};
 use metrics_util::registry::{AtomicStorage, Registry};
-use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
+use saluki_context::{
+    origin::OriginInfo,
+    tags::{Tag, TagSet},
+    ConcreteResolvable, Context, ContextResolver, ContextResolverBuilder,
+};
 use saluki_event::{metric::*, Event};
 use tokio::sync::broadcast::{self, error::RecvError};
 use tracing::debug;
@@ -190,15 +194,17 @@ async fn flush_metrics(flush_interval: Duration) {
 }
 
 fn context_from_key(context_resolver: &mut ContextResolver, key: Key) -> Context {
-    let (name, labels) = key.into_parts();
-    let labels = labels
-        .into_iter()
-        .map(|l| format!("{}:{}", l.key(), l.value()))
-        .collect::<Vec<_>>();
+    let tags = key
+        .labels()
+        .map(|l| Tag::from(format!("{}:{}", l.key(), l.value())))
+        .collect::<TagSet>();
+    let mut origin_info = OriginInfo::default();
+    origin_info.set_process_id(self_process_id());
 
-    let context_ref = context_resolver.create_context_ref(name.as_str(), &labels);
+    let key_ref = ConcreteResolvable::new(key.name(), &tags, Some(origin_info));
+
     context_resolver
-        .resolve(context_ref)
+        .resolve(key_ref)
         .expect("resolver should always allow falling back")
 }
 
@@ -214,4 +220,9 @@ pub async fn initialize_metrics(metrics_prefix: String) -> Result<(), Box<dyn st
     tokio::spawn(flush_metrics(FLUSH_INTERVAL));
 
     Ok(())
+}
+
+fn self_process_id() -> u32 {
+    static SELF_PROCESS_ID_CACHE: OnceLock<u32> = OnceLock::new();
+    *SELF_PROCESS_ID_CACHE.get_or_init(std::process::id)
 }

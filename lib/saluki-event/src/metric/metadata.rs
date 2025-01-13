@@ -1,72 +1,9 @@
 use std::{fmt, sync::Arc};
 
-use serde::Deserialize;
-
 const ORIGIN_PRODUCT_AGENT: u32 = 10;
 const ORIGIN_SUBPRODUCT_DOGSTATSD: u32 = 10;
 const ORIGIN_SUBPRODUCT_INTEGRATION: u32 = 11;
 const ORIGIN_PRODUCT_DETAIL_NONE: u32 = 0;
-
-/// The cardinality of tags associated with the origin entity.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(try_from = "String")]
-pub enum OriginTagCardinality {
-    /// No cardinality.
-    ///
-    /// This implies that no tags should be added to the metric based on its origin.
-    None,
-
-    /// Low cardinality.
-    ///
-    /// This generally covers tags which are static, or relatively slow to change, and generally results in a small
-    /// number of unique values for the given tag key.
-    Low,
-
-    /// Orchestrator cardinality.
-    ///
-    /// This generally covers orchestrator-specific tags, such as Kubernetes pod UID, and lands somewhere between low
-    /// and high cardinality.
-    Orchestrator,
-
-    /// High cardinality.
-    ///
-    /// This generally covers tags which frequently change and generally results in a large number of unique values for
-    /// the given tag key.
-    High,
-}
-
-impl<'a> TryFrom<&'a str> for OriginTagCardinality {
-    type Error = String;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
-            "none" => Ok(Self::None),
-            "low" => Ok(Self::Low),
-            "high" => Ok(Self::High),
-            "orch" | "orchestrator" => Ok(Self::Orchestrator),
-            other => Err(format!("unknown tag cardinality type '{}'", other)),
-        }
-    }
-}
-
-impl TryFrom<String> for OriginTagCardinality {
-    type Error = String;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::try_from(value.as_str())
-    }
-}
-
-impl fmt::Display for OriginTagCardinality {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::None => write!(f, "none"),
-            Self::Low => write!(f, "low"),
-            Self::Orchestrator => write!(f, "orchestrator"),
-            Self::High => write!(f, "high"),
-        }
-    }
-}
 
 /// Metric metadata.
 ///

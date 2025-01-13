@@ -8,7 +8,10 @@ use nom::{
     sequence::{delimited, preceded, separated_pair, terminated},
     IResult,
 };
-use saluki_context::tags::{BorrowedTag, RawTags};
+use saluki_context::{
+    origin::OriginTagCardinality,
+    tags::{BorrowedTag, RawTags},
+};
 use saluki_core::constants::datadog::{
     CARDINALITY_TAG_KEY, ENTITY_ID_IGNORE_VALUE, ENTITY_ID_TAG_KEY, JMX_CHECK_NAME_TAG_KEY,
 };
@@ -268,7 +271,7 @@ fn parse_dogstatsd_metric<'a>(
     let mut pod_uid = None;
     let mut cardinality = None;
     let mut jmx_check_name = None;
-    for tag in &tags {
+    for tag in tags.clone() {
         let tag = BorrowedTag::from(tag);
         match tag.name_and_value() {
             (ENTITY_ID_TAG_KEY, Some(entity_id)) if entity_id != ENTITY_ID_IGNORE_VALUE => {
@@ -699,7 +702,10 @@ impl<'a> Iterator for FloatIter<'a> {
 mod tests {
     use nom::IResult;
     use proptest::{collection::vec as arb_vec, prelude::*};
-    use saluki_context::{ContextResolver, ContextResolverBuilder};
+    use saluki_context::{
+        tags::{Tag, TagSet},
+        Context,
+    };
     use saluki_event::{
         eventd::{AlertType, EventD, Priority},
         metric::*,
@@ -722,35 +728,17 @@ mod tests {
     fn parse_dsd_metric_with_conf<'input>(
         input: &'input [u8], config: &DogstatsdCodecConfiguration,
     ) -> OptionalNomResult<'input, Metric> {
-        let mut context_resolver = ContextResolverBuilder::for_tests();
-        let (remaining, result) = parse_dsd_metric_direct(input, config, &mut context_resolver)?;
+        let (remaining, packet) = parse_dogstatsd_metric(input, config)?;
         assert!(remaining.is_empty());
 
-        Ok(result)
-    }
+        let tags = packet.tags.into_iter().map(Tag::from).collect::<TagSet>();
+        let context = Context::from_parts(packet.metric_name, tags);
 
-    fn parse_dsd_metric_direct<'input>(
-        input: &'input [u8], config: &DogstatsdCodecConfiguration, context_resolver: &mut ContextResolver,
-    ) -> IResult<&'input [u8], Option<Metric>> {
-        let (remaining, packet) = parse_dogstatsd_metric(input, config)?;
-        // TODO: this is duplicative with `handle_metric_packet`, but it's not clear where we want the responsibility for metadata to live
-        let metadata = MetricMetadata {
-            hostname: None,
-            origin: Some(
-                packet
-                    .jmx_check_name
-                    .map(MetricOrigin::jmx_check)
-                    .unwrap_or_else(MetricOrigin::dogstatsd),
-            ),
-        };
-
-        let context_ref = context_resolver.create_context_ref(packet.metric_name, &packet.tags);
-        let context = match context_resolver.resolve(context_ref) {
-            Some(context) => context,
-            None => return Ok((remaining, None)),
-        };
-
-        Ok((remaining, Some(Metric::from_parts(context, packet.values, metadata))))
+        Ok(Some(Metric::from_parts(
+            context,
+            packet.values,
+            MetricMetadata::default(),
+        )))
     }
 
     fn parse_dsd_eventd(input: &[u8]) -> NomResult<'_, EventD> {
@@ -794,13 +782,8 @@ mod tests {
     }
 
     #[track_caller]
-    fn check_basic_metric_eq(mut expected: Metric, actual: Option<Metric>) -> Metric {
+    fn check_basic_metric_eq(expected: Metric, actual: Option<Metric>) -> Metric {
         let actual = actual.expect("event should not have been None");
-
-        // We set this manually because the DSD codec is always going to set this on the actual metric, so we want our
-        // expected metric to also match... without each unit test having to set it as boilerplate.
-        expected.metadata_mut().set_origin(MetricOrigin::dogstatsd());
-
         assert_eq!(expected.context(), actual.context());
         assert_eq!(expected.values(), actual.values());
         assert_eq!(expected.metadata(), actual.metadata());
@@ -1087,29 +1070,6 @@ mod tests {
 
         assert_eq!(value_timestamps.len(), 1);
         assert_eq!(value_timestamps[0], 0);
-    }
-
-    #[test]
-    fn no_metrics_when_interner_full_allocations_disallowed() {
-        // We're specifically testing here that when we don't allow outside allocations, we should not be able to
-        // resolve a context if the interner is full. A no-op interner has the smallest possible size, so that's going
-        // to assure we can't intern anything... but we also need a string (name or one of the tags) that can't be
-        // _inlined_ either, since that will get around the interner being full.
-        //
-        // We set our metric name to be longer than 23 bytes (the inlining limit) to ensure this.
-
-        let config = DogstatsdCodecConfiguration::default();
-        let mut context_resolver = ContextResolverBuilder::for_tests().with_heap_allocations(false);
-
-        let metric_name = "big_metric_name_that_cant_possibly_be_inlined";
-        assert!(MetaString::try_inline(metric_name).is_none());
-
-        let input = format!("{}:1|c|#tag1:value1,tag2:value2,tag3:value3", metric_name);
-
-        let (remaining, result) = parse_dsd_metric_direct(input.as_bytes(), &config, &mut context_resolver)
-            .expect("should not fail to parse");
-        assert!(remaining.is_empty());
-        assert!(result.is_none());
     }
 
     #[test]

@@ -3,11 +3,13 @@
 #![deny(missing_docs)]
 
 mod context;
-pub use self::context::Context;
+pub use self::context::{ConcreteResolvable, Context, Resolvable, TagVisitor};
 
 mod expiry;
 
 mod hash;
+
+pub mod origin;
 
 mod resolver;
 pub use self::resolver::{ContextResolver, ContextResolverBuilder};

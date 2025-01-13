@@ -3480,6 +3480,7 @@ dependencies = [
  "quick_cache",
  "saluki-error",
  "saluki-metrics",
+ "serde",
  "stringtheory",
  "tokio",
  "tracing",

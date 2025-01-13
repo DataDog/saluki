@@ -7,8 +7,7 @@
 //! aggregation -- along with a default workload provider implementation based on the Datadog Agent.
 
 use async_trait::async_trait;
-use saluki_context::tags::SharedTagSet;
-use saluki_event::metric::OriginTagCardinality;
+use saluki_context::{origin::OriginTagCardinality, tags::SharedTagSet};
 
 mod aggregator;
 mod collectors;
