@@ -993,7 +993,7 @@ dependencies = [
  "ndarray",
  "ndarray-stats",
  "noisy_float",
- "ordered-float 4.5.0",
+ "ordered-float 4.6.0",
  "rand",
  "rand_distr",
  "serde",
@@ -2175,7 +2175,7 @@ version = "0.1.0"
 dependencies = [
  "bytesize",
  "metrics",
- "ordered-float 4.5.0",
+ "ordered-float 4.6.0",
  "pin-project",
  "process-memory",
  "proptest",
@@ -2226,7 +2226,7 @@ dependencies = [
  "hashbrown 0.15.2",
  "indexmap 2.7.0",
  "metrics",
- "ordered-float 4.5.0",
+ "ordered-float 4.6.0",
  "quanta",
 ]
 
@@ -2495,9 +2495,9 @@ dependencies = [
 
 [[package]]
 name = "ordered-float"
-version = "4.5.0"
+version = "4.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c65ee1f9701bf938026630b455d5315f490640234259037edb259798b3bcf85e"
+checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
 dependencies = [
  "num-traits",
 ]
@@ -3585,7 +3585,7 @@ version = "0.1.0"
 dependencies = [
  "bitmask-enum",
  "ddsketch-agent",
- "ordered-float 4.5.0",
+ "ordered-float 4.6.0",
  "proptest",
  "saluki-context",
  "serde",
