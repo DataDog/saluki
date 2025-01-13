@@ -164,7 +164,7 @@ impl DogstatsDPrefixFilter {
 
         if self.metric_prefix.is_empty() {
             for s in &self.blocklist.data {
-                if s == metric_name {
+                if s == metric_name || self.blocklist.match_prefix && metric_name.starts_with(s) {
                     return None;
                 }
             }
