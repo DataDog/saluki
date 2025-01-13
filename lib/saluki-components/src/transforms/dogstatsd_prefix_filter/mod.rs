@@ -291,6 +291,29 @@ mod tests {
     }
 
     #[test]
+    fn test_metric_blocklist_with_metric_prefix() {
+        let filter = DogstatsDPrefixFilter {
+            metric_prefix: "foo".to_string(),
+            metric_prefix_blacklist: vec![],
+            blocklist: Blocklist::new(&["foobar".to_string(), "test".to_string()], false),
+        };
+        let context = Context::from_static_parts("bar", &[]);
+        let metric = Metric::gauge(context, 1.0);
+        let new_metric = filter.enrich_metric(metric);
+        assert!(new_metric.is_none());
+
+        let filter = DogstatsDPrefixFilter {
+            metric_prefix: "foo".to_string(),
+            metric_prefix_blacklist: vec!["foo".to_string()],
+            blocklist: Blocklist::default(),
+        };
+        let context = Context::from_static_parts("foo", &[]);
+        let metric = Metric::gauge(context, 1.0);
+        let new_metric = filter.enrich_metric(metric).unwrap();
+        assert_eq!(new_metric.context().name().clone().into_owned(), "foo".to_string());
+    }
+
+    #[test]
     fn test_metric_match_prefix_without_added_prefix() {
         let filter = DogstatsDPrefixFilter {
             metric_prefix: "".to_string(),
