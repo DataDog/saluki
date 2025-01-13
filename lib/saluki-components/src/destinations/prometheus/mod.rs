@@ -86,20 +86,21 @@ impl MemoryBounds for PrometheusConfiguration {
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
-            .with_single_value::<Prometheus>()
+            .with_single_value::<Prometheus>("component struct")
             // This isn't _really_ bounded since the string buffer could definitely grow larger if the metric name was
             // larger, but the default buffer size is far beyond any typical metric name that it should almost never
             // grow beyond this initially allocated size.
-            .with_fixed_amount(NAME_NORMALIZATION_BUFFER_SIZE);
+            .with_fixed_amount("name normalization buffer size", NAME_NORMALIZATION_BUFFER_SIZE);
+
         builder
             .firm()
             // Even though our context map is really the Prometheus context to a map of context/value pairs, we're just
             // simplifying things here because the ratio of true "contexts" to Prometheus contexts should be very high,
             // high enough to make this a reasonable approximation.
-            .with_map::<Context, PrometheusValue>(CONTEXT_LIMIT)
-            .with_fixed_amount(PAYLOAD_SIZE_LIMIT_BYTES)
-            .with_fixed_amount(PAYLOAD_BUFFER_SIZE_LIMIT_BYTES)
-            .with_fixed_amount(TAGS_BUFFER_SIZE_LIMIT_BYTES);
+            .with_map::<Context, PrometheusValue>("state map", CONTEXT_LIMIT)
+            .with_fixed_amount("payload size", PAYLOAD_SIZE_LIMIT_BYTES)
+            .with_fixed_amount("payload buffer", PAYLOAD_BUFFER_SIZE_LIMIT_BYTES)
+            .with_fixed_amount("tags buffer", TAGS_BUFFER_SIZE_LIMIT_BYTES);
     }
 }
 

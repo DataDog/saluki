@@ -404,19 +404,19 @@ impl MemoryBounds for TagStore {
         builder
             .firm()
             // Active entities.
-            .with_array::<EntityId>(self.entity_limit())
+            .with_array::<EntityId>("entity ids", self.entity_limit())
             // Entity hierarchy mappings.
             //
             // See TODO note about why this is an estimate.
-            .with_map::<EntityId, EntityId>(self.entity_limit())
+            .with_map::<EntityId, EntityId>("entity id map", self.entity_limit())
             // Low cardinality entity tags.
-            .with_map::<EntityId, TagSet>(self.entity_limit())
+            .with_map::<EntityId, TagSet>("entity tagset map", self.entity_limit())
             // High cardinality entity tags.
-            .with_map::<EntityId, TagSet>(self.entity_limit())
+            .with_map::<EntityId, TagSet>("entity tagset map", self.entity_limit())
             // Unified low cardinality entity tags.
-            .with_map::<EntityId, TagSet>(self.entity_limit())
+            .with_map::<EntityId, TagSet>("entity tagset map", self.entity_limit())
             // Unified high cardinality entity tags.
-            .with_map::<EntityId, TagSet>(self.entity_limit());
+            .with_map::<EntityId, TagSet>("entity tagset map", self.entity_limit());
     }
 }
 

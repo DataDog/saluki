@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use memory_accounting::ComponentRegistry;
+use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{api::APIBuilder, logging::LoggingAPIHandler, prelude::*};
 use saluki_components::{
     destinations::{
@@ -128,7 +128,9 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
     let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;
-    let memory_limiter = initialize_memory_bounds(bounds_configuration, component_registry)?;
+    let memory_limiter = initialize_memory_bounds(bounds_configuration, &component_registry)?;
+
+    dump_bounds(component_registry.as_bounds());
 
     // Bounds validation succeeded, so now we'll build and spawn the topology.
     let built_topology = blueprint.build().await?;
@@ -255,4 +257,8 @@ async fn create_topology(
     }
 
     Ok(blueprint)
+}
+
+fn dump_bounds(bounds: ComponentBounds) {
+    std::fs::write("bounds.json", serde_json::to_string(&bounds.to_exprs()).unwrap()).unwrap();
 }

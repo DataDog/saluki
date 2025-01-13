@@ -68,10 +68,10 @@ impl MemoryBounds for AgentTelemetryRemapperConfiguration {
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
-            .with_single_value::<AgentTelemetryRemapper>()
+            .with_single_value::<AgentTelemetryRemapper>("component struct")
             // We also allocate the backing storage for the string interner up front, which is used by our context
             // resolver.
-            .with_fixed_amount(self.context_string_interner_bytes.as_u64() as usize);
+            .with_fixed_amount("string interner", self.context_string_interner_bytes.as_u64() as usize);
     }
 }
 

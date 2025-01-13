@@ -101,16 +101,22 @@ impl MemoryBounds for DatadogMetricsConfiguration {
             // Capture the size of the heap allocation when the component is built.
             //
             // TODO: This type signature is _ugly_, and it would be nice to improve it somehow.
-            .with_single_value::<DatadogMetrics<FixedSizeObjectPool<BytesBuffer>>>()
+            .with_single_value::<DatadogMetrics<FixedSizeObjectPool<BytesBuffer>>>("component struct")
             // Capture the size of our buffer pool.
-            .with_fixed_amount(rb_buffer_pool_size)
+            .with_fixed_amount("buffer pool", rb_buffer_pool_size)
             // Capture the size of the scratch buffer which may grow up to the uncompressed limit.
-            .with_fixed_amount(MetricsEndpoint::Series.uncompressed_size_limit())
-            .with_fixed_amount(MetricsEndpoint::Sketches.uncompressed_size_limit())
+            .with_fixed_amount(
+                "series scratch buffer",
+                MetricsEndpoint::Series.uncompressed_size_limit(),
+            )
+            .with_fixed_amount(
+                "sketches scratch buffer",
+                MetricsEndpoint::Sketches.uncompressed_size_limit(),
+            )
             // Capture the size of the requests channel.
             //
             // TODO: This type signature is _ugly_, and it would be nice to improve it somehow.
-            .with_array::<(usize, Request<FrozenChunkedBytesBuffer>)>(32);
+            .with_array::<(usize, Request<FrozenChunkedBytesBuffer>)>("requests channel", 32);
     }
 }
 

@@ -4,7 +4,7 @@ use std::{num::NonZeroUsize, time::Duration};
 use async_trait::async_trait;
 use bytes::{Buf, BufMut};
 use bytesize::ByteSize;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use metrics::{Counter, Gauge, Histogram};
 use saluki_config::GenericConfiguration;
 use saluki_context::{
@@ -331,12 +331,19 @@ where
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
-            .with_single_value::<DogStatsD>()
+            .with_single_value::<DogStatsD>("source struct")
             // We allocate our I/O buffers entirely up front.
-            .with_fixed_amount(self.buffer_count * get_adjusted_buffer_size(self.buffer_size))
+            .with_expr(UsageExpr::product(
+                "buffers",
+                UsageExpr::config("dogstatsd_buffer_count", self.buffer_count),
+                UsageExpr::config("dogstatsd_buffer_size", get_adjusted_buffer_size(self.buffer_size)),
+            ))
             // We also allocate the backing storage for the string interner up front, which is used by our context
             // resolver.
-            .with_fixed_amount(self.context_string_interner_bytes.as_u64() as usize);
+            .with_expr(UsageExpr::config(
+                "dogstatsd_string_interner_size",
+                self.context_string_interner_bytes.as_u64() as usize,
+            ));
     }
 }
 

@@ -71,9 +71,9 @@ impl MemoryBounds for DatadogEventsServiceChecksConfiguration {
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
-            .with_single_value::<DatadogEventsServiceChecks>()
+            .with_single_value::<DatadogEventsServiceChecks>("component struct")
             // Capture the size of the requests channel.
-            .with_array::<(usize, Request<String>)>(32);
+            .with_array::<(usize, Request<String>)>("requests channel", 32);
     }
 }
 

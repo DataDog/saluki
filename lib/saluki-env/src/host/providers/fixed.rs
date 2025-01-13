@@ -37,6 +37,6 @@ impl HostProvider for FixedHostProvider {
 
 impl MemoryBounds for FixedHostProvider {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        builder.minimum().with_single_value::<Self>();
+        builder.minimum().with_single_value::<Self>("component struct");
     }
 }

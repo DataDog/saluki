@@ -75,7 +75,7 @@ impl RemoteAgentWorkloadProvider {
         provider_bounds
             .subcomponent("string_interner")
             .firm()
-            .with_fixed_amount(string_interner_size_bytes.get());
+            .with_fixed_amount("string interner", string_interner_size_bytes.get());
 
         // Construct our aggregator, and add any collectors based on the detected features we've been given.
         let aggregator_health = health_registry
