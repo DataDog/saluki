@@ -13,12 +13,17 @@ use saluki_core::{
 use saluki_error::GenericError;
 use saluki_event::{metric::Metric, DataType};
 use serde::Deserialize;
+use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, error};
 
 #[derive(Deserialize)]
-/// Name Transform.
-pub struct NameFilterConfiguration {
+/// DogstatsD prefix filter transform.
+///
+/// Appends a prefix to every metric if specified.
+///
+/// Checks if a metric name should be allowed.
+pub struct DogstatsDPrefixFilterConfiguration {
     #[serde(default, rename = "statsd_metric_namespace")]
     metric_prefix: String,
 
@@ -61,7 +66,7 @@ fn default_metric_prefix_blacklist() -> Vec<String> {
     ]
 }
 
-impl NameFilterConfiguration {
+impl DogstatsDPrefixFilterConfiguration {
     /// Creates a new `NameFilterConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
@@ -69,7 +74,7 @@ impl NameFilterConfiguration {
 }
 
 #[async_trait]
-impl TransformBuilder for NameFilterConfiguration {
+impl TransformBuilder for DogstatsDPrefixFilterConfiguration {
     fn input_data_type(&self) -> DataType {
         DataType::Metric
     }
@@ -80,7 +85,7 @@ impl TransformBuilder for NameFilterConfiguration {
     }
 
     async fn build(&self, _: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
-        Ok(Box::new(NameFilter {
+        Ok(Box::new(DogstatsDPrefixFilter {
             metric_prefix: self.metric_prefix.clone(),
             metric_prefix_blacklist: self.metric_prefix_blacklist.clone(),
             blocklist: Blocklist::new(&self.metric_blocklist, self.metric_blocklist_match_prefix),
@@ -88,14 +93,14 @@ impl TransformBuilder for NameFilterConfiguration {
     }
 }
 
-impl MemoryBounds for NameFilterConfiguration {
+impl MemoryBounds for DogstatsDPrefixFilterConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         // Capture the size of the heap allocation when the component is built.
-        builder.minimum().with_single_value::<NameFilter>();
+        builder.minimum().with_single_value::<DogstatsDPrefixFilter>();
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Blocklist {
     data: Vec<String>,
     match_prefix: bool,
@@ -130,7 +135,7 @@ impl Blocklist {
 
         // Check for prefix match when match_prefix is true
         if self.match_prefix {
-            let index = i.map_or_else(|idx| idx, |idx| idx);
+            let index = i.unwrap_or_else(|idx| idx);
             if index > 0 && name.starts_with(&self.data[index - 1]) {
                 return true;
             }
@@ -145,7 +150,7 @@ impl Blocklist {
 }
 
 #[derive(Debug)]
-pub struct NameFilter {
+pub struct DogstatsDPrefixFilter {
     metric_prefix: String,
 
     metric_prefix_blacklist: Vec<String>,
@@ -153,7 +158,7 @@ pub struct NameFilter {
     blocklist: Blocklist,
 }
 
-impl NameFilter {
+impl DogstatsDPrefixFilter {
     fn enrich_metric(&self, mut metric: Metric) -> Option<Metric> {
         let metric_name = metric.context().name().deref();
 
@@ -164,12 +169,13 @@ impl NameFilter {
                 }
             }
         } else {
-            if self.is_excluded(metric_name) {
-                return None;
-            }
+            // Enrich metric with prefix if prefix is allowed.
+            let new_metric_name = if self.is_excluded(metric_name) {
+                metric.context().name().clone()
+            } else {
+                MetaString::from(format!("{}{}", self.metric_prefix, metric_name))
+            };
 
-            // Enrich metric with prefix and check if the blocklist contains the new name.
-            let new_metric_name = format!("{}{}", self.metric_prefix, metric_name);
             if self.blocklist.contains(&new_metric_name) {
                 debug!("Metric {} excluded due to blocklist.", new_metric_name);
                 return None;
@@ -193,7 +199,7 @@ impl NameFilter {
 }
 
 #[async_trait]
-impl Transform for NameFilter {
+impl Transform for DogstatsDPrefixFilter {
     async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
         health.mark_ready();
@@ -230,5 +236,91 @@ impl Transform for NameFilter {
         debug!("Agent metric name transform stopped.");
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_context::Context;
+
+    use super::*;
+
+    #[test]
+    fn test_metric_prefix_add() {
+        let filter = DogstatsDPrefixFilter {
+            metric_prefix: "foo".to_string(),
+            metric_prefix_blacklist: vec![],
+            blocklist: Blocklist::default(),
+        };
+        let context = Context::from_static_parts("bar", &[]);
+        let metric = Metric::gauge(context, 1.0);
+        let new_metric = filter.enrich_metric(metric).unwrap();
+
+        assert_eq!(new_metric.context().name().clone().into_owned(), "foobar".to_string());
+    }
+
+    #[test]
+    fn test_metric_prefix_blacklist() {
+        let filter = DogstatsDPrefixFilter {
+            metric_prefix: "foo".to_string(),
+            metric_prefix_blacklist: vec!["foo".to_string(), "bar".to_string()],
+            blocklist: Blocklist::default(),
+        };
+        let context = Context::from_static_parts("barbar", &[]);
+        let metric = Metric::gauge(context, 1.0);
+        let new_metric = filter.enrich_metric(metric).unwrap();
+        assert_eq!(new_metric.context().name().clone().into_owned(), "barbar".to_string());
+    }
+
+    #[test]
+    fn test_metric_blocklist() {
+        let filter = DogstatsDPrefixFilter {
+            metric_prefix: "".to_string(),
+            metric_prefix_blacklist: vec![],
+            blocklist: Blocklist::new(&["foobar".to_string(), "test".to_string()], false),
+        };
+        let context = Context::from_static_parts("foobar", &[]);
+        let metric = Metric::gauge(context, 1.0);
+        let new_metric = filter.enrich_metric(metric);
+        assert!(new_metric.is_none());
+
+        let context = Context::from_static_parts("foo", &[]);
+        let metric = Metric::gauge(context, 1.0);
+        let new_metric = filter.enrich_metric(metric).unwrap();
+        assert_eq!(new_metric.context().name().clone().into_owned(), "foo".to_string());
+    }
+
+    #[test]
+    fn test_metric_match_prefix_without_added_prefix() {
+        let filter = DogstatsDPrefixFilter {
+            metric_prefix: "".to_string(),
+            metric_prefix_blacklist: vec![],
+            blocklist: Blocklist::new(&["b".to_string(), "test".to_string()], true),
+        };
+        let context = Context::from_static_parts("bar", &[]);
+        let metric = Metric::gauge(context, 1.0);
+        let new_metric = filter.enrich_metric(metric);
+        // match prefix is true, "bar" has prefix "b"
+        assert!(new_metric.is_none());
+
+        let context = Context::from_static_parts("test", &[]);
+        let metric = Metric::gauge(context, 1.0);
+        let new_metric = filter.enrich_metric(metric);
+        // match prefix is true, "test" has prefix "test"
+        assert!(new_metric.is_none());
+    }
+
+    #[test]
+    fn test_metric_match_prefix_with_added_prefix() {
+        let filter = DogstatsDPrefixFilter {
+            metric_prefix: "foo".to_string(),
+            metric_prefix_blacklist: vec![],
+            blocklist: Blocklist::new(&["fo".to_string(), "test".to_string()], true),
+        };
+        let context = Context::from_static_parts("bar", &[]);
+        let metric = Metric::gauge(context, 1.0);
+        let new_metric = filter.enrich_metric(metric);
+        // new_metric is "foobar", match prefix is true, "foobar" has prefix "fo"
+        assert!(new_metric.is_none());
     }
 }

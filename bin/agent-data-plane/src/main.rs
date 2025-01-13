@@ -16,7 +16,7 @@ use saluki_components::{
     destinations::{DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration, PrometheusConfiguration},
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
     transforms::{
-        AggregateConfiguration, ChainedConfiguration, HostEnrichmentConfiguration, NameFilterConfiguration,
+        AggregateConfiguration, ChainedConfiguration, DogstatsDPrefixFilterConfiguration, HostEnrichmentConfiguration,
         OriginEnrichmentConfiguration,
     },
 };
@@ -177,7 +177,7 @@ fn create_topology(
     let origin_enrichment_config = OriginEnrichmentConfiguration::from_configuration(configuration)
         .error_context("Failed to configure origin enrichment transform.")?
         .with_environment_provider(env_provider);
-    let name_filter_configuration = NameFilterConfiguration::from_configuration(configuration)?;
+    let name_filter_configuration = DogstatsDPrefixFilterConfiguration::from_configuration(configuration)?;
     let enrich_config = ChainedConfiguration::default()
         .with_transform_builder(host_enrichment_config)
         .with_transform_builder(origin_enrichment_config);
