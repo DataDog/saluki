@@ -67,7 +67,7 @@ fn default_metric_prefix_blacklist() -> Vec<String> {
 }
 
 impl DogstatsDPrefixFilterConfiguration {
-    /// Creates a new `NameFilterConfiguration` from the given configuration.
+    /// Creates a new `DogstatsdPrefixFilterConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
     }
@@ -165,6 +165,7 @@ impl DogstatsDPrefixFilter {
         if self.metric_prefix.is_empty() {
             for s in &self.blocklist.data {
                 if s == metric_name || self.blocklist.match_prefix && metric_name.starts_with(s) {
+                    debug!("Metric {} excluded due to blocklist.", metric_name);
                     return None;
                 }
             }
@@ -173,7 +174,7 @@ impl DogstatsDPrefixFilter {
             let new_metric_name = if self.is_excluded(metric_name) {
                 metric.context().name().clone()
             } else {
-                MetaString::from(format!("{}{}", self.metric_prefix, metric_name))
+                self.prefixed_metric(metric_name)
             };
 
             if self.blocklist.contains(&new_metric_name) {
@@ -196,6 +197,14 @@ impl DogstatsDPrefixFilter {
                 .iter()
                 .any(|prefix| metric_name.starts_with(prefix))
     }
+
+    fn prefixed_metric(&self, metric_name: &str) -> MetaString {
+        if self.metric_prefix.ends_with(".") {
+            MetaString::from(format!("{}{}", self.metric_prefix, metric_name))
+        } else {
+            MetaString::from(format!("{}.{}", self.metric_prefix, metric_name))
+        }
+    }
 }
 
 #[async_trait]
@@ -204,7 +213,7 @@ impl Transform for DogstatsDPrefixFilter {
         let mut health = context.take_health_handle();
         health.mark_ready();
 
-        debug!("Agent metric name filter transform started.");
+        debug!("DogStatsD Prefix Filter transform started.");
 
         loop {
             select! {
@@ -233,7 +242,7 @@ impl Transform for DogstatsDPrefixFilter {
             }
         }
 
-        debug!("Agent metric name transform stopped.");
+        debug!("DogStatsD Prefix Filter transform stopped.");
 
         Ok(())
     }
@@ -256,7 +265,7 @@ mod tests {
         let metric = Metric::gauge(context, 1.0);
         let new_metric = filter.enrich_metric(metric).unwrap();
 
-        assert_eq!(new_metric.context().name().clone().into_owned(), "foobar".to_string());
+        assert_eq!(new_metric.context().name(), "foo.bar");
     }
 
     #[test]
@@ -269,7 +278,7 @@ mod tests {
         let context = Context::from_static_parts("barbar", &[]);
         let metric = Metric::gauge(context, 1.0);
         let new_metric = filter.enrich_metric(metric).unwrap();
-        assert_eq!(new_metric.context().name().clone().into_owned(), "barbar".to_string());
+        assert_eq!(new_metric.context().name(), "barbar");
     }
 
     #[test]
@@ -287,7 +296,7 @@ mod tests {
         let context = Context::from_static_parts("foo", &[]);
         let metric = Metric::gauge(context, 1.0);
         let new_metric = filter.enrich_metric(metric).unwrap();
-        assert_eq!(new_metric.context().name().clone().into_owned(), "foo".to_string());
+        assert_eq!(new_metric.context().name(), "foo");
     }
 
     #[test]
@@ -295,7 +304,7 @@ mod tests {
         let filter = DogstatsDPrefixFilter {
             metric_prefix: "foo".to_string(),
             metric_prefix_blacklist: vec![],
-            blocklist: Blocklist::new(&["foobar".to_string(), "test".to_string()], false),
+            blocklist: Blocklist::new(&["foo.bar".to_string(), "test".to_string()], false),
         };
         let context = Context::from_static_parts("bar", &[]);
         let metric = Metric::gauge(context, 1.0);
@@ -310,7 +319,7 @@ mod tests {
         let context = Context::from_static_parts("foo", &[]);
         let metric = Metric::gauge(context, 1.0);
         let new_metric = filter.enrich_metric(metric).unwrap();
-        assert_eq!(new_metric.context().name().clone().into_owned(), "foo".to_string());
+        assert_eq!(new_metric.context().name(), "foo");
     }
 
     #[test]
@@ -343,7 +352,7 @@ mod tests {
         let context = Context::from_static_parts("bar", &[]);
         let metric = Metric::gauge(context, 1.0);
         let new_metric = filter.enrich_metric(metric);
-        // new_metric is "foobar", match prefix is true, "foobar" has prefix "fo"
+        // new_metric is "foo.bar", match prefix is true, "foo.bar" has prefix "fo"
         assert!(new_metric.is_none());
     }
 }

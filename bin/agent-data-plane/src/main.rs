@@ -177,7 +177,7 @@ fn create_topology(
     let origin_enrichment_config = OriginEnrichmentConfiguration::from_configuration(configuration)
         .error_context("Failed to configure origin enrichment transform.")?
         .with_environment_provider(env_provider);
-    let name_filter_configuration = DogstatsDPrefixFilterConfiguration::from_configuration(configuration)?;
+    let dsd_prefix_filter_configuration = DogstatsDPrefixFilterConfiguration::from_configuration(configuration)?;
     let enrich_config = ChainedConfiguration::default()
         .with_transform_builder(host_enrichment_config)
         .with_transform_builder(origin_enrichment_config);
@@ -206,12 +206,12 @@ fn create_topology(
         .add_source("dsd_in", dsd_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
         .add_transform("enrich", enrich_config)?
-        .add_transform("name_filter", name_filter_configuration)?
+        .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
         .add_destination("dd_metrics_out", dd_metrics_config)?
         .add_destination("dd_events_sc_out", events_service_checks_config)?
         .connect_component("dsd_agg", ["dsd_in.metrics"])?
-        .connect_component("name_filter", ["dsd_agg"])?
-        .connect_component("enrich", ["name_filter"])?
+        .connect_component("dsd_prefix_filter", ["dsd_agg"])?
+        .connect_component("enrich", ["dsd_prefix_filter"])?
         .connect_component("dd_metrics_out", ["enrich"])?
         .connect_component("dd_events_sc_out", ["dsd_in.events", "dsd_in.service_checks"])?;
 
