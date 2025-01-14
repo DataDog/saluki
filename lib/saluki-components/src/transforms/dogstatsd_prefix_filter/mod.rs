@@ -17,12 +17,12 @@ use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, error};
 
-#[derive(Deserialize)]
 /// DogstatsD prefix filter transform.
 ///
 /// Appends a prefix to every metric if specified.
 ///
 /// Checks if a metric name should be allowed.
+#[derive(Deserialize)]
 pub struct DogstatsDPrefixFilterConfiguration {
     #[serde(default, rename = "statsd_metric_namespace")]
     metric_prefix: String,
