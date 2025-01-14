@@ -131,7 +131,7 @@ impl Blocklist {
             return false;
         }
 
-        let i = self.data.binary_search(&name.to_string());
+        let i = self.data.binary_search_by(|k| k.as_str().cmp(name));
 
         // Check for prefix match when match_prefix is true
         if self.match_prefix {
