@@ -283,8 +283,8 @@ impl TagSet {
     /// Merges the tags from another shared set into this set.
     ///
     /// If a tag from `other` is already present in this set, it will not be added.
-    pub fn merge_missing_shared(&mut self, other: SharedTagSet) {
-        for tag in &other {
+    pub fn merge_missing_shared(&mut self, other: &SharedTagSet) {
+        for tag in other {
             self.insert_tag_borrowed(tag);
         }
     }

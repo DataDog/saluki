@@ -293,7 +293,7 @@ where
             .with_idle_context_expiration(Duration::from_secs(30))
             .with_expiration_interval(Duration::from_secs(1))
             .with_heap_allocations(self.allow_context_heap_allocations)
-            .with_origin_enricher(self.origin_enrichment.clone())
+            .with_origin_enricher(self.origin_enrichment.build())
             .build();
 
         let codec_config = DogstatsdCodecConfiguration::default()

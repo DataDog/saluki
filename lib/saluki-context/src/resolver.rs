@@ -10,7 +10,7 @@ use tracing::debug;
 use crate::{
     context::{Context, ContextInner, Resolvable},
     expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle},
-    hash::{hash_resolvable_with_seen, ContextHashKey, NoopU64HashBuilder, PrehashedHashSet},
+    hash::{hash_resolvable_with_seen, new_fast_hashset, ContextKey, FastHashSet},
     origin::OriginEnricher,
     tags::TagSet,
 };
@@ -21,8 +21,7 @@ const DEFAULT_CONTEXT_RESOLVER_CACHED_CONTEXTS_LIMIT: usize = 500_000;
 const DEFAULT_CONTEXT_RESOLVER_INTERNER_CAPACITY_BYTES: NonZeroUsize =
     unsafe { NonZeroUsize::new_unchecked(2 * 1024 * 1024) };
 
-type ContextCache =
-    Cache<ContextHashKey, Context, UnitWeighter, NoopU64HashBuilder, ExpiryCapableLifecycle<ContextHashKey>>;
+type ContextCache = Cache<ContextKey, Context, UnitWeighter, ahash::RandomState, ExpiryCapableLifecycle<ContextKey>>;
 
 static_metrics! {
     name => Statistics,
@@ -194,7 +193,7 @@ impl ContextResolverBuilder {
     /// This is generally only useful for testing purposes, and is exposed publicly in order to be used in cross-crate
     /// testing scenarios.
     pub fn for_tests() -> ContextResolver {
-        Self::from_name("noop")
+        ContextResolverBuilder::from_name("noop")
             .expect("resolver name not empty")
             .with_cached_contexts_limit(usize::MAX)
             .with_interner_capacity_bytes(NonZeroUsize::new(1).expect("not zero"))
@@ -237,7 +236,7 @@ impl ContextResolverBuilder {
             cached_context_limit,
             cached_context_limit as u64,
             UnitWeighter,
-            NoopU64HashBuilder,
+            ahash::RandomState::default(),
             lifecycle,
         ));
 
@@ -258,7 +257,7 @@ impl ContextResolverBuilder {
             interner,
             context_cache,
             expiration,
-            hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64HashBuilder),
+            hash_seen_buffer: new_fast_hashset(),
             origin_enricher: self.origin_enricher,
             allow_heap_allocations,
         }
@@ -292,8 +291,8 @@ pub struct ContextResolver {
     stats: Statistics,
     interner: GenericMapInterner,
     context_cache: Arc<ContextCache>,
-    expiration: Expiration<ContextHashKey>,
-    hash_seen_buffer: PrehashedHashSet,
+    expiration: Expiration<ContextKey>,
+    hash_seen_buffer: FastHashSet<u64>,
     origin_enricher: Option<Arc<dyn OriginEnricher + Send + Sync>>,
     allow_heap_allocations: bool,
 }
@@ -324,14 +323,21 @@ impl ContextResolver {
             })
     }
 
-    fn create_context_key_from_resolvable<R>(&mut self, value: R) -> ContextHashKey
+    fn create_context_key_from_resolvable<R>(&mut self, value: R) -> ContextKey
     where
         R: Resolvable,
     {
-        hash_resolvable_with_seen(value, &mut self.hash_seen_buffer)
+        // If we have an origin enricher configured, and the resolvable value has origin information defined, attempt to
+        // look up the origin key for it. We'll pass that along to the hasher to include as part of the context key.
+        let origin_key = self
+            .origin_enricher
+            .as_ref()
+            .and_then(|enricher| value.origin_info().and_then(|info| enricher.resolve_origin_key(info)));
+
+        hash_resolvable_with_seen(value, origin_key, &mut self.hash_seen_buffer)
     }
 
-    fn create_context_from_resolvable<R>(&self, key: ContextHashKey, value: R) -> Option<Context>
+    fn create_context_from_resolvable<R>(&self, key: ContextKey, value: R) -> Option<Context>
     where
         R: Resolvable,
     {
@@ -356,10 +362,10 @@ impl ContextResolver {
             return None;
         }
 
-        // Collect any enriched tags based on the origin info of the context, if any.
+        // Collect any enriched tags based on the origin key of the context, if any.
         if let Some(origin_enricher) = self.origin_enricher.as_ref() {
-            if let Some(value) = value.origin_info() {
-                origin_enricher.enrich(value, &mut tags);
+            if let Some(origin_key) = key.origin_key() {
+                origin_enricher.collect_origin_tags(origin_key, &mut tags);
             }
         }
 
@@ -394,6 +400,8 @@ impl ContextResolver {
             }
             None => match self.create_context_from_resolvable(context_key, value) {
                 Some(context) => {
+                    debug!(?context_key, ?context, "Resolved new context.");
+
                     self.context_cache.insert(context_key, context.clone());
                     self.expiration.mark_entry_accessed(context_key);
 
@@ -433,7 +441,7 @@ impl Clone for ContextResolver {
             interner: self.interner.clone(),
             context_cache: Arc::clone(&self.context_cache),
             expiration: self.expiration.clone(),
-            hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64HashBuilder),
+            hash_seen_buffer: new_fast_hashset(),
             origin_enricher: self.origin_enricher.clone(),
             allow_heap_allocations: self.allow_heap_allocations,
         }
@@ -441,7 +449,7 @@ impl Clone for ContextResolver {
 }
 
 async fn drive_expiration(
-    context_cache: Arc<ContextCache>, stats: Statistics, expiration: Expiration<ContextHashKey>,
+    context_cache: Arc<ContextCache>, stats: Statistics, expiration: Expiration<ContextKey>,
     expiration_interval: Duration,
 ) {
     let mut expired_entries = Vec::new();

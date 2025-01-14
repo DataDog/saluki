@@ -1,6 +1,6 @@
 //! Metric origin.
 
-use std::{fmt, num::NonZeroU32};
+use std::{fmt, hash::Hasher as _, num::NonZeroU32};
 
 use serde::Deserialize;
 
@@ -158,8 +158,83 @@ impl<'a> OriginInfo<'a> {
     }
 }
 
-/// A value capable of collecting enriching tags for a metric based on its origin information.
+impl<'a> std::fmt::Display for OriginInfo<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut has_written = false;
+
+        write!(f, "OriginInfo(")?;
+
+        if let Some(process_id) = self.process_id {
+            write!(f, "process_id={}", process_id)?;
+        }
+
+        if let Some(container_id) = self.container_id {
+            if has_written {
+                write!(f, " ")?;
+            } else {
+                has_written = true;
+            }
+            write!(f, "container_id={}", container_id)?;
+        }
+
+        if let Some(pod_uid) = self.pod_uid {
+            if has_written {
+                write!(f, " ")?;
+            } else {
+                has_written = true;
+            }
+            write!(f, "pod_uid={}", pod_uid)?;
+        }
+
+        if let Some(cardinality) = self.cardinality {
+            if has_written {
+                write!(f, " ")?;
+            } else {
+                has_written = true;
+            }
+            write!(f, "cardinality={}", cardinality)?;
+        }
+
+        if let Some(external_data) = self.external_data {
+            if has_written {
+                write!(f, " ")?;
+            }
+            write!(f, "external_data={}", external_data)?;
+        }
+
+        write!(f, ")")
+    }
+}
+
+/// A key that uniquely identifies the origin of a metric.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OriginKey(u64);
+
+impl OriginKey {
+    /// Creates a new `OriginKey` from the given opaque value by hashing it.
+    pub fn from_opaque<O>(opaque: O) -> Self
+    where
+        O: std::hash::Hash,
+    {
+        let mut hasher = ahash::AHasher::default();
+        opaque.hash(&mut hasher);
+        Self(hasher.finish())
+    }
+}
+
+impl std::hash::Hash for OriginKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+/// A value capable of collecting enriched tags for a metric based on its origin information.
 pub trait OriginEnricher {
-    /// Enriches a metric by collecting all tags related to the given origin information.
-    fn enrich(&self, origin_info: &OriginInfo<'_>, tags: &mut TagSet);
+    /// Resolves the origin key for the given origin information.
+    ///
+    /// If the given origin information cannot be found/resolved, `None` is returned.
+    fn resolve_origin_key(&self, origin_info: &OriginInfo<'_>) -> Option<OriginKey>;
+
+    /// Collects the tags associated with the given origin key into the provided `TagSet`.
+    fn collect_origin_tags(&self, origin_key: OriginKey, tags: &mut TagSet);
 }

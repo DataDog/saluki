@@ -269,7 +269,7 @@ impl RemapperRule {
             new_tags.push(additional_tag.clone());
         }
 
-        let resolvable = ConcreteResolvable::new(self.new_name, new_tags.as_slice(), None);
+        let resolvable = ConcreteResolvable::new(self.new_name, new_tags.as_slice());
         context_resolver.resolve(resolvable)
     }
 }

@@ -8,7 +8,6 @@ use std::{
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SetRecorderError, SharedString, Unit};
 use metrics_util::registry::{AtomicStorage, Registry};
 use saluki_context::{
-    origin::OriginInfo,
     tags::{Tag, TagSet},
     ConcreteResolvable, Context, ContextResolver, ContextResolverBuilder,
 };
@@ -198,10 +197,11 @@ fn context_from_key(context_resolver: &mut ContextResolver, key: Key) -> Context
         .labels()
         .map(|l| Tag::from(format!("{}:{}", l.key(), l.value())))
         .collect::<TagSet>();
-    let mut origin_info = OriginInfo::default();
-    origin_info.set_process_id(self_process_id());
 
-    let key_ref = ConcreteResolvable::new(key.name(), &tags, Some(origin_info));
+    // NOTE/TODO: This doesn't matter right _now_, since our internal telemetry gets scraped by the Core Agent and thus
+    // enriched that way, but... without any origin information/key here, we're not marking these metrics as coming from
+    // the current process ID, and thus not enriching them in the same way as DSD metrics that come through.
+    let key_ref = ConcreteResolvable::new(key.name(), &tags);
 
     context_resolver
         .resolve(key_ref)
@@ -220,9 +220,4 @@ pub async fn initialize_metrics(metrics_prefix: String) -> Result<(), Box<dyn st
     tokio::spawn(flush_metrics(FLUSH_INTERVAL));
 
     Ok(())
-}
-
-fn self_process_id() -> u32 {
-    static SELF_PROCESS_ID_CACHE: OnceLock<u32> = OnceLock::new();
-    *SELF_PROCESS_ID_CACHE.get_or_init(std::process::id)
 }

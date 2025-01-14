@@ -1,6 +1,7 @@
+use papaya::HashMap;
 use saluki_context::{
-    origin::{OriginEnricher, OriginInfo, OriginTagCardinality},
-    tags::TagSet,
+    origin::{OriginEnricher, OriginInfo, OriginKey, OriginTagCardinality},
+    tags::{SharedTagSet, TagSet},
     Resolvable, TagVisitor,
 };
 use saluki_env::{workload::EntityId, WorkloadProvider};
@@ -78,19 +79,54 @@ impl<W> OriginEnrichmentConfiguration<W> {
     }
 }
 
-impl<W> OriginEnricher for OriginEnrichmentConfiguration<W>
+impl<W> OriginEnrichmentConfiguration<W>
+where
+    W: Clone,
+{
+    pub fn build(&self) -> DogStatsDOriginEnricher<W> {
+        DogStatsDOriginEnricher {
+            workload_provider: self.workload_provider.clone(),
+            entity_id_precedence: self.entity_id_precedence,
+            tag_cardinality: self.tag_cardinality,
+            origin_detection_unified: self.origin_detection_unified,
+            origin_detection_optout: self.origin_detection_optout,
+            origin_cache: HashMap::default(),
+        }
+    }
+}
+
+pub struct DogStatsDOriginEnricher<W> {
+    workload_provider: W,
+    entity_id_precedence: bool,
+    tag_cardinality: OriginTagCardinality,
+    origin_detection_unified: bool,
+    origin_detection_optout: bool,
+    origin_cache: HashMap<OriginKey, SharedTagSet>,
+}
+
+impl<W> DogStatsDOriginEnricher<W>
 where
     W: WorkloadProvider + Send + Sync,
 {
-    fn enrich(&self, origin_info: &OriginInfo<'_>, metric_tags: &mut TagSet) {
-        // Examine the various possible entity ID values, and based on their state, use one or more of them to enrich
-        // the tags for the given metric. Below is a description of each entity ID we may have extracted:
+    fn resolve_origin(&self, origin_info: &OriginInfo<'_>) -> Option<OriginKey> {
+        // Calculate the key for this origin information, and see if we've already previously resolved it.
+        let origin_key = OriginKey::from_opaque(origin_info);
+        if let Some(tags) = self.origin_cache.pin().get(&origin_key) {
+            trace!(origin = %origin_info, tags_len = tags.len(), "Found existing origin during resolving.");
+            return Some(origin_key);
+        }
+
+        // We couldn't find the origin information in the cache, so we'll try to resolve it now.
+        let mut had_entity_matches = false;
+        let mut enriched_tags = TagSet::default();
+
+        // Examine the various possible entity ID values, and based on their state, use one or more of them to grab any
+        // enriched tags attached to the entities. Below is a description of each entity ID we may have extracted:
         //
         // - entity ID (extracted from `dd.internal.entity_id` tag; non-prefixed pod UID)
         // - container ID (extracted from `saluki.internal.container_id` tag, which comes from special "container ID"
         //   extension in DogStatsD protocol; non-prefixed container ID)
         // - origin PID (extracted via UDS socket credentials)
-
         let maybe_entity_id = origin_info.pod_uid().and_then(EntityId::from_pod_uid);
         let maybe_container_id = origin_info.container_id().and_then(EntityId::from_raw_container_id);
         let maybe_origin_pid = origin_info.process_id().map(EntityId::ContainerPid);
@@ -100,7 +136,7 @@ where
         if !self.origin_detection_unified {
             if self.origin_detection_optout && tag_cardinality == OriginTagCardinality::None {
                 trace!("Skipping origin enrichment for DogStatsD metric with cardinality 'none'.");
-                return;
+                return None;
             }
 
             // If we discovered an entity ID via origin detection, and no client-provided entity ID was provided (or it was,
@@ -110,7 +146,9 @@ where
                     match self.workload_provider.get_tags_for_entity(&origin_pid, tag_cardinality) {
                         Some(tags) => {
                             trace!(entity_id = ?origin_pid, tags_len = tags.len(), "Found tags for entity.");
-                            metric_tags.merge_missing_shared(tags);
+
+                            had_entity_matches = true;
+                            enriched_tags.merge_missing_shared(&tags);
                         }
                         None => trace!(entity_id = ?origin_pid, "No tags found for entity."),
                     }
@@ -124,7 +162,9 @@ where
                 match self.workload_provider.get_tags_for_entity(&entity_id, tag_cardinality) {
                     Some(tags) => {
                         trace!(?entity_id, tags_len = tags.len(), "Found tags for entity.");
-                        metric_tags.merge_missing_shared(tags);
+
+                        had_entity_matches = true;
+                        enriched_tags.merge_missing_shared(&tags);
                     }
                     None => trace!(?entity_id, "No tags found for entity."),
                 }
@@ -132,7 +172,7 @@ where
         } else {
             if tag_cardinality == OriginTagCardinality::None {
                 trace!("Skipping origin enrichment for metric with cardinality 'none'.");
-                return;
+                return None;
             }
 
             // Try all possible detected entity IDs, enriching in the following order of precedence: origin PID,
@@ -142,7 +182,9 @@ where
                 match self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
                     Some(tags) => {
                         trace!(?entity_id, tags_len = tags.len(), "Found tags for entity.");
-                        metric_tags.merge_missing_shared(tags);
+
+                        had_entity_matches = true;
+                        enriched_tags.merge_missing_shared(&tags);
                     }
                     None => trace!(?entity_id, "No tags found for entity."),
                 }
@@ -158,12 +200,44 @@ where
                     match self.workload_provider.get_tags_for_entity(&entity_id, tag_cardinality) {
                         Some(tags) => {
                             trace!(?entity_id, tags_len = tags.len(), "Found tags for entity.");
-                            metric_tags.merge_missing_shared(tags);
+
+                            had_entity_matches = true;
+                            enriched_tags.merge_missing_shared(&tags);
                         }
                         None => trace!(?entity_id, "No tags found for entity."),
                     }
                 }
             }
+        }
+
+        // If we had any entity matches, even if we have no tags for those entities, we'll consider this a "hit" and
+        // cache whatever we got. This allows us to avoid checking _every single time_ if there isn't anything that
+        // matches the given origin information. The flip side is that if we have no entries at all in the workload
+        // provider related to the origin information we're resolving, then we likely just haven't been _given_ the tags
+        // yet, and so we treat that as a "miss" and avoid caching it.
+        if had_entity_matches {
+            let tags_len = enriched_tags.len();
+            self.origin_cache.pin().insert(origin_key, enriched_tags.into_shared());
+
+            trace!(origin = %origin_info, tags_len, "Caching tags for origin.");
+            Some(origin_key)
+        } else {
+            None
+        }
+    }
+}
+
+impl<W> OriginEnricher for DogStatsDOriginEnricher<W>
+where
+    W: WorkloadProvider + Send + Sync,
+{
+    fn resolve_origin_key(&self, origin_info: &OriginInfo<'_>) -> Option<OriginKey> {
+        self.resolve_origin(origin_info)
+    }
+
+    fn collect_origin_tags(&self, origin_key: OriginKey, tags: &mut TagSet) {
+        if let Some(origin_tags) = self.origin_cache.pin().get(&origin_key) {
+            tags.merge_missing_shared(origin_tags);
         }
     }
 }
@@ -214,7 +288,7 @@ impl<'a> Resolvable for ResolvableMetricPacket<'a> {
         self.packet.metric_name
     }
 
-    fn origin_info(&self) -> Option<&OriginInfo<'_>> {
+    fn origin_info(&self) -> Option<&OriginInfo<'a>> {
         Some(&self.origin_info)
     }
 }
