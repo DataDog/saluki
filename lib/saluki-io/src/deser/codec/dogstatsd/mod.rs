@@ -477,10 +477,8 @@ fn parse_dogstatsd_service_check<'a>(
                 }
                 // Message: A message describing the current state of the service check.
                 message::SERVICE_CHECK_MESSAGE_PREFIX => {
-                    let (_, message) = all_consuming(preceded(
-                        tag(message::SERVICE_CHECK_MESSAGE_PREFIX),
-                        ascii_alphanum_and_seps,
-                    ))(chunk)?;
+                    let (_, message) =
+                        all_consuming(preceded(tag(message::SERVICE_CHECK_MESSAGE_PREFIX), utf8))(chunk)?;
                     maybe_message = Some(message.into());
 
                     // This field must be positioned last among the metadata fields
@@ -531,6 +529,14 @@ fn split_at_delimiter_inclusive(input: &[u8], delimiter: u8) -> Option<(&[u8], &
                 Some((input, &[]))
             }
         }
+    }
+}
+
+#[inline]
+fn utf8(input: &[u8]) -> IResult<&[u8], &str> {
+    match simdutf8::basic::from_utf8(input) {
+        Ok(s) => Ok((&[], s)),
+        Err(_) => Err(nom::Err::Error(Error::new(input, ErrorKind::Verify))),
     }
 }
 
@@ -1389,6 +1395,12 @@ mod tests {
             .with_tags(tags)
             .with_message(sc_message);
         check_basic_service_check_eq(expected, actual);
+    }
+
+    #[test]
+    fn service_check_semi_real_payload_kafka() {
+        let raw_payload = "_sc|kafka.can_connect|2|#env:staging,service:datadog-agent,dd.internal.entity_id:none,dd.internal.card:none,instance:kafka-127.0.0.1-9999,jmx_server:127.0.0.1|m:Unable to instantiate or initialize instance 127.0.0.1:9999. Is the target JMX Server or JVM running? Failed to retrieve RMIServer stub: javax.naming.ServiceUnavailableException [Root exception is java.rmi.ConnectException: Connection refused to host: 127.0.0.1; nested exception is: \\n\tjava.net.ConnectException: Connection refused (Connection refused)]";
+        let _ = parse_dsd_service_check(raw_payload.as_bytes()).unwrap();
     }
 
     #[test]
