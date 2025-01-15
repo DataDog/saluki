@@ -1,8 +1,8 @@
 lading:
-  version: 0.24.0
+  version: 0.25.3
 
 target:
   cpu_allotment: 4
-  memory_allotment: 2g
+  memory_allotment: 2GiB
   ddprof_replicas: 2
   internal_profiling_replicas: 0
