@@ -233,7 +233,7 @@ pub trait OriginEnricher {
     /// Resolves the origin key for the given origin information.
     ///
     /// If the given origin information cannot be found/resolved, `None` is returned.
-    fn resolve_origin_key(&self, origin_info: &OriginInfo<'_>) -> Option<OriginKey>;
+    fn resolve_origin_key(&self, origin_info: OriginInfo<'_>) -> Option<OriginKey>;
 
     /// Collects the tags associated with the given origin key into the provided `TagSet`.
     fn collect_origin_tags(&self, origin_key: OriginKey, tags: &mut TagSet);

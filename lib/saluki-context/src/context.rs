@@ -7,8 +7,7 @@ use metrics::Gauge;
 use stringtheory::MetaString;
 
 use crate::{
-    hash::{hash_resolvable, ContextKey},
-    origin::OriginInfo,
+    hash::{hash_context, ContextKey},
     tags::TagSet,
 };
 
@@ -25,7 +24,7 @@ impl Context {
     pub fn from_static_name(name: &'static str) -> Self {
         const EMPTY_TAGS: &[&str] = &[];
 
-        let key = hash_resolvable(ConcreteResolvable::new(name, EMPTY_TAGS), None);
+        let key = hash_context(name, EMPTY_TAGS, None);
         Self {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
@@ -43,7 +42,7 @@ impl Context {
             tag_set.insert_tag(MetaString::from_static(tag));
         }
 
-        let key = hash_resolvable(ConcreteResolvable::new(name, tags), None);
+        let key = hash_context(name, tags, None);
         Self {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
@@ -57,7 +56,7 @@ impl Context {
     /// Creates a new `Context` from the given name and given tags.
     pub fn from_parts<S: Into<MetaString>>(name: S, tags: TagSet) -> Self {
         let name = name.into();
-        let key = hash_resolvable(ConcreteResolvable::new(name.clone(), &tags), None);
+        let key = hash_context(&name, &tags, None);
         Self {
             inner: Arc::new(ContextInner {
                 name,
@@ -72,7 +71,7 @@ impl Context {
     pub fn with_name<S: Into<MetaString>>(&self, name: S) -> Self {
         let name = name.into();
         let tags = self.inner.tags.clone();
-        let key = hash_resolvable(ConcreteResolvable::new(name.clone(), &tags), None);
+        let key = hash_context(&name, &tags, None);
 
         Self {
             inner: Arc::new(ContextInner {
@@ -205,7 +204,7 @@ impl hash::Hash for ContextInner {
         // If the context is dirty -- has changed since it was originally resolved -- then our cached key is now
         // invalid, so we need to re-hash the context. Otherwise, we can just use the cached key.
         let key = if is_context_dirty(self.key) {
-            hash_resolvable(ConcreteResolvable::new(self.name.clone(), &self.tags), None)
+            hash_context(&self.name, &self.tags, None)
         } else {
             self.key
         };
@@ -225,16 +224,16 @@ impl fmt::Debug for ContextInner {
 }
 
 /// A value containing tags that can be visited.
-pub trait TagVisitor {
+pub trait Tagged {
     /// Visits the tags in this value.
     fn visit_tags<F>(&self, visitor: F)
     where
         F: FnMut(&str);
 }
 
-impl<'a, T> TagVisitor for &'a T
+impl<'a, T> Tagged for &'a T
 where
-    T: TagVisitor,
+    T: Tagged,
 {
     fn visit_tags<F>(&self, visitor: F)
     where
@@ -244,140 +243,42 @@ where
     }
 }
 
-impl<'a> TagVisitor for (&'static str, &'a [&'static str]) {
+impl<'a> Tagged for &'a [&'static str] {
     fn visit_tags<F>(&self, mut visitor: F)
     where
         F: FnMut(&str),
     {
-        for tag in self.1 {
+        for tag in self.iter() {
             visitor(tag);
         }
     }
 }
 
-impl<'a> TagVisitor for (&'a MetaString, &'a TagSet) {
+impl<'a> Tagged for &'a [MetaString] {
     fn visit_tags<F>(&self, mut visitor: F)
     where
         F: FnMut(&str),
     {
-        for tag in self.1 {
+        for tag in self.iter() {
+            visitor(tag);
+        }
+    }
+}
+
+impl<'a> Tagged for &'a TagSet {
+    fn visit_tags<F>(&self, mut visitor: F)
+    where
+        F: FnMut(&str),
+    {
+        for tag in self.into_iter() {
             visitor(tag.as_str());
         }
     }
 }
 
-/// A value that can be resolved to a context.
-pub trait Resolvable: TagVisitor {
-    /// Returns the name of this value.
-    fn name(&self) -> &str;
-
-    /// Returns the origin information associated with this value, if any.
-    fn origin_info(&self) -> Option<&OriginInfo<'_>> {
-        None
-    }
-}
-
-impl<'a, T> Resolvable for &'a T
-where
-    T: Resolvable,
-{
-    fn name(&self) -> &str {
-        (*self).name()
-    }
-
-    fn origin_info(&self) -> Option<&OriginInfo<'_>> {
-        (*self).origin_info()
-    }
-}
-
-impl<'a> Resolvable for (&'static str, &'a [&'static str]) {
-    fn name(&self) -> &str {
-        self.0
-    }
-
-    fn origin_info(&self) -> Option<&OriginInfo<'_>> {
-        None
-    }
-}
-
-impl<'a> Resolvable for (&'a MetaString, &'a TagSet) {
-    fn name(&self) -> &str {
-        self.0
-    }
-
-    fn origin_info(&self) -> Option<&OriginInfo<'_>> {
-        None
-    }
-}
-
-/// A concrete resolvable value.
-///
-/// This type is a helper for creating resolvable values with concrete types such that each individual component --
-/// name, tags, and origin info -- can be provided individually.
-pub struct ConcreteResolvable<'a, T> {
-    name: MetaString,
-    tags: T,
-    origin_info: Option<OriginInfo<'a>>,
-}
-
-impl<'a, T> ConcreteResolvable<'a, T> {
-    /// Creates a new `ConcreteResolvable` with the given name and tags, and origin key.
-    pub fn new<N>(name: N, tags: T) -> Self
-    where
-        N: Into<MetaString>,
-    {
-        Self {
-            name: name.into(),
-            tags,
-            origin_info: None,
-        }
-    }
-
-    /// Creates a new `ConcreteResolvable` with the given name, tags, and origin information.
-    pub fn with_origin_info<N>(name: N, tags: T, origin_info: OriginInfo<'a>) -> Self
-    where
-        N: Into<MetaString>,
-    {
-        ConcreteResolvable {
-            name: name.into(),
-            tags,
-            origin_info: Some(origin_info),
-        }
-    }
-}
-
-impl<'a, T, V> TagVisitor for ConcreteResolvable<'a, T>
-where
-    T: IntoIterator<Item = V> + Clone,
-    V: AsRef<str>,
-{
-    fn visit_tags<F>(&self, mut visitor: F)
-    where
-        F: FnMut(&str),
-    {
-        for tag in self.tags.clone() {
-            visitor(tag.as_ref());
-        }
-    }
-}
-
-impl<'a, T, V> Resolvable for ConcreteResolvable<'a, T>
-where
-    T: IntoIterator<Item = V> + Clone,
-    V: AsRef<str>,
-{
-    fn name(&self) -> &str {
-        self.name.as_ref()
-    }
-
-    fn origin_info(&self) -> Option<&OriginInfo<'_>> {
-        self.origin_info.as_ref()
-    }
-}
-
 fn get_dirty_context_key_value() -> ContextKey {
     const EMPTY_TAGS: &[&str] = &[];
-    *DIRTY_CONTEXT_KEY.get_or_init(|| hash_resolvable(ConcreteResolvable::new("", EMPTY_TAGS), None))
+    *DIRTY_CONTEXT_KEY.get_or_init(|| hash_context("", EMPTY_TAGS, None))
 }
 
 fn is_context_dirty(key: ContextKey) -> bool {

@@ -1,3 +1,5 @@
+use crate::Tagged;
+
 /// A wrapper over raw tags in their unprocessed form.
 ///
 /// This type is meant to handle raw tags that have been extracted from network payloads, such as DogStatsD, where the
@@ -15,7 +17,7 @@
 /// is retained.
 #[derive(Clone)]
 pub struct RawTags<'a> {
-    raw_tags: &'a [u8],
+    raw_tags: &'a str,
     max_tag_count: usize,
     max_tag_len: usize,
 }
@@ -27,11 +29,7 @@ impl<'a> RawTags<'a> {
     /// length. If the iterator encounters more tags than the maximum count, it will simply stop returning tags. If the
     /// iterator encounters any tag that is longer than the maximum length, it will truncate the tag to configured
     /// length, or to a smaller length, whichever is closer to a valid UTF-8 character boundary.
-    ///
-    /// # Safety
-    ///
-    /// The caller is responsible for ensuring that the byte slice given contains only valid UTF-8 data.
-    pub const unsafe fn new(raw_tags: &'a [u8], max_tag_count: usize, max_tag_len: usize) -> Self {
+    pub const fn new(raw_tags: &'a str, max_tag_count: usize, max_tag_len: usize) -> Self {
         Self {
             raw_tags,
             max_tag_count,
@@ -42,18 +40,13 @@ impl<'a> RawTags<'a> {
     /// Creates an empty `RawTags`.
     pub const fn empty() -> Self {
         Self {
-            raw_tags: &[],
+            raw_tags: "",
             max_tag_count: 0,
             max_tag_len: 0,
         }
     }
-}
 
-impl<'a> IntoIterator for RawTags<'a> {
-    type Item = &'a str;
-    type IntoIter = RawTagsIter<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
+    fn tags_iter(&self) -> RawTagsIter<'a> {
         RawTagsIter {
             raw_tags: self.raw_tags,
             parsed_tags: 0,
@@ -63,8 +56,28 @@ impl<'a> IntoIterator for RawTags<'a> {
     }
 }
 
+impl<'a> IntoIterator for RawTags<'a> {
+    type Item = &'a str;
+    type IntoIter = RawTagsIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.tags_iter()
+    }
+}
+
+impl<'a> Tagged for RawTags<'a> {
+    fn visit_tags<F>(&self, mut visitor: F)
+    where
+        F: FnMut(&str),
+    {
+        for tag in self.tags_iter() {
+            visitor(tag);
+        }
+    }
+}
+
 pub struct RawTagsIter<'a> {
-    raw_tags: &'a [u8],
+    raw_tags: &'a str,
     parsed_tags: usize,
     max_tag_len: usize,
     max_tag_count: usize,
@@ -82,10 +95,7 @@ impl<'a> Iterator for RawTagsIter<'a> {
             return None;
         }
 
-        // SAFETY: The caller that creates `TagSplitter` is responsible for ensuring that the entire byte slice is
-        // valid UTF-8, which means we should also have valid UTF-8 here since only `TagSplitter` creates `TagIter`.
-        let tag = unsafe { std::str::from_utf8_unchecked(raw_tag) };
-        let tag = limit_str_to_len(tag, self.max_tag_len);
+        let tag = limit_str_to_len(raw_tag, self.max_tag_len);
 
         self.parsed_tags += 1;
 
@@ -120,17 +130,15 @@ fn limit_str_to_len(s: &str, limit: usize) -> &str {
     }
 }
 
-// TODO: I don't love that this is duplicated between `saluki-io` in the DSD codec module and here... but I think it's
-// cleaner to have `RawTags<'a>` here to make working with it for `ChainedTags<'a>` easier.
 #[inline]
-fn split_at_delimiter(input: &[u8], delimiter: u8) -> Option<(&[u8], &[u8])> {
-    match memchr::memchr(delimiter, input) {
+fn split_at_delimiter(input: &str, delimiter: u8) -> Option<(&str, &str)> {
+    match memchr::memchr(delimiter, input.as_bytes()) {
         Some(index) => Some((&input[0..index], &input[index + 1..input.len()])),
         None => {
             if input.is_empty() {
                 None
             } else {
-                Some((input, &[]))
+                Some((input, ""))
             }
         }
     }

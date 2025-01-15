@@ -50,7 +50,7 @@ mod framer;
 use self::framer::{get_framer, DsdFramer};
 
 mod origin;
-use self::origin::{origin_info_from_metric_packet, OriginEnrichmentConfiguration, ResolvableMetricPacket};
+use self::origin::{origin_info_from_metric_packet, OriginEnrichmentConfiguration};
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -97,12 +97,12 @@ const fn default_dogstatsd_permissive_decoding() -> bool {
 ///
 /// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format.
 #[derive(Deserialize)]
-pub struct DogStatsDConfiguration<W = ()> {
+pub struct DogStatsDConfiguration {
     /// Origin enrichment configuration.
     ///
     /// See [`OriginEnrichmentConfiguration`] for more details.
     #[serde(default)]
-    origin_enrichment: OriginEnrichmentConfiguration<W>,
+    origin_enrichment: OriginEnrichmentConfiguration,
 
     /// The size of the buffer used to receive messages into, in bytes.
     ///
@@ -207,30 +207,22 @@ pub struct DogStatsDConfiguration<W = ()> {
     permissive_decoding: bool,
 }
 
-impl DogStatsDConfiguration<()> {
+impl DogStatsDConfiguration {
     /// Creates a new `DogStatsDConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
     }
-}
 
-impl<W> DogStatsDConfiguration<W> {
     /// Sets the workload provider for this configuration.
     ///
     /// A workload provider must be set in order for origin enrichment to function.
-    pub fn with_workload_provider<W2>(self, workload_provider: W2) -> DogStatsDConfiguration<W2> {
-        DogStatsDConfiguration {
+    pub fn with_workload_provider<W>(self, workload_provider: W) -> DogStatsDConfiguration
+    where
+        W: WorkloadProvider + Send + Sync + Clone + 'static,
+    {
+        Self {
             origin_enrichment: self.origin_enrichment.with_workload_provider(workload_provider),
-            buffer_size: self.buffer_size,
-            buffer_count: self.buffer_count,
-            port: self.port,
-            socket_path: self.socket_path,
-            socket_stream_path: self.socket_stream_path,
-            non_local_traffic: self.non_local_traffic,
-            allow_context_heap_allocations: self.allow_context_heap_allocations,
-            no_aggregation_pipeline_support: self.no_aggregation_pipeline_support,
-            context_string_interner_bytes: self.context_string_interner_bytes,
-            permissive_decoding: self.permissive_decoding,
+            ..self
         }
     }
 
@@ -275,10 +267,7 @@ impl<W> DogStatsDConfiguration<W> {
 }
 
 #[async_trait]
-impl<W> SourceBuilder for DogStatsDConfiguration<W>
-where
-    W: WorkloadProvider + Send + Sync + Clone + 'static,
-{
+impl SourceBuilder for DogStatsDConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
         let listeners = self.build_listeners().await?;
         if listeners.is_empty() {
@@ -325,7 +314,7 @@ where
     }
 }
 
-impl<W> MemoryBounds for DogStatsDConfiguration<W> {
+impl MemoryBounds for DogStatsDConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder
             .minimum()
@@ -838,8 +827,7 @@ fn handle_metric_packet(
     }
 
     // Try to resolve the context for this metric.
-    let resolvable = ResolvableMetricPacket::new(&packet, origin_info);
-    match context_resolver.resolve(resolvable) {
+    match context_resolver.resolve(packet.metric_name, packet.tags.clone(), Some(origin_info)) {
         Some(context) => {
             let origin = packet
                 .jmx_check_name

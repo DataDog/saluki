@@ -3,7 +3,7 @@
 #![deny(missing_docs)]
 
 mod context;
-pub use self::context::{ConcreteResolvable, Context, Resolvable, TagVisitor};
+pub use self::context::{Context, Tagged};
 
 mod expiry;
 

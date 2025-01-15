@@ -8,10 +8,10 @@ use tokio::time::sleep;
 use tracing::debug;
 
 use crate::{
-    context::{Context, ContextInner, Resolvable},
+    context::{Context, ContextInner, Tagged},
     expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle},
-    hash::{hash_resolvable_with_seen, new_fast_hashset, ContextKey, FastHashSet},
-    origin::OriginEnricher,
+    hash::{hash_context_with_seen, new_fast_hashset, ContextKey, FastHashSet},
+    origin::{OriginEnricher, OriginInfo},
     tags::TagSet,
 };
 
@@ -323,36 +323,38 @@ impl ContextResolver {
             })
     }
 
-    fn create_context_key_from_resolvable<R>(&mut self, value: R) -> ContextKey
+    fn create_context_key_from_resolvable<T>(
+        &mut self, name: &str, tags: T, origin_info: Option<OriginInfo<'_>>,
+    ) -> ContextKey
     where
-        R: Resolvable,
+        T: Tagged,
     {
         // If we have an origin enricher configured, and the resolvable value has origin information defined, attempt to
         // look up the origin key for it. We'll pass that along to the hasher to include as part of the context key.
         let origin_key = self
             .origin_enricher
             .as_ref()
-            .and_then(|enricher| value.origin_info().and_then(|info| enricher.resolve_origin_key(info)));
+            .and_then(|enricher| origin_info.and_then(|info| enricher.resolve_origin_key(info)));
 
-        hash_resolvable_with_seen(value, origin_key, &mut self.hash_seen_buffer)
+        hash_context_with_seen(name, tags, origin_key, &mut self.hash_seen_buffer)
     }
 
-    fn create_context_from_resolvable<R>(&self, key: ContextKey, value: R) -> Option<Context>
+    fn create_context_from_resolvable<T>(&self, key: ContextKey, name: &str, tags: T) -> Option<Context>
     where
-        R: Resolvable,
+        T: Tagged,
     {
         // Intern the name and tags of the context.
-        let name = self.intern(value.name())?;
+        let context_name = self.intern(name)?;
 
-        let mut tags = TagSet::default();
+        let mut context_tags = TagSet::default();
 
         // TODO: This is clunky.
         let mut failed = false;
-        value.visit_tags(|tag| {
+        tags.visit_tags(|tag| {
             // Don't keep trying to intern the tags if we failed to intern the last one.
             if !failed {
                 match self.intern(tag) {
-                    Some(tag) => tags.insert_tag(tag),
+                    Some(tag) => context_tags.insert_tag(tag),
                     None => failed = true,
                 }
             }
@@ -365,15 +367,15 @@ impl ContextResolver {
         // Collect any enriched tags based on the origin key of the context, if any.
         if let Some(origin_enricher) = self.origin_enricher.as_ref() {
             if let Some(origin_key) = key.origin_key() {
-                origin_enricher.collect_origin_tags(origin_key, &mut tags);
+                origin_enricher.collect_origin_tags(origin_key, &mut context_tags);
             }
         }
 
         self.stats.resolved_new_context_total().increment(1);
 
         Some(Context::from_inner(ContextInner {
-            name,
-            tags,
+            name: context_name,
+            tags: context_tags,
             key,
             active_count: self.stats.active_contexts().clone(),
         }))
@@ -387,18 +389,18 @@ impl ContextResolver {
     ///
     /// `None` may be returned if the interner is full and outside allocations are disallowed. See
     /// `allow_heap_allocations` for more information.
-    pub fn resolve<R>(&mut self, value: R) -> Option<Context>
+    pub fn resolve<T>(&mut self, name: &str, tags: T, origin_info: Option<OriginInfo<'_>>) -> Option<Context>
     where
-        R: Resolvable,
+        T: Tagged,
     {
-        let context_key = self.create_context_key_from_resolvable(&value);
+        let context_key = self.create_context_key_from_resolvable(name, &tags, origin_info);
         match self.context_cache.get(&context_key) {
             Some(context) => {
                 self.stats.resolved_existing_context_total().increment(1);
                 self.expiration.mark_entry_accessed(context_key);
                 Some(context)
             }
-            None => match self.create_context_from_resolvable(context_key, value) {
+            None => match self.create_context_from_resolvable(context_key, name, tags) {
                 Some(context) => {
                     debug!(?context_key, ?context, "Resolved new context.");
 
@@ -503,12 +505,14 @@ mod tests {
         let tags1: [&str; 0] = [];
         let tags2 = ["tag1"];
 
-        let ref1 = (name, &tags1[..]);
-        let ref2 = (name, &tags2[..]);
-        assert_ne!(ref1, ref2);
+        assert_ne!(&tags1[..], &tags2[..]);
 
-        let context1 = resolver.resolve(ref1).expect("should not fail to resolve");
-        let context2 = resolver.resolve(ref2).expect("should not fail to resolve");
+        let context1 = resolver
+            .resolve(name, &tags1[..], None)
+            .expect("should not fail to resolve");
+        let context2 = resolver
+            .resolve(name, &tags2[..], None)
+            .expect("should not fail to resolve");
 
         // The contexts should not be equal to each other, and should have distinct underlying pointers to the shared
         // context state:
@@ -516,12 +520,12 @@ mod tests {
         assert!(!context1.ptr_eq(&context2));
 
         // If we create the context references again, we _should_ get back the same contexts as before:
-        let ref1_redo = (name, &tags1[..]);
-        let ref2_redo = (name, &tags2[..]);
-        assert_ne!(ref1_redo, ref2_redo);
-
-        let context1_redo = resolver.resolve(ref1_redo).expect("should not fail to resolve");
-        let context2_redo = resolver.resolve(ref2_redo).expect("should not fail to resolve");
+        let context1_redo = resolver
+            .resolve(name, &tags1[..], None)
+            .expect("should not fail to resolve");
+        let context2_redo = resolver
+            .resolve(name, &tags2[..], None)
+            .expect("should not fail to resolve");
 
         assert_ne!(context1_redo, context2_redo);
         assert_eq!(context1, context1_redo);
@@ -539,12 +543,14 @@ mod tests {
         let tags1 = ["tag1", "tag2"];
         let tags2 = ["tag2", "tag1"];
 
-        let ref1 = (name, &tags1[..]);
-        let ref2 = (name, &tags2[..]);
-        assert_ne!(ref1, ref2);
+        assert_ne!(&tags1[..], &tags2[..]);
 
-        let context1 = resolver.resolve(ref1).expect("should not fail to resolve");
-        let context2 = resolver.resolve(ref2).expect("should not fail to resolve");
+        let context1 = resolver
+            .resolve(name, &tags1[..], None)
+            .expect("should not fail to resolve");
+        let context2 = resolver
+            .resolve(name, &tags2[..], None)
+            .expect("should not fail to resolve");
 
         // The contexts should be equal to each other, and should have the same underlying pointer to the shared context
         // state:
@@ -561,7 +567,7 @@ mod tests {
         let context = metrics::with_local_recorder(&recorder, || {
             let mut resolver: ContextResolver = ContextResolverBuilder::for_tests();
             resolver
-                .resolve(("name", &["tag"][..]))
+                .resolve("name", &["tag"][..], None)
                 .expect("should not fail to resolve")
         });
 
@@ -588,16 +594,14 @@ mod tests {
         let name = "metric_name";
         let tags = ["tag1"];
 
-        let ref1 = (name, &tags[..]);
-        let ref2 = (name, &tags[..]);
-        assert_eq!(ref1, ref2);
-
-        let context1 = resolver.resolve(ref1).expect("should not fail to resolve");
+        let context1 = resolver
+            .resolve(name, &tags[..], None)
+            .expect("should not fail to resolve");
         let mut context2 = context1.clone();
 
         // Mutate the tags of `context2`, which should end up cloning the inner state and becoming its own instance:
-        let tags = context2.tags_mut();
-        tags.insert_tag("tag2");
+        let context2_tags = context2.tags_mut();
+        context2_tags.insert_tag("tag2");
 
         // The contexts should no longer be equal to each other, and should have distinct underlying pointers to the
         // shared context state:
@@ -612,7 +616,9 @@ mod tests {
 
         // And just for good measure, check that we can still resolve the original context reference and get back a
         // context that is equal to `context1`:
-        let context1_redo = resolver.resolve(ref2).expect("should not fail to resolve");
+        let context1_redo = resolver
+            .resolve(name, &tags[..], None)
+            .expect("should not fail to resolve");
         assert_eq!(context1, context1_redo);
         assert!(context1.ptr_eq(&context1_redo));
     }
@@ -628,15 +634,18 @@ mod tests {
         let tags2 = ["tag2"];
         let tags2_duplicated = ["tag2", "tag2"];
 
-        let ref1 = (name, &tags1[..]);
-        let ref1_duplicated = (name, &tags1_duplicated[..]);
-        let ref2 = (name, &tags2[..]);
-        let ref2_duplicated = (name, &tags2_duplicated[..]);
-
-        let context1 = resolver.resolve(ref1).expect("should not fail to resolve");
-        let context1_duplicated = resolver.resolve(ref1_duplicated).expect("should not fail to resolve");
-        let context2 = resolver.resolve(ref2).expect("should not fail to resolve");
-        let context2_duplicated = resolver.resolve(ref2_duplicated).expect("should not fail to resolve");
+        let context1 = resolver
+            .resolve(name, &tags1[..], None)
+            .expect("should not fail to resolve");
+        let context1_duplicated = resolver
+            .resolve(name, &tags1_duplicated[..], None)
+            .expect("should not fail to resolve");
+        let context2 = resolver
+            .resolve(name, &tags2[..], None)
+            .expect("should not fail to resolve");
+        let context2_duplicated = resolver
+            .resolve(name, &tags2_duplicated[..], None)
+            .expect("should not fail to resolve");
 
         // Each non-duplicated/duplicated context pair should be equal to one another:
         assert_eq!(context1, context1_duplicated);

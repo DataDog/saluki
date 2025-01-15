@@ -1,10 +1,14 @@
+use std::sync::Arc;
+
 use papaya::HashMap;
 use saluki_context::{
     origin::{OriginEnricher, OriginInfo, OriginKey, OriginTagCardinality},
     tags::{SharedTagSet, TagSet},
-    Resolvable, TagVisitor,
 };
-use saluki_env::{workload::EntityId, WorkloadProvider};
+use saluki_env::{
+    workload::{providers::NoopWorkloadProvider, EntityId},
+    WorkloadProvider,
+};
 use saluki_io::deser::codec::dogstatsd::MetricPacket;
 use serde::Deserialize;
 use tracing::trace;
@@ -17,15 +21,19 @@ const fn default_origin_detection_optout() -> bool {
     true
 }
 
+fn default_workload_provider() -> Arc<dyn WorkloadProvider + Send + Sync> {
+    Arc::new(NoopWorkloadProvider)
+}
+
 /// Origin enrichment configuration.
 ///
 /// Origin enrichment controls the when and how of enriching metrics ingested via DogStatsD based on various sources of
 /// "origin" information, such as specific metric tags or UDS socket credentials. Enrichment involves adding additional
 /// metric tags that describe the origin of the metric, such as the Kubernetes pod or container.
-#[derive(Clone, Debug, Deserialize)]
-pub struct OriginEnrichmentConfiguration<W = ()> {
-    #[serde(skip)]
-    workload_provider: W,
+#[derive(Clone, Deserialize)]
+pub struct OriginEnrichmentConfiguration {
+    #[serde(skip, default = "default_workload_provider")]
+    workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
 
     /// Whether or not a client-provided entity ID should take precedence over automatically detected origin metadata.
     ///
@@ -66,11 +74,14 @@ pub struct OriginEnrichmentConfiguration<W = ()> {
     origin_detection_optout: bool,
 }
 
-impl<W> OriginEnrichmentConfiguration<W> {
+impl OriginEnrichmentConfiguration {
     /// Sets the workload provider for the configuration.
-    pub fn with_workload_provider<W2>(self, workload_provider: W2) -> OriginEnrichmentConfiguration<W2> {
-        OriginEnrichmentConfiguration {
-            workload_provider,
+    pub fn with_workload_provider<W>(self, workload_provider: W) -> Self
+    where
+        W: WorkloadProvider + Send + Sync + Clone + 'static,
+    {
+        Self {
+            workload_provider: Arc::new(workload_provider),
             entity_id_precedence: self.entity_id_precedence,
             tag_cardinality: self.tag_cardinality,
             origin_detection_unified: self.origin_detection_unified,
@@ -79,11 +90,8 @@ impl<W> OriginEnrichmentConfiguration<W> {
     }
 }
 
-impl<W> OriginEnrichmentConfiguration<W>
-where
-    W: Clone,
-{
-    pub fn build(&self) -> DogStatsDOriginEnricher<W> {
+impl OriginEnrichmentConfiguration {
+    pub fn build(&self) -> DogStatsDOriginEnricher {
         DogStatsDOriginEnricher {
             workload_provider: self.workload_provider.clone(),
             entity_id_precedence: self.entity_id_precedence,
@@ -95,8 +103,8 @@ where
     }
 }
 
-pub struct DogStatsDOriginEnricher<W> {
-    workload_provider: W,
+pub struct DogStatsDOriginEnricher {
+    workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
     entity_id_precedence: bool,
     tag_cardinality: OriginTagCardinality,
     origin_detection_unified: bool,
@@ -104,13 +112,10 @@ pub struct DogStatsDOriginEnricher<W> {
     origin_cache: HashMap<OriginKey, SharedTagSet>,
 }
 
-impl<W> DogStatsDOriginEnricher<W>
-where
-    W: WorkloadProvider + Send + Sync,
-{
-    fn resolve_origin(&self, origin_info: &OriginInfo<'_>) -> Option<OriginKey> {
+impl DogStatsDOriginEnricher {
+    fn resolve_origin(&self, origin_info: OriginInfo<'_>) -> Option<OriginKey> {
         // Calculate the key for this origin information, and see if we've already previously resolved it.
-        let origin_key = OriginKey::from_opaque(origin_info);
+        let origin_key = OriginKey::from_opaque(&origin_info);
         if let Some(tags) = self.origin_cache.pin().get(&origin_key) {
             trace!(origin = %origin_info, tags_len = tags.len(), "Found existing origin during resolving.");
             return Some(origin_key);
@@ -227,11 +232,8 @@ where
     }
 }
 
-impl<W> OriginEnricher for DogStatsDOriginEnricher<W>
-where
-    W: WorkloadProvider + Send + Sync,
-{
-    fn resolve_origin_key(&self, origin_info: &OriginInfo<'_>) -> Option<OriginKey> {
+impl OriginEnricher for DogStatsDOriginEnricher {
+    fn resolve_origin_key(&self, origin_info: OriginInfo<'_>) -> Option<OriginKey> {
         self.resolve_origin(origin_info)
     }
 
@@ -242,54 +244,15 @@ where
     }
 }
 
-impl<W> Default for OriginEnrichmentConfiguration<W>
-where
-    W: Default,
-{
+impl Default for OriginEnrichmentConfiguration {
     fn default() -> Self {
         Self {
-            workload_provider: Default::default(),
+            workload_provider: default_workload_provider(),
             entity_id_precedence: false,
             tag_cardinality: default_tag_cardinality(),
             origin_detection_unified: false,
             origin_detection_optout: default_origin_detection_optout(),
         }
-    }
-}
-
-/// A resolvable metric packet.
-///
-/// Allows resolving a context based on a given borrowed metric packet and its origin information.
-pub struct ResolvableMetricPacket<'a> {
-    packet: &'a MetricPacket<'a>,
-    origin_info: OriginInfo<'a>,
-}
-
-impl<'a> ResolvableMetricPacket<'a> {
-    /// Creates a new `ResolvableMetricPacket` with the given metric packet and origin information.
-    pub fn new(packet: &'a MetricPacket<'a>, origin_info: OriginInfo<'a>) -> Self {
-        Self { packet, origin_info }
-    }
-}
-
-impl<'a> TagVisitor for ResolvableMetricPacket<'a> {
-    fn visit_tags<F>(&self, mut visitor: F)
-    where
-        F: FnMut(&str),
-    {
-        for tag in self.packet.tags.clone() {
-            visitor(tag);
-        }
-    }
-}
-
-impl<'a> Resolvable for ResolvableMetricPacket<'a> {
-    fn name(&self) -> &str {
-        self.packet.metric_name
-    }
-
-    fn origin_info(&self) -> Option<&OriginInfo<'a>> {
-        Some(&self.origin_info)
     }
 }
 

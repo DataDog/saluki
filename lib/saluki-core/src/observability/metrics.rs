@@ -1,15 +1,16 @@
 //! Internal metrics support.
 use std::{
     num::NonZeroUsize,
-    sync::{atomic::Ordering, Arc, OnceLock},
+    sync::{atomic::Ordering, Arc, LazyLock, OnceLock},
     time::Duration,
 };
 
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SetRecorderError, SharedString, Unit};
 use metrics_util::registry::{AtomicStorage, Registry};
 use saluki_context::{
+    origin::OriginInfo,
     tags::{Tag, TagSet},
-    ConcreteResolvable, Context, ContextResolver, ContextResolverBuilder,
+    Context, ContextResolver, ContextResolverBuilder,
 };
 use saluki_event::{metric::*, Event};
 use tokio::sync::broadcast::{self, error::RecvError};
@@ -198,14 +199,19 @@ fn context_from_key(context_resolver: &mut ContextResolver, key: Key) -> Context
         .map(|l| Tag::from(format!("{}:{}", l.key(), l.value())))
         .collect::<TagSet>();
 
-    // NOTE/TODO: This doesn't matter right _now_, since our internal telemetry gets scraped by the Core Agent and thus
-    // enriched that way, but... without any origin information/key here, we're not marking these metrics as coming from
-    // the current process ID, and thus not enriching them in the same way as DSD metrics that come through.
-    let key_ref = ConcreteResolvable::new(key.name(), &tags);
-
     context_resolver
-        .resolve(key_ref)
+        .resolve(key.name(), &tags, Some(internal_telemetry_origin_info()))
         .expect("resolver should always allow falling back")
+}
+
+fn internal_telemetry_origin_info() -> OriginInfo<'static> {
+    static SELF_ORIGIN_INFO: LazyLock<OriginInfo<'static>> = LazyLock::new(|| {
+        let mut origin_info = OriginInfo::default();
+        origin_info.set_process_id(std::process::id());
+        origin_info
+    });
+
+    (*SELF_ORIGIN_INFO).clone()
 }
 
 /// Initializes the metrics subsystem with the given metrics prefix.

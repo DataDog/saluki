@@ -4,8 +4,8 @@ use std::{fmt, hash, ops::Deref as _, sync::Arc};
 
 use stringtheory::MetaString;
 
-mod splitter;
-pub use self::splitter::RawTags;
+mod raw;
+pub use self::raw::RawTags;
 
 /// A metric tag.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]

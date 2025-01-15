@@ -616,20 +616,12 @@ fn metric_tags(config: &DogstatsdCodecConfiguration) -> impl Fn(&[u8]) -> IResul
     let max_tag_count = config.maximum_tag_count;
     let max_tag_len = config.maximum_tag_length;
 
-    move |input: &[u8]| {
-        // Make sure the raw value(s) are valid UTF-8 before we use them later on.
-        if simdutf8::basic::from_utf8(input).is_err() {
-            return Err(nom::Err::Error(Error::new(input, ErrorKind::Verify)));
-        }
-
-        match split_at_delimiter_inclusive(input, b'|') {
-            Some((tags, remaining)) => {
-                // SAFETY: We've already checked above that `tags` is valid UTF-8.
-                let splitter = unsafe { RawTags::new(tags, max_tag_count, max_tag_len) };
-                Ok((remaining, splitter))
-            }
-            None => Err(nom::Err::Error(Error::new(input, ErrorKind::TakeWhile1))),
-        }
+    move |input: &[u8]| match split_at_delimiter_inclusive(input, b'|') {
+        Some((tags, remaining)) => match simdutf8::basic::from_utf8(tags) {
+            Ok(tags) => Ok((remaining, RawTags::new(tags, max_tag_count, max_tag_len))),
+            Err(_) => Err(nom::Err::Error(Error::new(input, ErrorKind::Verify))),
+        },
+        None => Err(nom::Err::Error(Error::new(input, ErrorKind::TakeWhile1))),
     }
 }
 

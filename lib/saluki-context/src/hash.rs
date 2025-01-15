@@ -3,7 +3,7 @@ use std::{
     hash::{Hash as _, Hasher as _},
 };
 
-use crate::{context::Resolvable, origin::OriginKey};
+use crate::{context::Tagged, origin::OriginKey};
 
 pub type FastHashSet<T> = HashSet<T, ahash::RandomState>;
 
@@ -30,12 +30,12 @@ fn hash_string(s: &str) -> u64 {
 /// set.
 ///
 /// Returns a hash that uniquely identifies the combination of name, tags, and origin of the value.
-pub fn hash_resolvable<R>(value: R, origin_key: Option<OriginKey>) -> ContextKey
+pub fn hash_context<T>(name: &str, tags: T, origin_key: Option<OriginKey>) -> ContextKey
 where
-    R: Resolvable,
+    T: Tagged,
 {
     let mut seen = new_fast_hashset();
-    hash_resolvable_with_seen(value, origin_key, &mut seen)
+    hash_context_with_seen(name, tags, origin_key, &mut seen)
 }
 
 /// Hashes a `Resolvable`, using a provided set to track which tags have already been hashed.
@@ -49,21 +49,21 @@ where
 /// allocates a new hash set each time.
 ///
 /// Returns a hash that uniquely identifies the combination of name, tags, and origin of the value.
-pub(super) fn hash_resolvable_with_seen<R>(
-    value: R, origin_key: Option<OriginKey>, seen: &mut FastHashSet<u64>,
+pub(super) fn hash_context_with_seen<T>(
+    name: &str, tags: T, origin_key: Option<OriginKey>, seen: &mut FastHashSet<u64>,
 ) -> ContextKey
 where
-    R: Resolvable,
+    T: Tagged,
 {
     seen.clear();
 
     let mut hasher = ahash::AHasher::default();
-    value.name().hash(&mut hasher);
+    name.hash(&mut hasher);
 
     // Hash the tags individually and XOR their hashes together, which allows us to be order-oblivious:
     let mut combined_tags_hash = 0;
 
-    value.visit_tags(|tag| {
+    tags.visit_tags(|tag| {
         let tag_hash = hash_string(tag);
 
         // If we've already seen this tag before, skip combining it again.
