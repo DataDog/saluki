@@ -8,9 +8,9 @@ use saluki_context::Context;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     observability::ComponentMetricsExt as _,
-    pooling::ObjectPool,
+    pooling::{ElasticObjectPool, ObjectPool},
     topology::{
-        interconnect::{BufferedForwarder, FixedSizeEventBuffer},
+        interconnect::{BufferedForwarder, FixedSizeEventBuffer, FixedSizeEventBufferInner, Forwarder},
         OutputDefinition,
     },
 };
@@ -31,6 +31,8 @@ use self::telemetry::Telemetry;
 
 mod config;
 use self::config::HistogramConfiguration;
+
+const PASSTHROUGH_EVENT_BUFFERS_MAX: usize = 16;
 
 const fn default_window_duration() -> Duration {
     Duration::from_secs(10)
@@ -54,6 +56,10 @@ const fn default_passthrough_timestamped_metrics() -> bool {
 
 const fn default_passthrough_flush_interval() -> Duration {
     Duration::from_secs(2)
+}
+
+const fn default_passthrough_event_buffer_len() -> usize {
+    2048
 }
 
 /// Aggregate transform.
@@ -165,6 +171,19 @@ pub struct AggregateConfiguration {
     )]
     passthrough_flush_interval: Duration,
 
+    /// Length of event buffers used exclusive for passthrough metrics.
+    ///
+    /// While passthrough metrics are not re-aggregated by the transform, they will still be temporarily buffered in
+    /// order to optimize the efficiency of processing them in the next component. This setting controls the maximum
+    /// number of passthrough metrics that can be buffered in a single batch before being forwarded.
+    ///
+    /// Defaults to 2048.
+    #[serde(
+        rename = "dogstatsd_no_aggregation_pipeline_batch_size",
+        default = "default_passthrough_event_buffer_len"
+    )]
+    passthrough_event_buffer_len: usize,
+
     /// Histogram aggregation configuration.
     ///
     /// Controls the aggregates/percentiles that are generated for distributions in "histogram" mode (client-side
@@ -189,6 +208,7 @@ impl AggregateConfiguration {
             counter_expiry_seconds: default_counter_expiry_seconds(),
             passthrough_timestamped_metrics: default_passthrough_timestamped_metrics(),
             passthrough_flush_interval: default_passthrough_flush_interval(),
+            passthrough_event_buffer_len: default_passthrough_event_buffer_len(),
             hist_config: HistogramConfiguration::default(),
         }
     }
@@ -215,6 +235,7 @@ impl TransformBuilder for AggregateConfiguration {
             flush_open_windows: self.flush_open_windows,
             passthrough_timestamped_metrics: self.passthrough_timestamped_metrics,
             passthrough_flush_interval: self.passthrough_flush_interval,
+            passthrough_event_buffer_len: self.passthrough_event_buffer_len,
         }))
     }
 
@@ -239,10 +260,18 @@ impl MemoryBounds for AggregateConfiguration {
         //
         // However, there could be many more values in a single metric, and we don't account for that.
 
+        let passthrough_event_buffer_min_elements = self.passthrough_event_buffer_len;
+        let passthrough_event_buffer_max_elements =
+            self.passthrough_event_buffer_len * (PASSTHROUGH_EVENT_BUFFERS_MAX - 1);
+
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
-            .with_single_value::<Aggregate>("component struct");
+            .with_single_value::<Aggregate>("component struct")
+            .with_array::<Event>(
+                "passthrough event buffer pool (minimum)",
+                passthrough_event_buffer_min_elements,
+            );
         builder
             .firm()
             // Account for the aggregation state map, where we map contexts to the merged metric.
@@ -254,7 +283,9 @@ impl MemoryBounds for AggregateConfiguration {
                     UsageExpr::struct_size::<AggregatedMetric>("aggregated metric"),
                 ),
                 UsageExpr::config("aggregate_context_limit", self.context_limit),
-            ));
+            ))
+            // Upper bound of our passthrough event buffer object pool.
+            .with_array::<Event>("passthrough event buffer pool", passthrough_event_buffer_max_elements);
     }
 }
 
@@ -265,6 +296,7 @@ pub struct Aggregate {
     flush_open_windows: bool,
     passthrough_timestamped_metrics: bool,
     passthrough_flush_interval: Duration,
+    passthrough_event_buffer_len: usize,
 }
 
 #[async_trait]
@@ -280,7 +312,17 @@ impl Transform for Aggregate {
 
         let passthrough_flush = sleep(self.passthrough_flush_interval);
         let mut pending_passthrough_flush = false;
-        let mut passthrough_event_buffer = context.event_buffer_pool().acquire().await;
+
+        let passthrough_event_buffer_len = self.passthrough_event_buffer_len;
+        let (passthrough_event_buffer_pool, shrinker) = ElasticObjectPool::<FixedSizeEventBuffer>::with_builder(
+            "agg_passthrough_event_buffers",
+            1,
+            PASSTHROUGH_EVENT_BUFFERS_MAX,
+            move || FixedSizeEventBufferInner::with_capacity(passthrough_event_buffer_len),
+        );
+        tokio::spawn(shrinker);
+
+        let mut passthrough_event_buffer = passthrough_event_buffer_pool.acquire().await;
 
         health.mark_ready();
         debug!("Aggregation transform started.");
@@ -319,7 +361,7 @@ impl Transform for Aggregate {
                 _ = &mut passthrough_flush, if pending_passthrough_flush  => {
                     // We've hit our deadline for batching up any timestamped metrics, so forward those now.
                     pending_passthrough_flush = false;
-                    match forward_events(&mut passthrough_event_buffer, &context).await {
+                    match forward_events(&mut passthrough_event_buffer, &passthrough_event_buffer_pool, context.forwarder()).await {
                         Ok(unaggregated_events) => debug!(unaggregated_events, "Forwarded events."),
                         Err(e) => error!(error = %e, "Failed to flush unaggregated events."),
                     }
@@ -347,7 +389,7 @@ impl Transform for Aggregate {
                                         if let Some(event) = passthrough_event_buffer.try_push(Event::Metric(timestamped_metric)) {
                                             // Our current passthrough event buffer is full, so we need to forward
                                             // it and replace it with a new event buffer.
-                                            match forward_events(&mut passthrough_event_buffer, &context).await {
+                                            match forward_events(&mut passthrough_event_buffer, &passthrough_event_buffer_pool, context.forwarder()).await {
                                                 Ok(unaggregated_events) => debug!(unaggregated_events, "Forwarded events."),
                                                 Err(e) => error!(error = %e, "Failed to flush unaggregated events."),
                                             }
@@ -398,7 +440,13 @@ impl Transform for Aggregate {
         }
 
         // Do a final flush of any timestamped metrics that we've buffered up.
-        match forward_events(&mut passthrough_event_buffer, &context).await {
+        match forward_events(
+            &mut passthrough_event_buffer,
+            &passthrough_event_buffer_pool,
+            context.forwarder(),
+        )
+        .await
+        {
             Ok(unaggregated_events) => debug!(unaggregated_events, "Forwarded events."),
             Err(e) => error!(error = %e, "Failed to flush unaggregated events."),
         }
@@ -425,20 +473,17 @@ fn try_split_timestamped_values(mut metric: Metric) -> (Option<Metric>, Option<M
 }
 
 async fn forward_events(
-    event_buffer: &mut FixedSizeEventBuffer, context: &TransformContext,
+    event_buffer: &mut FixedSizeEventBuffer, object_pool: &ElasticObjectPool<FixedSizeEventBuffer>,
+    forwarder: &Forwarder,
 ) -> Result<usize, GenericError> {
     if !event_buffer.is_empty() {
         let events_len = event_buffer.len();
 
         // Acquire a new event buffer to replace the one we're about to forward, and swap them.
-        let new_event_buffer = context.event_buffer_pool().acquire().await;
+        let new_event_buffer = object_pool.acquire().await;
         let event_buffer = std::mem::replace(event_buffer, new_event_buffer);
 
-        context
-            .forwarder()
-            .forward_buffer(event_buffer)
-            .await
-            .map(|()| events_len)
+        forwarder.forward_buffer(event_buffer).await.map(|()| events_len)
     } else {
         Ok(0)
     }
