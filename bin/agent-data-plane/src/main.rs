@@ -8,7 +8,7 @@
 use std::time::{Duration, Instant};
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
-use saluki_app::{api::APIBuilder, logging::LoggingAPIHandler, metrics::emit_startup_metrics, prelude::*};
+use saluki_app::{api::APIBuilder, logging::LoggingAPIHandler, memory::MemoryProfilingAPIHandler, metrics::emit_startup_metrics, prelude::*};
 use saluki_components::{
     destinations::{DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration, PrometheusConfiguration},
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
@@ -124,6 +124,7 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     let privileged_api = APIBuilder::new()
         .with_self_signed_tls()
         .with_handler(logging_api_handler)
+        .with_handler(MemoryProfilingAPIHandler)
         .with_optional_handler(env_provider.workload_api_handler());
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.

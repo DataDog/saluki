@@ -10,7 +10,7 @@ default = []
 full = ["api", "logging", "memory", "metrics", "tls"]
 api = ["dep:axum", "dep:saluki-api", "dep:saluki-error", "dep:saluki-io", "dep:tokio", "dep:tower", "dep:tracing"]
 logging = ["api", "dep:chrono", "dep:chrono-tz", "dep:iana-time-zone", "dep:serde", "dep:tracing", "dep:tracing-subscriber"]
-memory = ["metrics", "dep:bytesize", "dep:memory-accounting", "dep:saluki-config", "dep:saluki-error", "dep:serde", "dep:tokio", "dep:tracing"]
+memory = ["api", "metrics", "dep:bytesize", "dep:jemalloc_pprof", "dep:memory-accounting", "dep:saluki-config", "dep:saluki-error", "dep:serde", "dep:tokio", "dep:tracing"]
 metrics = ["dep:saluki-core", "dep:metrics", "dep:tokio"]
 tls = ["dep:saluki-error", "dep:saluki-tls"]
 tls-fips = ["saluki-tls?/fips"]
@@ -22,6 +22,7 @@ chrono = { workspace = true, optional = true }
 chrono-tz = { workspace = true, optional = true }
 http = { workspace = true }
 iana-time-zone = { workspace = true, optional = true }
+jemalloc_pprof = { workspace = true, default-features = false, optional = true }
 memory-accounting = { workspace = true, optional = true }
 metrics = { workspace = true, optional = true }
 rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }

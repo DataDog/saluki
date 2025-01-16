@@ -13,6 +13,11 @@ use memory_accounting::{
     ComponentRegistry, MemoryGrant, MemoryLimiter, VerifiedBounds,
 };
 use metrics::{counter, gauge, Counter, Gauge, Level};
+use saluki_api::{
+    response::IntoResponse,
+    routing::{get, Router},
+    APIHandler, StatusCode,
+};
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
@@ -314,6 +319,41 @@ impl CgroupMemoryParser {
             return None;
         }
         memory.parse::<ByteSize>().ok()
+    }
+}
+/// An API handler for memory profiling.
+///
+/// This handler exposes a single route -- `/debug/pprof/heap` -- which returns a jemalloc heap profile in pprof
+/// format. As one might expect, this handler should only be used when jemalloc is set as the global allocator for the
+/// application.
+pub struct MemoryProfilingAPIHandler;
+
+impl MemoryProfilingAPIHandler {
+    async fn pprof_handler() -> Result<impl IntoResponse, (StatusCode, String)> {
+        let mut prof_ctl = jemalloc_pprof::PROF_CTL.as_ref().unwrap().lock().await;
+        require_profiling_activated(&prof_ctl)?;
+        let pprof = prof_ctl
+            .dump_pprof()
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        Ok(pprof)
+    }
+}
+
+impl APIHandler for MemoryProfilingAPIHandler {
+    type State = ();
+
+    fn generate_initial_state(&self) -> Self::State {}
+
+    fn generate_routes(&self) -> Router<Self::State> {
+        Router::new().route("/debug/pprof/heap", get(Self::pprof_handler))
+    }
+}
+
+fn require_profiling_activated(prof_ctl: &jemalloc_pprof::JemallocProfCtl) -> Result<(), (StatusCode, String)> {
+    if prof_ctl.activated() {
+        Ok(())
+    } else {
+        Err((axum::http::StatusCode::FORBIDDEN, "heap profiling not activated".into()))
     }
 }
 
