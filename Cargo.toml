@@ -66,6 +66,7 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 ahash = { version = "0.8", default-features = false, features = ["std", "runtime-rng"] }
 async-compression = { version = "0.4.13", default-features = false }
 bitmask-enum = { version = "2.2", default-features = false }
+jemalloc_pprof = { version = "0.6", default-features = false }
 figment = { version = "0.10", default-features = false }
 hostname = { version = "0.4", default-features = false }
 http = { version = "1", default-features = false }
