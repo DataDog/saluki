@@ -8,7 +8,10 @@ use nom::{
     sequence::{delimited, preceded, separated_pair, terminated},
     IResult,
 };
-use saluki_context::BorrowedTag;
+use saluki_context::{
+    origin::OriginTagCardinality,
+    tags::{BorrowedTag, RawTags},
+};
 use saluki_core::constants::datadog::{
     CARDINALITY_TAG_KEY, ENTITY_ID_IGNORE_VALUE, ENTITY_ID_TAG_KEY, JMX_CHECK_NAME_TAG_KEY,
 };
@@ -263,12 +266,12 @@ fn parse_dogstatsd_metric<'a>(
         metric_values.set_timestamp(timestamp);
     }
 
-    let tags = maybe_tags.unwrap_or_else(TagSplitter::empty);
+    let tags = maybe_tags.unwrap_or_else(RawTags::empty);
 
     let mut pod_uid = None;
     let mut cardinality = None;
     let mut jmx_check_name = None;
-    for tag in &tags {
+    for tag in tags.clone() {
         let tag = BorrowedTag::from(tag);
         match tag.name_and_value() {
             (ENTITY_ID_TAG_KEY, Some(entity_id)) if entity_id != ENTITY_ID_IGNORE_VALUE => {
@@ -305,7 +308,7 @@ fn parse_dogstatsd_metric<'a>(
 
 pub struct MetricPacket<'a> {
     pub metric_name: &'a str,
-    pub tags: TagSplitter<'a>,
+    pub tags: RawTags<'a>,
     pub values: MetricValues,
     pub num_points: u64,
     pub timestamp: Option<u64>,
@@ -402,7 +405,7 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
                 // Tags: additional tags to be added to the event.
                 _ if chunk.starts_with(message::TAGS_PREFIX) => {
                     let (_, tags) = all_consuming(preceded(tag(message::TAGS_PREFIX), metric_tags(config)))(chunk)?;
-                    maybe_tags = Some(tags.into_iter().map(Into::into).collect());
+                    maybe_tags = Some(tags.into_iter().map(|tag| tag.into()).collect());
                 }
                 _ => {
                     // We don't know what this is, so we just skip it.
@@ -473,7 +476,7 @@ fn parse_dogstatsd_service_check<'a>(
                 // Tags: additional tags to be added to the service check.
                 _ if chunk.starts_with(message::TAGS_PREFIX) => {
                     let (_, tags) = all_consuming(preceded(tag(message::TAGS_PREFIX), metric_tags(config)))(chunk)?;
-                    maybe_tags = Some(tags.into_iter().map(Into::into).collect());
+                    maybe_tags = Some(tags.into_iter().map(|tag| tag.into()).collect());
                 }
                 // Message: A message describing the current state of the service check.
                 message::SERVICE_CHECK_MESSAGE_PREFIX => {
@@ -609,20 +612,16 @@ fn metric_values_from_raw(
 }
 
 #[inline]
-fn metric_tags(config: &DogstatsdCodecConfiguration) -> impl Fn(&[u8]) -> IResult<&[u8], TagSplitter<'_>> {
+fn metric_tags(config: &DogstatsdCodecConfiguration) -> impl Fn(&[u8]) -> IResult<&[u8], RawTags<'_>> {
     let max_tag_count = config.maximum_tag_count;
     let max_tag_len = config.maximum_tag_length;
 
-    move |input: &[u8]| {
-        // Make sure the raw value(s) are valid UTF-8 before we use them later on.
-        if simdutf8::basic::from_utf8(input).is_err() {
-            return Err(nom::Err::Error(Error::new(input, ErrorKind::Verify)));
-        }
-
-        match split_at_delimiter_inclusive(input, b'|') {
-            Some((tags, remaining)) => Ok((remaining, TagSplitter::new(tags, max_tag_count, max_tag_len))),
-            None => Err(nom::Err::Error(Error::new(input, ErrorKind::TakeWhile1))),
-        }
+    move |input: &[u8]| match split_at_delimiter_inclusive(input, b'|') {
+        Some((tags, remaining)) => match simdutf8::basic::from_utf8(tags) {
+            Ok(tags) => Ok((remaining, RawTags::new(tags, max_tag_count, max_tag_len))),
+            Err(_) => Err(nom::Err::Error(Error::new(input, ErrorKind::Verify))),
+        },
+        None => Err(nom::Err::Error(Error::new(input, ErrorKind::TakeWhile1))),
     }
 }
 
@@ -660,117 +659,6 @@ fn external_data(input: &[u8]) -> IResult<&[u8], &str> {
     })(input)
 }
 
-#[inline]
-fn limit_str_to_len(s: &str, limit: usize) -> &str {
-    if limit >= s.len() {
-        s
-    } else {
-        let sb = s.as_bytes();
-
-        // Search through the last four bytes of the string, ending at the index `limit`, and look for the byte that
-        // defines the boundary of a full UTF-8 character.
-        let start = limit.saturating_sub(3);
-        let new_index = sb[start..=limit]
-            .iter()
-            // Bit twiddling magic for checking if `b` is < 128 or >= 192.
-            .rposition(|b| (*b as i8) >= -0x40);
-
-        // SAFETY: UTF-8 characters are a maximum of four bytes, so we know we will have found a valid character
-        // boundary by searching over four bytes, regardless of where the slice started.
-        //
-        // Similarly we know that taking everything from index 0 to the detected character boundary index will be a
-        // valid UTF-8 string.
-        unsafe {
-            let safe_end = start + new_index.unwrap_unchecked();
-            std::str::from_utf8_unchecked(&sb[..safe_end])
-        }
-    }
-}
-
-/// An iterator for splitting tags out of an input byte slice.
-///
-/// Extracts individual tags from the input byte slice by splitting on the comma (`,`, 0x2C) character.
-///
-/// ## Cloning
-///
-/// `TagSplitter` can be cloned to create a new iterator with its own iteration state. The same underlying input byte
-/// slice is retained.
-#[derive(Clone)]
-pub struct TagSplitter<'a> {
-    raw_tags: &'a [u8],
-    max_tag_count: usize,
-    max_tag_len: usize,
-}
-
-impl<'a> TagSplitter<'a> {
-    /// Creates a new `TagSplitter` from the given input byte slice.
-    ///
-    /// The maximum tag count and maximum tag length control how many tags are returned from the iterator and their
-    /// length. If the iterator encounters more tags than the maximum count, it will simply stop returning tags. If the
-    /// iterator encounters any tag that is longer than the maximum length, it will truncate the tag to configured
-    /// length, or to a smaller length, whichever is closer to a valid UTF-8 character boundary.
-    const fn new(raw_tags: &'a [u8], max_tag_count: usize, max_tag_len: usize) -> Self {
-        Self {
-            raw_tags,
-            max_tag_count,
-            max_tag_len,
-        }
-    }
-
-    /// Creates an empty `TagSplitter`.
-    const fn empty() -> Self {
-        Self {
-            raw_tags: &[],
-            max_tag_count: 0,
-            max_tag_len: 0,
-        }
-    }
-}
-
-impl<'a> IntoIterator for &TagSplitter<'a> {
-    type Item = &'a str;
-    type IntoIter = TagIter<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        TagIter {
-            raw_tags: self.raw_tags,
-            parsed_tags: 0,
-            max_tag_len: self.max_tag_len,
-            max_tag_count: self.max_tag_count,
-        }
-    }
-}
-
-pub struct TagIter<'a> {
-    raw_tags: &'a [u8],
-    parsed_tags: usize,
-    max_tag_len: usize,
-    max_tag_count: usize,
-}
-
-impl<'a> Iterator for TagIter<'a> {
-    type Item = &'a str;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let (raw_tag, tail) = split_at_delimiter(self.raw_tags, b',')?;
-        self.raw_tags = tail;
-
-        if self.parsed_tags >= self.max_tag_count {
-            // We've reached the maximum number of tags, so we just skip the rest.
-            return None;
-        }
-
-        // SAFETY: The caller that creates `TagSplitter` is responsible for ensuring that the entire byte slice is
-        // valid UTF-8, which means we should also have valid UTF-8 here since only `TagSplitter` creates `TagIter`.
-        let tag = unsafe { std::str::from_utf8_unchecked(raw_tag) };
-        let tag = limit_str_to_len(tag, self.max_tag_len);
-
-        self.parsed_tags += 1;
-
-        Some(tag)
-    }
-}
-
 struct FloatIter<'a> {
     raw_values: &'a [u8],
 }
@@ -806,7 +694,10 @@ impl<'a> Iterator for FloatIter<'a> {
 mod tests {
     use nom::IResult;
     use proptest::{collection::vec as arb_vec, prelude::*};
-    use saluki_context::{ContextResolver, ContextResolverBuilder};
+    use saluki_context::{
+        tags::{Tag, TagSet},
+        Context,
+    };
     use saluki_event::{
         eventd::{AlertType, EventD, Priority},
         metric::*,
@@ -829,42 +720,17 @@ mod tests {
     fn parse_dsd_metric_with_conf<'input>(
         input: &'input [u8], config: &DogstatsdCodecConfiguration,
     ) -> OptionalNomResult<'input, Metric> {
-        let mut context_resolver = ContextResolverBuilder::for_tests();
-        let (remaining, result) = parse_dsd_metric_direct(input, config, &mut context_resolver)?;
+        let (remaining, packet) = parse_dogstatsd_metric(input, config)?;
         assert!(remaining.is_empty());
 
-        Ok(result)
-    }
+        let tags = packet.tags.into_iter().map(Tag::from).collect::<TagSet>();
+        let context = Context::from_parts(packet.metric_name, tags);
 
-    fn parse_dsd_metric_direct<'input>(
-        input: &'input [u8], config: &DogstatsdCodecConfiguration, context_resolver: &mut ContextResolver,
-    ) -> IResult<&'input [u8], Option<Metric>> {
-        let (remaining, packet) = parse_dogstatsd_metric(input, config)?;
-        // TODO: this is duplicative with `handle_metric_packet`, but it's not clear where we want the responsibility for metadata to live
-        let metadata = MetricMetadata {
-            hostname: None,
-            origin_entity: OriginEntity {
-                process_id: None,
-                container_id: MetaString::from(packet.container_id.unwrap_or("")),
-                pod_uid: MetaString::from(packet.pod_uid.unwrap_or("")),
-                cardinality: packet.cardinality,
-                external_data: MetaString::from(packet.external_data.unwrap_or("")),
-            },
-            origin: Some(
-                packet
-                    .jmx_check_name
-                    .map(MetricOrigin::jmx_check)
-                    .unwrap_or_else(MetricOrigin::dogstatsd),
-            ),
-        };
-
-        let context_ref = context_resolver.create_context_ref(packet.metric_name, &packet.tags);
-        let context = match context_resolver.resolve(context_ref) {
-            Some(context) => context,
-            None => return Ok((remaining, None)),
-        };
-
-        Ok((remaining, Some(Metric::from_parts(context, packet.values, metadata))))
+        Ok(Some(Metric::from_parts(
+            context,
+            packet.values,
+            MetricMetadata::default(),
+        )))
     }
 
     fn parse_dsd_eventd(input: &[u8]) -> NomResult<'_, EventD> {
@@ -908,13 +774,8 @@ mod tests {
     }
 
     #[track_caller]
-    fn check_basic_metric_eq(mut expected: Metric, actual: Option<Metric>) -> Metric {
+    fn check_basic_metric_eq(expected: Metric, actual: Option<Metric>) -> Metric {
         let actual = actual.expect("event should not have been None");
-
-        // We set this manually because the DSD codec is always going to set this on the actual metric, so we want our
-        // expected metric to also match... without each unit test having to set it as boilerplate.
-        expected.metadata_mut().set_origin(MetricOrigin::dogstatsd());
-
         assert_eq!(expected.context(), actual.context());
         assert_eq!(expected.values(), actual.values());
         assert_eq!(expected.metadata(), actual.metadata());
@@ -1027,12 +888,14 @@ mod tests {
         let value = 1.0;
         let container_id = "abcdef123456";
         let raw = format!("{}:{}|c|c:{}", name, value, container_id);
-        let mut expected = Metric::counter(name, value);
-        let origin_entity = expected.metadata_mut().origin_entity_mut();
-        origin_entity.container_id = MetaString::from(container_id);
+        let expected = Metric::counter(name, value);
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
         check_basic_metric_eq(expected, actual);
+
+        let config = DogstatsdCodecConfiguration::default();
+        let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
+        assert_eq!(packet.container_id, Some(container_id));
     }
 
     #[test]
@@ -1054,12 +917,14 @@ mod tests {
         let value = 1.0;
         let external_data = "it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183";
         let raw = format!("{}:{}|c|e:{}", name, value, external_data);
-        let mut expected = Metric::counter(name, value);
-        let origin_entity = expected.metadata_mut().origin_entity_mut();
-        origin_entity.external_data = MetaString::from(external_data);
+        let expected = Metric::counter(name, value);
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
         check_basic_metric_eq(expected, actual);
+
+        let config = DogstatsdCodecConfiguration::default();
+        let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
+        assert_eq!(packet.external_data, Some(external_data));
     }
 
     #[test]
@@ -1069,21 +934,21 @@ mod tests {
         let sample_rate = 0.5;
         let tags = ["tag1", "tag2"];
         let container_id = "abcdef123456";
+        let external_data = "it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183";
         let timestamp = 1234567890;
         let raw = format!(
-            "{}:{}|c|#{}|@{}|c:{}|T{}",
+            "{}:{}|c|#{}|@{}|c:{}|e:{}|T{}",
             name,
             value,
             tags.join(","),
             sample_rate,
             container_id,
+            external_data,
             timestamp
         );
 
         let value_sample_rate_adjusted = value * (1.0 / sample_rate);
         let mut expected = Metric::counter((name, &tags[..]), value_sample_rate_adjusted);
-        let origin_entity = expected.metadata_mut().origin_entity_mut();
-        origin_entity.container_id = MetaString::from(container_id);
         expected.values_mut().set_timestamp(timestamp);
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
@@ -1098,6 +963,11 @@ mod tests {
 
         assert_eq!(values.len(), 1);
         assert_eq!(values[0], (timestamp, value_sample_rate_adjusted));
+
+        let config = DogstatsdCodecConfiguration::default();
+        let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
+        assert_eq!(packet.container_id, Some(container_id));
+        assert_eq!(packet.external_data, Some(external_data));
     }
 
     #[test]
@@ -1192,29 +1062,6 @@ mod tests {
 
         assert_eq!(value_timestamps.len(), 1);
         assert_eq!(value_timestamps[0], 0);
-    }
-
-    #[test]
-    fn no_metrics_when_interner_full_allocations_disallowed() {
-        // We're specifically testing here that when we don't allow outside allocations, we should not be able to
-        // resolve a context if the interner is full. A no-op interner has the smallest possible size, so that's going
-        // to assure we can't intern anything... but we also need a string (name or one of the tags) that can't be
-        // _inlined_ either, since that will get around the interner being full.
-        //
-        // We set our metric name to be longer than 23 bytes (the inlining limit) to ensure this.
-
-        let config = DogstatsdCodecConfiguration::default();
-        let mut context_resolver = ContextResolverBuilder::for_tests().with_heap_allocations(false);
-
-        let metric_name = "big_metric_name_that_cant_possibly_be_inlined";
-        assert!(MetaString::try_inline(metric_name).is_none());
-
-        let input = format!("{}:1|c|#tag1:value1,tag2:value2,tag3:value3", metric_name);
-
-        let (remaining, result) = parse_dsd_metric_direct(input.as_bytes(), &config, &mut context_resolver)
-            .expect("should not fail to parse");
-        assert!(remaining.is_empty());
-        assert!(result.is_none());
     }
 
     #[test]

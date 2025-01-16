@@ -3,14 +3,15 @@
 #![deny(missing_docs)]
 
 mod context;
-pub use self::context::Context;
+pub use self::context::{Context, Tagged};
 
 mod expiry;
 
 mod hash;
 
+pub mod origin;
+
 mod resolver;
 pub use self::resolver::{ContextResolver, ContextResolverBuilder};
 
-mod tags;
-pub use self::tags::{BorrowedTag, Tag, TagSet};
+pub mod tags;

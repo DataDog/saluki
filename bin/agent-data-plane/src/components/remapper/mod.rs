@@ -269,8 +269,7 @@ impl RemapperRule {
             new_tags.push(additional_tag.clone());
         }
 
-        let context_ref = context_resolver.create_context_ref(self.new_name, new_tags.as_slice().iter());
-        context_resolver.resolve(context_ref)
+        context_resolver.resolve(self.new_name, new_tags.as_slice(), None)
     }
 }
 

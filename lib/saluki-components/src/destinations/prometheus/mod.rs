@@ -7,7 +7,7 @@ use hyper::{body::Incoming, service::service_fn};
 use indexmap::IndexMap;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
-use saluki_context::{Context, TagSet};
+use saluki_context::{tags::TagSet, Context};
 use saluki_core::components::{destinations::*, ComponentContext};
 use saluki_error::GenericError;
 use saluki_event::{

@@ -1,4 +1,3 @@
-use std::num::NonZeroU32;
 use std::sync::LazyLock;
 use std::{num::NonZeroUsize, time::Duration};
 
@@ -20,12 +19,10 @@ use saluki_core::{
         OutputDefinition,
     },
 };
+use saluki_env::WorkloadProvider;
 use saluki_error::{generic_error, GenericError};
 use saluki_event::metric::{MetricMetadata, MetricOrigin};
-use saluki_event::{
-    metric::{Metric, OriginEntity},
-    DataType, Event,
-};
+use saluki_event::{metric::Metric, DataType, Event};
 use saluki_io::{
     buf::{BytesBuffer, CollapsibleReadWriteIoBuffer as _, FixedSizeVec},
     deser::{
@@ -51,6 +48,9 @@ use tracing::{debug, error, info, trace, warn};
 
 mod framer;
 use self::framer::{get_framer, DsdFramer};
+
+mod origin;
+use self::origin::{origin_info_from_metric_packet, OriginEnrichmentConfiguration};
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -98,6 +98,12 @@ const fn default_dogstatsd_permissive_decoding() -> bool {
 /// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format.
 #[derive(Deserialize)]
 pub struct DogStatsDConfiguration {
+    /// Origin enrichment configuration.
+    ///
+    /// See [`OriginEnrichmentConfiguration`] for more details.
+    #[serde(default)]
+    origin_enrichment: OriginEnrichmentConfiguration,
+
     /// The size of the buffer used to receive messages into, in bytes.
     ///
     /// Payloads cannot exceed this size, or they will be truncated, leading to discarded messages.
@@ -207,6 +213,19 @@ impl DogStatsDConfiguration {
         Ok(config.as_typed()?)
     }
 
+    /// Sets the workload provider for this configuration.
+    ///
+    /// A workload provider must be set in order for origin enrichment to function.
+    pub fn with_workload_provider<W>(self, workload_provider: W) -> DogStatsDConfiguration
+    where
+        W: WorkloadProvider + Send + Sync + Clone + 'static,
+    {
+        Self {
+            origin_enrichment: self.origin_enrichment.with_workload_provider(workload_provider),
+            ..self
+        }
+    }
+
     async fn build_listeners(&self) -> Result<Vec<Listener>, Error> {
         let mut listeners = Vec::new();
 
@@ -263,8 +282,8 @@ impl SourceBuilder for DogStatsDConfiguration {
             .with_idle_context_expiration(Duration::from_secs(30))
             .with_expiration_interval(Duration::from_secs(1))
             .with_heap_allocations(self.allow_context_heap_allocations)
+            .with_origin_enricher(self.origin_enrichment.build())
             .build();
-        let multitenant_strategy = MultitenantStrategy::new(context_resolver);
 
         let codec_config = DogstatsdCodecConfiguration::default()
             .with_timestamps(self.no_aggregation_pipeline_support)
@@ -278,7 +297,7 @@ impl SourceBuilder for DogStatsDConfiguration {
                 FixedSizeVec::with_capacity(get_adjusted_buffer_size(self.buffer_size))
             }),
             codec,
-            multitenant_strategy,
+            context_resolver,
         }))
     }
 
@@ -313,7 +332,7 @@ pub struct DogStatsD {
     listeners: Vec<Listener>,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     codec: DogstatsdCodec,
-    multitenant_strategy: MultitenantStrategy,
+    context_resolver: ContextResolver,
 }
 
 struct ListenerContext {
@@ -321,7 +340,7 @@ struct ListenerContext {
     listener: Listener,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     codec: DogstatsdCodec,
-    multitenant_strategy: MultitenantStrategy,
+    context_resolver: ContextResolver,
 }
 
 struct HandlerContext {
@@ -330,7 +349,7 @@ struct HandlerContext {
     codec: DogstatsdCodec,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     metrics: Metrics,
-    multitenant_strategy: MultitenantStrategy,
+    context_resolver: ContextResolver,
 }
 
 struct Metrics {
@@ -472,22 +491,6 @@ fn build_metrics(listen_addr: &ListenAddress, context: ComponentContext) -> Metr
     }
 }
 
-// This is basically a shim where we can implement logic to map a metric origin to a given context resolver and/or string interner.
-#[derive(Clone)]
-struct MultitenantStrategy {
-    context_resolver: ContextResolver,
-}
-
-impl MultitenantStrategy {
-    fn new(context_resolver: ContextResolver) -> Self {
-        Self { context_resolver }
-    }
-
-    fn get_context_resolver(&mut self) -> &mut ContextResolver {
-        &mut self.context_resolver
-    }
-}
-
 #[async_trait]
 impl Source for DogStatsD {
     async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
@@ -509,7 +512,7 @@ impl Source for DogStatsD {
                 listener,
                 io_buffer_pool: self.io_buffer_pool.clone(),
                 codec: self.codec.clone(),
-                multitenant_strategy: self.multitenant_strategy.clone(),
+                context_resolver: self.context_resolver.clone(),
             };
 
             spawn_traced(process_listener(context.clone(), listener_context));
@@ -548,7 +551,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
         mut listener,
         io_buffer_pool,
         codec,
-        multitenant_strategy,
+        context_resolver,
     } = listener_context;
     tokio::pin!(shutdown_handle);
 
@@ -573,7 +576,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
                         codec: codec.clone(),
                         io_buffer_pool: io_buffer_pool.clone(),
                         metrics: build_metrics(&listen_addr, source_context.component_context()),
-                        multitenant_strategy: multitenant_strategy.clone(),
+                        context_resolver: context_resolver.clone(),
                     };
                     spawn_traced(process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register()));
                 }
@@ -611,7 +614,7 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
         codec,
         io_buffer_pool,
         metrics,
-        mut multitenant_strategy,
+        mut context_resolver,
     } = handler_context;
 
     if !stream.is_connectionless() {
@@ -690,7 +693,7 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                         match frames.next() {
                             Some(Ok(frame)) => {
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
-                                match handle_frame(&frame[..], &codec, &mut multitenant_strategy, &metrics, &peer_addr) {
+                                match handle_frame(&frame[..], &codec, &mut context_resolver, &metrics, &peer_addr) {
                                     Ok(Some(event)) => {
                                         if let Some(event) = event_buffer.try_push(event) {
                                             debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
@@ -768,7 +771,7 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
 }
 
 fn handle_frame(
-    frame: &[u8], codec: &DogstatsdCodec, multitenant_strategy: &mut MultitenantStrategy, source_metrics: &Metrics,
+    frame: &[u8], codec: &DogstatsdCodec, context_resolver: &mut ContextResolver, source_metrics: &Metrics,
     peer_addr: &ConnectionAddress,
 ) -> Result<Option<Event>, ParseError> {
     let parsed = match codec.decode_packet(frame) {
@@ -789,7 +792,7 @@ fn handle_frame(
         ParsedPacket::Metric(metric_packet) => {
             let events_len = metric_packet.num_points;
 
-            match handle_metric_packet(metric_packet, multitenant_strategy, peer_addr) {
+            match handle_metric_packet(metric_packet, context_resolver, peer_addr) {
                 Some(metric) => {
                     source_metrics.metrics_received().increment(events_len);
                     Event::Metric(metric)
@@ -815,39 +818,28 @@ fn handle_frame(
 }
 
 fn handle_metric_packet(
-    packet: MetricPacket, multitenant_strategy: &mut MultitenantStrategy, peer_addr: &ConnectionAddress,
+    packet: MetricPacket, context_resolver: &mut ContextResolver, peer_addr: &ConnectionAddress,
 ) -> Option<Metric> {
-    let context_resolver = multitenant_strategy.get_context_resolver();
-
-    // Try resolving the context first, since we might need to bail if we can't.
-    let context_ref = context_resolver.create_context_ref(packet.metric_name, &packet.tags);
-    let context = context_resolver.resolve(context_ref)?;
-
-    let mut process_id = None;
+    // Capture the origin information from the packet, including any process ID information if we have it.
+    let mut origin_info = origin_info_from_metric_packet(&packet);
     if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
-        if let Some(pid) = NonZeroU32::new(creds.pid as u32) {
-            process_id = Some(pid);
-        }
+        origin_info.set_process_id(creds.pid as u32);
     }
 
-    let metadata = MetricMetadata {
-        hostname: None,
-        origin_entity: OriginEntity {
-            process_id,
-            container_id: context_resolver.intern(packet.container_id.unwrap_or(""))?,
-            pod_uid: context_resolver.intern(packet.pod_uid.unwrap_or(""))?,
-            cardinality: packet.cardinality,
-            external_data: context_resolver.intern(packet.external_data.unwrap_or(""))?,
-        },
-        origin: Some(
-            packet
+    // Try to resolve the context for this metric.
+    match context_resolver.resolve(packet.metric_name, packet.tags.clone(), Some(origin_info)) {
+        Some(context) => {
+            let origin = packet
                 .jmx_check_name
                 .map(MetricOrigin::jmx_check)
-                .unwrap_or_else(MetricOrigin::dogstatsd),
-        ),
-    };
+                .unwrap_or_else(MetricOrigin::dogstatsd);
+            let metadata = MetricMetadata::default().with_origin(origin);
 
-    Some(Metric::from_parts(context, packet.values, metadata))
+            Some(Metric::from_parts(context, packet.values, metadata))
+        }
+        // We failed to resolve the context, likely due to not having enough interner capacity.
+        None => None,
+    }
 }
 
 async fn forward_events(
@@ -927,7 +919,7 @@ mod tests {
         net::ConnectionAddress,
     };
 
-    use super::{handle_metric_packet, MultitenantStrategy};
+    use super::handle_metric_packet;
 
     #[test]
     fn no_metrics_when_interner_full_allocations_disallowed() {
@@ -939,8 +931,7 @@ mod tests {
         // We set our metric name to be longer than 31 bytes (the inlining limit) to ensure this.
 
         let codec = DogstatsdCodec::from_configuration(DogstatsdCodecConfiguration::default());
-        let context_resolver = ContextResolverBuilder::for_tests().with_heap_allocations(false);
-        let mut multitenant_strategy = MultitenantStrategy::new(context_resolver);
+        let mut context_resolver = ContextResolverBuilder::for_tests().with_heap_allocations(false);
         let peer_addr = ConnectionAddress::from("1.1.1.1:1234".parse::<SocketAddr>().unwrap());
 
         let input = "big_metric_name_that_cant_possibly_be_inlined:1|c|#tag1:value1,tag2:value2,tag3:value3";
@@ -949,7 +940,7 @@ mod tests {
             panic!("Failed to parse packet.");
         };
 
-        let maybe_metric = handle_metric_packet(packet, &mut multitenant_strategy, &peer_addr);
+        let maybe_metric = handle_metric_packet(packet, &mut context_resolver, &peer_addr);
         assert!(maybe_metric.is_none());
     }
 }
