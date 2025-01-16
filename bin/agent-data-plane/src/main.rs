@@ -11,7 +11,7 @@ use std::{
 };
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
-use saluki_app::{api::APIBuilder, logging::LoggingAPIHandler, prelude::*};
+use saluki_app::{api::APIBuilder, logging::LoggingAPIHandler, memory::MemoryProfilingAPIHandler, prelude::*};
 use saluki_components::{
     destinations::{
         new_remote_agent_service, DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration,
@@ -123,6 +123,7 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
         .with_self_signed_tls()
         .with_grpc_service(new_remote_agent_service())
         .with_handler(logging_api_handler)
+        .with_handler(MemoryProfilingAPIHandler)
         .with_optional_handler(env_provider.workload_api_handler());
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
