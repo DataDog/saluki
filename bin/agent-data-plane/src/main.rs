@@ -17,11 +17,11 @@ use saluki_components::{
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
     transforms::{
         AggregateConfiguration, ChainedConfiguration, DogstatsDPrefixFilterConfiguration, HostEnrichmentConfiguration,
-        OriginEnrichmentConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration, RefreshableConfiguration, RefresherConfiguration};
 use saluki_core::topology::TopologyBlueprint;
+use saluki_env::EnvironmentProvider as _;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use saluki_io::net::ListenAddress;
@@ -174,19 +174,13 @@ fn create_topology(
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
     let dsd_config = DogStatsDConfiguration::from_configuration(configuration)
-        .error_context("Failed to configure DogStatsD source.")?;
+        .error_context("Failed to configure DogStatsD source.")?
+        .with_workload_provider(env_provider.workload().clone());
     let dsd_agg_config = AggregateConfiguration::from_configuration(configuration)
         .error_context("Failed to configure aggregate transform.")?;
-
-    let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
-    let origin_enrichment_config = OriginEnrichmentConfiguration::from_configuration(configuration)
-        .error_context("Failed to configure origin enrichment transform.")?
-        .with_environment_provider(env_provider);
     let dsd_prefix_filter_configuration = DogstatsDPrefixFilterConfiguration::from_configuration(configuration)?;
-    let enrich_config = ChainedConfiguration::default()
-        .with_transform_builder(host_enrichment_config)
-        .with_transform_builder(origin_enrichment_config);
-
+    let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider);
+    let enrich_config = ChainedConfiguration::default().with_transform_builder(host_enrichment_config);
     let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Metrics destination.")?;
 

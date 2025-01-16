@@ -1,13 +1,17 @@
 //! Internal metrics support.
 use std::{
     num::NonZeroUsize,
-    sync::{atomic::Ordering, Arc, OnceLock},
+    sync::{atomic::Ordering, Arc, LazyLock, OnceLock},
     time::Duration,
 };
 
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SetRecorderError, SharedString, Unit};
 use metrics_util::registry::{AtomicStorage, Registry};
-use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
+use saluki_context::{
+    origin::OriginInfo,
+    tags::{Tag, TagSet},
+    Context, ContextResolver, ContextResolverBuilder,
+};
 use saluki_event::{metric::*, Event};
 use tokio::sync::broadcast::{self, error::RecvError};
 use tracing::debug;
@@ -154,9 +158,7 @@ async fn flush_metrics(flush_interval: Duration) {
             let context = context_from_key(&mut context_resolver, key);
             let value = counter.swap(0, Ordering::Relaxed) as f64;
 
-            let mut metric = Metric::counter(context, value);
-            set_metric_metadata(&mut metric);
-
+            let metric = Metric::counter(context, value);
             metrics.push(Event::Metric(metric));
         }
 
@@ -164,9 +166,7 @@ async fn flush_metrics(flush_interval: Duration) {
             let context = context_from_key(&mut context_resolver, key);
             let value = f64::from_bits(gauge.load(Ordering::Relaxed));
 
-            let mut metric = Metric::gauge(context, value);
-            set_metric_metadata(&mut metric);
-
+            let metric = Metric::gauge(context, value);
             metrics.push(Event::Metric(metric));
         }
 
@@ -184,9 +184,7 @@ async fn flush_metrics(flush_interval: Duration) {
                 continue;
             }
 
-            let mut metric = Metric::distribution(context, &distribution_samples[..]);
-            set_metric_metadata(&mut metric);
-
+            let metric = Metric::distribution(context, &distribution_samples[..]);
             metrics.push(Event::Metric(metric));
         }
 
@@ -195,38 +193,25 @@ async fn flush_metrics(flush_interval: Duration) {
     }
 }
 
-fn set_metric_metadata(metric: &mut Metric) {
-    // Set the origin entity if process ID is available.
-    metric
-        .metadata_mut()
-        .origin_entity_mut()
-        .set_process_id(self_process_id());
-
-    // Set the origin data to reflect the internal nature of the metric.
-    //
-    // TODO: This should be more like "Agent Internal" but I don't see an obvious combo of product/subproduct/subproduct
-    // detail to indicate as such... gotta talk to some people and see.
-    metric.metadata_mut().set_origin(MetricOrigin::dogstatsd());
-}
-
-fn self_process_id() -> u32 {
-    // We cache the process ID here just to insulate ourselves. On Linux, with glibc, the underlying `getpid` call
-    // should be cached (since it goes through a syscall), but who knows what happens with musl, Windows, Darwin, etc.
-    static PROCESS_ID: OnceLock<u32> = OnceLock::new();
-    *PROCESS_ID.get_or_init(std::process::id)
-}
-
 fn context_from_key(context_resolver: &mut ContextResolver, key: Key) -> Context {
-    let (name, labels) = key.into_parts();
-    let labels = labels
-        .into_iter()
-        .map(|l| format!("{}:{}", l.key(), l.value()))
-        .collect::<Vec<_>>();
+    let tags = key
+        .labels()
+        .map(|l| Tag::from(format!("{}:{}", l.key(), l.value())))
+        .collect::<TagSet>();
 
-    let context_ref = context_resolver.create_context_ref(name.as_str(), &labels);
     context_resolver
-        .resolve(context_ref)
+        .resolve(key.name(), &tags, Some(internal_telemetry_origin_info()))
         .expect("resolver should always allow falling back")
+}
+
+fn internal_telemetry_origin_info() -> OriginInfo<'static> {
+    static SELF_ORIGIN_INFO: LazyLock<OriginInfo<'static>> = LazyLock::new(|| {
+        let mut origin_info = OriginInfo::default();
+        origin_info.set_process_id(std::process::id());
+        origin_info
+    });
+
+    (*SELF_ORIGIN_INFO).clone()
 }
 
 /// Initializes the metrics subsystem with the given metrics prefix.

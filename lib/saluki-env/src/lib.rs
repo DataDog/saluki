@@ -15,6 +15,8 @@ mod prelude;
 pub mod time;
 pub mod workload;
 
+use std::sync::Arc;
+
 pub use self::host::HostProvider;
 pub use self::workload::WorkloadProvider;
 
@@ -31,4 +33,20 @@ pub trait EnvironmentProvider {
 
     /// Gets a reference to workload provider for this environment.
     fn workload(&self) -> &Self::Workload;
+}
+
+impl<E> EnvironmentProvider for Arc<E>
+where
+    E: EnvironmentProvider,
+{
+    type Host = E::Host;
+    type Workload = E::Workload;
+
+    fn host(&self) -> &Self::Host {
+        (**self).host()
+    }
+
+    fn workload(&self) -> &Self::Workload {
+        (**self).workload()
+    }
 }

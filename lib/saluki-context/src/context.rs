@@ -6,9 +6,12 @@ use std::{
 use metrics::Gauge;
 use stringtheory::MetaString;
 
-use crate::{hash::hash_context, tags::TagSet};
+use crate::{
+    hash::{hash_context, ContextKey},
+    tags::TagSet,
+};
 
-static DIRTY_CONTEXT_HASH: OnceLock<u64> = OnceLock::new();
+static DIRTY_CONTEXT_KEY: OnceLock<ContextKey> = OnceLock::new();
 
 /// A metric context.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -21,12 +24,12 @@ impl Context {
     pub fn from_static_name(name: &'static str) -> Self {
         const EMPTY_TAGS: &[&str] = &[];
 
-        let (hash, _) = hash_context(name, EMPTY_TAGS);
+        let key = hash_context(name, EMPTY_TAGS, None);
         Self {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
                 tags: TagSet::default(),
-                hash,
+                key,
                 active_count: Gauge::noop(),
             }),
         }
@@ -39,12 +42,12 @@ impl Context {
             tag_set.insert_tag(MetaString::from_static(tag));
         }
 
-        let (hash, _) = hash_context(name, tags);
+        let key = hash_context(name, tags, None);
         Self {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
                 tags: tag_set,
-                hash,
+                key,
                 active_count: Gauge::noop(),
             }),
         }
@@ -53,12 +56,12 @@ impl Context {
     /// Creates a new `Context` from the given name and given tags.
     pub fn from_parts<S: Into<MetaString>>(name: S, tags: TagSet) -> Self {
         let name = name.into();
-        let (hash, _) = hash_context(&name, &tags);
+        let key = hash_context(&name, &tags, None);
         Self {
             inner: Arc::new(ContextInner {
                 name,
                 tags,
-                hash,
+                key,
                 active_count: Gauge::noop(),
             }),
         }
@@ -68,13 +71,13 @@ impl Context {
     pub fn with_name<S: Into<MetaString>>(&self, name: S) -> Self {
         let name = name.into();
         let tags = self.inner.tags.clone();
-        let (hash, _) = hash_context(&name, &tags);
+        let key = hash_context(&name, &tags, None);
 
         Self {
             inner: Arc::new(ContextInner {
                 name,
                 tags,
-                hash,
+                key,
                 active_count: Gauge::noop(),
             }),
         }
@@ -95,7 +98,7 @@ impl Context {
 
     fn mark_dirty(&mut self) {
         let inner = self.inner_mut();
-        inner.hash = get_dirty_context_hash_value();
+        inner.key = get_dirty_context_key_value();
     }
 
     /// Gets the name of this context.
@@ -160,18 +163,18 @@ impl fmt::Display for Context {
 }
 
 pub struct ContextInner {
+    pub key: ContextKey,
     pub name: MetaString,
     pub tags: TagSet,
-    pub hash: u64,
     pub active_count: Gauge,
 }
 
 impl Clone for ContextInner {
     fn clone(&self) -> Self {
         Self {
+            key: self.key,
             name: self.name.clone(),
             tags: self.tags.clone(),
-            hash: self.hash,
 
             // We're specifically detaching this context from the statistics of the resolver from which `self`
             // originated, as we only want to track the statistics of the contexts created _directly_ through the
@@ -189,8 +192,8 @@ impl Drop for ContextInner {
 
 impl PartialEq<ContextInner> for ContextInner {
     fn eq(&self, other: &ContextInner) -> bool {
-        // NOTE: See the documentation for `ContextRef` on why/how we only check equality using the hash of the context.
-        self.hash == other.hash
+        // TODO: Note about why we consider the hash good enough for equality.
+        self.key == other.key
     }
 }
 
@@ -198,14 +201,15 @@ impl Eq for ContextInner {}
 
 impl hash::Hash for ContextInner {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        // If the context is dirty -- has changed since it was originally resolved -- then our cached hash is now
-        // invalid, so we need to re-hash the context. Otherwise, we can just use the cached hash.
-        if is_context_dirty(self.hash) {
-            let (hash, _) = hash_context(&self.name, &self.tags);
-            state.write_u64(hash);
+        // If the context is dirty -- has changed since it was originally resolved -- then our cached key is now
+        // invalid, so we need to re-hash the context. Otherwise, we can just use the cached key.
+        let key = if is_context_dirty(self.key) {
+            hash_context(&self.name, &self.tags, None)
         } else {
-            state.write_u64(self.hash);
-        }
+            self.key
+        };
+
+        key.hash(state);
     }
 }
 
@@ -214,60 +218,69 @@ impl fmt::Debug for ContextInner {
         f.debug_struct("ContextInner")
             .field("name", &self.name)
             .field("tags", &self.tags)
-            .field("hash", &self.hash)
+            .field("key", &self.key)
             .finish()
     }
 }
 
-/// A context reference that requires zero allocations.
-///
-/// It can be constructed entirely from borrowed strings, which allows for trivially extracting the name and tags of a
-/// metric from a byte slice and then resolving the context without needing to allocate any new memory when a context
-/// has already been resolved.
-///
-/// ## Hashing and equality
-///
-/// `ContextRef` (and `Context` itself) are order-oblivious [1] when it comes to tags, which means that we do not
-/// consider the order of the tags to be relevant to the resulting hash or when comparing two contexts for equality.
-/// This is achieved by hashing the tags in an order-oblivious way (XORing the hashes of the tags into a single value)
-/// and using the hash of the name/tags when comparing equality between two contexts, instead of comparing the
-/// names/tags directly to each other.
-///
-/// Normally, hash maps would instruct you to not use the hash values directly as a proxy for equality because of the
-/// risk of hash collisions, and they're right: this approach _does_ theoretically allow for incorrectly considering two
-/// contexts as equal purely due to a hash collision.
-///
-/// However, the risk of this is low enough that we're willing to accept it. Theoretically, for a perfectly uniform hash
-/// function with a 64-bit output, we would expect a 50% chance of observing a hash collision after hashing roughly **5
-/// billion unique inputs**. At a more practical number, like 1 million unique inputs, the chance of a collision drops
-/// down to around a 1 in 50 million chance, which we find acceptable to contend with.
-///
-/// [1]: https://stackoverflow.com/questions/5889238/why-is-xor-the-default-way-to-combine-hashes
-#[derive(Debug)]
-pub struct ContextRef<'a, I> {
-    pub name: &'a str,
-    pub tags: I,
-    pub tag_len: usize,
-    pub hash: u64,
+/// A value containing tags that can be visited.
+pub trait Tagged {
+    /// Visits the tags in this value.
+    fn visit_tags<F>(&self, visitor: F)
+    where
+        F: FnMut(&str);
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContextHashKey(pub u64);
-
-impl hash::Hash for ContextHashKey {
-    fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        state.write_u64(self.0);
+impl<'a, T> Tagged for &'a T
+where
+    T: Tagged,
+{
+    fn visit_tags<F>(&self, visitor: F)
+    where
+        F: FnMut(&str),
+    {
+        (*self).visit_tags(visitor)
     }
 }
 
-fn get_dirty_context_hash_value() -> u64 {
-    const EMPTY_TAGS: &[&str] = &[];
-    *DIRTY_CONTEXT_HASH.get_or_init(|| {
-        let (hash, _) = hash_context("", EMPTY_TAGS);
-        hash
-    })
+impl<'a> Tagged for &'a [&'static str] {
+    fn visit_tags<F>(&self, mut visitor: F)
+    where
+        F: FnMut(&str),
+    {
+        for tag in self.iter() {
+            visitor(tag);
+        }
+    }
 }
 
-fn is_context_dirty(hash: u64) -> bool {
-    hash == get_dirty_context_hash_value()
+impl<'a> Tagged for &'a [MetaString] {
+    fn visit_tags<F>(&self, mut visitor: F)
+    where
+        F: FnMut(&str),
+    {
+        for tag in self.iter() {
+            visitor(tag);
+        }
+    }
+}
+
+impl<'a> Tagged for &'a TagSet {
+    fn visit_tags<F>(&self, mut visitor: F)
+    where
+        F: FnMut(&str),
+    {
+        for tag in self.into_iter() {
+            visitor(tag.as_str());
+        }
+    }
+}
+
+fn get_dirty_context_key_value() -> ContextKey {
+    const EMPTY_TAGS: &[&str] = &[];
+    *DIRTY_CONTEXT_KEY.get_or_init(|| hash_context("", EMPTY_TAGS, None))
+}
+
+fn is_context_dirty(key: ContextKey) -> bool {
+    key == get_dirty_context_key_value()
 }

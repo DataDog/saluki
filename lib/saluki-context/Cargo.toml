@@ -14,6 +14,7 @@ metrics = { workspace = true }
 quick_cache = { workspace = true, features = ["ahash", "parking_lot"] }
 saluki-error = { workspace = true }
 saluki-metrics = { workspace = true }
+serde = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time"] }
 tracing = { workspace = true }

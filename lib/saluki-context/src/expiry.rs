@@ -8,8 +8,6 @@ use crossbeam_queue::ArrayQueue;
 use hashbrown::HashMap;
 use quick_cache::Lifecycle;
 
-use crate::hash::NoopU64HashBuilder;
-
 /// Builder for creating an expiration configuration.
 pub struct ExpirationBuilder<K> {
     time_to_idle: Option<Duration>,
@@ -94,7 +92,7 @@ impl AccessState {
 
 #[derive(Debug)]
 struct Inner<K> {
-    last_seen: HashMap<K, AccessState, NoopU64HashBuilder>,
+    last_seen: HashMap<K, AccessState, ahash::RandomState>,
     time_to_idle: Duration,
 }
 
@@ -130,7 +128,7 @@ where
     fn new(time_to_idle: Duration) -> Self {
         Self {
             inner: Mutex::new(Inner {
-                last_seen: HashMap::with_hasher(NoopU64HashBuilder),
+                last_seen: HashMap::with_hasher(ahash::RandomState::default()),
                 time_to_idle,
             }),
             pending_ops: ArrayQueue::new(128),

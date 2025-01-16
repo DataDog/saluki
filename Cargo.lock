@@ -2509,6 +2509,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b15813163c1d831bf4a13c3610c05c0d03b39feb07f7e09fa234dac9b15aaf39"
 
 [[package]]
+name = "papaya"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ce63bf9dca3eab259cffd421f05661b3386aee36276f5aed9f71450b98f5c5c"
+dependencies = [
+ "seize",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3419,6 +3428,7 @@ dependencies = [
  "metrics",
  "metrics-util",
  "nom",
+ "papaya",
  "paste",
  "pin-project",
  "protobuf",
@@ -3480,6 +3490,7 @@ dependencies = [
  "quick_cache",
  "saluki-error",
  "saluki-metrics",
+ "serde",
  "stringtheory",
  "tokio",
  "tracing",
@@ -3761,6 +3772,16 @@ checksum = "fa39c7303dc58b5543c94d22c1766b0d31f2ee58306363ea622b10bbc075eaa2"
 dependencies = [
  "core-foundation-sys",
  "libc",
+]
+
+[[package]]
+name = "seize"
+version = "0.4.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d84b0c858bdd30cb56f5597f8b3bf702ec23829e652cc636a1e5a7b9de46ae93"
+dependencies = [
+ "libc",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
