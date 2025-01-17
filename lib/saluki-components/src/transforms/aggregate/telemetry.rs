@@ -1,4 +1,6 @@
-use metrics::{Counter, Gauge};
+use std::time::Duration;
+
+use metrics::{Counter, Gauge, Histogram};
 use saluki_event::metric::MetricValues;
 use saluki_metrics::MetricsBuilder;
 
@@ -54,6 +56,7 @@ pub struct Telemetry {
     active_contexts_by_type: MetricTypedGauge,
     passthrough_metrics: Counter,
     events_dropped: Counter,
+    passthrough_batch_duration: Histogram,
 }
 
 impl Telemetry {
@@ -64,6 +67,7 @@ impl Telemetry {
             passthrough_metrics: builder.register_debug_counter("aggregate_passthrough_metrics_total"),
             events_dropped: builder
                 .register_debug_counter_with_tags("component_events_dropped_total", ["intentional:true"]),
+            passthrough_batch_duration: builder.register_debug_histogram("aggregate_passthrough_batch_duration_secs"),
         }
     }
 
@@ -74,6 +78,7 @@ impl Telemetry {
             active_contexts_by_type: MetricTypedGauge::noop(),
             passthrough_metrics: Counter::noop(),
             events_dropped: Counter::noop(),
+            passthrough_batch_duration: Histogram::noop(),
         }
     }
 
@@ -93,5 +98,9 @@ impl Telemetry {
 
     pub fn increment_events_dropped(&self) {
         self.events_dropped.increment(1);
+    }
+
+    pub fn record_passthrough_batch_duration(&self, duration: Duration) {
+        self.passthrough_batch_duration.record(duration.as_secs_f64());
     }
 }
