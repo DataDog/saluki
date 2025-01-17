@@ -315,6 +315,7 @@ impl Transform for Aggregate {
 
         let passthrough_flush = interval(Duration::from_secs(2));
         let mut pending_passthrough_flush = false;
+        let mut pending_passthrough_batch_start = Instant::now();
         let mut last_passthrough_processed_at = Instant::now();
 
         let passthrough_event_buffer_len = self.passthrough_event_buffer_len;
@@ -365,6 +366,9 @@ impl Transform for Aggregate {
                 _ = passthrough_flush.tick() => {
                     // Check if our passthrough processing has been idle long enough to force a flush.
                     if pending_passthrough_flush && last_passthrough_processed_at.elapsed() >= self.passthrough_idle_flush_timeout {
+                        let batch_duration = pending_passthrough_batch_start.elapsed();
+                        self.telemetry.record_passthrough_batch_duration(batch_duration);
+
                         debug!("Passthrough processing exceeded idle flush timeout. Flushing...");
 
                         pending_passthrough_flush = false;
@@ -435,7 +439,12 @@ impl Transform for Aggregate {
                         }
 
                         if processed_passthrough_metrics {
-                            pending_passthrough_flush = true;
+                            // If this is the first time we've processed passthrough metrics since we last flushed any
+                            // passthrough metrics, then mark ourselves as pending and track when this batch started.
+                            if !pending_passthrough_flush {
+                                pending_passthrough_batch_start = Instant::now();
+                                pending_passthrough_flush = true;
+                            }
                             last_passthrough_processed_at = Instant::now();
                         }
                     },
