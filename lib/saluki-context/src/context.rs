@@ -243,7 +243,18 @@ where
     }
 }
 
-impl<'a> Tagged for &'a [&'static str] {
+impl<'a> Tagged for &'a [&'a str] {
+    fn visit_tags<F>(&self, mut visitor: F)
+    where
+        F: FnMut(&str),
+    {
+        for tag in self.iter() {
+            visitor(tag);
+        }
+    }
+}
+
+impl<'a, const N: usize> Tagged for [&'a str; N] {
     fn visit_tags<F>(&self, mut visitor: F)
     where
         F: FnMut(&str),

@@ -331,9 +331,12 @@ impl<'a> IntoIterator for &'a TagSet {
     }
 }
 
-impl FromIterator<Tag> for TagSet {
-    fn from_iter<I: IntoIterator<Item = Tag>>(iter: I) -> Self {
-        Self(iter.into_iter().collect())
+impl<T> FromIterator<T> for TagSet
+where
+    T: Into<Tag>,
+{
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        Self(iter.into_iter().map(Into::into).collect())
     }
 }
 
@@ -346,6 +349,15 @@ impl Extend<Tag> for TagSet {
 impl From<Tag> for TagSet {
     fn from(tag: Tag) -> Self {
         Self(vec![tag])
+    }
+}
+
+impl<T, const N: usize> From<[T; N]> for TagSet
+where
+    T: Into<Tag>,
+{
+    fn from(tags: [T; N]) -> Self {
+        Self(tags.into_iter().map(Into::into).collect())
     }
 }
 

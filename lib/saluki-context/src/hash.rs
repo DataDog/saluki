@@ -7,8 +7,9 @@ use crate::{context::Tagged, origin::OriginKey};
 
 pub type FastHashSet<T> = HashSet<T, ahash::RandomState>;
 
-pub fn new_fast_hashset<T>() -> FastHashSet<T> {
-    HashSet::with_hasher(ahash::RandomState::default())
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ContextKey {
+    hash: u64,
 }
 
 #[inline]
@@ -57,10 +58,15 @@ where
 {
     seen.clear();
 
+    // Hash the name first.
     let mut hasher = ahash::AHasher::default();
     name.hash(&mut hasher);
 
-    // Hash the tags individually and XOR their hashes together, which allows us to be order-oblivious:
+    // Hash any tags that are present.
+    //
+    // We hash these into a separate value, and so so by hashing each tag individually and then XORing the resulting tag
+    // hash into our "combined" tag hash, which lets us be order-oblivious: we can has the same set of tags, in any
+    // order, and get the same output hash.
     let mut combined_tags_hash = 0;
 
     tags.visit_tags(|tag| {
@@ -76,19 +82,14 @@ where
 
     hasher.write_u64(combined_tags_hash);
 
-    let metric_key = hasher.finish();
-
-    ContextKey { metric_key, origin_key }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct ContextKey {
-    metric_key: u64,
-    origin_key: Option<OriginKey>,
-}
-
-impl ContextKey {
-    pub fn origin_key(&self) -> Option<OriginKey> {
-        self.origin_key
+    // If we have an origin key, hash that too.
+    if let Some(origin_key) = origin_key {
+        origin_key.hash(&mut hasher);
     }
+
+    ContextKey { hash: hasher.finish() }
+}
+
+pub fn new_fast_hashset<T>() -> FastHashSet<T> {
+    HashSet::with_hasher(ahash::RandomState::default())
 }
