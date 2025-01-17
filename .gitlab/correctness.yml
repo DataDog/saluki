@@ -74,5 +74,5 @@ run-ground-truth:
       --metrics-intake-config-path $(pwd)/test/correctness/metrics-intake.yaml
       --dsd-image gcr.io/datadoghq/dogstatsd:${BASE_DD_AGENT_VERSION}
       --dsd-config-path $(pwd)/test/correctness/datadog.yaml
-      --adp-image ${ADP_IMAGE_BASE}:${CI_COMMIT_SHA}
+      --adp-image ${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}
       --adp-config-path $(pwd)/test/correctness/datadog.yaml
