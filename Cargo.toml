@@ -134,7 +134,7 @@ tower-http = { version = "0.6", default-features = false }
 bollard = { version = "0.17", default-features = false }
 clap = { version = "4.5.20", default-features = false }
 reqwest = { version = "0.12.8", default-features = false }
-lading-payload = { git = "https://github.com/DataDog/lading", tag = "v0.25.2" }
+lading-payload = { git = "https://github.com/DataDog/lading", tag = "v0.25.3" }
 serde_yaml = { version = "0.9", default-features = false }
 serde_with = { version = "3.11.0", default-features = false, features = ["macros"] }
 triomphe = { git = "https://github.com/Manishearth/triomphe.git", rev = "3c3d47a3afdf43ad776769e20616bb4d5f919a7f", default-features = false }

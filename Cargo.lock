@@ -2045,7 +2045,7 @@ dependencies = [
 [[package]]
 name = "lading-payload"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/lading?tag=v0.25.2#5efa22d3819bbb40bd82e9169f3feebf1e6127ea"
+source = "git+https://github.com/DataDog/lading?tag=v0.25.3#46d6de9132ea46cf666a776b5058302c467473e9"
 dependencies = [
  "byte-unit",
  "bytes",
@@ -2057,7 +2057,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_tuple",
- "thiserror 1.0.69",
+ "thiserror 2.0.6",
  "time",
  "tokio",
  "tracing",
