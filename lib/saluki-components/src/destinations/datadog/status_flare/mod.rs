@@ -24,7 +24,7 @@ use tonic::transport::Server;
 use tracing::debug;
 use uuid::Uuid;
 
-const DEFAULT_API_LISTEN_PORT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(5102) };
+const DEFAULT_API_LISTEN_PORT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(5100) };
 
 /// Datadog Status and Flare Destination
 ///
@@ -112,6 +112,7 @@ impl Destination for DatadogStatusFlare {
         } = *self;
 
         let api_endpoint = format!("127.0.0.1:{}", api_listen_port);
+        println!("rz6300 {}", api_endpoint);
         let auth_token: String = thread_rng()
             .sample_iter(&Alphanumeric)
             .take(64)
@@ -166,6 +167,7 @@ impl RemoteAgent for RemoteAgentImpl {
     async fn get_status_details(
         &self, _request: tonic::Request<GetStatusDetailsRequest>,
     ) -> std::result::Result<tonic::Response<GetStatusDetailsResponse>, tonic::Status> {
+        println!("rz6300 remote agent status requested");
         let response = GetStatusDetailsResponse {
             main_section: None,
             named_sections: HashMap::new(),

@@ -59,7 +59,10 @@ where
     type Error = B::Error;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
+    #[allow(unreachable_code)]
+    #[allow(unused)]
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        println!("rz6300 calling poll_ready");
         // drive readiness for each inner service and record which is ready
         loop {
             match (self.rest_ready, self.grpc_ready) {
@@ -67,10 +70,12 @@ where
                     return Ok(()).into();
                 }
                 (false, _) => {
+                    println!("rz6300 polling for http");
                     ready!(self.rest.poll_ready(cx)).map_err(|err| match err {})?;
                     self.rest_ready = true;
                 }
                 (_, false) => {
+                    println!("rz6300 polling for grpc");
                     ready!(self.grpc.poll_ready(cx))?;
                     self.grpc_ready = true;
                 }
@@ -79,6 +84,7 @@ where
     }
 
     fn call(&mut self, req: Request<Incoming>) -> Self::Future {
+        println!("rz6300 multiplex service calling");
         // require users to call `poll_ready` first, if they don't we're allowed to panic
         // as per the `tower::Service` contract
         assert!(
@@ -111,6 +117,7 @@ where
 }
 
 fn is_grpc_request<B>(req: &Request<B>) -> bool {
+    println!("rz6300 uri: {:?} headers: {:?}", req.uri(), req.headers());
     req.headers()
         .get(CONTENT_TYPE)
         .map(|content_type| content_type.as_bytes())

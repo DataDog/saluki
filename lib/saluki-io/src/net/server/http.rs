@@ -80,9 +80,10 @@ where
                             let service = service.clone();
                             let conn_builder = conn_builder.clone();
                             let listen_addr = listener.listen_address().clone();
-
+                            println!("rz6300 stream: {}, listen_addr: {}", stream.remote_addr(), listen_addr);
                             match &maybe_tls_acceptor {
                                 Some(acceptor) => {
+                                    println!("rz6300 accepting stream: {}, listen_addr: {}", stream.remote_addr(), listen_addr);
                                     let tls_stream = match acceptor.accept(stream).await {
                                         Ok(stream) => stream,
                                         Err(e) => {
@@ -90,11 +91,14 @@ where
                                             continue
                                         },
                                     };
+                                    println!("rz6300 accepted");
 
                                     spawn_traced(async move {
+                                        println!("rz6300 serving connection");
                                         if let Err(e) = conn_builder.serve_connection(TokioIo::new(tls_stream), service).await {
                                             error!(%listen_addr, error = %e, "Failed to serve HTTP connection.");
                                         }
+                                       println!("rz6300 served connection");
                                     });
                                 },
                                 None => {

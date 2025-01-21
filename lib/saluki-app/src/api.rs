@@ -1,6 +1,6 @@
 //! API server.
 
-use std::{future::Future, io::BufReader, sync::Arc};
+use std::{future::Future, io::BufReader};
 
 use axum::Router;
 use rcgen::{generate_simple_self_signed, CertifiedKey};
@@ -103,6 +103,7 @@ impl APIBuilder {
     ///
     /// If the given listen address is not connection-oriented, or if the server fails to bind to the address, or if
     /// there is an error while accepting for new connections, an error will be returned.
+    #[allow(deprecated)]
     pub async fn serve<F>(self, listen_address: ListenAddress, shutdown: F) -> Result<(), GenericError>
     where
         F: Future<Output = ()> + Send + 'static,
@@ -111,13 +112,18 @@ impl APIBuilder {
 
         // We have to convert this Tower-based `Service` to a Hyper-based `Service` to use it with `HttpServer`, since
         // the two traits are different from a semver perspective.
-        let http_service = TowerToHyperService::new(self.router);
+        let http_service = self.router;
 
-        let multiplexed_service =
-            TowerToHyperService::new(MultiplexService::new(http_service, Arc::new(self.grpc_router.unwrap())));
+        let multiplexed_service = TowerToHyperService::new(MultiplexService::new(
+            http_service,
+            self.grpc_router.unwrap().into_router(),
+        ));
 
         // Create and spawn the HTTP server.
-        let http_server = HttpServer::from_listener(listener, multiplexed_service);
+        let mut http_server = HttpServer::from_listener(listener, multiplexed_service);
+        if let Some(tls_config) = self.tls_config {
+            http_server = http_server.with_tls_config(tls_config);
+        }
         let (shutdown_handle, error_handle) = http_server.listen();
 
         // Wait for our shutdown signal, which we'll forward to the listener to stop accepting new connections... or
