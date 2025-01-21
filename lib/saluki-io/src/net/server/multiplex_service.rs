@@ -4,11 +4,11 @@ use std::{
 };
 
 use axum::{
-    extract::Request,
     http::header::CONTENT_TYPE,
     response::{IntoResponse, Response},
 };
 use futures::{future::BoxFuture, ready};
+use http::Request;
 use hyper::body::Incoming;
 use tower::Service;
 

@@ -1,6 +1,6 @@
 //! API server.
 
-use std::{future::Future, io::BufReader};
+use std::{future::Future, io::BufReader, sync::Arc};
 
 use axum::Router;
 use rcgen::{generate_simple_self_signed, CertifiedKey};
@@ -9,7 +9,10 @@ use rustls_pemfile::{certs, pkcs8_private_keys};
 use saluki_api::APIHandler;
 use saluki_error::GenericError;
 use saluki_io::net::{
-    listener::ConnectionOrientedListener, server::http::HttpServer, util::hyper::TowerToHyperService, ListenAddress,
+    listener::ConnectionOrientedListener,
+    server::{http::HttpServer, multiplex_service::MultiplexService},
+    util::hyper::TowerToHyperService,
+    ListenAddress,
 };
 use tokio::select;
 use tonic::transport::server::Router as TonicRouter;
@@ -108,10 +111,13 @@ impl APIBuilder {
 
         // We have to convert this Tower-based `Service` to a Hyper-based `Service` to use it with `HttpServer`, since
         // the two traits are different from a semver perspective.
-        let service = TowerToHyperService::new(self.router);
+        let http_service = TowerToHyperService::new(self.router);
+
+        let multiplexed_service =
+            TowerToHyperService::new(MultiplexService::new(http_service, Arc::new(self.grpc_router.unwrap())));
 
         // Create and spawn the HTTP server.
-        let http_server = HttpServer::from_listener(listener, service);
+        let http_server = HttpServer::from_listener(listener, multiplexed_service);
         let (shutdown_handle, error_handle) = http_server.listen();
 
         // Wait for our shutdown signal, which we'll forward to the listener to stop accepting new connections... or
