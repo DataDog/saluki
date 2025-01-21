@@ -145,8 +145,8 @@ impl Destination for DatadogStatusFlare {
                             register_agent.reset_after(Duration::from_secs(new_refresh_interval as u64));
                             debug!("Refreshed registration with Core Agent");
                         }
-                        Err(_) => {
-                            debug!("Failed to refresh registration with Core Agent.");
+                        Err(e) => {
+                            debug!("Failed to refresh registration with Core Agent: {}", e);
                         }
                     }
                 }
