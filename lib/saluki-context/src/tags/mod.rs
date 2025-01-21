@@ -1,6 +1,11 @@
-use std::{fmt, hash, ops::Deref as _};
+//! Metric tags.
+
+use std::{fmt, hash, ops::Deref as _, sync::Arc};
 
 use stringtheory::MetaString;
+
+mod raw;
+pub use self::raw::RawTags;
 
 /// A metric tag.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -22,6 +27,11 @@ impl Tag {
         self.0.len()
     }
 
+    /// Returns a reference to the entire underlying tag string.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
     /// Gets the name of the tag.
     ///
     /// For bare tags (e.g. `production`), this is simply the tag value itself. For key/value-style tags (e.g.
@@ -40,6 +50,11 @@ impl Tag {
     /// this is the value part of the tag, or `web` based on the example.
     pub fn value(&self) -> Option<&str> {
         self.0.deref().split_once(':').map(|(_, value)| value)
+    }
+
+    /// Returns a borrowed version of the tag.
+    pub fn as_borrowed(&self) -> BorrowedTag<'_> {
+        BorrowedTag::from(self.0.deref())
     }
 
     /// Consumes the tag and returns the inner `MetaString`.
@@ -72,6 +87,12 @@ where
 {
     fn from(s: T) -> Self {
         Self(s.into())
+    }
+}
+
+impl AsRef<str> for Tag {
+    fn as_ref(&self) -> &str {
+        &self.0
     }
 }
 
@@ -124,12 +145,29 @@ impl<'a> BorrowedTag<'a> {
             None => (self.raw, None),
         }
     }
+
+    /// Consumes this borrowed tag and returns an owned version of the raw tag.
+    pub fn into_string(self) -> MetaString {
+        self.raw.into()
+    }
 }
 
 impl<'a> From<&'a str> for BorrowedTag<'a> {
     fn from(s: &'a str) -> Self {
         let separator = memchr::memchr(b':', s.as_bytes());
         Self { raw: s, separator }
+    }
+}
+
+impl<'a> AsRef<str> for BorrowedTag<'a> {
+    fn as_ref(&self) -> &str {
+        self.raw
+    }
+}
+
+impl<'a> hash::Hash for BorrowedTag<'a> {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        self.raw.hash(state);
     }
 }
 
@@ -163,6 +201,15 @@ impl TagSet {
         let tag = tag.into();
         if !self.0.iter().any(|existing| existing == &tag) {
             self.0.push(tag);
+        }
+    }
+
+    /// Inserts a tag into the set.
+    ///
+    /// If the tag is already present in the set, this does nothing.
+    fn insert_tag_borrowed(&mut self, tag: &Tag) {
+        if !self.0.iter().any(|existing| existing == tag) {
+            self.0.push(tag.clone());
         }
     }
 
@@ -233,21 +280,19 @@ impl TagSet {
         }
     }
 
-    /// Returns a sorted version of the tag set.
-    pub fn as_sorted(&self) -> Self {
-        let mut tags = self.0.clone();
-        tags.sort_unstable();
-        Self(tags)
+    /// Merges the tags from another shared set into this set.
+    ///
+    /// If a tag from `other` is already present in this set, it will not be added.
+    pub fn merge_missing_shared(&mut self, other: &SharedTagSet) {
+        for tag in other {
+            self.insert_tag_borrowed(tag);
+        }
     }
-}
 
-fn tag_has_name(tag: &Tag, tag_name: &str) -> bool {
-    // Try matching it as a key-value pair (e.g., `env:production`) first, and then just try matching it as a bare tag
-    // (e.g., `production`).
-    let tag_str = tag.0.deref();
-    tag_str
-        .split_once(':')
-        .map_or_else(|| tag_str == tag_name, |(name, _)| name == tag_name)
+    /// Consumes this `TagSet` and returns a shared, read-only version of it.
+    pub fn into_shared(self) -> SharedTagSet {
+        SharedTagSet(Arc::new(self))
+    }
 }
 
 impl PartialEq<TagSet> for TagSet {
@@ -302,4 +347,95 @@ impl From<Tag> for TagSet {
     fn from(tag: Tag) -> Self {
         Self(vec![tag])
     }
+}
+
+/// A shared, read-only set of tags.
+#[derive(Clone, Debug)]
+pub struct SharedTagSet(Arc<TagSet>);
+
+impl SharedTagSet {
+    /// Returns `true` if the tag set is empty.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Returns the number of tags in the set.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns `true` if the given tag is contained in the set.
+    ///
+    /// This matches the complete tag, rather than just the name.
+    pub fn has_tag<T>(&self, tag: T) -> bool
+    where
+        T: AsRef<str>,
+    {
+        self.0.has_tag(tag)
+    }
+
+    /// Gets a single tag, by name, from the set.
+    ///
+    /// If multiple tags are present with the same name, the first tag with a matching name will be returned. If no tag
+    /// in the set matches, `None` is returned.
+    pub fn get_single_tag<T>(&self, tag_name: T) -> Option<&Tag>
+    where
+        T: AsRef<str>,
+    {
+        self.0.get_single_tag(tag_name)
+    }
+}
+
+impl PartialEq<TagSet> for SharedTagSet {
+    fn eq(&self, other: &TagSet) -> bool {
+        // NOTE: We could try storing tags in sorted order internally, which would make this moot... but for now, we'll
+        // avoid the sort (which lets us avoid an allocation) and just do the naive per-item comparison.
+        if self.0.len() != other.len() {
+            return false;
+        }
+
+        for other_tag in other {
+            if !self.0.deref().into_iter().any(|tag| tag == other_tag) {
+                return false;
+            }
+        }
+
+        true
+    }
+}
+
+impl PartialEq<SharedTagSet> for SharedTagSet {
+    fn eq(&self, other: &SharedTagSet) -> bool {
+        // NOTE: We could try storing tags in sorted order internally, which would make this moot... but for now, we'll
+        // avoid the sort (which lets us avoid an allocation) and just do the naive per-item comparison.
+        if self.0.len() != other.0.len() {
+            return false;
+        }
+
+        for other_tag in other.0.deref() {
+            if !self.0.deref().into_iter().any(|tag| tag == other_tag) {
+                return false;
+            }
+        }
+
+        true
+    }
+}
+
+impl<'a> IntoIterator for &'a SharedTagSet {
+    type Item = &'a Tag;
+    type IntoIter = std::slice::Iter<'a, Tag>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.deref().into_iter()
+    }
+}
+
+fn tag_has_name(tag: &Tag, tag_name: &str) -> bool {
+    // Try matching it as a key-value pair (e.g., `env:production`) first, and then just try matching it as a bare tag
+    // (e.g., `production`).
+    let tag_str = tag.0.deref();
+    tag_str
+        .split_once(':')
+        .map_or_else(|| tag_str == tag_name, |(name, _)| name == tag_name)
 }

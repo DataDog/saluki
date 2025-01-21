@@ -190,7 +190,7 @@ endif
 
 .PHONY: run-adp
 run-adp: build-adp
-run-adp: ## Runs ADP locally (requires Datadog Agent for tagging)
+run-adp: ## Runs ADP locally (debug, requires Datadog Agent for tagging)
 ifeq ($(shell test -f /etc/datadog-agent/auth_token || echo not-found), not-found)
 	$(error "Authentication token not found at /etc/datadog-agent/auth_token. Is the Datadog Agent running? Is the current user in the right group to access it?")
 endif
@@ -198,10 +198,27 @@ ifeq ($(shell test -n "$(DD_API_KEY)" || echo not-found), not-found)
 	$(error "API key not set. Please set the DD_API_KEY environment variable.")
 endif
 	@echo "[*] Running ADP..."
-	@DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_SOCKET=/tmp/adp-dsd.sock DD_DOGSTATSD_EXPIRY_SECONDS=30 \
+	@DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
+	DD_DOGSTATSD_EXPIRY_SECONDS=30 \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5101 \
 	DD_AUTH_TOKEN_FILE_PATH=/etc/datadog-agent/auth_token \
 	target/debug/agent-data-plane
+
+.PHONY: run-adp-release
+run-adp-release: build-adp-release
+run-adp-release: ## Runs ADP locally (release, requires Datadog Agent for tagging)
+ifeq ($(shell test -f /etc/datadog-agent/auth_token || echo not-found), not-found)
+	$(error "Authentication token not found at /etc/datadog-agent/auth_token. Is the Datadog Agent running? Is the current user in the right group to access it?")
+endif
+ifeq ($(shell test -n "$(DD_API_KEY)" || echo not-found), not-found)
+	$(error "API key not set. Please set the DD_API_KEY environment variable.")
+endif
+	@echo "[*] Running ADP..."
+	@DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
+	DD_DOGSTATSD_EXPIRY_SECONDS=30 \
+	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5101 \
+	DD_AUTH_TOKEN_FILE_PATH=/etc/datadog-agent/auth_token \
+	target/release/agent-data-plane
 
 .PHONY: run-adp-standalone
 run-adp-standalone: build-adp
@@ -211,7 +228,8 @@ ifeq ($(shell test -n "$(DD_API_KEY)" || echo not-found), not-found)
 endif
 	@echo "[*] Running ADP..."
 	@DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true \
-	DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_SOCKET=/tmp/adp-dsd.sock DD_DOGSTATSD_EXPIRY_SECONDS=30 \
+	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
+	DD_DOGSTATSD_EXPIRY_SECONDS=30 \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5101 \
 	target/debug/agent-data-plane
 
@@ -223,7 +241,8 @@ ifeq ($(shell test -n "$(DD_API_KEY)" || echo not-found), not-found)
 endif
 	@echo "[*] Running ADP..."
 	@DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true \
-	DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dsd.sock DD_DOGSTATSD_EXPIRY_SECONDS=30 \
+	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
+	DD_DOGSTATSD_EXPIRY_SECONDS=30 \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5101 \
 	target/release/agent-data-plane
 
@@ -234,13 +253,13 @@ run-dsd-basic-udp: build-dsd-client ## Runs a basic set of metrics via the Dogst
 
 .PHONY: run-dsd-basic-uds
 run-dsd-basic-uds: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDS)
-	@echo "[*] Sending basic metrics via Dogstatsd (unixgram:///tmp/adp-dsd.sock)..."
-	@./tooling/bin/dogstatsd_client unixgram:///tmp/adp-dsd.sock count:1,gauge:2,histogram:3,distribution:4,set:five
+	@echo "[*] Sending basic metrics via Dogstatsd (unixgram:///tmp/adp-dogstatsd-dgram.sock)..."
+	@./tooling/bin/dogstatsd_client unixgram:///tmp/adp-dogstatsd-dgram.sock count:1,gauge:2,histogram:3,distribution:4,set:five
 
 .PHONY: run-dsd-basic-uds-stream
 run-dsd-basic-uds-stream: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDS Stream)
-	@echo "[*] Sending basic metrics via Dogstatsd (unix:///tmp/adp-dsd.sock)..."
-	@./tooling/bin/dogstatsd_client unix:///tmp/adp-dsd.sock count:1,gauge:2,histogram:3,distribution:4,set:five
+	@echo "[*] Sending basic metrics via Dogstatsd (unix:///tmp/adp-dogstatsd-stream.sock)..."
+	@./tooling/bin/dogstatsd_client unix:///tmp/adp-dogstatsd-stream.sock count:1,gauge:2,histogram:3,distribution:4,set:five
 
 ##@ Kubernetes
 
@@ -440,7 +459,8 @@ profile-run-adp: build-adp-release
 profile-run-adp: ## Runs ADP locally for profiling
 	@echo "[*] Running ADP..."
 	@DD_API_KEY=00000001adp DD_HOSTNAME=adp-profiling DD_DD_URL=http://127.0.0.1:9095 \
-	DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_SOCKET=/tmp/adp-dsd.sock DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true \
+	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
+	DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5101 \
 	DD_DOGSTATSD_EXPIRY_SECONDS=30 \
 	target/release/agent-data-plane
@@ -453,7 +473,8 @@ ifeq ($(shell test -S /var/run/datadog/apm.socket || echo not-found), not-found)
 endif
 	@echo "[*] Running ADP under ddprof (service: adp, environment: local, version: $(GIT_COMMIT))..."
 	@DD_API_KEY=00000001adp DD_HOSTNAME=adp-profiling DD_DD_URL=http://127.0.0.1:9095 \
-	DD_DOGSTATSD_PORT=0 DD_DOGSTATSD_SOCKET=/tmp/adp-dsd.sock DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true \
+	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
+	DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5101 \
 	DD_DOGSTATSD_EXPIRY_SECONDS=30 \
 	./test/ddprof/bin/ddprof --service adp --environment local --service-version $(GIT_COMMIT) \

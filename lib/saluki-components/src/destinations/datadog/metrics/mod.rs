@@ -1,54 +1,28 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
-use http::{
-    uri::{Authority, Scheme},
-    HeaderName, HeaderValue, Request, Uri,
-};
-use http_body::Body;
-use http_body_util::BodyExt as _;
-use hyper::body::Incoming;
+use http::{Request, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::{GenericConfiguration, RefreshableConfiguration};
 use saluki_core::{
     components::{destinations::*, ComponentContext},
     observability::ComponentMetricsExt as _,
     pooling::{FixedSizeObjectPool, ObjectPool},
-    task::spawn_traced,
 };
-use saluki_error::{generic_error, GenericError};
+use saluki_error::GenericError;
 use saluki_event::DataType;
-use saluki_io::{
-    buf::{BytesBuffer, FixedSizeVec, FrozenChunkedBytesBuffer},
-    net::{client::http::HttpClient, util::retry::agent::DatadogAgentForwarderRetryConfiguration},
-};
+use saluki_io::buf::{BytesBuffer, FixedSizeVec, FrozenChunkedBytesBuffer};
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use stringtheory::MetaString;
-use tokio::{
-    select,
-    sync::{mpsc, oneshot, Barrier},
-};
-use tower::{BoxError, Service, ServiceBuilder};
+use tokio::select;
 use tracing::{debug, error};
 
-use super::common::endpoints::{EndpointConfiguration, ResolvedEndpoint};
+use super::common::{config::ForwarderConfiguration, io::TransactionForwarder, telemetry::ComponentTelemetry};
 
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
 
-mod telemetry;
-use self::telemetry::ComponentTelemetry;
-
 const RB_BUFFER_POOL_COUNT: usize = 128;
 const RB_BUFFER_POOL_BUF_SIZE: usize = 32_768;
-
-static DD_AGENT_VERSION_HEADER: HeaderName = HeaderName::from_static("dd-agent-version");
-static DD_API_KEY_HEADER: HeaderName = HeaderName::from_static("dd-api-key");
-
-fn default_request_timeout_secs() -> u64 {
-    20
-}
 
 /// Datadog Metrics destination.
 ///
@@ -63,23 +37,11 @@ fn default_request_timeout_secs() -> u64 {
 #[derive(Deserialize)]
 #[allow(dead_code)]
 pub struct DatadogMetricsConfiguration {
-    /// Endpoint configuration settings
+    /// Forwarder configuration settings.
     ///
-    /// See [`EndpointConfiguration`] for more information about the available settings.
+    /// See [`ForwarderConfiguration`] for more information about the available settings.
     #[serde(flatten)]
-    endpoint_config: EndpointConfiguration,
-
-    /// The request timeout for forwarding metrics, in seconds.
-    ///
-    /// Defaults to 20 seconds.
-    #[serde(default = "default_request_timeout_secs", rename = "forwarder_timeout")]
-    request_timeout_secs: u64,
-
-    /// Retry configuration settings.
-    ///
-    /// See [`DatadogAgentForwarderRetryConfiguration`] for more information about the available settings.
-    #[serde(flatten)]
-    retry_config: DatadogAgentForwarderRetryConfiguration,
+    forwarder_config: ForwarderConfiguration,
 
     #[serde(skip)]
     config_refresher: Option<RefreshableConfiguration>,
@@ -105,17 +67,14 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(context);
-
-        let service = HttpClient::builder()
-            .with_retry_policy(self.retry_config.into_default_http_retry_policy())
-            .with_bytes_sent_counter(metrics_builder.register_debug_counter("component_bytes_sent_total"))
-            .with_endpoint_telemetry(metrics_builder, Some(get_metrics_endpoint_name))
-            .build()?;
-
-        // Resolve all endpoints that we'll be forwarding metrics to.
-        let endpoints = self
-            .endpoint_config
-            .build_resolved_endpoints(self.config_refresher.clone())?;
+        let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+        let forwarder = TransactionForwarder::from_config(
+            self.forwarder_config.clone(),
+            self.config_refresher.clone(),
+            get_metrics_endpoint_name,
+            telemetry.clone(),
+            metrics_builder,
+        )?;
 
         // Create our request builders.
         let rb_buffer_pool = create_request_builder_buffer_pool();
@@ -123,10 +82,10 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         let sketches_request_builder = RequestBuilder::new(MetricsEndpoint::Sketches, rb_buffer_pool).await?;
 
         Ok(Box::new(DatadogMetrics {
-            service,
             series_request_builder,
             sketches_request_builder,
-            endpoints,
+            forwarder,
+            telemetry,
         }))
     }
 }
@@ -142,10 +101,7 @@ impl MemoryBounds for DatadogMetricsConfiguration {
             // Capture the size of the heap allocation when the component is built.
             //
             // TODO: This type signature is _ugly_, and it would be nice to improve it somehow.
-            .with_single_value::<DatadogMetrics<
-                FixedSizeObjectPool<BytesBuffer>,
-                HttpClient<FrozenChunkedBytesBuffer>,
-            >>()
+            .with_single_value::<DatadogMetrics<FixedSizeObjectPool<BytesBuffer>>>()
             // Capture the size of our buffer pool.
             .with_fixed_amount(rb_buffer_pool_size)
             // Capture the size of the scratch buffer which may grow up to the uncompressed limit.
@@ -154,54 +110,38 @@ impl MemoryBounds for DatadogMetricsConfiguration {
             // Capture the size of the requests channel.
             //
             // TODO: This type signature is _ugly_, and it would be nice to improve it somehow.
-            .with_array::<(
-                usize,
-                Request<FrozenChunkedBytesBuffer>,
-            )>(32);
+            .with_array::<(usize, Request<FrozenChunkedBytesBuffer>)>(32);
     }
 }
 
-pub struct DatadogMetrics<O, S>
+pub struct DatadogMetrics<O>
 where
     O: ObjectPool<Item = BytesBuffer> + 'static,
-    S: Service<Request<FrozenChunkedBytesBuffer>> + 'static,
 {
-    service: S,
     series_request_builder: RequestBuilder<O>,
     sketches_request_builder: RequestBuilder<O>,
-    endpoints: Vec<ResolvedEndpoint>,
+    forwarder: TransactionForwarder<FrozenChunkedBytesBuffer>,
+    telemetry: ComponentTelemetry,
 }
 
 #[allow(unused)]
 #[async_trait]
-impl<O, S> Destination for DatadogMetrics<O, S>
+impl<O> Destination for DatadogMetrics<O>
 where
     O: ObjectPool<Item = BytesBuffer> + 'static,
-    S: Service<Request<FrozenChunkedBytesBuffer>, Response = hyper::Response<Incoming>> + Clone + Send + 'static,
-    S::Future: Send,
-    S::Error: Send + Into<BoxError>,
 {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
         let Self {
             mut series_request_builder,
             mut sketches_request_builder,
-            service,
-            endpoints,
+            forwarder,
+            telemetry,
         } = *self;
 
         let mut health = context.take_health_handle();
 
-        // Spawn our IO task to handle sending requests.
-        let (io_shutdown_tx, io_shutdown_rx) = oneshot::channel();
-        let (requests_tx, requests_rx) = mpsc::channel(32);
-        let telemetry = ComponentTelemetry::from_context(context.component_context());
-        spawn_traced(run_io_loop(
-            requests_rx,
-            io_shutdown_tx,
-            service,
-            telemetry.clone(),
-            endpoints,
-        ));
+        // Spawn our forwarder task to handle sending requests.
+        let forwarder_handle = forwarder.spawn().await;
 
         health.mark_ready();
         debug!("Datadog Metrics destination started.");
@@ -244,11 +184,7 @@ where
 
                                     for maybe_request in maybe_requests {
                                         match maybe_request {
-                                            Ok(request) => {
-                                                if requests_tx.send(request).await.is_err() {
-                                                    return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
-                                                }
-                                            },
+                                            Ok((events, request)) => forwarder_handle.send_request(events, request).await?,
                                             Err(e) => {
                                                 // TODO: Increment a counter here that metrics were dropped due to a flush failure.
                                                 if e.is_recoverable() {
@@ -279,11 +215,9 @@ where
                         let maybe_series_requests = series_request_builder.flush().await;
                         for maybe_request in maybe_series_requests {
                             match maybe_request {
-                                Ok(request) => {
+                                Ok((events, request)) => {
                                     debug!("Flushed request from series request builder. Sending to I/O task...");
-                                    if requests_tx.send(request).await.is_err() {
-                                        return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
-                                    }
+                                    forwarder_handle.send_request(events, request).await?;
                                 },
                                 Err(e) => {
                                     // TODO: Increment a counter here that metrics were dropped due to a flush failure.
@@ -300,11 +234,9 @@ where
                         let maybe_sketches_requests = sketches_request_builder.flush().await;
                         for maybe_request in maybe_sketches_requests {
                             match maybe_request {
-                                Ok(request) => {
-                                debug!("Flushed request from sketches request builder. Sending to I/O task...");
-                                    if requests_tx.send(request).await.is_err() {
-                                        return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
-                                    }
+                                Ok((events, request)) => {
+                                    debug!("Flushed request from sketches request builder. Sending to I/O task...");
+                                    forwarder_handle.send_request(events, request).await?;
                                 },
                                 Err(e) => {
                                     // TODO: Increment a counter here that metrics were dropped due to a flush failure.
@@ -325,186 +257,12 @@ where
             }
         }
 
-        // Drop the requests channel, which allows the IO task to naturally shut down once it has received and sent all
-        // requests. We then wait for it to signal back to us that it has stopped before exiting ourselves.
-        drop(requests_tx);
-        let _ = io_shutdown_rx.await;
+        // Signal the forwarder to shutdown, and wait until it does so.
+        forwarder_handle.shutdown().await;
 
         debug!("Datadog Metrics destination stopped.");
 
         Ok(())
-    }
-}
-
-async fn run_io_loop<S, B>(
-    mut requests_rx: mpsc::Receiver<(usize, Request<B>)>, io_shutdown_tx: oneshot::Sender<()>, service: S,
-    telemetry: ComponentTelemetry, resolved_endpoints: Vec<ResolvedEndpoint>,
-) where
-    S: Service<Request<B>, Response = hyper::Response<Incoming>> + Clone + Send + 'static,
-    S::Future: Send,
-    S::Error: Send + Into<BoxError>,
-    B: Body + Clone + Send + 'static,
-{
-    // Spawn an endpoint I/O task for each endpoint we're configured to send to.
-    //
-    // This gives us granularity at just the right level, since the places we expect there to be problems (and thus
-    // where concurrency can help make forward progress) are at the endpoint/API key level.
-    let mut endpoint_txs = Vec::new();
-    let task_barrier = Arc::new(Barrier::new(resolved_endpoints.len() + 1));
-
-    for resolved_endpoint in resolved_endpoints {
-        let endpoint_url = resolved_endpoint.endpoint().to_string();
-
-        let (endpoint_tx, endpoint_rx) = mpsc::channel(32);
-        let task_barrier = Arc::clone(&task_barrier);
-        spawn_traced(run_endpoint_io_loop(
-            endpoint_rx,
-            task_barrier,
-            service.clone(),
-            telemetry.clone(),
-            resolved_endpoint,
-        ));
-
-        endpoint_txs.push((endpoint_url, endpoint_tx));
-    }
-
-    // Listen for requests to forward, and send a copy of each one to each endpoint I/O task.
-    while let Some((metrics_count, request)) = requests_rx.recv().await {
-        for (endpoint_url, endpoint_tx) in &endpoint_txs {
-            if endpoint_tx.try_send((metrics_count, request.clone())).is_err() {
-                error!(
-                    endpoint = endpoint_url,
-                    "Failed to send request to endpoint I/O task: receiver dropped."
-                );
-            }
-        }
-    }
-
-    debug!("Requests channel for main I/O task complete. Stopping endpoint I/O tasks and synchronizing on shutdown.");
-
-    // Drop our endpoint I/O task channels, which will cause them to shut down once they've processed all outstanding
-    // requests in their respective channel. We wait for that to happen by synchronizing on the task barrier.
-    //
-    // Once all tasks have completed, we signal back to the main component task that the I/O loop has shutdown.
-    drop(endpoint_txs);
-    task_barrier.wait().await;
-
-    debug!("All endpoint I/O tasks have stopped. Main I/O task shutting down.");
-
-    let _ = io_shutdown_tx.send(());
-}
-
-async fn run_endpoint_io_loop<S, B>(
-    mut requests_rx: mpsc::Receiver<(usize, Request<B>)>, task_barrier: Arc<Barrier>, service: S,
-    telemetry: ComponentTelemetry, endpoint: ResolvedEndpoint,
-) where
-    S: Service<Request<B>, Response = hyper::Response<Incoming>> + Send + 'static,
-    S::Future: Send,
-    S::Error: Send + Into<BoxError>,
-    B: Body,
-{
-    let endpoint_url = endpoint.endpoint().to_string();
-    debug!(endpoint = endpoint_url, "Starting endpoint I/O task.");
-
-    // Build our endpoint service.
-    //
-    // This is where we'll modify the incoming request for our our specific endpoint, such as setting the host portion
-    // of the URI, adding the API key as a header, and so on.
-    let mut service = ServiceBuilder::new()
-        // Set the request's URI to the endpoint's URI, and add the API key as a header.
-        .map_request(for_resolved_endpoint::<B>(endpoint))
-        // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
-        .map_request(with_version_info::<B>())
-        .service(service);
-
-    // Process all requests until the channel is closed.
-    while let Some((metrics_count, request)) = requests_rx.recv().await {
-        match service.call(request).await {
-            Ok(response) => {
-                let status = response.status();
-                if status.is_success() {
-                    debug!(endpoint = endpoint_url, %status, "Request sent.");
-
-                    telemetry.events_sent().increment(metrics_count as u64);
-                } else {
-                    telemetry.http_failed_send().increment(1);
-                    telemetry.events_dropped_http().increment(metrics_count as u64);
-
-                    match response.into_body().collect().await {
-                        Ok(body) => {
-                            let body = body.to_bytes();
-                            let body_str = String::from_utf8_lossy(&body[..]);
-                            error!(endpoint = endpoint_url, %status, "Received non-success response. Body: {}", body_str);
-                        }
-                        Err(e) => {
-                            error!(endpoint = endpoint_url, %status, error = %e, "Failed to read response body of non-success response.");
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                let e: tower::BoxError = e.into();
-                error!(endpoint = endpoint_url, error = %e, error_source = ?e.source(), "Failed to send request.");
-            }
-        }
-    }
-
-    debug!(
-        endpoint = endpoint_url,
-        "Requests channel for endpoint I/O task complete. Synchronizing on shutdown."
-    );
-
-    // Signal to the main I/O task that we've finished.
-    task_barrier.wait().await;
-}
-
-fn for_resolved_endpoint<B>(mut endpoint: ResolvedEndpoint) -> impl FnMut(Request<B>) -> Request<B> + Clone {
-    let new_uri_authority = Authority::try_from(endpoint.endpoint().authority())
-        .expect("should not fail to construct new endpoint authority");
-    let new_uri_scheme =
-        Scheme::try_from(endpoint.endpoint().scheme()).expect("should not fail to construct new endpoint scheme");
-    move |mut request| {
-        // Build an updated URI by taking the endpoint URL and slapping the request's URI path on the end of it.
-        let new_uri = Uri::builder()
-            .scheme(new_uri_scheme.clone())
-            .authority(new_uri_authority.clone())
-            .path_and_query(request.uri().path_and_query().expect("request path must exist").clone())
-            .build()
-            .expect("should not fail to construct new URI");
-        let api_key = endpoint.api_key();
-        let api_key_value = HeaderValue::from_str(api_key).expect("should not fail to construct API key header value");
-        *request.uri_mut() = new_uri;
-
-        // Add the API key as a header.
-        request
-            .headers_mut()
-            .insert(DD_API_KEY_HEADER.clone(), api_key_value.clone());
-
-        request
-    }
-}
-
-fn with_version_info<B>() -> impl Fn(Request<B>) -> Request<B> + Clone {
-    let app_details = saluki_metadata::get_app_details();
-    let formatted_full_name = app_details
-        .full_name()
-        .replace(" ", "-")
-        .replace("_", "-")
-        .to_lowercase();
-
-    let agent_version_header_value = HeaderValue::from_static(app_details.version().raw());
-    let raw_user_agent_header_value = format!("{}/{}", formatted_full_name, app_details.version().raw());
-    let user_agent_header_value = HeaderValue::from_maybe_shared(raw_user_agent_header_value)
-        .expect("should not fail to construct User-Agent header value");
-
-    move |mut request| {
-        request
-            .headers_mut()
-            .insert(DD_AGENT_VERSION_HEADER.clone(), agent_version_header_value.clone());
-        request
-            .headers_mut()
-            .insert(http::header::USER_AGENT, user_agent_header_value.clone());
-        request
     }
 }
 

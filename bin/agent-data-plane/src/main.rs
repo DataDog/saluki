@@ -11,7 +11,7 @@ use std::{
 };
 
 use memory_accounting::ComponentRegistry;
-use saluki_app::{api::APIBuilder, prelude::*};
+use saluki_app::{api::APIBuilder, logging::LoggingAPIHandler, prelude::*};
 use saluki_components::{
     destinations::{
         new_remote_agent_server, DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration,
@@ -19,16 +19,18 @@ use saluki_components::{
     },
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
     transforms::{
-        AggregateConfiguration, ChainedConfiguration, HostEnrichmentConfiguration, OriginEnrichmentConfiguration,
+        AggregateConfiguration, ChainedConfiguration, DogstatsDPrefixFilterConfiguration, HostEnrichmentConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration, RefreshableConfiguration, RefresherConfiguration};
 use saluki_core::topology::TopologyBlueprint;
+use saluki_env::EnvironmentProvider as _;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use saluki_io::net::ListenAddress;
+use tikv_jemallocator::Jemalloc;
 use tokio::select;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 mod components;
 use self::components::remapper::AgentTelemetryRemapperConfiguration;
@@ -37,16 +39,20 @@ mod env_provider;
 use self::env_provider::ADPEnvironmentProvider;
 
 #[global_allocator]
-static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System> =
-    memory_accounting::allocator::TrackingAllocator::new(std::alloc::System);
+static ALLOC: memory_accounting::allocator::TrackingAllocator<Jemalloc> =
+    memory_accounting::allocator::TrackingAllocator::new(Jemalloc);
 
 #[tokio::main]
 async fn main() {
     let started = Instant::now();
 
-    if let Err(e) = initialize_logging(None) {
-        fatal_and_exit(format!("failed to initialize logging: {}", e));
-    }
+    let logging_api_handler = match initialize_dynamic_logging(None).await {
+        Ok(handler) => handler,
+        Err(e) => {
+            fatal_and_exit(format!("failed to initialize logging: {}", e));
+            return;
+        }
+    };
 
     if let Err(e) = initialize_metrics("adp").await {
         fatal_and_exit(format!("failed to initialize metrics: {}", e));
@@ -60,7 +66,7 @@ async fn main() {
         fatal_and_exit(format!("failed to initialize TLS: {}", e));
     }
 
-    match run(started).await {
+    match run(started, logging_api_handler).await {
         Ok(()) => info!("Agent Data Plane stopped."),
         Err(e) => {
             // TODO: It'd be better to take the error cause chain and write it out as a list of errors, instead of
@@ -71,7 +77,7 @@ async fn main() {
     }
 }
 
-async fn run(started: Instant) -> Result<(), GenericError> {
+async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
     info!(
         version = app_details.version().raw(),
@@ -79,6 +85,11 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         target_arch = app_details.target_arch(),
         build_time = app_details.build_time(),
         "Agent Data Plane starting..."
+    );
+
+    debug!(
+        "Using jemalloc configuration: {}",
+        tikv_jemalloc_ctl::config::malloc_conf::mib().unwrap().read().unwrap()
     );
 
     // Load our configuration and create all high-level primitives (health registry, component registry, environment
@@ -112,7 +123,8 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         .with_handler(health_registry.api_handler())
         .with_handler(component_registry.api_handler())
         .with_grpc_service(remote_agent_server)
-        .with_self_signed_tls();
+        .with_self_signed_tls()
+        .with_handler(logging_api_handler);
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
     let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;
@@ -169,18 +181,13 @@ async fn create_topology(
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
     let dsd_config = DogStatsDConfiguration::from_configuration(configuration)
-        .error_context("Failed to configure DogStatsD source.")?;
+        .error_context("Failed to configure DogStatsD source.")?
+        .with_workload_provider(env_provider.workload().clone());
     let dsd_agg_config = AggregateConfiguration::from_configuration(configuration)
         .error_context("Failed to configure aggregate transform.")?;
-
-    let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
-    let origin_enrichment_config = OriginEnrichmentConfiguration::from_configuration(configuration)
-        .error_context("Failed to configure origin enrichment transform.")?
-        .with_environment_provider(env_provider);
-    let enrich_config = ChainedConfiguration::default()
-        .with_transform_builder(host_enrichment_config)
-        .with_transform_builder(origin_enrichment_config);
-
+    let dsd_prefix_filter_configuration = DogstatsDPrefixFilterConfiguration::from_configuration(configuration)?;
+    let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider);
+    let enrich_config = ChainedConfiguration::default().with_transform_builder(host_enrichment_config);
     let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Metrics destination.")?;
 
@@ -211,10 +218,12 @@ async fn create_topology(
         .add_source("dsd_in", dsd_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
         .add_transform("enrich", enrich_config)?
+        .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
         .add_destination("dd_metrics_out", dd_metrics_config)?
         .add_destination("dd_events_sc_out", events_service_checks_config)?
         .connect_component("dsd_agg", ["dsd_in.metrics"])?
-        .connect_component("enrich", ["dsd_agg"])?
+        .connect_component("dsd_prefix_filter", ["dsd_agg"])?
+        .connect_component("enrich", ["dsd_prefix_filter"])?
         .connect_component("dd_metrics_out", ["enrich"])?
         .connect_component("dd_events_sc_out", ["dsd_in.events", "dsd_in.service_checks"])?;
 

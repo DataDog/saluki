@@ -1,7 +1,10 @@
 use metrics::Counter;
-use saluki_core::{components::ComponentContext, observability::ComponentMetricsExt as _};
 use saluki_metrics::MetricsBuilder;
 
+/// Component-specific telemetry.
+///
+/// This type covers high-level component telemetry, such as events/bytes sent, tailored to the Datadog destinations and
+/// the commonalities between them.
 #[derive(Clone)]
 pub struct ComponentTelemetry {
     events_sent: Counter,
@@ -12,9 +15,8 @@ pub struct ComponentTelemetry {
 }
 
 impl ComponentTelemetry {
-    pub fn from_context(context: ComponentContext) -> Self {
-        let builder = MetricsBuilder::from_component_context(context);
-
+    /// Creates a new `ComponentTelemetry` instance with default tags derived from the given component context.
+    pub fn from_builder(builder: &MetricsBuilder) -> Self {
         Self {
             events_sent: builder.register_debug_counter("component_events_sent_total"),
             bytes_sent: builder.register_debug_counter("component_bytes_sent_total"),
@@ -35,7 +37,6 @@ impl ComponentTelemetry {
         &self.events_sent
     }
 
-    #[allow(dead_code)]
     pub fn bytes_sent(&self) -> &Counter {
         &self.bytes_sent
     }

@@ -1,4 +1,3 @@
-use std::num::NonZeroU32;
 use std::sync::LazyLock;
 use std::{num::NonZeroUsize, time::Duration};
 
@@ -20,17 +19,15 @@ use saluki_core::{
         OutputDefinition,
     },
 };
+use saluki_env::WorkloadProvider;
 use saluki_error::{generic_error, GenericError};
 use saluki_event::metric::{MetricMetadata, MetricOrigin};
-use saluki_event::{
-    metric::{Metric, OriginEntity},
-    DataType, Event,
-};
+use saluki_event::{metric::Metric, DataType, Event};
 use saluki_io::{
     buf::{BytesBuffer, CollapsibleReadWriteIoBuffer as _, FixedSizeVec},
     deser::{
         codec::{
-            dogstatsd::{MetricPacket, ParseError, ParsedPacket},
+            dogstatsd::{parse_message_type, MessageType, MetricPacket, ParseError, ParsedPacket},
             DogstatsdCodec, DogstatsdCodecConfiguration,
         },
         framing::FramerExt as _,
@@ -47,10 +44,13 @@ use tokio::{
     select,
     time::{interval, MissedTickBehavior},
 };
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 mod framer;
 use self::framer::{get_framer, DsdFramer};
+
+mod origin;
+use self::origin::{origin_info_from_metric_packet, OriginEnrichmentConfiguration};
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -89,11 +89,21 @@ const fn default_context_string_interner_size() -> ByteSize {
     ByteSize::mib(2)
 }
 
+const fn default_dogstatsd_permissive_decoding() -> bool {
+    true
+}
+
 /// DogStatsD source.
 ///
 /// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format.
 #[derive(Deserialize)]
 pub struct DogStatsDConfiguration {
+    /// Origin enrichment configuration.
+    ///
+    /// See [`OriginEnrichmentConfiguration`] for more details.
+    #[serde(default)]
+    origin_enrichment: OriginEnrichmentConfiguration,
+
     /// The size of the buffer used to receive messages into, in bytes.
     ///
     /// Payloads cannot exceed this size, or they will be truncated, leading to discarded messages.
@@ -183,12 +193,37 @@ pub struct DogStatsDConfiguration {
         default = "default_context_string_interner_size"
     )]
     context_string_interner_bytes: ByteSize,
+
+    /// Whether or not to enable permissive mode in the decoder.
+    ///
+    /// Permissive mode allows the decoder to relax its strictness around the allowed payloads, which lets it match the
+    /// decoding behavior of the Datadog Agent.
+    ///
+    /// Defaults to `true`.
+    #[serde(
+        rename = "dogstatsd_permissive_decoding",
+        default = "default_dogstatsd_permissive_decoding"
+    )]
+    permissive_decoding: bool,
 }
 
 impl DogStatsDConfiguration {
     /// Creates a new `DogStatsDConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
+    }
+
+    /// Sets the workload provider for this configuration.
+    ///
+    /// A workload provider must be set in order for origin enrichment to function.
+    pub fn with_workload_provider<W>(self, workload_provider: W) -> DogStatsDConfiguration
+    where
+        W: WorkloadProvider + Send + Sync + Clone + 'static,
+    {
+        Self {
+            origin_enrichment: self.origin_enrichment.with_workload_provider(workload_provider),
+            ..self
+        }
     }
 
     async fn build_listeners(&self) -> Result<Vec<Listener>, Error> {
@@ -247,10 +282,13 @@ impl SourceBuilder for DogStatsDConfiguration {
             .with_idle_context_expiration(Duration::from_secs(30))
             .with_expiration_interval(Duration::from_secs(1))
             .with_heap_allocations(self.allow_context_heap_allocations)
+            .with_origin_enricher(self.origin_enrichment.build())
             .build();
-        let multitenant_strategy = MultitenantStrategy::new(context_resolver);
 
-        let codec_config = DogstatsdCodecConfiguration::default().with_timestamps(self.no_aggregation_pipeline_support);
+        let codec_config = DogstatsdCodecConfiguration::default()
+            .with_timestamps(self.no_aggregation_pipeline_support)
+            .with_permissive_mode(self.permissive_decoding);
+
         let codec = DogstatsdCodec::from_configuration(codec_config);
 
         Ok(Box::new(DogStatsD {
@@ -259,7 +297,7 @@ impl SourceBuilder for DogStatsDConfiguration {
                 FixedSizeVec::with_capacity(get_adjusted_buffer_size(self.buffer_size))
             }),
             codec,
-            multitenant_strategy,
+            context_resolver,
         }))
     }
 
@@ -294,7 +332,7 @@ pub struct DogStatsD {
     listeners: Vec<Listener>,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     codec: DogstatsdCodec,
-    multitenant_strategy: MultitenantStrategy,
+    context_resolver: ContextResolver,
 }
 
 struct ListenerContext {
@@ -302,16 +340,16 @@ struct ListenerContext {
     listener: Listener,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     codec: DogstatsdCodec,
-    multitenant_strategy: MultitenantStrategy,
+    context_resolver: ContextResolver,
 }
 
 struct HandlerContext {
-    listen_addr: String,
+    listen_addr: ListenAddress,
     framer: DsdFramer,
     codec: DogstatsdCodec,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     metrics: Metrics,
-    multitenant_strategy: MultitenantStrategy,
+    context_resolver: ContextResolver,
 }
 
 struct Metrics {
@@ -320,7 +358,10 @@ struct Metrics {
     service_checks_received: Counter,
     bytes_received: Counter,
     bytes_received_size: Histogram,
-    decoder_errors: Counter,
+    framing_errors: Counter,
+    metric_decoder_errors: Counter,
+    event_decoder_errors: Counter,
+    service_check_decoder_errors: Counter,
     failed_context_resolve_total: Counter,
     connections_active: Gauge,
     packet_receive_success: Counter,
@@ -348,8 +389,20 @@ impl Metrics {
         &self.bytes_received_size
     }
 
-    fn decoder_errors(&self) -> &Counter {
-        &self.decoder_errors
+    fn framing_errors(&self) -> &Counter {
+        &self.framing_errors
+    }
+
+    fn metric_decode_failed(&self) -> &Counter {
+        &self.metric_decoder_errors
+    }
+
+    fn event_decode_failed(&self) -> &Counter {
+        &self.event_decoder_errors
+    }
+
+    fn service_check_decode_failed(&self) -> &Counter {
+        &self.service_check_decoder_errors
     }
 
     fn failed_context_resolve_total(&self) -> &Counter {
@@ -396,9 +449,33 @@ fn build_metrics(listen_addr: &ListenAddress, context: ComponentContext) -> Metr
             .register_debug_counter_with_tags("component_bytes_received_total", [("listener_type", listener_type)]),
         bytes_received_size: builder
             .register_debug_histogram_with_tags("component_bytes_received_size", [("listener_type", listener_type)]),
-        decoder_errors: builder.register_debug_counter_with_tags(
+        framing_errors: builder.register_debug_counter_with_tags(
             "component_errors_total",
-            [("listener_type", listener_type), ("error_type", "decode")],
+            [("listener_type", listener_type), ("error_type", "framing")],
+        ),
+        metric_decoder_errors: builder.register_debug_counter_with_tags(
+            "component_errors_total",
+            [
+                ("listener_type", listener_type),
+                ("error_type", "decode"),
+                ("message_type", "metrics"),
+            ],
+        ),
+        event_decoder_errors: builder.register_debug_counter_with_tags(
+            "component_errors_total",
+            [
+                ("listener_type", listener_type),
+                ("error_type", "decode"),
+                ("message_type", "events"),
+            ],
+        ),
+        service_check_decoder_errors: builder.register_debug_counter_with_tags(
+            "component_errors_total",
+            [
+                ("listener_type", listener_type),
+                ("error_type", "decode"),
+                ("message_type", "service_checks"),
+            ],
         ),
         connections_active: builder
             .register_debug_gauge_with_tags("component_connections_active", [("listener_type", listener_type)]),
@@ -411,22 +488,6 @@ fn build_metrics(listen_addr: &ListenAddress, context: ComponentContext) -> Metr
             [("listener_type", listener_type), ("state", "error")],
         ),
         failed_context_resolve_total: builder.register_debug_counter("component_failed_context_resolve_total"),
-    }
-}
-
-// This is basically a shim where we can implement logic to map a metric origin to a given context resolver and/or string interner.
-#[derive(Clone)]
-struct MultitenantStrategy {
-    context_resolver: ContextResolver,
-}
-
-impl MultitenantStrategy {
-    fn new(context_resolver: ContextResolver) -> Self {
-        Self { context_resolver }
-    }
-
-    fn get_context_resolver(&mut self) -> &mut ContextResolver {
-        &mut self.context_resolver
     }
 }
 
@@ -451,7 +512,7 @@ impl Source for DogStatsD {
                 listener,
                 io_buffer_pool: self.io_buffer_pool.clone(),
                 codec: self.codec.clone(),
-                multitenant_strategy: self.multitenant_strategy.clone(),
+                context_resolver: self.context_resolver.clone(),
             };
 
             spawn_traced(process_listener(context.clone(), listener_context));
@@ -490,7 +551,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
         mut listener,
         io_buffer_pool,
         codec,
-        multitenant_strategy,
+        context_resolver,
     } = listener_context;
     tokio::pin!(shutdown_handle);
 
@@ -510,12 +571,12 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
                     debug!(%listen_addr, "Spawning new stream handler.");
 
                     let handler_context = HandlerContext {
-                        listen_addr: listen_addr.to_string(),
+                        listen_addr: listen_addr.clone(),
                         framer: get_framer(&listen_addr),
                         codec: codec.clone(),
                         io_buffer_pool: io_buffer_pool.clone(),
                         metrics: build_metrics(&listen_addr, source_context.component_context()),
-                        multitenant_strategy: multitenant_strategy.clone(),
+                        context_resolver: context_resolver.clone(),
                     };
                     spawn_traced(process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register()));
                 }
@@ -553,7 +614,7 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
         codec,
         io_buffer_pool,
         metrics,
-        mut multitenant_strategy,
+        mut context_resolver,
     } = handler_context;
 
     if !stream.is_connectionless() {
@@ -563,16 +624,16 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
     // Set a buffer flush interval of 100ms, which will ensure we always flush buffered events at least every 100ms if
     // we're otherwise idle and not receiving packets from the client.
     let mut buffer_flush = interval(Duration::from_millis(100));
-    buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let mut event_buffer = source_context.event_buffer_pool().acquire().await;
     let mut buffer = io_buffer_pool.acquire().await;
     if !buffer.has_remaining_mut() {
-        error!("Newly acquired buffer has no capacity. This should never happen.");
+        error!(%listen_addr, "Newly acquired buffer has no capacity. This should never happen.");
         return;
     }
 
-    debug!(capacity = buffer.remaining_mut(), "Acquired buffer for decoding.");
+    debug!(%listen_addr, capacity = buffer.remaining_mut(), "Acquired buffer for decoding.");
 
     'read: loop {
         let mut eof = false;
@@ -597,11 +658,18 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                         eof = true;
                     }
 
-                    if !eof {
-                        metrics.packet_receive_success().increment(1);
-                        metrics.bytes_received().increment(bytes_read as u64);
-                        metrics.bytes_received_size().record(bytes_read as f64);
-                    }
+                    // TODO: This is correct for UDP and UDS in SOCK_DGRAM mode, but not for UDS in SOCK_STREAM mode...
+                    // because to match the Datadog Agent, we would only want to increment the number of successful
+                    // packets for each length-delimited frame, but this is obviously being incremented before we do any
+                    // framing... and even further, with the nested framer, we don't have access to the signal that
+                    // we've gotten a full length-delimited outer frame, only each individual newline-delimited inner
+                    // frame.
+                    //
+                    // As such, we'll potentially be over-reporting this metric for UDS in SOCK_STREAM mode compared to
+                    // the Datadog Agent.
+                    metrics.packet_receive_success().increment(1);
+                    metrics.bytes_received().increment(bytes_read as u64);
+                    metrics.bytes_received_size().record(bytes_read as f64);
 
                     // When we're actually at EOF, or we're dealing with a connectionless stream, we try to decode in EOF mode.
                     //
@@ -610,12 +678,12 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                     // actually hit true EOF.
                     let reached_eof = eof || stream.is_connectionless();
 
-                    debug!(
-                        chunk_len = buffer.chunk().len(),
-                        chunk_cap = buffer.chunk_mut().len(),
+                    trace!(
                         buffer_len = buffer.remaining(),
                         buffer_cap = buffer.remaining_mut(),
                         eof = reached_eof,
+                        %listen_addr,
+                        %peer_addr,
                         "Received {} bytes from stream.",
                         bytes_read
                     );
@@ -624,16 +692,16 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                     'frame: loop {
                         match frames.next() {
                             Some(Ok(frame)) => {
-                                trace!(?frame, "Decoded frame.");
-                                match handle_frame(&frame[..], &codec, &mut multitenant_strategy, &metrics, &peer_addr) {
+                                trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
+                                match handle_frame(&frame[..], &codec, &mut context_resolver, &metrics, &peer_addr) {
                                     Ok(Some(event)) => {
                                         if let Some(event) = event_buffer.try_push(event) {
-                                            debug!("Event buffer is full. Forwarding events.");
+                                            debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
                                             forward_events(&mut event_buffer, &source_context, &listen_addr).await;
 
                                             // Try to push the event again now that we have a new event buffer.
                                             if event_buffer.try_push(event).is_some() {
-                                                error!("Event buffer is full even after forwarding events. Dropping event.");
+                                                error!(%listen_addr, %peer_addr, "Event buffer is full even after forwarding events. Dropping event.");
                                             }
                                         }
                                     },
@@ -644,25 +712,24 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                                         // Simply continue on.
                                         continue
                                     },
-                                    Err(e) => {
-                                        error!(%listen_addr, error = %e, "Failed to parse frame.");
-                                        metrics.decoder_errors().increment(1);
-                                    }
+                                    Err(e) => warn!(%listen_addr, %peer_addr, error = %e, "Failed to parse frame."),
                                 }
                             }
                             Some(Err(e)) => {
-                                error!(error = %e, "Error decoding frame.");
+                                metrics.framing_errors().increment(1);
 
-                                if buffer.remaining() == 8192 {
-                                    info!("Buffer contents: {:?}", buffer.chunk());
-                                    panic!("boom");
+                                if stream.is_connectionless() {
+                                    // For connectionless streams, we don't want to shutdown the stream since we can just keep
+                                    // reading more packets.
+                                    warn!(%listen_addr, %peer_addr, error = %e, "Error decoding frame. Continuing stream.");
+                                    continue 'read;
+                                } else {
+                                    warn!(%listen_addr, %peer_addr, error = %e, "Error decoding frame. Stopping stream.");
+                                    break 'read;
                                 }
-
-                                metrics.decoder_errors().increment(1);
-                                break 'frame;
                             }
                             None => {
-                                debug!("Not enough data to decode another frame.");
+                                trace!(%listen_addr, %peer_addr, "Not enough data to decode another frame.");
                                 if eof && !stream.is_connectionless() {
                                     trace!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
                                     break 'read;
@@ -674,25 +741,29 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                     }
                 },
                 Err(e) => {
-                    error!(%listen_addr, %e, "I/O error while decoding. Stopping stream.");
                     metrics.packet_receive_failure().increment(1);
-                    continue 'read;
+
+                    if stream.is_connectionless() {
+                        // For connectionless streams, we don't want to shutdown the stream since we can just keep
+                        // reading more packets.
+                        warn!(%listen_addr, error = %e, "I/O error while decoding. Continuing stream.");
+                        continue 'read;
+                    } else {
+                        warn!(%listen_addr, error = %e, "I/O error while decoding. Stopping stream.");
+                        break 'read;
+                    }
                 }
             },
 
             _ = buffer_flush.tick() => {
                 if !event_buffer.is_empty() {
-                    debug!("Buffer flush triggered. Forwarding events.");
                     forward_events(&mut event_buffer, &source_context, &listen_addr).await;
-                } else {
-                    debug!("Buffer flush triggered, but no events to forward.");
                 }
             },
         }
     }
 
     if !event_buffer.is_empty() {
-        debug!("Stream finished. Forwarding remaining events.");
         forward_events(&mut event_buffer, &source_context, &listen_addr).await;
     }
 
@@ -700,14 +771,28 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
 }
 
 fn handle_frame(
-    frame: &[u8], codec: &DogstatsdCodec, multitenant_strategy: &mut MultitenantStrategy, source_metrics: &Metrics,
+    frame: &[u8], codec: &DogstatsdCodec, context_resolver: &mut ContextResolver, source_metrics: &Metrics,
     peer_addr: &ConnectionAddress,
 ) -> Result<Option<Event>, ParseError> {
-    let event = match codec.decode_packet(frame)? {
+    let parsed = match codec.decode_packet(frame) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            // Try and determine what the message type was, if possible, to increment the correct error counter.
+            match parse_message_type(frame) {
+                MessageType::MetricSample => source_metrics.metric_decode_failed().increment(1),
+                MessageType::Event => source_metrics.event_decode_failed().increment(1),
+                MessageType::ServiceCheck => source_metrics.service_check_decode_failed().increment(1),
+            }
+
+            return Err(e);
+        }
+    };
+
+    let event = match parsed {
         ParsedPacket::Metric(metric_packet) => {
             let events_len = metric_packet.num_points;
 
-            match handle_metric_packet(metric_packet, multitenant_strategy, peer_addr) {
+            match handle_metric_packet(metric_packet, context_resolver, peer_addr) {
                 Some(metric) => {
                     source_metrics.metrics_received().increment(events_len);
                     Event::Metric(metric)
@@ -733,42 +818,34 @@ fn handle_frame(
 }
 
 fn handle_metric_packet(
-    packet: MetricPacket, multitenant_strategy: &mut MultitenantStrategy, peer_addr: &ConnectionAddress,
+    packet: MetricPacket, context_resolver: &mut ContextResolver, peer_addr: &ConnectionAddress,
 ) -> Option<Metric> {
-    let context_resolver = multitenant_strategy.get_context_resolver();
-
-    // Try resolving the context first, since we might need to bail if we can't.
-    let context_ref = context_resolver.create_context_ref(packet.metric_name, &packet.tags);
-    let context = context_resolver.resolve(context_ref)?;
-
-    let mut process_id = None;
+    // Capture the origin information from the packet, including any process ID information if we have it.
+    let mut origin_info = origin_info_from_metric_packet(&packet);
     if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
-        if let Some(pid) = NonZeroU32::new(creds.pid as u32) {
-            process_id = Some(pid);
-        }
+        origin_info.set_process_id(creds.pid as u32);
     }
 
-    let metadata = MetricMetadata {
-        hostname: None,
-        origin_entity: OriginEntity {
-            process_id,
-            container_id: context_resolver.intern(packet.container_id.unwrap_or(""))?,
-            pod_uid: context_resolver.intern(packet.pod_uid.unwrap_or(""))?,
-            cardinality: packet.cardinality,
-        },
-        origin: Some(
-            packet
+    // Try to resolve the context for this metric.
+    match context_resolver.resolve(packet.metric_name, packet.tags.clone(), Some(origin_info)) {
+        Some(context) => {
+            let origin = packet
                 .jmx_check_name
                 .map(MetricOrigin::jmx_check)
-                .unwrap_or_else(MetricOrigin::dogstatsd),
-        ),
-    };
+                .unwrap_or_else(MetricOrigin::dogstatsd);
+            let metadata = MetricMetadata::default().with_origin(origin);
 
-    Some(Metric::from_parts(context, packet.values, metadata))
+            Some(Metric::from_parts(context, packet.values, metadata))
+        }
+        // We failed to resolve the context, likely due to not having enough interner capacity.
+        None => None,
+    }
 }
 
-async fn forward_events(event_buffer: &mut FixedSizeEventBuffer, source_context: &SourceContext, listen_addr: &str) {
-    trace!(%listen_addr, events_len = event_buffer.len(), "Forwarding events.");
+async fn forward_events(
+    event_buffer: &mut FixedSizeEventBuffer, source_context: &SourceContext, listen_addr: &ListenAddress,
+) {
+    debug!(%listen_addr, events_len = event_buffer.len(), "Forwarding events.");
 
     // Acquire a new event buffer to replace the one we're about to forward, and swap them.
     let new_event_buffer = source_context.event_buffer_pool().acquire().await;
@@ -842,7 +919,7 @@ mod tests {
         net::ConnectionAddress,
     };
 
-    use super::{handle_metric_packet, MultitenantStrategy};
+    use super::handle_metric_packet;
 
     #[test]
     fn no_metrics_when_interner_full_allocations_disallowed() {
@@ -854,8 +931,7 @@ mod tests {
         // We set our metric name to be longer than 31 bytes (the inlining limit) to ensure this.
 
         let codec = DogstatsdCodec::from_configuration(DogstatsdCodecConfiguration::default());
-        let context_resolver = ContextResolverBuilder::for_tests().with_heap_allocations(false);
-        let mut multitenant_strategy = MultitenantStrategy::new(context_resolver);
+        let mut context_resolver = ContextResolverBuilder::for_tests().with_heap_allocations(false);
         let peer_addr = ConnectionAddress::from("1.1.1.1:1234".parse::<SocketAddr>().unwrap());
 
         let input = "big_metric_name_that_cant_possibly_be_inlined:1|c|#tag1:value1,tag2:value2,tag3:value3";
@@ -864,7 +940,7 @@ mod tests {
             panic!("Failed to parse packet.");
         };
 
-        let maybe_metric = handle_metric_packet(packet, &mut multitenant_strategy, &peer_addr);
+        let maybe_metric = handle_metric_packet(packet, &mut context_resolver, &peer_addr);
         assert!(maybe_metric.is_none());
     }
 }

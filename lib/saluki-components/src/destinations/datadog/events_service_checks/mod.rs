@@ -1,65 +1,36 @@
 use async_trait::async_trait;
-use http::{Request, Uri};
-use http_body_util::BodyExt;
+use http::{uri::PathAndQuery, HeaderValue, Method, Request, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config::GenericConfiguration;
+use saluki_config::{GenericConfiguration, RefreshableConfiguration};
 use saluki_core::{
     components::{destinations::*, ComponentContext},
     observability::ComponentMetricsExt as _,
-    task::spawn_traced,
 };
-use saluki_error::{generic_error, GenericError};
-use saluki_event::{DataType, Event};
-use saluki_io::net::{client::http::HttpClient, util::retry::agent::DatadogAgentForwarderRetryConfiguration};
+use saluki_error::{ErrorContext as _, GenericError};
+use saluki_event::{eventd::EventD, service_check::ServiceCheck, DataType, Event};
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use stringtheory::MetaString;
-use tokio::{
-    select,
-    sync::{mpsc, oneshot},
-};
+use tokio::select;
 use tracing::{debug, error};
-mod request_builder;
-use request_builder::{EventsServiceChecksEndpoint, RequestBuilder};
 
-const DEFAULT_SITE: &str = "datadoghq.com";
+use super::common::{config::ForwarderConfiguration, io::TransactionForwarder, telemetry::ComponentTelemetry};
 
-fn default_site() -> String {
-    DEFAULT_SITE.to_owned()
-}
+static CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/json");
 
 /// Datadog Events and Service Checks destination.
 ///
 /// Forwards events and service checks to the Datadog platform.
 #[derive(Deserialize)]
 pub struct DatadogEventsServiceChecksConfiguration {
-    /// The API key to use.
-    api_key: String,
-
-    /// The site to send events / service checks to.
+    /// Forwarder configuration settings.
     ///
-    /// This is the base domain for the Datadog site in which the API key originates from. This will generally be a
-    /// portion of the domain used to access the Datadog UI, such as `datadoghq.com` or `us5.datadoghq.com`.
-    ///
-    /// Defaults to `datadoghq.com`.
-    #[serde(default = "default_site")]
-    site: String,
-
-    /// The full URL base to send events / service checks to.
-    ///
-    /// This takes precedence over `site`, and is not altered in any way. This can be useful to specifying the exact
-    /// endpoint used, such as when looking to change the scheme (e.g. `http` vs `https`) or specifying a custom port,
-    /// which are both useful when proxying traffic to an intermediate destination before forwarding to Datadog.
-    ///
-    /// Defaults to unset.
-    #[serde(default)]
-    dd_url: Option<String>,
-
-    /// Retry configuration settings.
-    ///
-    /// See [`DatadogAgentForwarderRetryConfiguration`] for more information about the available settings.
+    /// See [`ForwarderConfiguration`] for more information about the available settings.
     #[serde(flatten)]
-    retry_config: DatadogAgentForwarderRetryConfiguration,
+    forwarder_config: ForwarderConfiguration,
+
+    #[serde(skip)]
+    config_refresher: Option<RefreshableConfiguration>,
 }
 
 impl DatadogEventsServiceChecksConfiguration {
@@ -68,25 +39,9 @@ impl DatadogEventsServiceChecksConfiguration {
         Ok(config.as_typed()?)
     }
 
-    fn api_base(&self) -> Result<Uri, GenericError> {
-        match &self.dd_url {
-            Some(url) => Uri::try_from(url).map_err(Into::into),
-            None => {
-                let site = if self.site.is_empty() {
-                    DEFAULT_SITE
-                } else {
-                    self.site.as_str()
-                };
-                let authority = format!("api.{}", site);
-
-                Uri::builder()
-                    .scheme("https")
-                    .authority(authority.as_str())
-                    .path_and_query("/")
-                    .build()
-                    .map_err(Into::into)
-            }
-        }
+    /// Add option to retrieve configuration values from a `RefreshableConfiguration`.
+    pub fn add_refreshable_configuration(&mut self, refresher: RefreshableConfiguration) {
+        self.config_refresher = Some(refresher);
     }
 }
 
@@ -98,30 +53,16 @@ impl DestinationBuilder for DatadogEventsServiceChecksConfiguration {
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(context);
-
-        let http_client = HttpClient::builder()
-            .with_retry_policy(self.retry_config.into_default_http_retry_policy())
-            .with_bytes_sent_counter(metrics_builder.register_debug_counter("component_bytes_sent_total"))
-            .with_endpoint_telemetry(metrics_builder, Some(get_events_checks_endpoint_name))
-            .build()?;
-
-        let api_base = self.api_base()?;
-
-        let events_request_builder = RequestBuilder::new(
-            self.api_key.clone(),
-            api_base.clone(),
-            EventsServiceChecksEndpoint::Events,
+        let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+        let forwarder = TransactionForwarder::from_config(
+            self.forwarder_config.clone(),
+            self.config_refresher.clone(),
+            get_events_checks_endpoint_name,
+            telemetry,
+            metrics_builder,
         )?;
-        let service_checks_request_builder = RequestBuilder::new(
-            self.api_key.clone(),
-            api_base,
-            EventsServiceChecksEndpoint::ServiceChecks,
-        )?;
-        Ok(Box::new(DatadogEventsServiceChecks {
-            http_client,
-            events_request_builder,
-            service_checks_request_builder,
-        }))
+
+        Ok(Box::new(DatadogEventsServiceChecks { forwarder }))
     }
 }
 
@@ -137,26 +78,18 @@ impl MemoryBounds for DatadogEventsServiceChecksConfiguration {
 }
 
 pub struct DatadogEventsServiceChecks {
-    http_client: HttpClient<String>,
-    events_request_builder: RequestBuilder,
-    service_checks_request_builder: RequestBuilder,
+    forwarder: TransactionForwarder<String>,
 }
 
 #[async_trait]
 impl Destination for DatadogEventsServiceChecks {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
-        let Self {
-            http_client,
-            mut events_request_builder,
-            mut service_checks_request_builder,
-        } = *self;
+        let Self { forwarder } = *self;
 
         let mut health = context.take_health_handle();
 
-        // Spawn our IO task to handle sending requests.
-        let (io_shutdown_tx, io_shutdown_rx) = oneshot::channel();
-        let (requests_tx, requests_rx) = mpsc::channel(32);
-        spawn_traced(run_io_loop(requests_rx, io_shutdown_tx, http_client));
+        // Spawn our forwarder task to handle sending requests.
+        let forwarder_handle = forwarder.spawn().await;
 
         health.mark_ready();
         debug!("Datadog Events and Service Checks destination started.");
@@ -174,15 +107,8 @@ impl Destination for DatadogEventsServiceChecks {
                             for event in event_buffer {
                                 match event {
                                     Event::EventD(eventd) => {
-                                        let request_builder = &mut events_request_builder;
-                                        let json = serde_json::to_string(&eventd).unwrap();
-
-                                        match request_builder.create_request(json) {
-                                            Ok(request) => {
-                                                if requests_tx.send((1, request)).await.is_err() {
-                                                    return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
-                                                }
-                                            }
+                                        match build_eventd_request(&eventd) {
+                                            Ok(request) => forwarder_handle.send_request(1, request).await?,
                                             Err(e) => {
                                                 error!(error = %e, "Failed to create request for event.");
                                                 continue;
@@ -190,14 +116,8 @@ impl Destination for DatadogEventsServiceChecks {
                                         }
                                     }
                                     Event::ServiceCheck(service_check) => {
-                                        let request_builder = &mut service_checks_request_builder;
-                                        let json = serde_json::to_string(&service_check).unwrap();
-                                        match request_builder.create_request(json) {
-                                            Ok(request) => {
-                                                if requests_tx.send((1, request)).await.is_err() {
-                                                    return Err(generic_error!("Failed to send request to IO task: receiver dropped."));
-                                                }
-                                            }
+                                        match build_service_check_request(&service_check) {
+                                            Ok(request) => forwarder_handle.send_request(1, request).await?,
                                             Err(e) => {
                                                 error!(error = %e, "Failed to create request for service check.");
                                                 continue;
@@ -218,49 +138,31 @@ impl Destination for DatadogEventsServiceChecks {
             }
         }
 
-        // Drop the requests channel, which allows the IO task to naturally shut down once it has received and sent all
-        // requests. We then wait for it to signal back to us that it has stopped before exiting ourselves.
-        drop(requests_tx);
-        let _ = io_shutdown_rx.await;
+        // Signal the forwarder to shutdown, and wait until it does so.
+        forwarder_handle.shutdown().await;
 
         debug!("Datadog Events Service Checks destination stopped.");
         Ok(())
     }
 }
 
-async fn run_io_loop(
-    mut requests_rx: mpsc::Receiver<(usize, Request<String>)>, io_shutdown_tx: oneshot::Sender<()>,
-    mut http_client: HttpClient<String>,
-) {
-    // Loop and process all incoming requests.
-    while let Some((_events_count, request)) = requests_rx.recv().await {
-        // TODO: We currently are not emitting any metrics.
-        match http_client.send(request).await {
-            Ok(response) => {
-                let status = response.status();
-                if status.is_success() {
-                    debug!(%status, "Request sent.");
-                } else {
-                    match response.into_body().collect().await {
-                        Ok(body) => {
-                            let body = body.to_bytes();
-                            let body_str = String::from_utf8_lossy(&body[..]);
-                            error!(%status, "Received non-success response. Body: {}", body_str);
-                        }
-                        Err(e) => {
-                            error!(%status, error = %e, "Failed to read response body of non-success response.");
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                error!(error = %e, error_source = ?e.source(), "Failed to send request.");
-            }
-        }
-    }
+fn build_request(data: String, relative_path: &'static str) -> Result<Request<String>, GenericError> {
+    Request::builder()
+        .method(Method::POST)
+        .uri(Uri::from(PathAndQuery::from_static(relative_path)))
+        .header(http::header::CONTENT_TYPE, CONTENT_TYPE_JSON.clone())
+        .body(data)
+        .error_context("Failed to build request body.")
+}
 
-    // Signal back to the main task that we've stopped.
-    let _ = io_shutdown_tx.send(());
+fn build_eventd_request(eventd: &EventD) -> Result<Request<String>, GenericError> {
+    let json = serde_json::to_string(eventd).error_context("Failed to serialize eventd.")?;
+    build_request(json, "/api/v1/events")
+}
+
+fn build_service_check_request(service_check: &ServiceCheck) -> Result<Request<String>, GenericError> {
+    let json = serde_json::to_string(service_check).error_context("Failed to serialize service check.")?;
+    build_request(json, "/api/v1/check_run")
 }
 
 fn get_events_checks_endpoint_name(uri: &Uri) -> Option<MetaString> {

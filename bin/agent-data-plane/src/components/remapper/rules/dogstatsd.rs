@@ -3,13 +3,6 @@ use crate::components::remapper::RemapperRule;
 pub fn get_dogstatsd_remappings() -> Vec<RemapperRule> {
     vec![
         // DogStatsD metrics.
-        //
-        // TODO: We need to add `dogstatsd.processed`, but with `state:error`, which the Agent captures by
-        // metric type... but it's weird because it checks the prefix of the metric payload to determine metric vs event
-        // vs service check, and anything that isn't a service check or metric it just assumes is a "metric"... so you
-        // might have a bunch of "metric" type errors for straight up invalid payloads... and I guess it just feels
-        // weird to me to categorize pure gibberish as a "metrics"-related decode error instead of just "hey, we got an
-        // invalid payload". :shrug:
         RemapperRule::by_name_and_tags(
             "adp.object_pool_acquired",
             &["pool_name:dsd_packet_bufs"],
@@ -75,5 +68,20 @@ pub fn get_dogstatsd_remappings() -> Vec<RemapperRule> {
         )
         .with_original_tags(["message_type"])
         .with_additional_tags(["state:ok"]),
+        RemapperRule::by_name_and_tags(
+            "adp.component_errors_total",
+            &["component_id:dsd_in", "error_type:decode"],
+            "dogstatsd.processed",
+        )
+        .with_original_tags(["message_type"])
+        .with_additional_tags(["state:error"]),
+        // NOTE: The Agent-side metric does not have the `_secs` suffix, and is in nanoseconds, which is why we're
+        // slightly deviating here.
+        RemapperRule::by_name_and_tags(
+            "adp.component_send_latency_seconds",
+            &["component_id:dsd_in"],
+            "dogstatsd.channel_latency_secs",
+        )
+        .with_remapped_tags([("output", "message_type")]),
     ]
 }

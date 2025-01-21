@@ -3,11 +3,13 @@ use datadog_protos::agent::{EntityId as RemoteEntityId, EventType, TagCardinalit
 use futures::StreamExt as _;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
-use saluki_context::{Tag, TagSet};
+use saluki_context::{
+    origin::OriginTagCardinality,
+    tags::{Tag, TagSet},
+};
 use saluki_error::GenericError;
-use saluki_event::metric::OriginTagCardinality;
 use saluki_health::Health;
-use stringtheory::interning::GenericMapInterner;
+use stringtheory::{interning::GenericMapInterner, MetaString};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, trace, warn};
 
@@ -46,14 +48,22 @@ impl RemoteAgentTaggerMetadataCollector {
         })
     }
 
-    fn get_interned_tagset(&self, tags: Vec<String>) -> Option<TagSet> {
-        let mut interned_tags = Vec::with_capacity(tags.len());
+    fn owned_tags_into_tagset(&self, tags: Vec<String>) -> Option<TagSet> {
+        // We'll either inline the tags if they're short enough, otherwise we intern them.
+        let mut new_tags = Vec::with_capacity(tags.len());
         for tag in tags {
-            let interned_tag = self.tag_interner.try_intern(tag.as_str())?;
-            interned_tags.push(Tag::from(interned_tag));
+            let new_tag = match MetaString::try_inline(&tag) {
+                Some(s) => Tag::from(s),
+                None => {
+                    let interned = self.tag_interner.try_intern(&tag)?;
+                    Tag::from(interned)
+                }
+            };
+
+            new_tags.push(new_tag);
         }
 
-        Some(TagSet::from_iter(interned_tags))
+        Some(TagSet::from_iter(new_tags))
     }
 }
 
@@ -112,7 +122,7 @@ impl MetadataCollector for RemoteAgentTaggerMetadataCollector {
                                     let mut actions = Vec::new();
                                     for (cardinality, tags) in entity_tags {
                                         if !tags.is_empty() {
-                                            match self.get_interned_tagset(tags) {
+                                            match self.owned_tags_into_tagset(tags) {
                                                 Some(tags) => actions.push(MetadataAction::SetTags { cardinality, tags }),
                                                 None => {
                                                     warn!(%entity_id, %cardinality, "Failed to intern tags for entity. Tags will not be present.");
@@ -163,20 +173,23 @@ impl MemoryBounds for RemoteAgentTaggerMetadataCollector {
 }
 
 fn remote_entity_id_to_entity_id(remote_entity_id: RemoteEntityId) -> Option<EntityId> {
-    // TODO: Realistically, we should have our own string interner to hold these entity IDs... something like the
-    // workload collector having its own or maybe the workload provider, which then passes out a reference to it for all
-    // collectors it's using.
-    //
-    // Either way, we would want to intern, and as such as, we'd want to ideally change our generated code for the
-    // protos to hand us string references rather than allocating.
-    //
-    // Potentially a good reason to do the incremental protobuf encoding work sooner rather than later, since we could
-    // switch to the zero-copy structs it has for reading serialized protos.
+    // TODO: In the future, it would be nice to do zero-copy deserialization so that we could just intern them (or
+    // inline them) directly instead of having to deal with the owned strings... but for now, we can transparently
+    // convert the owned `String`s to `MetaString`s so it's not a huge deal.
     match remote_entity_id.prefix.as_str() {
         "container_id" => Some(EntityId::Container(remote_entity_id.uid.into())),
         "kubernetes_pod_uid" => Some(EntityId::PodUid(remote_entity_id.uid.into())),
-        other => {
-            warn!("Unhandled entity ID prefix: {}", other);
+        "internal" => match remote_entity_id.uid.as_str() {
+            "global-entity-id" => Some(EntityId::Global),
+            uid => {
+                warn!("Unhandled internal entity ID: internal://{}", uid);
+                None
+            }
+        },
+        // We don't care about these, so we just ignore them.
+        "container_image_metadata" => None,
+        prefix => {
+            warn!("Unhandled entity ID prefix: {}://{}", prefix, remote_entity_id.uid);
             None
         }
     }

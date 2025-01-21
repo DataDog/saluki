@@ -1,4 +1,4 @@
-use std::{hash, num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 use quick_cache::{sync::Cache, UnitWeighter};
 use saluki_error::{generic_error, GenericError};
@@ -8,9 +8,10 @@ use tokio::time::sleep;
 use tracing::debug;
 
 use crate::{
-    context::{Context, ContextHashKey, ContextInner, ContextRef},
+    context::{Context, ContextInner, Tagged},
     expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle},
-    hash::{hash_context_with_seen, NoopU64HashBuilder, PrehashedHashSet},
+    hash::{hash_context_with_seen, new_fast_hashset, ContextKey, FastHashSet},
+    origin::{OriginEnricher, OriginInfo},
     tags::TagSet,
 };
 
@@ -20,8 +21,7 @@ const DEFAULT_CONTEXT_RESOLVER_CACHED_CONTEXTS_LIMIT: usize = 500_000;
 const DEFAULT_CONTEXT_RESOLVER_INTERNER_CAPACITY_BYTES: NonZeroUsize =
     unsafe { NonZeroUsize::new_unchecked(2 * 1024 * 1024) };
 
-type ContextCache =
-    Cache<ContextHashKey, Context, UnitWeighter, NoopU64HashBuilder, ExpiryCapableLifecycle<ContextHashKey>>;
+type ContextCache = Cache<ContextKey, Context, UnitWeighter, ahash::RandomState, ExpiryCapableLifecycle<ContextKey>>;
 
 static_metrics! {
     name => Statistics,
@@ -51,6 +51,7 @@ pub struct ContextResolverBuilder {
     expiration_interval: Option<Duration>,
     interner_capacity_bytes: Option<NonZeroUsize>,
     allow_heap_allocations: Option<bool>,
+    origin_enricher: Option<Arc<dyn OriginEnricher + Send + Sync>>,
 }
 
 impl ContextResolverBuilder {
@@ -76,6 +77,7 @@ impl ContextResolverBuilder {
             expiration_interval: None,
             interner_capacity_bytes: None,
             allow_heap_allocations: None,
+            origin_enricher: None,
         })
     }
 
@@ -158,6 +160,27 @@ impl ContextResolverBuilder {
         self
     }
 
+    /// Sets the origin enricher to use when building a context.
+    ///
+    /// In some cases, metrics may have enriched tags based on their origin -- the application/host/container/etc that
+    /// emitted the metric -- which has to be considered when build the context itself. As this can be expensive, it is
+    /// useful to split the logic of actually grabbing the enriched tags based on the available origin info into a
+    /// separate phase, and implementation, that can run separately from the initial hash-based approach of checking if
+    /// a context has already been resolved.
+    ///
+    /// When set, any origin information provided by `Resolvable::origin_info` will be considered during hashing when
+    /// looking up a context, and the enriched tags returned by the enricher will be added to the context when a new
+    /// context is built for the first time.
+    ///
+    /// Defaults to being disabled.
+    pub fn with_origin_enricher<E>(mut self, enricher: E) -> Self
+    where
+        E: OriginEnricher + Send + Sync + 'static,
+    {
+        self.origin_enricher = Some(Arc::new(enricher));
+        self
+    }
+
     /// Builds a [`ContextResolver`] with a no-op configuration, suitable for tests.
     ///
     /// This ignores all configuration on the builder and uses a default configuration of:
@@ -170,7 +193,7 @@ impl ContextResolverBuilder {
     /// This is generally only useful for testing purposes, and is exposed publicly in order to be used in cross-crate
     /// testing scenarios.
     pub fn for_tests() -> ContextResolver {
-        Self::from_name("noop")
+        ContextResolverBuilder::from_name("noop")
             .expect("resolver name not empty")
             .with_cached_contexts_limit(usize::MAX)
             .with_interner_capacity_bytes(NonZeroUsize::new(1).expect("not zero"))
@@ -213,7 +236,7 @@ impl ContextResolverBuilder {
             cached_context_limit,
             cached_context_limit as u64,
             UnitWeighter,
-            NoopU64HashBuilder,
+            ahash::RandomState::default(),
             lifecycle,
         ));
 
@@ -234,7 +257,8 @@ impl ContextResolverBuilder {
             interner,
             context_cache,
             expiration,
-            hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64HashBuilder),
+            hash_seen_buffer: new_fast_hashset(),
+            origin_enricher: self.origin_enricher,
             allow_heap_allocations,
         }
     }
@@ -252,7 +276,7 @@ impl ContextResolverBuilder {
 /// for an existing context without needing to allocate an entirely new one, and get a clone of the handle to use going
 /// forward.
 ///
-/// ## Design
+/// # Design
 ///
 /// `ContextResolver` specifically manages interning and mapping of contexts. It can be cheaply cloned itself.
 ///
@@ -263,13 +287,13 @@ impl ContextResolverBuilder {
 /// Once a context is resolved, a cheap handle -- `Context` -- is returned. This handle, like `ContextResolver`, can be
 /// cheaply cloned. It points directly to the underlying context data (name and tags) and provides access to these
 /// components.
-#[derive(Debug)]
 pub struct ContextResolver {
     stats: Statistics,
     interner: GenericMapInterner,
     context_cache: Arc<ContextCache>,
-    expiration: Expiration<ContextHashKey>,
-    hash_seen_buffer: PrehashedHashSet,
+    expiration: Expiration<ContextKey>,
+    hash_seen_buffer: FastHashSet<u64>,
+    origin_enricher: Option<Arc<dyn OriginEnricher + Send + Sync>>,
     allow_heap_allocations: bool,
 }
 
@@ -286,10 +310,7 @@ impl ContextResolver {
         self
     }
 
-    /// Attempt to intern the given string using the resolver's string interner.
-    ///
-    /// This will try to store the string inline, intern it, or fall back to allocating a new `MetaString`.
-    pub fn intern(&self, s: &str) -> Option<MetaString> {
+    fn intern(&self, s: &str) -> Option<MetaString> {
         // First we'll see if we can inline the string, and if we can't, then we try to actually intern it. If interning
         // fails, then we just fall back to allocating a new `MetaString` instance.
         MetaString::try_inline(s)
@@ -302,67 +323,89 @@ impl ContextResolver {
             })
     }
 
-    fn create_context_from_ref<I, T>(&self, context_ref: ContextRef<'_, I>) -> Option<Context>
+    fn create_context_key_from_resolvable<T>(
+        &mut self, name: &str, tags: T, origin_info: Option<OriginInfo<'_>>,
+    ) -> ContextKey
     where
-        I: IntoIterator<Item = T>,
-        T: AsRef<str> + hash::Hash + std::fmt::Debug,
+        T: Tagged,
     {
-        let name = self.intern(context_ref.name)?;
-        let mut tags = TagSet::with_capacity(context_ref.tag_len);
-        for tag in context_ref.tags {
-            let tag = self.intern(tag.as_ref())?;
-            tags.insert_tag(tag);
+        // If we have an origin enricher configured, and the resolvable value has origin information defined, attempt to
+        // look up the origin key for it. We'll pass that along to the hasher to include as part of the context key.
+        let origin_key = self
+            .origin_enricher
+            .as_ref()
+            .and_then(|enricher| origin_info.and_then(|info| enricher.resolve_origin_key(info)));
+
+        hash_context_with_seen(name, tags, origin_key, &mut self.hash_seen_buffer)
+    }
+
+    fn create_context_from_resolvable<T>(&self, key: ContextKey, name: &str, tags: T) -> Option<Context>
+    where
+        T: Tagged,
+    {
+        // Intern the name and tags of the context.
+        let context_name = self.intern(name)?;
+
+        let mut context_tags = TagSet::default();
+
+        // TODO: This is clunky.
+        let mut failed = false;
+        tags.visit_tags(|tag| {
+            // Don't keep trying to intern the tags if we failed to intern the last one.
+            if !failed {
+                match self.intern(tag) {
+                    Some(tag) => context_tags.insert_tag(tag),
+                    None => failed = true,
+                }
+            }
+        });
+
+        if failed {
+            return None;
+        }
+
+        // Collect any enriched tags based on the origin key of the context, if any.
+        if let Some(origin_enricher) = self.origin_enricher.as_ref() {
+            if let Some(origin_key) = key.origin_key() {
+                origin_enricher.collect_origin_tags(origin_key, &mut context_tags);
+            }
         }
 
         self.stats.resolved_new_context_total().increment(1);
 
         Some(Context::from_inner(ContextInner {
-            name,
-            tags,
-            hash: context_ref.hash,
+            name: context_name,
+            tags: context_tags,
+            key,
             active_count: self.stats.active_contexts().clone(),
         }))
-    }
-
-    /// Creates a `ContextRef<'a, I>` from the given name and tags.
-    pub fn create_context_ref<'a, I, T>(&mut self, name: &'a str, tags: I) -> ContextRef<'a, I>
-    where
-        I: IntoIterator<Item = T> + Clone,
-        T: AsRef<str> + hash::Hash,
-    {
-        let (context_hash, tag_len) = hash_context_with_seen(name, tags.clone(), &mut self.hash_seen_buffer);
-
-        ContextRef {
-            name,
-            tags,
-            tag_len,
-            hash: context_hash,
-        }
     }
 
     /// Resolves the given context.
     ///
     /// If the context has not yet been resolved, the name and tags are interned and a new context is created and
-    /// stored. Otherwise, the existing context is returned.
+    /// stored. Otherwise, the existing context is returned. If an origin enricher is configured, and origin info is
+    /// available, any enriched tags will be added to the context.
     ///
     /// `None` may be returned if the interner is full and outside allocations are disallowed. See
     /// `allow_heap_allocations` for more information.
-    pub fn resolve<I, T>(&self, context_ref: ContextRef<'_, I>) -> Option<Context>
+    pub fn resolve<T>(&mut self, name: &str, tags: T, origin_info: Option<OriginInfo<'_>>) -> Option<Context>
     where
-        I: IntoIterator<Item = T>,
-        T: AsRef<str> + hash::Hash + std::fmt::Debug,
+        T: Tagged,
     {
-        let hash_key = ContextHashKey(context_ref.hash);
-        match self.context_cache.get(&hash_key) {
+        let context_key = self.create_context_key_from_resolvable(name, &tags, origin_info);
+        match self.context_cache.get(&context_key) {
             Some(context) => {
                 self.stats.resolved_existing_context_total().increment(1);
-                self.expiration.mark_entry_accessed(hash_key);
+                self.expiration.mark_entry_accessed(context_key);
                 Some(context)
             }
-            None => match self.create_context_from_ref(context_ref) {
+            None => match self.create_context_from_resolvable(context_key, name, tags) {
                 Some(context) => {
-                    self.context_cache.insert(hash_key.clone(), context.clone());
-                    self.expiration.mark_entry_accessed(hash_key);
+                    debug!(?context_key, ?context, "Resolved new context.");
+
+                    self.context_cache.insert(context_key, context.clone());
+                    self.expiration.mark_entry_accessed(context_key);
 
                     // TODO: This is lazily updated during resolve, which means this metric might lag behind the actual
                     // count as interned strings are dropped/reclaimed... but we don't have a way to figure out if a given
@@ -400,14 +443,15 @@ impl Clone for ContextResolver {
             interner: self.interner.clone(),
             context_cache: Arc::clone(&self.context_cache),
             expiration: self.expiration.clone(),
-            hash_seen_buffer: PrehashedHashSet::with_hasher(NoopU64HashBuilder),
+            hash_seen_buffer: new_fast_hashset(),
+            origin_enricher: self.origin_enricher.clone(),
             allow_heap_allocations: self.allow_heap_allocations,
         }
     }
 }
 
 async fn drive_expiration(
-    context_cache: Arc<ContextCache>, stats: Statistics, expiration: Expiration<ContextHashKey>,
+    context_cache: Arc<ContextCache>, stats: Statistics, expiration: Expiration<ContextKey>,
     expiration_interval: Duration,
 ) {
     let mut expired_entries = Vec::new();
@@ -452,15 +496,6 @@ mod tests {
             .unwrap_or_else(|| panic!("no metric found with key: {}", key))
     }
 
-    fn refs_approx_eq<I1, I2, T>(ref1: &ContextRef<'_, I1>, ref2: &ContextRef<'_, I2>) -> bool
-    where
-        I1: IntoIterator<Item = T>,
-        I2: IntoIterator<Item = T>,
-        T: hash::Hash,
-    {
-        ref1.name == ref2.name && ref1.hash == ref2.hash && ref1.tag_len == ref2.tag_len
-    }
-
     #[test]
     fn basic() {
         let mut resolver: ContextResolver = ContextResolverBuilder::for_tests();
@@ -470,12 +505,14 @@ mod tests {
         let tags1: [&str; 0] = [];
         let tags2 = ["tag1"];
 
-        let ref1 = resolver.create_context_ref(name, &tags1);
-        let ref2 = resolver.create_context_ref(name, &tags2);
-        assert!(!refs_approx_eq(&ref1, &ref2));
+        assert_ne!(&tags1[..], &tags2[..]);
 
-        let context1 = resolver.resolve(ref1).expect("should not fail to resolve");
-        let context2 = resolver.resolve(ref2).expect("should not fail to resolve");
+        let context1 = resolver
+            .resolve(name, &tags1[..], None)
+            .expect("should not fail to resolve");
+        let context2 = resolver
+            .resolve(name, &tags2[..], None)
+            .expect("should not fail to resolve");
 
         // The contexts should not be equal to each other, and should have distinct underlying pointers to the shared
         // context state:
@@ -483,12 +520,12 @@ mod tests {
         assert!(!context1.ptr_eq(&context2));
 
         // If we create the context references again, we _should_ get back the same contexts as before:
-        let ref1 = resolver.create_context_ref(name, &tags1);
-        let ref2 = resolver.create_context_ref(name, &tags2);
-        assert!(!refs_approx_eq(&ref1, &ref2));
-
-        let context1_redo = resolver.resolve(ref1).expect("should not fail to resolve");
-        let context2_redo = resolver.resolve(ref2).expect("should not fail to resolve");
+        let context1_redo = resolver
+            .resolve(name, &tags1[..], None)
+            .expect("should not fail to resolve");
+        let context2_redo = resolver
+            .resolve(name, &tags2[..], None)
+            .expect("should not fail to resolve");
 
         assert_ne!(context1_redo, context2_redo);
         assert_eq!(context1, context1_redo);
@@ -506,12 +543,14 @@ mod tests {
         let tags1 = ["tag1", "tag2"];
         let tags2 = ["tag2", "tag1"];
 
-        let ref1 = resolver.create_context_ref(name, &tags1);
-        let ref2 = resolver.create_context_ref(name, &tags2);
-        assert!(refs_approx_eq(&ref1, &ref2));
+        assert_ne!(&tags1[..], &tags2[..]);
 
-        let context1 = resolver.resolve(ref1).expect("should not fail to resolve");
-        let context2 = resolver.resolve(ref2).expect("should not fail to resolve");
+        let context1 = resolver
+            .resolve(name, &tags1[..], None)
+            .expect("should not fail to resolve");
+        let context2 = resolver
+            .resolve(name, &tags2[..], None)
+            .expect("should not fail to resolve");
 
         // The contexts should be equal to each other, and should have the same underlying pointer to the shared context
         // state:
@@ -527,8 +566,9 @@ mod tests {
         // Create our resolver and then create a context, which will have its metrics attached to our local recorder:
         let context = metrics::with_local_recorder(&recorder, || {
             let mut resolver: ContextResolver = ContextResolverBuilder::for_tests();
-            let context_ref = resolver.create_context_ref("name", &["tag1"]);
-            resolver.resolve(context_ref).expect("should not fail to resolve")
+            resolver
+                .resolve("name", &["tag"][..], None)
+                .expect("should not fail to resolve")
         });
 
         // We should be able to see that the active context count is one, representing the context we created:
@@ -554,16 +594,14 @@ mod tests {
         let name = "metric_name";
         let tags = ["tag1"];
 
-        let ref1 = resolver.create_context_ref(name, &tags);
-        let ref2 = resolver.create_context_ref(name, &tags);
-        assert!(refs_approx_eq(&ref1, &ref2));
-
-        let context1 = resolver.resolve(ref1).expect("should not fail to resolve");
+        let context1 = resolver
+            .resolve(name, &tags[..], None)
+            .expect("should not fail to resolve");
         let mut context2 = context1.clone();
 
         // Mutate the tags of `context2`, which should end up cloning the inner state and becoming its own instance:
-        let tags = context2.tags_mut();
-        tags.insert_tag("tag2");
+        let context2_tags = context2.tags_mut();
+        context2_tags.insert_tag("tag2");
 
         // The contexts should no longer be equal to each other, and should have distinct underlying pointers to the
         // shared context state:
@@ -578,7 +616,9 @@ mod tests {
 
         // And just for good measure, check that we can still resolve the original context reference and get back a
         // context that is equal to `context1`:
-        let context1_redo = resolver.resolve(ref2).expect("should not fail to resolve");
+        let context1_redo = resolver
+            .resolve(name, &tags[..], None)
+            .expect("should not fail to resolve");
         assert_eq!(context1, context1_redo);
         assert!(context1.ptr_eq(&context1_redo));
     }
@@ -594,15 +634,18 @@ mod tests {
         let tags2 = ["tag2"];
         let tags2_duplicated = ["tag2", "tag2"];
 
-        let ref1 = resolver.create_context_ref(name, &tags1);
-        let ref1_duplicated = resolver.create_context_ref(name, &tags1_duplicated);
-        let ref2 = resolver.create_context_ref(name, &tags2);
-        let ref2_duplicated = resolver.create_context_ref(name, &tags2_duplicated);
-
-        let context1 = resolver.resolve(ref1).expect("should not fail to resolve");
-        let context1_duplicated = resolver.resolve(ref1_duplicated).expect("should not fail to resolve");
-        let context2 = resolver.resolve(ref2).expect("should not fail to resolve");
-        let context2_duplicated = resolver.resolve(ref2_duplicated).expect("should not fail to resolve");
+        let context1 = resolver
+            .resolve(name, &tags1[..], None)
+            .expect("should not fail to resolve");
+        let context1_duplicated = resolver
+            .resolve(name, &tags1_duplicated[..], None)
+            .expect("should not fail to resolve");
+        let context2 = resolver
+            .resolve(name, &tags2[..], None)
+            .expect("should not fail to resolve");
+        let context2_duplicated = resolver
+            .resolve(name, &tags2_duplicated[..], None)
+            .expect("should not fail to resolve");
 
         // Each non-duplicated/duplicated context pair should be equal to one another:
         assert_eq!(context1, context1_duplicated);

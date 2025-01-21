@@ -23,6 +23,7 @@ aws-lc-rs,https://github.com/aws/aws-lc-rs,ISC AND (Apache-2.0 OR ISC),AWS-LibCr
 aws-lc-sys,https://github.com/aws/aws-lc-rs,ISC AND (Apache-2.0 OR ISC) AND OpenSSL,AWS-LC
 axum,https://github.com/tokio-rs/axum,MIT,The axum Authors
 axum-core,https://github.com/tokio-rs/axum,MIT,The axum-core Authors
+axum-extra,https://github.com/tokio-rs/axum,MIT,The axum-extra Authors
 backon,https://github.com/Xuanwo/backon,Apache-2.0,The backon Authors
 backtrace,https://github.com/rust-lang/backtrace-rs,MIT OR Apache-2.0,The Rust Project Developers
 base64,https://github.com/marshallpierce/rust-base64,MIT OR Apache-2.0,"Alice Maz <alice@alicemaz.com>, Marshall Pierce <marshall@mpierce.org>"
@@ -81,6 +82,7 @@ flate2,https://github.com/rust-lang/flate2-rs,MIT OR Apache-2.0,"Alex Crichton <
 float-cmp,https://github.com/mikedilger/float-cmp,MIT,Mike Dilger <mike@mikedilger.com>
 float-ord,https://github.com/notriddle/rust-float-ord,MIT  OR  Apache-2.0,Michael Howell <michael@notriddle.com>
 fnv,https://github.com/servo/rust-fnv,Apache-2.0  OR  MIT,Alex Crichton <alex@alexcrichton.com>
+foldhash,https://github.com/orlp/foldhash,Zlib,Orson Peters <orsonpeters@gmail.com>
 futures,https://github.com/rust-lang/futures-rs,MIT OR Apache-2.0,The futures Authors
 futures-channel,https://github.com/rust-lang/futures-rs,MIT OR Apache-2.0,The futures-channel Authors
 futures-core,https://github.com/rust-lang/futures-rs,MIT OR Apache-2.0,The futures-core Authors
@@ -162,7 +164,6 @@ minimal-lexical,https://github.com/Alexhuszagh/minimal-lexical,MIT OR Apache-2.0
 miniz_oxide,https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide,MIT OR Zlib OR Apache-2.0,"Frommi <daniil.liferenko@gmail.com>, oyvindln <oyvindln@users.noreply.github.com>"
 mintex,https://github.com/garypen/mintex,Apache-2.0,garypen <garypen@gmail.com>
 mio,https://github.com/tokio-rs/mio,MIT,"Carl Lerche <me@carllerche.com>, Thomas de Zeeuw <thomasdezeeuw@gmail.com>, Tokio Contributors <team@tokio.rs>"
-mirai-annotations,https://github.com/facebookexperimental/MIRAI,MIT,Herman Venter <hermanv@fb.com>
 multimap,https://github.com/havarnov/multimap,MIT OR Apache-2.0,Håvar Nøvik <havar.novik@gmail.com>
 ndarray,https://github.com/rust-ndarray/ndarray,MIT OR Apache-2.0,"Ulrik Sverdrup ""bluss"", Jim Turner"
 noisy_float,https://github.com/SergiusIW/noisy_float-rs,Apache-2.0,Matthew Michelotti <matthew@matthewmichelotti.com>
@@ -172,7 +173,6 @@ num-complex,https://github.com/rust-num/num-complex,MIT OR Apache-2.0,The Rust P
 num-conv,https://github.com/jhpratt/num-conv,MIT OR Apache-2.0,Jacob Pratt <jacob@jhpratt.dev>
 num-integer,https://github.com/rust-num/num-integer,MIT OR Apache-2.0,The Rust Project Developers
 num-traits,https://github.com/rust-num/num-traits,MIT OR Apache-2.0,The Rust Project Developers
-num_cpus,https://github.com/seanmonstar/num_cpus,MIT OR Apache-2.0,Sean McArthur <sean@seanmonstar.com>
 num_threads,https://github.com/jhpratt/num_threads,MIT OR Apache-2.0,Jacob Pratt <open-source@jhpratt.dev>
 object,https://github.com/gimli-rs/object,Apache-2.0 OR MIT,The object Authors
 once_cell,https://github.com/matklad/once_cell,MIT OR Apache-2.0,Aleksey Kladov <aleksey.kladov@gmail.com>
@@ -184,6 +184,7 @@ opentelemetry_api,https://github.com/open-telemetry/opentelemetry-rust,Apache-2.
 opentelemetry_sdk,https://github.com/open-telemetry/opentelemetry-rust,Apache-2.0,The opentelemetry_sdk Authors
 ordered-float,https://github.com/reem/rust-ordered-float,MIT,"Jonathan Reem <jonathan.reem@gmail.com>, Matt Brubeck <mbrubeck@limpet.net>"
 overload,https://github.com/danaugrs/overload,MIT,Daniel Salvadori <danaugrs@gmail.com>
+papaya,https://github.com/ibraheemdev/papaya,MIT,Ibraheem Ahmed <ibraheem@ibraheem.ca>
 parking_lot,https://github.com/Amanieu/parking_lot,MIT OR Apache-2.0,Amanieu d'Antras <amanieu@gmail.com>
 parse-zoneinfo,https://github.com/chronotope/chrono-tz,MIT,The parse-zoneinfo Authors
 paste,https://github.com/dtolnay/paste,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
@@ -246,8 +247,10 @@ schannel,https://github.com/steffengy/schannel-rs,MIT,"Steven Fackler <sfackler@
 scopeguard,https://github.com/bluss/scopeguard,MIT OR Apache-2.0,bluss
 secrecy,https://github.com/iqlusioninc/crates/tree/main/secrecy,Apache-2.0 OR MIT,Tony Arcieri <tony@iqlusion.io>
 security-framework,https://github.com/kornelski/rust-security-framework,MIT OR Apache-2.0,"Steven Fackler <sfackler@gmail.com>, Kornel <kornel@geekhood.net>"
+seize,https://github.com/ibraheemdev/seize,MIT,Ibraheem Ahmed <ibraheem@ibraheem.ca>
 serde,https://github.com/serde-rs/serde,MIT OR Apache-2.0,"Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com>"
 serde-value,https://github.com/arcnmx/serde-value,MIT,arcnmx
+serde_html_form,https://github.com/jplatte/serde_html_form,MIT,The serde_html_form Authors
 serde_json,https://github.com/serde-rs/json,MIT OR Apache-2.0,"Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com>"
 serde_path_to_error,https://github.com/dtolnay/path-to-error,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
 serde_repr,https://github.com/dtolnay/serde-repr,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
@@ -282,6 +285,9 @@ terminal_size,https://github.com/eminence/terminal-size,MIT OR Apache-2.0,Andrew
 thiserror,https://github.com/dtolnay/thiserror,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
 thousands,https://github.com/tov/thousands-rs,MIT OR Apache-2.0,Jesse A. Tov <jesse.tov@gmail.com>
 thread_local,https://github.com/Amanieu/thread_local-rs,MIT OR Apache-2.0,Amanieu d'Antras <amanieu@gmail.com>
+tikv-jemalloc-ctl,https://github.com/tikv/jemallocator,MIT OR Apache-2.0,"Steven Fackler <sfackler@gmail.com>, Gonzalo Brito Gadeschi <gonzalobg88@gmail.com>, The TiKV Project Developers"
+tikv-jemalloc-sys,https://github.com/tikv/jemallocator,MIT OR Apache-2.0,"Alex Crichton <alex@alexcrichton.com>, Gonzalo Brito Gadeschi <gonzalobg88@gmail.com>, The TiKV Project Developers"
+tikv-jemallocator,https://github.com/tikv/jemallocator,MIT OR Apache-2.0,"Alex Crichton <alex@alexcrichton.com>, Gonzalo Brito Gadeschi <gonzalobg88@gmail.com>, Simon Sapin <simon.sapin@exyr.org>, Steven Fackler <sfackler@gmail.com>, The TiKV Project Developers"
 time,https://github.com/time-rs/time,MIT OR Apache-2.0,"Jacob Pratt <open-source@jhpratt.dev>, Time contributors"
 tinystr,https://github.com/unicode-org/icu4x,Unicode-3.0,The ICU4X Project Developers
 tinytemplate,https://github.com/bheisler/TinyTemplate,Apache-2.0 OR MIT,Brook Heisler <brookheisler@gmail.com>
@@ -305,7 +311,7 @@ typenum,https://github.com/paholg/typenum,MIT OR Apache-2.0,"Paho Lurie-Gregg <p
 ucd-trie,https://github.com/BurntSushi/ucd-generate,MIT OR Apache-2.0,Andrew Gallant <jamslam@gmail.com>
 unarray,https://github.com/cameron1024/unarray,MIT OR Apache-2.0,The unarray Authors
 uncased,https://github.com/SergioBenitez/uncased,MIT OR Apache-2.0,Sergio Benitez <sb@sergio.bz>
-unicode-ident,https://github.com/dtolnay/unicode-ident,(MIT OR Apache-2.0) AND Unicode-DFS-2016,David Tolnay <dtolnay@gmail.com>
+unicode-ident,https://github.com/dtolnay/unicode-ident,(MIT OR Apache-2.0) AND Unicode-3.0,David Tolnay <dtolnay@gmail.com>
 unicode-segmentation,https://github.com/unicode-rs/unicode-segmentation,MIT OR Apache-2.0,"kwantam <kwantam@gmail.com>, Manish Goregaokar <manishsmail@gmail.com>"
 unsafe-libyaml,https://github.com/dtolnay/unsafe-libyaml,MIT,David Tolnay <dtolnay@gmail.com>
 untrusted,https://github.com/briansmith/untrusted,ISC,Brian Smith <brian@briansmith.org>
