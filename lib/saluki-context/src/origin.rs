@@ -165,6 +165,7 @@ impl<'a> std::fmt::Display for OriginInfo<'a> {
         write!(f, "OriginInfo(")?;
 
         if let Some(process_id) = self.process_id {
+            has_written = true;
             write!(f, "process_id={}", process_id)?;
         }
 

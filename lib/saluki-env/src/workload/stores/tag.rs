@@ -474,6 +474,12 @@ mod tests {
 		}};
 	}
 
+    macro_rules! orch_cardinality {
+		($entity_id:expr, tags => [$($key:literal => $value:literal),+]) => {{
+			tag_values!($entity_id, OriginTagCardinality::Orchestrator, tags => [$($key => $value,)+])
+		}};
+	}
+
     macro_rules! high_cardinality {
 		($entity_id:expr, tags => [$($key:literal => $value:literal),+]) => {{
 			tag_values!($entity_id, OriginTagCardinality::High, tags => [$($key => $value,)+])
@@ -531,17 +537,52 @@ mod tests {
     }
 
     #[test]
-    fn high_cardinality_is_superset() {
+    fn orchestrator_cardinality_is_superset() {
         let entity_id = EntityId::Container("container-id".into());
         let (low_card_expected_tags, low_card_operations) = low_cardinality!(&entity_id, tags => ["service" => "foo"]);
-        let (mut high_card_expected_tags, high_card_operations) =
-            high_cardinality!(&entity_id, tags => ["pod" => "foo-8xl-ah2z7"]);
+        let (mut orch_card_expected_tags, orch_card_operations) =
+            orch_cardinality!(&entity_id, tags => ["pod" => "foo-8xl-ah2z7"]);
 
-        // Make sure to make our expected high cardinality tags a superset.
-        high_card_expected_tags.extend(low_card_expected_tags.clone());
+        // Make sure to make our expected orchestrator cardinality tags a superset.
+        orch_card_expected_tags.extend(low_card_expected_tags.clone());
 
         let mut store = TagStore::with_entity_limit(DEFAULT_ENTITY_LIMIT);
         for operation in low_card_operations {
+            store.process_operation(operation);
+        }
+        for operation in orch_card_operations {
+            store.process_operation(operation);
+        }
+
+        let querier = store.querier();
+
+        let low_card_unified_tags = querier.get_entity_tags(&entity_id, OriginTagCardinality::Low).unwrap();
+        assert_eq!(sorted_sts(low_card_unified_tags), sorted_ts(low_card_expected_tags));
+
+        let orch_card_unified_tags = querier
+            .get_entity_tags(&entity_id, OriginTagCardinality::Orchestrator)
+            .unwrap();
+        assert_eq!(sorted_sts(orch_card_unified_tags), sorted_ts(orch_card_expected_tags));
+    }
+
+    #[test]
+    fn high_cardinality_is_superset() {
+        let entity_id = EntityId::Container("container-id".into());
+        let (low_card_expected_tags, low_card_operations) = low_cardinality!(&entity_id, tags => ["service" => "foo"]);
+        let (mut orch_card_expected_tags, orch_card_operations) =
+            orch_cardinality!(&entity_id, tags => ["pod" => "foo-8xl-ah2z7"]);
+        let (mut high_card_expected_tags, high_card_operations) = high_cardinality!(&entity_id, tags => ["container_id" => "9d00856f8ce7c98d4ef5f851d8fbb0692c9be68665f28c6fe562357bd13fb2c0"]);
+
+        // Make sure to make our expected orchestrator cardinality tags, and high cardinality tags, a superset of
+        // lower-precedence cardinalities.
+        orch_card_expected_tags.extend(low_card_expected_tags.clone());
+        high_card_expected_tags.extend(orch_card_expected_tags.clone());
+
+        let mut store = TagStore::with_entity_limit(DEFAULT_ENTITY_LIMIT);
+        for operation in low_card_operations {
+            store.process_operation(operation);
+        }
+        for operation in orch_card_operations {
             store.process_operation(operation);
         }
         for operation in high_card_operations {
@@ -552,6 +593,11 @@ mod tests {
 
         let low_card_unified_tags = querier.get_entity_tags(&entity_id, OriginTagCardinality::Low).unwrap();
         assert_eq!(sorted_sts(low_card_unified_tags), sorted_ts(low_card_expected_tags));
+
+        let orch_card_unified_tags = querier
+            .get_entity_tags(&entity_id, OriginTagCardinality::Orchestrator)
+            .unwrap();
+        assert_eq!(sorted_sts(orch_card_unified_tags), sorted_ts(orch_card_expected_tags));
 
         let high_card_unified_tags = querier.get_entity_tags(&entity_id, OriginTagCardinality::High).unwrap();
         assert_eq!(sorted_sts(high_card_unified_tags), sorted_ts(high_card_expected_tags));

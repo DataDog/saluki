@@ -11,7 +11,7 @@ use saluki_env::{
 };
 use saluki_io::deser::codec::dogstatsd::MetricPacket;
 use serde::Deserialize;
-use tracing::trace;
+use tracing::{debug, trace};
 
 const fn default_tag_cardinality() -> OriginTagCardinality {
     OriginTagCardinality::Low
@@ -58,7 +58,7 @@ pub struct OriginEnrichmentConfiguration {
     ///
     /// [1]: if an entity ID was detected via Origin Detection, it is only used if either no client-provided entity ID
     ///      was present or if `entity_id_precedence` is set to `false`.
-    #[serde(rename = "dogstatsd_origin_detection_unified", default)]
+    #[serde(rename = "origin_detection_unified", default)]
     origin_detection_unified: bool,
 
     /// Whether or not to opt out of origin detection for DogStatsD metrics.
@@ -150,12 +150,12 @@ impl DogStatsDOriginEnricher {
                 if maybe_entity_id.is_none() || !self.entity_id_precedence {
                     match self.workload_provider.get_tags_for_entity(&origin_pid, tag_cardinality) {
                         Some(tags) => {
-                            trace!(entity_id = ?origin_pid, tags_len = tags.len(), "Found tags for entity.");
+                            debug!(entity_id = %origin_pid, tags_len = tags.len(), "Found tags for entity.");
 
                             had_entity_matches = true;
                             enriched_tags.merge_missing_shared(&tags);
                         }
-                        None => trace!(entity_id = ?origin_pid, "No tags found for entity."),
+                        None => debug!(entity_id = %origin_pid, "No tags found for entity."),
                     }
                 }
             }
@@ -166,12 +166,12 @@ impl DogStatsDOriginEnricher {
             if let Some(entity_id) = maybe_client_entity_id {
                 match self.workload_provider.get_tags_for_entity(&entity_id, tag_cardinality) {
                     Some(tags) => {
-                        trace!(?entity_id, tags_len = tags.len(), "Found tags for entity.");
+                        debug!(%entity_id, tags_len = tags.len(), "Found tags for entity.");
 
                         had_entity_matches = true;
                         enriched_tags.merge_missing_shared(&tags);
                     }
-                    None => trace!(?entity_id, "No tags found for entity."),
+                    None => debug!(%entity_id, "No tags found for entity."),
                 }
             }
         } else {
@@ -186,12 +186,12 @@ impl DogStatsDOriginEnricher {
             for entity_id in maybe_entity_ids.iter().flatten() {
                 match self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
                     Some(tags) => {
-                        trace!(?entity_id, tags_len = tags.len(), "Found tags for entity.");
+                        debug!(%entity_id, tags_len = tags.len(), "Found tags for entity.");
 
                         had_entity_matches = true;
                         enriched_tags.merge_missing_shared(&tags);
                     }
-                    None => trace!(?entity_id, "No tags found for entity."),
+                    None => debug!(%entity_id, "No tags found for entity."),
                 }
             }
 
@@ -204,12 +204,12 @@ impl DogStatsDOriginEnricher {
                 {
                     match self.workload_provider.get_tags_for_entity(&entity_id, tag_cardinality) {
                         Some(tags) => {
-                            trace!(?entity_id, tags_len = tags.len(), "Found tags for entity.");
+                            debug!(%entity_id, tags_len = tags.len(), "Found tags for entity.");
 
                             had_entity_matches = true;
                             enriched_tags.merge_missing_shared(&tags);
                         }
-                        None => trace!(?entity_id, "No tags found for entity."),
+                        None => debug!(%entity_id, "No tags found for entity."),
                     }
                 }
             }
@@ -222,9 +222,9 @@ impl DogStatsDOriginEnricher {
         // yet, and so we treat that as a "miss" and avoid caching it.
         if had_entity_matches {
             let tags_len = enriched_tags.len();
-            self.origin_cache.pin().insert(origin_key, enriched_tags.into_shared());
+            debug!(origin = %origin_info, tags_len, tags = %enriched_tags, "Caching tags for origin.");
 
-            trace!(origin = %origin_info, tags_len, "Caching tags for origin.");
+            self.origin_cache.pin().insert(origin_key, enriched_tags.into_shared());
             Some(origin_key)
         } else {
             None
