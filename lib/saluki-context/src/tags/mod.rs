@@ -431,6 +431,14 @@ impl<'a> IntoIterator for &'a SharedTagSet {
     }
 }
 
+/// A value containing tags that can be visited.
+pub trait Tagged {
+    /// Visits the tags in this value.
+    fn visit_tags<F>(&self, visitor: F)
+    where
+        F: FnMut(&Tag);
+}
+
 fn tag_has_name(tag: &Tag, tag_name: &str) -> bool {
     // Try matching it as a key-value pair (e.g., `env:production`) first, and then just try matching it as a bare tag
     // (e.g., `production`).

@@ -11,7 +11,7 @@ use crate::{
     context::{Context, ContextInner, Tagged},
     expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle},
     hash::{hash_context_with_seen, new_fast_hashset, ContextKey, FastHashSet},
-    origin::{OriginEnricher, OriginInfo},
+    origin::{OriginInfo, OriginTags, OriginTagsResolver},
     tags::TagSet,
 };
 
@@ -51,7 +51,7 @@ pub struct ContextResolverBuilder {
     expiration_interval: Option<Duration>,
     interner_capacity_bytes: Option<NonZeroUsize>,
     allow_heap_allocations: Option<bool>,
-    origin_enricher: Option<Arc<dyn OriginEnricher + Send + Sync>>,
+    origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
 }
 
 impl ContextResolverBuilder {
@@ -77,7 +77,7 @@ impl ContextResolverBuilder {
             expiration_interval: None,
             interner_capacity_bytes: None,
             allow_heap_allocations: None,
-            origin_enricher: None,
+            origin_tags_resolver: None,
         })
     }
 
@@ -160,7 +160,7 @@ impl ContextResolverBuilder {
         self
     }
 
-    /// Sets the origin enricher to use when building a context.
+    /// Sets the origin tags resolver to use when building a context.
     ///
     /// In some cases, metrics may have enriched tags based on their origin -- the application/host/container/etc that
     /// emitted the metric -- which has to be considered when build the context itself. As this can be expensive, it is
@@ -168,16 +168,15 @@ impl ContextResolverBuilder {
     /// separate phase, and implementation, that can run separately from the initial hash-based approach of checking if
     /// a context has already been resolved.
     ///
-    /// When set, any origin information provided by `Resolvable::origin_info` will be considered during hashing when
-    /// looking up a context, and the enriched tags returned by the enricher will be added to the context when a new
-    /// context is built for the first time.
+    /// When set, any origin information provided will be considered during hashing when looking up a context, and any
+    /// enriched tags attached to the detected origin will be accessible from the context.
     ///
     /// Defaults to being disabled.
-    pub fn with_origin_enricher<E>(mut self, enricher: E) -> Self
+    pub fn with_origin_tags_resolver<R>(mut self, resolver: R) -> Self
     where
-        E: OriginEnricher + Send + Sync + 'static,
+        R: OriginTagsResolver + 'static,
     {
-        self.origin_enricher = Some(Arc::new(enricher));
+        self.origin_tags_resolver = Some(Arc::new(resolver));
         self
     }
 
@@ -258,7 +257,7 @@ impl ContextResolverBuilder {
             context_cache,
             expiration,
             hash_seen_buffer: new_fast_hashset(),
-            origin_enricher: self.origin_enricher,
+            origin_tags_resolver: self.origin_tags_resolver,
             allow_heap_allocations,
         }
     }
@@ -293,7 +292,7 @@ pub struct ContextResolver {
     context_cache: Arc<ContextCache>,
     expiration: Expiration<ContextKey>,
     hash_seen_buffer: FastHashSet<u64>,
-    origin_enricher: Option<Arc<dyn OriginEnricher + Send + Sync>>,
+    origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
     allow_heap_allocations: bool,
 }
 
@@ -323,7 +322,7 @@ impl ContextResolver {
             })
     }
 
-    fn create_context_key_from_resolvable<T>(
+    fn create_context_key<T>(
         &mut self, name: &str, tags: T, origin_info: Option<OriginInfo<'_>>,
     ) -> ContextKey
     where
@@ -332,14 +331,14 @@ impl ContextResolver {
         // If we have an origin enricher configured, and the resolvable value has origin information defined, attempt to
         // look up the origin key for it. We'll pass that along to the hasher to include as part of the context key.
         let origin_key = self
-            .origin_enricher
+            .origin_tags_resolver
             .as_ref()
-            .and_then(|enricher| origin_info.and_then(|info| enricher.resolve_origin_key(info)));
+            .and_then(|resolver| origin_info.and_then(|info| resolver.resolve_origin_key(info)));
 
         hash_context_with_seen(name, tags, origin_key, &mut self.hash_seen_buffer)
     }
 
-    fn create_context_from_resolvable<T>(&self, key: ContextKey, name: &str, tags: T) -> Option<Context>
+    fn create_context<T>(&self, key: ContextKey, name: &str, tags: T) -> Option<Context>
     where
         T: Tagged,
     {
@@ -365,17 +364,17 @@ impl ContextResolver {
         }
 
         // Collect any enriched tags based on the origin key of the context, if any.
-        if let Some(origin_enricher) = self.origin_enricher.as_ref() {
-            if let Some(origin_key) = key.origin_key() {
-                origin_enricher.collect_origin_tags(origin_key, &mut context_tags);
-            }
-        }
+        let origin_tags = match self.origin_tags_resolver.as_ref() {
+            Some(resolver) => key.origin_key().map(|key| OriginTags::from_resolved(key, Arc::clone(resolver))).unwrap_or_else(OriginTags::empty),
+            None => OriginTags::empty(),
+        };
 
         self.stats.resolved_new_context_total().increment(1);
 
         Some(Context::from_inner(ContextInner {
             name: context_name,
             tags: context_tags,
+            origin_tags,
             key,
             active_count: self.stats.active_contexts().clone(),
         }))
@@ -393,14 +392,14 @@ impl ContextResolver {
     where
         T: Tagged,
     {
-        let context_key = self.create_context_key_from_resolvable(name, &tags, origin_info);
+        let context_key = self.create_context_key(name, &tags, origin_info);
         match self.context_cache.get(&context_key) {
             Some(context) => {
                 self.stats.resolved_existing_context_total().increment(1);
                 self.expiration.mark_entry_accessed(context_key);
                 Some(context)
             }
-            None => match self.create_context_from_resolvable(context_key, name, tags) {
+            None => match self.create_context(context_key, name, tags) {
                 Some(context) => {
                     debug!(?context_key, ?context, "Resolved new context.");
 
@@ -444,7 +443,7 @@ impl Clone for ContextResolver {
             context_cache: Arc::clone(&self.context_cache),
             expiration: self.expiration.clone(),
             hash_seen_buffer: new_fast_hashset(),
-            origin_enricher: self.origin_enricher.clone(),
+            origin_tags_resolver: self.origin_tags_resolver.clone(),
             allow_heap_allocations: self.allow_heap_allocations,
         }
     }

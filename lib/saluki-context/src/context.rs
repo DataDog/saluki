@@ -7,8 +7,7 @@ use metrics::Gauge;
 use stringtheory::MetaString;
 
 use crate::{
-    hash::{hash_context, ContextKey},
-    tags::TagSet,
+    hash::{hash_context, ContextKey}, origin::OriginTags, tags::TagSet
 };
 
 static DIRTY_CONTEXT_KEY: OnceLock<ContextKey> = OnceLock::new();
@@ -29,6 +28,7 @@ impl Context {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
                 tags: TagSet::default(),
+                origin_tags: OriginTags::empty(),
                 key,
                 active_count: Gauge::noop(),
             }),
@@ -47,6 +47,7 @@ impl Context {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
                 tags: tag_set,
+                origin_tags: OriginTags::empty(),
                 key,
                 active_count: Gauge::noop(),
             }),
@@ -61,6 +62,7 @@ impl Context {
             inner: Arc::new(ContextInner {
                 name,
                 tags,
+                origin_tags: OriginTags::empty(),
                 key,
                 active_count: Gauge::noop(),
             }),
@@ -77,6 +79,7 @@ impl Context {
             inner: Arc::new(ContextInner {
                 name,
                 tags,
+                origin_tags: OriginTags::empty(),
                 key,
                 active_count: Gauge::noop(),
             }),
@@ -166,6 +169,7 @@ pub struct ContextInner {
     pub key: ContextKey,
     pub name: MetaString,
     pub tags: TagSet,
+    pub origin_tags: OriginTags,
     pub active_count: Gauge,
 }
 
@@ -175,6 +179,7 @@ impl Clone for ContextInner {
             key: self.key,
             name: self.name.clone(),
             tags: self.tags.clone(),
+            origin_tags: self.origin_tags.clone(),
 
             // We're specifically detaching this context from the statistics of the resolver from which `self`
             // originated, as we only want to track the statistics of the contexts created _directly_ through the
