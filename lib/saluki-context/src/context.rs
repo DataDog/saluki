@@ -5,7 +5,7 @@ use stringtheory::MetaString;
 
 use crate::{
     hash::{hash_context, ContextKey},
-    tags::TagSet,
+    tags::{Tag, TagSet, Tagged},
 };
 
 /// A metric context.
@@ -134,6 +134,15 @@ impl fmt::Display for Context {
     }
 }
 
+impl Tagged for Context {
+    fn visit_tags<F>(&self, mut visitor: F)
+    where
+        F: FnMut(&Tag),
+    {
+        self.tags().visit_tags(&mut visitor);
+    }
+}
+
 pub struct ContextInner {
     pub key: ContextKey,
     pub name: MetaString,
@@ -184,58 +193,5 @@ impl fmt::Debug for ContextInner {
             .field("tags", &self.tags)
             .field("key", &self.key)
             .finish()
-    }
-}
-
-/// A value containing tags that can be visited.
-pub trait Tagged {
-    /// Visits the tags in this value.
-    fn visit_tags<F>(&self, visitor: F)
-    where
-        F: FnMut(&str);
-}
-
-impl<'a, T> Tagged for &'a T
-where
-    T: Tagged,
-{
-    fn visit_tags<F>(&self, visitor: F)
-    where
-        F: FnMut(&str),
-    {
-        (*self).visit_tags(visitor)
-    }
-}
-
-impl<'a> Tagged for &'a [&'static str] {
-    fn visit_tags<F>(&self, mut visitor: F)
-    where
-        F: FnMut(&str),
-    {
-        for tag in self.iter() {
-            visitor(tag);
-        }
-    }
-}
-
-impl<'a> Tagged for &'a [MetaString] {
-    fn visit_tags<F>(&self, mut visitor: F)
-    where
-        F: FnMut(&str),
-    {
-        for tag in self.iter() {
-            visitor(tag);
-        }
-    }
-}
-
-impl<'a> Tagged for &'a TagSet {
-    fn visit_tags<F>(&self, mut visitor: F)
-    where
-        F: FnMut(&str),
-    {
-        for tag in self.into_iter() {
-            visitor(tag.as_str());
-        }
     }
 }

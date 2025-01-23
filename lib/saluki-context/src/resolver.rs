@@ -8,7 +8,7 @@ use tokio::time::sleep;
 use tracing::debug;
 
 use crate::{
-    context::{Context, ContextInner, Tagged},
+    context::{Context, ContextInner},
     expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle},
     hash::{hash_context_with_seen, new_fast_hashset, ContextKey, FastHashSet},
     origin::{OriginEnricher, OriginInfo},
@@ -323,11 +323,10 @@ impl ContextResolver {
             })
     }
 
-    fn create_context_key_from_resolvable<T>(
-        &mut self, name: &str, tags: T, origin_info: Option<OriginInfo<'_>>,
-    ) -> ContextKey
+    fn create_context_key<I, T>(&mut self, name: &str, tags: I, origin_info: Option<OriginInfo<'_>>) -> ContextKey
     where
-        T: Tagged,
+        I: IntoIterator<Item = T>,
+        T: AsRef<str>,
     {
         // If we have an origin enricher configured, and the resolvable value has origin information defined, attempt to
         // look up the origin key for it. We'll pass that along to the hasher to include as part of the context key.
@@ -339,29 +338,18 @@ impl ContextResolver {
         hash_context_with_seen(name, tags, origin_key, &mut self.hash_seen_buffer)
     }
 
-    fn create_context_from_resolvable<T>(&self, key: ContextKey, name: &str, tags: T) -> Option<Context>
+    fn create_context<I, T>(&self, key: ContextKey, name: &str, tags: I) -> Option<Context>
     where
-        T: Tagged,
+        I: IntoIterator<Item = T>,
+        T: AsRef<str>,
     {
         // Intern the name and tags of the context.
         let context_name = self.intern(name)?;
 
         let mut context_tags = TagSet::default();
-
-        // TODO: This is clunky.
-        let mut failed = false;
-        tags.visit_tags(|tag| {
-            // Don't keep trying to intern the tags if we failed to intern the last one.
-            if !failed {
-                match self.intern(tag) {
-                    Some(tag) => context_tags.insert_tag(tag),
-                    None => failed = true,
-                }
-            }
-        });
-
-        if failed {
-            return None;
+        for tag in tags {
+            let tag = self.intern(tag.as_ref())?;
+            context_tags.insert_tag(tag);
         }
 
         // Collect any enriched tags based on the origin key of the context, if any.
@@ -389,18 +377,19 @@ impl ContextResolver {
     ///
     /// `None` may be returned if the interner is full and outside allocations are disallowed. See
     /// `allow_heap_allocations` for more information.
-    pub fn resolve<T>(&mut self, name: &str, tags: T, origin_info: Option<OriginInfo<'_>>) -> Option<Context>
+    pub fn resolve<I, T>(&mut self, name: &str, tags: I, origin_info: Option<OriginInfo<'_>>) -> Option<Context>
     where
-        T: Tagged,
+        I: IntoIterator<Item = T> + Clone,
+        T: AsRef<str>,
     {
-        let context_key = self.create_context_key_from_resolvable(name, &tags, origin_info);
+        let context_key = self.create_context_key(name, tags.clone(), origin_info);
         match self.context_cache.get(&context_key) {
             Some(context) => {
                 self.stats.resolved_existing_context_total().increment(1);
                 self.expiration.mark_entry_accessed(context_key);
                 Some(context)
             }
-            None => match self.create_context_from_resolvable(context_key, name, tags) {
+            None => match self.create_context(context_key, name, tags) {
                 Some(context) => {
                     debug!(?context_key, ?context, "Resolved new context.");
 

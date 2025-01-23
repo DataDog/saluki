@@ -3,7 +3,7 @@ use std::{
     hash::{Hash as _, Hasher as _},
 };
 
-use crate::{context::Tagged, origin::OriginKey};
+use crate::origin::OriginKey;
 
 pub type FastHashSet<T> = HashSet<T, ahash::RandomState>;
 
@@ -30,9 +30,10 @@ fn hash_string(s: &str) -> u64 {
 /// set.
 ///
 /// Returns a hash that uniquely identifies the combination of name, tags, and origin of the value.
-pub fn hash_context<T>(name: &str, tags: T, origin_key: Option<OriginKey>) -> ContextKey
+pub fn hash_context<I, T>(name: &str, tags: I, origin_key: Option<OriginKey>) -> ContextKey
 where
-    T: Tagged,
+    I: IntoIterator<Item = T>,
+    T: AsRef<str>,
 {
     let mut seen = new_fast_hashset();
     hash_context_with_seen(name, tags, origin_key, &mut seen)
@@ -49,11 +50,12 @@ where
 /// allocates a new hash set each time.
 ///
 /// Returns a hash that uniquely identifies the combination of name, tags, and origin of the value.
-pub(super) fn hash_context_with_seen<T>(
-    name: &str, tags: T, origin_key: Option<OriginKey>, seen: &mut FastHashSet<u64>,
+pub(super) fn hash_context_with_seen<I, T>(
+    name: &str, tags: I, origin_key: Option<OriginKey>, seen: &mut FastHashSet<u64>,
 ) -> ContextKey
 where
-    T: Tagged,
+    I: IntoIterator<Item = T>,
+    T: AsRef<str>,
 {
     seen.clear();
 
@@ -63,16 +65,16 @@ where
     // Hash the tags individually and XOR their hashes together, which allows us to be order-oblivious:
     let mut combined_tags_hash = 0;
 
-    tags.visit_tags(|tag| {
-        let tag_hash = hash_string(tag);
+    for tag in tags {
+        let tag_hash = hash_string(tag.as_ref());
 
         // If we've already seen this tag before, skip combining it again.
         if !seen.insert(tag_hash) {
-            return;
+            continue;
         }
 
         combined_tags_hash ^= tag_hash;
-    });
+    }
 
     hasher.write_u64(combined_tags_hash);
 
