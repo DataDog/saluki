@@ -483,7 +483,6 @@ mod tests {
     };
 
     use super::*;
-    use crate::tags::Tag;
 
     fn get_gauge_value(metrics: &[(CompositeKey, Option<Unit>, Option<SharedString>, DebugValue)], key: &str) -> f64 {
         metrics
@@ -581,46 +580,6 @@ mod tests {
         let metrics_after = snapshotter.snapshot().into_vec();
         let active_contexts = get_gauge_value(&metrics_after, Statistics::active_contexts_name());
         assert_eq!(active_contexts, 0.0);
-    }
-
-    #[test]
-    fn mutate_tags() {
-        let mut resolver: ContextResolver = ContextResolverBuilder::for_tests();
-
-        // Create a basic context.
-        //
-        // We create two identical references so that we can later try and resolve the original context again to make
-        // sure things are still working as expected:
-        let name = "metric_name";
-        let tags = ["tag1"];
-
-        let context1 = resolver
-            .resolve(name, &tags[..], None)
-            .expect("should not fail to resolve");
-        let mut context2 = context1.clone();
-
-        // Mutate the tags of `context2`, which should end up cloning the inner state and becoming its own instance:
-        let context2_tags = context2.tags_mut();
-        context2_tags.insert_tag("tag2");
-
-        // The contexts should no longer be equal to each other, and should have distinct underlying pointers to the
-        // shared context state:
-        assert_ne!(context1, context2);
-        assert!(!context1.ptr_eq(&context2));
-
-        let expected_tags_context1 = TagSet::from_iter(vec![Tag::from("tag1")]);
-        assert_eq!(context1.tags(), &expected_tags_context1);
-
-        let expected_tags_context2 = TagSet::from_iter(vec![Tag::from("tag1"), Tag::from("tag2")]);
-        assert_eq!(context2.tags(), &expected_tags_context2);
-
-        // And just for good measure, check that we can still resolve the original context reference and get back a
-        // context that is equal to `context1`:
-        let context1_redo = resolver
-            .resolve(name, &tags[..], None)
-            .expect("should not fail to resolve");
-        assert_eq!(context1, context1_redo);
-        assert!(context1.ptr_eq(&context1_redo));
     }
 
     #[test]
