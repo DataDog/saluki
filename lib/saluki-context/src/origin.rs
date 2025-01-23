@@ -1,10 +1,10 @@
 //! Metric origin.
 
-use std::{fmt, hash::Hasher as _, num::NonZeroU32};
+use std::{fmt, hash::Hasher as _, num::NonZeroU32, sync::Arc};
 
 use serde::Deserialize;
 
-use crate::tags::TagSet;
+use crate::tags::{Tag, Tagged};
 
 /// The cardinality of tags associated with the origin entity.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
@@ -105,6 +105,15 @@ pub struct OriginInfo<'a> {
 }
 
 impl<'a> OriginInfo<'a> {
+    /// Returns `true` if the origin information is empty.
+    pub fn is_empty(&self) -> bool {
+        self.process_id.is_none()
+            && self.container_id.is_none()
+            && self.pod_uid.is_none()
+            && self.cardinality.is_none()
+            && self.external_data.is_none()
+    }
+
     /// Sets the process ID of the sender.
     ///
     /// Must be a non-zero value. If the value is zero, it is silently ignored.
@@ -228,13 +237,101 @@ impl std::hash::Hash for OriginKey {
     }
 }
 
-/// A value capable of collecting enriched tags for a metric based on its origin information.
-pub trait OriginEnricher {
+#[derive(Clone)]
+enum OriginTagsInner {
+    Empty,
+    Resolved {
+        key: OriginKey,
+        resolver: Arc<dyn OriginTagsResolver>,
+    },
+}
+
+/// A set of tags associated with the origin of a metric.
+#[derive(Clone)]
+pub struct OriginTags {
+    inner: OriginTagsInner,
+}
+
+impl OriginTags {
+    pub(super) fn empty() -> Self {
+        Self {
+            inner: OriginTagsInner::Empty,
+        }
+    }
+
+    pub(super) fn from_resolved(origin_key: OriginKey, resolver: Arc<dyn OriginTagsResolver>) -> Self {
+        Self {
+            inner: OriginTagsInner::Resolved {
+                key: origin_key,
+                resolver,
+            },
+        }
+    }
+}
+
+impl Tagged for OriginTags {
+    fn visit_tags<F>(&self, mut visitor: F)
+    where
+        F: FnMut(&Tag),
+    {
+        match self.inner {
+            OriginTagsInner::Empty => {}
+            OriginTagsInner::Resolved { key, ref resolver } => resolver.visit_origin_tags(key, &mut visitor),
+        }
+    }
+}
+
+/// A resolver for mapping origins to their associated tags.
+pub trait OriginTagsResolver: Send + Sync {
     /// Resolves the origin key for the given origin information.
     ///
     /// If the given origin information cannot be found/resolved, `None` is returned.
     fn resolve_origin_key(&self, origin_info: OriginInfo<'_>) -> Option<OriginKey>;
 
-    /// Collects the tags associated with the given origin key into the provided `TagSet`.
-    fn collect_origin_tags(&self, origin_key: OriginKey, tags: &mut TagSet);
+    /// Visits the tags associated with the given origin key.
+    fn visit_origin_tags(&self, origin_key: OriginKey, visitor: &mut dyn OriginTagVisitor);
+}
+
+impl<T> OriginTagsResolver for Arc<T>
+where
+    T: OriginTagsResolver,
+{
+    fn resolve_origin_key(&self, origin_info: OriginInfo<'_>) -> Option<OriginKey> {
+        (**self).resolve_origin_key(origin_info)
+    }
+
+    fn visit_origin_tags(&self, origin_key: OriginKey, visitor: &mut dyn OriginTagVisitor) {
+        (**self).visit_origin_tags(origin_key, visitor)
+    }
+}
+
+impl<T> OriginTagsResolver for Option<T>
+where
+    T: OriginTagsResolver,
+{
+    fn resolve_origin_key(&self, origin_info: OriginInfo<'_>) -> Option<OriginKey> {
+        self.as_ref()
+            .and_then(|resolver| resolver.resolve_origin_key(origin_info))
+    }
+
+    fn visit_origin_tags(&self, origin_key: OriginKey, visitor: &mut dyn OriginTagVisitor) {
+        if let Some(resolver) = self.as_ref() {
+            resolver.visit_origin_tags(origin_key, visitor)
+        }
+    }
+}
+
+/// A visitor for origin tags.
+pub trait OriginTagVisitor {
+    /// Visits a tag.
+    fn visit_tag(&mut self, tag: &Tag);
+}
+
+impl<F> OriginTagVisitor for F
+where
+    F: FnMut(&Tag),
+{
+    fn visit_tag(&mut self, tag: &Tag) {
+        self(tag)
+    }
 }
