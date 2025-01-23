@@ -295,6 +295,17 @@ impl TagSet {
     }
 }
 
+impl Tagged for TagSet {
+    fn visit_tags<F>(&self, mut visitor: F)
+    where
+        F: FnMut(&Tag),
+    {
+        for tag in &self.0 {
+            visitor(tag);
+        }
+    }
+}
+
 impl PartialEq<TagSet> for TagSet {
     fn eq(&self, other: &TagSet) -> bool {
         // NOTE: We could try storing tags in sorted order internally, which would make this moot... but for now, we'll
@@ -386,6 +397,15 @@ impl SharedTagSet {
     }
 }
 
+impl Tagged for SharedTagSet {
+    fn visit_tags<F>(&self, visitor: F)
+    where
+        F: FnMut(&Tag),
+    {
+        self.0.visit_tags(visitor);
+    }
+}
+
 impl PartialEq<TagSet> for SharedTagSet {
     fn eq(&self, other: &TagSet) -> bool {
         // NOTE: We could try storing tags in sorted order internally, which would make this moot... but for now, we'll
@@ -437,6 +457,18 @@ pub trait Tagged {
     fn visit_tags<F>(&self, visitor: F)
     where
         F: FnMut(&Tag);
+}
+
+impl<T> Tagged for Arc<T>
+where
+    T: Tagged,
+{
+    fn visit_tags<F>(&self, visitor: F)
+    where
+        F: FnMut(&Tag),
+    {
+        (**self).visit_tags(visitor)
+    }
 }
 
 fn tag_has_name(tag: &Tag, tag_name: &str) -> bool {

@@ -249,7 +249,7 @@ enum OriginTagsInner {
 /// A set of tags associated with the origin of a metric.
 #[derive(Clone)]
 pub struct OriginTags {
-	inner: OriginTagsInner,
+    inner: OriginTagsInner,
 }
 
 impl OriginTags {
@@ -259,9 +259,12 @@ impl OriginTags {
         }
     }
 
-	pub(super) fn from_resolved(origin_key: OriginKey, resolver: Arc<dyn OriginTagsResolver>) -> Self {
+    pub(super) fn from_resolved(origin_key: OriginKey, resolver: Arc<dyn OriginTagsResolver>) -> Self {
         Self {
-            inner: OriginTagsInner::Resolved { key: origin_key, resolver },
+            inner: OriginTagsInner::Resolved {
+                key: origin_key,
+                resolver,
+            },
         }
     }
 }
@@ -272,7 +275,7 @@ impl Tagged for OriginTags {
         F: FnMut(&Tag),
     {
         match self.inner {
-            OriginTagsInner::Empty => {},
+            OriginTagsInner::Empty => {}
             OriginTagsInner::Resolved { key, ref resolver } => resolver.visit_origin_tags(key, &mut visitor),
         }
     }
@@ -299,6 +302,22 @@ where
 
     fn visit_origin_tags(&self, origin_key: OriginKey, visitor: &mut dyn OriginTagVisitor) {
         (**self).visit_origin_tags(origin_key, visitor)
+    }
+}
+
+impl<T> OriginTagsResolver for Option<T>
+where
+    T: OriginTagsResolver,
+{
+    fn resolve_origin_key(&self, origin_info: OriginInfo<'_>) -> Option<OriginKey> {
+        self.as_ref()
+            .and_then(|resolver| resolver.resolve_origin_key(origin_info))
+    }
+
+    fn visit_origin_tags(&self, origin_key: OriginKey, visitor: &mut dyn OriginTagVisitor) {
+        if let Some(resolver) = self.as_ref() {
+            resolver.visit_origin_tags(origin_key, visitor)
+        }
     }
 }
 

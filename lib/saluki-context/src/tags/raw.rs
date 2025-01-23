@@ -1,5 +1,3 @@
-use crate::Tagged;
-
 /// A wrapper over raw tags in their unprocessed form.
 ///
 /// This type is meant to handle raw tags that have been extracted from network payloads, such as DogStatsD, where the
@@ -7,9 +5,9 @@ use crate::Tagged;
 /// 0x2C) character.
 ///
 /// `RawTags` supports iteration over these tags in an efficient, zero-copy fashion and returns string references to
-/// each individual tag. It supports configuration to control how many tags can be returned, and the maximum allowable
-/// length for a tag. This allows easy usage where limits must be enforced, without having to write additional code to
-/// filter the resulting iterator.
+/// each individual tag. It can be configured to control how many tags can be returned overall, as well what the maximum
+/// allowable length for a tag should be. This allows easy usage where limits must be enforced, without having to write
+/// additional code to filter the resulting iterator.
 ///
 /// ## Cloning
 ///
@@ -23,7 +21,7 @@ pub struct RawTags<'a> {
 }
 
 impl<'a> RawTags<'a> {
-    /// Creates a new `RawTags` from the given input byte slice.
+    /// Creates a new `RawTags` from the given input string.
     ///
     /// The maximum tag count and maximum tag length control how many tags are returned from the iterator and their
     /// length. If the iterator encounters more tags than the maximum count, it will simply stop returning tags. If the
@@ -65,17 +63,7 @@ impl<'a> IntoIterator for RawTags<'a> {
     }
 }
 
-impl<'a> Tagged for RawTags<'a> {
-    fn visit_tags<F>(&self, mut visitor: F)
-    where
-        F: FnMut(&str),
-    {
-        for tag in self.tags_iter() {
-            visitor(tag);
-        }
-    }
-}
-
+/// An iterator of raw tags.
 pub struct RawTagsIter<'a> {
     raw_tags: &'a str,
     parsed_tags: usize,

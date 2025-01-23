@@ -8,7 +8,7 @@ use tokio::time::sleep;
 use tracing::debug;
 
 use crate::{
-    context::{Context, ContextInner, Tagged},
+    context::{Context, ContextInner},
     expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle},
     hash::{hash_context_with_seen, new_fast_hashset, ContextKey, FastHashSet},
     origin::{OriginInfo, OriginTags, OriginTagsResolver},
@@ -180,9 +180,9 @@ impl ContextResolverBuilder {
         self
     }
 
-    /// Builds a [`ContextResolver`] with a no-op configuration, suitable for tests.
+    /// Configures a [`ContextResolverBuilder`] that is suitable for tests.
     ///
-    /// This ignores all configuration on the builder and uses a default configuration of:
+    /// This configures the builder with the following defaults:
     ///
     /// - resolver name of "noop"
     /// - unlimited context cache size
@@ -191,13 +191,12 @@ impl ContextResolverBuilder {
     ///
     /// This is generally only useful for testing purposes, and is exposed publicly in order to be used in cross-crate
     /// testing scenarios.
-    pub fn for_tests() -> ContextResolver {
+    pub fn for_tests() -> Self {
         ContextResolverBuilder::from_name("noop")
             .expect("resolver name not empty")
             .with_cached_contexts_limit(usize::MAX)
             .with_interner_capacity_bytes(NonZeroUsize::new(1).expect("not zero"))
             .with_heap_allocations(true)
-            .build()
     }
 
     /// Builds a [`ContextResolver`] from the current configuration.
@@ -297,18 +296,6 @@ pub struct ContextResolver {
 }
 
 impl ContextResolver {
-    /// Sets whether or not to allow heap allocations when interning strings.
-    ///
-    /// In cases where the interner is full, this setting determines whether or not we refuse to resolve a context, or
-    /// if we instead allocate strings normally (which will not be interned and will not be shared with other contexts)
-    /// to satisfy the request.
-    ///
-    /// Defaults to `true`.
-    pub fn with_heap_allocations(mut self, allow: bool) -> Self {
-        self.allow_heap_allocations = allow;
-        self
-    }
-
     fn intern(&self, s: &str) -> Option<MetaString> {
         // First we'll see if we can inline the string, and if we can't, then we try to actually intern it. If interning
         // fails, then we just fall back to allocating a new `MetaString` instance.
@@ -322,11 +309,10 @@ impl ContextResolver {
             })
     }
 
-    fn create_context_key<T>(
-        &mut self, name: &str, tags: T, origin_info: Option<OriginInfo<'_>>,
-    ) -> ContextKey
+    fn create_context_key<I, T>(&mut self, name: &str, tags: I, origin_info: Option<OriginInfo<'_>>) -> ContextKey
     where
-        T: Tagged,
+        I: IntoIterator<Item = T>,
+        T: AsRef<str>,
     {
         // If we have an origin enricher configured, and the resolvable value has origin information defined, attempt to
         // look up the origin key for it. We'll pass that along to the hasher to include as part of the context key.
@@ -338,34 +324,27 @@ impl ContextResolver {
         hash_context_with_seen(name, tags, origin_key, &mut self.hash_seen_buffer)
     }
 
-    fn create_context<T>(&self, key: ContextKey, name: &str, tags: T) -> Option<Context>
+    fn create_context<I, T>(&self, key: ContextKey, name: &str, tags: I) -> Option<Context>
     where
-        T: Tagged,
+        I: IntoIterator<Item = T>,
+        T: AsRef<str>,
     {
         // Intern the name and tags of the context.
         let context_name = self.intern(name)?;
 
+        // Collect all of the context tags, which will handle deduplication and interning.
         let mut context_tags = TagSet::default();
-
-        // TODO: This is clunky.
-        let mut failed = false;
-        tags.visit_tags(|tag| {
-            // Don't keep trying to intern the tags if we failed to intern the last one.
-            if !failed {
-                match self.intern(tag) {
-                    Some(tag) => context_tags.insert_tag(tag),
-                    None => failed = true,
-                }
-            }
-        });
-
-        if failed {
-            return None;
+        for tag in tags {
+            let tag = self.intern(tag.as_ref())?;
+            context_tags.insert_tag(tag);
         }
 
         // Collect any enriched tags based on the origin key of the context, if any.
         let origin_tags = match self.origin_tags_resolver.as_ref() {
-            Some(resolver) => key.origin_key().map(|key| OriginTags::from_resolved(key, Arc::clone(resolver))).unwrap_or_else(OriginTags::empty),
+            Some(resolver) => key
+                .origin_key()
+                .map(|key| OriginTags::from_resolved(key, Arc::clone(resolver)))
+                .unwrap_or_else(OriginTags::empty),
             None => OriginTags::empty(),
         };
 
@@ -388,11 +367,12 @@ impl ContextResolver {
     ///
     /// `None` may be returned if the interner is full and outside allocations are disallowed. See
     /// `allow_heap_allocations` for more information.
-    pub fn resolve<T>(&mut self, name: &str, tags: T, origin_info: Option<OriginInfo<'_>>) -> Option<Context>
+    pub fn resolve<I, T>(&mut self, name: &str, tags: I, origin_info: Option<OriginInfo<'_>>) -> Option<Context>
     where
-        T: Tagged,
+        I: IntoIterator<Item = T> + Clone,
+        T: AsRef<str>,
     {
-        let context_key = self.create_context_key(name, &tags, origin_info);
+        let context_key = self.create_context_key(name, tags.clone(), origin_info);
         match self.context_cache.get(&context_key) {
             Some(context) => {
                 self.stats.resolved_existing_context_total().increment(1);
@@ -482,7 +462,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::tags::Tag;
+    use crate::origin::{OriginKey, OriginTagVisitor};
 
     fn get_gauge_value(metrics: &[(CompositeKey, Option<Unit>, Option<SharedString>, DebugValue)], key: &str) -> f64 {
         metrics
@@ -495,9 +475,19 @@ mod tests {
             .unwrap_or_else(|| panic!("no metric found with key: {}", key))
     }
 
+    struct DummyOriginTagsResolver;
+
+    impl OriginTagsResolver for DummyOriginTagsResolver {
+        fn resolve_origin_key(&self, info: OriginInfo<'_>) -> Option<OriginKey> {
+            Some(OriginKey::from_opaque(info))
+        }
+
+        fn visit_origin_tags(&self, _: OriginKey, _: &mut dyn OriginTagVisitor) {}
+    }
+
     #[test]
     fn basic() {
-        let mut resolver: ContextResolver = ContextResolverBuilder::for_tests();
+        let mut resolver = ContextResolverBuilder::for_tests().build();
 
         // Create two distinct contexts with the same name but different tags:
         let name = "metric_name";
@@ -535,7 +525,7 @@ mod tests {
 
     #[test]
     fn tag_order() {
-        let mut resolver: ContextResolver = ContextResolverBuilder::for_tests();
+        let mut resolver = ContextResolverBuilder::for_tests().build();
 
         // Create two distinct contexts with the same name and tags, but with the tags in a different order:
         let name = "metric_name";
@@ -564,7 +554,7 @@ mod tests {
 
         // Create our resolver and then create a context, which will have its metrics attached to our local recorder:
         let context = metrics::with_local_recorder(&recorder, || {
-            let mut resolver: ContextResolver = ContextResolverBuilder::for_tests();
+            let mut resolver = ContextResolverBuilder::for_tests().build();
             resolver
                 .resolve("name", &["tag"][..], None)
                 .expect("should not fail to resolve")
@@ -583,48 +573,8 @@ mod tests {
     }
 
     #[test]
-    fn mutate_tags() {
-        let mut resolver: ContextResolver = ContextResolverBuilder::for_tests();
-
-        // Create a basic context.
-        //
-        // We create two identical references so that we can later try and resolve the original context again to make
-        // sure things are still working as expected:
-        let name = "metric_name";
-        let tags = ["tag1"];
-
-        let context1 = resolver
-            .resolve(name, &tags[..], None)
-            .expect("should not fail to resolve");
-        let mut context2 = context1.clone();
-
-        // Mutate the tags of `context2`, which should end up cloning the inner state and becoming its own instance:
-        let context2_tags = context2.tags_mut();
-        context2_tags.insert_tag("tag2");
-
-        // The contexts should no longer be equal to each other, and should have distinct underlying pointers to the
-        // shared context state:
-        assert_ne!(context1, context2);
-        assert!(!context1.ptr_eq(&context2));
-
-        let expected_tags_context1 = TagSet::from_iter(vec![Tag::from("tag1")]);
-        assert_eq!(context1.tags(), &expected_tags_context1);
-
-        let expected_tags_context2 = TagSet::from_iter(vec![Tag::from("tag1"), Tag::from("tag2")]);
-        assert_eq!(context2.tags(), &expected_tags_context2);
-
-        // And just for good measure, check that we can still resolve the original context reference and get back a
-        // context that is equal to `context1`:
-        let context1_redo = resolver
-            .resolve(name, &tags[..], None)
-            .expect("should not fail to resolve");
-        assert_eq!(context1, context1_redo);
-        assert!(context1.ptr_eq(&context1_redo));
-    }
-
-    #[test]
     fn duplicate_tags() {
-        let mut resolver: ContextResolver = ContextResolverBuilder::for_tests();
+        let mut resolver = ContextResolverBuilder::for_tests().build();
 
         // Two contexts with the same name, but each with a different set of duplicate tags:
         let name = "metric_name";
@@ -662,5 +612,44 @@ mod tests {
         assert_ne!(context1_duplicated, context2_duplicated);
         assert_ne!(context1, context2_duplicated);
         assert_ne!(context2, context1_duplicated);
+    }
+
+    #[test]
+    fn differing_origins_with_without_resolver() {
+        // Create a regular context resolver, without any origin tags resolver, which should result in contexts being
+        // the same so long as the name and tags are the same, disregarding any difference in origin information:
+        let mut resolver = ContextResolverBuilder::for_tests().build();
+
+        let name = "metric_name";
+        let tags = ["tag1"];
+        let mut origin1 = OriginInfo::default();
+        origin1.set_container_id("container1");
+        let mut origin2 = OriginInfo::default();
+        origin2.set_container_id("container2");
+
+        let context1 = resolver
+            .resolve(name, &tags[..], Some(origin1.clone()))
+            .expect("should not fail to resolve");
+        let context2 = resolver
+            .resolve(name, &tags[..], Some(origin2.clone()))
+            .expect("should not fail to resolve");
+
+        assert_eq!(context1, context2);
+
+        // Now build a context resolver with an origin tags resolver that trivially returns the origin key based on the
+        // hash of the origin info, which should result in the contexts incorporating the origin information into their
+        // equality/hashing, thus no longer comparing as equal:
+        let mut resolver = ContextResolverBuilder::for_tests()
+            .with_origin_tags_resolver(DummyOriginTagsResolver)
+            .build();
+
+        let context1 = resolver
+            .resolve(name, &tags[..], Some(origin1))
+            .expect("should not fail to resolve");
+        let context2 = resolver
+            .resolve(name, &tags[..], Some(origin2))
+            .expect("should not fail to resolve");
+
+        assert_ne!(context1, context2);
     }
 }

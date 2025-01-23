@@ -20,6 +20,8 @@ mod helpers;
 mod metadata;
 pub use self::metadata::{MetadataAction, MetadataOperation};
 
+mod origin;
+
 pub mod providers;
 
 mod stores;
@@ -34,14 +36,6 @@ pub trait WorkloadProvider {
     ///
     /// If no tags can be found for the entity, or at the given cardinality, `None` is returned.
     fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet>;
-
-    /// Resolves an entity ID from external data.
-    ///
-    /// External data is free-form string data attached to entities and designed for deferred resolution when they are
-    /// unable to access their entity ID directly for attachment to telemetry payloads.
-    ///
-    /// If the external data is invalid, or no entity ID can be resolved from it, `None` is returned.
-    fn resolve_entity_id_from_external_data(&self, external_data: &str) -> Option<EntityId>;
 }
 
 impl<T> WorkloadProvider for Option<T>
@@ -51,13 +45,6 @@ where
     fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
         match self.as_ref() {
             Some(provider) => provider.get_tags_for_entity(entity_id, cardinality),
-            None => None,
-        }
-    }
-
-    fn resolve_entity_id_from_external_data(&self, external_data: &str) -> Option<EntityId> {
-        match self.as_ref() {
-            Some(provider) => provider.resolve_entity_id_from_external_data(external_data),
             None => None,
         }
     }

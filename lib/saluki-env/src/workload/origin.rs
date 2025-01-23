@@ -1,39 +1,44 @@
+use std::sync::Arc;
+
 use papaya::HashMap;
 use saluki_context::origin::{OriginInfo, OriginKey, OriginTagCardinality, OriginTagVisitor};
 use serde::Deserialize;
 use tracing::trace;
 
-use crate::workload::{
-    external_data::ResolvedExternalData, EntityId
-};
+use super::stores::{ExternalDataStoreResolver, TagStoreQuerier};
+use crate::workload::{external_data::ResolvedExternalData, EntityId};
 
-use super::{ExternalDataStoreResolver, TagStoreQuerier};
-
-/// Resolves the tag associated with an origin.
-pub struct OriginTagsResolver {
+/// A handle for querying the tags associated with an origin.
+#[derive(Clone)]
+pub struct OriginTagsQuerier {
     config: OriginEnrichmentConfiguration,
     tag_querier: TagStoreQuerier,
-    external_data_resolver: ExternalDataStoreResolver,
-    key_mappings: HashMap<OriginKey, OwnedOriginInfo>,
+    ed_resolver: ExternalDataStoreResolver,
+    key_mappings: Arc<HashMap<OriginKey, OwnedOriginInfo>>,
 }
 
-impl OriginTagsResolver {
-    /// Creates a new `OriginTagsResolver`.
-    pub fn new(config: OriginEnrichmentConfiguration, tag_querier: TagStoreQuerier, external_data_resolver: ExternalDataStoreResolver) -> Self {
+impl OriginTagsQuerier {
+    /// Creates a new `OriginTagsQuerier`.
+    pub fn new(
+        config: OriginEnrichmentConfiguration, tag_querier: TagStoreQuerier, ed_resolver: ExternalDataStoreResolver,
+    ) -> Self {
         Self {
             config,
             tag_querier,
-            external_data_resolver,
-            key_mappings: HashMap::default(),
+            ed_resolver,
+            key_mappings: Arc::new(HashMap::default()),
         }
     }
 
-    fn resolve_origin_key_from_info(&self, origin_info: OriginInfo<'_>) -> Option<OriginKey> {
+    /// Resolves an origin key from the provided origin information.
+    ///
+    /// If the origin information is empty, this method will return `None`. Otherwise, it will hash the origin
+    pub fn resolve_origin_key_from_info(&self, origin_info: OriginInfo<'_>) -> Option<OriginKey> {
         // If there's no origin information at all, then there's nothing to key off of.
         if origin_info.is_empty() {
             return None;
         }
-        
+
         // We quickly hash the origin information to its key form, and see if we're already tracking it.
         //
         // If we haven't seen this origin yet, we generate an owned representation of its information and store it in
@@ -41,47 +46,61 @@ impl OriginTagsResolver {
         // necessary origin tags.
         let origin_key = OriginKey::from_opaque(&origin_info);
 
+        // TODO: This is a slow leak because we never remove entries and have no signal to know when to do so.
+        //
+        // We should likely just use `quick-cache` here, but it's not a huge deal for now.
         let _ = self.key_mappings.pin().get_or_insert_with(origin_key, || {
-            OwnedOriginInfo::from_borrowed_info(origin_info, &self.external_data_resolver)
+            OwnedOriginInfo::from_borrowed_info(origin_info, &self.ed_resolver)
         });
 
         Some(origin_key)
     }
 
-    fn visit_origin_tags(&self, origin_key: OriginKey, visitor: &mut dyn OriginTagVisitor) {
-        let dsd_resolver = DogStatsDOriginTagResolver { config: &self.config, querier: &self.tag_querier };
+    /// Visits the origin tags associated with the given origin key.
+    pub fn visit_origin_tags(&self, origin_key: OriginKey, visitor: &mut dyn OriginTagVisitor) {
+        // TODO: I know our only usage of the origin tags resolver is for DSD, so baking this in like this is _fine_,
+        // but conceptually this could stand to be configurable.
+        let dsd_resolver = DogStatsDOriginTagResolver {
+            config: &self.config,
+            querier: &self.tag_querier,
+        };
+
         match self.key_mappings.pin().get(&origin_key) {
             Some(origin) => {
                 dsd_resolver.visit_origin_tags(origin, visitor);
-            },
+            }
             None => {
                 trace!(?origin_key, "No origin information found for key.");
-            },
+            }
         }
     }
 }
 
+/// An owned and resolved representation of `OriginInfo<'a>`
+///
+/// This representation is used to store the pre-calculated entity IDs derived from a borrowed `OriginInfo<'a>` in order
+/// to speed the lookup of origin tags attached to each individual entity ID that comprises an origin.
 #[derive(Hash)]
 struct OwnedOriginInfo {
     cardinality: Option<OriginTagCardinality>,
     process_id: Option<EntityId>,
     container_id: Option<EntityId>,
     pod_uid: Option<EntityId>,
-    external_data: Option<ResolvedExternalData>,
+    resolved_external_data: Option<ResolvedExternalData>,
 }
 
 impl OwnedOriginInfo {
-    fn from_borrowed_info<'a>(origin_info: OriginInfo<'a>, external_data_resolver: &ExternalDataStoreResolver) -> Self {
+    fn from_borrowed_info(origin_info: OriginInfo<'_>, ed_resolver: &ExternalDataStoreResolver) -> Self {
         // We have to do a little song-and-dance to get the resolved External Data out, because the interface provided
         // can't return a reference to the resolved External Data directly.
-        let external_data = match origin_info.external_data() {
+        let resolved_external_data = match origin_info.external_data() {
             Some(raw_external_data) => {
                 let mut maybe_resolved_external_data = None;
-                external_data_resolver.resolve_external_data(raw_external_data, |maybe_resolved| {
+                ed_resolver.resolve_external_data(raw_external_data, |maybe_resolved| {
                     maybe_resolved_external_data = maybe_resolved.cloned();
                 });
                 maybe_resolved_external_data
-            },
+            }
             None => None,
         };
 
@@ -90,7 +109,7 @@ impl OwnedOriginInfo {
             process_id: origin_info.process_id().map(EntityId::ContainerPid),
             container_id: origin_info.container_id().and_then(EntityId::from_raw_container_id),
             pod_uid: origin_info.pod_uid().and_then(EntityId::from_pod_uid),
-            external_data,
+            resolved_external_data,
         }
     }
 }
@@ -179,7 +198,7 @@ impl<'a> DogStatsDOriginTagResolver<'a> {
             // but entity ID precedence is disabled), then try to get tags for the detected entity ID.
             if let Some(origin_pid) = maybe_origin_pid {
                 if maybe_entity_id.is_none() || !self.config.entity_id_precedence {
-                    match self.querier.get_entity_tags(&origin_pid, tag_cardinality) {
+                    match self.querier.get_entity_tags(origin_pid, tag_cardinality) {
                         Some(tags) => {
                             trace!(entity_id = ?origin_pid, tags_len = tags.len(), "Found tags for entity.");
 
@@ -196,7 +215,7 @@ impl<'a> DogStatsDOriginTagResolver<'a> {
             // client-provided entity ID takes precedence over the container ID.
             let maybe_client_entity_id = maybe_entity_id.or(maybe_container_id);
             if let Some(entity_id) = maybe_client_entity_id {
-                match self.querier.get_entity_tags(&entity_id, tag_cardinality) {
+                match self.querier.get_entity_tags(entity_id, tag_cardinality) {
                     Some(tags) => {
                         trace!(?entity_id, tags_len = tags.len(), "Found tags for entity.");
 
@@ -216,9 +235,21 @@ impl<'a> DogStatsDOriginTagResolver<'a> {
             // Try all possible detected entity IDs, enriching in the following order of precedence: origin PID,
             // local container ID, client-provided entity ID, External Data-based pod ID, and External Data-based
             // container ID.
-            let maybe_external_data_pod_uid = origin_info.external_data.as_ref().map(|red| red.pod_entity_id());
-            let maybe_external_data_container_id = origin_info.external_data.as_ref().map(|red| red.container_entity_id());
-            let maybe_entity_ids = &[maybe_origin_pid, maybe_container_id, maybe_entity_id, maybe_external_data_pod_uid, maybe_external_data_container_id];
+            let maybe_external_data_pod_uid = origin_info
+                .resolved_external_data
+                .as_ref()
+                .map(|red| red.pod_entity_id());
+            let maybe_external_data_container_id = origin_info
+                .resolved_external_data
+                .as_ref()
+                .map(|red| red.container_entity_id());
+            let maybe_entity_ids = &[
+                maybe_origin_pid,
+                maybe_container_id,
+                maybe_entity_id,
+                maybe_external_data_pod_uid,
+                maybe_external_data_container_id,
+            ];
             for entity_id in maybe_entity_ids.iter().flatten() {
                 match self.querier.get_entity_tags(entity_id, tag_cardinality) {
                     Some(tags) => {

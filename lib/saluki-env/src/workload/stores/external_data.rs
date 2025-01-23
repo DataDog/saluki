@@ -14,12 +14,26 @@ use crate::{
 };
 
 /// A store for External Data entity mappings.
+///
+/// "External Data" is a concept that is used to aid origin detection of workloads running in Kubernetes environments
+/// where introspection is not possible or may return incorrect information. Origin detection generally centers around
+/// determining the container where a metric originates from, and then enriching the metric with tags that describe that
+/// container, as well as the pod the container is running within, and so on. In some cases, the origin of a metric
+/// cannot be detected from the outside (such as by using peer credentials over Unix Domain sockets) and cannot be
+/// detected by the workload itself (such as when running in nested virtualization environments). In these cases, we
+/// need a mechanism to attach metadata to the workload such that it can send the necessary information to allow for the
+/// origin of a metric to be correctly detected.
+///
+/// "External Data" supports this by allowing for an external Kubernetes admission controller to attach specific
+/// metadata -- pod UID and container name -- to application pods, which is then read and sent along with metrics. This
+/// information is then used during origin detection in order to correlate the container ID of the origin, which is
+/// sufficient to allow enriching the metric with container-specific tags.
+///
+/// See [`ExternalData`] for more information on the External Data format itself.
 pub struct ExternalDataStore {
     snapshot: Arc<ArcSwap<ExternalDataSnapshot>>,
-
     entity_limit: NonZeroUsize,
     active_entities: FastHashSet<EntityId>,
-
     forward_mappings: FastIndexMap<ExternalData, ResolvedExternalData>,
     reverse_mappings: FastIndexMap<EntityId, ExternalData>,
 }
@@ -173,7 +187,11 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use super::{ExternalDataStore, ExternalDataStoreResolver};
-    use crate::workload::{aggregator::MetadataStore as _, external_data::{ExternalData, ResolvedExternalData}, EntityId, MetadataOperation};
+    use crate::workload::{
+        aggregator::MetadataStore as _,
+        external_data::{ExternalData, ResolvedExternalData},
+        EntityId, MetadataOperation,
+    };
 
     const DEFAULT_ENTITY_LIMIT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(10) };
 
@@ -181,19 +199,24 @@ mod tests {
         EntityId::Container(id.into())
     }
 
-    fn build_external_data(pod_uid: &str, container_name: &str) -> (ExternalData, ResolvedExternalData, String) {
+    fn build_external_data(
+        pod_uid: &str, container_name: &str, container_id: &EntityId,
+    ) -> (ExternalData, ResolvedExternalData, String) {
         let raw = format!("pu-{},cn-{}", pod_uid, container_name);
         let pod_entity_id = EntityId::from_pod_uid(pod_uid).unwrap();
-        let container_entity_id = EntityId::from_raw_container_id(container_name).unwrap();
 
         let external_data = ExternalData::new(pod_uid.into(), container_name.into());
-        let resolved_external_data = ResolvedExternalData::new(pod_entity_id.clone(), container_entity_id.clone());
+        let resolved_external_data = ResolvedExternalData::new(pod_entity_id.clone(), container_id.clone());
         (external_data, resolved_external_data, raw)
     }
 
-    fn get_resolved_external_data(resolver: &ExternalDataStoreResolver, raw_external_data: &str) -> Option<ResolvedExternalData> {
+    fn get_resolved_external_data(
+        resolver: &ExternalDataStoreResolver, raw_external_data: &str,
+    ) -> Option<ResolvedExternalData> {
         let mut maybe_resolved_external_data = None;
-        resolver.resolve_external_data(raw_external_data, |maybe_external_data| maybe_resolved_external_data = maybe_external_data.cloned());
+        resolver.resolve_external_data(raw_external_data, |maybe_external_data| {
+            maybe_resolved_external_data = maybe_external_data.cloned()
+        });
         maybe_resolved_external_data
     }
 
@@ -203,7 +226,7 @@ mod tests {
         let resolver = store.resolver();
 
         let container_eid = entity_id_container("abcdef");
-        let (ed, resolved_ed, raw_ed) = build_external_data("1234", "redis");
+        let (ed, resolved_ed, raw_ed) = build_external_data("1234", "redis", &container_eid);
 
         // Make sure we don't get anything back for this External Data yet:
         assert_eq!(get_resolved_external_data(&resolver, &raw_ed), None);
@@ -230,9 +253,9 @@ mod tests {
         let container_eid1 = entity_id_container("abcdef");
         let container_eid2 = entity_id_container("bcdefg");
         let container_eid3 = entity_id_container("cdefgh");
-        let (ed1, resolved_ed1, raw_ed1) = build_external_data("1234", "redis");
-        let (ed2, resolved_ed2, raw_ed2) = build_external_data("1234", "init-volume");
-        let (ed3, resolved_ed3, raw_ed3) = build_external_data("1234", "chmod-dir");
+        let (ed1, resolved_ed1, raw_ed1) = build_external_data("1234", "redis", &container_eid1);
+        let (ed2, resolved_ed2, raw_ed2) = build_external_data("1234", "init-volume", &container_eid2);
+        let (ed3, resolved_ed3, raw_ed3) = build_external_data("1234", "chmod-dir", &container_eid3);
 
         assert_eq!(get_resolved_external_data(&resolver, &raw_ed1), None);
         assert_eq!(get_resolved_external_data(&resolver, &raw_ed2), None);
@@ -241,7 +264,10 @@ mod tests {
         // Attach the External Data to all of the containers:
         store.process_operation(MetadataOperation::attach_external_data(container_eid1.clone(), ed1));
         store.process_operation(MetadataOperation::attach_external_data(container_eid2, ed2));
-        store.process_operation(MetadataOperation::attach_external_data(container_eid3.clone(), ed3.clone()));
+        store.process_operation(MetadataOperation::attach_external_data(
+            container_eid3.clone(),
+            ed3.clone(),
+        ));
 
         // Now we should be able to resolve External Data for the first two container entities, but not the third, as we
         // have hit our entity limit:

@@ -3,7 +3,8 @@ use std::{io, num::NonZeroU64};
 use datadog_protos::metrics::{self as proto, Resource};
 use ddsketch_agent::DDSketch;
 use http::{uri::PathAndQuery, HeaderValue, Method, Request, Uri};
-use protobuf::CodedOutputStream;
+use protobuf::{Chars, CodedOutputStream};
+use saluki_context::tags::Tagged as _;
 use saluki_core::pooling::ObjectPool;
 use saluki_event::metric::*;
 use saluki_io::{
@@ -397,29 +398,37 @@ fn encode_series_metric(metric: &Metric) -> proto::MetricSeries {
     let mut series = proto::MetricSeries::new();
     series.set_metric(metric.context().name().clone().into());
 
-    // Set our tags.
-    //
-    // This involves extracting some specific tags first that have to be set on dedicated fields (host, resources, etc)
-    // and then setting the rest as generic tags.
-    let mut tags = metric.context().tags().clone();
-
     let mut host_resource = Resource::new();
     host_resource.set_type("host".to_string().into());
     host_resource.set_name(metric.metadata().hostname().map(|h| h.into()).unwrap_or_default());
     series.mut_resources().push(host_resource);
 
-    if let Some(ir_tags) = tags.remove_tags("dd.internal.resource") {
-        for ir_tag in ir_tags {
-            if let Some((resource_type, resource_name)) = ir_tag.value().and_then(|s| s.split_once(':')) {
+    // Collect and handle all of our tags.
+    //
+    // We extract some specific tags and use them to add resource entries, such that they aren't sent as actual tags.
+    let mut tags = Vec::new();
+
+    let metric_tags = metric.context().tags();
+    for metric_tag in metric_tags {
+        // If this is an "internal resource" tag, we materialize it as a bonafide resource entry instead.
+        if metric_tag.name() == "dd.internal.resource" {
+            if let Some((resource_type, resource_name)) = metric_tag.value().and_then(|s| s.split_once(':')) {
                 let mut resource = Resource::new();
                 resource.set_type(resource_type.into());
                 resource.set_name(resource_name.into());
                 series.mut_resources().push(resource);
             }
+        } else {
+            // Just a regular metric tag.
+            tags.push(metric_tag.as_str().into());
         }
     }
 
-    series.set_tags(tags.into_iter().map(|tag| tag.into_inner().into()).collect());
+    metric.context().origin_tags().visit_tags(|tag| {
+        tags.push(tag.as_str().into());
+    });
+
+    series.set_tags(tags);
 
     // Set the origin metadata, if it exists.
     if let Some(origin) = metric.metadata().origin() {
@@ -483,15 +492,20 @@ fn encode_sketch_metric(metric: &Metric) -> proto::Sketch {
     let mut sketch = proto::Sketch::new();
     sketch.set_metric(metric.context().name().into());
     sketch.set_host(metric.metadata().hostname().map(|h| h.into()).unwrap_or_default());
-    sketch.set_tags(
-        metric
-            .context()
-            .tags()
-            .into_iter()
-            .cloned()
-            .map(|tag| tag.into_inner().into())
-            .collect(),
-    );
+
+    // Collect and handle all of our tags.
+    let mut tags = metric
+        .context()
+        .tags()
+        .into_iter()
+        .map(|tag| tag.as_str().into())
+        .collect::<Vec<Chars>>();
+
+    metric.context().origin_tags().visit_tags(|tag| {
+        tags.push(tag.as_str().into());
+    });
+
+    sketch.set_tags(tags);
 
     // Set the origin metadata, if it exists.
     if let Some(MetricOrigin::OriginMetadata {
