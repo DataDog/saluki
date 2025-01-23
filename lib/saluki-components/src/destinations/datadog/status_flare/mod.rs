@@ -3,9 +3,10 @@ use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use datadog_protos::agent::{
     GetFlareFilesRequest, GetFlareFilesResponse, GetStatusDetailsRequest, GetStatusDetailsResponse, RemoteAgent,
-    RemoteAgentServer,
+    RemoteAgentServer, StatusSection,
 };
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
@@ -112,7 +113,6 @@ impl Destination for DatadogStatusFlare {
         } = *self;
 
         let api_endpoint = format!("127.0.0.1:{}", api_listen_port);
-        println!("rz6300 {}", api_endpoint);
         let auth_token: String = thread_rng()
             .sample_iter(&Alphanumeric)
             .take(64)
@@ -160,16 +160,19 @@ impl Destination for DatadogStatusFlare {
 }
 
 #[derive(Default)]
-struct RemoteAgentImpl;
+struct RemoteAgentImpl {
+    started: DateTime<Utc>,
+}
 
 #[async_trait]
 impl RemoteAgent for RemoteAgentImpl {
     async fn get_status_details(
         &self, _request: tonic::Request<GetStatusDetailsRequest>,
     ) -> std::result::Result<tonic::Response<GetStatusDetailsResponse>, tonic::Status> {
-        println!("rz6300 remote agent status requested");
+        let mut status_fields = HashMap::new();
+        status_fields.insert("Started".to_string(), self.started.to_rfc3339());
         let response = GetStatusDetailsResponse {
-            main_section: None,
+            main_section: Some(StatusSection { fields: status_fields }),
             named_sections: HashMap::new(),
         };
         Ok(tonic::Response::new(response))
@@ -187,6 +190,6 @@ impl RemoteAgent for RemoteAgentImpl {
 
 /// Create the RemoteAgent gRPC server.
 pub fn new_remote_agent_server() -> Result<Router, GenericError> {
-    let remote_agent = RemoteAgentImpl;
+    let remote_agent = RemoteAgentImpl { started: Utc::now() };
     Ok(Server::builder().add_service(RemoteAgentServer::new(remote_agent)))
 }

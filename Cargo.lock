@@ -3430,6 +3430,7 @@ dependencies = [
  "bitmask-enum",
  "bytes",
  "bytesize",
+ "chrono",
  "datadog-protos",
  "ddsketch-agent",
  "float-cmp",

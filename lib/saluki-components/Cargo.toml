@@ -12,6 +12,7 @@ async-trait = { workspace = true }
 bitmask-enum = { workspace = true }
 bytes = { workspace = true }
 bytesize = { workspace = true }
+chrono = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }
