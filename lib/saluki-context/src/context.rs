@@ -5,6 +5,7 @@ use stringtheory::MetaString;
 
 use crate::{
     hash::{hash_context, ContextKey},
+    origin::OriginTags,
     tags::{Tag, TagSet, Tagged},
 };
 
@@ -24,6 +25,7 @@ impl Context {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
                 tags: TagSet::default(),
+                origin_tags: OriginTags::empty(),
                 key,
                 active_count: Gauge::noop(),
             }),
@@ -42,6 +44,7 @@ impl Context {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
                 tags: tag_set,
+                origin_tags: OriginTags::empty(),
                 key,
                 active_count: Gauge::noop(),
             }),
@@ -56,6 +59,7 @@ impl Context {
             inner: Arc::new(ContextInner {
                 name,
                 tags,
+                origin_tags: OriginTags::empty(),
                 key,
                 active_count: Gauge::noop(),
             }),
@@ -66,12 +70,14 @@ impl Context {
     pub fn with_name<S: Into<MetaString>>(&self, name: S) -> Self {
         let name = name.into();
         let tags = self.inner.tags.clone();
+        let origin_tags = self.inner.origin_tags.clone();
         let key = hash_context(&name, &tags, None);
 
         Self {
             inner: Arc::new(ContextInner {
                 name,
                 tags,
+                origin_tags,
                 key,
                 active_count: Gauge::noop(),
             }),
@@ -87,14 +93,19 @@ impl Context {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
-    /// Gets the name of this context.
+    /// Returns the name of this context.
     pub fn name(&self) -> &MetaString {
         &self.inner.name
     }
 
-    /// Gets the tags of this context.
+    /// Returns the instrumented tags of this context.
     pub fn tags(&self) -> &TagSet {
         &self.inner.tags
+    }
+
+    /// Returns the origin tags of this context.
+    pub fn origin_tags(&self) -> &OriginTags {
+        &self.inner.origin_tags
     }
 }
 
@@ -140,6 +151,7 @@ impl Tagged for Context {
         F: FnMut(&Tag),
     {
         self.tags().visit_tags(&mut visitor);
+        self.origin_tags().visit_tags(&mut visitor);
     }
 }
 
@@ -147,6 +159,7 @@ pub struct ContextInner {
     pub key: ContextKey,
     pub name: MetaString,
     pub tags: TagSet,
+    pub origin_tags: OriginTags,
     pub active_count: Gauge,
 }
 
@@ -156,6 +169,7 @@ impl Clone for ContextInner {
             key: self.key,
             name: self.name.clone(),
             tags: self.tags.clone(),
+            origin_tags: self.origin_tags.clone(),
 
             // We're specifically detaching this context from the statistics of the resolver from which `self`
             // originated, as we only want to track the statistics of the contexts created _directly_ through the
