@@ -198,18 +198,34 @@ impl DogStatsDOriginEnricher {
             // If the metric has External Data attached, try to resolve an entity ID from it and enrich the metric with
             // any tags attached to that entity ID.
             if let Some(external_data) = origin_info.external_data() {
-                if let Some(entity_id) = self
-                    .workload_provider
-                    .resolve_entity_id_from_external_data(external_data)
-                {
-                    match self.workload_provider.get_tags_for_entity(&entity_id, tag_cardinality) {
+                if let Some(resolved_external_data) = self.workload_provider.resolve_external_data(external_data) {
+                    let pod_entity_id = resolved_external_data.pod_entity_id();
+                    let container_entity_id = resolved_external_data.container_entity_id();
+
+                    match self
+                        .workload_provider
+                        .get_tags_for_entity(pod_entity_id, tag_cardinality)
+                    {
                         Some(tags) => {
-                            trace!(?entity_id, tags_len = tags.len(), "Found tags for entity.");
+                            trace!(entity_id = ?pod_entity_id, tags_len = tags.len(), "Found tags for entity.");
 
                             had_entity_matches = true;
                             enriched_tags.merge_missing_shared(&tags);
                         }
-                        None => trace!(?entity_id, "No tags found for entity."),
+                        None => trace!(entity_id = ?pod_entity_id, "No tags found for entity."),
+                    }
+
+                    match self
+                        .workload_provider
+                        .get_tags_for_entity(container_entity_id, tag_cardinality)
+                    {
+                        Some(tags) => {
+                            trace!(entity_id = ?container_entity_id, tags_len = tags.len(), "Found tags for entity.");
+
+                            had_entity_matches = true;
+                            enriched_tags.merge_missing_shared(&tags);
+                        }
+                        None => trace!(entity_id = ?container_entity_id, "No tags found for entity."),
                     }
                 }
             }

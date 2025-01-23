@@ -18,6 +18,7 @@ use crate::{
             ContainerdMetadataCollector, RemoteAgentTaggerMetadataCollector, RemoteAgentWorkloadMetadataCollector,
         },
         entity::EntityId,
+        external_data::ResolvedExternalData,
         stores::{ExternalDataStore, ExternalDataStoreResolver, TagStore, TagStoreQuerier},
     },
     WorkloadProvider,
@@ -158,8 +159,8 @@ impl WorkloadProvider for RemoteAgentWorkloadProvider {
         self.tag_querier.get_entity_tags(entity_id, cardinality)
     }
 
-    fn resolve_entity_id_from_external_data(&self, external_data: &str) -> Option<EntityId> {
-        self.external_data_resolver.resolve_entity_id(external_data)
+    fn resolve_external_data(&self, external_data: &str) -> Option<ResolvedExternalData> {
+        self.external_data_resolver.resolve(external_data)
     }
 }
 
