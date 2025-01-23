@@ -953,7 +953,7 @@ mod tests {
         // We set our metric name to be longer than 31 bytes (the inlining limit) to ensure this.
 
         let codec = DogstatsdCodec::from_configuration(DogstatsdCodecConfiguration::default());
-        let mut context_resolver = ContextResolverBuilder::for_tests().with_heap_allocations(false);
+        let mut context_resolver = ContextResolverBuilder::for_tests().with_heap_allocations(false).build();
         let peer_addr = ConnectionAddress::from("1.1.1.1:1234".parse::<SocketAddr>().unwrap());
 
         let input = "big_metric_name_that_cant_possibly_be_inlined:1|c|#tag1:value1,tag2:value2,tag3:value3";
