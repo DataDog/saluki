@@ -30,10 +30,6 @@ const DEFAULT_API_LISTEN_PORT: NonZeroUsize = unsafe { NonZeroUsize::new_uncheck
 /// Datadog Status and Flare Destination
 ///
 /// Registers ADP as a remote agent to the Core Agent.
-///
-/// ## Missing
-///
-/// - grpc server to respond to Core Agent
 pub struct DatadogStatusFlareConfiguration {
     id: String,
 
@@ -168,7 +164,7 @@ struct RemoteAgentImpl {
 impl RemoteAgent for RemoteAgentImpl {
     async fn get_status_details(
         &self, _request: tonic::Request<GetStatusDetailsRequest>,
-    ) -> std::result::Result<tonic::Response<GetStatusDetailsResponse>, tonic::Status> {
+    ) -> Result<tonic::Response<GetStatusDetailsResponse>, tonic::Status> {
         let mut status_fields = HashMap::new();
         status_fields.insert("Started".to_string(), self.started.to_rfc3339());
         let response = GetStatusDetailsResponse {
@@ -180,7 +176,7 @@ impl RemoteAgent for RemoteAgentImpl {
 
     async fn get_flare_files(
         &self, _request: tonic::Request<GetFlareFilesRequest>,
-    ) -> std::result::Result<tonic::Response<GetFlareFilesResponse>, tonic::Status> {
+    ) -> Result<tonic::Response<GetFlareFilesResponse>, tonic::Status> {
         let response = GetFlareFilesResponse {
             files: HashMap::default(),
         };

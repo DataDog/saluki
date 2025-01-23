@@ -67,7 +67,7 @@ impl APIBuilder {
         self
     }
 
-    /// Adds a self signed certificate to this builder.
+    /// Configures this builder to use TLS with a dynamically generated self-signed certificate.
     pub fn with_self_signed_tls(self) -> Self {
         let CertifiedKey { cert, key_pair } = generate_simple_self_signed(["localhost".to_owned()]).unwrap();
         let cert_file = cert.pem();
@@ -87,7 +87,7 @@ impl APIBuilder {
         self.with_tls_config(config)
     }
 
-    /// Adds a Tonic router to this builder.
+    /// Sets the gRPC router to use for this builder.
     ///
     /// Currently this is only used for the remote agent server.
     pub fn with_grpc_service(mut self, router: TonicRouter) -> Self {
