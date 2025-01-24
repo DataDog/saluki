@@ -1,4 +1,4 @@
-use std::{collections::HashSet, num::NonZeroU64};
+use std::{collections::HashSet, fmt, num::NonZeroU64};
 
 use super::{
     iter::{PointsIter, PointsIterRef},
@@ -95,5 +95,27 @@ impl<'a> IntoIterator for &'a SetPoints {
 
     fn into_iter(self) -> Self::IntoIter {
         PointsIterRef::set(self.0.values.iter())
+    }
+}
+
+impl fmt::Display for SetPoints {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[")?;
+        for (i, point) in self.0.values.iter().enumerate() {
+            if i > 0 {
+                write!(f, ",")?;
+            }
+
+            let ts = point.timestamp.map(|ts| ts.get()).unwrap_or_default();
+            write!(f, "({}, [", ts)?;
+            for (j, value) in point.value.iter().enumerate() {
+                if j > 0 {
+                    write!(f, ",")?;
+                }
+                write!(f, "{}", value)?;
+            }
+            write!(f, "])")?;
+        }
+        write!(f, "]")
     }
 }

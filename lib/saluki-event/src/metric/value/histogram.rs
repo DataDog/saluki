@@ -1,4 +1,4 @@
-use std::num::NonZeroU64;
+use std::{fmt, num::NonZeroU64};
 
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
@@ -288,6 +288,28 @@ impl<'a> IntoIterator for &'a mut HistogramPoints {
         HistogramIterRefMut {
             inner: self.0.values.iter_mut(),
         }
+    }
+}
+
+impl fmt::Display for HistogramPoints {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[")?;
+        for (i, point) in self.0.values.iter().enumerate() {
+            if i > 0 {
+                write!(f, ",")?;
+            }
+
+            let ts = point.timestamp.map(|ts| ts.get()).unwrap_or_default();
+            write!(f, "({}, [", ts)?;
+            for (j, sample) in point.value.samples().iter().enumerate() {
+                if j > 0 {
+                    write!(f, ",")?;
+                }
+                write!(f, "{{{} * {}}}", sample.value, sample.weight)?;
+            }
+            write!(f, "])")?;
+        }
+        write!(f, "]")
     }
 }
 

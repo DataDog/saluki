@@ -1,4 +1,4 @@
-use std::num::NonZeroU64;
+use std::{fmt, num::NonZeroU64};
 
 use ordered_float::OrderedFloat;
 
@@ -143,5 +143,20 @@ impl<'a> IntoIterator for &'a ScalarPoints {
 
     fn into_iter(self) -> Self::IntoIter {
         PointsIterRef::scalar(self.0.values.iter())
+    }
+}
+
+impl fmt::Display for ScalarPoints {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[")?;
+        for (i, (timestamp, value)) in self.into_iter().enumerate() {
+            if i > 0 {
+                write!(f, ",")?;
+            }
+
+            let ts = timestamp.map(|ts| ts.get()).unwrap_or_default();
+            write!(f, "({}, {})", ts, value)?;
+        }
+        write!(f, "]")
     }
 }
