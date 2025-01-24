@@ -409,24 +409,16 @@ impl MetricValues {
     pub fn collapse_non_timestamped(&mut self, timestamp: u64) {
         match self {
             // Collapse by summing.
-            Self::Counter(points) => points
-                .inner_mut()
-                .collapse_non_timestamped(timestamp, collapse_scalar_merge),
-            Self::Rate(points, _) => points
-                .inner_mut()
-                .collapse_non_timestamped(timestamp, collapse_scalar_merge),
+            Self::Counter(points) => points.inner_mut().collapse_non_timestamped(timestamp, merge_scalar_sum),
+            Self::Rate(points, _) => points.inner_mut().collapse_non_timestamped(timestamp, merge_scalar_sum),
             // Collapse by keeping the last value.
             Self::Gauge(points) => points
                 .inner_mut()
-                .collapse_non_timestamped(timestamp, collapse_scalar_latest),
+                .collapse_non_timestamped(timestamp, merge_scalar_latest),
             // Collapse by merging.
-            Self::Set(points) => points.inner_mut().collapse_non_timestamped(timestamp, collapse_set),
-            Self::Histogram(points) => points
-                .inner_mut()
-                .collapse_non_timestamped(timestamp, collapse_histogram),
-            Self::Distribution(sketches) => sketches
-                .inner_mut()
-                .collapse_non_timestamped(timestamp, collapse_sketch),
+            Self::Set(points) => points.inner_mut().collapse_non_timestamped(timestamp, merge_set),
+            Self::Histogram(points) => points.inner_mut().collapse_non_timestamped(timestamp, merge_histogram),
+            Self::Distribution(sketches) => sketches.inner_mut().collapse_non_timestamped(timestamp, merge_sketch),
         }
     }
 
@@ -440,16 +432,16 @@ impl MetricValues {
     /// existing value.
     pub fn merge(&mut self, other: Self) {
         match (self, other) {
-            (Self::Counter(a), Self::Counter(b)) => a.merge(b),
+            (Self::Counter(a), Self::Counter(b)) => a.merge(b, merge_scalar_sum),
             (Self::Rate(a_points, a_interval), Self::Rate(b_points, b_interval)) => {
                 if *a_interval != b_interval {
                     *a_points = b_points;
                     *a_interval = b_interval;
                 } else {
-                    a_points.merge(b_points);
+                    a_points.merge(b_points, merge_scalar_sum);
                 }
             }
-            (Self::Gauge(a), Self::Gauge(b)) => *a = b,
+            (Self::Gauge(a), Self::Gauge(b)) => a.merge(b, merge_scalar_latest),
             (Self::Set(a), Self::Set(b)) => a.merge(b),
             (Self::Histogram(a), Self::Histogram(b)) => a.merge(b),
             (Self::Distribution(a), Self::Distribution(b)) => a.merge(b),
@@ -485,22 +477,306 @@ impl fmt::Display for MetricValues {
     }
 }
 
-fn collapse_scalar_merge(dest: &mut OrderedFloat<f64>, src: &mut OrderedFloat<f64>) {
+fn merge_scalar_sum(dest: &mut OrderedFloat<f64>, src: &mut OrderedFloat<f64>) {
     *dest += *src;
 }
 
-fn collapse_scalar_latest(dest: &mut OrderedFloat<f64>, src: &mut OrderedFloat<f64>) {
+fn merge_scalar_latest(dest: &mut OrderedFloat<f64>, src: &mut OrderedFloat<f64>) {
     *dest = *src;
 }
 
-fn collapse_set(dest: &mut HashSet<String>, src: &mut HashSet<String>) {
+fn merge_set(dest: &mut HashSet<String>, src: &mut HashSet<String>) {
     dest.extend(src.drain());
 }
 
-fn collapse_histogram(dest: &mut Histogram, src: &mut Histogram) {
+fn merge_histogram(dest: &mut Histogram, src: &mut Histogram) {
     dest.merge(src);
 }
 
-fn collapse_sketch(dest: &mut DDSketch, src: &mut DDSketch) {
+fn merge_sketch(dest: &mut DDSketch, src: &mut DDSketch) {
     dest.merge(src);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{HistogramPoints, MetricValues, SetPoints, SketchPoints};
+    use crate::metric::ScalarPoints;
+
+    #[test]
+    fn merge_counters() {
+        let cases = [
+            // Both A and B have single point with an identical timestamp, so the points should be merged.
+            (
+                ScalarPoints::from((1, 1.0)),
+                ScalarPoints::from((1, 2.0)),
+                ScalarPoints::from((1, 3.0)),
+            ),
+            // A has a single point with a timestamp, B has a single point without a timestamp, so both points should be kept.
+            (
+                ScalarPoints::from((1, 1.0)),
+                ScalarPoints::from(2.0),
+                ScalarPoints::from([(0, 2.0), (1, 1.0)]),
+            ),
+            // Both A and B have single point without a timestamp, so the points should be merged.
+            (
+                ScalarPoints::from(5.0),
+                ScalarPoints::from(6.0),
+                ScalarPoints::from(11.0),
+            ),
+        ];
+
+        for (a, b, expected) in cases {
+            let mut merged = MetricValues::Counter(a.clone());
+            merged.merge(MetricValues::Counter(b.clone()));
+
+            assert_eq!(
+                merged,
+                MetricValues::Counter(expected.clone()),
+                "merged {} with {}, expected {} but got {}",
+                a,
+                b,
+                expected,
+                merged
+            );
+        }
+    }
+
+    #[test]
+    fn merge_gauges() {
+        let cases = [
+            // Both A and B have single point with an identical timestamp, so B's point value should override A's point value.
+            (
+                ScalarPoints::from((1, 1.0)),
+                ScalarPoints::from((1, 2.0)),
+                ScalarPoints::from((1, 2.0)),
+            ),
+            // A has a single point with a timestamp, B has a single point without a timestamp, so both points should be kept.
+            (
+                ScalarPoints::from((1, 1.0)),
+                ScalarPoints::from(2.0),
+                ScalarPoints::from([(0, 2.0), (1, 1.0)]),
+            ),
+            // Both A and B have single point without a timestamp, so B's point value should override A's point value.
+            (
+                ScalarPoints::from(5.0),
+                ScalarPoints::from(6.0),
+                ScalarPoints::from(6.0),
+            ),
+        ];
+
+        for (a, b, expected) in cases {
+            let mut merged = MetricValues::Gauge(a.clone());
+            merged.merge(MetricValues::Gauge(b.clone()));
+
+            assert_eq!(
+                merged,
+                MetricValues::Gauge(expected.clone()),
+                "merged {} with {}, expected {} but got {}",
+                a,
+                b,
+                expected,
+                merged
+            );
+        }
+    }
+
+    #[test]
+    fn merge_rates() {
+        const FIVE_SECS: Duration = Duration::from_secs(5);
+        const TEN_SECS: Duration = Duration::from_secs(10);
+
+        let cases = [
+            // Both A and B have single point with an identical timestamp, and identical intervals, so the points should be merged.
+            (
+                ScalarPoints::from((1, 1.0)),
+                FIVE_SECS,
+                ScalarPoints::from((1, 2.0)),
+                FIVE_SECS,
+                ScalarPoints::from((1, 3.0)),
+                FIVE_SECS,
+            ),
+            // A has a single point with a timestamp, B has a single point without a timestamp, and identical intervals, so both points should be kept.
+            (
+                ScalarPoints::from((1, 1.0)),
+                FIVE_SECS,
+                ScalarPoints::from(2.0),
+                FIVE_SECS,
+                ScalarPoints::from([(0, 2.0), (1, 1.0)]),
+                FIVE_SECS,
+            ),
+            // Both A and B have single point without a timestamp, and identical intervals, so the points should be merged.
+            (
+                ScalarPoints::from(5.0),
+                FIVE_SECS,
+                ScalarPoints::from(6.0),
+                FIVE_SECS,
+                ScalarPoints::from(11.0),
+                FIVE_SECS,
+            ),
+            // We do three permutations here -- identical timestamped point, differing timestamped point,
+            // non-timestamped point -- but always with differing intervals, which should lead to B overriding A
+            // entirely.
+            (
+                ScalarPoints::from((1, 1.0)),
+                FIVE_SECS,
+                ScalarPoints::from((1, 2.0)),
+                TEN_SECS,
+                ScalarPoints::from((1, 2.0)),
+                TEN_SECS,
+            ),
+            (
+                ScalarPoints::from((1, 3.0)),
+                FIVE_SECS,
+                ScalarPoints::from(4.0),
+                TEN_SECS,
+                ScalarPoints::from((0, 4.0)),
+                TEN_SECS,
+            ),
+            (
+                ScalarPoints::from(7.0),
+                TEN_SECS,
+                ScalarPoints::from(9.0),
+                FIVE_SECS,
+                ScalarPoints::from(9.0),
+                FIVE_SECS,
+            ),
+        ];
+
+        for (a, a_interval, b, b_interval, expected, expected_interval) in cases {
+            let mut merged = MetricValues::Rate(a.clone(), a_interval);
+            merged.merge(MetricValues::Rate(b.clone(), b_interval));
+
+            assert_eq!(
+                merged,
+                MetricValues::Rate(expected.clone(), expected_interval),
+                "merged {}/{:?} with {}/{:?}, expected {} but got {}",
+                a,
+                a_interval,
+                b,
+                b_interval,
+                expected,
+                merged
+            );
+        }
+    }
+
+    #[test]
+    fn merge_sets() {
+        let cases = [
+            // Both A and B have single point with an identical timestamp, so the values should be merged.
+            (
+                SetPoints::from((1, "foo")),
+                SetPoints::from((1, "bar")),
+                SetPoints::from((1, ["foo", "bar"])),
+            ),
+            // A has a single point with a timestamp, B has a single point without a timestamp, so both points should be
+            // kept.
+            (
+                SetPoints::from((1, "foo")),
+                SetPoints::from("bar"),
+                SetPoints::from([(0, "bar"), (1, "foo")]),
+            ),
+            // Both A and B have single point without a timestamp, so the values should be merged.
+            (
+                SetPoints::from("foo"),
+                SetPoints::from("bar"),
+                SetPoints::from(["foo", "bar"]),
+            ),
+        ];
+
+        for (a, b, expected) in cases {
+            let mut merged = MetricValues::Set(a.clone());
+            merged.merge(MetricValues::Set(b.clone()));
+
+            assert_eq!(
+                merged,
+                MetricValues::Set(expected.clone()),
+                "merged {} with {}, expected {} but got {}",
+                a,
+                b,
+                expected,
+                merged
+            );
+        }
+    }
+
+    #[test]
+    fn merge_histograms() {
+        let cases = [
+            // Both A and B have single point with an identical timestamp, so the samples should be merged.
+            (
+                HistogramPoints::from((1, 1.0)),
+                HistogramPoints::from((1, 2.0)),
+                HistogramPoints::from((1, [1.0, 2.0])),
+            ),
+            // A has a single point with a timestamp, B has a single point without a timestamp, so both points should be kept.
+            (
+                HistogramPoints::from((1, 1.0)),
+                HistogramPoints::from(2.0),
+                HistogramPoints::from([(0, 2.0), (1, 1.0)]),
+            ),
+            // Both A and B have single point without a timestamp, so the samples should be merged.
+            (
+                HistogramPoints::from(5.0),
+                HistogramPoints::from(6.0),
+                HistogramPoints::from([5.0, 6.0]),
+            ),
+        ];
+
+        for (a, b, expected) in cases {
+            let mut merged = MetricValues::Histogram(a.clone());
+            merged.merge(MetricValues::Histogram(b.clone()));
+
+            assert_eq!(
+                merged,
+                MetricValues::Histogram(expected.clone()),
+                "merged {} with {}, expected {} but got {}",
+                a,
+                b,
+                expected,
+                merged
+            );
+        }
+    }
+
+    #[test]
+    fn merge_distributions() {
+        let cases = [
+            // Both A and B have single point with an identical timestamp, so the sketches should be merged.
+            (
+                SketchPoints::from((1, 1.0)),
+                SketchPoints::from((1, 2.0)),
+                SketchPoints::from((1, [1.0, 2.0])),
+            ),
+            // A has a single point with a timestamp, B has a single point without a timestamp, so both points should be kept.
+            (
+                SketchPoints::from((1, 1.0)),
+                SketchPoints::from(2.0),
+                SketchPoints::from([(0, 2.0), (1, 1.0)]),
+            ),
+            // Both A and B have single point without a timestamp, so the sketches should be merged.
+            (
+                SketchPoints::from(5.0),
+                SketchPoints::from(6.0),
+                SketchPoints::from([5.0, 6.0]),
+            ),
+        ];
+
+        for (a, b, expected) in cases {
+            let mut merged = MetricValues::Distribution(a.clone());
+            merged.merge(MetricValues::Distribution(b.clone()));
+
+            assert_eq!(
+                merged,
+                MetricValues::Distribution(expected.clone()),
+                "merged {} with {}, expected {} but got {}",
+                a,
+                b,
+                expected,
+                merged
+            );
+        }
+    }
 }

@@ -80,6 +80,46 @@ impl<'a> From<&'a str> for SetPoints {
     }
 }
 
+impl<'a> From<(u64, &'a str)> for SetPoints {
+    fn from((ts, value): (u64, &'a str)) -> Self {
+        Self(TimestampedValue::from((ts, HashSet::from([value.to_string()]))).into())
+    }
+}
+
+impl<'a, const N: usize> From<[&'a str; N]> for SetPoints {
+    fn from(values: [&'a str; N]) -> Self {
+        Self(TimestampedValue::from(HashSet::from_iter(values.into_iter().map(|s| s.to_string()))).into())
+    }
+}
+
+impl<'a, const N: usize> From<(u64, [&'a str; N])> for SetPoints {
+    fn from((ts, values): (u64, [&'a str; N])) -> Self {
+        Self(TimestampedValue::from((ts, values.into_iter().map(|s| s.to_string()).collect())).into())
+    }
+}
+
+impl<'a, const N: usize> From<[(u64, &'a str); N]> for SetPoints {
+    fn from(values: [(u64, &'a str); N]) -> Self {
+        Self(
+            values
+                .iter()
+                .map(|(ts, value)| TimestampedValue::from((*ts, HashSet::from([value.to_string()]))))
+                .into(),
+        )
+    }
+}
+
+impl<'a, const N: usize> From<[(u64, &'a [&'a str]); N]> for SetPoints {
+    fn from(values: [(u64, &'a [&'a str]); N]) -> Self {
+        Self(
+            values
+                .iter()
+                .map(|(ts, values)| TimestampedValue::from((*ts, values.iter().map(|s| s.to_string()).collect())))
+                .into(),
+        )
+    }
+}
+
 impl IntoIterator for SetPoints {
     type Item = (Option<NonZeroU64>, f64);
     type IntoIter = PointsIter;

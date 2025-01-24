@@ -115,6 +115,15 @@ impl From<(u64, f64)> for SketchPoints {
     }
 }
 
+impl<const N: usize> From<(u64, [f64; N])> for SketchPoints {
+    fn from((ts, values): (u64, [f64; N])) -> Self {
+        let mut sketch = DDSketch::default();
+        sketch.insert_many(&values[..]);
+
+        Self(TimestampedValue::from((ts, sketch)).into())
+    }
+}
+
 impl<'a> From<(u64, &'a [f64])> for SketchPoints {
     fn from((ts, values): (u64, &'a [f64])) -> Self {
         let mut sketch = DDSketch::default();
@@ -129,6 +138,17 @@ impl<'a> From<&'a [(u64, &'a [f64])]> for SketchPoints {
         Self(TimestampedValues::from(values.iter().map(|(ts, values)| {
             let mut sketch = DDSketch::default();
             sketch.insert_many(values);
+
+            (*ts, sketch)
+        })))
+    }
+}
+
+impl<const N: usize> From<[(u64, f64); N]> for SketchPoints {
+    fn from(values: [(u64, f64); N]) -> Self {
+        Self(TimestampedValues::from(values.iter().map(|(ts, value)| {
+            let mut sketch = DDSketch::default();
+            sketch.insert(*value);
 
             (*ts, sketch)
         })))

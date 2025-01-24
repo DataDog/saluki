@@ -57,7 +57,10 @@ impl ScalarPoints {
     ///
     /// If a point with the same timestamp exists in both sets, the values will be added together. Otherwise, the points
     /// will appended to the end of the set.
-    pub fn merge(&mut self, other: Self) {
+    pub fn merge<F>(&mut self, other: Self, merge: F)
+    where
+        F: Fn(&mut OrderedFloat<f64>, &mut OrderedFloat<f64>),
+    {
         let mut needs_sort = false;
         for other_value in other.0.values {
             if let Some(existing_value) = self
@@ -66,7 +69,8 @@ impl ScalarPoints {
                 .iter_mut()
                 .find(|value| value.timestamp == other_value.timestamp)
             {
-                existing_value.value += other_value.value;
+                let mut other = other_value.value;
+                merge(&mut existing_value.value, &mut other);
             } else {
                 self.0.values.push(other_value);
                 needs_sort = true;

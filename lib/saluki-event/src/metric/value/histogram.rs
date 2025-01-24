@@ -225,6 +225,15 @@ impl From<f64> for HistogramPoints {
     }
 }
 
+impl From<(u64, f64)> for HistogramPoints {
+    fn from((ts, value): (u64, f64)) -> Self {
+        let mut histogram = Histogram::default();
+        histogram.insert(value, SampleRate::unsampled());
+
+        Self(TimestampedValue::from((ts, histogram)).into())
+    }
+}
+
 impl<const N: usize> From<[f64; N]> for HistogramPoints {
     fn from(values: [f64; N]) -> Self {
         let mut histogram = Histogram::default();
@@ -233,6 +242,33 @@ impl<const N: usize> From<[f64; N]> for HistogramPoints {
         }
 
         Self(TimestampedValue::from(histogram).into())
+    }
+}
+
+impl<const N: usize> From<(u64, [f64; N])> for HistogramPoints {
+    fn from((ts, values): (u64, [f64; N])) -> Self {
+        let mut histogram = Histogram::default();
+        for value in values {
+            histogram.insert(value, SampleRate::unsampled());
+        }
+
+        Self(TimestampedValue::from((ts, histogram)).into())
+    }
+}
+
+impl<const N: usize> From<[(u64, f64); N]> for HistogramPoints {
+    fn from(values: [(u64, f64); N]) -> Self {
+        Self(
+            values
+                .into_iter()
+                .map(|(ts, value)| {
+                    let mut histogram = Histogram::default();
+                    histogram.insert(value, SampleRate::unsampled());
+
+                    (ts, histogram)
+                })
+                .into(),
+        )
     }
 }
 

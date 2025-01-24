@@ -533,13 +533,6 @@ impl AggregationState {
             // This means we'll always remove all-closed/empty non-counter metrics, and we _may_ remove all-closed/empty
             // counters.
             if let Some(closed_bucket_values) = am.values.split_at_timestamp(split_timestamp) {
-                trace!(
-                    metric_name = &**context.name(),
-                    metric_tags = %context.tags(),
-                    points = %closed_bucket_values,
-                    "Flushing closed buckets."
-                );
-
                 // We got some closed bucket values, so flush those out.
                 transform_and_push_metric(
                     context.clone(),
