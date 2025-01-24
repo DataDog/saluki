@@ -1,4 +1,4 @@
-use std::num::NonZeroU64;
+use std::{fmt, num::NonZeroU64};
 
 use ddsketch_agent::DDSketch;
 
@@ -165,6 +165,32 @@ impl<'a> IntoIterator for &'a SketchPoints {
         SketchesIterRef {
             inner: self.0.values.iter(),
         }
+    }
+}
+
+impl fmt::Display for SketchPoints {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[")?;
+        for (i, point) in self.0.values.iter().enumerate() {
+            if i > 0 {
+                write!(f, ",")?;
+            }
+
+            let ts = point.timestamp.map(|ts| ts.get()).unwrap_or_default();
+            let sketch = &point.value;
+            write!(
+                f,
+                "({}, {{cnt={} min={} max={} avg={} sum={} bin_count={}}})",
+                ts,
+                sketch.count(),
+                sketch.min().unwrap_or(0.0),
+                sketch.max().unwrap_or(0.0),
+                sketch.avg().unwrap_or(0.0),
+                sketch.sum().unwrap_or(0.0),
+                sketch.bin_count(),
+            )?;
+        }
+        write!(f, "]")
     }
 }
 

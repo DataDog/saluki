@@ -1,6 +1,6 @@
 mod iter;
 
-use std::{collections::HashSet, num::NonZeroU64, time::Duration};
+use std::{collections::HashSet, fmt, num::NonZeroU64, time::Duration};
 
 use ddsketch_agent::DDSketch;
 use ordered_float::OrderedFloat;
@@ -468,6 +468,19 @@ impl MetricValues {
             Self::Set(_) => "set",
             Self::Histogram(_) => "histogram",
             Self::Distribution(_) => "distribution",
+        }
+    }
+}
+
+impl fmt::Display for MetricValues {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Counter(points) => write!(f, "{}", points),
+            Self::Rate(points, interval) => write!(f, "{} over {:?}", points, interval),
+            Self::Gauge(points) => write!(f, "{}", points),
+            Self::Set(points) => write!(f, "{}", points),
+            Self::Histogram(points) => write!(f, "{}", points),
+            Self::Distribution(points) => write!(f, "{}", points),
         }
     }
 }

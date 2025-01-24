@@ -368,6 +368,22 @@ impl Tagged for TagSet {
     }
 }
 
+impl fmt::Display for TagSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[")?;
+
+        for (i, tag) in self.0.iter().enumerate() {
+            if i > 0 {
+                write!(f, ",")?;
+            }
+
+            write!(f, "{}", tag.as_str())?;
+        }
+
+        write!(f, "]")
+    }
+}
+
 /// A shared, read-only set of tags.
 #[derive(Clone, Debug)]
 pub struct SharedTagSet(Arc<TagSet>);
