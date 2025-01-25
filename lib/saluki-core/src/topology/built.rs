@@ -4,7 +4,7 @@ use memory_accounting::{
     allocator::{AllocationGroupToken, Tracked},
     MemoryLimiter,
 };
-use saluki_error::{generic_error, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use tokio::{
     sync::mpsc,
@@ -123,6 +123,12 @@ impl BuiltTopology {
     ) -> Result<RunningTopology, GenericError> {
         let _guard = self.component_token.enter();
 
+        let thread_pool = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(8)
+            .build()
+            .error_context("Failed to build asynchronous thread pool runtime.")?;
+        let thread_pool_handle = thread_pool.handle().clone();
+
         let mut component_tasks = JoinSet::new();
         let mut component_task_map = HashMap::new();
 
@@ -159,6 +165,7 @@ impl BuiltTopology {
                 component_registry,
                 health_handle,
                 health_registry.clone(),
+                thread_pool_handle.clone(),
             );
 
             let task_handle = spawn_source(&mut component_tasks, source, context);
@@ -191,6 +198,7 @@ impl BuiltTopology {
                 component_registry,
                 health_handle,
                 health_registry.clone(),
+                thread_pool_handle.clone(),
             );
 
             let task_handle = spawn_transform(&mut component_tasks, transform, context);
@@ -217,6 +225,7 @@ impl BuiltTopology {
                 component_registry,
                 health_handle,
                 health_registry.clone(),
+                thread_pool_handle.clone(),
             );
 
             let task_handle = spawn_destination(&mut component_tasks, destination, context);
@@ -224,6 +233,7 @@ impl BuiltTopology {
         }
 
         Ok(RunningTopology::from_parts(
+            thread_pool,
             shutdown_coordinator,
             component_tasks,
             component_task_map,
