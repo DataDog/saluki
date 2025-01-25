@@ -12,6 +12,7 @@ fips = ["saluki-app/tls-fips"]
 [dependencies]
 async-trait = { workspace = true }
 bytesize = { workspace = true }
+jemalloc_pprof = { workspace = true }
 memory-accounting = { workspace = true }
 saluki-app = { workspace = true, features = ["full"] }
 saluki-components = { workspace = true }
@@ -27,7 +28,7 @@ saluki-metadata = { workspace = true }
 serde = { workspace = true }
 stringtheory = { workspace = true }
 tikv-jemalloc-ctl = { workspace = true, features = ["use_std"] }
-tikv-jemallocator = { workspace = true, features = ["background_threads", "unprefixed_malloc_on_supported_platforms", "stats"] }
+tikv-jemallocator = { workspace = true, features = ["background_threads", "profiling", "unprefixed_malloc_on_supported_platforms", "stats"] }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "signal"] }
 tracing = { workspace = true }
 
