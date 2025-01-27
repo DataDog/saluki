@@ -1,5 +1,3 @@
-use crate::Tagged;
-
 /// A wrapper over raw tags in their unprocessed form.
 ///
 /// This type is meant to handle raw tags that have been extracted from network payloads, such as DogStatsD, where the
@@ -62,17 +60,6 @@ impl<'a> IntoIterator for RawTags<'a> {
 
     fn into_iter(self) -> Self::IntoIter {
         self.tags_iter()
-    }
-}
-
-impl<'a> Tagged for RawTags<'a> {
-    fn visit_tags<F>(&self, mut visitor: F)
-    where
-        F: FnMut(&str),
-    {
-        for tag in self.tags_iter() {
-            visitor(tag);
-        }
     }
 }
 

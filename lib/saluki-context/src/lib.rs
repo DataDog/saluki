@@ -3,7 +3,7 @@
 #![deny(missing_docs)]
 
 mod context;
-pub use self::context::{Context, Tagged};
+pub use self::context::Context;
 
 mod expiry;
 

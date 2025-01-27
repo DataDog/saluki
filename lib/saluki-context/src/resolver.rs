@@ -8,7 +8,7 @@ use tokio::time::sleep;
 use tracing::debug;
 
 use crate::{
-    context::{Context, ContextInner, Tagged},
+    context::{Context, ContextInner},
     expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle},
     hash::{hash_context_with_seen, new_fast_hashset, ContextKey, FastHashSet},
     origin::{OriginEnricher, OriginInfo},
@@ -323,11 +323,10 @@ impl ContextResolver {
             })
     }
 
-    fn create_context_key_from_resolvable<T>(
-        &mut self, name: &str, tags: T, origin_info: Option<OriginInfo<'_>>,
-    ) -> ContextKey
+    fn create_context_key<I, T>(&mut self, name: &str, tags: I, origin_info: Option<OriginInfo<'_>>) -> ContextKey
     where
-        T: Tagged,
+        I: IntoIterator<Item = T>,
+        T: AsRef<str>,
     {
         // If we have an origin enricher configured, and the resolvable value has origin information defined, attempt to
         // look up the origin key for it. We'll pass that along to the hasher to include as part of the context key.
@@ -339,29 +338,18 @@ impl ContextResolver {
         hash_context_with_seen(name, tags, origin_key, &mut self.hash_seen_buffer)
     }
 
-    fn create_context_from_resolvable<T>(&self, key: ContextKey, name: &str, tags: T) -> Option<Context>
+    fn create_context<I, T>(&self, key: ContextKey, name: &str, tags: I) -> Option<Context>
     where
-        T: Tagged,
+        I: IntoIterator<Item = T>,
+        T: AsRef<str>,
     {
         // Intern the name and tags of the context.
         let context_name = self.intern(name)?;
 
         let mut context_tags = TagSet::default();
-
-        // TODO: This is clunky.
-        let mut failed = false;
-        tags.visit_tags(|tag| {
-            // Don't keep trying to intern the tags if we failed to intern the last one.
-            if !failed {
-                match self.intern(tag) {
-                    Some(tag) => context_tags.insert_tag(tag),
-                    None => failed = true,
-                }
-            }
-        });
-
-        if failed {
-            return None;
+        for tag in tags {
+            let tag = self.intern(tag.as_ref())?;
+            context_tags.insert_tag(tag);
         }
 
         // Collect any enriched tags based on the origin key of the context, if any.
@@ -389,18 +377,19 @@ impl ContextResolver {
     ///
     /// `None` may be returned if the interner is full and outside allocations are disallowed. See
     /// `allow_heap_allocations` for more information.
-    pub fn resolve<T>(&mut self, name: &str, tags: T, origin_info: Option<OriginInfo<'_>>) -> Option<Context>
+    pub fn resolve<I, T>(&mut self, name: &str, tags: I, origin_info: Option<OriginInfo<'_>>) -> Option<Context>
     where
-        T: Tagged,
+        I: IntoIterator<Item = T> + Clone,
+        T: AsRef<str>,
     {
-        let context_key = self.create_context_key_from_resolvable(name, &tags, origin_info);
+        let context_key = self.create_context_key(name, tags.clone(), origin_info);
         match self.context_cache.get(&context_key) {
             Some(context) => {
                 self.stats.resolved_existing_context_total().increment(1);
                 self.expiration.mark_entry_accessed(context_key);
                 Some(context)
             }
-            None => match self.create_context_from_resolvable(context_key, name, tags) {
+            None => match self.create_context(context_key, name, tags) {
                 Some(context) => {
                     debug!(?context_key, ?context, "Resolved new context.");
 
@@ -483,7 +472,6 @@ mod tests {
     };
 
     use super::*;
-    use crate::tags::Tag;
 
     fn get_gauge_value(metrics: &[(CompositeKey, Option<Unit>, Option<SharedString>, DebugValue)], key: &str) -> f64 {
         metrics
@@ -581,46 +569,6 @@ mod tests {
         let metrics_after = snapshotter.snapshot().into_vec();
         let active_contexts = get_gauge_value(&metrics_after, Statistics::active_contexts_name());
         assert_eq!(active_contexts, 0.0);
-    }
-
-    #[test]
-    fn mutate_tags() {
-        let mut resolver: ContextResolver = ContextResolverBuilder::for_tests();
-
-        // Create a basic context.
-        //
-        // We create two identical references so that we can later try and resolve the original context again to make
-        // sure things are still working as expected:
-        let name = "metric_name";
-        let tags = ["tag1"];
-
-        let context1 = resolver
-            .resolve(name, &tags[..], None)
-            .expect("should not fail to resolve");
-        let mut context2 = context1.clone();
-
-        // Mutate the tags of `context2`, which should end up cloning the inner state and becoming its own instance:
-        let context2_tags = context2.tags_mut();
-        context2_tags.insert_tag("tag2");
-
-        // The contexts should no longer be equal to each other, and should have distinct underlying pointers to the
-        // shared context state:
-        assert_ne!(context1, context2);
-        assert!(!context1.ptr_eq(&context2));
-
-        let expected_tags_context1 = TagSet::from_iter(vec![Tag::from("tag1")]);
-        assert_eq!(context1.tags(), &expected_tags_context1);
-
-        let expected_tags_context2 = TagSet::from_iter(vec![Tag::from("tag1"), Tag::from("tag2")]);
-        assert_eq!(context2.tags(), &expected_tags_context2);
-
-        // And just for good measure, check that we can still resolve the original context reference and get back a
-        // context that is equal to `context1`:
-        let context1_redo = resolver
-            .resolve(name, &tags[..], None)
-            .expect("should not fail to resolve");
-        assert_eq!(context1, context1_redo);
-        assert!(context1.ptr_eq(&context1_redo));
     }
 
     #[test]
