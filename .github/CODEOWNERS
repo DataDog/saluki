@@ -1,6 +1,4 @@
-# Currently, APR owns all code in this repository.
-#
-# AML is also a major stakeholder and so has blanket ownership as well.
+# Currently, Agent Metrics owns all code in this repository.
 * @DataDog/agent-metrics
 
 # We publish public ADP-bundled Agent images based on CI triggered through this repository,
