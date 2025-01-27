@@ -12,7 +12,12 @@ fips = ["saluki-app/tls-fips"]
 [dependencies]
 async-trait = { workspace = true }
 bytesize = { workspace = true }
+http = { workspace = true }
 memory-accounting = { workspace = true }
+papaya = { workspace = true }
+pin-project-lite = { workspace = true }
+process-memory = { workspace = true }
+prost = { workspace = true, features = ["derive", "std"] }
 saluki-app = { workspace = true, features = ["full"] }
 saluki-components = { workspace = true }
 saluki-config = { workspace = true }
@@ -30,7 +35,12 @@ tikv-jemalloc-ctl = { workspace = true, features = ["use_std"] }
 tikv-jemallocator = { workspace = true, features = ["background_threads", "unprefixed_malloc_on_supported_platforms", "stats"] }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "signal"] }
 tokio-rustls = { workspace = true }
+tokio-stream = { workspace = true, features = ["sync"] }
+tonic = { workspace = true, features = ["codegen", "prost"] }
+tonic-web = { workspace = true }
+tower = { workspace = true }
 tracing = { workspace = true }
 
 [build-dependencies]
 chrono = { workspace = true }
+tonic-build = { workspace = true, features = ["prost"] }

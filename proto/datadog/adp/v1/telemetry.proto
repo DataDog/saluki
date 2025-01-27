@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package datadog.adp.v1.telemetry;
+
+message MetricSnapshot {
+    uint64 unix_timestamp_utc = 1;
+    map<string, double> metrics = 2;
+}
+
+message GetProcessInformationRequest {}
+
+message GetProcessInformationResponse {
+    uint32 pid = 1;
+    uint64 uptime_secs = 2;
+    uint64 rss_bytes = 3;
+}
+
+message GetAggregatedMetricsRequest {}
+
+message GetAggregatedMetricsResponse {
+    MetricSnapshot snapshot = 1;
+}
+
+message GetLatestMetricsRequest {}
+
+message GetLatestMetricsResponse {
+    MetricSnapshot snapshot = 1;
+}
+
+service TelemetryService {
+    rpc GetProcessInformation(GetProcessInformationRequest) returns (GetProcessInformationResponse) {}
+    rpc GetAggregatedMetrics(GetAggregatedMetricsRequest) returns (GetAggregatedMetricsResponse) {}
+    rpc GetLatestMetrics(GetLatestMetricsRequest) returns (stream GetLatestMetricsResponse) {}
+}

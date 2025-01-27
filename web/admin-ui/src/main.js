@@ -7,6 +7,7 @@ import PrimeVue from 'primevue/config';
 import VueApexCharts from 'vue3-apexcharts';
 import ConfirmationService from 'primevue/confirmationservice';
 import ToastService from 'primevue/toastservice';
+import { createGrpcWebTransport } from '@connectrpc/connect-web';
 
 import '@/assets/styles.scss';
 import '@/assets/tailwind.css';
@@ -25,5 +26,10 @@ app.use(PrimeVue, {
 app.use(ToastService);
 app.use(ConfirmationService);
 app.use(VueApexCharts);
+
+const transport = createGrpcWebTransport({
+  baseUrl: '/api'
+});
+app.provide('grpc-api-transport', transport);
 
 app.mount('#app');
