@@ -9,7 +9,8 @@
 #![deny(missing_docs)]
 
 pub mod features;
-pub(crate) mod helpers;
+#[allow(missing_docs)]
+pub mod helpers;
 pub mod host;
 mod prelude;
 pub mod time;

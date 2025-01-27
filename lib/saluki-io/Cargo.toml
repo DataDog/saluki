@@ -48,6 +48,7 @@ snafu = { workspace = true }
 socket2 = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
+tokio-rustls = { workspace = true }
 tokio-util = { workspace = true }
 tower = { workspace = true, features = ["retry", "timeout", "util"] }
 tracing = { workspace = true }
