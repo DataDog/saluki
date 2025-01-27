@@ -7,6 +7,14 @@ use stringtheory::MetaString;
 mod raw;
 pub use self::raw::RawTags;
 
+/// A value containing tags that can be visited.
+pub trait Tagged {
+    /// Visits the tags in this value.
+    fn visit_tags<F>(&self, visitor: F)
+    where
+        F: FnMut(&Tag);
+}
+
 /// A metric tag.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Tag(MetaString);
@@ -349,6 +357,17 @@ impl From<Tag> for TagSet {
     }
 }
 
+impl Tagged for TagSet {
+    fn visit_tags<F>(&self, mut visitor: F)
+    where
+        F: FnMut(&Tag),
+    {
+        for tag in &self.0 {
+            visitor(tag);
+        }
+    }
+}
+
 /// A shared, read-only set of tags.
 #[derive(Clone, Debug)]
 pub struct SharedTagSet(Arc<TagSet>);
@@ -428,6 +447,15 @@ impl<'a> IntoIterator for &'a SharedTagSet {
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.deref().into_iter()
+    }
+}
+
+impl Tagged for SharedTagSet {
+    fn visit_tags<F>(&self, visitor: F)
+    where
+        F: FnMut(&Tag),
+    {
+        self.0.visit_tags(visitor);
     }
 }
 
