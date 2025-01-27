@@ -23,6 +23,7 @@ use tracing::{debug, error, info};
 
 use crate::net::listener::ConnectionOrientedListener;
 
+/// An HTTP server.
 pub struct HttpServer<S> {
     listener: ConnectionOrientedListener,
     conn_builder: Builder<TokioExecutor>,
@@ -31,6 +32,7 @@ pub struct HttpServer<S> {
 }
 
 impl<S> HttpServer<S> {
+    /// Creates a new `HttpServer` from the given listener and service.
     pub fn from_listener(listener: ConnectionOrientedListener, service: S) -> Self {
         Self {
             listener,
@@ -40,6 +42,11 @@ impl<S> HttpServer<S> {
         }
     }
 
+    /// Sets the TLS configuration for the server.
+    ///
+    /// This will enable TLS for the server, and the server will only accept connections that are encrypted with TLS.
+    ///
+    /// Defaults to TLS being disabled.
     pub fn with_tls_config(mut self, config: ServerConfig) -> Self {
         self.tls_config = Some(config);
         self
@@ -55,6 +62,10 @@ where
     B::Data: Send,
     B::Error: std::error::Error + Send + Sync,
 {
+    /// Starts the server and listens for incoming connections.
+    ///
+    /// Returns two handles: one for shutting down the server, and one for receiving any errors that occur while the
+    /// server is running.
     pub fn listen(self) -> (ShutdownHandle, ErrorHandle) {
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
         let (error_tx, error_rx) = oneshot::channel();
@@ -130,14 +141,19 @@ where
     }
 }
 
+/// A handle for shutting down an [`HttpServer`].
 pub struct ShutdownHandle(oneshot::Sender<()>);
 
 impl ShutdownHandle {
+    /// Triggers the server to shutdown.
+    ///
+    /// This method does not wait for shutdown to occur.
     pub fn shutdown(self) {
         let _ = self.0.send(());
     }
 }
 
+/// A future that resolves when [`HttpServer`] encounters an unrecoverable error.
 pub struct ErrorHandle(oneshot::Receiver<GenericError>);
 
 impl Future for ErrorHandle {

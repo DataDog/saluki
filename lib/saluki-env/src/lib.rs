@@ -9,7 +9,6 @@
 #![deny(missing_docs)]
 
 pub mod features;
-#[allow(missing_docs)]
 pub mod helpers;
 pub mod host;
 mod prelude;
