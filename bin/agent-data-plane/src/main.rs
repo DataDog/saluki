@@ -14,7 +14,7 @@ use memory_accounting::ComponentRegistry;
 use saluki_app::{api::APIBuilder, logging::LoggingAPIHandler, prelude::*};
 use saluki_components::{
     destinations::{
-        new_remote_agent_server, DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration,
+        new_remote_agent_service, DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration,
         DatadogStatusFlareConfiguration, PrometheusConfiguration,
     },
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
@@ -117,12 +117,12 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
         .error_context("Failed to get API listen address.")?
         .unwrap_or_else(|| ListenAddress::Tcp(([0, 0, 0, 0], 5100).into()));
 
-    let remote_agent_server = new_remote_agent_server()?;
+    let remote_agent_service = new_remote_agent_service()?;
 
     let primary_api = APIBuilder::new()
         .with_handler(health_registry.api_handler())
         .with_handler(component_registry.api_handler())
-        .with_grpc_service(remote_agent_server)
+        .with_grpc_service(remote_agent_service)
         .with_self_signed_tls()
         .with_handler(logging_api_handler);
 

@@ -20,8 +20,6 @@ use saluki_error::GenericError;
 use saluki_event::DataType;
 use tokio::select;
 use tokio::time::{interval, MissedTickBehavior};
-use tonic::transport::server::Router;
-use tonic::transport::Server;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -156,7 +154,7 @@ impl Destination for DatadogStatusFlare {
 }
 
 #[derive(Default)]
-struct RemoteAgentImpl {
+pub struct RemoteAgentImpl {
     started: DateTime<Utc>,
 }
 
@@ -184,8 +182,8 @@ impl RemoteAgent for RemoteAgentImpl {
     }
 }
 
-/// Create the RemoteAgent gRPC server.
-pub fn new_remote_agent_server() -> Result<Router, GenericError> {
+/// Create the RemoteAgent service.
+pub fn new_remote_agent_service() -> Result<RemoteAgentServer<RemoteAgentImpl>, GenericError> {
     let remote_agent = RemoteAgentImpl { started: Utc::now() };
-    Ok(Server::builder().add_service(RemoteAgentServer::new(remote_agent)))
+    Ok(RemoteAgentServer::new(remote_agent))
 }

@@ -3398,6 +3398,7 @@ dependencies = [
  "bytesize",
  "chrono",
  "chrono-tz",
+ "http 1.2.0",
  "iana-time-zone",
  "memory-accounting",
  "metrics",

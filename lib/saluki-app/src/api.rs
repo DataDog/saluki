@@ -1,8 +1,9 @@
 //! API server.
 
-use std::{future::Future, io::BufReader};
+use std::{convert::Infallible, error::Error, future::Future, io::BufReader};
 
 use axum::Router;
+use http::{Request, Response};
 use rcgen::{generate_simple_self_signed, CertifiedKey};
 use rustls::ServerConfig;
 use rustls_pemfile::{certs, pkcs8_private_keys};
@@ -15,7 +16,8 @@ use saluki_io::net::{
     ListenAddress,
 };
 use tokio::select;
-use tonic::transport::server::Router as TonicRouter;
+use tonic::{body::BoxBody, server::NamedService, service::RoutesBuilder};
+use tower::Service;
 use tracing::error;
 
 /// An API builder.
@@ -32,7 +34,7 @@ use tracing::error;
 pub struct APIBuilder {
     router: Router,
     tls_config: Option<ServerConfig>,
-    grpc_router: Option<TonicRouter>,
+    grpc_routes_builder: RoutesBuilder,
 }
 
 impl APIBuilder {
@@ -43,7 +45,7 @@ impl APIBuilder {
         Self {
             router: Router::new(),
             tls_config: None,
-            grpc_router: None,
+            grpc_routes_builder: RoutesBuilder::default(),
         }
     }
 
@@ -87,11 +89,18 @@ impl APIBuilder {
         self.with_tls_config(config)
     }
 
-    /// Sets the gRPC router to use for this builder.
-    ///
-    /// Currently this is only used for the remote agent server.
-    pub fn with_grpc_service(mut self, router: TonicRouter) -> Self {
-        self.grpc_router = Some(router);
+    /// Add a gRPC service to the routes builder.
+    pub fn with_grpc_service<S>(mut self, svc: S) -> Self
+    where
+        S: Service<Request<BoxBody>, Response = Response<BoxBody>, Error = Infallible>
+            + NamedService
+            + Clone
+            + Send
+            + 'static,
+        S::Future: Send + 'static,
+        S::Error: Into<Box<dyn Error + Send + Sync>> + Send,
+    {
+        self.grpc_routes_builder.add_service(svc);
         self
     }
 
@@ -116,7 +125,7 @@ impl APIBuilder {
 
         let multiplexed_service = TowerToHyperService::new(MultiplexService::new(
             http_service,
-            self.grpc_router.unwrap().into_router(),
+            self.grpc_routes_builder.routes().into_router(),
         ));
 
         // Create and spawn the HTTP server.
