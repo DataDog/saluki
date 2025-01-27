@@ -41,6 +41,7 @@ dependencies = [
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tokio",
+ "tokio-rustls",
  "tracing",
 ]
 
@@ -266,6 +267,7 @@ dependencies = [
  "aws-lc-fips-sys",
  "aws-lc-sys",
  "paste",
+ "untrusted 0.7.1",
  "zeroize",
 ]
 
@@ -3139,6 +3141,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rcgen"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54077e1872c46788540de1ea3d7f4ccb1983d12f9aa909b234468676c1a36779"
+dependencies = [
+ "aws-lc-rs",
+ "pem",
+ "rustls-pki-types",
+ "time",
+ "yasna",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3246,7 +3261,7 @@ dependencies = [
  "getrandom",
  "libc",
  "spin",
- "untrusted",
+ "untrusted 0.9.0",
  "windows-sys 0.52.0",
 ]
 
@@ -3362,7 +3377,7 @@ dependencies = [
  "aws-lc-rs",
  "ring",
  "rustls-pki-types",
- "untrusted",
+ "untrusted 0.9.0",
 ]
 
 [[package]]
@@ -3394,10 +3409,14 @@ dependencies = [
  "bytesize",
  "chrono",
  "chrono-tz",
+ "http 1.2.0",
  "iana-time-zone",
  "memory-accounting",
  "metrics",
  "metrics-util",
+ "rcgen",
+ "rustls",
+ "rustls-pemfile",
  "saluki-api",
  "saluki-config",
  "saluki-core",
@@ -3407,6 +3426,7 @@ dependencies = [
  "saluki-tls",
  "serde",
  "tokio",
+ "tonic 0.12.3",
  "tower 0.5.2",
  "tracing",
  "tracing-subscriber",
@@ -3422,6 +3442,7 @@ dependencies = [
  "bitmask-enum",
  "bytes",
  "bytesize",
+ "chrono",
  "datadog-protos",
  "ddsketch-agent",
  "float-cmp",
@@ -3444,6 +3465,7 @@ dependencies = [
  "pin-project",
  "protobuf",
  "quanta",
+ "rand",
  "regex",
  "rustls",
  "saluki-config",
@@ -3465,9 +3487,11 @@ dependencies = [
  "stringtheory",
  "tokio",
  "tokio-util",
+ "tonic 0.12.3",
  "tower 0.5.2",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -3678,6 +3702,7 @@ dependencies = [
  "socket2",
  "stringtheory",
  "tokio",
+ "tokio-rustls",
  "tokio-test",
  "tokio-util",
  "tower 0.5.2",
@@ -4814,6 +4839,12 @@ checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a156c684c91ea7d62626509bce3cb4e1d9ed5c4d978f7b4352658f96a4c26b4a"
+
+[[package]]
+name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
@@ -4852,6 +4883,15 @@ name = "utf8parse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
+
+[[package]]
+name = "uuid"
+version = "1.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8c5f0a0af699448548ad1a2fbf920fb4bee257eae39953ba95cb84891a0446a"
+dependencies = [
+ "getrandom",
+]
 
 [[package]]
 name = "valuable"
@@ -5216,6 +5256,15 @@ name = "yansi"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049"
+
+[[package]]
+name = "yasna"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e17bb3549cc1321ae1296b9cdc2698e2b6cb1992adfa19a8c72e5b7a738f44cd"
+dependencies = [
+ "time",
+]
 
 [[package]]
 name = "yoke"
