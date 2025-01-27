@@ -210,7 +210,11 @@ impl RemoteAgentClient {
         })
     }
 
-    /// TODO
+    /// Registers a Remote Agent with the Agent.
+    ///
+    /// # Errors
+    ///
+    /// If there is an error sending the request to the Agent API, an error will be returned.
     pub async fn register_remote_agent_request(
         &mut self, id: &str, display_name: &str, api_endpoint: &str, auth_token: &str,
     ) -> Result<Response<RegisterRemoteAgentResponse>, GenericError> {

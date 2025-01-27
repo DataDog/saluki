@@ -12,6 +12,16 @@ use http::Request;
 use hyper::body::Incoming;
 use tower::Service;
 
+/// A [`Service`] that multiplexes requests between two underlying REST-ful and gRPC services.
+///
+/// In some scenarios, it can be useful to expose gRPC services on the same existing REST-ful HTTP endpoints as gRPC
+/// defaults to using HTTP/2, and doing so allows the use of a single exposed endpoint/port, leading to reduced
+/// configuration and complexity.
+///
+/// This service takes two services -- one for REST-ful requests and one for gRPC requests -- and multiplexes incoming
+/// requests between the two by inspecting the request headers, specifically the `Content-Type` header. If the header
+/// starts with `application/grpc`, the request is assumed to be a gRPC request and is forwarded to the gRPC service.
+/// Otherwise, the request is assumed to be a REST-ful request and is forwarded to the REST-ful service.
 pub struct MultiplexService<A, B> {
     rest: A,
     rest_ready: bool,
@@ -20,6 +30,7 @@ pub struct MultiplexService<A, B> {
 }
 
 impl<A, B> MultiplexService<A, B> {
+    /// Creates a new `MultiplexService` from the given REST-ful and gRPC services.
     pub fn new(rest: A, grpc: B) -> Self {
         Self {
             rest,
@@ -39,7 +50,7 @@ where
         Self {
             rest: self.rest.clone(),
             grpc: self.grpc.clone(),
-            // the cloned services probably won't be ready
+            // Don't assume either service is ready when cloning.
             rest_ready: false,
             grpc_ready: false,
         }
@@ -60,7 +71,8 @@ where
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        // drive readiness for each inner service and record which is ready
+        // We drive both services to readiness as we need to ensure either service can handle a request before we can
+        // actually accept a call, given that we don't know what type of request we're about to get.
         loop {
             match (self.rest_ready, self.grpc_ready) {
                 (true, true) => {
@@ -79,8 +91,6 @@ where
     }
 
     fn call(&mut self, req: Request<Incoming>) -> Self::Future {
-        // require users to call `poll_ready` first, if they don't we're allowed to panic
-        // as per the `tower::Service` contract
         assert!(
             self.grpc_ready,
             "grpc service not ready. Did you forget to call `poll_ready`?"
@@ -90,8 +100,7 @@ where
             "rest service not ready. Did you forget to call `poll_ready`?"
         );
 
-        // if we get a grpc request call the grpc service, otherwise call the rest service
-        // when calling a service it becomes not-ready so we have drive readiness again
+        // Figure out which service this request should go to, reset that service's readiness, and call it.
         if is_grpc_request(&req) {
             self.grpc_ready = false;
             let future = self.grpc.call(req);
@@ -111,6 +120,9 @@ where
 }
 
 fn is_grpc_request<B>(req: &Request<B>) -> bool {
+    // We specifically check if the header value _starts_ with `application/grpc` as the gRPC spec allows for additional
+    // suffixes to describe how the payload is encoded (i.e. `application/grpc+proto` when encoded via Protocol Buffers
+    // vs `application/grpc+json` when encoded via JSON for gRPC-Web).
     req.headers()
         .get(CONTENT_TYPE)
         .map(|content_type| content_type.as_bytes())
