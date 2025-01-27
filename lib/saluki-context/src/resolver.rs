@@ -11,7 +11,7 @@ use crate::{
     context::{Context, ContextInner},
     expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle},
     hash::{hash_context_with_seen, new_fast_hashset, ContextKey, FastHashSet},
-    origin::{OriginInfo, OriginTags, OriginTagsResolver},
+    origin::{OriginInfo, OriginKey, OriginTags, OriginTagsResolver},
     tags::TagSet,
 };
 
@@ -322,7 +322,9 @@ impl ContextResolver {
             })
     }
 
-    fn create_context_key<I, T>(&mut self, name: &str, tags: I, origin_info: Option<OriginInfo<'_>>) -> ContextKey
+    fn create_context_key<I, T>(
+        &mut self, name: &str, tags: I, origin_info: Option<OriginInfo<'_>>,
+    ) -> (ContextKey, Option<OriginKey>)
     where
         I: IntoIterator<Item = T>,
         T: AsRef<str>,
@@ -334,10 +336,14 @@ impl ContextResolver {
             .as_ref()
             .and_then(|resolver| origin_info.and_then(|info| resolver.resolve_origin_key(info)));
 
-        hash_context_with_seen(name, tags, origin_key, &mut self.hash_seen_buffer)
+        let context_key = hash_context_with_seen(name, tags, origin_key, &mut self.hash_seen_buffer);
+
+        (context_key, origin_key)
     }
 
-    fn create_context<I, T>(&self, key: ContextKey, name: &str, tags: I) -> Option<Context>
+    fn create_context<I, T>(
+        &self, key: ContextKey, name: &str, tags: I, origin_key: Option<OriginKey>,
+    ) -> Option<Context>
     where
         I: IntoIterator<Item = T>,
         T: AsRef<str>,
@@ -353,8 +359,7 @@ impl ContextResolver {
 
         // Collect any enriched tags based on the origin key of the context, if any.
         let origin_tags = match self.origin_tags_resolver.as_ref() {
-            Some(resolver) => key
-                .origin_key()
+            Some(resolver) => origin_key
                 .map(|key| OriginTags::from_resolved(key, Arc::clone(resolver)))
                 .unwrap_or_else(OriginTags::empty),
             None => OriginTags::empty(),
@@ -384,14 +389,14 @@ impl ContextResolver {
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str>,
     {
-        let context_key = self.create_context_key(name, tags.clone(), origin_info);
+        let (context_key, origin_key) = self.create_context_key(name, tags.clone(), origin_info);
         match self.context_cache.get(&context_key) {
             Some(context) => {
                 self.stats.resolved_existing_context_total().increment(1);
                 self.expiration.mark_entry_accessed(context_key);
                 Some(context)
             }
-            None => match self.create_context(context_key, name, tags) {
+            None => match self.create_context(context_key, name, tags, origin_key) {
                 Some(context) => {
                     debug!(?context_key, ?context, "Resolved new context.");
 

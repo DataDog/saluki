@@ -60,9 +60,11 @@ where
     seen.clear();
 
     let mut hasher = ahash::AHasher::default();
+
+    // Hash the metric name.
     name.hash(&mut hasher);
 
-    // Hash the tags individually and XOR their hashes together, which allows us to be order-oblivious:
+    // Hash the metric tags individually and XOR their hashes together, which allows us to be order-oblivious:
     let mut combined_tags_hash = 0;
 
     for tag in tags {
@@ -78,19 +80,15 @@ where
 
     hasher.write_u64(combined_tags_hash);
 
-    let metric_key = hasher.finish();
+    // Finally, hash the origin key.
+    if let Some(origin_key) = origin_key {
+        origin_key.hash(&mut hasher);
+    }
 
-    ContextKey { metric_key, origin_key }
+    ContextKey { hash: hasher.finish() }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ContextKey {
-    metric_key: u64,
-    origin_key: Option<OriginKey>,
-}
-
-impl ContextKey {
-    pub fn origin_key(&self) -> Option<OriginKey> {
-        self.origin_key
-    }
+    hash: u64,
 }
