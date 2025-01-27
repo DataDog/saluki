@@ -1,7 +1,4 @@
-use std::{
-    fmt, hash,
-    sync::{Arc, OnceLock},
-};
+use std::{fmt, hash, sync::Arc};
 
 use metrics::Gauge;
 use stringtheory::MetaString;
@@ -10,8 +7,6 @@ use crate::{
     hash::{hash_context, ContextKey},
     tags::TagSet,
 };
-
-static DIRTY_CONTEXT_KEY: OnceLock<ContextKey> = OnceLock::new();
 
 /// A metric context.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -92,15 +87,6 @@ impl Context {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
-    fn inner_mut(&mut self) -> &mut ContextInner {
-        Arc::make_mut(&mut self.inner)
-    }
-
-    fn mark_dirty(&mut self) {
-        let inner = self.inner_mut();
-        inner.key = get_dirty_context_key_value();
-    }
-
     /// Gets the name of this context.
     pub fn name(&self) -> &MetaString {
         &self.inner.name
@@ -109,20 +95,6 @@ impl Context {
     /// Gets the tags of this context.
     pub fn tags(&self) -> &TagSet {
         &self.inner.tags
-    }
-
-    /// Gets a mutable reference to the tags of this context.
-    pub fn tags_mut(&mut self) -> &mut TagSet {
-        // Mark the context as dirty. We have to do this before giving back a mutable reference to the tags, which means
-        // we are _potentially_ marking the context dirty even if nothing is changed about the tags.
-        //
-        // If this somehow became a problem, we could always move part of the hash to `TagSet` itself where we had
-        // granular control and could mark ourselves dirty only when the tags were actually changed. Shouldn't matter
-        // right now, though.
-        self.mark_dirty();
-
-        let inner = self.inner_mut();
-        &mut inner.tags
     }
 }
 
@@ -201,15 +173,7 @@ impl Eq for ContextInner {}
 
 impl hash::Hash for ContextInner {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        // If the context is dirty -- has changed since it was originally resolved -- then our cached key is now
-        // invalid, so we need to re-hash the context. Otherwise, we can just use the cached key.
-        let key = if is_context_dirty(self.key) {
-            hash_context(&self.name, &self.tags, None)
-        } else {
-            self.key
-        };
-
-        key.hash(state);
+        self.key.hash(state);
     }
 }
 
@@ -274,13 +238,4 @@ impl<'a> Tagged for &'a TagSet {
             visitor(tag.as_str());
         }
     }
-}
-
-fn get_dirty_context_key_value() -> ContextKey {
-    const EMPTY_TAGS: &[&str] = &[];
-    *DIRTY_CONTEXT_KEY.get_or_init(|| hash_context("", EMPTY_TAGS, None))
-}
-
-fn is_context_dirty(key: ContextKey) -> bool {
-    key == get_dirty_context_key_value()
 }
