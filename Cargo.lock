@@ -26,8 +26,12 @@ dependencies = [
  "chrono",
  "datadog-protos",
  "futures",
+ "http 1.2.0",
  "memory-accounting",
  "papaya",
+ "pin-project-lite",
+ "process-memory",
+ "prost 0.13.5",
  "rand",
  "saluki-app",
  "saluki-components",
@@ -47,7 +51,11 @@ dependencies = [
  "tikv-jemallocator",
  "tokio",
  "tokio-rustls",
+ "tokio-stream",
  "tonic 0.12.3",
+ "tonic-build 0.12.3",
+ "tonic-web",
+ "tower 0.5.2",
  "tracing",
  "uuid",
 ]
@@ -4497,6 +4505,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -4647,6 +4656,26 @@ dependencies = [
  "prost-types 0.13.5",
  "quote",
  "syn 2.0.98",
+]
+
+[[package]]
+name = "tonic-web"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5299dd20801ad736dccb4a5ea0da7376e59cd98f213bf1c3d478cf53f4834b58"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "http 1.2.0",
+ "http-body 1.0.1",
+ "http-body-util",
+ "pin-project",
+ "tokio-stream",
+ "tonic 0.12.3",
+ "tower-http 0.5.2",
+ "tower-layer",
+ "tower-service",
+ "tracing",
 ]
 
 [[package]]

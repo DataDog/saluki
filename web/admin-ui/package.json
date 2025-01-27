@@ -5,9 +5,12 @@
         "dev": "vite",
         "build": "vite build",
         "preview": "vite preview",
-        "lint": "eslint --fix . --ext .vue,.js,.jsx,.cjs,.mjs --fix --ignore-path .gitignore"
+        "lint": "eslint --fix . --ext .vue,.js,.jsx,.cjs,.mjs --fix --ignore-path .gitignore",
+        "protogen": "buf generate buf.build/connectrpc/eliza"
     },
     "dependencies": {
+        "@connectrpc/connect": "^2.0.1",
+        "@connectrpc/connect-web": "^2.0.1",
         "@primevue/themes": "^4.2.4",
         "apexcharts": "^4.4.0",
         "chart.js": "3.3.2",

@@ -15,8 +15,12 @@ bytesize = { workspace = true }
 chrono = { workspace = true }
 datadog-protos = { workspace = true }
 futures = { workspace = true }
+http = { workspace = true }
 memory-accounting = { workspace = true }
 papaya = { workspace = true }
+pin-project-lite = { workspace = true }
+process-memory = { workspace = true }
+prost = { workspace = true, features = ["derive", "std"] }
 rand = { workspace = true }
 saluki-app = { workspace = true, features = ["full"] }
 saluki-components = { workspace = true }
@@ -39,7 +43,10 @@ tokio = { workspace = true, features = [
   "signal",
 ] }
 tokio-rustls = { workspace = true }
-tonic = { workspace = true }
+tokio-stream = { workspace = true, features = ["sync"] }
+tonic = { workspace = true, features = ["codegen", "prost"] }
+tonic-web = { workspace = true }
+tower = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["std", "v7"] }
 
@@ -53,3 +60,4 @@ tikv-jemallocator = { workspace = true, features = [
 
 [build-dependencies]
 chrono = { workspace = true }
+tonic-build = { workspace = true, features = ["prost"] }

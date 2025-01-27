@@ -28,6 +28,9 @@ use tracing::{error, info, warn};
 mod api;
 use self::api::configure_and_spawn_api_endpoints;
 
+mod admin_telemetry;
+use self::admin_telemetry::initialize_telemetry_service;
+
 mod components;
 use self::components::remapper::AgentTelemetryRemapperConfiguration;
 
@@ -109,6 +112,8 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     let env_provider =
         ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry).await?;
 
+    let telemetry_service = initialize_telemetry_service();
+
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
     let blueprint = create_topology(&configuration, &env_provider, &component_registry).await?;
@@ -119,7 +124,8 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     // meant for sensitive information or actions that require elevated permissions.
     let unprivileged_api = APIBuilder::new()
         .with_handler(health_registry.api_handler())
-        .with_handler(component_registry.api_handler());
+        .with_handler(component_registry.api_handler())
+        .with_grpc_service(telemetry_service);
 
     let privileged_api = APIBuilder::new()
         .with_self_signed_tls()
