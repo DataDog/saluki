@@ -27,7 +27,7 @@ metrics = { workspace = true, optional = true }
 metrics-util = { workspace = true, features = ["handles", "recency", "registry"], optional = true }
 rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
 rustls = { workspace = true, features = ["tls12"] }
-rustls-pemfile = { workspace = true }
+rustls-pemfile = { workspace = true, features = ["std"]}
 saluki-api = { workspace = true, optional = true }
 saluki-config = { workspace = true, optional = true }
 saluki-core = { workspace = true, optional = true }
