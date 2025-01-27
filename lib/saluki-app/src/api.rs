@@ -32,9 +32,9 @@ use tracing::error;
 /// - graceful shutdown (shutdown stops new connections, but does not wait for existing connections to close)
 #[derive(Default)]
 pub struct APIBuilder {
-    router: Router,
+    http_router: Router,
+    grpc_router: RoutesBuilder,
     tls_config: Option<ServerConfig>,
-    grpc_routes_builder: RoutesBuilder,
 }
 
 impl APIBuilder {
@@ -43,9 +43,9 @@ impl APIBuilder {
     /// A fallback route will be provided that returns a 404 Not Found response for any route that isn't explicitly handled.
     pub fn new() -> Self {
         Self {
-            router: Router::new(),
+            http_router: Router::new(),
+            grpc_router: RoutesBuilder::default(),
             tls_config: None,
-            grpc_routes_builder: RoutesBuilder::default(),
         }
     }
 
@@ -58,18 +58,24 @@ impl APIBuilder {
     {
         let handler_router = handler.generate_routes();
         let handler_state = handler.generate_initial_state();
-        self.router = self.router.merge(handler_router.with_state(handler_state));
+        self.http_router = self.http_router.merge(handler_router.with_state(handler_state));
 
         self
     }
 
-    /// Adds the given tls configuration to this builder.
+    /// Sets the TLS configuration for the server.
+    ///
+    /// This will enable TLS for the server, and the server will only accept connections that are encrypted with TLS.
+    ///
+    /// Defaults to TLS being disabled.
     pub fn with_tls_config(mut self, config: ServerConfig) -> Self {
         self.tls_config = Some(config);
         self
     }
 
-    /// Configures this builder to use TLS with a dynamically generated self-signed certificate.
+    /// Sets the TLS configuration for the server based on a dynamically generated self-signed certificate.
+    ///
+    /// This will enable TLS for the server, and the server will only accept connections that are encrypted with TLS.
     pub fn with_self_signed_tls(self) -> Self {
         let CertifiedKey { cert, key_pair } = generate_simple_self_signed(["localhost".to_owned()]).unwrap();
         let cert_file = cert.pem();
@@ -89,7 +95,7 @@ impl APIBuilder {
         self.with_tls_config(config)
     }
 
-    /// Add a gRPC service to the routes builder.
+    /// Add the given gRPC service to this builder.
     pub fn with_grpc_service<S>(mut self, svc: S) -> Self
     where
         S: Service<Request<BoxBody>, Response = Response<BoxBody>, Error = Infallible>
@@ -100,7 +106,7 @@ impl APIBuilder {
         S::Future: Send + 'static,
         S::Error: Into<Box<dyn Error + Send + Sync>> + Send,
     {
-        self.grpc_routes_builder.add_service(svc);
+        self.grpc_router.add_service(svc);
         self
     }
 
@@ -108,24 +114,21 @@ impl APIBuilder {
     ///
     /// The listen address must be a connection-oriented address (TCP or Unix domain socket in SOCK_STREAM mode).
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the given listen address is not connection-oriented, or if the server fails to bind to the address, or if
     /// there is an error while accepting for new connections, an error will be returned.
-    #[allow(deprecated)]
     pub async fn serve<F>(self, listen_address: ListenAddress, shutdown: F) -> Result<(), GenericError>
     where
         F: Future<Output = ()> + Send + 'static,
     {
         let listener = ConnectionOrientedListener::from_listen_address(listen_address).await?;
 
-        // We have to convert this Tower-based `Service` to a Hyper-based `Service` to use it with `HttpServer`, since
-        // the two traits are different from a semver perspective.
-        let http_service = self.router;
-
+        // Wrap up our HTTP and gRPC routers in a multiplexed service, allowing us to handle both types of requests on
+        // the same port. Additionally, we have to wrap the service to translate from `tower::Service` to `hyper::Service`.
         let multiplexed_service = TowerToHyperService::new(MultiplexService::new(
-            http_service,
-            self.grpc_routes_builder.routes().into_router(),
+            self.http_router,
+            self.grpc_router.routes().into_axum_router(),
         ));
 
         // Create and spawn the HTTP server.
