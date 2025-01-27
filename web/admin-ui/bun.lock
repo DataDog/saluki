@@ -4,6 +4,8 @@
     "": {
       "name": "sakai-vue",
       "dependencies": {
+        "@connectrpc/connect": "^2.0.1",
+        "@connectrpc/connect-web": "^2.0.1",
         "@primevue/themes": "^4.2.4",
         "apexcharts": "^4.4.0",
         "chart.js": "3.3.2",
@@ -38,6 +40,12 @@
     "@antfu/utils": ["@antfu/utils@0.7.10", "", {}, "sha512-+562v9k4aI80m1+VuMHehNJWLOFjBnXn3tdOitzD0il5b7smkSBal4+a3oKiQTbrwMmN/TBUMDvbdoWDehgOww=="],
 
     "@babel/parser": ["@babel/parser@7.25.0", "", { "bin": { "parser": "bin/babel-parser.js" } }, "sha512-CzdIU9jdP0dg7HdyB+bHvDJGagUv+qtzZt5rYCWwW6tITNqV9odjp6Qu41gkG0ca5UfdDUWrKkiAnHHdGRnOrA=="],
+
+    "@bufbuild/protobuf": ["@bufbuild/protobuf@2.2.3", "", {}, "sha512-tFQoXHJdkEOSwj5tRIZSPNUuXK3RaR7T1nUrPgbYX1pUbvqqaaZAsfo+NXBPsz5rZMSKVFrgK1WL8Q/MSLvprg=="],
+
+    "@connectrpc/connect": ["@connectrpc/connect@2.0.1", "", { "peerDependencies": { "@bufbuild/protobuf": "^2.2.0" } }, "sha512-o+MauvcOnfN4vjpS8ngoX+ubhcCDvnexlLwtk/VnkCLjoRMUz2PKqi87Si58ViWq0vzmGYPRf2LNwhJk5kcCXA=="],
+
+    "@connectrpc/connect-web": ["@connectrpc/connect-web@2.0.1", "", { "peerDependencies": { "@bufbuild/protobuf": "^2.2.0", "@connectrpc/connect": "2.0.1" } }, "sha512-FmUR9TyuHu/3efr9cYZcqqAccgsswLSm3PQBXGuya5h57AjQWROW6ejL6Fg0d+A9EwsxRmJktefmFszXUMlU9Q=="],
 
     "@esbuild/aix-ppc64": ["@esbuild/aix-ppc64@0.21.5", "", { "os": "aix", "cpu": "ppc64" }, "sha512-1SDgH6ZSPTlggy1yI6+Dbkiz8xzpHJEVAlF/AM1tHPLsf5STom9rwtjE4hKAF20FfXXNTFqEYXyJNWh1GiZedQ=="],
 
