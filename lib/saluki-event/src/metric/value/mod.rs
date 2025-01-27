@@ -470,6 +470,19 @@ impl MetricValues {
             Self::Distribution(_) => "distribution",
         }
     }
+
+    /// Returns whether the metric is a serie.
+    pub fn is_serie(&self) -> bool {
+        matches!(
+            self,
+            Self::Counter(_) | Self::Rate(_, _) | Self::Gauge(_) | Self::Set(_)
+        )
+    }
+
+    /// Returns whether the metric is a sketch.
+    pub fn is_sketch(&self) -> bool {
+        matches!(self, Self::Histogram(_) | Self::Distribution(_))
+    }
 }
 
 fn collapse_scalar_merge(dest: &mut OrderedFloat<f64>, src: &mut OrderedFloat<f64>) {

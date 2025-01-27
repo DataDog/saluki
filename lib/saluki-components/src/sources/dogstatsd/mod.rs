@@ -53,7 +53,7 @@ mod origin;
 use self::origin::{origin_info_from_metric_packet, OriginEnrichmentConfiguration};
 
 mod filters;
-use filters::{Filter, MetricPayloadFilter};
+use filters::{EnablePayloadsFilter, Filter};
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -93,6 +93,14 @@ const fn default_context_string_interner_size() -> ByteSize {
 }
 
 const fn default_dogstatsd_permissive_decoding() -> bool {
+    true
+}
+
+const fn default_enable_payloads_series() -> bool {
+    true
+}
+
+const fn default_enable_payloads_sketches() -> bool {
     true
 }
 
@@ -208,6 +216,18 @@ pub struct DogStatsDConfiguration {
         default = "default_dogstatsd_permissive_decoding"
     )]
     permissive_decoding: bool,
+
+    /// Whether or not to enable sending serie payloads.
+    ///
+    /// Defaults to `true`.
+    #[serde(default = "default_enable_payloads_series")]
+    enable_payloads_series: bool,
+
+    /// Whether or not to enable sending sketch payloads.
+    ///
+    /// Defaults to `true`.
+    #[serde(default = "default_enable_payloads_sketches")]
+    enable_payloads_sketches: bool,
 }
 
 impl DogStatsDConfiguration {
@@ -301,7 +321,10 @@ impl SourceBuilder for DogStatsDConfiguration {
             }),
             codec,
             context_resolver,
-            pre_filters: vec![Arc::new(MetricPayloadFilter {})],
+            pre_filters: vec![Arc::new(EnablePayloadsFilter::new(
+                self.enable_payloads_series,
+                self.enable_payloads_sketches,
+            ))],
         }))
     }
 
@@ -806,7 +829,10 @@ fn handle_frame(
         ParsedPacket::Metric(metric_packet) => {
             let events_len = metric_packet.num_points;
             for filter in filters {
-                if filter.allow_metric(&metric_packet) {}
+                if !filter.allow_metric(&metric_packet) {
+                    debug!(%metric_packet.metric_name, "Metric filtered out.");
+                    return Ok(None);
+                }
             }
 
             match handle_metric_packet(metric_packet, context_resolver, peer_addr) {
