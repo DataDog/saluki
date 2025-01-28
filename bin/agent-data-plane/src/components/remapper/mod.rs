@@ -280,7 +280,7 @@ mod tests {
     #[test]
     fn test_remap_object_pool_metrics() {
         let mut remapper = AgentTelemetryRemapper {
-            context_resolver: ContextResolverBuilder::for_tests(),
+            context_resolver: ContextResolverBuilder::for_tests().build(),
             rules: get_datadog_agent_remappings(),
         };
 
