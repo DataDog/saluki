@@ -2,7 +2,7 @@
 
 <template>
   <router-view />
-  <Toast />
+  <Toast group="dashboardErrors" />
 </template>
 
 <style scoped></style>
