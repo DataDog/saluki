@@ -1,4 +1,4 @@
-use std::num::NonZeroU64;
+use std::{fmt, num::NonZeroU64};
 
 use ordered_float::OrderedFloat;
 
@@ -57,7 +57,10 @@ impl ScalarPoints {
     ///
     /// If a point with the same timestamp exists in both sets, the values will be added together. Otherwise, the points
     /// will appended to the end of the set.
-    pub fn merge(&mut self, other: Self) {
+    pub fn merge<F>(&mut self, other: Self, merge: F)
+    where
+        F: Fn(&mut OrderedFloat<f64>, &mut OrderedFloat<f64>),
+    {
         let mut needs_sort = false;
         for other_value in other.0.values {
             if let Some(existing_value) = self
@@ -66,7 +69,8 @@ impl ScalarPoints {
                 .iter_mut()
                 .find(|value| value.timestamp == other_value.timestamp)
             {
-                existing_value.value += other_value.value;
+                let mut other = other_value.value;
+                merge(&mut existing_value.value, &mut other);
             } else {
                 self.0.values.push(other_value);
                 needs_sort = true;
@@ -143,5 +147,20 @@ impl<'a> IntoIterator for &'a ScalarPoints {
 
     fn into_iter(self) -> Self::IntoIter {
         PointsIterRef::scalar(self.0.values.iter())
+    }
+}
+
+impl fmt::Display for ScalarPoints {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[")?;
+        for (i, (timestamp, value)) in self.into_iter().enumerate() {
+            if i > 0 {
+                write!(f, ",")?;
+            }
+
+            let ts = timestamp.map(|ts| ts.get()).unwrap_or_default();
+            write!(f, "({}, {})", ts, value)?;
+        }
+        write!(f, "]")
     }
 }
