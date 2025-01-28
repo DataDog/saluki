@@ -53,7 +53,7 @@ mod origin;
 use self::origin::{origin_info_from_metric_packet, OriginEnrichmentConfiguration};
 
 mod filters;
-use filters::{EnablePayloadsFilter, Filter};
+use self::filters::{EnablePayloadsFilter, Filter};
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -321,10 +321,10 @@ impl SourceBuilder for DogStatsDConfiguration {
             }),
             codec,
             context_resolver,
-            pre_filters: vec![Arc::new(EnablePayloadsFilter::new(
+            pre_filters: Arc::new(vec![Box::new(EnablePayloadsFilter::new(
                 self.enable_payloads_series,
                 self.enable_payloads_sketches,
-            ))],
+            ))]),
         }))
     }
 
@@ -360,7 +360,7 @@ pub struct DogStatsD {
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     codec: DogstatsdCodec,
     context_resolver: ContextResolver,
-    pre_filters: Vec<Arc<dyn Filter + Send + Sync>>,
+    pre_filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>,
 }
 
 struct ListenerContext {
@@ -578,7 +578,7 @@ impl Source for DogStatsD {
 }
 
 async fn process_listener(
-    source_context: SourceContext, listener_context: ListenerContext, filters: Vec<Arc<dyn Filter + Send + Sync>>,
+    source_context: SourceContext, listener_context: ListenerContext, filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>,
 ) {
     let ListenerContext {
         shutdown_handle,
@@ -629,7 +629,7 @@ async fn process_listener(
 
 async fn process_stream(
     stream: Stream, source_context: SourceContext, handler_context: HandlerContext,
-    shutdown_handle: DynamicShutdownHandle, filters: Vec<Arc<dyn Filter + Send + Sync>>,
+    shutdown_handle: DynamicShutdownHandle, filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>,
 ) {
     tokio::pin!(shutdown_handle);
 
@@ -643,7 +643,7 @@ async fn process_stream(
 
 async fn drive_stream(
     mut stream: Stream, source_context: SourceContext, handler_context: HandlerContext,
-    filters: Vec<Arc<dyn Filter + Send + Sync>>,
+    filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>,
 ) {
     let HandlerContext {
         listen_addr,
@@ -730,7 +730,7 @@ async fn drive_stream(
                         match frames.next() {
                             Some(Ok(frame)) => {
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
-                                match handle_frame(&frame[..], &codec, &mut context_resolver, &metrics, &peer_addr, &filters) {
+                                match handle_frame(&frame[..], &codec, &mut context_resolver, &metrics, &peer_addr, filters.clone()) {
                                     Ok(Some(event)) => {
                                         if let Some(event) = event_buffer.try_push(event) {
                                             debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
@@ -809,7 +809,7 @@ async fn drive_stream(
 
 fn handle_frame(
     frame: &[u8], codec: &DogstatsdCodec, context_resolver: &mut ContextResolver, source_metrics: &Metrics,
-    peer_addr: &ConnectionAddress, filters: &Vec<Arc<dyn Filter + Send + Sync>>,
+    peer_addr: &ConnectionAddress, filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>,
 ) -> Result<Option<Event>, ParseError> {
     let parsed = match codec.decode_packet(frame) {
         Ok(parsed) => parsed,
@@ -828,7 +828,7 @@ fn handle_frame(
     let event = match parsed {
         ParsedPacket::Metric(metric_packet) => {
             let events_len = metric_packet.num_points;
-            for filter in filters {
+            for filter in filters.iter() {
                 if !filter.allow_metric(&metric_packet) {
                     debug!(%metric_packet.metric_name, "Metric filtered out.");
                     return Ok(None);

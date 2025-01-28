@@ -471,17 +471,17 @@ impl MetricValues {
         }
     }
 
-    /// Returns whether the metric is a serie.
+    /// Returns `true` if this metric is a serie.
     pub fn is_serie(&self) -> bool {
         matches!(
             self,
-            Self::Counter(_) | Self::Rate(_, _) | Self::Gauge(_) | Self::Set(_)
+            Self::Counter(_) | Self::Rate(_, _) | Self::Gauge(_) | Self::Set(_) | Self::Histogram(_)
         )
     }
 
-    /// Returns whether the metric is a sketch.
+    /// Returns `true` if this metric is a sketch.
     pub fn is_sketch(&self) -> bool {
-        matches!(self, Self::Histogram(_) | Self::Distribution(_))
+        matches!(self, Self::Distribution(_))
     }
 }
 
