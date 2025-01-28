@@ -3,8 +3,11 @@ use std::{future::Future, num::NonZeroUsize};
 use async_trait::async_trait;
 use memory_accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
-use saluki_context::{origin::OriginTagCardinality, tags::SharedTagSet};
-use saluki_error::{generic_error, GenericError};
+use saluki_context::{
+    origin::{OriginInfo, OriginKey, OriginTagCardinality, OriginTagVisitor, OriginTagsResolver},
+    tags::SharedTagSet,
+};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::{Health, HealthRegistry};
 use stringtheory::interning::GenericMapInterner;
 
@@ -18,7 +21,8 @@ use crate::{
             ContainerdMetadataCollector, RemoteAgentTaggerMetadataCollector, RemoteAgentWorkloadMetadataCollector,
         },
         entity::EntityId,
-        stores::{ExternalDataStore, ExternalDataStoreResolver, TagStore, TagStoreQuerier},
+        origin::{OriginEnrichmentConfiguration, OriginTagsQuerier},
+        stores::{ExternalDataStore, TagStore, TagStoreQuerier},
     },
     WorkloadProvider,
 };
@@ -50,8 +54,8 @@ const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = unsafe { NonZeroUsize::
 /// remote tagger API does not stream us these mappings itself and only deals with resolved container IDs.
 #[derive(Clone)]
 pub struct RemoteAgentWorkloadProvider {
-    tag_querier: TagStoreQuerier,
-    external_data_resolver: ExternalDataStoreResolver,
+    tags_querier: TagStoreQuerier,
+    origin_tags_querier: OriginTagsQuerier,
 }
 
 impl RemoteAgentWorkloadProvider {
@@ -131,7 +135,7 @@ impl RemoteAgentWorkloadProvider {
 
         // Create and attach the various metadata stores.
         let tag_store = TagStore::with_entity_limit(DEFAULT_TAG_STORE_ENTITY_LIMIT);
-        let tag_querier = tag_store.querier();
+        let tags_querier = tag_store.querier();
 
         aggregator.add_store(tag_store);
 
@@ -140,14 +144,20 @@ impl RemoteAgentWorkloadProvider {
 
         aggregator.add_store(external_data_store);
 
+        let origin_enrichment_config = config
+            .as_typed::<OriginEnrichmentConfiguration>()
+            .error_context("Failed to load origin enrichment configuration.")?;
+        let origin_tags_querier =
+            OriginTagsQuerier::new(origin_enrichment_config, tags_querier.clone(), external_data_resolver);
+
         // With the aggregator configured, update the memory bounds and spawn the aggregator.
         provider_bounds.with_subcomponent("aggregator", &aggregator);
 
         tokio::spawn(aggregator.run());
 
         Ok(Self {
-            tag_querier,
-            external_data_resolver,
+            tags_querier,
+            origin_tags_querier,
         })
     }
 }
@@ -155,11 +165,17 @@ impl RemoteAgentWorkloadProvider {
 #[async_trait]
 impl WorkloadProvider for RemoteAgentWorkloadProvider {
     fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
-        self.tag_querier.get_entity_tags(entity_id, cardinality)
+        self.tags_querier.get_entity_tags(entity_id, cardinality)
+    }
+}
+
+impl OriginTagsResolver for RemoteAgentWorkloadProvider {
+    fn resolve_origin_key(&self, origin_info: OriginInfo<'_>) -> Option<OriginKey> {
+        self.origin_tags_querier.resolve_origin_key_from_info(origin_info)
     }
 
-    fn resolve_entity_id_from_external_data(&self, external_data: &str) -> Option<EntityId> {
-        self.external_data_resolver.resolve_entity_id(external_data)
+    fn visit_origin_tags(&self, origin_key: OriginKey, visitor: &mut dyn OriginTagVisitor) {
+        self.origin_tags_querier.visit_origin_tags(origin_key, visitor)
     }
 }
 

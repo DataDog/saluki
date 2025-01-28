@@ -1,4 +1,4 @@
-use std::num::NonZeroU64;
+use std::{fmt, num::NonZeroU64};
 
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
@@ -225,6 +225,15 @@ impl From<f64> for HistogramPoints {
     }
 }
 
+impl From<(u64, f64)> for HistogramPoints {
+    fn from((ts, value): (u64, f64)) -> Self {
+        let mut histogram = Histogram::default();
+        histogram.insert(value, SampleRate::unsampled());
+
+        Self(TimestampedValue::from((ts, histogram)).into())
+    }
+}
+
 impl<const N: usize> From<[f64; N]> for HistogramPoints {
     fn from(values: [f64; N]) -> Self {
         let mut histogram = Histogram::default();
@@ -233,6 +242,33 @@ impl<const N: usize> From<[f64; N]> for HistogramPoints {
         }
 
         Self(TimestampedValue::from(histogram).into())
+    }
+}
+
+impl<const N: usize> From<(u64, [f64; N])> for HistogramPoints {
+    fn from((ts, values): (u64, [f64; N])) -> Self {
+        let mut histogram = Histogram::default();
+        for value in values {
+            histogram.insert(value, SampleRate::unsampled());
+        }
+
+        Self(TimestampedValue::from((ts, histogram)).into())
+    }
+}
+
+impl<const N: usize> From<[(u64, f64); N]> for HistogramPoints {
+    fn from(values: [(u64, f64); N]) -> Self {
+        Self(
+            values
+                .into_iter()
+                .map(|(ts, value)| {
+                    let mut histogram = Histogram::default();
+                    histogram.insert(value, SampleRate::unsampled());
+
+                    (ts, histogram)
+                })
+                .into(),
+        )
     }
 }
 
@@ -288,6 +324,28 @@ impl<'a> IntoIterator for &'a mut HistogramPoints {
         HistogramIterRefMut {
             inner: self.0.values.iter_mut(),
         }
+    }
+}
+
+impl fmt::Display for HistogramPoints {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[")?;
+        for (i, point) in self.0.values.iter().enumerate() {
+            if i > 0 {
+                write!(f, ",")?;
+            }
+
+            let ts = point.timestamp.map(|ts| ts.get()).unwrap_or_default();
+            write!(f, "({}, [", ts)?;
+            for (j, sample) in point.value.samples().iter().enumerate() {
+                if j > 0 {
+                    write!(f, ",")?;
+                }
+                write!(f, "{{{} * {}}}", sample.value, sample.weight)?;
+            }
+            write!(f, "])")?;
+        }
+        write!(f, "]")
     }
 }
 

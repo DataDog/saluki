@@ -1,3 +1,5 @@
+//! Generic helper types/functions for building Tonic-based gRPC clients.
+
 use std::{path::Path, str::FromStr as _, sync::Arc};
 
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};

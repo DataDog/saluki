@@ -1,17 +1,13 @@
-use std::{
-    fmt, hash,
-    sync::{Arc, OnceLock},
-};
+use std::{fmt, hash, sync::Arc};
 
 use metrics::Gauge;
 use stringtheory::MetaString;
 
 use crate::{
     hash::{hash_context, ContextKey},
-    tags::TagSet,
+    origin::OriginTags,
+    tags::{Tag, TagSet, Tagged},
 };
-
-static DIRTY_CONTEXT_KEY: OnceLock<ContextKey> = OnceLock::new();
 
 /// A metric context.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -29,6 +25,7 @@ impl Context {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
                 tags: TagSet::default(),
+                origin_tags: OriginTags::empty(),
                 key,
                 active_count: Gauge::noop(),
             }),
@@ -47,6 +44,7 @@ impl Context {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
                 tags: tag_set,
+                origin_tags: OriginTags::empty(),
                 key,
                 active_count: Gauge::noop(),
             }),
@@ -61,6 +59,7 @@ impl Context {
             inner: Arc::new(ContextInner {
                 name,
                 tags,
+                origin_tags: OriginTags::empty(),
                 key,
                 active_count: Gauge::noop(),
             }),
@@ -71,12 +70,14 @@ impl Context {
     pub fn with_name<S: Into<MetaString>>(&self, name: S) -> Self {
         let name = name.into();
         let tags = self.inner.tags.clone();
+        let origin_tags = self.inner.origin_tags.clone();
         let key = hash_context(&name, &tags, None);
 
         Self {
             inner: Arc::new(ContextInner {
                 name,
                 tags,
+                origin_tags,
                 key,
                 active_count: Gauge::noop(),
             }),
@@ -92,37 +93,19 @@ impl Context {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
-    fn inner_mut(&mut self) -> &mut ContextInner {
-        Arc::make_mut(&mut self.inner)
-    }
-
-    fn mark_dirty(&mut self) {
-        let inner = self.inner_mut();
-        inner.key = get_dirty_context_key_value();
-    }
-
-    /// Gets the name of this context.
+    /// Returns the name of this context.
     pub fn name(&self) -> &MetaString {
         &self.inner.name
     }
 
-    /// Gets the tags of this context.
+    /// Returns the instrumented tags of this context.
     pub fn tags(&self) -> &TagSet {
         &self.inner.tags
     }
 
-    /// Gets a mutable reference to the tags of this context.
-    pub fn tags_mut(&mut self) -> &mut TagSet {
-        // Mark the context as dirty. We have to do this before giving back a mutable reference to the tags, which means
-        // we are _potentially_ marking the context dirty even if nothing is changed about the tags.
-        //
-        // If this somehow became a problem, we could always move part of the hash to `TagSet` itself where we had
-        // granular control and could mark ourselves dirty only when the tags were actually changed. Shouldn't matter
-        // right now, though.
-        self.mark_dirty();
-
-        let inner = self.inner_mut();
-        &mut inner.tags
+    /// Returns the origin tags of this context.
+    pub fn origin_tags(&self) -> &OriginTags {
+        &self.inner.origin_tags
     }
 }
 
@@ -162,10 +145,21 @@ impl fmt::Display for Context {
     }
 }
 
+impl Tagged for Context {
+    fn visit_tags<F>(&self, mut visitor: F)
+    where
+        F: FnMut(&Tag),
+    {
+        self.tags().visit_tags(&mut visitor);
+        self.origin_tags().visit_tags(&mut visitor);
+    }
+}
+
 pub struct ContextInner {
     pub key: ContextKey,
     pub name: MetaString,
     pub tags: TagSet,
+    pub origin_tags: OriginTags,
     pub active_count: Gauge,
 }
 
@@ -175,6 +169,7 @@ impl Clone for ContextInner {
             key: self.key,
             name: self.name.clone(),
             tags: self.tags.clone(),
+            origin_tags: self.origin_tags.clone(),
 
             // We're specifically detaching this context from the statistics of the resolver from which `self`
             // originated, as we only want to track the statistics of the contexts created _directly_ through the
@@ -201,15 +196,7 @@ impl Eq for ContextInner {}
 
 impl hash::Hash for ContextInner {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        // If the context is dirty -- has changed since it was originally resolved -- then our cached key is now
-        // invalid, so we need to re-hash the context. Otherwise, we can just use the cached key.
-        let key = if is_context_dirty(self.key) {
-            hash_context(&self.name, &self.tags, None)
-        } else {
-            self.key
-        };
-
-        key.hash(state);
+        self.key.hash(state);
     }
 }
 
@@ -221,66 +208,4 @@ impl fmt::Debug for ContextInner {
             .field("key", &self.key)
             .finish()
     }
-}
-
-/// A value containing tags that can be visited.
-pub trait Tagged {
-    /// Visits the tags in this value.
-    fn visit_tags<F>(&self, visitor: F)
-    where
-        F: FnMut(&str);
-}
-
-impl<'a, T> Tagged for &'a T
-where
-    T: Tagged,
-{
-    fn visit_tags<F>(&self, visitor: F)
-    where
-        F: FnMut(&str),
-    {
-        (*self).visit_tags(visitor)
-    }
-}
-
-impl<'a> Tagged for &'a [&'static str] {
-    fn visit_tags<F>(&self, mut visitor: F)
-    where
-        F: FnMut(&str),
-    {
-        for tag in self.iter() {
-            visitor(tag);
-        }
-    }
-}
-
-impl<'a> Tagged for &'a [MetaString] {
-    fn visit_tags<F>(&self, mut visitor: F)
-    where
-        F: FnMut(&str),
-    {
-        for tag in self.iter() {
-            visitor(tag);
-        }
-    }
-}
-
-impl<'a> Tagged for &'a TagSet {
-    fn visit_tags<F>(&self, mut visitor: F)
-    where
-        F: FnMut(&str),
-    {
-        for tag in self.into_iter() {
-            visitor(tag.as_str());
-        }
-    }
-}
-
-fn get_dirty_context_key_value() -> ContextKey {
-    const EMPTY_TAGS: &[&str] = &[];
-    *DIRTY_CONTEXT_KEY.get_or_init(|| hash_context("", EMPTY_TAGS, None))
-}
-
-fn is_context_dirty(key: ContextKey) -> bool {
-    key == get_dirty_context_key_value()
 }

@@ -13,7 +13,10 @@ use std::{
 use memory_accounting::ComponentRegistry;
 use saluki_app::{api::APIBuilder, logging::LoggingAPIHandler, prelude::*};
 use saluki_components::{
-    destinations::{DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration, PrometheusConfiguration},
+    destinations::{
+        new_remote_agent_service, DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration,
+        DatadogStatusFlareConfiguration, PrometheusConfiguration,
+    },
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
     transforms::{
         AggregateConfiguration, ChainedConfiguration, DogstatsDPrefixFilterConfiguration, HostEnrichmentConfiguration,
@@ -106,7 +109,7 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
 
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
-    let blueprint = create_topology(&configuration, env_provider, &component_registry)?;
+    let blueprint = create_topology(&configuration, env_provider, &component_registry).await?;
 
     // Build our administrative API server.
     let primary_api_listen_address = configuration
@@ -114,9 +117,13 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
         .error_context("Failed to get API listen address.")?
         .unwrap_or_else(|| ListenAddress::Tcp(([0, 0, 0, 0], 5100).into()));
 
+    let remote_agent_service = new_remote_agent_service()?;
+
     let primary_api = APIBuilder::new()
         .with_handler(health_registry.api_handler())
         .with_handler(component_registry.api_handler())
+        .with_grpc_service(remote_agent_service)
+        .with_self_signed_tls()
         .with_handler(logging_api_handler);
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
@@ -168,14 +175,14 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     }
 }
 
-fn create_topology(
+async fn create_topology(
     configuration: &GenericConfiguration, env_provider: ADPEnvironmentProvider, component_registry: &ComponentRegistry,
 ) -> Result<TopologyBlueprint, GenericError> {
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
     let dsd_config = DogStatsDConfiguration::from_configuration(configuration)
         .error_context("Failed to configure DogStatsD source.")?
-        .with_workload_provider(env_provider.workload().clone());
+        .with_origin_tags_resolver(env_provider.workload().clone());
     let dsd_agg_config = AggregateConfiguration::from_configuration(configuration)
         .error_context("Failed to configure aggregate transform.")?;
     let dsd_prefix_filter_configuration = DogstatsDPrefixFilterConfiguration::from_configuration(configuration)?;
@@ -196,11 +203,17 @@ fn create_topology(
         }
     }
 
+    let status_configuration = DatadogStatusFlareConfiguration::from_configuration(configuration).await?;
+
     let events_service_checks_config = DatadogEventsServiceChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Events/Service Checks destination.")?;
 
+    let int_metrics_config = InternalMetricsConfiguration;
+    let int_metrics_remap_config = AgentTelemetryRemapperConfiguration::new();
+
     let topology_registry = component_registry.get_or_create("topology");
     let mut blueprint = TopologyBlueprint::from_component_registry(topology_registry);
+
     blueprint
         .add_source("dsd_in", dsd_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
@@ -214,17 +227,29 @@ fn create_topology(
         .connect_component("dd_metrics_out", ["enrich"])?
         .connect_component("dd_events_sc_out", ["dsd_in.events", "dsd_in.service_checks"])?;
 
-    // Insert a Prometheus scrape destination if we've been instructed to enable internal telemetry.
-    if configuration.get_typed_or_default::<bool>("telemetry_enabled") {
-        let int_metrics_config = InternalMetricsConfiguration;
-        let int_metrics_remap_config = AgentTelemetryRemapperConfiguration::new();
-        let prometheus_config = PrometheusConfiguration::from_configuration(configuration)?;
+    let use_prometheus = configuration.get_typed_or_default::<bool>("telemetry_enabled");
+    let use_status_flare_component = !configuration.get_typed_or_default::<bool>("adp_standalone_mode");
 
+    // Insert internal metrics source only if internal telemetry or status and flare component is enabled.
+    if use_prometheus || use_status_flare_component {
         blueprint
             .add_source("internal_metrics_in", int_metrics_config)?
             .add_transform("internal_metrics_remap", int_metrics_remap_config)?
+            .connect_component("internal_metrics_remap", ["internal_metrics_in"])?;
+    }
+
+    // Insert a Datadog Status Flare destination if we've been instructed to not do a no-op.
+    if use_status_flare_component {
+        blueprint
+            .add_destination("dd_status_flare_out", status_configuration)?
+            .connect_component("dd_status_flare_out", ["internal_metrics_remap"])?;
+    }
+
+    // Insert a Prometheus scrape destination if we've been instructed to enable internal telemetry.
+    if use_prometheus {
+        let prometheus_config = PrometheusConfiguration::from_configuration(configuration)?;
+        blueprint
             .add_destination("internal_metrics_out", prometheus_config)?
-            .connect_component("internal_metrics_remap", ["internal_metrics_in"])?
             .connect_component("internal_metrics_out", ["internal_metrics_remap"])?;
     }
 

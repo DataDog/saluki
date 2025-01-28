@@ -29,6 +29,7 @@ stringtheory = { workspace = true }
 tikv-jemalloc-ctl = { workspace = true, features = ["use_std"] }
 tikv-jemallocator = { workspace = true, features = ["background_threads", "unprefixed_malloc_on_supported_platforms", "stats"] }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "signal"] }
+tokio-rustls = { workspace = true }
 tracing = { workspace = true }
 
 [build-dependencies]

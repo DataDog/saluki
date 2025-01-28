@@ -1,14 +1,23 @@
 //! API server.
 
-use std::future::Future;
+use std::{convert::Infallible, error::Error, future::Future, io::BufReader};
 
 use axum::Router;
+use http::{Request, Response};
+use rcgen::{generate_simple_self_signed, CertifiedKey};
+use rustls::ServerConfig;
+use rustls_pemfile::{certs, pkcs8_private_keys};
 use saluki_api::APIHandler;
 use saluki_error::GenericError;
 use saluki_io::net::{
-    listener::ConnectionOrientedListener, server::http::HttpServer, util::hyper::TowerToHyperService, ListenAddress,
+    listener::ConnectionOrientedListener,
+    server::{http::HttpServer, multiplex_service::MultiplexService},
+    util::hyper::TowerToHyperService,
+    ListenAddress,
 };
 use tokio::select;
+use tonic::{body::BoxBody, server::NamedService, service::RoutesBuilder};
+use tower::Service;
 use tracing::error;
 
 /// An API builder.
@@ -23,7 +32,9 @@ use tracing::error;
 /// - graceful shutdown (shutdown stops new connections, but does not wait for existing connections to close)
 #[derive(Default)]
 pub struct APIBuilder {
-    router: Router,
+    http_router: Router,
+    grpc_router: RoutesBuilder,
+    tls_config: Option<ServerConfig>,
 }
 
 impl APIBuilder {
@@ -31,7 +42,11 @@ impl APIBuilder {
     ///
     /// A fallback route will be provided that returns a 404 Not Found response for any route that isn't explicitly handled.
     pub fn new() -> Self {
-        Self { router: Router::new() }
+        Self {
+            http_router: Router::new(),
+            grpc_router: RoutesBuilder::default(),
+            tls_config: None,
+        }
     }
 
     /// Adds the given handler to this builder.
@@ -43,8 +58,55 @@ impl APIBuilder {
     {
         let handler_router = handler.generate_routes();
         let handler_state = handler.generate_initial_state();
-        self.router = self.router.merge(handler_router.with_state(handler_state));
+        self.http_router = self.http_router.merge(handler_router.with_state(handler_state));
 
+        self
+    }
+
+    /// Sets the TLS configuration for the server.
+    ///
+    /// This will enable TLS for the server, and the server will only accept connections that are encrypted with TLS.
+    ///
+    /// Defaults to TLS being disabled.
+    pub fn with_tls_config(mut self, config: ServerConfig) -> Self {
+        self.tls_config = Some(config);
+        self
+    }
+
+    /// Sets the TLS configuration for the server based on a dynamically generated self-signed certificate.
+    ///
+    /// This will enable TLS for the server, and the server will only accept connections that are encrypted with TLS.
+    pub fn with_self_signed_tls(self) -> Self {
+        let CertifiedKey { cert, key_pair } = generate_simple_self_signed(["localhost".to_owned()]).unwrap();
+        let cert_file = cert.pem();
+        let key_file = key_pair.serialize_pem();
+
+        let cert_file = &mut BufReader::new(cert_file.as_bytes());
+        let key_file = &mut BufReader::new(key_file.as_bytes());
+
+        let cert_chain = certs(cert_file).collect::<Result<Vec<_>, _>>().unwrap();
+        let mut keys = pkcs8_private_keys(key_file).collect::<Result<Vec<_>, _>>().unwrap();
+
+        let config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(cert_chain, rustls::pki_types::PrivateKeyDer::Pkcs8(keys.remove(0)))
+            .unwrap();
+
+        self.with_tls_config(config)
+    }
+
+    /// Add the given gRPC service to this builder.
+    pub fn with_grpc_service<S>(mut self, svc: S) -> Self
+    where
+        S: Service<Request<BoxBody>, Response = Response<BoxBody>, Error = Infallible>
+            + NamedService
+            + Clone
+            + Send
+            + 'static,
+        S::Future: Send + 'static,
+        S::Error: Into<Box<dyn Error + Send + Sync>> + Send,
+    {
+        self.grpc_router.add_service(svc);
         self
     }
 
@@ -52,7 +114,7 @@ impl APIBuilder {
     ///
     /// The listen address must be a connection-oriented address (TCP or Unix domain socket in SOCK_STREAM mode).
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the given listen address is not connection-oriented, or if the server fails to bind to the address, or if
     /// there is an error while accepting for new connections, an error will be returned.
@@ -62,12 +124,18 @@ impl APIBuilder {
     {
         let listener = ConnectionOrientedListener::from_listen_address(listen_address).await?;
 
-        // We have to convert this Tower-based `Service` to a Hyper-based `Service` to use it with `HttpServer`, since
-        // the two traits are different from a semver perspective.
-        let service = TowerToHyperService::new(self.router);
+        // Wrap up our HTTP and gRPC routers in a multiplexed service, allowing us to handle both types of requests on
+        // the same port. Additionally, we have to wrap the service to translate from `tower::Service` to `hyper::Service`.
+        let multiplexed_service = TowerToHyperService::new(MultiplexService::new(
+            self.http_router,
+            self.grpc_router.routes().into_axum_router(),
+        ));
 
         // Create and spawn the HTTP server.
-        let http_server = HttpServer::from_listener(listener, service);
+        let mut http_server = HttpServer::from_listener(listener, multiplexed_service);
+        if let Some(tls_config) = self.tls_config {
+            http_server = http_server.with_tls_config(tls_config);
+        }
         let (shutdown_handle, error_handle) = http_server.listen();
 
         // Wait for our shutdown signal, which we'll forward to the listener to stop accepting new connections... or

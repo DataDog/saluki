@@ -1,4 +1,4 @@
-use std::{collections::HashSet, num::NonZeroU64};
+use std::{collections::HashSet, fmt, num::NonZeroU64};
 
 use super::{
     iter::{PointsIter, PointsIterRef},
@@ -80,6 +80,46 @@ impl<'a> From<&'a str> for SetPoints {
     }
 }
 
+impl<'a> From<(u64, &'a str)> for SetPoints {
+    fn from((ts, value): (u64, &'a str)) -> Self {
+        Self(TimestampedValue::from((ts, HashSet::from([value.to_string()]))).into())
+    }
+}
+
+impl<'a, const N: usize> From<[&'a str; N]> for SetPoints {
+    fn from(values: [&'a str; N]) -> Self {
+        Self(TimestampedValue::from(HashSet::from_iter(values.into_iter().map(|s| s.to_string()))).into())
+    }
+}
+
+impl<'a, const N: usize> From<(u64, [&'a str; N])> for SetPoints {
+    fn from((ts, values): (u64, [&'a str; N])) -> Self {
+        Self(TimestampedValue::from((ts, values.into_iter().map(|s| s.to_string()).collect())).into())
+    }
+}
+
+impl<'a, const N: usize> From<[(u64, &'a str); N]> for SetPoints {
+    fn from(values: [(u64, &'a str); N]) -> Self {
+        Self(
+            values
+                .iter()
+                .map(|(ts, value)| TimestampedValue::from((*ts, HashSet::from([value.to_string()]))))
+                .into(),
+        )
+    }
+}
+
+impl<'a, const N: usize> From<[(u64, &'a [&'a str]); N]> for SetPoints {
+    fn from(values: [(u64, &'a [&'a str]); N]) -> Self {
+        Self(
+            values
+                .iter()
+                .map(|(ts, values)| TimestampedValue::from((*ts, values.iter().map(|s| s.to_string()).collect())))
+                .into(),
+        )
+    }
+}
+
 impl IntoIterator for SetPoints {
     type Item = (Option<NonZeroU64>, f64);
     type IntoIter = PointsIter;
@@ -95,5 +135,27 @@ impl<'a> IntoIterator for &'a SetPoints {
 
     fn into_iter(self) -> Self::IntoIter {
         PointsIterRef::set(self.0.values.iter())
+    }
+}
+
+impl fmt::Display for SetPoints {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[")?;
+        for (i, point) in self.0.values.iter().enumerate() {
+            if i > 0 {
+                write!(f, ",")?;
+            }
+
+            let ts = point.timestamp.map(|ts| ts.get()).unwrap_or_default();
+            write!(f, "({}, [", ts)?;
+            for (j, value) in point.value.iter().enumerate() {
+                if j > 0 {
+                    write!(f, ",")?;
+                }
+                write!(f, "{}", value)?;
+            }
+            write!(f, "])")?;
+        }
+        write!(f, "]")
     }
 }
