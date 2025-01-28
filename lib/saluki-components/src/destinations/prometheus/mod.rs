@@ -329,7 +329,7 @@ fn format_tags(tags_buffer: &mut String, context: &Context) -> bool {
     let mut has_tags = false;
     let mut exceeded = false;
 
-    context.visit_tags(|tag| {
+    context.visit_tags(&mut |tag: &saluki_context::tags::Tag| {
         // If we've previously exceeded the tags buffer size limit, we can't write any more tags.
         if exceeded {
             return;

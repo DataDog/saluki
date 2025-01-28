@@ -4,7 +4,7 @@ use datadog_protos::metrics::{self as proto, Resource};
 use ddsketch_agent::DDSketch;
 use http::{uri::PathAndQuery, HeaderValue, Method, Request, Uri};
 use protobuf::CodedOutputStream;
-use saluki_context::tags::Tagged as _;
+use saluki_context::tags::{Tag, Tagged as _};
 use saluki_core::pooling::ObjectPool;
 use saluki_event::metric::*;
 use saluki_io::{
@@ -410,7 +410,7 @@ fn encode_series_metric(metric: &Metric) -> proto::MetricSeries {
     // and then setting the rest as generic tags.
     let mut tags = Vec::new();
 
-    metric.context().visit_tags(|tag| {
+    metric.context().visit_tags(&mut |tag: &Tag| {
         // If this is a resource tag, we'll convert it directly to a resource entry.
         if tag.name() == "dd.internal.resource" {
             if let Some((resource_type, resource_name)) = tag.value().and_then(|s| s.split_once(':')) {
@@ -493,7 +493,7 @@ fn encode_sketch_metric(metric: &Metric) -> proto::Sketch {
     // Collect and set all of our metric tags.
     let mut tags = Vec::new();
 
-    metric.context().visit_tags(|tag| {
+    metric.context().visit_tags(&mut |tag: &Tag| {
         tags.push(tag.as_str().into());
     });
 

@@ -11,7 +11,7 @@ use crate::{
     context::{Context, ContextInner},
     expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle},
     hash::{hash_context_with_seen, new_fast_hashset, ContextKey, FastHashSet},
-    origin::{OriginInfo, OriginKey, OriginTags, OriginTagsResolver},
+    origin::{OriginKey, OriginRef, OriginTags, OriginTagsResolver},
     tags::TagSet,
 };
 
@@ -171,12 +171,20 @@ impl ContextResolverBuilder {
     /// When set, any origin information provided will be considered during hashing when looking up a context, and any
     /// enriched tags attached to the detected origin will be accessible from the context.
     ///
-    /// Defaults to being disabled.
-    pub fn with_origin_tags_resolver<R>(mut self, resolver: R) -> Self
+    /// Defaults to unset.
+    pub fn with_origin_tags_resolver<R>(mut self, resolver: Option<R>) -> Self
     where
         R: OriginTagsResolver + 'static,
     {
-        self.origin_tags_resolver = Some(Arc::new(resolver));
+        self.origin_tags_resolver = match resolver {
+            Some(resolver) => {
+                // We do in fact need this big match statement, instead of a simple `resolver.map(Arc::new)`, in order
+                // to drive the compiler towards coercing our `Arc<R>` into `Arc<dyn OriginTagsResolver>`. ¯\_(ツ)_/¯
+                let resolver = Arc::new(resolver);
+                Some(resolver)
+            }
+            None => None,
+        };
         self
     }
 
@@ -323,7 +331,7 @@ impl ContextResolver {
     }
 
     fn create_context_key<I, T>(
-        &mut self, name: &str, tags: I, origin_info: Option<OriginInfo<'_>>,
+        &mut self, name: &str, tags: I, maybe_origin: Option<OriginRef<'_>>,
     ) -> (ContextKey, Option<OriginKey>)
     where
         I: IntoIterator<Item = T>,
@@ -334,7 +342,7 @@ impl ContextResolver {
         let origin_key = self
             .origin_tags_resolver
             .as_ref()
-            .and_then(|resolver| origin_info.and_then(|info| resolver.resolve_origin_key(info)));
+            .and_then(|resolver| maybe_origin.and_then(|origin| resolver.resolve_origin_key(origin)));
 
         let context_key = hash_context_with_seen(name, tags, origin_key, &mut self.hash_seen_buffer);
 
@@ -384,12 +392,12 @@ impl ContextResolver {
     ///
     /// `None` may be returned if the interner is full and outside allocations are disallowed. See
     /// `allow_heap_allocations` for more information.
-    pub fn resolve<I, T>(&mut self, name: &str, tags: I, origin_info: Option<OriginInfo<'_>>) -> Option<Context>
+    pub fn resolve<I, T>(&mut self, name: &str, tags: I, origin: Option<OriginRef<'_>>) -> Option<Context>
     where
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str>,
     {
-        let (context_key, origin_key) = self.create_context_key(name, tags.clone(), origin_info);
+        let (context_key, origin_key) = self.create_context_key(name, tags.clone(), origin);
         match self.context_cache.get(&context_key) {
             Some(context) => {
                 self.stats.resolved_existing_context_total().increment(1);

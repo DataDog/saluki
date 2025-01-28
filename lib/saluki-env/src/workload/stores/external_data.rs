@@ -2,15 +2,12 @@ use std::{num::NonZeroUsize, sync::Arc};
 
 use arc_swap::ArcSwap;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_context::origin::{ExternalData, ExternalDataRef};
 use tracing::{debug, trace};
 
 use crate::{
     prelude::*,
-    workload::{
-        aggregator::MetadataStore,
-        external_data::{ExternalData, ExternalDataRef, ResolvedExternalData},
-        EntityId, MetadataAction, MetadataOperation,
-    },
+    workload::{aggregator::MetadataStore, origin::ResolvedExternalData, EntityId, MetadataAction, MetadataOperation},
 };
 
 /// A store for External Data entity mappings.
@@ -171,11 +168,9 @@ impl ExternalDataStoreResolver {
     /// container). If the external data maps to valid, and the referenced entities exist, `Some(ResolvedExternalData)`
     /// is returned, containing the entity IDs for both pod and container. Otherwise, if the raw external data is
     /// invalid, or the referenced entities don't exist, `None` is returned.
-    pub fn resolve(&self, raw_external_data: &str) -> Option<ResolvedExternalData> {
+    pub fn resolve(&self, external_data: &ExternalDataRef<'_>) -> Option<ResolvedExternalData> {
         let snapshot = self.snapshot.load();
-        ExternalDataRef::from_raw(raw_external_data)
-            .and_then(|external_data_ref| snapshot.forward_mappings.get(&external_data_ref))
-            .cloned()
+        snapshot.forward_mappings.get(external_data).cloned()
     }
 }
 
@@ -183,12 +178,10 @@ impl ExternalDataStoreResolver {
 mod tests {
     use std::num::NonZeroUsize;
 
+    use saluki_context::origin::{ExternalData, ExternalDataRef};
+
     use super::ExternalDataStore;
-    use crate::workload::{
-        aggregator::MetadataStore as _,
-        external_data::{ExternalData, ResolvedExternalData},
-        EntityId, MetadataOperation,
-    };
+    use crate::workload::{aggregator::MetadataStore as _, origin::ResolvedExternalData, EntityId, MetadataOperation};
 
     const DEFAULT_ENTITY_LIMIT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(10) };
 
@@ -197,14 +190,14 @@ mod tests {
     }
 
     fn build_external_data(
-        pod_uid: &str, container_name: &str, container_id: &EntityId,
-    ) -> (ExternalData, ResolvedExternalData, String) {
-        let raw = format!("pu-{},cn-{}", pod_uid, container_name);
+        pod_uid: &str, container_name: &str, container_id: &EntityId, init_container: bool,
+    ) -> (String, ExternalData, ResolvedExternalData) {
+        let raw_external_data = format!("pu-{},cn-{},it-{}", pod_uid, container_name, init_container);
         let pod_entity_id = EntityId::from_pod_uid(pod_uid).unwrap();
 
-        let external_data = ExternalData::new(pod_uid.into(), container_name.into());
+        let external_data = ExternalData::new(pod_uid.into(), container_name.into(), init_container);
         let resolved_external_data = ResolvedExternalData::new(pod_entity_id.clone(), container_id.clone());
-        (external_data, resolved_external_data, raw)
+        (raw_external_data, external_data, resolved_external_data)
     }
 
     #[test]
@@ -213,21 +206,22 @@ mod tests {
         let resolver = store.resolver();
 
         let container_eid = entity_id_container("abcdef");
-        let (ed, resolved_ed, raw_ed) = build_external_data("1234", "redis", &container_eid);
+        let (raw_ed, ed, resolved_ed) = build_external_data("1234", "redis", &container_eid, false);
+        let ed_ref = ExternalDataRef::from_raw(&raw_ed).unwrap();
 
         // Make sure we don't get anything back for this External Data yet:
-        assert_eq!(resolver.resolve(&raw_ed), None);
+        assert_eq!(resolver.resolve(&ed_ref), None);
 
         // Attach the External Data to the given container:
         store.process_operation(MetadataOperation::attach_external_data(container_eid.clone(), ed));
 
         // Now we should be able to resolve the External Data:
-        assert_eq!(resolver.resolve(&raw_ed), Some(resolved_ed));
+        assert_eq!(resolver.resolve(&ed_ref), Some(resolved_ed));
 
         // Delete the container entity, which should drop the attached External Data:
         store.process_operation(MetadataOperation::delete(container_eid));
 
-        assert_eq!(resolver.resolve(&raw_ed), None);
+        assert_eq!(resolver.resolve(&ed_ref), None);
     }
 
     #[test]
@@ -240,13 +234,16 @@ mod tests {
         let container_eid1 = entity_id_container("abcdef");
         let container_eid2 = entity_id_container("bcdefg");
         let container_eid3 = entity_id_container("cdefgh");
-        let (ed1, resolved_ed1, raw_ed1) = build_external_data("1234", "redis", &container_eid1);
-        let (ed2, resolved_ed2, raw_ed2) = build_external_data("1234", "init-volume", &container_eid2);
-        let (ed3, resolved_ed3, raw_ed3) = build_external_data("1234", "chmod-dir", &container_eid3);
+        let (raw_ed1, ed1, resolved_ed1) = build_external_data("1234", "redis", &container_eid1, false);
+        let (raw_ed2, ed2, resolved_ed2) = build_external_data("1234", "init-volume", &container_eid2, true);
+        let (raw_ed3, ed3, resolved_ed3) = build_external_data("1234", "chmod-dir", &container_eid3, true);
+        let ed_ref1 = ExternalDataRef::from_raw(&raw_ed1).unwrap();
+        let ed_ref2 = ExternalDataRef::from_raw(&raw_ed2).unwrap();
+        let ed_ref3 = ExternalDataRef::from_raw(&raw_ed3).unwrap();
 
-        assert_eq!(resolver.resolve(&raw_ed1), None);
-        assert_eq!(resolver.resolve(&raw_ed2), None);
-        assert_eq!(resolver.resolve(&raw_ed3), None);
+        assert_eq!(resolver.resolve(&ed_ref1), None);
+        assert_eq!(resolver.resolve(&ed_ref2), None);
+        assert_eq!(resolver.resolve(&ed_ref3), None);
 
         // Attach the External Data to all of the containers:
         store.process_operation(MetadataOperation::attach_external_data(container_eid1.clone(), ed1));
@@ -258,16 +255,16 @@ mod tests {
 
         // Now we should be able to resolve External Data for the first two container entities, but not the third, as we
         // have hit our entity limit:
-        assert_eq!(resolver.resolve(&raw_ed1), Some(resolved_ed1));
-        assert_eq!(resolver.resolve(&raw_ed2), Some(resolved_ed2));
-        assert_eq!(resolver.resolve(&raw_ed3), None);
+        assert_eq!(resolver.resolve(&ed_ref1), Some(resolved_ed1));
+        assert_eq!(resolver.resolve(&ed_ref2), Some(resolved_ed2));
+        assert_eq!(resolver.resolve(&ed_ref3), None);
 
         // Delete the first container entity, which should drop the attached External Data:
         store.process_operation(MetadataOperation::delete(container_eid1));
-        assert_eq!(resolver.resolve(&raw_ed1), None);
+        assert_eq!(resolver.resolve(&ed_ref1), None);
 
         // Try again to attach the External Data to the third container entity, which we should now be able to resolve:
         store.process_operation(MetadataOperation::attach_external_data(container_eid3, ed3));
-        assert_eq!(resolver.resolve(&raw_ed3), Some(resolved_ed3));
+        assert_eq!(resolver.resolve(&ed_ref3), Some(resolved_ed3));
     }
 }

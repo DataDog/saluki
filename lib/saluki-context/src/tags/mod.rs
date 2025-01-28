@@ -11,9 +11,24 @@ pub use self::raw::RawTags;
 /// A value containing tags that can be visited.
 pub trait Tagged {
     /// Visits the tags in this value.
-    fn visit_tags<F>(&self, visitor: F)
+    fn visit_tags<V>(&self, visitor: &mut V)
     where
-        F: FnMut(&Tag);
+        V: TagVisitor;
+}
+
+/// A tag visitor.
+pub trait TagVisitor {
+    /// Visits a tag.
+    fn visit_tag(&mut self, tag: &Tag);
+}
+
+impl<F> TagVisitor for F
+where
+    F: FnMut(&Tag),
+{
+    fn visit_tag(&mut self, tag: &Tag) {
+        self(tag)
+    }
 }
 
 /// A metric tag.
@@ -368,12 +383,12 @@ impl From<Tag> for TagSet {
 }
 
 impl Tagged for TagSet {
-    fn visit_tags<F>(&self, mut visitor: F)
+    fn visit_tags<V>(&self, visitor: &mut V)
     where
-        F: FnMut(&Tag),
+        V: TagVisitor,
     {
         for tag in &self.0 {
-            visitor(tag);
+            visitor.visit_tag(tag);
         }
     }
 }
@@ -502,9 +517,9 @@ impl Serialize for SharedTagSet {
 }
 
 impl Tagged for SharedTagSet {
-    fn visit_tags<F>(&self, visitor: F)
+    fn visit_tags<V>(&self, visitor: &mut V)
     where
-        F: FnMut(&Tag),
+        V: TagVisitor,
     {
         self.0.visit_tags(visitor);
     }

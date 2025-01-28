@@ -6,7 +6,7 @@ use stringtheory::MetaString;
 use crate::{
     hash::{hash_context, ContextKey},
     origin::OriginTags,
-    tags::{Tag, TagSet, Tagged},
+    tags::{TagSet, TagVisitor, Tagged},
 };
 
 /// A metric context.
@@ -146,12 +146,12 @@ impl fmt::Display for Context {
 }
 
 impl Tagged for Context {
-    fn visit_tags<F>(&self, mut visitor: F)
+    fn visit_tags<V>(&self, visitor: &mut V)
     where
-        F: FnMut(&Tag),
+        V: TagVisitor,
     {
-        self.tags().visit_tags(&mut visitor);
-        self.origin_tags().visit_tags(&mut visitor);
+        self.tags().visit_tags(visitor);
+        self.origin_tags().visit_tags(visitor);
     }
 }
 
