@@ -199,7 +199,6 @@ ifeq ($(shell test -n "$(DD_API_KEY)" || echo not-found), not-found)
 endif
 	@echo "[*] Running ADP..."
 	@DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_DOGSTATSD_EXPIRY_SECONDS=30 \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5101 \
 	DD_AUTH_TOKEN_FILE_PATH=/etc/datadog-agent/auth_token \
 	target/debug/agent-data-plane
@@ -215,7 +214,6 @@ ifeq ($(shell test -n "$(DD_API_KEY)" || echo not-found), not-found)
 endif
 	@echo "[*] Running ADP..."
 	@DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_DOGSTATSD_EXPIRY_SECONDS=30 \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5101 \
 	DD_AUTH_TOKEN_FILE_PATH=/etc/datadog-agent/auth_token \
 	target/release/agent-data-plane
@@ -223,26 +221,20 @@ endif
 .PHONY: run-adp-standalone
 run-adp-standalone: build-adp
 run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
-ifeq ($(shell test -n "$(DD_API_KEY)" || echo not-found), not-found)
-	$(error "API key not set. Please set the DD_API_KEY environment variable.")
-endif
 	@echo "[*] Running ADP..."
-	@DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true \
+	@DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true DD_ADP_USE_FIXED_HOST_PROVIDER=true \
+	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_DOGSTATSD_EXPIRY_SECONDS=30 \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5101 \
 	target/debug/agent-data-plane
 
 .PHONY: run-adp-standalone-release
 run-adp-standalone-release: build-adp-release
 run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
-ifeq ($(shell test -n "$(DD_API_KEY)" || echo not-found), not-found)
-	$(error "API key not set. Please set the DD_API_KEY environment variable.")
-endif
 	@echo "[*] Running ADP..."
-	@DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true \
+	@DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true DD_ADP_USE_FIXED_HOST_PROVIDER=true \
+	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_DOGSTATSD_EXPIRY_SECONDS=30 \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5101 \
 	target/release/agent-data-plane
 
@@ -455,28 +447,16 @@ profile-run-blackhole: ## Runs a blackhole HTTP server for use by ADP
 	@dummyhttp -v -c 202 -p 9095
 
 .PHONY: profile-run-adp
-profile-run-adp: build-adp-release
-profile-run-adp: ## Runs ADP locally for profiling
-	@echo "[*] Running ADP..."
-	@DD_API_KEY=00000001adp DD_HOSTNAME=adp-profiling DD_DD_URL=http://127.0.0.1:9095 \
-	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true \
-	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5101 \
-	DD_DOGSTATSD_EXPIRY_SECONDS=30 \
-	target/release/agent-data-plane
-
-.PHONY: profile-run-adp-ddprof
-profile-run-adp-ddprof: ensure-ddprof build-adp-release
-profile-run-adp-ddprof: ## Runs ADP locally for profiling (via ddprof)
+profile-run-adp: ensure-ddprof build-adp-release
+profile-run-adp: ## Runs ADP locally for profiling (via ddprof)
 ifeq ($(shell test -S /var/run/datadog/apm.socket || echo not-found), not-found)
 	$(error "APM socket at /var/run/datadog/apm.socket not found. Is the Datadog Agent running?")
 endif
 	@echo "[*] Running ADP under ddprof (service: adp, environment: local, version: $(GIT_COMMIT))..."
-	@DD_API_KEY=00000001adp DD_HOSTNAME=adp-profiling DD_DD_URL=http://127.0.0.1:9095 \
+	@DD_API_KEY=api-key-adp-profiling DD_HOSTNAME=adp-profiling DD_DD_URL=http://127.0.0.1:9095 \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true \
+	DD_ADP_USE_NOOP_WORKLOAD_PROVIDER=true DD_ADP_USE_FIXED_HOST_PROVIDER=true \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5101 \
-	DD_DOGSTATSD_EXPIRY_SECONDS=30 \
 	./test/ddprof/bin/ddprof --service adp --environment local --service-version $(GIT_COMMIT) \
 	--url unix:///var/run/datadog/apm.socket \
 	--inlined-functions true --timeline --upload-period 10 --preset cpu_live_heap \
