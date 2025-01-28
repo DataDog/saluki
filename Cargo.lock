@@ -3593,6 +3593,7 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "memory-accounting",
+ "papaya",
  "pin-project-lite",
  "proptest",
  "prost 0.13.4",
