@@ -2,7 +2,7 @@ use saluki_io::deser::codec::dogstatsd::MetricPacket;
 
 /// A filter for determining whether a metric packet should be materialized into an `Event`.
 pub trait Filter {
-    fn allow_metric<'a>(&self, metric: &MetricPacket<'a>) -> bool;
+    fn allow_metric(&self, metric: &MetricPacket<'_>) -> bool;
 }
 
 /// Filters metric payloads based on whether or not the specific metric type (series or sketch) is enabled.
@@ -21,7 +21,7 @@ impl EnablePayloadsFilter {
 }
 
 impl Filter for EnablePayloadsFilter {
-    fn allow_metric<'a>(&self, metric: &MetricPacket<'a>) -> bool {
+    fn allow_metric(&self, metric: &MetricPacket<'_>) -> bool {
         if !self.allow_series && metric.values.is_serie() {
             return false;
         }
@@ -70,7 +70,7 @@ mod tests {
         let serie_metric = metric_packet(Histogram(1.0.into()));
         let sketch_metric = metric_packet(Distribution(1.0.into()));
         let filter = EnablePayloadsFilter::new(false, false);
-        assert_eq!(filter.allow_metric(&serie_metric), false);
-        assert_eq!(filter.allow_metric(&sketch_metric), false);
+        assert!(!filter.allow_metric(&serie_metric));
+        assert!(!filter.allow_metric(&sketch_metric));
     }
 }
