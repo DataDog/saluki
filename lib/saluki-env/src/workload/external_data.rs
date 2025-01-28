@@ -2,6 +2,8 @@ use indexmap::Equivalent;
 use stringtheory::MetaString;
 use tracing::warn;
 
+use super::EntityId;
+
 /// External data associated with a workload entity.
 ///
 /// An external data string is a comma-separated list of key/value pairs, where each key represents a particular aspect
@@ -25,6 +27,11 @@ impl ExternalData {
             pod_uid,
             container_name,
         }
+    }
+
+    /// Returns a reference to the pod UID.
+    pub fn pod_uid(&self) -> &MetaString {
+        &self.pod_uid
     }
 }
 
@@ -99,6 +106,33 @@ impl<'a> std::hash::Hash for ExternalDataRef<'a> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.pod_uid.hash(state);
         self.container_name.hash(state);
+    }
+}
+
+/// A resolved External Data entry.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ResolvedExternalData {
+    pod_entity_id: EntityId,
+    container_entity_id: EntityId,
+}
+
+impl ResolvedExternalData {
+    /// Creates a new `ResolvedExternalData` from the given pod and container entity IDs.
+    pub fn new(pod_entity_id: EntityId, container_entity_id: EntityId) -> Self {
+        Self {
+            pod_entity_id,
+            container_entity_id,
+        }
+    }
+
+    /// Returns a reference to the pod entity ID.
+    pub fn pod_entity_id(&self) -> &EntityId {
+        &self.pod_entity_id
+    }
+
+    /// Returns a reference to the container entity ID.
+    pub fn container_entity_id(&self) -> &EntityId {
+        &self.container_entity_id
     }
 }
 
