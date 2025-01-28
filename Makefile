@@ -515,6 +515,13 @@ emit-build-metadata: ## Emits build metadata shell variables suitable for use du
 	@echo "APP_VERSION=${APP_VERSION}"
 	@echo "APP_BUILD_TIME=${APP_BUILD_TIME}"
 
+##@ Admin UI
+
+.PHONY: run-admin-ui-dev
+run-admin-ui-dev: ## Runs the Admin UI locally in development mode
+	@echo "[*] Running Admin UI in development mode..."
+	@cd web/admin-ui && bun run dev
+
 ##@ Utility
 
 .PHONY: clean
