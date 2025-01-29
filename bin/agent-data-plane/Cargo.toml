@@ -26,11 +26,13 @@ saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }
 serde = { workspace = true }
 stringtheory = { workspace = true }
-tikv-jemalloc-ctl = { workspace = true, features = ["use_std"] }
-tikv-jemallocator = { workspace = true, features = ["background_threads", "unprefixed_malloc_on_supported_platforms", "stats"] }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "signal"] }
 tokio-rustls = { workspace = true }
 tracing = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tikv-jemalloc-ctl = { workspace = true, features = ["use_std"] }
+tikv-jemallocator = { workspace = true, features = ["background_threads", "unprefixed_malloc_on_supported_platforms", "stats"] }
 
 [build-dependencies]
 chrono = { workspace = true }
