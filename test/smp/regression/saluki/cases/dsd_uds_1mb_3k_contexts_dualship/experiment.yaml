@@ -21,12 +21,8 @@ target:
     DD_DOGSTATSD_PORT: "0"
     DD_DOGSTATSD_SOCKET: /tmp/adp-dogstatsd-dgram.sock
 
-    # Runs the workload provider in no-op mode, otherwise it would need to connect to a real Datadog Agent, which
-    # obviously we don't have available to us, and perhaps further, don't need for the purpose of this benchmark.
-    DD_ADP_USE_NOOP_WORKLOAD_PROVIDER: "true"
-
-    # Similarly, use a fixed host provider since we don't have a real Datadog Agent to query the hostname from.
-    DD_ADP_USE_FIXED_HOST_PROVIDER: "true"
+    # Runs ADP in standalone mode, which decouples ADP from any dependency on the Datadog Agent.
+    DD_ADP_STANDALONE_MODE: "true"
 
     # Enable internal telemetry endpoint.
     DD_TELEMETRY_ENABLED: "true"
