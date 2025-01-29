@@ -7,7 +7,7 @@ use saluki_env::{
 };
 use saluki_error::GenericError;
 use saluki_health::HealthRegistry;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Agent Data Plane-specific environment provider.
 ///
@@ -18,8 +18,7 @@ use tracing::debug;
 /// # Opting out for testing/benchmarking
 ///
 /// In order to facilitate testing/benchmarking where running the Datadog Agent is not desirable, the underlying
-/// providers can be effectively disabled by setting the configuration values of `adp.use_fixed_host_provider` and
-/// `adp.use_noop_workload_provider` to `true`.
+/// providers can be effectively disabled by setting the `adp.use_fixed_host_provider` configuration value to `true`.
 ///
 /// This will effectively disable origin enrichment (no entity tags) and cause metrics to be tagged with a fixed
 /// hostname based on the configuration value of `hostname`.
@@ -35,12 +34,16 @@ impl ADPEnvironmentProvider {
     ) -> Result<Self, GenericError> {
         let mut provider_component = component_registry.get_or_create("env_provider");
 
+        let in_standalone_mode = config.get_typed_or_default::<bool>("adp.standalone_mode");
+        if in_standalone_mode {
+            warn!("Running in standalone mode. Origin detection/enrichment and other features dependent upon the Datadog Agent will not be available.");
+        }
+
         // We allow disabling the normal environment provider functionality via configuration, since in some cases we
         // don't actually care about having a real environment provider as we may simply be running in a benchmark/test
         // environment, etc.
-        let use_fixed_host_provider = config.get_typed_or_default::<bool>("adp.use_fixed_host_provider");
-        let host_provider = if use_fixed_host_provider {
-            debug!("Using fixed host provider as instructed by configuration.");
+        let host_provider = if in_standalone_mode {
+            debug!("Using fixed host provider due to standalone mode. Hostname must be set via `hostname` configuration setting.");
             BoxedHostProvider::from_provider(FixedHostProvider::from_configuration(config)?)
         } else {
             let provider = RemoteAgentHostProvider::from_configuration(config).await?;
@@ -49,9 +52,8 @@ impl ADPEnvironmentProvider {
             BoxedHostProvider::from_provider(provider)
         };
 
-        let use_noop_workload_provider = config.get_typed_or_default::<bool>("adp.use_noop_workload_provider");
-        let workload_provider = if use_noop_workload_provider {
-            debug!("Using no-op workload provider as instructed by configuration.");
+        let workload_provider = if in_standalone_mode {
+            debug!("Using no-op workload provider due to standalone mode. Origin detection/enrichment will not be available.");
             None
         } else {
             let component = component_registry.get_or_create("workload");
