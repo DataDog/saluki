@@ -28,9 +28,8 @@ use saluki_env::EnvironmentProvider as _;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use saluki_io::net::ListenAddress;
-use tikv_jemallocator::Jemalloc;
 use tokio::select;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 mod components;
 use self::components::remapper::AgentTelemetryRemapperConfiguration;
@@ -38,9 +37,15 @@ use self::components::remapper::AgentTelemetryRemapperConfiguration;
 mod env_provider;
 use self::env_provider::ADPEnvironmentProvider;
 
+#[cfg(target_os = "linux")]
 #[global_allocator]
-static ALLOC: memory_accounting::allocator::TrackingAllocator<Jemalloc> =
-    memory_accounting::allocator::TrackingAllocator::new(Jemalloc);
+static ALLOC: memory_accounting::allocator::TrackingAllocator<tikv_jemallocator::Jemalloc> =
+    memory_accounting::allocator::TrackingAllocator::new(tikv_jemallocator::Jemalloc);
+
+#[cfg(not(target_os = "linux"))]
+#[global_allocator]
+static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System> =
+    memory_accounting::allocator::TrackingAllocator::new(std::alloc::System);
 
 #[tokio::main]
 async fn main() {
@@ -85,11 +90,6 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
         target_arch = app_details.target_arch(),
         build_time = app_details.build_time(),
         "Agent Data Plane starting..."
-    );
-
-    debug!(
-        "Using jemalloc configuration: {}",
-        tikv_jemalloc_ctl::config::malloc_conf::mib().unwrap().read().unwrap()
     );
 
     // Load our configuration and create all high-level primitives (health registry, component registry, environment
