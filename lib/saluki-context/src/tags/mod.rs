@@ -466,6 +466,33 @@ impl<'a> IntoIterator for &'a SharedTagSet {
     }
 }
 
+impl fmt::Display for SharedTagSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[")?;
+
+        for (i, tag) in self.0.deref().into_iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+
+            write!(f, "{}", tag.as_str())?;
+        }
+
+        write!(f, "]")
+    }
+}
+
+impl serde::Serialize for SharedTagSet {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // We have this manual implementation of `Serialize` just to avoid needing to bring in `serde_with` to get the
+        // helper that utilizes the `Display` implementation.
+        serializer.collect_str(self)
+    }
+}
+
 impl Tagged for SharedTagSet {
     fn visit_tags<F>(&self, visitor: F)
     where
