@@ -203,13 +203,8 @@ async fn create_topology(
         }
     }
 
-    let status_configuration = DatadogStatusFlareConfiguration::from_configuration(configuration).await?;
-
     let events_service_checks_config = DatadogEventsServiceChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Events/Service Checks destination.")?;
-
-    let int_metrics_config = InternalMetricsConfiguration;
-    let int_metrics_remap_config = AgentTelemetryRemapperConfiguration::new();
 
     let topology_registry = component_registry.get_or_create("topology");
     let mut blueprint = TopologyBlueprint::from_component_registry(topology_registry);
@@ -227,26 +222,32 @@ async fn create_topology(
         .connect_component("dd_metrics_out", ["enrich"])?
         .connect_component("dd_events_sc_out", ["dsd_in.events", "dsd_in.service_checks"])?;
 
-    let use_prometheus = configuration.get_typed_or_default::<bool>("telemetry_enabled");
-    let use_status_flare_component = !configuration.get_typed_or_default::<bool>("adp_standalone_mode");
+    let telemetry_enabled = configuration.get_typed_or_default::<bool>("telemetry_enabled");
+    let in_standalone_mode = configuration.get_typed_or_default::<bool>("adp.standalone_mode");
 
-    // Insert internal metrics source only if internal telemetry or status and flare component is enabled.
-    if use_prometheus || use_status_flare_component {
+    // When telemetry is enabled, or we're not in standalone mode, we need to collect internal metrics, so add those
+    // components and route them here.
+    if telemetry_enabled || !in_standalone_mode {
+        let int_metrics_config = InternalMetricsConfiguration;
+        let int_metrics_remap_config = AgentTelemetryRemapperConfiguration::new();
+
         blueprint
             .add_source("internal_metrics_in", int_metrics_config)?
             .add_transform("internal_metrics_remap", int_metrics_remap_config)?
             .connect_component("internal_metrics_remap", ["internal_metrics_in"])?;
     }
 
-    // Insert a Datadog Status Flare destination if we've been instructed to not do a no-op.
-    if use_status_flare_component {
+    // When not in standalone mode, install the necessary components for registering ourselves with the Datadog Agent as
+    // a "remote agent", which wires up ADP to allow the Datadog Agent to query it for status and flare information.
+    if !in_standalone_mode {
+        let status_configuration = DatadogStatusFlareConfiguration::from_configuration(configuration).await?;
         blueprint
             .add_destination("dd_status_flare_out", status_configuration)?
             .connect_component("dd_status_flare_out", ["internal_metrics_remap"])?;
     }
 
-    // Insert a Prometheus scrape destination if we've been instructed to enable internal telemetry.
-    if use_prometheus {
+    // When internal telemetry is enabled, expose a Prometheus scrape endpoint that the Datadog Agent will pull from.
+    if telemetry_enabled {
         let prometheus_config = PrometheusConfiguration::from_configuration(configuration)?;
         blueprint
             .add_destination("internal_metrics_out", prometheus_config)?
