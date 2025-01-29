@@ -130,7 +130,15 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;
     let memory_limiter = initialize_memory_bounds(bounds_configuration, &component_registry)?;
 
-    dump_bounds(component_registry.as_bounds());
+    if let Ok(val) = std::env::var("DD_ADP_WRITE_SIZING_GUIDE") {
+        if val != "false" {
+            if let Err(error) = write_sizing_guide(component_registry.as_bounds()) {
+                warn!("Failed to write sizing guide: {}", error);
+            } else {
+                return Ok(());
+            }
+        }
+    }
 
     // Bounds validation succeeded, so now we'll build and spawn the topology.
     let built_topology = blueprint.build().await?;
@@ -259,6 +267,23 @@ async fn create_topology(
     Ok(blueprint)
 }
 
-fn dump_bounds(bounds: ComponentBounds) {
-    std::fs::write("bounds.json", serde_json::to_string(&bounds.to_exprs()).unwrap()).unwrap();
+fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
+    use std::{
+        fs::File,
+        io::{BufWriter, Write},
+    };
+
+    let template = include_str!("sizing_guide_template.html");
+    let mut output = BufWriter::new(File::create("sizing_guide.html")?);
+    for line in template.lines() {
+        if line.trim() == "<!-- INSERT GENERATED CONTENT -->" {
+            serde_json::to_writer_pretty(&mut output, &bounds.to_exprs())?;
+        } else {
+            output.write_all(line.as_bytes())?;
+        }
+        output.write_all(b"\n")?;
+    }
+    info!("Wrote sizing guide to sizing_guide.html");
+    output.flush()?;
+    Ok(())
 }
