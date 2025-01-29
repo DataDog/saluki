@@ -111,19 +111,17 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
     let blueprint = create_topology(&configuration, env_provider, &component_registry).await?;
 
-    // Build our administrative API server.
-    let primary_api_listen_address = configuration
-        .try_get_typed("api_listen_address")
-        .error_context("Failed to get API listen address.")?
-        .unwrap_or_else(|| ListenAddress::Tcp(([0, 0, 0, 0], 5100).into()));
-
-    let remote_agent_service = new_remote_agent_service()?;
-
-    let primary_api = APIBuilder::new()
+    // Build our unprivileged and privileged API server.
+    //
+    // The unprivileged API is purely for things like health checks or read-only information. The privileged API is
+    // meant for sensitive information or actions that require elevated permissions.
+    let unprivileged_api = APIBuilder::new()
         .with_handler(health_registry.api_handler())
-        .with_handler(component_registry.api_handler())
-        .with_grpc_service(remote_agent_service)
+        .with_handler(component_registry.api_handler());
+
+    let privileged_api = APIBuilder::new()
         .with_self_signed_tls()
+        .with_grpc_service(new_remote_agent_service())
         .with_handler(logging_api_handler);
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
@@ -137,12 +135,9 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     // Spawn the health checker.
     health_registry.spawn().await?;
 
-    // Run the API server now that we've been able to launch the topology.
-    //
-    // TODO: Use something better than `pending()`... perhaps something like a more generalized
-    // `ComponentShutdownCoordinator` that allows for triggering and waiting for all attached tasks to signal that
-    // they've shutdown.
-    primary_api.serve(primary_api_listen_address, pending()).await?;
+    // Spawn both of our API servers.
+    spawn_unprivileged_api(&configuration, unprivileged_api).await?;
+    spawn_privileged_api(&configuration, privileged_api).await?;
 
     let startup_time = started.elapsed();
 
@@ -249,10 +244,59 @@ async fn create_topology(
     // When internal telemetry is enabled, expose a Prometheus scrape endpoint that the Datadog Agent will pull from.
     if telemetry_enabled {
         let prometheus_config = PrometheusConfiguration::from_configuration(configuration)?;
+        info!(
+            "Serving telemetry scrape endpoint on {}.",
+            prometheus_config.listen_address()
+        );
+
         blueprint
             .add_destination("internal_metrics_out", prometheus_config)?
             .connect_component("internal_metrics_out", ["internal_metrics_remap"])?;
     }
 
     Ok(blueprint)
+}
+
+async fn spawn_unprivileged_api(
+    configuration: &GenericConfiguration, api_builder: APIBuilder,
+) -> Result<(), GenericError> {
+    let api_listen_address = configuration
+        .try_get_typed("api_listen_address")
+        .error_context("Failed to get API listen address.")?
+        .unwrap_or_else(|| ListenAddress::Tcp(([0, 0, 0, 0], 5100).into()));
+
+    // TODO: Use something better than `pending()`... perhaps something like a more generalized
+    // `ComponentShutdownCoordinator` that allows for triggering and waiting for all attached tasks to signal that
+    // they've shutdown.
+    tokio::spawn(async move {
+        info!("Serving unprivileged API on {}.", api_listen_address);
+
+        if let Err(e) = api_builder.serve(api_listen_address, pending()).await {
+            error!("Failed to serve unprivileged API: {}", e);
+        }
+    });
+
+    Ok(())
+}
+
+async fn spawn_privileged_api(
+    configuration: &GenericConfiguration, api_builder: APIBuilder,
+) -> Result<(), GenericError> {
+    let api_listen_address = configuration
+        .try_get_typed("secure_api_listen_address")
+        .error_context("Failed to get secure API listen address.")?
+        .unwrap_or_else(|| ListenAddress::Tcp(([0, 0, 0, 0], 5101).into()));
+
+    // TODO: Use something better than `pending()`... perhaps something like a more generalized
+    // `ComponentShutdownCoordinator` that allows for triggering and waiting for all attached tasks to signal that
+    // they've shutdown.
+    tokio::spawn(async move {
+        info!("Serving privileged API on {}.", api_listen_address);
+
+        if let Err(e) = api_builder.serve(api_listen_address, pending()).await {
+            error!("Failed to serve privileged API: {}", e);
+        }
+    });
+
+    Ok(())
 }
