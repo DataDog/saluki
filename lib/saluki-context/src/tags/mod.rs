@@ -2,6 +2,7 @@
 
 use std::{fmt, hash, ops::Deref as _, sync::Arc};
 
+use serde::Serialize;
 use stringtheory::MetaString;
 
 mod raw;
@@ -86,6 +87,15 @@ impl hash::Hash for Tag {
 impl fmt::Display for Tag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl Serialize for Tag {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
     }
 }
 
@@ -180,7 +190,7 @@ impl<'a> hash::Hash for BorrowedTag<'a> {
 }
 
 /// A set of tags.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct TagSet(Vec<Tag>);
 
 impl TagSet {
@@ -482,14 +492,12 @@ impl fmt::Display for SharedTagSet {
     }
 }
 
-impl serde::Serialize for SharedTagSet {
+impl Serialize for SharedTagSet {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        // We have this manual implementation of `Serialize` just to avoid needing to bring in `serde_with` to get the
-        // helper that utilizes the `Display` implementation.
-        serializer.collect_str(self)
+        self.0.deref().serialize(serializer)
     }
 }
 
