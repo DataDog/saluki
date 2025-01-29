@@ -85,7 +85,7 @@ ordered-float = { version = "4.6", default-features = false }
 paste = { version = "1", default-features = false }
 pin-project = { version = "1.1", default-features = false }
 pin-project-lite = { version = "0.2", default-features = false }
-proptest = { version = "1.6", default-features = false }
+proptest = { version = "1.6", default-features = false, features = ["std"] }
 prost = { version = "0.13", default-features = false }
 quanta = { version = "0.12", default-features = false }
 rand = { version = "0.8.5", default-features = false }
