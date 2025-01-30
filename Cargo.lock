@@ -3601,6 +3601,7 @@ dependencies = [
  "prost-types 0.13.4",
  "regex",
  "rustls-pemfile",
+ "saluki-api",
  "saluki-config",
  "saluki-context",
  "saluki-error",

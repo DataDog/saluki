@@ -1,3 +1,5 @@
+//! A workload provider based on the Datadog Agent's remote tagger and workloadmeta APIs.
+
 use std::{future::Future, num::NonZeroUsize};
 
 use async_trait::async_trait;
@@ -26,6 +28,9 @@ use crate::{
     },
     WorkloadProvider,
 };
+
+mod api;
+pub use self::api::RemoteAgentWorkloadAPIHandler;
 
 // TODO: Make these configurable.
 
@@ -159,6 +164,15 @@ impl RemoteAgentWorkloadProvider {
             tags_querier,
             origin_tags_querier,
         })
+    }
+
+    /// Returns an API handler for dumping the contents of the underlying data stores.
+    ///
+    /// This handler can be used to register routes on an [`APIBuilder`][saluki_api::APIBuilder] for dumping the
+    /// contents of the underlying data stores powering this workload provider. See [`RemoteAgentWorkloadAPIHandler`]
+    /// for more information about routes and responses.
+    pub fn api_handler(&self) -> RemoteAgentWorkloadAPIHandler {
+        RemoteAgentWorkloadAPIHandler::from_state(self.tags_querier.clone())
     }
 }
 

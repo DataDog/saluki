@@ -89,7 +89,7 @@ impl TestRunner {
             .with_env_var("DD_API_KEY", "dummy-api-key-correctness-testing")
             .with_env_var("DD_ADP_STANDALONE_MODE", "true")
             .with_env_var("DD_TELEMETRY_ENABLED", "true")
-            .with_env_var("DD_PROMETHEUS_LISTEN_ADDR", "tcp://0.0.0.0:5101")
+            .with_env_var("DD_PROMETHEUS_LISTEN_ADDR", "tcp://0.0.0.0:5102")
             .with_exposed_port("tcp", 6000);
 
         group_runner

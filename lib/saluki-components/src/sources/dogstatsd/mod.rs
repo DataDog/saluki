@@ -1,4 +1,4 @@
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::{num::NonZeroUsize, time::Duration};
 
 use async_trait::async_trait;
@@ -51,6 +51,9 @@ use tracing::{debug, error, info, trace, warn};
 mod framer;
 use self::framer::{get_framer, DsdFramer};
 
+mod filters;
+use self::filters::{EnablePayloadsFilter, Filter};
+
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 enum Error {
@@ -89,6 +92,14 @@ const fn default_context_string_interner_size() -> ByteSize {
 }
 
 const fn default_dogstatsd_permissive_decoding() -> bool {
+    true
+}
+
+const fn default_enable_payloads_series() -> bool {
+    true
+}
+
+const fn default_enable_payloads_sketches() -> bool {
     true
 }
 
@@ -202,6 +213,18 @@ pub struct DogStatsDConfiguration<R = ()> {
         default = "default_dogstatsd_permissive_decoding"
     )]
     permissive_decoding: bool,
+
+    /// Whether or not to enable sending serie payloads.
+    ///
+    /// Defaults to `true`.
+    #[serde(default = "default_enable_payloads_series")]
+    enable_payloads_series: bool,
+
+    /// Whether or not to enable sending sketch payloads.
+    ///
+    /// Defaults to `true`.
+    #[serde(default = "default_enable_payloads_sketches")]
+    enable_payloads_sketches: bool,
 }
 
 impl DogStatsDConfiguration {
@@ -229,6 +252,8 @@ impl<R> DogStatsDConfiguration<R> {
             no_aggregation_pipeline_support: self.no_aggregation_pipeline_support,
             context_string_interner_bytes: self.context_string_interner_bytes,
             permissive_decoding: self.permissive_decoding,
+            enable_payloads_series: self.enable_payloads_series,
+            enable_payloads_sketches: self.enable_payloads_sketches,
         }
     }
 
@@ -307,6 +332,10 @@ where
             }),
             codec,
             context_resolver,
+            pre_filters: Arc::new(vec![Box::new(EnablePayloadsFilter::new(
+                self.enable_payloads_series,
+                self.enable_payloads_sketches,
+            ))]),
         }))
     }
 
@@ -352,6 +381,7 @@ pub struct DogStatsD {
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     codec: DogstatsdCodec,
     context_resolver: ContextResolver,
+    pre_filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>,
 }
 
 struct ListenerContext {
@@ -534,7 +564,11 @@ impl Source for DogStatsD {
                 context_resolver: self.context_resolver.clone(),
             };
 
-            spawn_traced(process_listener(context.clone(), listener_context));
+            spawn_traced(process_listener(
+                context.clone(),
+                listener_context,
+                self.pre_filters.clone(),
+            ));
         }
 
         health.mark_ready();
@@ -564,7 +598,9 @@ impl Source for DogStatsD {
     }
 }
 
-async fn process_listener(source_context: SourceContext, listener_context: ListenerContext) {
+async fn process_listener(
+    source_context: SourceContext, listener_context: ListenerContext, filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>,
+) {
     let ListenerContext {
         shutdown_handle,
         mut listener,
@@ -597,7 +633,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
                         metrics: build_metrics(&listen_addr, source_context.component_context()),
                         context_resolver: context_resolver.clone(),
                     };
-                    spawn_traced(process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register()));
+                    spawn_traced(process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register(), filters.clone()));
                 }
                 Err(e) => {
                     error!(%listen_addr, error = %e, "Failed to accept connection. Stopping listener.");
@@ -614,7 +650,7 @@ async fn process_listener(source_context: SourceContext, listener_context: Liste
 
 async fn process_stream(
     stream: Stream, source_context: SourceContext, handler_context: HandlerContext,
-    shutdown_handle: DynamicShutdownHandle,
+    shutdown_handle: DynamicShutdownHandle, filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>,
 ) {
     tokio::pin!(shutdown_handle);
 
@@ -622,11 +658,14 @@ async fn process_stream(
         _ = &mut shutdown_handle => {
             debug!("Stream handler received shutdown signal.");
         },
-        _ = drive_stream(stream, source_context, handler_context) => {},
+        _ = drive_stream(stream, source_context, handler_context, filters) => {},
     }
 }
 
-async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler_context: HandlerContext) {
+async fn drive_stream(
+    mut stream: Stream, source_context: SourceContext, handler_context: HandlerContext,
+    filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>,
+) {
     let HandlerContext {
         listen_addr,
         mut framer,
@@ -712,7 +751,7 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
                         match frames.next() {
                             Some(Ok(frame)) => {
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
-                                match handle_frame(&frame[..], &codec, &mut context_resolver, &metrics, &peer_addr) {
+                                match handle_frame(&frame[..], &codec, &mut context_resolver, &metrics, &peer_addr, filters.clone()) {
                                     Ok(Some(event)) => {
                                         if let Some(event) = event_buffer.try_push(event) {
                                             debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
@@ -791,7 +830,7 @@ async fn drive_stream(mut stream: Stream, source_context: SourceContext, handler
 
 fn handle_frame(
     frame: &[u8], codec: &DogstatsdCodec, context_resolver: &mut ContextResolver, source_metrics: &Metrics,
-    peer_addr: &ConnectionAddress,
+    peer_addr: &ConnectionAddress, filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>,
 ) -> Result<Option<Event>, ParseError> {
     let parsed = match codec.decode_packet(frame) {
         Ok(parsed) => parsed,
@@ -810,6 +849,12 @@ fn handle_frame(
     let event = match parsed {
         ParsedPacket::Metric(metric_packet) => {
             let events_len = metric_packet.num_points;
+            for filter in filters.iter() {
+                if !filter.allow_metric(&metric_packet) {
+                    debug!(%metric_packet.metric_name, "Metric filtered out.");
+                    return Ok(None);
+                }
+            }
 
             match handle_metric_packet(metric_packet, context_resolver, peer_addr) {
                 Some(metric) => {

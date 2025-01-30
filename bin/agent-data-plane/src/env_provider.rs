@@ -2,7 +2,7 @@ use memory_accounting::ComponentRegistry;
 use saluki_config::GenericConfiguration;
 use saluki_env::{
     host::providers::{BoxedHostProvider, FixedHostProvider, RemoteAgentHostProvider},
-    workload::providers::RemoteAgentWorkloadProvider,
+    workload::providers::{RemoteAgentWorkloadAPIHandler, RemoteAgentWorkloadProvider},
     EnvironmentProvider,
 };
 use saluki_error::GenericError;
@@ -65,6 +65,14 @@ impl ADPEnvironmentProvider {
             host_provider,
             workload_provider,
         })
+    }
+
+    /// Returns an API handler for interacting with the underlying data stores powering the workload provider, if one
+    /// has been configured.
+    ///
+    /// See [`RemoteAgentWorkloadAPIHandler`] for more information about routes and responses.
+    pub fn workload_api_handler(&self) -> Option<RemoteAgentWorkloadAPIHandler> {
+        self.workload_provider.as_ref().map(|provider| provider.api_handler())
     }
 }
 

@@ -61,6 +61,11 @@ impl PrometheusConfiguration {
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
     }
+
+    /// Returns the listen address for the Prometheus scrape endpoint.
+    pub fn listen_address(&self) -> &ListenAddress {
+        &self.listen_addr
+    }
 }
 
 #[async_trait]

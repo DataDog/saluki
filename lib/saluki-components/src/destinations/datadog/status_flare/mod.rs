@@ -23,18 +23,18 @@ use tokio::time::{interval, MissedTickBehavior};
 use tracing::debug;
 use uuid::Uuid;
 
-const DEFAULT_API_LISTEN_PORT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(5100) };
+// TODO: This should really come from the binary itself, since we don't actually control the server where our
+// `RemoteAgent` gRPC service is exposed from... but it would be very clunky to pass that around so we're just aligning
+// the default port here _for now_.
+const DEFAULT_API_LISTEN_PORT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(5101) };
 
 /// Datadog Status and Flare Destination
 ///
 /// Registers ADP as a remote agent to the Core Agent.
 pub struct DatadogStatusFlareConfiguration {
     id: String,
-
     display_name: String,
-
     api_listen_port: NonZeroUsize,
-
     client: RemoteAgentClient,
 }
 
@@ -88,11 +88,8 @@ impl MemoryBounds for DatadogStatusFlareConfiguration {
 
 pub struct DatadogStatusFlare {
     id: String,
-
     display_name: String,
-
     api_listen_port: NonZeroUsize,
-
     client: RemoteAgentClient,
 }
 
@@ -132,7 +129,8 @@ impl Destination for DatadogStatusFlare {
 
                 // Time to (re)register with the Core Agent.
                 //
-                // TODO: Consider spawning the registration as a task so that the component can keep polling and not slow down the accepting of events and responding of health checks.
+                // TODO: Consider spawning the registration as a task so that the component can keep polling and not
+                // slow down the accepting of events and responding of health checks.
                 _ = register_agent.tick() => {
                     match client.register_remote_agent_request(&id, &display_name, &api_endpoint, &auth_token).await {
                         Ok(resp) => {
@@ -183,7 +181,7 @@ impl RemoteAgent for RemoteAgentImpl {
 }
 
 /// Create the RemoteAgent service.
-pub fn new_remote_agent_service() -> Result<RemoteAgentServer<RemoteAgentImpl>, GenericError> {
+pub fn new_remote_agent_service() -> RemoteAgentServer<RemoteAgentImpl> {
     let remote_agent = RemoteAgentImpl { started: Utc::now() };
-    Ok(RemoteAgentServer::new(remote_agent))
+    RemoteAgentServer::new(remote_agent)
 }
