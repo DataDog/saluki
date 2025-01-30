@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{cmp::Ordering, fmt};
 
 use stringtheory::MetaString;
 
@@ -74,6 +74,16 @@ impl EntityId {
         }
         Some(Self::PodUid(pod_uid.into()))
     }
+
+    fn precedence_value(&self) -> usize {
+        match self {
+            Self::Global => 0,
+            Self::PodUid(_) => 1,
+            Self::Container(_) => 2,
+            Self::ContainerInode(_) => 3,
+            Self::ContainerPid(_) => 4,
+        }
+    }
 }
 
 impl fmt::Display for EntityId {
@@ -84,6 +94,71 @@ impl fmt::Display for EntityId {
             Self::Container(container_id) => write!(f, "{}{}", ENTITY_PREFIX_CONTAINER_ID, container_id),
             Self::ContainerInode(inode) => write!(f, "{}{}", ENTITY_PREFIX_CONTAINER_INODE, inode),
             Self::ContainerPid(pid) => write!(f, "{}{}", ENTITY_PREFIX_CONTAINER_PID, pid),
+        }
+    }
+}
+
+impl serde::Serialize for EntityId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // We have this manual implementation of `Serialize` just to avoid needing to bring in `serde_with` to get the
+        // helper that utilizes the `Display` implementation.
+        serializer.collect_str(self)
+    }
+}
+
+/// A wrapper for entity IDs that sorts them in a manner consistent with the expected precedence of entity IDs.
+///
+/// This type establishes a total ordering over entity IDs based on their logical precedence, which is as follows:
+///
+/// - global (highest precedence)
+/// - pod
+/// - container
+/// - container inode
+/// - container PID (lowest precedence)
+///
+/// Wrapped entity IDs are be sorted highest to lowest precedence. For entity IDs with the same precedence, they are
+/// further ordered by their internal value. For entity IDs with a string identifier, lexicographical ordering is used.
+/// For entity IDs with a numeric identifier, numerical ordering is used.
+#[derive(Eq, PartialEq)]
+pub struct HighestPrecedenceEntityIdRef<'a>(&'a EntityId);
+
+impl<'a> From<&'a EntityId> for HighestPrecedenceEntityIdRef<'a> {
+    fn from(entity_id: &'a EntityId) -> Self {
+        Self(entity_id)
+    }
+}
+
+impl<'a> PartialOrd for HighestPrecedenceEntityIdRef<'a> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<'a> Ord for HighestPrecedenceEntityIdRef<'a> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Do the initial comparison based on the implicit precedence of each entity ID.
+        let self_precedence = self.0.precedence_value();
+        let other_precedence = other.0.precedence_value();
+        if self_precedence != other_precedence {
+            return self_precedence.cmp(&other_precedence);
+        }
+
+        // We have two entities at the same level of precedence, so we need to compare their actual values.
+        match (self.0, other.0) {
+            // Global entities are always equal.
+            (EntityId::Global, EntityId::Global) => Ordering::Equal,
+            (EntityId::PodUid(self_pod_uid), EntityId::PodUid(other_pod_uid)) => self_pod_uid.cmp(other_pod_uid),
+            (EntityId::Container(self_container_id), EntityId::Container(other_container_id)) => {
+                self_container_id.cmp(other_container_id)
+            }
+            (EntityId::ContainerInode(self_inode), EntityId::ContainerInode(other_inode)) => {
+                self_inode.cmp(other_inode)
+            }
+            (EntityId::ContainerPid(self_pid), EntityId::ContainerPid(other_pid)) => self_pid.cmp(other_pid),
+            _ => unreachable!("entities with different precedence should not be compared"),
         }
     }
 }

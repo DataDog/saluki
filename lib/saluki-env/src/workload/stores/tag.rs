@@ -36,9 +36,9 @@ pub struct TagStore {
     snapshot: Arc<ArcSwap<TagSnapshot>>,
 
     entity_limit: NonZeroUsize,
-    active_entities: FastHashSet<EntityId>,
+    active_entities: Arc<FastConcurrentHashSet<EntityId>>,
 
-    entity_hierarchy_mappings: FastHashMap<EntityId, EntityId>,
+    entity_hierarchy_mappings: Arc<FastConcurrentHashMap<EntityId, EntityId>>,
 
     low_cardinality_entity_tags: FastHashMap<EntityId, TagSet>,
     orchestrator_cardinality_entity_tags: FastHashMap<EntityId, TagSet>,
@@ -58,8 +58,8 @@ impl TagStore {
         Self {
             snapshot: Arc::new(ArcSwap::new(Arc::new(TagSnapshot::default()))),
             entity_limit,
-            active_entities: FastHashSet::default(),
-            entity_hierarchy_mappings: FastHashMap::default(),
+            active_entities: Arc::new(FastConcurrentHashSet::default()),
+            entity_hierarchy_mappings: Arc::new(FastConcurrentHashMap::default()),
             low_cardinality_entity_tags: FastHashMap::default(),
             orchestrator_cardinality_entity_tags: FastHashMap::default(),
             high_cardinality_entity_tags: FastHashMap::default(),
@@ -75,7 +75,9 @@ impl TagStore {
     }
 
     fn track_entity(&mut self, entity_id: &EntityId) -> bool {
-        if self.active_entities.contains(entity_id) {
+        let guard = self.active_entities.guard();
+
+        if self.active_entities.contains(entity_id, &guard) {
             return true;
         }
 
@@ -83,12 +85,14 @@ impl TagStore {
             return false;
         }
 
-        let _ = self.active_entities.insert(entity_id.clone());
+        let _ = self.active_entities.insert(entity_id.clone(), &guard);
         true
     }
 
     fn delete_entity(&mut self, entity_id: EntityId) {
-        self.active_entities.remove(&entity_id);
+        let entity_mappings_guard = self.entity_hierarchy_mappings.guard();
+
+        self.active_entities.pin().remove(&entity_id);
 
         // Delete all of the tags for the entity, both raw and unified.
         self.low_cardinality_entity_tags.remove(&entity_id);
@@ -97,20 +101,26 @@ impl TagStore {
         self.unified_high_cardinality_entity_tags.remove(&entity_id);
 
         // Delete the ancestry mapping, if it exists, for the entity itself.
-        self.entity_hierarchy_mappings.remove(&entity_id);
+        self.entity_hierarchy_mappings
+            .remove(&entity_id, &entity_mappings_guard);
 
         // Iterate over all ancestry mappings, and delete any which reference this entity as an ancestor. We'll keep a
         // list of the entity IDs which reference this entity as an ancestor, as we'll need to regenerate their tags
         // after breaking the ancestry link.
         let mut entity_ids_to_resolve = Vec::new();
-        for (descendant_entity_id, ancestor_entity_id) in self.entity_hierarchy_mappings.iter() {
+        for (descendant_entity_id, ancestor_entity_id) in self.entity_hierarchy_mappings.iter(&entity_mappings_guard) {
             if ancestor_entity_id == &entity_id {
                 entity_ids_to_resolve.push(descendant_entity_id.clone());
             }
         }
 
+        for entity_id in &entity_ids_to_resolve {
+            self.entity_hierarchy_mappings.remove(entity_id, &entity_mappings_guard);
+        }
+
+        drop(entity_mappings_guard);
+
         for entity_id in entity_ids_to_resolve {
-            self.entity_hierarchy_mappings.remove(&entity_id);
             self.regenerate_entity_tags(entity_id);
         }
     }
@@ -118,6 +128,7 @@ impl TagStore {
     fn add_hierarchy_mapping(&mut self, child_entity_id: EntityId, parent_entity_id: EntityId) {
         let _ = self
             .entity_hierarchy_mappings
+            .pin()
             .insert(child_entity_id.clone(), parent_entity_id);
         self.regenerate_entity_tags(child_entity_id);
     }
@@ -215,7 +226,7 @@ impl TagStore {
         let mut entity_stack = VecDeque::new();
 
         // Seed the entity stack with our initial entity.
-        for (descendant_entity_id, ancestor_entity_id) in self.entity_hierarchy_mappings.iter() {
+        for (descendant_entity_id, ancestor_entity_id) in self.entity_hierarchy_mappings.pin().iter() {
             if ancestor_entity_id == &entity_id {
                 entity_stack.push_back(descendant_entity_id.clone());
             }
@@ -255,7 +266,7 @@ impl TagStore {
             }
 
             // Add any descendants of the current entity to the stack.
-            for (descendant_entity_id, ancestor_entity_id) in self.entity_hierarchy_mappings.iter() {
+            for (descendant_entity_id, ancestor_entity_id) in self.entity_hierarchy_mappings.pin().iter() {
                 if ancestor_entity_id == &sub_entity_id {
                     entity_stack.push_back(descendant_entity_id.clone());
                 }
@@ -302,13 +313,15 @@ impl TagStore {
     }
 
     fn resolve_entity_tags(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> SharedTagSet {
+        let entity_mappings_guard = self.entity_hierarchy_mappings.guard();
+
         // Build the ancestry chain for the entity, starting with the entity itself.
         let mut entity_chain = VecDeque::new();
         entity_chain.push_back(entity_id);
 
         loop {
             let current = entity_chain.front().expect("entity chain can never be empty");
-            if let Some(ancestor) = self.entity_hierarchy_mappings.get(*current) {
+            if let Some(ancestor) = self.entity_hierarchy_mappings.get(*current, &entity_mappings_guard) {
                 entity_chain.push_front(ancestor);
             } else {
                 break;
@@ -337,6 +350,8 @@ impl TagStore {
     pub fn querier(&self) -> TagStoreQuerier {
         TagStoreQuerier {
             snapshot: Arc::clone(&self.snapshot),
+            entities: Arc::clone(&self.active_entities),
+            mappings: Arc::clone(&self.entity_hierarchy_mappings),
         }
     }
 }
@@ -431,6 +446,8 @@ struct TagSnapshot {
 #[derive(Clone)]
 pub struct TagStoreQuerier {
     snapshot: Arc<ArcSwap<TagSnapshot>>,
+    entities: Arc<FastConcurrentHashSet<EntityId>>,
+    mappings: Arc<FastConcurrentHashMap<EntityId, EntityId>>,
 }
 
 impl TagStoreQuerier {
@@ -445,6 +462,26 @@ impl TagStoreQuerier {
             OriginTagCardinality::Low => snapshot.low_cardinality_entity_tags.get(entity_id).cloned(),
             OriginTagCardinality::Orchestrator => snapshot.orchestrator_cardinality_entity_tags.get(entity_id).cloned(),
             OriginTagCardinality::High => snapshot.high_cardinality_entity_tags.get(entity_id).cloned(),
+        }
+    }
+
+    /// Visits each active entity in the tag store.
+    pub fn visit_active_entities<F>(&self, mut visitor: F)
+    where
+        F: FnMut(&EntityId),
+    {
+        for entity_id in self.entities.pin().iter() {
+            visitor(entity_id);
+        }
+    }
+
+    /// Visits each entity mapping in the tag store.
+    pub fn visit_entity_mappings<F>(&self, mut visitor: F)
+    where
+        F: FnMut(&EntityId, &EntityId),
+    {
+        for (child_entity_id, parent_entity_id) in self.mappings.pin().iter() {
+            visitor(child_entity_id, parent_entity_id);
         }
     }
 }
