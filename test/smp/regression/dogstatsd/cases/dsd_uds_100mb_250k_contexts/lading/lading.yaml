@@ -8,24 +8,24 @@ generator:
         dogstatsd:
           contexts:
             inclusive:
-              min: 250000
-              max: 250001
+              min: 249000
+              max: 251000
           name_length:
             inclusive:
-              min: 1
-              max: 200
+              min: 16
+              max: 96
           tag_length:
             inclusive:
-              min: 3
-              max: 150
+              min: 8
+              max: 96
           tags_per_msg:
             inclusive:
-              min: 2
-              max: 50
+              min: 4
+              max: 32
           multivalue_count:
             inclusive:
-              min: 2
-              max: 32
+              min: 4
+              max: 16
           multivalue_pack_probability: 0.08
           kind_weights:
             metric: 100
@@ -40,7 +40,7 @@ generator:
             set: 9
             histogram: 1
       bytes_per_second: "100 MiB"
-      maximum_prebuild_cache_size_bytes: "500 Mb"
+      maximum_prebuild_cache_size_bytes: "512 Mb"
 
 blackhole:
   - http:
