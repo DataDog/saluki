@@ -69,8 +69,9 @@ impl MemoryRegistryState {
             component_usage.insert(
                 component_name.to_string(),
                 ComponentUsage {
-                    minimum_required_bytes: bounds.self_minimum_required_bytes,
-                    firm_limit_bytes: bounds.self_firm_limit_bytes,
+                    // TODO: figure out what's actually going on here, this might not be a valid change
+                    minimum_required_bytes: bounds.total_minimum_required_bytes(),
+                    firm_limit_bytes: bounds.total_firm_limit_bytes(),
                     actual_live_bytes: stats_snapshot.live_bytes(),
                 },
             );

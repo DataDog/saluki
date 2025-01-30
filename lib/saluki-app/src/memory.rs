@@ -119,7 +119,7 @@ impl MemoryBoundsConfiguration {
 ///
 /// If the bounds could not be validated, an error is returned.
 pub fn initialize_memory_bounds(
-    configuration: MemoryBoundsConfiguration, mut component_registry: ComponentRegistry,
+    configuration: MemoryBoundsConfiguration, component_registry: &ComponentRegistry,
 ) -> Result<MemoryLimiter, GenericError> {
     let initial_grant = match configuration.memory_limit {
         Some(limit) => MemoryGrant::with_slop_factor(limit.as_u64() as usize, configuration.memory_slop_factor)?,

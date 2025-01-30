@@ -105,7 +105,7 @@ impl MemoryBounds for MetadataAggregator {
         builder
             .firm()
             // Operations channel.
-            .with_array::<MetadataOperation>(OPERATIONS_CHANNEL_SIZE);
+            .with_array::<MetadataOperation>("metadata ops channel", OPERATIONS_CHANNEL_SIZE);
 
         for store in &self.stores {
             builder.with_subcomponent(store.name(), store);

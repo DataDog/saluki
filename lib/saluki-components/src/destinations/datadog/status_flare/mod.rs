@@ -82,7 +82,7 @@ impl MemoryBounds for DatadogStatusFlareConfiguration {
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
-            .with_single_value::<DatadogStatusFlare>();
+            .with_single_value::<DatadogStatusFlare>("component struct");
     }
 }
 

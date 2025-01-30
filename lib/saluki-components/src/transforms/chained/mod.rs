@@ -39,7 +39,7 @@ impl ChainedConfiguration {
 impl MemoryBounds for ChainedConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         // Capture the size of the heap allocation when the component is built.
-        builder.minimum().with_single_value::<Chained>();
+        builder.minimum().with_single_value::<Chained>("component struct");
 
         for (subtransform_id, subtransform_builder) in self.subtransform_builders.iter() {
             let mut subtransform_bounds_builder = builder.subcomponent(subtransform_id);

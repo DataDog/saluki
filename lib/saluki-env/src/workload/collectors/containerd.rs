@@ -94,7 +94,9 @@ impl MemoryBounds for ContainerdMetadataCollector {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         // TODO: Kind of a throwaway calculation because nothing about the gRPC client can really be bounded at the
         // moment, and we also don't have any way to know the number of namespaces we'll be monitoring a priori.
-        builder.firm().with_fixed_amount(std::mem::size_of::<Self>());
+        builder
+            .firm()
+            .with_fixed_amount("self struct", std::mem::size_of::<Self>());
     }
 }
 

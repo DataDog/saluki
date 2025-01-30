@@ -45,7 +45,9 @@ impl<E> MemoryBounds for HostEnrichmentConfiguration<E> {
         // Not a relevant problem _right now_, but a _potential_ problem in the future. :shrug:
 
         // Capture the size of the heap allocation when the component is built.
-        builder.minimum().with_single_value::<HostEnrichment>();
+        builder
+            .minimum()
+            .with_single_value::<HostEnrichment>("component struct");
     }
 }
 

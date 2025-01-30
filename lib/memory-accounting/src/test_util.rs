@@ -17,8 +17,10 @@ impl BoundedComponent {
 
 impl MemoryBounds for BoundedComponent {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        builder.minimum().with_fixed_amount(self.minimum_required.unwrap_or(0));
-        builder.firm().with_fixed_amount(self.firm_limit);
+        builder
+            .minimum()
+            .with_fixed_amount("min amount", self.minimum_required.unwrap_or(0));
+        builder.firm().with_fixed_amount("firm limit", self.firm_limit);
     }
 }
 

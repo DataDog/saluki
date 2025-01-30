@@ -2,7 +2,7 @@ use std::{num::NonZeroU64, time::Duration};
 
 use async_trait::async_trait;
 use hashbrown::{hash_map::Entry, HashMap};
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_config::GenericConfiguration;
 use saluki_context::Context;
 use saluki_core::{
@@ -211,11 +211,19 @@ impl MemoryBounds for AggregateConfiguration {
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
-            .with_single_value::<Aggregate>();
+            .with_single_value::<Aggregate>("component struct");
         builder
             .firm()
             // Account for the aggregation state map, where we map contexts to the merged metric.
-            .with_map::<Context, AggregatedMetric>(self.context_limit);
+            .with_expr(UsageExpr::product(
+                "aggregation state map",
+                UsageExpr::sum(
+                    "context map entry",
+                    UsageExpr::struct_size::<Context>("context"),
+                    UsageExpr::struct_size::<AggregatedMetric>("aggregated metric"),
+                ),
+                UsageExpr::config("aggregate_context_limit", self.context_limit),
+            ));
     }
 }
 

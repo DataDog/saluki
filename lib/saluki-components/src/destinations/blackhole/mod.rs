@@ -29,7 +29,7 @@ impl DestinationBuilder for BlackholeConfiguration {
 impl MemoryBounds for BlackholeConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         // Capture the size of the heap allocation when the component is built.
-        builder.minimum().with_single_value::<Blackhole>();
+        builder.minimum().with_single_value::<Blackhole>("blackhole");
     }
 }
 
