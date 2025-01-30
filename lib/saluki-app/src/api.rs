@@ -18,7 +18,6 @@ use saluki_io::net::{
 use tokio::select;
 use tonic::{body::BoxBody, server::NamedService, service::RoutesBuilder};
 use tower::Service;
-use tracing::error;
 
 /// An API builder.
 ///
@@ -140,14 +139,12 @@ impl APIBuilder {
 
         // Wait for our shutdown signal, which we'll forward to the listener to stop accepting new connections... or
         // capture any errors thrown by the listener itself.
-        tokio::spawn(async move {
-            select! {
-                _ = shutdown => shutdown_handle.shutdown(),
-                maybe_err = error_handle => if let Some(err) = maybe_err {
-                    error!(error = ?err, "Failed to serve API connection.");
-                },
-            }
-        });
+        select! {
+            _ = shutdown =>  shutdown_handle.shutdown(),
+            maybe_err = error_handle => if let Some(e) = maybe_err {
+                return Err(GenericError::from(e))
+            },
+        }
 
         Ok(())
     }
