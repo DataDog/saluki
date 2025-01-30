@@ -62,6 +62,36 @@ impl APIBuilder {
         self
     }
 
+    /// Adds the given optional handler to this builder.
+    ///
+    /// If the handler is `Some`, the initial state and routes provided by the handler will be merged into this builder.
+    /// Otherwise, this builder will be returned unchanged.
+    pub fn with_optional_handler<H>(self, handler: Option<H>) -> Self
+    where
+        H: APIHandler,
+    {
+        if let Some(handler) = handler {
+            self.with_handler(handler)
+        } else {
+            self
+        }
+    }
+
+    /// Add the given gRPC service to this builder.
+    pub fn with_grpc_service<S>(mut self, svc: S) -> Self
+    where
+        S: Service<Request<BoxBody>, Response = Response<BoxBody>, Error = Infallible>
+            + NamedService
+            + Clone
+            + Send
+            + 'static,
+        S::Future: Send + 'static,
+        S::Error: Into<Box<dyn Error + Send + Sync>> + Send,
+    {
+        self.grpc_router.add_service(svc);
+        self
+    }
+
     /// Sets the TLS configuration for the server.
     ///
     /// This will enable TLS for the server, and the server will only accept connections that are encrypted with TLS.
@@ -92,21 +122,6 @@ impl APIBuilder {
             .unwrap();
 
         self.with_tls_config(config)
-    }
-
-    /// Add the given gRPC service to this builder.
-    pub fn with_grpc_service<S>(mut self, svc: S) -> Self
-    where
-        S: Service<Request<BoxBody>, Response = Response<BoxBody>, Error = Infallible>
-            + NamedService
-            + Clone
-            + Send
-            + 'static,
-        S::Future: Send + 'static,
-        S::Error: Into<Box<dyn Error + Send + Sync>> + Send,
-    {
-        self.grpc_router.add_service(svc);
-        self
     }
 
     /// Serves the API on the given listen address until `shutdown` resolves.

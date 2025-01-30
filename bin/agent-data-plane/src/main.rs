@@ -122,11 +122,8 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     let privileged_api = APIBuilder::new()
         .with_self_signed_tls()
         .with_grpc_service(new_remote_agent_service())
-        .with_handler(logging_api_handler);
-
-    if let Some(api_handler) = env_provider.workload_api_handler() {
-        privileged_api = privileged_api.with_handler(api_handler);
-    }
+        .with_handler(logging_api_handler)
+        .with_optional_handler(env_provider.workload_api_handler());
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
     let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;
