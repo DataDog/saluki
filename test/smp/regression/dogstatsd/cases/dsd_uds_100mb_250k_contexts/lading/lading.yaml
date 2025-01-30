@@ -8,16 +8,16 @@ generator:
         dogstatsd:
           contexts:
             inclusive:
-              min: 250000
-              max: 250001
+              min: 249000
+              max: 251000
           name_length:
             inclusive:
               min: 16
-              max: 128
+              max: 96
           tag_length:
             inclusive:
               min: 8
-              max: 128
+              max: 96
           tags_per_msg:
             inclusive:
               min: 4
