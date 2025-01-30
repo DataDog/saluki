@@ -109,7 +109,7 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
 
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
-    let blueprint = create_topology(&configuration, env_provider, &component_registry).await?;
+    let blueprint = create_topology(&configuration, &env_provider, &component_registry).await?;
 
     // Build our unprivileged and privileged API server.
     //
@@ -122,7 +122,8 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     let privileged_api = APIBuilder::new()
         .with_self_signed_tls()
         .with_grpc_service(new_remote_agent_service())
-        .with_handler(logging_api_handler);
+        .with_handler(logging_api_handler)
+        .with_optional_handler(env_provider.workload_api_handler());
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
     let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;
@@ -171,7 +172,7 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
 }
 
 async fn create_topology(
-    configuration: &GenericConfiguration, env_provider: ADPEnvironmentProvider, component_registry: &ComponentRegistry,
+    configuration: &GenericConfiguration, env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
 ) -> Result<TopologyBlueprint, GenericError> {
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
@@ -181,7 +182,7 @@ async fn create_topology(
     let dsd_agg_config = AggregateConfiguration::from_configuration(configuration)
         .error_context("Failed to configure aggregate transform.")?;
     let dsd_prefix_filter_configuration = DogstatsDPrefixFilterConfiguration::from_configuration(configuration)?;
-    let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider);
+    let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
     let enrich_config = ChainedConfiguration::default().with_transform_builder(host_enrichment_config);
     let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Metrics destination.")?;

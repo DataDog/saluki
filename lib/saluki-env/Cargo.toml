@@ -30,6 +30,7 @@ prost = { workspace = true }
 prost-types = { workspace = true }
 regex = { workspace = true, features = ["std", "perf"] }
 rustls-pemfile = { workspace = true }
+saluki-api = { workspace = true }
 saluki-config = { workspace = true }
 saluki-context = { workspace = true }
 saluki-error = { workspace = true }
