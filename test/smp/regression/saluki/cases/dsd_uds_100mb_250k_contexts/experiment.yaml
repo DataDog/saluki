@@ -26,7 +26,7 @@ target:
 
     # Enable internal telemetry endpoint.
     DD_TELEMETRY_ENABLED: "true"
-    DD_PROMETHEUS_LISTEN_ADDR: tcp://127.0.0.1:5101
+    DD_PROMETHEUS_LISTEN_ADDR: tcp://127.0.0.1:5102
 
     # Test out using allowing up to two concurrent requests when forwarding.
     DD_FORWARDER_NUM_WORKERS: "2"
