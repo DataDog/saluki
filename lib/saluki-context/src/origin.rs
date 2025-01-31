@@ -7,7 +7,7 @@ use serde::Deserialize;
 use stringtheory::MetaString;
 use tracing::warn;
 
-use crate::tags::{TagVisitor, Tagged};
+use crate::tags::{Tag, TagVisitor, Tagged};
 
 /// The cardinality of tags associated with the origin entity.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
@@ -273,13 +273,13 @@ impl OriginTags {
 }
 
 impl Tagged for OriginTags {
-    fn visit_tags<V>(&self, visitor: &mut V)
+    fn visit_tags<F>(&self, mut visitor: F)
     where
-        V: TagVisitor,
+        F: FnMut(&Tag),
     {
         match self.inner {
             OriginTagsInner::Empty => {}
-            OriginTagsInner::Resolved { key, ref resolver } => resolver.visit_origin_tags(key, visitor),
+            OriginTagsInner::Resolved { key, ref resolver } => resolver.visit_origin_tags(key, &mut visitor),
         }
     }
 }
