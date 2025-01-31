@@ -21,6 +21,8 @@ mod helpers;
 mod metadata;
 pub use self::metadata::{MetadataAction, MetadataOperation};
 
+mod on_demand_pid;
+
 pub mod origin;
 use self::origin::ResolvedOrigin;
 

@@ -2,7 +2,9 @@
 
 use std::{
     collections::HashMap,
-    io,
+    fs::{self, OpenOptions},
+    io::{self, BufRead as _, BufReader},
+    os::unix::fs::MetadataExt as _,
     path::{Path, PathBuf},
     sync::LazyLock,
 };
@@ -11,11 +13,7 @@ use regex::Regex;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stringtheory::{interning::GenericMapInterner, MetaString};
-use tokio::{
-    fs::{self, OpenOptions},
-    io::{AsyncBufReadExt as _, BufReader},
-};
-use tracing::{debug, error, trace};
+use tracing::{debug, error};
 
 use crate::features::{Feature, FeatureDetector};
 
@@ -38,7 +36,7 @@ pub struct CgroupsConfiguration {
 impl CgroupsConfiguration {
     /// Creates a new `CgroupsConfiguration` from the given configuration.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If any of the paths in the configuration are not valid, an error will be returned. This does not include,
     /// however, if any of the configured paths do not _exist_.
@@ -88,40 +86,89 @@ impl CgroupsConfiguration {
     }
 }
 
+/// Reader for querying control groups being used for containerization.
+#[derive(Clone)]
 pub struct CgroupsReader {
+    procfs_path: PathBuf,
     hierarchy_reader: HierarchyReader,
     interner: GenericMapInterner,
 }
 
 impl CgroupsReader {
-    pub async fn try_from_config(
+    pub fn try_from_config(
         config: &CgroupsConfiguration, interner: GenericMapInterner,
     ) -> Result<Option<Self>, GenericError> {
-        let hierarchy_reader = HierarchyReader::try_from_config(config).await?;
+        let hierarchy_reader = HierarchyReader::try_from_config(config)?;
         Ok(hierarchy_reader.map(|hierarchy_reader| Self {
+            procfs_path: config.procfs_path().to_path_buf(),
             hierarchy_reader,
             interner,
         }))
     }
 
-    pub async fn get_child_cgroups(&self) -> Vec<Cgroup> {
-        // TODO: Probably don't do the container ID extraction here, just the returning of `Cgroup` with the cgroup path
-        // and inode. Would make things a little bit cleaner in the future if we just specifically handled cgroup data
-        // without any comingling of concerns.
-        let mut cgroups = Vec::new();
-        let mut visit = |path: &Path, ino: u64| {
-            if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-                if let Some(container_id) = extract_container_id(name, &self.interner) {
-                    cgroups.push(Cgroup {
-                        name: name.to_string(),
-                        path: path.to_path_buf(),
-                        ino,
-                        container_id,
-                    });
+    fn try_cgroup_from_path(&self, cgroup_path: &Path) -> Option<Cgroup> {
+        if let Some(name) = cgroup_path.file_name().and_then(|s| s.to_str()) {
+            if let Some(container_id) = extract_container_id(name, &self.interner) {
+                let metadata = match cgroup_path.metadata() {
+                    Ok(metadata) => metadata,
+                    Err(e) => {
+                        debug!(error = %e, "Failed to get metadata for possible cgroup controller path '{}'.", cgroup_path.display());
+                        return None;
+                    }
+                };
+
+                debug!(
+                    controller_inode = metadata.ino(),
+                    "Found valid cgroups controller for container '{}' at '{}'.",
+                    container_id,
+                    cgroup_path.display()
+                );
+
+                return Some(Cgroup {
+                    name: name.to_string(),
+                    path: cgroup_path.to_path_buf(),
+                    ino: metadata.ino(),
+                    container_id,
+                });
+            }
+        }
+
+        None
+    }
+
+    pub fn get_cgroup_by_pid(&self, pid: u32) -> Option<Cgroup> {
+        // See if the given process ID exists in the proc filesystem _and_ if there's a cgroup path for it.
+        let proc_pid_cgroup_path = self.procfs_path.join(pid.to_string()).join("cgroup");
+        let lines = read_lines(&proc_pid_cgroup_path).ok()?;
+
+        let base_controller_name = self.hierarchy_reader.base_controller();
+
+        // We're looking for the first line that matches our base controller name, and then we'll see if it's attached
+        // to the container based on the name, and if so, return it.
+        for entry in lines.iter().filter_map(|s| CgroupControllerEntry::try_from_str(s)) {
+            if entry.name == base_controller_name {
+                let full_entry_path = self
+                    .hierarchy_reader
+                    .root_path()
+                    .join(entry.path.strip_prefix("/").unwrap_or(entry.path));
+                if let Some(cgroup) = self.try_cgroup_from_path(&full_entry_path) {
+                    return Some(cgroup);
                 }
+            }
+        }
+
+        None
+    }
+
+    pub fn get_child_cgroups(&self) -> Vec<Cgroup> {
+        let mut cgroups = Vec::new();
+        let mut visit = |path: &Path| {
+            if let Some(cgroup) = self.try_cgroup_from_path(path) {
+                cgroups.push(cgroup);
             }
         };
 
+        // Walk the cgroups hierarchy and collect all cgroups that we can find that are related to containers..
         let root_path = match &self.hierarchy_reader {
             HierarchyReader::V1 {
                 base_controller_path, ..
@@ -129,14 +176,15 @@ impl CgroupsReader {
             HierarchyReader::V2 { root, .. } => root.as_path(),
         };
 
-        if let Err(e) = visit_subdirectories(root_path, &mut visit).await {
-            error!(error = %e, "Failed to visit cgroups v1 hierarchy.");
+        if let Err(e) = visit_subdirectories(root_path, &mut visit) {
+            error!(error = %e, "Failed to visit cgroups hierarchy.");
         }
 
         cgroups
     }
 }
 
+#[derive(Clone)]
 enum HierarchyReader {
     V1 {
         base_controller_path: PathBuf,
@@ -150,11 +198,10 @@ enum HierarchyReader {
 }
 
 impl HierarchyReader {
-    pub async fn try_from_config(config: &CgroupsConfiguration) -> Result<Option<Self>, GenericError> {
+    pub fn try_from_config(config: &CgroupsConfiguration) -> Result<Option<Self>, GenericError> {
         // Open the mount file from procfs to scan through and find any cgroups subsystems.
         let mounts_path = config.procfs_path().join("mounts");
         let mount_entries = read_lines(&mounts_path)
-            .await
             .with_error_context(|| format!("Failed to read mount entries from procfs ({})", mounts_path.display()))?;
 
         let mut controllers = HashMap::new();
@@ -173,7 +220,7 @@ impl HierarchyReader {
                     // For cgroups v1, we have to go through all mounts we see to build a full list of enabled controlled.
                     "cgroup" => process_cgroupv1_mount_entry(cgroup_path, &mut controllers),
                     // For cgroups v2, we only need to find the unified root mountpoint, and then we can create our reader.
-                    "cgroup2" => maybe_cgroups_v2 = process_cgroupv2_mount_entry(cgroup_path).await?,
+                    "cgroup2" => maybe_cgroups_v2 = process_cgroupv2_mount_entry(cgroup_path)?,
                     _ => {}
                 }
             }
@@ -209,6 +256,24 @@ impl HierarchyReader {
             controllers,
         }))
     }
+
+    fn base_controller(&self) -> Option<&'static str> {
+        match self {
+            Self::V1 { .. } => Some(CGROUPS_V1_BASE_CONTROLLER_NAME),
+
+            // Since cgroups v2 is "unified", there's no base controller path.
+            Self::V2 { .. } => None,
+        }
+    }
+
+    fn root_path(&self) -> &Path {
+        match self {
+            Self::V1 {
+                base_controller_path, ..
+            } => base_controller_path.as_path(),
+            Self::V2 { root, .. } => root.as_path(),
+        }
+    }
 }
 
 pub struct Cgroup {
@@ -216,6 +281,32 @@ pub struct Cgroup {
     pub path: PathBuf,
     pub ino: u64,
     pub container_id: MetaString,
+}
+
+pub struct CgroupControllerEntry<'a> {
+    id: usize,
+    name: Option<&'a str>,
+    path: &'a Path,
+}
+
+impl<'a> CgroupControllerEntry<'a> {
+    fn try_from_str(line: &'a str) -> Option<Self> {
+        let mut fields = line.splitn(3, ':');
+
+        let id = fields.next()?.parse::<usize>().ok()?;
+        let name = fields.next().map(|s| if s.is_empty() { None } else { Some(s) })?;
+        let path = fields.next()?;
+
+        if path.is_empty() {
+            return None;
+        }
+
+        Some(Self {
+            id,
+            name,
+            path: Path::new(path),
+        })
+    }
 }
 
 fn process_cgroupv1_mount_entry(cgroup_path: &str, controllers: &mut HashMap<String, PathBuf>) {
@@ -234,23 +325,16 @@ fn process_cgroupv1_mount_entry(cgroup_path: &str, controllers: &mut HashMap<Str
             }
         }
 
-        trace!(
-            controller = path_controller,
-            controller_path = cgroup_path,
-            "Detected cgroup v1 controller."
-        );
-
         controllers.insert(path_controller.to_string(), PathBuf::from(cgroup_path));
     }
 }
 
-async fn process_cgroupv2_mount_entry(cgroup_path: &str) -> Result<Option<HierarchyReader>, GenericError> {
+fn process_cgroupv2_mount_entry(cgroup_path: &str) -> Result<Option<HierarchyReader>, GenericError> {
     let root = PathBuf::from(cgroup_path);
 
     // Read and get the list of active/enabled controllers.
     let controllers_path = root.join(CGROUPS_V2_CONTROLLERS_FILE);
     let controllers = read_lines(&controllers_path)
-        .await
         .with_error_context(|| {
             format!(
                 "Failed to read controllers from cgroups v2 hierarchy ({}).",
@@ -261,34 +345,32 @@ async fn process_cgroupv2_mount_entry(cgroup_path: &str) -> Result<Option<Hierar
         .flat_map(|s| s.split_whitespace().map(|s| s.to_string()).collect::<Vec<_>>())
         .collect::<Vec<_>>();
 
-    trace!(root_path = %root.display(), controllers_len = controllers.len(), "Detected cgroups v2 controllers.");
-
     Ok(Some(HierarchyReader::V2 {
         root: PathBuf::from(cgroup_path),
         controllers,
     }))
 }
 
-async fn read_lines(path: &Path) -> io::Result<Vec<String>> {
-    let file = OpenOptions::new().read(true).open(path).await?;
+fn read_lines(path: &Path) -> io::Result<Vec<String>> {
+    let file = OpenOptions::new().read(true).open(path)?;
 
-    let mut reader = BufReader::new(file).lines();
+    let reader = BufReader::new(file).lines();
 
     let mut lines = Vec::new();
-    while let Some(line) = reader.next_line().await? {
-        lines.push(line);
+    for line in reader {
+        lines.push(line?);
     }
 
     Ok(lines)
 }
 
-async fn visit_subdirectories<P, F>(path: P, mut visit: F) -> io::Result<()>
+fn visit_subdirectories<P, F>(path: P, mut visit: F) -> io::Result<()>
 where
     P: AsRef<Path>,
-    F: FnMut(&Path, u64),
+    F: FnMut(&Path),
 {
     // We can only visit directories, so if the initial path we're given isn't a directory, then we can't do anything.
-    let metadata = fs::metadata(path.as_ref()).await?;
+    let metadata = fs::metadata(path.as_ref())?;
     if !metadata.is_dir() {
         return Ok(());
     }
@@ -297,11 +379,12 @@ where
     // for further visiting.
     let mut stack = vec![path.as_ref().to_path_buf()];
     while let Some(path) = stack.pop() {
-        let mut dir_reader = fs::read_dir(path).await?;
-        while let Some(entry) = dir_reader.next_entry().await? {
-            if entry.file_type().await?.is_dir() {
+        let dir_reader = fs::read_dir(path)?;
+        for entry in dir_reader {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
                 let path = entry.path();
-                visit(&path, entry.ino());
+                visit(&path);
                 stack.push(path);
             }
         }
