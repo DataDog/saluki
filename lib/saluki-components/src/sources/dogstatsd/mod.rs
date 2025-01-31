@@ -7,10 +7,7 @@ use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use metrics::{Counter, Gauge, Histogram};
 use saluki_config::GenericConfiguration;
-use saluki_context::{
-    origin::{OriginInfo, OriginTagsResolver},
-    ContextResolver, ContextResolverBuilder,
-};
+use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::{
     components::{sources::*, ComponentContext},
     observability::ComponentMetricsExt as _,
@@ -22,6 +19,7 @@ use saluki_core::{
         OutputDefinition,
     },
 };
+use saluki_env::WorkloadProvider;
 use saluki_error::{generic_error, GenericError};
 use saluki_event::metric::{MetricMetadata, MetricOrigin};
 use saluki_event::{metric::Metric, DataType, Event};
@@ -53,6 +51,9 @@ use self::framer::{get_framer, DsdFramer};
 
 mod filters;
 use self::filters::{EnablePayloadsFilter, Filter};
+
+mod origin;
+use self::origin::{origin_from_metric_packet, DogStatsDOriginTagResolver, OriginEnrichmentConfiguration};
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -107,11 +108,7 @@ const fn default_enable_payloads_sketches() -> bool {
 ///
 /// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format.
 #[derive(Deserialize)]
-pub struct DogStatsDConfiguration<R = ()> {
-    /// Origin tags resolver to use for resolving contexts.
-    #[serde(skip, default)]
-    origin_tags_resolver: R,
-
+pub struct DogStatsDConfiguration {
     /// The size of the buffer used to receive messages into, in bytes.
     ///
     /// Payloads cannot exceed this size, or they will be truncated, leading to discarded messages.
@@ -225,6 +222,13 @@ pub struct DogStatsDConfiguration<R = ()> {
     /// Defaults to `true`.
     #[serde(default = "default_enable_payloads_sketches")]
     enable_payloads_sketches: bool,
+
+    /// Configuration related to origin detection and enrichment.
+    origin_enrichment: OriginEnrichmentConfiguration,
+
+    /// Workload provider to utilize for origin detection/enrichment.
+    #[serde(skip)]
+    workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 }
 
 impl DogStatsDConfiguration {
@@ -232,29 +236,18 @@ impl DogStatsDConfiguration {
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
     }
-}
 
-impl<R> DogStatsDConfiguration<R> {
-    /// Sets the origin tags resolver to use for resolving contexts.
-    pub fn with_origin_tags_resolver<R2>(self, origin_tags_resolver: R2) -> DogStatsDConfiguration<R2>
+    /// Sets the workload provider to use for configuring origin detection/enrichment.
+    ///
+    /// A workload provider must be set otherwise origin detection/enrichment will not be enabled.
+    ///
+    /// Defaults to unset.
+    pub fn with_workload_provider<W>(mut self, workload_provider: W) -> Self
     where
-        R2: OriginTagsResolver + Clone + 'static,
+        W: WorkloadProvider + Send + Sync + 'static,
     {
-        DogStatsDConfiguration {
-            origin_tags_resolver,
-            buffer_size: self.buffer_size,
-            buffer_count: self.buffer_count,
-            port: self.port,
-            socket_path: self.socket_path,
-            socket_stream_path: self.socket_stream_path,
-            non_local_traffic: self.non_local_traffic,
-            allow_context_heap_allocations: self.allow_context_heap_allocations,
-            no_aggregation_pipeline_support: self.no_aggregation_pipeline_support,
-            context_string_interner_bytes: self.context_string_interner_bytes,
-            permissive_decoding: self.permissive_decoding,
-            enable_payloads_series: self.enable_payloads_series,
-            enable_payloads_sketches: self.enable_payloads_sketches,
-        }
+        self.workload_provider = Some(Arc::new(workload_provider));
+        self
     }
 
     async fn build_listeners(&self) -> Result<Vec<Listener>, Error> {
@@ -298,16 +291,17 @@ impl<R> DogStatsDConfiguration<R> {
 }
 
 #[async_trait]
-impl<R> SourceBuilder for DogStatsDConfiguration<R>
-where
-    R: OriginTagsResolver + Clone + 'static,
-{
+impl SourceBuilder for DogStatsDConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
         let listeners = self.build_listeners().await?;
         if listeners.is_empty() {
             return Err(Error::NoListenersConfigured.into());
         }
 
+        let maybe_origin_tags_resolver = self
+            .workload_provider
+            .clone()
+            .map(|provider| DogStatsDOriginTagResolver::new(self.origin_enrichment.clone(), provider));
         let context_string_interner_size = NonZeroUsize::new(self.context_string_interner_bytes.as_u64() as usize)
             .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
         let context_resolver = ContextResolverBuilder::from_name("dogstatsd")
@@ -316,7 +310,7 @@ where
             .with_idle_context_expiration(Duration::from_secs(30))
             .with_expiration_interval(Duration::from_secs(1))
             .with_heap_allocations(self.allow_context_heap_allocations)
-            .with_origin_tags_resolver(self.origin_tags_resolver.clone())
+            .with_origin_tags_resolver(maybe_origin_tags_resolver)
             .build();
 
         let codec_config = DogstatsdCodecConfiguration::default()
@@ -352,10 +346,7 @@ where
     }
 }
 
-impl<R> MemoryBounds for DogStatsDConfiguration<R>
-where
-    R: OriginTagsResolver,
-{
+impl MemoryBounds for DogStatsDConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder
             .minimum()
@@ -877,20 +868,20 @@ fn handle_frame(
 fn handle_metric_packet(
     packet: MetricPacket, context_resolver: &mut ContextResolver, peer_addr: &ConnectionAddress,
 ) -> Option<Metric> {
-    // Capture the origin information from the packet, including any process ID information if we have it.
-    let mut origin_info = origin_info_from_metric_packet(&packet);
+    // Capture the origin from the packet, including any process ID information if we have it.
+    let mut origin = origin_from_metric_packet(&packet);
     if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
-        origin_info.set_process_id(creds.pid as u32);
+        origin.set_process_id(creds.pid as u32);
     }
 
     // Try to resolve the context for this metric.
-    match context_resolver.resolve(packet.metric_name, packet.tags.clone(), Some(origin_info)) {
+    match context_resolver.resolve(packet.metric_name, packet.tags.clone(), Some(origin)) {
         Some(context) => {
-            let origin = packet
+            let metric_origin = packet
                 .jmx_check_name
                 .map(MetricOrigin::jmx_check)
                 .unwrap_or_else(MetricOrigin::dogstatsd);
-            let metadata = MetricMetadata::default().with_origin(origin);
+            let metadata = MetricMetadata::default().with_origin(metric_origin);
 
             Some(Metric::from_parts(context, packet.values, metadata))
         }
@@ -964,16 +955,6 @@ const fn get_adjusted_buffer_size(buffer_size: usize) -> usize {
     // We do it this way so that we don't have to change the buffer size in the configuration, since if you just ported
     // over a Datadog Agent configuration, the value would be too small, and vise versa.
     buffer_size + 4
-}
-
-/// Builds an `OriginInfo` object from the given metric packet.
-fn origin_info_from_metric_packet<'packet>(packet: &MetricPacket<'packet>) -> OriginInfo<'packet> {
-    let mut origin_info = OriginInfo::default();
-    origin_info.set_pod_uid(packet.pod_uid);
-    origin_info.set_container_id(packet.container_id);
-    origin_info.set_external_data(packet.external_data);
-    origin_info.set_cardinality(packet.cardinality);
-    origin_info
 }
 
 #[cfg(test)]

@@ -49,4 +49,4 @@ tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-proptest = { workspace = true, features = ["std"] }
+proptest = { workspace = true }

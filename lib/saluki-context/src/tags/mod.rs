@@ -16,6 +16,21 @@ pub trait Tagged {
         F: FnMut(&Tag);
 }
 
+/// A tag visitor.
+pub trait TagVisitor {
+    /// Visits a tag.
+    fn visit_tag(&mut self, tag: &Tag);
+}
+
+impl<F> TagVisitor for F
+where
+    F: FnMut(&Tag),
+{
+    fn visit_tag(&mut self, tag: &Tag) {
+        self(tag)
+    }
+}
+
 /// A metric tag.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Tag(MetaString);
@@ -373,7 +388,7 @@ impl Tagged for TagSet {
         F: FnMut(&Tag),
     {
         for tag in &self.0 {
-            visitor(tag);
+            visitor.visit_tag(tag);
         }
     }
 }

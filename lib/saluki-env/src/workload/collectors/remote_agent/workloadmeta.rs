@@ -3,6 +3,7 @@ use datadog_protos::agent::{KubernetesPod, WorkloadmetaEventType};
 use futures::StreamExt as _;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
+use saluki_context::origin::ExternalData;
 use saluki_error::GenericError;
 use saluki_health::Health;
 use stringtheory::{interning::GenericMapInterner, MetaString};
@@ -11,7 +12,7 @@ use tracing::{debug, trace};
 
 use crate::{
     helpers::remote_agent::RemoteAgentClient,
-    workload::{collectors::MetadataCollector, external_data::ExternalData, metadata::MetadataOperation, EntityId},
+    workload::{collectors::MetadataCollector, metadata::MetadataOperation, EntityId},
 };
 
 /// A workload provider that uses the remote workload metadata API from a Datadog Agent to provide workload information.
@@ -118,11 +119,10 @@ async fn process_kubernetes_pod_external_data(
         }
     };
 
-    for container in kubernetes_pod
-        .containers
-        .iter()
-        .chain(kubernetes_pod.init_containers.iter())
-    {
+    let init_containers = kubernetes_pod.init_containers.iter().map(|container| (container, true));
+    let non_init_containers = kubernetes_pod.containers.iter().map(|container| (container, false));
+
+    for (container, is_init) in init_containers.chain(non_init_containers) {
         let container_name = match interner.try_intern(&container.name) {
             Some(container_name) => MetaString::from(container_name),
             None => {
@@ -139,7 +139,7 @@ async fn process_kubernetes_pod_external_data(
             }
         };
 
-        let external_data = ExternalData::new(pod_uid.clone(), container_name);
+        let external_data = ExternalData::new(pod_uid.clone(), container_name, is_init);
         let operation = MetadataOperation::attach_external_data(entity_id, external_data);
         if let Err(e) = operations_tx.send(operation).await {
             debug!(error = %e, "Failed to send metadata operation.");

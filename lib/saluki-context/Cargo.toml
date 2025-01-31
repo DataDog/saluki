@@ -9,6 +9,7 @@ repository = { workspace = true }
 ahash = { workspace = true }
 crossbeam-queue = { workspace = true, features = ["alloc"] }
 hashbrown = { workspace = true }
+indexmap = { workspace = true }
 memchr = { workspace = true }
 metrics = { workspace = true }
 quick_cache = { workspace = true, features = ["ahash", "parking_lot"] }
@@ -21,3 +22,4 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 metrics-util = { workspace = true, features = ["debugging"] }
+proptest = { workspace = true }

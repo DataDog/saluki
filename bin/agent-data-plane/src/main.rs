@@ -178,7 +178,7 @@ async fn create_topology(
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
     let dsd_config = DogStatsDConfiguration::from_configuration(configuration)
         .error_context("Failed to configure DogStatsD source.")?
-        .with_origin_tags_resolver(env_provider.workload().clone());
+        .with_workload_provider(env_provider.workload().clone());
     let dsd_agg_config = AggregateConfiguration::from_configuration(configuration)
         .error_context("Failed to configure aggregate transform.")?;
     let dsd_prefix_filter_configuration = DogstatsDPrefixFilterConfiguration::from_configuration(configuration)?;

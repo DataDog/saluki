@@ -1,11 +1,11 @@
 use std::fmt;
 
 use saluki_context::{
-    origin::OriginTagCardinality,
+    origin::{ExternalData, OriginTagCardinality},
     tags::{Tag, TagSet},
 };
 
-use super::{entity::EntityId, external_data::ExternalData, helpers::OneOrMany};
+use super::{entity::EntityId, helpers::OneOrMany};
 
 /// A metadata operation.
 ///

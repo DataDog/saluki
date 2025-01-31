@@ -2,14 +2,13 @@
 
 use std::{future::Future, num::NonZeroUsize};
 
-use async_trait::async_trait;
 use memory_accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{
-    origin::{OriginInfo, OriginKey, OriginTagCardinality, OriginTagVisitor, OriginTagsResolver},
+    origin::{OriginKey, OriginRef, OriginTagCardinality},
     tags::SharedTagSet,
 };
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_error::{generic_error, GenericError};
 use saluki_health::{Health, HealthRegistry};
 use stringtheory::interning::GenericMapInterner;
 
@@ -23,7 +22,7 @@ use crate::{
             ContainerdMetadataCollector, RemoteAgentTaggerMetadataCollector, RemoteAgentWorkloadMetadataCollector,
         },
         entity::EntityId,
-        origin::{OriginEnrichmentConfiguration, OriginTagsQuerier},
+        origin::{OriginResolver, ResolvedOrigin},
         stores::{ExternalDataStore, TagStore, TagStoreQuerier},
     },
     WorkloadProvider,
@@ -60,7 +59,7 @@ const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = unsafe { NonZeroUsize::
 #[derive(Clone)]
 pub struct RemoteAgentWorkloadProvider {
     tags_querier: TagStoreQuerier,
-    origin_tags_querier: OriginTagsQuerier,
+    origin_resolver: OriginResolver,
 }
 
 impl RemoteAgentWorkloadProvider {
@@ -149,11 +148,7 @@ impl RemoteAgentWorkloadProvider {
 
         aggregator.add_store(external_data_store);
 
-        let origin_enrichment_config = config
-            .as_typed::<OriginEnrichmentConfiguration>()
-            .error_context("Failed to load origin enrichment configuration.")?;
-        let origin_tags_querier =
-            OriginTagsQuerier::new(origin_enrichment_config, tags_querier.clone(), external_data_resolver);
+        let origin_resolver = OriginResolver::new(external_data_resolver);
 
         // With the aggregator configured, update the memory bounds and spawn the aggregator.
         provider_bounds.with_subcomponent("aggregator", &aggregator);
@@ -162,7 +157,7 @@ impl RemoteAgentWorkloadProvider {
 
         Ok(Self {
             tags_querier,
-            origin_tags_querier,
+            origin_resolver,
         })
     }
 
@@ -176,20 +171,17 @@ impl RemoteAgentWorkloadProvider {
     }
 }
 
-#[async_trait]
 impl WorkloadProvider for RemoteAgentWorkloadProvider {
     fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
         self.tags_querier.get_entity_tags(entity_id, cardinality)
     }
-}
 
-impl OriginTagsResolver for RemoteAgentWorkloadProvider {
-    fn resolve_origin_key(&self, origin_info: OriginInfo<'_>) -> Option<OriginKey> {
-        self.origin_tags_querier.resolve_origin_key_from_info(origin_info)
+    fn resolve_origin(&self, origin: OriginRef<'_>) -> Option<OriginKey> {
+        self.origin_resolver.resolve_origin(origin)
     }
 
-    fn visit_origin_tags(&self, origin_key: OriginKey, visitor: &mut dyn OriginTagVisitor) {
-        self.origin_tags_querier.visit_origin_tags(origin_key, visitor)
+    fn get_resolved_origin_by_key(&self, origin_key: &OriginKey) -> Option<ResolvedOrigin> {
+        self.origin_resolver.get_resolved_origin_by_key(origin_key)
     }
 }
 
