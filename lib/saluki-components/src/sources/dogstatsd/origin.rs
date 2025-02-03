@@ -63,6 +63,17 @@ pub struct OriginEnrichmentConfiguration {
     origin_detection_optout: bool,
 }
 
+impl Default for OriginEnrichmentConfiguration {
+    fn default() -> Self {
+        Self {
+            entity_id_precedence: false,
+            tag_cardinality: default_tag_cardinality(),
+            origin_detection_unified: false,
+            origin_detection_optout: default_origin_detection_optout(),
+        }
+    }
+}
+
 pub(super) struct DogStatsDOriginTagResolver {
     config: OriginEnrichmentConfiguration,
     workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
