@@ -5,7 +5,7 @@ use std::{future::Future, num::NonZeroUsize};
 use memory_accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{
-    origin::{OriginKey, OriginRef, OriginTagCardinality},
+    origin::{OriginKey, OriginTagCardinality, RawOrigin},
     tags::SharedTagSet,
 };
 use saluki_error::{generic_error, GenericError};
@@ -176,7 +176,7 @@ impl WorkloadProvider for RemoteAgentWorkloadProvider {
         self.tags_querier.get_entity_tags(entity_id, cardinality)
     }
 
-    fn resolve_origin(&self, origin: OriginRef<'_>) -> Option<OriginKey> {
+    fn resolve_origin(&self, origin: RawOrigin<'_>) -> Option<OriginKey> {
         self.origin_resolver.resolve_origin(origin)
     }
 

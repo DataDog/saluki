@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use papaya::HashMap;
-use saluki_context::origin::{OriginKey, OriginRef, OriginTagCardinality};
+use saluki_context::origin::{OriginKey, OriginTagCardinality, RawOrigin};
 use tracing::trace;
 
 use super::stores::ExternalDataStoreResolver;
@@ -45,9 +45,9 @@ struct ResolvedOriginInner {
     resolved_external_data: Option<ResolvedExternalData>,
 }
 
-/// An resolved representation of `OriginRef<'a>`
+/// An resolved representation of `RawOrigin<'a>`
 ///
-/// This representation is used to store the pre-calculated entity IDs derived from a borrowed `OriginRef<'a>` in order
+/// This representation is used to store the pre-calculated entity IDs derived from a borrowed `RawOrigin<'a>` in order
 /// to speed the lookup of origin tags attached to each individual entity ID that comprises an origin.
 ///
 /// This type can be cheaply cloned and shared across threads.
@@ -57,7 +57,7 @@ pub struct ResolvedOrigin {
 }
 
 impl ResolvedOrigin {
-    pub(crate) fn from_ref(origin: OriginRef<'_>, ed_resolver: &ExternalDataStoreResolver) -> Self {
+    pub(crate) fn from_ref(origin: RawOrigin<'_>, ed_resolver: &ExternalDataStoreResolver) -> Self {
         Self {
             inner: Arc::new(ResolvedOriginInner {
                 cardinality: origin.cardinality(),
@@ -111,7 +111,7 @@ impl OriginResolver {
         }
     }
 
-    pub(crate) fn resolve_origin(&self, origin: OriginRef<'_>) -> Option<OriginKey> {
+    pub(crate) fn resolve_origin(&self, origin: RawOrigin<'_>) -> Option<OriginKey> {
         // If there's no origin information at all, then there's nothing to key off of.
         if origin.is_empty() {
             return None;

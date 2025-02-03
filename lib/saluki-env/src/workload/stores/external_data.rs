@@ -2,7 +2,7 @@ use std::{num::NonZeroUsize, sync::Arc};
 
 use arc_swap::ArcSwap;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_context::origin::{ExternalData, ExternalDataRef};
+use saluki_context::origin::{ExternalData, RawExternalData};
 use tracing::{debug, trace};
 
 use crate::{
@@ -168,7 +168,7 @@ impl ExternalDataStoreResolver {
     /// container). If the external data maps to valid, and the referenced entities exist, `Some(ResolvedExternalData)`
     /// is returned, containing the entity IDs for both pod and container. Otherwise, if the raw external data is
     /// invalid, or the referenced entities don't exist, `None` is returned.
-    pub fn resolve(&self, external_data: &ExternalDataRef<'_>) -> Option<ResolvedExternalData> {
+    pub fn resolve(&self, external_data: &RawExternalData<'_>) -> Option<ResolvedExternalData> {
         let snapshot = self.snapshot.load();
         snapshot.forward_mappings.get(external_data).cloned()
     }
@@ -178,7 +178,7 @@ impl ExternalDataStoreResolver {
 mod tests {
     use std::num::NonZeroUsize;
 
-    use saluki_context::origin::{ExternalData, ExternalDataRef};
+    use saluki_context::origin::{ExternalData, RawExternalData};
 
     use super::ExternalDataStore;
     use crate::workload::{aggregator::MetadataStore as _, origin::ResolvedExternalData, EntityId, MetadataOperation};
@@ -207,7 +207,7 @@ mod tests {
 
         let container_eid = entity_id_container("abcdef");
         let (raw_ed, ed, resolved_ed) = build_external_data("1234", "redis", &container_eid, false);
-        let ed_ref = ExternalDataRef::from_raw(&raw_ed).unwrap();
+        let ed_ref = RawExternalData::try_from_str(&raw_ed).unwrap();
 
         // Make sure we don't get anything back for this External Data yet:
         assert_eq!(resolver.resolve(&ed_ref), None);
@@ -237,9 +237,9 @@ mod tests {
         let (raw_ed1, ed1, resolved_ed1) = build_external_data("1234", "redis", &container_eid1, false);
         let (raw_ed2, ed2, resolved_ed2) = build_external_data("1234", "init-volume", &container_eid2, true);
         let (raw_ed3, ed3, resolved_ed3) = build_external_data("1234", "chmod-dir", &container_eid3, true);
-        let ed_ref1 = ExternalDataRef::from_raw(&raw_ed1).unwrap();
-        let ed_ref2 = ExternalDataRef::from_raw(&raw_ed2).unwrap();
-        let ed_ref3 = ExternalDataRef::from_raw(&raw_ed3).unwrap();
+        let ed_ref1 = RawExternalData::try_from_str(&raw_ed1).unwrap();
+        let ed_ref2 = RawExternalData::try_from_str(&raw_ed2).unwrap();
+        let ed_ref3 = RawExternalData::try_from_str(&raw_ed3).unwrap();
 
         assert_eq!(resolver.resolve(&ed_ref1), None);
         assert_eq!(resolver.resolve(&ed_ref2), None);

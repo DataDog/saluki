@@ -11,7 +11,7 @@ use crate::{
     context::{Context, ContextInner},
     expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle},
     hash::{hash_context_with_seen, new_fast_hashset, ContextKey, FastHashSet},
-    origin::{OriginKey, OriginRef, OriginTags, OriginTagsResolver},
+    origin::{OriginKey, OriginTags, OriginTagsResolver, RawOrigin},
     tags::TagSet,
 };
 
@@ -331,7 +331,7 @@ impl ContextResolver {
     }
 
     fn create_context_key<I, T>(
-        &mut self, name: &str, tags: I, maybe_origin: Option<OriginRef<'_>>,
+        &mut self, name: &str, tags: I, maybe_origin: Option<RawOrigin<'_>>,
     ) -> (ContextKey, Option<OriginKey>)
     where
         I: IntoIterator<Item = T>,
@@ -392,7 +392,7 @@ impl ContextResolver {
     ///
     /// `None` may be returned if the interner is full and outside allocations are disallowed. See
     /// `allow_heap_allocations` for more information.
-    pub fn resolve<I, T>(&mut self, name: &str, tags: I, origin: Option<OriginRef<'_>>) -> Option<Context>
+    pub fn resolve<I, T>(&mut self, name: &str, tags: I, origin: Option<RawOrigin<'_>>) -> Option<Context>
     where
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str>,

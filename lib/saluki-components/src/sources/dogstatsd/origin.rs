@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use saluki_context::{
-    origin::{OriginKey, OriginRef, OriginTagCardinality, OriginTagsResolver},
+    origin::{OriginKey, OriginTagCardinality, OriginTagsResolver, RawOrigin},
     tags::TagVisitor,
 };
 use saluki_env::{workload::origin::ResolvedOrigin, WorkloadProvider};
@@ -165,7 +165,7 @@ impl DogStatsDOriginTagResolver {
 }
 
 impl OriginTagsResolver for DogStatsDOriginTagResolver {
-    fn resolve_origin_key(&self, origin: OriginRef<'_>) -> Option<OriginKey> {
+    fn resolve_origin_key(&self, origin: RawOrigin<'_>) -> Option<OriginKey> {
         self.workload_provider.resolve_origin(origin)
     }
 
@@ -176,9 +176,9 @@ impl OriginTagsResolver for DogStatsDOriginTagResolver {
     }
 }
 
-/// Builds an `OriginRef` object from the given metric packet.
-pub fn origin_from_metric_packet<'packet>(packet: &MetricPacket<'packet>) -> OriginRef<'packet> {
-    let mut origin = OriginRef::default();
+/// Builds an `RawOrigin` object from the given metric packet.
+pub fn origin_from_metric_packet<'packet>(packet: &MetricPacket<'packet>) -> RawOrigin<'packet> {
+    let mut origin = RawOrigin::default();
     origin.set_pod_uid(packet.pod_uid);
     origin.set_container_id(packet.container_id);
     origin.set_external_data(packet.external_data);

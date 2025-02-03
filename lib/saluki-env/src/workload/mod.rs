@@ -7,7 +7,7 @@
 //! aggregation -- along with a default workload provider implementation based on the Datadog Agent.
 
 use saluki_context::{
-    origin::{OriginKey, OriginRef, OriginTagCardinality},
+    origin::{OriginKey, OriginTagCardinality, RawOrigin},
     tags::SharedTagSet,
 };
 
@@ -43,7 +43,7 @@ pub trait WorkloadProvider {
     /// If the origin is empty, `None` is returned. Otherwise, `Some(OriginKey)` will be returned, which is a unique,
     /// but opaque, key that can be used to retrieve the origin at a later time. The returned key will always be equal
     /// to the key returned for the same origin in the same process.
-    fn resolve_origin(&self, origin: OriginRef<'_>) -> Option<OriginKey>;
+    fn resolve_origin(&self, origin: RawOrigin<'_>) -> Option<OriginKey>;
 
     /// Gets a resolved origin by its key.
     fn get_resolved_origin_by_key(&self, origin_key: &OriginKey) -> Option<ResolvedOrigin>;
@@ -60,7 +60,7 @@ where
         }
     }
 
-    fn resolve_origin(&self, origin: OriginRef<'_>) -> Option<OriginKey> {
+    fn resolve_origin(&self, origin: RawOrigin<'_>) -> Option<OriginKey> {
         match self.as_ref() {
             Some(provider) => provider.resolve_origin(origin),
             None => None,
