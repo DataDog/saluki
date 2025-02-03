@@ -54,6 +54,6 @@ impl HostProvider for RemoteAgentHostProvider {
 
 impl MemoryBounds for RemoteAgentHostProvider {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        builder.minimum().with_single_value::<Self>();
+        builder.minimum().with_single_value::<Self>("component struct");
     }
 }

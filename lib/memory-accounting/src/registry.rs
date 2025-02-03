@@ -4,6 +4,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
+use crate::UsageExpr;
 use crate::{
     allocator::{AllocationGroupRegistry, AllocationGroupToken},
     api::MemoryAPIHandler,
@@ -103,8 +104,8 @@ impl ComponentMetadata {
 
     pub fn as_bounds(&self) -> ComponentBounds {
         let mut bounds = ComponentBounds::default();
-        bounds.self_firm_limit_bytes = self.bounds.self_firm_limit_bytes;
-        bounds.self_minimum_required_bytes = self.bounds.self_minimum_required_bytes;
+        bounds.self_firm_limit_bytes = self.bounds.self_firm_limit_bytes.clone();
+        bounds.self_minimum_required_bytes = self.bounds.self_minimum_required_bytes.clone();
 
         for (name, subcomponent) in self.subcomponents.iter() {
             let subcomponent = subcomponent.lock().unwrap();
@@ -119,7 +120,7 @@ impl ComponentMetadata {
 /// A registry for components for tracking memory bounds and runtime memory usage.
 ///
 /// This registry provides a unified interface for declaring the memory bounds of a "component", as well as registering
-/// that component for runtime memory usage tracking when using the tracking allocator implementation in `memory-accounting`.   
+/// that component for runtime memory usage tracking when using the tracking allocator implementation in `memory-accounting`.
 ///
 /// ## Components
 ///
@@ -199,7 +200,7 @@ impl ComponentRegistry {
     ///
     /// - when a component has invalid bounds (e.g. minimum required bytes higher than firm limit)
     /// - when the combined total of the firm limit for all components exceeds the effective limit
-    pub fn verify_bounds(&mut self, initial_grant: MemoryGrant) -> Result<VerifiedBounds, VerifierError> {
+    pub fn verify_bounds(&self, initial_grant: MemoryGrant) -> Result<VerifiedBounds, VerifierError> {
         let bounds = self.inner.lock().unwrap().as_bounds();
         BoundsVerifier::new(initial_grant, bounds).verify()
     }
@@ -211,6 +212,11 @@ impl ComponentRegistry {
     /// responses.
     pub fn api_handler(&self) -> MemoryAPIHandler {
         MemoryAPIHandler::from_state(Arc::clone(&self.inner))
+    }
+
+    /// Gets the total minimum required bytes for this component and all subcomponents.
+    pub fn as_bounds(&self) -> ComponentBounds {
+        self.inner.lock().unwrap().as_bounds()
     }
 }
 
@@ -235,18 +241,18 @@ pub(crate) mod private {
 // Simple trait-based builder state approach so we can use a single builder view to modify either the minimum required
 // or firm limit amounts.
 pub trait BoundsMutator: private::Sealed {
-    fn add_usage(bounds: &mut ComponentBounds, amount: usize);
+    fn add_usage(bounds: &mut ComponentBounds, expr: UsageExpr);
 }
 
 impl BoundsMutator for Minimum {
-    fn add_usage(bounds: &mut ComponentBounds, amount: usize) {
-        bounds.self_minimum_required_bytes = bounds.self_minimum_required_bytes.saturating_add(amount);
+    fn add_usage(bounds: &mut ComponentBounds, expr: UsageExpr) {
+        bounds.self_minimum_required_bytes.push(expr)
     }
 }
 
 impl BoundsMutator for Firm {
-    fn add_usage(bounds: &mut ComponentBounds, amount: usize) {
-        bounds.self_firm_limit_bytes = bounds.self_firm_limit_bytes.saturating_add(amount);
+    fn add_usage(bounds: &mut ComponentBounds, expr: UsageExpr) {
+        bounds.self_firm_limit_bytes.push(expr)
     }
 }
 
@@ -315,27 +321,6 @@ impl<'a> MemoryBoundsBuilder<'a> {
         self
     }
 
-    /// Merges a set of existing `ComponentBounds` into the current builder.
-    pub fn merge_existing(&mut self, existing: &ComponentBounds) -> &mut Self {
-        let mut bounds_builder = self.inner.bounds_builder();
-        bounds_builder
-            .minimum()
-            .with_fixed_amount(existing.self_minimum_required_bytes);
-        bounds_builder.firm().with_fixed_amount(existing.self_firm_limit_bytes);
-
-        for (name, existing_subcomponent) in &existing.subcomponents {
-            let subcomponent = self.inner.get_or_create(name);
-            let mut builder = MemoryBoundsBuilder {
-                inner: subcomponent,
-                _lt: PhantomData,
-            };
-
-            builder.merge_existing(existing_subcomponent);
-        }
-
-        self
-    }
-
     #[cfg(test)]
     pub(crate) fn as_bounds(&self) -> ComponentBounds {
         self.inner.inner.lock().unwrap().as_bounds()
@@ -363,16 +348,16 @@ impl<'a, S: BoundsMutator> BoundsBuilder<'a, S> {
     /// This is useful for tracking the expected memory usage of a single instance of a type if that type is heap
     /// allocated. For example, components that are spawned by a topology generally end up being boxed, which means a
     /// heap allocation exists that is the size of the component type.
-    pub fn with_single_value<T>(&mut self) -> &mut Self {
-        S::add_usage(&mut self.inner.bounds, std::mem::size_of::<T>());
+    pub fn with_single_value<T>(&mut self, name: impl Into<String>) -> &mut Self {
+        S::add_usage(&mut self.inner.bounds, UsageExpr::struct_size::<T>(name));
         self
     }
 
     /// Accounts for a fixed amount of memory usage.
     ///
     /// This is a catch-all for directly accounting for a specific number of bytes.
-    pub fn with_fixed_amount(&mut self, chunk_size: usize) -> &mut Self {
-        S::add_usage(&mut self.inner.bounds, chunk_size);
+    pub fn with_fixed_amount(&mut self, name: impl Into<String>, chunk_size: usize) -> &mut Self {
+        S::add_usage(&mut self.inner.bounds, UsageExpr::constant(name, chunk_size));
         self
     }
 
@@ -380,8 +365,15 @@ impl<'a, S: BoundsMutator> BoundsBuilder<'a, S> {
     ///
     /// This can be used to track the expected memory usage of generalized containers like `Vec<T>`, where items are
     /// homogenous and allocated contiguously.
-    pub fn with_array<T>(&mut self, len: usize) -> &mut Self {
-        S::add_usage(&mut self.inner.bounds, len * std::mem::size_of::<T>());
+    pub fn with_array<T>(&mut self, name: impl Into<String>, len: usize) -> &mut Self {
+        S::add_usage(
+            &mut self.inner.bounds,
+            UsageExpr::product(
+                "array",
+                UsageExpr::struct_size::<T>(name),
+                UsageExpr::constant("len", len),
+            ),
+        );
         self
     }
 
@@ -389,11 +381,24 @@ impl<'a, S: BoundsMutator> BoundsBuilder<'a, S> {
     ///
     /// This can be used to track the expected memory usage of generalized maps like `HashMap<K, V>`, where keys and
     /// values are
-    pub fn with_map<K, V>(&mut self, len: usize) -> &mut Self {
+    pub fn with_map<K, V>(&mut self, name: impl Into<String>, len: usize) -> &mut Self {
         S::add_usage(
             &mut self.inner.bounds,
-            len * (std::mem::size_of::<K>() + std::mem::size_of::<V>()),
+            UsageExpr::product(
+                "map",
+                UsageExpr::sum(
+                    name,
+                    UsageExpr::struct_size::<K>("key"),
+                    UsageExpr::struct_size::<V>("value"),
+                ),
+                UsageExpr::constant("len", len),
+            ),
         );
+        self
+    }
+
+    pub fn with_expr(&mut self, expr: UsageExpr) -> &mut Self {
+        S::add_usage(&mut self.inner.bounds, expr);
         self
     }
 }
