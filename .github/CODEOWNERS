@@ -1,5 +1,5 @@
-# Currently, Agent Metrics owns all code in this repository.
-* @DataDog/agent-metrics
+# Currently, Agent Metric Pipelines owns all code in this repository.
+* @DataDog/agent-metric-pipelines
 
 # We publish public ADP-bundled Agent images based on CI triggered through this repository,
 # and the code ownership arrangement is to ensure that Agent Delivery has a stake in the configuration
