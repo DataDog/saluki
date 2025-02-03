@@ -1,48 +1,25 @@
 <script setup>
-import { h, ref, Fragment } from 'vue';
 import { Handle } from '@vue-flow/core';
-import { autoPlacement, arrow, autoUpdate, flip, offset, shift, useFloating } from '@floating-ui/vue';
-import VNodes from '@/components/VNodes.ts';
 
-const props = defineProps(['data', 'sourcePosition', 'targetPosition']);
-
-const label = typeof props.data.label !== 'string' && props.data.label ? h(props.data.label) : h(Fragment, [props.data.label]);
-
-const reference = ref(null);
-const floating = ref(null);
-const floatingArrow = ref(null);
-const tooltipVisible = ref(false);
-const { floatingStyles, middlewareData } = useFloating(reference, floating, {
-  whileElementsMounted: autoUpdate,
-  middleware: [autoPlacement(), offset(6), flip(), shift({ padding: 5 }), arrow({ element: floatingArrow })]
-});
-
-function showTooltip() {
-  tooltipVisible.value = true;
-}
-
-function hideTooltip() {
-  tooltipVisible.value = false;
-}
+defineProps(['boundary', 'data', 'sourcePosition', 'targetPosition']);
 </script>
 
 <template>
-  <div>
-    <div reference="reference" @mouseenter="showTooltip" @mouseleave="hideTooltip" class="component-node">
+  <VTooltip :boundary="boundary" placement="right" :triggers="['hover']" :distance="20" :shift="true" :flip="true">
+    <div class="component-node">
       <Handle type="target" :position="targetPosition" connectable="false" />
-      <VNodes :node="label" />
+      <div class="text-lg font-medium text-surface-700 dark:text-surface-200">{{ data.component.name }}</div>
+      <div v-if="data.component.subname" class="text-sm font-normal text-surface-500 dark:text-surface-400">{{ data.component.subname }}</div>
       <Handle type="source" :position="sourcePosition" connectable="false" />
     </div>
-    <div v-if="tooltipVisible" ref="floating" class="component-tooltip" :style="floatingStyles">
-      Floating
-      <div
-        ref="floatingArrow"
-        class="component-tooltip-arrow"
-        :style="{
-          position: 'absolute',
-          left: middlewareData.arrow?.x != null ? `${middlewareData.arrow.x}px` : '',
-          top: middlewareData.arrow?.y != null ? `${middlewareData.arrow.y}px` : ''
-        }"></div>
-    </div>
-  </div>
+
+    <template #popper>
+      <div>
+        <p class="text-md font-bold">{{ data.component.name }} {{ data.component.subname }}</p>
+        <p class="text-sm"><span class="font-semibold">Type: </span> {{ data.component.type }}</p>
+        <br />
+        <p class="text-sm"><span class="font-semibold">Bytes in: </span> 35.5MB</p>
+      </div>
+    </template>
+  </VTooltip>
 </template>

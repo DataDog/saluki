@@ -6,6 +6,7 @@ import { createApp } from 'vue';
 import { createPinia } from 'pinia';
 import PrimeVue from 'primevue/config';
 import VueApexCharts from 'vue3-apexcharts';
+import FloatingVue from 'floating-vue';
 import ConfirmationService from 'primevue/confirmationservice';
 import ToastService from 'primevue/toastservice';
 import { createGrpcWebTransport } from '@connectrpc/connect-web';
@@ -29,6 +30,7 @@ app.use(PrimeVue, {
 app.use(ToastService);
 app.use(ConfirmationService);
 app.use(VueApexCharts);
+app.use(FloatingVue);
 
 const transport = createGrpcWebTransport({
   baseUrl: '/api'
