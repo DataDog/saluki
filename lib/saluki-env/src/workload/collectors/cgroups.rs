@@ -67,9 +67,9 @@ impl MetadataCollector for CgroupsMetadataCollector {
         let mut reader = Some(self.reader.clone());
         let mut operations = Some(Vec::with_capacity(64));
 
-        // Repeatedly traverse the cgroups v2 hierarchy in a loop, generating ancestry links for controller
-        // inode/container ID pairs that we find. We do this using a simple heuristic to determine if the control group
-        // name is actually a container ID or something unrelated.
+        // Repeatedly traverse the cgroups hierarchy in a loop, generating ancestry links for controller inode/container
+        // ID pairs that we find. We do this using a simple heuristic to determine if the control group name is actually
+        // a container ID or something unrelated.
         //
         // We batch these metadata operations and then send them all at the end of the loop.
         loop {
