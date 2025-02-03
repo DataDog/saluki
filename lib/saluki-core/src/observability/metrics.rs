@@ -8,7 +8,7 @@ use std::{
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SetRecorderError, SharedString, Unit};
 use metrics_util::registry::{AtomicStorage, Registry};
 use saluki_context::{
-    origin::OriginInfo,
+    origin::RawOrigin,
     tags::{Tag, TagSet},
     Context, ContextResolver, ContextResolverBuilder,
 };
@@ -200,13 +200,13 @@ fn context_from_key(context_resolver: &mut ContextResolver, key: Key) -> Context
         .collect::<TagSet>();
 
     context_resolver
-        .resolve(key.name(), &tags, Some(internal_telemetry_origin_info()))
+        .resolve(key.name(), &tags, Some(internal_telemetry_origin()))
         .expect("resolver should always allow falling back")
 }
 
-fn internal_telemetry_origin_info() -> OriginInfo<'static> {
-    static SELF_ORIGIN_INFO: LazyLock<OriginInfo<'static>> = LazyLock::new(|| {
-        let mut origin_info = OriginInfo::default();
+fn internal_telemetry_origin() -> RawOrigin<'static> {
+    static SELF_ORIGIN_INFO: LazyLock<RawOrigin<'static>> = LazyLock::new(|| {
+        let mut origin_info = RawOrigin::default();
         origin_info.set_process_id(std::process::id());
         origin_info
     });
