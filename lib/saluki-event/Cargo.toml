@@ -15,4 +15,4 @@ smallvec = { workspace = true, features = ["const_generics", "drain_filter", "un
 stringtheory = { workspace = true }
 
 [dev-dependencies]
-proptest = { workspace = true, features = ["std"] }
+proptest = { workspace = true }
