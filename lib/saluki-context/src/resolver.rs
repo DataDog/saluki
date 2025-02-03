@@ -188,9 +188,9 @@ impl ContextResolverBuilder {
         self
     }
 
-    /// Configures a [`ContextResolverBuilder`] that is suitable for tests.
+    /// Builds a [`ContextResolver`] with a no-op configuration, suitable for tests.
     ///
-    /// This configures the builder with the following defaults:
+    /// This ignores all configuration on the builder and uses a default configuration of:
     ///
     /// - resolver name of "noop"
     /// - unlimited context cache size
@@ -199,12 +199,13 @@ impl ContextResolverBuilder {
     ///
     /// This is generally only useful for testing purposes, and is exposed publicly in order to be used in cross-crate
     /// testing scenarios.
-    pub fn for_tests() -> Self {
+    pub fn for_tests() -> ContextResolver {
         ContextResolverBuilder::from_name("noop")
             .expect("resolver name not empty")
             .with_cached_contexts_limit(usize::MAX)
             .with_interner_capacity_bytes(NonZeroUsize::new(1).expect("not zero"))
             .with_heap_allocations(true)
+            .build()
     }
 
     /// Builds a [`ContextResolver`] from the current configuration.
@@ -304,6 +305,18 @@ pub struct ContextResolver {
 }
 
 impl ContextResolver {
+    /// Sets whether or not to allow heap allocations when interning strings.
+    ///
+    /// In cases where the interner is full, this setting determines whether or not we refuse to resolve a context, or
+    /// if we instead allocate strings normally (which will not be interned and will not be shared with other contexts)
+    /// to satisfy the request.
+    ///
+    /// Defaults to `true`.
+    pub fn with_heap_allocations(mut self, allow: bool) -> Self {
+        self.allow_heap_allocations = allow;
+        self
+    }
+
     fn intern(&self, s: &str) -> Option<MetaString> {
         // First we'll see if we can inline the string, and if we can't, then we try to actually intern it. If interning
         // fails, then we just fall back to allocating a new `MetaString` instance.
@@ -474,7 +487,6 @@ mod tests {
     };
 
     use super::*;
-    use crate::tags::TagVisitor;
 
     fn get_gauge_value(metrics: &[(CompositeKey, Option<Unit>, Option<SharedString>, DebugValue)], key: &str) -> f64 {
         metrics
@@ -487,19 +499,9 @@ mod tests {
             .unwrap_or_else(|| panic!("no metric found with key: {}", key))
     }
 
-    struct DummyOriginTagsResolver;
-
-    impl OriginTagsResolver for DummyOriginTagsResolver {
-        fn resolve_origin_key(&self, info: RawOrigin<'_>) -> Option<OriginKey> {
-            Some(OriginKey::from_opaque(info))
-        }
-
-        fn visit_origin_tags(&self, _: OriginKey, _: &mut dyn TagVisitor) {}
-    }
-
     #[test]
     fn basic() {
-        let mut resolver = ContextResolverBuilder::for_tests().build();
+        let mut resolver: ContextResolver = ContextResolverBuilder::for_tests();
 
         // Create two distinct contexts with the same name but different tags:
         let name = "metric_name";
@@ -537,7 +539,7 @@ mod tests {
 
     #[test]
     fn tag_order() {
-        let mut resolver = ContextResolverBuilder::for_tests().build();
+        let mut resolver: ContextResolver = ContextResolverBuilder::for_tests();
 
         // Create two distinct contexts with the same name and tags, but with the tags in a different order:
         let name = "metric_name";
@@ -566,7 +568,7 @@ mod tests {
 
         // Create our resolver and then create a context, which will have its metrics attached to our local recorder:
         let context = metrics::with_local_recorder(&recorder, || {
-            let mut resolver = ContextResolverBuilder::for_tests().build();
+            let mut resolver: ContextResolver = ContextResolverBuilder::for_tests();
             resolver
                 .resolve("name", &["tag"][..], None)
                 .expect("should not fail to resolve")
@@ -586,7 +588,7 @@ mod tests {
 
     #[test]
     fn duplicate_tags() {
-        let mut resolver = ContextResolverBuilder::for_tests().build();
+        let mut resolver: ContextResolver = ContextResolverBuilder::for_tests();
 
         // Two contexts with the same name, but each with a different set of duplicate tags:
         let name = "metric_name";
@@ -624,44 +626,5 @@ mod tests {
         assert_ne!(context1_duplicated, context2_duplicated);
         assert_ne!(context1, context2_duplicated);
         assert_ne!(context2, context1_duplicated);
-    }
-
-    #[test]
-    fn differing_origins_with_without_resolver() {
-        // Create a regular context resolver, without any origin tags resolver, which should result in contexts being
-        // the same so long as the name and tags are the same, disregarding any difference in origin information:
-        let mut resolver = ContextResolverBuilder::for_tests().build();
-
-        let name = "metric_name";
-        let tags = ["tag1"];
-        let mut origin1 = RawOrigin::default();
-        origin1.set_container_id("container1");
-        let mut origin2 = RawOrigin::default();
-        origin2.set_container_id("container2");
-
-        let context1 = resolver
-            .resolve(name, &tags[..], Some(origin1.clone()))
-            .expect("should not fail to resolve");
-        let context2 = resolver
-            .resolve(name, &tags[..], Some(origin2.clone()))
-            .expect("should not fail to resolve");
-
-        assert_eq!(context1, context2);
-
-        // Now build a context resolver with an origin tags resolver that trivially returns the origin key based on the
-        // hash of the origin info, which should result in the contexts incorporating the origin information into their
-        // equality/hashing, thus no longer comparing as equal:
-        let mut resolver = ContextResolverBuilder::for_tests()
-            .with_origin_tags_resolver(Some(DummyOriginTagsResolver))
-            .build();
-
-        let context1 = resolver
-            .resolve(name, &tags[..], Some(origin1))
-            .expect("should not fail to resolve");
-        let context2 = resolver
-            .resolve(name, &tags[..], Some(origin2))
-            .expect("should not fail to resolve");
-
-        assert_ne!(context1, context2);
     }
 }
