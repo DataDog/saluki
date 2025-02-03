@@ -43,7 +43,7 @@ impl CgroupsMetadataCollector {
         config: &GenericConfiguration, feature_detector: FeatureDetector, health: Health, interner: GenericMapInterner,
     ) -> Result<Self, GenericError> {
         let cgroups_config = CgroupsConfiguration::from_configuration(config, feature_detector)?;
-        let reader = match CgroupsReader::try_from_config(&cgroups_config, interner).await? {
+        let reader = match CgroupsReader::try_from_config(&cgroups_config, interner)? {
             Some(reader) => reader,
             None => {
                 return Err(generic_error!("Failed to detect any cgroups v1/v2 hierarchy. "));
@@ -64,24 +64,35 @@ impl MetadataCollector for CgroupsMetadataCollector {
         self.health.mark_ready();
 
         let mut traverse_interval = interval(Duration::from_secs(2));
-        let mut operations = Vec::with_capacity(64);
+        let mut reader = Some(self.reader.clone());
+        let mut operations = Some(Vec::with_capacity(64));
 
-        // Repeatedly traverse the cgroups v2 hierarchy in a loop, generating ancestry links for controller
-        // inode/container ID pairs that we find. We do this using a simple heuristic to determine if the control group
-        // name is actually a container ID or something unrelated.
+        // Repeatedly traverse the cgroups hierarchy in a loop, generating ancestry links for controller inode/container
+        // ID pairs that we find. We do this using a simple heuristic to determine if the control group name is actually
+        // a container ID or something unrelated.
         //
         // We batch these metadata operations and then send them all at the end of the loop.
         loop {
             select! {
                 _ = self.health.live() => {},
                 _ = traverse_interval.tick() => {
-                    match traverse_cgroups(&self.reader, &mut operations).await {
-                        Ok(()) => {
-                            for operation in operations.drain(..) {
+                    // This is a little clunky but necessary in order to reuse the reader/operations given that we have
+                    // to transfer ownership when we spawn the blocking task.
+                    let old_reader = reader.take().expect("reader should be present");
+                    let old_operations = operations.take().expect("operations should be present");
+
+                    let traverse_result = tokio::task::spawn_blocking(|| traverse_cgroups(old_reader, old_operations));
+                    match traverse_result.await {
+                        Ok(Ok((new_reader, mut new_operations))) => {
+                            for operation in new_operations.drain(..) {
                                 operations_tx.send(operation).await?;
                             }
-                        }
-                        Err(e) => error!(error = %e, "Failed to read cgroups."),
+
+                            reader = Some(new_reader);
+                            operations = Some(new_operations);
+                        },
+                        Ok(Err(e)) => error!(error = %e, "Failed to read cgroups."),
+                        Err(e) => error!(error = %e, "Failed to spawn cgroups traverse task."),
                     }
                 },
             }
@@ -100,8 +111,12 @@ impl MemoryBounds for CgroupsMetadataCollector {
     }
 }
 
-async fn traverse_cgroups(root: &CgroupsReader, operations: &mut Vec<MetadataOperation>) -> Result<(), GenericError> {
-    let child_cgroups = root.get_child_cgroups().await;
+fn traverse_cgroups(
+    reader: CgroupsReader, mut operations: Vec<MetadataOperation>,
+) -> Result<(CgroupsReader, Vec<MetadataOperation>), GenericError> {
+    let start = std::time::Instant::now();
+
+    let child_cgroups = reader.get_child_cgroups();
     for child_cgroup in child_cgroups {
         let cgroup_name = child_cgroup.name;
         let container_id = child_cgroup.container_id;
@@ -115,5 +130,8 @@ async fn traverse_cgroups(root: &CgroupsReader, operations: &mut Vec<MetadataOpe
         operations.push(operation);
     }
 
-    Ok(())
+    let elapsed = start.elapsed();
+    tracing::info!(elapsed = ?elapsed, "Traversed cgroups.");
+
+    Ok((reader, operations))
 }
