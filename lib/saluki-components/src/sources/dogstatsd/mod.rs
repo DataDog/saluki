@@ -224,7 +224,7 @@ pub struct DogStatsDConfiguration {
     enable_payloads_sketches: bool,
 
     /// Configuration related to origin detection and enrichment.
-    #[serde(default)]
+    #[serde(flatten, default)]
     origin_enrichment: OriginEnrichmentConfiguration,
 
     /// Workload provider to utilize for origin detection/enrichment.
