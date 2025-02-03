@@ -1,8 +1,9 @@
-import { createApp } from 'vue';
 import App from './App.vue';
 import router from './router';
+import DatadogTheme from './theme';
 
-import Aura from '@primevue/themes/aura';
+import { createApp } from 'vue';
+import { createPinia } from 'pinia';
 import PrimeVue from 'primevue/config';
 import VueApexCharts from 'vue3-apexcharts';
 import ConfirmationService from 'primevue/confirmationservice';
@@ -13,11 +14,13 @@ import '@/assets/styles.scss';
 import '@/assets/tailwind.css';
 
 const app = createApp(App);
+const pinia = createPinia();
 
 app.use(router);
+app.use(pinia);
 app.use(PrimeVue, {
   theme: {
-    preset: Aura,
+    preset: DatadogTheme,
     options: {
       darkModeSelector: '.app-dark'
     }

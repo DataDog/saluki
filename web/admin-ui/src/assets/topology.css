@@ -1,0 +1,83 @@
+:root {
+    --vf-node-bg: var(--surface-card);
+    --vf-node-text: var(--text-color);
+    --vf-connection-path: #b1b1b7;
+    --vf-handle: #555;
+  }
+
+  .vue-flow__edge {
+    &.updating {
+      .vue-flow__edge-path {
+        stroke: #777;
+      }
+    }
+  }
+
+  .vue-flow__edge-text {
+    font-size: 10px;
+  }
+
+  .vue-flow__edge-textbg {
+    fill: #fff;
+  }
+
+  .vue-flow__edge-path,
+  .vue-flow__connection-path {
+    stroke: var(--text-color-secondary);
+    stroke-width: 2;
+  }
+
+  .vue-flow__node-default,
+  .vue-flow__node-input,
+  .vue-flow__node-output,
+  .vue-flow__node-component {
+    min-width: 150px;
+    padding: 10px;
+    border-radius: 5px;
+    font-size: 12px;
+    text-align: center;
+    border: 2px solid var(--surface-border);
+    color: var(--vf-node-text);
+    background-color: var(--vf-node-bg);
+
+    .vue-flow__handle {
+      background: var(--vf-handle);
+    }
+
+    &.selected,
+    &:focus,
+    &:focus-visible {
+      outline: none;
+      border: 2px solid var(--surface-border);
+    }
+
+    &:hover {
+      border-width: 2px;
+      border-color: var(--primary-color);
+      box-shadow: 0 0 2px 1px var(--primary-color);
+    }
+  }
+
+  .vue-flow__handle {
+    min-width: 0;
+    min-height: 0;
+    width: 0;
+    height: 0;
+    background: var(--vf-handle);
+    border: 0;
+    border-radius: 100%;
+  }
+
+.component-tooltip {
+    width: max-content;
+    background: #222;
+    color: white;
+    font-weight: bold;
+    padding: 5px;
+    border-radius: 4px;
+    font-size: 90%;
+}
+
+.component-tooltip-arrow {
+    border: 2px solid red;
+}

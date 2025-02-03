@@ -37,7 +37,7 @@ async function fetchStatistics() {
 
   try {
     const { pid, uptimeSecs, rssBytes } = await client.getProcessInformation();
-    stats.value = { pid, uptimeSecs: Number(uptimeSecs), rssBytes: Number(rssBytes), metrics: 285.4, logs: 0, traces: 0 };
+    stats.value = { pid, uptimeSecs: Number(uptimeSecs), cpuUsage: 0.0, rssBytes: Number(rssBytes), metrics: 0, logs: 0, traces: 0 };
 
     toast.removeGroup('dashboardErrors');
     loading.value = false;
@@ -87,9 +87,9 @@ async function fetchStatistics() {
     <div class="card mb-0">
       <div class="flex justify-between mb-2">
         <div>
-          <span class="block text-muted-color font-medium mb-2 text-xl">Memory</span>
+          <span class="block text-muted-color font-medium mb-2 text-xl">CPU</span>
           <div v-if="loading"><SpinningLoader /></div>
-          <div v-if="stats" class="text-surface-900 dark:text-surface-0 font-medium text-3xl">{{ bytesToHumanFriendly(stats.rssBytes) }}</div>
+          <div v-if="stats" class="text-surface-900 dark:text-surface-0 font-medium text-3xl">{{ stats.cpuUsage.toFixed(2) }} %</div>
         </div>
       </div>
     </div>
@@ -98,14 +98,25 @@ async function fetchStatistics() {
     <div class="card mb-0">
       <div class="flex justify-between mb-2">
         <div>
-          <span class="block text-muted-color font-medium mb-2 text-xl">Metrics Ingested</span>
+          <span class="block text-muted-color font-medium mb-2 text-xl">Memory</span>
           <div v-if="loading"><SpinningLoader /></div>
-          <div v-if="stats" class="text-surface-900 dark:text-surface-0 font-medium text-3xl">{{ stats.metrics }} M</div>
+          <div v-if="stats" class="text-surface-900 dark:text-surface-0 font-medium text-3xl">{{ bytesToHumanFriendly(stats.rssBytes) }}</div>
         </div>
       </div>
     </div>
   </div>
-  <div class="col-span-12 lg:col-span-6 xl:col-span-3">
+  <div class="col-span-12 lg:col-span-6 xl:col-span-4">
+    <div class="card mb-0">
+      <div class="flex justify-between mb-2">
+        <div>
+          <span class="block text-muted-color font-medium mb-2 text-xl">Metrics Ingested</span>
+          <div v-if="loading"><SpinningLoader /></div>
+          <div v-if="stats" class="text-surface-900 dark:text-surface-0 font-medium text-3xl">{{ stats.metrics }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-span-12 lg:col-span-6 xl:col-span-4">
     <div class="card mb-0">
       <div class="flex justify-between mb-2">
         <div>
@@ -116,7 +127,7 @@ async function fetchStatistics() {
       </div>
     </div>
   </div>
-  <div class="col-span-12 lg:col-span-6 xl:col-span-3">
+  <div class="col-span-12 lg:col-span-6 xl:col-span-4">
     <div class="card mb-0">
       <div class="flex justify-between mb-2">
         <div>
