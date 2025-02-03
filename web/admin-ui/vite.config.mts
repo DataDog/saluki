@@ -7,6 +7,9 @@ import { defineConfig } from 'vite';
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  build: {
+    target: 'es2022'
+  },
   optimizeDeps: {
     noDiscovery: true
   },
@@ -24,7 +27,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'https://localhost:5100',
+        target: 'http://localhost:5100',
         secure: false,
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, '')

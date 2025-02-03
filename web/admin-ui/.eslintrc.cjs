@@ -8,7 +8,7 @@ module.exports = {
   },
   extends: ['plugin:vue/vue3-essential', 'eslint:recommended', '@vue/eslint-config-prettier'],
   parserOptions: {
-    ecmaVersion: 'latest'
+    ecmaVersion: '2022'
   },
   rules: {
     'vue/multi-word-component-names': 'off',
