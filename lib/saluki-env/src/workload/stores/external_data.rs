@@ -143,10 +143,10 @@ impl MemoryBounds for ExternalDataStore {
         builder
             .firm()
             // Active entities.
-            .with_array::<EntityId>(self.entity_limit())
+            .with_array::<EntityId>("entity ids", self.entity_limit())
             // Forward and reverse mappings.
-            .with_map::<ExternalData, EntityId>(self.entity_limit())
-            .with_map::<EntityId, ExternalData>(self.entity_limit());
+            .with_map::<ExternalData, EntityId>("ext data entity map", self.entity_limit())
+            .with_map::<EntityId, ExternalData>("entity ext data map", self.entity_limit());
     }
 }
 

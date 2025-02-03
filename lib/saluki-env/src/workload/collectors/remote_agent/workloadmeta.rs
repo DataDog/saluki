@@ -96,7 +96,9 @@ impl MemoryBounds for RemoteAgentWorkloadMetadataCollector {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         // TODO: Kind of a throwaway calculation because nothing about the gRPC client can really be bounded at the
         // moment.
-        builder.firm().with_fixed_amount(std::mem::size_of::<Self>());
+        builder
+            .firm()
+            .with_fixed_amount("self struct", std::mem::size_of::<Self>());
     }
 }
 
