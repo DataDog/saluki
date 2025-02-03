@@ -94,9 +94,9 @@ impl MemoryBounds for CgroupsMetadataCollector {
         builder
             .minimum()
             // Pre-allocated operation batch buffer. This is only the minimum, as it could grow larger.
-            .with_array::<MetadataOperation>(64);
+            .with_array::<MetadataOperation>("metadata operations", 64);
         // TODO: Kind of a throwaway calculation because nothing about the reader can really be bounded at the moment.
-        builder.firm().with_fixed_amount(std::mem::size_of::<Self>());
+        builder.firm().with_single_value::<Self>("component struct");
     }
 }
 
