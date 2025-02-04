@@ -35,6 +35,7 @@ use self::telemetry::Telemetry;
 mod config;
 use self::config::HistogramConfiguration;
 
+const PASSTHROUGH_IDLE_FLUSH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 const PASSTHROUGH_EVENT_BUFFERS_MAX: usize = 16;
 
 const fn default_window_duration() -> Duration {
@@ -167,7 +168,7 @@ pub struct AggregateConfiguration {
     /// order to optimize the efficiency of processing them in the next component. This setting controls the maximum
     /// amount of time that passthrough metrics will be buffered before being forwarded.
     ///
-    /// Defaults to 2 seconds.
+    /// Defaults to 1 seconds.
     #[serde(
         rename = "aggregate_passthrough_idle_flush_timeout",
         default = "default_passthrough_idle_flush_timeout"
@@ -313,7 +314,7 @@ impl Transform for Aggregate {
         );
         let mut final_primary_flush = false;
 
-        let passthrough_flush = interval(Duration::from_secs(2));
+        let passthrough_flush = interval(PASSTHROUGH_IDLE_FLUSH_CHECK_INTERVAL);
         let mut passthrough_batcher = PassthroughBatcher::new(
             self.passthrough_event_buffer_len,
             self.passthrough_idle_flush_timeout,
