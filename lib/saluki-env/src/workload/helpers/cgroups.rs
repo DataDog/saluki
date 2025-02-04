@@ -229,7 +229,19 @@ impl HierarchyReader {
             let maybe_cgroup_path = fields.nth(1);
             let maybe_fs_type = fields.nth(0);
 
-            if let (Some(cgroup_path), Some(fs_type)) = (maybe_cgroup_path, maybe_fs_type) {
+            if let (Some(raw_cgroup_path), Some(fs_type)) = (maybe_cgroup_path, maybe_fs_type) {
+                let cgroup_path = Path::new(raw_cgroup_path);
+
+                // Make sure this path is rooted within our configured cgroupfs path.
+                //
+                // When we're inside a container that has a host-mapped cgroupfs path, the `mounts`` file might end up
+                // having duplicate entries (like one set as `/sys/fs/cgroup` and another set as `/host/sys/fs/cgroup`,
+                // etc)... and we want to use the one that matches our configured cgroupfs path as that's the one that
+                // will actually have the cgroups we care about.
+                if !cgroup_path.starts_with(config.cgroupfs_path()) {
+                    continue;
+                }
+
                 match fs_type {
                     // For cgroups v1, we have to go through all mounts we see to build a full list of enabled controlled.
                     "cgroup" => process_cgroupv1_mount_entry(cgroup_path, &mut controllers),
@@ -323,9 +335,9 @@ impl<'a> CgroupControllerEntry<'a> {
     }
 }
 
-fn process_cgroupv1_mount_entry(cgroup_path: &str, controllers: &mut HashMap<String, PathBuf>) {
+fn process_cgroupv1_mount_entry(cgroup_path: &Path, controllers: &mut HashMap<String, PathBuf>) {
     // Split the cgroup path, since there can be multiple controllers mounted at the same path.
-    let path_controllers = Path::new(cgroup_path)
+    let path_controllers = cgroup_path
         .file_name()
         .and_then(|s| s.to_str().map(|s| s.split(',')))
         .into_iter()
@@ -334,7 +346,7 @@ fn process_cgroupv1_mount_entry(cgroup_path: &str, controllers: &mut HashMap<Str
         // If we have an existing path mapping for this controller, keep whichever one is the
         // shortest, as we want the more generic path.
         if let Some(existing_path) = controllers.get(path_controller) {
-            if existing_path.as_os_str().len() < cgroup_path.len() {
+            if existing_path.as_os_str().len() < cgroup_path.as_os_str().len() {
                 continue;
             }
         }
@@ -343,11 +355,9 @@ fn process_cgroupv1_mount_entry(cgroup_path: &str, controllers: &mut HashMap<Str
     }
 }
 
-fn process_cgroupv2_mount_entry(cgroup_path: &str) -> Result<Option<HierarchyReader>, GenericError> {
-    let root = PathBuf::from(cgroup_path);
-
+fn process_cgroupv2_mount_entry(cgroup_path: &Path) -> Result<Option<HierarchyReader>, GenericError> {
     // Read and get the list of active/enabled controllers.
-    let controllers_path = root.join(CGROUPS_V2_CONTROLLERS_FILE);
+    let controllers_path = cgroup_path.join(CGROUPS_V2_CONTROLLERS_FILE);
     let controllers = read_lines(&controllers_path)
         .with_error_context(|| {
             format!(
@@ -360,7 +370,7 @@ fn process_cgroupv2_mount_entry(cgroup_path: &str) -> Result<Option<HierarchyRea
         .collect::<Vec<_>>();
 
     Ok(Some(HierarchyReader::V2 {
-        root: PathBuf::from(cgroup_path),
+        root: cgroup_path.to_path_buf(),
         controllers,
     }))
 }
