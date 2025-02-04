@@ -101,10 +101,10 @@ pub struct CgroupsReader {
 impl CgroupsReader {
     /// Creates a new `CgroupsReader` from the given configuration and interner.
     ///
-    /// If either a valid cgroups v1 or v2 hierarchy can be found, `Ok(Some)` is returned with the reader. Otherwise,
+    /// If either a valid cgroups v1 or v2 hierarchy is found, `Ok(Some)` is returned with the reader. Otherwise,
     /// `Ok(None)` is returned.
     ///
-    /// The provided interner will be used for storing references to cgroup names and container IDs.
+    /// The provided interner will be used exclusively for handling container IDs.
     ///
     /// # Errors
     ///
@@ -251,7 +251,7 @@ impl HierarchyReader {
 
                 // Make sure this path is rooted within our configured cgroupfs path.
                 //
-                // When we're inside a container that has a host-mapped cgroupfs path, the `mounts`` file might end up
+                // When we're inside a container that has a host-mapped cgroupfs path, the `mounts` file might end up
                 // having duplicate entries (like one set as `/sys/fs/cgroup` and another set as `/host/sys/fs/cgroup`,
                 // etc)... and we want to use the one that matches our configured cgroupfs path as that's the one that
                 // will actually have the cgroups we care about.
