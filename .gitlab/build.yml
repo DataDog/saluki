@@ -8,8 +8,9 @@ calculate-build-metadata:
     reports:
       dotenv: build.env
 
-build-adp-image:
+build-adp-image-amd64:
   stage: build
+  tags: ["arch:amd64"]
   image: ${DOCKER_BUILD_IMAGE}
   needs:
     - calculate-build-metadata
@@ -19,16 +20,10 @@ build-adp-image:
     KUBERNETES_MEMORY_REQUEST: "8Gi"
     KUBERNETES_MEMORY_LIMIT: "12Gi"
   script:
-    # As it turns out, doing the multi-platform build in a single step means we're sacrificing build performance. For
-    # example, building the ARM64 image on an AMD64 runner is anywhere between 2-3x slower, which then slows downs
-    # things like the correctness test.
-    #
-    # We should consider bringing back the individual build steps, and then constructing the multi-image manifest
-    # ourselves.
     - docker buildx build
-      --platform linux/amd64,linux/arm64
+      --platform linux/amd64
       --file ./docker/Dockerfile.agent-data-plane
-      --tag ${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}
+      --tag ${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}-amd64
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg BUILD_PROFILE=optimized-debug-release
@@ -45,6 +40,51 @@ build-adp-image:
       --label ci.job_id=${CI_JOB_ID}
       --push
       .
+
+build-adp-image-arm64:
+  stage: build
+  tags: ["arch:arm64"]
+  image: ${DOCKER_BUILD_IMAGE}
+  needs:
+    - calculate-build-metadata
+  variables:
+    # Compiling Rust is intensive. ¯\_(ツ)_/¯
+    KUBERNETES_CPU_REQUEST: "16"
+    KUBERNETES_MEMORY_REQUEST: "8Gi"
+    KUBERNETES_MEMORY_LIMIT: "12Gi"
+  script:
+    - docker buildx build
+      --platform linux/arm64
+      --file ./docker/Dockerfile.agent-data-plane
+      --tag ${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}-arm64
+      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
+      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
+      --build-arg BUILD_PROFILE=optimized-debug-release
+      --build-arg APP_FULL_NAME=${APP_FULLNAME}
+      --build-arg APP_SHORT_NAME=${APP_SHORT_NAME}
+      --build-arg APP_IDENTIFIER=${APP_IDENTIFIER}
+      --build-arg APP_VERSION=${APP_VERSION}
+      --build-arg APP_GIT_HASH=${APP_GIT_HASH}
+      --build-arg APP_BUILD_TIME=${APP_BUILD_TIME}
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --push
+      .
+
+build-adp-image:
+  stage: build
+  image: ${DOCKER_BUILD_IMAGE}
+  needs:
+    - build-adp-image-amd64
+    - build-adp-image-arm64
+  script:
+    - docker manifest create ${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA} 
+      --amend ${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}-amd64
+      --amend ${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}-arm64
+    - docker manifest push ${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}
 
 build-converged-adp-image:
   stage: build
