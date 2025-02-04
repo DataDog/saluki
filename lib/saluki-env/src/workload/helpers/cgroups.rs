@@ -87,6 +87,10 @@ impl CgroupsConfiguration {
 }
 
 /// Reader for querying control groups being used for containerization.
+///
+/// This reader is capable of querying both cgroups v1 and v2 hierarchies, and can be used to find cgroups -- either
+/// within the entire hierarchy, or for a specific process ID -- that are mapped specifically to containers. A simple
+/// naming heuristic is used to both identify and extract container IDs from cgroup names.
 #[derive(Clone)]
 pub struct CgroupsReader {
     procfs_path: PathBuf,
@@ -95,6 +99,16 @@ pub struct CgroupsReader {
 }
 
 impl CgroupsReader {
+    /// Creates a new `CgroupsReader` from the given configuration and interner.
+    ///
+    /// If either a valid cgroups v1 or v2 hierarchy can be found, `Ok(Some)` is returned with the reader. Otherwise,
+    /// `Ok(None)` is returned.
+    ///
+    /// The provided interner will be used for storing references to cgroup names and container IDs.
+    ///
+    /// # Errors
+    ///
+    /// If there is an I/O error while attempting to query the current cgroups hierarchy, an error will be returned.
     pub fn try_from_config(
         config: &CgroupsConfiguration, interner: GenericMapInterner,
     ) -> Result<Option<Self>, GenericError> {
@@ -125,8 +139,6 @@ impl CgroupsReader {
                 );
 
                 return Some(Cgroup {
-                    name: name.to_string(),
-                    path: cgroup_path.to_path_buf(),
                     ino: metadata.ino(),
                     container_id,
                 });
@@ -136,6 +148,10 @@ impl CgroupsReader {
         None
     }
 
+    /// Gets a cgroup for the given process ID.
+    ///
+    /// This method will attempt to find the cgroup for the given process ID by looking at the `/proc/<pid>/cgroup`
+    /// file. If the process ID does not exist or is not attached to a cgroup, `None` will be returned.
     pub fn get_cgroup_by_pid(&self, pid: u32) -> Option<Cgroup> {
         // See if the given process ID exists in the proc filesystem _and_ if there's a cgroup path for it.
         let proc_pid_cgroup_path = self.procfs_path.join(pid.to_string()).join("cgroup");
@@ -174,6 +190,7 @@ impl CgroupsReader {
         None
     }
 
+    /// Gets all child cgroups in the current cgroups hierarchy
     pub fn get_child_cgroups(&self) -> Vec<Cgroup> {
         let mut cgroups = Vec::new();
         let mut visit = |path: &Path| {
@@ -212,7 +229,7 @@ enum HierarchyReader {
 }
 
 impl HierarchyReader {
-    pub fn try_from_config(config: &CgroupsConfiguration) -> Result<Option<Self>, GenericError> {
+    fn try_from_config(config: &CgroupsConfiguration) -> Result<Option<Self>, GenericError> {
         // Open the mount file from procfs to scan through and find any cgroups subsystems.
         let mounts_path = config.procfs_path().join("mounts");
         let mount_entries = read_lines(&mounts_path)
@@ -302,14 +319,25 @@ impl HierarchyReader {
     }
 }
 
+/// A container cgroup.
 pub struct Cgroup {
-    pub name: String,
-    pub path: PathBuf,
-    pub ino: u64,
-    pub container_id: MetaString,
+    ino: u64,
+    container_id: MetaString,
 }
 
-pub struct CgroupControllerEntry<'a> {
+impl Cgroup {
+    /// Returns the inode of the cgroup controller.
+    pub fn inode(&self) -> u64 {
+        self.ino
+    }
+
+    /// Consumes `self` and returns the container ID.
+    pub fn into_container_id(self) -> MetaString {
+        self.container_id
+    }
+}
+
+struct CgroupControllerEntry<'a> {
     id: usize,
     name: Option<&'a str>,
     path: &'a Path,
