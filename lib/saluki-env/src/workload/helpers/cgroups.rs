@@ -13,7 +13,7 @@ use regex::Regex;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stringtheory::{interning::GenericMapInterner, MetaString};
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 
 use crate::features::{Feature, FeatureDetector};
 
@@ -112,16 +112,16 @@ impl CgroupsReader {
                 let metadata = match cgroup_path.metadata() {
                     Ok(metadata) => metadata,
                     Err(e) => {
-                        debug!(error = %e, "Failed to get metadata for possible cgroup controller path '{}'.", cgroup_path.display());
+                        trace!(error = %e, cgroup_controller_path = %cgroup_path.display(), "Failed to get metadata for possible cgroup controller path.");
                         return None;
                     }
                 };
 
-                debug!(
+                trace!(
                     controller_inode = metadata.ino(),
-                    "Found valid cgroups controller for container '{}' at '{}'.",
-                    container_id,
-                    cgroup_path.display()
+                    %container_id,
+                    cgroup_controller_path = %cgroup_path.display(),
+                    "Found valid cgroups controller for container.",
                 );
 
                 return Some(Cgroup {
@@ -143,13 +143,13 @@ impl CgroupsReader {
             Ok(lines) => lines,
             Err(e) => match e.kind() {
                 io::ErrorKind::NotFound => {
-                    debug!(pid, "Process does not exist or is not attached to a cgroup.");
+                    debug!(pid, cgroup_lookup_path = %proc_pid_cgroup_path.display(), "Process does not exist or is not attached to a cgroup.");
                     return None;
-                },
+                }
                 _ => {
-                    debug!(error = %e, pid, "Failed to read cgroup file for process.");
+                    debug!(error = %e, pid, cgroup_lookup_path = %proc_pid_cgroup_path.display(), "Failed to read cgroup file for process.");
                     return None;
-                },
+                }
             },
         };
 
@@ -169,7 +169,7 @@ impl CgroupsReader {
             }
         }
 
-        debug!(pid, base_controller_name, "Could not find matching base cgroup controller for process.");
+        debug!(pid, cgroup_lookup_path = %proc_pid_cgroup_path.display(), base_controller_name, "Could not find matching base cgroup controller for process.");
 
         None
     }
@@ -456,7 +456,8 @@ mod tests {
     #[test]
     fn parse_controller_entry_cgroups_v2() {
         let controller_id = 0;
-        let controller_path_raw = "/system.slice/docker-0b96e72f48e169638a735c0a05adcfc9d6aba2bf6697b627f1635b4f00ea011d.scope";
+        let controller_path_raw =
+            "/system.slice/docker-0b96e72f48e169638a735c0a05adcfc9d6aba2bf6697b627f1635b4f00ea011d.scope";
         let controller_path = Path::new(controller_path_raw);
         let raw = format!("{}::{}", controller_id, controller_path_raw);
 
@@ -468,7 +469,8 @@ mod tests {
 
     #[test]
     fn extract_container_id_cri_containerd() {
-        let expected_container_id = MetaString::from("06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe");
+        let expected_container_id =
+            MetaString::from("06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe");
         let raw = format!("cri-containerd-{}.scope", expected_container_id);
         let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
 
