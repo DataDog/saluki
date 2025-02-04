@@ -44,7 +44,7 @@ impl CgroupsConfiguration {
         config: &GenericConfiguration, feature_detector: FeatureDetector,
     ) -> Result<Self, GenericError> {
         let procfs_root = match config.try_get_typed::<PathBuf>("container_proc_root")? {
-            Some(procfs_root) => procfs_root,
+            Some(path) => path,
             None => {
                 if feature_detector.is_feature_available(Feature::HostMappedProcfs) {
                     PathBuf::from(DEFAULT_HOST_MAPPED_PROCFS_ROOT)
@@ -55,7 +55,7 @@ impl CgroupsConfiguration {
         };
 
         let cgroupfs_root = match config.try_get_typed::<PathBuf>("container_cgroup_root")? {
-            Some(procfs_root) => procfs_root,
+            Some(path) => path,
             None => {
                 if feature_detector.is_feature_available(Feature::HostMappedProcfs) {
                     PathBuf::from(DEFAULT_HOST_MAPPED_CGROUPFS_ROOT)
@@ -139,7 +139,19 @@ impl CgroupsReader {
     pub fn get_cgroup_by_pid(&self, pid: u32) -> Option<Cgroup> {
         // See if the given process ID exists in the proc filesystem _and_ if there's a cgroup path for it.
         let proc_pid_cgroup_path = self.procfs_path.join(pid.to_string()).join("cgroup");
-        let lines = read_lines(&proc_pid_cgroup_path).ok()?;
+        let lines = match read_lines(&proc_pid_cgroup_path) {
+            Ok(lines) => lines,
+            Err(e) => match e.kind() {
+                io::ErrorKind::NotFound => {
+                    debug!(pid, "Process does not exist or is not attached to a cgroup.");
+                    return None;
+                },
+                _ => {
+                    debug!(error = %e, pid, "Failed to read cgroup file for process.");
+                    return None;
+                },
+            },
+        };
 
         let base_controller_name = self.hierarchy_reader.base_controller();
 
@@ -156,6 +168,8 @@ impl CgroupsReader {
                 }
             }
         }
+
+        debug!(pid, base_controller_name, "Could not find matching base cgroup controller for process.");
 
         None
     }
@@ -415,4 +429,50 @@ fn extract_container_id(cgroup_name: &str, interner: &GenericMapInterner) -> Opt
                 None
             }
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{num::NonZeroUsize, path::Path};
+
+    use stringtheory::{interning::GenericMapInterner, MetaString};
+
+    use super::{extract_container_id, CgroupControllerEntry};
+
+    #[test]
+    fn parse_controller_entry_cgroups_v1() {
+        let controller_id = 12;
+        let controller_name = "memory";
+        let controller_path_raw = "/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod095a9475_4c4f_4726_912c_65743701ef3f.slice/cri-containerd-06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe.scope";
+        let controller_path = Path::new(controller_path_raw);
+        let raw = format!("{}:{}:{}", controller_id, controller_name, controller_path_raw);
+
+        let entry = CgroupControllerEntry::try_from_str(&raw).unwrap();
+        assert_eq!(entry.id, controller_id);
+        assert_eq!(entry.name, Some(controller_name));
+        assert_eq!(entry.path, controller_path);
+    }
+
+    #[test]
+    fn parse_controller_entry_cgroups_v2() {
+        let controller_id = 0;
+        let controller_path_raw = "/system.slice/docker-0b96e72f48e169638a735c0a05adcfc9d6aba2bf6697b627f1635b4f00ea011d.scope";
+        let controller_path = Path::new(controller_path_raw);
+        let raw = format!("{}::{}", controller_id, controller_path_raw);
+
+        let entry = CgroupControllerEntry::try_from_str(&raw).unwrap();
+        assert_eq!(entry.id, controller_id);
+        assert_eq!(entry.name, None);
+        assert_eq!(entry.path, controller_path);
+    }
+
+    #[test]
+    fn extract_container_id_cri_containerd() {
+        let expected_container_id = MetaString::from("06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe");
+        let raw = format!("cri-containerd-{}.scope", expected_container_id);
+        let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
+
+        let actual_container_id = extract_container_id(&raw, &interner);
+        assert_eq!(Some(expected_container_id), actual_container_id);
+    }
 }
