@@ -61,7 +61,7 @@ impl OnDemandPIDResolver {
         // If we don't have a mapping, query the host OS for it.
         match self.inner.cgroups_reader.get_cgroup_by_pid(process_id) {
             Some(cgroup) => {
-                let container_eid = EntityId::Container(cgroup.container_id);
+                let container_eid = EntityId::Container(cgroup.into_container_id());
 
                 debug!("Resolved PID {} to container ID {}.", process_id, container_eid);
 
