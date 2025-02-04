@@ -117,21 +117,18 @@ fn traverse_cgroups(
     let start = std::time::Instant::now();
 
     let child_cgroups = reader.get_child_cgroups();
+    let child_cgroups_len = child_cgroups.len();
     for child_cgroup in child_cgroups {
-        let cgroup_name = child_cgroup.name;
-        let container_id = child_cgroup.container_id;
-        debug!(%container_id, %cgroup_name, "Found container control group.");
-
         // Create an ancestry link between the container inode and the container ID.
-        let entity_id = EntityId::ContainerInode(child_cgroup.ino);
-        let ancestor_entity_id = EntityId::Container(container_id);
+        let entity_id = EntityId::ContainerInode(child_cgroup.inode());
+        let ancestor_entity_id = EntityId::Container(child_cgroup.into_container_id());
 
         let operation = MetadataOperation::link_ancestor(entity_id, ancestor_entity_id);
         operations.push(operation);
     }
 
     let elapsed = start.elapsed();
-    tracing::info!(elapsed = ?elapsed, "Traversed cgroups.");
+    debug!(elapsed = ?elapsed, child_cgroups_len, "Traversed cgroups.");
 
     Ok((reader, operations))
 }
