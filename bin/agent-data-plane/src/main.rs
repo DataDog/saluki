@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use memory_accounting::ComponentRegistry;
+use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{api::APIBuilder, logging::LoggingAPIHandler, prelude::*};
 use saluki_components::{
     destinations::{
@@ -128,7 +128,17 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
     let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;
-    let memory_limiter = initialize_memory_bounds(bounds_configuration, component_registry)?;
+    let memory_limiter = initialize_memory_bounds(bounds_configuration, &component_registry)?;
+
+    if let Ok(val) = std::env::var("DD_ADP_WRITE_SIZING_GUIDE") {
+        if val != "false" {
+            if let Err(error) = write_sizing_guide(component_registry.as_bounds()) {
+                warn!("Failed to write sizing guide: {}", error);
+            } else {
+                return Ok(());
+            }
+        }
+    }
 
     // Bounds validation succeeded, so now we'll build and spawn the topology.
     let built_topology = blueprint.build().await?;
@@ -260,6 +270,28 @@ async fn create_topology(
     }
 
     Ok(blueprint)
+}
+
+fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
+    use std::{
+        fs::File,
+        io::{BufWriter, Write},
+    };
+
+    let template = include_str!("sizing_guide_template.html");
+    let mut output = BufWriter::new(File::create("sizing_guide.html")?);
+    for line in template.lines() {
+        if line.trim() == "<!-- INSERT GENERATED CONTENT -->" {
+            serde_json::to_writer_pretty(&mut output, &bounds.to_exprs())?;
+        } else {
+            output.write_all(line.as_bytes())?;
+        }
+        output.write_all(b"\n")?;
+    }
+    info!("Wrote sizing guide to sizing_guide.html");
+    output.flush()?;
+
+    Ok(())
 }
 
 async fn spawn_unprivileged_api(

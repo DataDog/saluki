@@ -74,6 +74,9 @@ pub mod allocator;
 //mod builder;
 mod api;
 mod registry;
+
+use serde::Serialize;
+
 pub use self::registry::{ComponentRegistry, MemoryBoundsBuilder};
 
 mod grant;
@@ -116,11 +119,90 @@ where
     }
 }
 
+/// Represents a memory usage expression for a component.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "type")]
+pub enum UsageExpr {
+    /// A config value
+    Config {
+        /// The name
+        name: String,
+        /// The value
+        value: usize,
+    },
+
+    /// A struct size
+    StructSize {
+        /// The value
+        name: String,
+        /// The value
+        value: usize,
+    },
+
+    /// A constant value
+    Constant {
+        /// The name
+        name: String,
+        /// The value
+        value: usize,
+    },
+
+    /// A product of subexpressions
+    Product {
+        /// Values to multiply
+        values: Vec<UsageExpr>,
+    },
+
+    /// A sum of subexpressions
+    Sum {
+        /// Values to add
+        values: Vec<UsageExpr>,
+    },
+}
+
+impl UsageExpr {
+    /// Creates a new usage expression that is a config value.
+    pub fn config(s: impl Into<String>, value: usize) -> Self {
+        Self::Config { name: s.into(), value }
+    }
+
+    /// Creates a new usage expression that is a constant value.
+    pub fn constant(s: impl Into<String>, value: usize) -> Self {
+        Self::Constant { name: s.into(), value }
+    }
+
+    /// Creates a new usage expression that is a struct size.
+    pub fn struct_size<T>(s: impl Into<String>) -> Self {
+        Self::StructSize {
+            name: s.into(),
+            value: std::mem::size_of::<T>(),
+        }
+    }
+
+    /// Creates a new usage expression that is the product of two subexpressions.
+    pub fn product(_s: impl Into<String>, lhs: UsageExpr, rhs: UsageExpr) -> Self {
+        Self::Product { values: vec![lhs, rhs] }
+    }
+
+    /// Creates a new usage expression that is the sum of two subexpressions.
+    pub fn sum(_s: impl Into<String>, lhs: UsageExpr, rhs: UsageExpr) -> Self {
+        Self::Sum { values: vec![lhs, rhs] }
+    }
+
+    fn evaluate(&self) -> usize {
+        match self {
+            Self::Config { value, .. } | Self::StructSize { value, .. } | Self::Constant { value, .. } => *value,
+            Self::Product { values } => values.iter().map(UsageExpr::evaluate).product(),
+            Self::Sum { values } => values.iter().map(UsageExpr::evaluate).sum(),
+        }
+    }
+}
+
 /// Memory bounds for a component.
 #[derive(Clone, Debug, Default)]
 pub struct ComponentBounds {
-    self_minimum_required_bytes: usize,
-    self_firm_limit_bytes: usize,
+    self_minimum_required_bytes: Vec<UsageExpr>,
+    self_firm_limit_bytes: Vec<UsageExpr>,
     subcomponents: HashMap<String, ComponentBounds>,
 }
 
@@ -128,6 +210,9 @@ impl ComponentBounds {
     /// Gets the total minimum required bytes for this component and all subcomponents.
     pub fn total_minimum_required_bytes(&self) -> usize {
         self.self_minimum_required_bytes
+            .iter()
+            .map(UsageExpr::evaluate)
+            .sum::<usize>()
             + self
                 .subcomponents
                 .values()
@@ -140,7 +225,14 @@ impl ComponentBounds {
     /// The firm limit includes the minimum required bytes.
     pub fn total_firm_limit_bytes(&self) -> usize {
         self.self_minimum_required_bytes
-            + self.self_firm_limit_bytes
+            .iter()
+            .map(UsageExpr::evaluate)
+            .sum::<usize>()
+            + self
+                .self_firm_limit_bytes
+                .iter()
+                .map(UsageExpr::evaluate)
+                .sum::<usize>()
             + self
                 .subcomponents
                 .values()
@@ -153,5 +245,35 @@ impl ComponentBounds {
     /// Only iterates over direct subcomponents, not the subcomponents of those subcomponents, and so on.
     pub fn subcomponents(&self) -> impl IntoIterator<Item = (&String, &ComponentBounds)> {
         self.subcomponents.iter()
+    }
+
+    /// Returns a tree of all bound expressions for this component and its subcomponents as JSON.
+    pub fn to_exprs(&self) -> Vec<serde_json::Value> {
+        let path = vec!["root".to_string()];
+        let mut stack = vec![(path, self)];
+        let mut output = Vec::new();
+
+        while let Some((path, cb)) = stack.pop() {
+            for expr in &cb.self_minimum_required_bytes {
+                output.push(serde_json::json!({
+                    "name": format!("{}.min", path.join(".")),
+                    "expr": expr,
+                }));
+            }
+            for expr in &cb.self_firm_limit_bytes {
+                output.push(serde_json::json!({
+                    "name": format!("{}.firm", path.join(".")),
+                    "expr": expr,
+                }));
+            }
+
+            for (name, subcomponent) in cb.subcomponents() {
+                let mut path = path.clone();
+                path.push(name.clone());
+                stack.push((path, subcomponent));
+            }
+        }
+
+        output
     }
 }

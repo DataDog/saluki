@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>ADP Memory Bounds Calculator</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                margin: 20px;
+            }
+            .inputs-group {
+                display: grid;
+                grid-template-columns: auto 150px;
+                max-width: fit-content;
+                gap: 10px;
+                margin-bottom: 10px;
+                align-items: center;
+            }
+            label {
+                display: block;
+            }
+            input[type="number"] {
+                display: block;
+            }
+            #tree-output {
+                margin-top: 20px;
+                font-family: monospace;
+            }
+            .tree-node {
+                margin-left: 20px;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>ADP Memory Bounds Calculator</h1>
+        <h2>Workload inputs</h2>
+        <div class="inputs-group">
+            <label for="cardinality">cardinality: </label>
+            <input
+                name="cardinality"
+                id="cardinality"
+                type="number"
+                value="5000"
+                onchange="updateCardinality()"
+            />
+        </div>
+        <h2>Config inputs</h2>
+        <div id="config-inputs" class="inputs-group"></div>
+        <h2>Results</h2>
+        <p>
+            Firm memory bound:
+            <span id="result"></span>
+        </p>
+        <div id="tree-output"></div>
+
+        <script>
+            // Function to load the bounds expressions from an external JSON file
+            async function loadBoundsExprs() {
+                const response = await fetch("bounds.json");
+                if (!response.ok) {
+                    throw new Error("Network response was not ok");
+                }
+                return await response.json();
+            }
+
+            // Function to generate input fields for configuration keys
+            function generateConfigInputs(configKeys) {
+                const configInputsDiv =
+                    document.getElementById("config-inputs");
+                Object.keys(configKeys).forEach((component) => {
+                    Object.keys(configKeys[component]).forEach((leaf) => {
+                        const key = [component, leaf].join(".");
+                        const label = document.createElement("label");
+                        label.htmlFor = key;
+                        label.textContent = `${key}:`;
+
+                        const input = document.createElement("input");
+                        input.type = "number";
+                        input.id = key;
+                        input.name = key;
+                        input.defaultValue = configKeys[component][leaf];
+                        input.placeholder = configKeys[component][leaf];
+                        input.onchange = () => {
+                            evaluateExpressionTree();
+                        };
+
+                        configInputsDiv.appendChild(label);
+                        configInputsDiv.appendChild(input);
+                    });
+                });
+            }
+
+            function updateCardinality() {
+                const cardinality = parseInt(
+                    document.getElementById("cardinality").value,
+                    10,
+                );
+
+                // Set the aggregate context limit to 10% more than the cardinality, with a minimum of 100
+                document.getElementById(
+                    "dsd_agg.aggregate_context_limit",
+                ).value = Math.max(100, Math.ceil(cardinality * 1.1));
+
+                // Set the string interner size to a linear interpolation between 2MB and 96MB at 5000 and 250k cardinality, respectively
+                document.getElementById(
+                    "dsd_in.dogstatsd_string_interner_size",
+                ).value = Math.max(
+                    2097152,
+                    Math.floor(
+                        2097152 +
+                            ((cardinality - 5000) * (96000000 - 2097152)) /
+                                (250000 - 5000),
+                    ),
+                );
+
+                evaluateExpressionTree();
+            }
+
+            function formatBytes(bytes) {
+                if (bytes === 0) return "0 Bytes";
+
+                const k = 1024;
+                const sizes = [
+                    "Bytes",
+                    "KB",
+                    "MB",
+                    "GB",
+                    "TB",
+                    "PB",
+                    "EB",
+                    "ZB",
+                    "YB",
+                ];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                const size = bytes / Math.pow(k, i);
+
+                return `${size.toFixed(1)} ${sizes[i]}`;
+            }
+
+            // Function to evaluate the expression tree
+            function evaluateExpression(expression, config = {}) {
+                switch (expression.type) {
+                    case "Sum":
+                        return expression.values.reduce(
+                            (acc, expr) =>
+                                acc + evaluateExpression(expr, config),
+                            0,
+                        );
+                    case "Product":
+                        return expression.values.reduce(
+                            (acc, expr) =>
+                                acc * evaluateExpression(expr, config),
+                            1,
+                        );
+                    case "Config":
+                        if (config[expression.name] !== undefined) {
+                            return config[expression.name];
+                        } else {
+                            config[expression.name] = expression.value;
+                        }
+                        return config[expression.name];
+                    case "StructSize":
+                        return expression.value;
+                    case "Constant":
+                        return expression.value;
+                    default:
+                        throw new Error(
+                            `Unknown expression type: ${expression.type}`,
+                        );
+                }
+            }
+
+            // Function to create a nested list representation of the tree
+            function createTreeElement(tree, parentElement) {
+                const ul = document.createElement("ul");
+                let subtreeTotal = 0;
+                for (const key in tree) {
+                    const li = document.createElement("li");
+                    if (typeof tree[key] === "object") {
+                        const label = document.createElement("span");
+                        li.appendChild(label);
+                        const childTotal = createTreeElement(tree[key], li);
+                        label.textContent = `${key}: ${formatBytes(childTotal)}`;
+                        subtreeTotal += childTotal;
+                    } else {
+                        li.textContent = `${key}: ${formatBytes(tree[key])}`;
+                        subtreeTotal += tree[key];
+                    }
+                    ul.appendChild(li);
+                }
+                parentElement.appendChild(ul);
+                return subtreeTotal;
+            }
+
+            // Function to handle the evaluation button click
+            function evaluateExpressionTree() {
+                if (!boundsExprs) {
+                    alert("Bounds expressions not loaded yet.");
+                    return;
+                }
+
+                const config = {};
+                Object.keys(configKeys).forEach((component) => {
+                    Object.keys(configKeys[component]).forEach((attr) => {
+                        const key = [component, attr].join(".");
+                        const value = parseInt(
+                            document.getElementById(key).value,
+                            10,
+                        );
+                        if (!isNaN(value)) {
+                            if (config[component] === undefined) {
+                                config[component] = {};
+                            }
+                            config[component][attr] = value;
+                        }
+                    });
+                });
+
+                let total = 0;
+                const totalTree = {};
+                for (const boundsExpr of boundsExprs) {
+                    const fullPath = boundsExpr.name.split(".");
+                    const path = fullPath.slice(0, fullPath.length - 2);
+                    const leaf = fullPath[fullPath.length - 2];
+                    let tree = totalTree;
+                    for (const segment of path) {
+                        if (!tree[segment]) {
+                            tree[segment] = {};
+                        }
+                        tree = tree[segment];
+                    }
+
+                    const stringedPath = fullPath
+                        .slice(4, fullPath.length - 1)
+                        .join(".");
+                    const component_config = config[stringedPath] ?? {};
+                    const result = evaluateExpression(
+                        boundsExpr.expr,
+                        component_config,
+                    );
+                    if (Object.keys(component_config).length > 0) {
+                        config[stringedPath] = component_config;
+                    }
+
+                    if (isNaN(result)) {
+                        console.log("Offending expression:", boundsExpr.expr);
+                    } else {
+                        total += result;
+                        if (!tree[leaf]) {
+                            tree[leaf] = 0;
+                        }
+                        tree[leaf] += result;
+                    }
+                }
+                document.getElementById("result").textContent =
+                    formatBytes(total);
+
+                const treeOutputDiv = document.getElementById("tree-output");
+                treeOutputDiv.innerHTML = "";
+                createTreeElement(totalTree, treeOutputDiv);
+
+                return config;
+            }
+
+            // Vars gotta be global
+            let configKeys = {};
+            let boundsExprs = null;
+
+            // Load the expression tree when the page loads
+            window.onload = async function () {
+                // boundsExprs = await loadBoundsExprs();
+                boundsExprs = JSON.parse(
+                    document.getElementById("json-data").textContent,
+                );
+                console.log("loaded bounds exprs", boundsExprs);
+                let config = evaluateExpressionTree();
+                console.log("initial config vals:", config);
+                // for (const outer_key of Object.keys(config)) {
+                //     for (const inner_key of Object.keys(config[outer_key])) {
+                //         const key = [outer_key, inner_key].join(".");
+                //         configKeys[key] = config[inner_key];
+                //     }
+                // }
+                configKeys = config;
+                console.log("config keys", config);
+                generateConfigInputs(configKeys);
+            };
+        </script>
+
+        <script id="json-data" type="application/json">
+            <!-- INSERT GENERATED CONTENT -->
+        </script>
+    </body>
+</html>

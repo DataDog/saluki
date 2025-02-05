@@ -30,7 +30,7 @@ pub use self::value::{HistogramPoints, HistogramSummary, MetricValues, ScalarPoi
 ///
 /// The metadata contains ancillary data related to the metric, such as the timestamp, sample rate, and origination
 /// information like hostname and sender.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Metric {
     context: Context,
     values: MetricValues,

@@ -67,10 +67,10 @@ impl TopologyBlueprint {
         let mut event_buffer_bounds_builder = bounds_builder.subcomponent("buffer_pools/event_buffer");
         event_buffer_bounds_builder
             .minimum()
-            .with_fixed_amount(GLOBAL_EVENT_BUFFER_POOL_SIZE_MIN);
+            .with_fixed_amount("global event buffer pool", GLOBAL_EVENT_BUFFER_POOL_SIZE_MIN);
         event_buffer_bounds_builder
             .firm()
-            .with_fixed_amount(GLOBAL_EVENT_BUFFER_POOL_SIZE_FIRM);
+            .with_fixed_amount("global event buffer pool", GLOBAL_EVENT_BUFFER_POOL_SIZE_FIRM);
 
         Self {
             graph: Graph::default(),
@@ -87,7 +87,7 @@ impl TopologyBlueprint {
             .get_or_create("interconnects")
             .bounds_builder()
             .minimum()
-            .with_array::<FixedSizeEventBuffer>(128);
+            .with_array::<FixedSizeEventBuffer>("fixed size event buffers", 128);
     }
 
     /// Adds a source component to the blueprint.

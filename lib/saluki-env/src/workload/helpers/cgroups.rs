@@ -13,7 +13,7 @@ use regex::Regex;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stringtheory::{interning::GenericMapInterner, MetaString};
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 
 use crate::features::{Feature, FeatureDetector};
 
@@ -44,7 +44,7 @@ impl CgroupsConfiguration {
         config: &GenericConfiguration, feature_detector: FeatureDetector,
     ) -> Result<Self, GenericError> {
         let procfs_root = match config.try_get_typed::<PathBuf>("container_proc_root")? {
-            Some(procfs_root) => procfs_root,
+            Some(path) => path,
             None => {
                 if feature_detector.is_feature_available(Feature::HostMappedProcfs) {
                     PathBuf::from(DEFAULT_HOST_MAPPED_PROCFS_ROOT)
@@ -55,7 +55,7 @@ impl CgroupsConfiguration {
         };
 
         let cgroupfs_root = match config.try_get_typed::<PathBuf>("container_cgroup_root")? {
-            Some(procfs_root) => procfs_root,
+            Some(path) => path,
             None => {
                 if feature_detector.is_feature_available(Feature::HostMappedProcfs) {
                     PathBuf::from(DEFAULT_HOST_MAPPED_CGROUPFS_ROOT)
@@ -87,6 +87,10 @@ impl CgroupsConfiguration {
 }
 
 /// Reader for querying control groups being used for containerization.
+///
+/// This reader is capable of querying both cgroups v1 and v2 hierarchies, and can be used to find cgroups -- either
+/// within the entire hierarchy, or for a specific process ID -- that are mapped specifically to containers. A simple
+/// naming heuristic is used to both identify and extract container IDs from cgroup names.
 #[derive(Clone)]
 pub struct CgroupsReader {
     procfs_path: PathBuf,
@@ -95,6 +99,16 @@ pub struct CgroupsReader {
 }
 
 impl CgroupsReader {
+    /// Creates a new `CgroupsReader` from the given configuration and interner.
+    ///
+    /// If either a valid cgroups v1 or v2 hierarchy is found, `Ok(Some)` is returned with the reader. Otherwise,
+    /// `Ok(None)` is returned.
+    ///
+    /// The provided interner will be used exclusively for handling container IDs.
+    ///
+    /// # Errors
+    ///
+    /// If there is an I/O error while attempting to query the current cgroups hierarchy, an error will be returned.
     pub fn try_from_config(
         config: &CgroupsConfiguration, interner: GenericMapInterner,
     ) -> Result<Option<Self>, GenericError> {
@@ -112,21 +126,19 @@ impl CgroupsReader {
                 let metadata = match cgroup_path.metadata() {
                     Ok(metadata) => metadata,
                     Err(e) => {
-                        debug!(error = %e, "Failed to get metadata for possible cgroup controller path '{}'.", cgroup_path.display());
+                        trace!(error = %e, cgroup_controller_path = %cgroup_path.display(), "Failed to get metadata for possible cgroup controller path.");
                         return None;
                     }
                 };
 
-                debug!(
+                trace!(
                     controller_inode = metadata.ino(),
-                    "Found valid cgroups controller for container '{}' at '{}'.",
-                    container_id,
-                    cgroup_path.display()
+                    %container_id,
+                    cgroup_controller_path = %cgroup_path.display(),
+                    "Found valid cgroups controller for container.",
                 );
 
                 return Some(Cgroup {
-                    name: name.to_string(),
-                    path: cgroup_path.to_path_buf(),
                     ino: metadata.ino(),
                     container_id,
                 });
@@ -136,10 +148,26 @@ impl CgroupsReader {
         None
     }
 
+    /// Gets a cgroup for the given process ID.
+    ///
+    /// This method will attempt to find the cgroup for the given process ID by looking at the `/proc/<pid>/cgroup`
+    /// file. If the process ID does not exist or is not attached to a cgroup, `None` will be returned.
     pub fn get_cgroup_by_pid(&self, pid: u32) -> Option<Cgroup> {
         // See if the given process ID exists in the proc filesystem _and_ if there's a cgroup path for it.
         let proc_pid_cgroup_path = self.procfs_path.join(pid.to_string()).join("cgroup");
-        let lines = read_lines(&proc_pid_cgroup_path).ok()?;
+        let lines = match read_lines(&proc_pid_cgroup_path) {
+            Ok(lines) => lines,
+            Err(e) => match e.kind() {
+                io::ErrorKind::NotFound => {
+                    debug!(pid, cgroup_lookup_path = %proc_pid_cgroup_path.display(), "Process does not exist or is not attached to a cgroup.");
+                    return None;
+                }
+                _ => {
+                    debug!(error = %e, pid, cgroup_lookup_path = %proc_pid_cgroup_path.display(), "Failed to read cgroup file for process.");
+                    return None;
+                }
+            },
+        };
 
         let base_controller_name = self.hierarchy_reader.base_controller();
 
@@ -157,9 +185,12 @@ impl CgroupsReader {
             }
         }
 
+        debug!(pid, cgroup_lookup_path = %proc_pid_cgroup_path.display(), base_controller_name, "Could not find matching base cgroup controller for process.");
+
         None
     }
 
+    /// Gets all child cgroups in the current cgroups hierarchy
     pub fn get_child_cgroups(&self) -> Vec<Cgroup> {
         let mut cgroups = Vec::new();
         let mut visit = |path: &Path| {
@@ -198,7 +229,7 @@ enum HierarchyReader {
 }
 
 impl HierarchyReader {
-    pub fn try_from_config(config: &CgroupsConfiguration) -> Result<Option<Self>, GenericError> {
+    fn try_from_config(config: &CgroupsConfiguration) -> Result<Option<Self>, GenericError> {
         // Open the mount file from procfs to scan through and find any cgroups subsystems.
         let mounts_path = config.procfs_path().join("mounts");
         let mount_entries = read_lines(&mounts_path)
@@ -215,7 +246,19 @@ impl HierarchyReader {
             let maybe_cgroup_path = fields.nth(1);
             let maybe_fs_type = fields.nth(0);
 
-            if let (Some(cgroup_path), Some(fs_type)) = (maybe_cgroup_path, maybe_fs_type) {
+            if let (Some(raw_cgroup_path), Some(fs_type)) = (maybe_cgroup_path, maybe_fs_type) {
+                let cgroup_path = Path::new(raw_cgroup_path);
+
+                // Make sure this path is rooted within our configured cgroupfs path.
+                //
+                // When we're inside a container that has a host-mapped cgroupfs path, the `mounts` file might end up
+                // having duplicate entries (like one set as `/sys/fs/cgroup` and another set as `/host/sys/fs/cgroup`,
+                // etc)... and we want to use the one that matches our configured cgroupfs path as that's the one that
+                // will actually have the cgroups we care about.
+                if !cgroup_path.starts_with(config.cgroupfs_path()) {
+                    continue;
+                }
+
                 match fs_type {
                     // For cgroups v1, we have to go through all mounts we see to build a full list of enabled controlled.
                     "cgroup" => process_cgroupv1_mount_entry(cgroup_path, &mut controllers),
@@ -276,14 +319,25 @@ impl HierarchyReader {
     }
 }
 
+/// A container cgroup.
 pub struct Cgroup {
-    pub name: String,
-    pub path: PathBuf,
-    pub ino: u64,
-    pub container_id: MetaString,
+    ino: u64,
+    container_id: MetaString,
 }
 
-pub struct CgroupControllerEntry<'a> {
+impl Cgroup {
+    /// Returns the inode of the cgroup controller.
+    pub fn inode(&self) -> u64 {
+        self.ino
+    }
+
+    /// Consumes `self` and returns the container ID.
+    pub fn into_container_id(self) -> MetaString {
+        self.container_id
+    }
+}
+
+struct CgroupControllerEntry<'a> {
     id: usize,
     name: Option<&'a str>,
     path: &'a Path,
@@ -309,9 +363,9 @@ impl<'a> CgroupControllerEntry<'a> {
     }
 }
 
-fn process_cgroupv1_mount_entry(cgroup_path: &str, controllers: &mut HashMap<String, PathBuf>) {
+fn process_cgroupv1_mount_entry(cgroup_path: &Path, controllers: &mut HashMap<String, PathBuf>) {
     // Split the cgroup path, since there can be multiple controllers mounted at the same path.
-    let path_controllers = Path::new(cgroup_path)
+    let path_controllers = cgroup_path
         .file_name()
         .and_then(|s| s.to_str().map(|s| s.split(',')))
         .into_iter()
@@ -320,7 +374,7 @@ fn process_cgroupv1_mount_entry(cgroup_path: &str, controllers: &mut HashMap<Str
         // If we have an existing path mapping for this controller, keep whichever one is the
         // shortest, as we want the more generic path.
         if let Some(existing_path) = controllers.get(path_controller) {
-            if existing_path.as_os_str().len() < cgroup_path.len() {
+            if existing_path.as_os_str().len() < cgroup_path.as_os_str().len() {
                 continue;
             }
         }
@@ -329,11 +383,9 @@ fn process_cgroupv1_mount_entry(cgroup_path: &str, controllers: &mut HashMap<Str
     }
 }
 
-fn process_cgroupv2_mount_entry(cgroup_path: &str) -> Result<Option<HierarchyReader>, GenericError> {
-    let root = PathBuf::from(cgroup_path);
-
+fn process_cgroupv2_mount_entry(cgroup_path: &Path) -> Result<Option<HierarchyReader>, GenericError> {
     // Read and get the list of active/enabled controllers.
-    let controllers_path = root.join(CGROUPS_V2_CONTROLLERS_FILE);
+    let controllers_path = cgroup_path.join(CGROUPS_V2_CONTROLLERS_FILE);
     let controllers = read_lines(&controllers_path)
         .with_error_context(|| {
             format!(
@@ -346,7 +398,7 @@ fn process_cgroupv2_mount_entry(cgroup_path: &str) -> Result<Option<HierarchyRea
         .collect::<Vec<_>>();
 
     Ok(Some(HierarchyReader::V2 {
-        root: PathBuf::from(cgroup_path),
+        root: cgroup_path.to_path_buf(),
         controllers,
     }))
 }
@@ -415,4 +467,52 @@ fn extract_container_id(cgroup_name: &str, interner: &GenericMapInterner) -> Opt
                 None
             }
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{num::NonZeroUsize, path::Path};
+
+    use stringtheory::{interning::GenericMapInterner, MetaString};
+
+    use super::{extract_container_id, CgroupControllerEntry};
+
+    #[test]
+    fn parse_controller_entry_cgroups_v1() {
+        let controller_id = 12;
+        let controller_name = "memory";
+        let controller_path_raw = "/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod095a9475_4c4f_4726_912c_65743701ef3f.slice/cri-containerd-06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe.scope";
+        let controller_path = Path::new(controller_path_raw);
+        let raw = format!("{}:{}:{}", controller_id, controller_name, controller_path_raw);
+
+        let entry = CgroupControllerEntry::try_from_str(&raw).unwrap();
+        assert_eq!(entry.id, controller_id);
+        assert_eq!(entry.name, Some(controller_name));
+        assert_eq!(entry.path, controller_path);
+    }
+
+    #[test]
+    fn parse_controller_entry_cgroups_v2() {
+        let controller_id = 0;
+        let controller_path_raw =
+            "/system.slice/docker-0b96e72f48e169638a735c0a05adcfc9d6aba2bf6697b627f1635b4f00ea011d.scope";
+        let controller_path = Path::new(controller_path_raw);
+        let raw = format!("{}::{}", controller_id, controller_path_raw);
+
+        let entry = CgroupControllerEntry::try_from_str(&raw).unwrap();
+        assert_eq!(entry.id, controller_id);
+        assert_eq!(entry.name, None);
+        assert_eq!(entry.path, controller_path);
+    }
+
+    #[test]
+    fn extract_container_id_cri_containerd() {
+        let expected_container_id =
+            MetaString::from("06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe");
+        let raw = format!("cri-containerd-{}.scope", expected_container_id);
+        let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
+
+        let actual_container_id = extract_container_id(&raw, &interner);
+        assert_eq!(Some(expected_container_id), actual_container_id);
+    }
 }
