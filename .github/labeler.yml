@@ -88,3 +88,7 @@
 "destination/prometheus":
   - changed-files:
     - any-glob-to-any-file: ["lib/saluki-components/src/destinations/prometheus/**/*"]
+
+"rfc":
+  - changed-files:
+    - any-glob-to-any-file: ["rfcs/**/*"]
