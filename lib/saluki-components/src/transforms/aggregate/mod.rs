@@ -479,6 +479,8 @@ impl PassthroughBatcher {
 
             if self.active_buffer.try_push(event).is_some() {
                 error!("Event buffer is full even after forwarding events. Dropping event.");
+                self.telemetry.increment_events_dropped();
+                return;
             }
         }
 
