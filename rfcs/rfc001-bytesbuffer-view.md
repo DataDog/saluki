@@ -2,41 +2,68 @@
 
 ## Problem
 
-The design of `Framer` centers around being given a buffer that can be incrementally consumed/advanced as frames are decoded from it.
+The design of `Framer` centers around being given a buffer that can be incrementally consumed/advanced as frames are
+decoded from it.
 
-In order to provide an ergonomic approach for consuming the input buffer, `Framer::next_frame` is generic over the input buffer type, so long as it implements `bytes::Buf`. Advancing the buffer, however, requires mutable access, which precludes us from returning an immutable borrow over the slice representing our frame.
+In order to provide an ergonomic approach for consuming the input buffer, `Framer::next_frame` is generic over the input
+buffer type, so long as it implements `bytes::Buf`. Advancing the buffer, however, requires mutable access, which
+precludes us from returning an immutable borrow over the slice representing our frame.
 
-We get around this by calling `Buf::copy_to_bytes` to give us an owned value that can be returned, and since our input buffer is never `Bytes` in the first place, there is no special optimization under the hood: it allocates a new `Vec<u8>` and copies the bytes into it.
+We get around this by calling `Buf::copy_to_bytes` to give us an owned value that can be returned, and since our input
+buffer is never `Bytes` in the first place, there is no special optimization under the hood: it allocates a new
+`Vec<u8>` and copies the bytes into it.
 
-We need to be able to have a framer authoritatively advance the input buffer when a frame is decoded, and also be able to avoid allocating in order to return the frame to the caller.
+We need to be able to have a framer authoritatively advance the input buffer when a frame is decoded, and also be able
+to avoid allocating in order to return the frame to the caller.
 
 ## Why don't we use `Bytes` up front?
 
-Using `Bytes` as the input buffer type would, in practice, allow us to get zero-cost slicing in framer implementations with no additional effort. However, there are things that make trying to do this unergonomic and/or risky in the context of our goal of only utilizing fixed-size buffers.
+Using `Bytes` as the input buffer type would, in practice, allow us to get zero-cost slicing in framer implementations
+with no additional effort. However, there are things that make trying to do this unergonomic and/or risky in the context
+of our goal of only utilizing fixed-size buffers.
 
-`Bytes` is immutable, and so to even have a `Bytes` to give to a framer implies that you started out with a `BytesMut`. Since we want to pool these buffers, we need to pool them in their mutable form -- `BytesMut` -- so that they can actually be used for socket reads. 
+`Bytes` is immutable, and so to even have a `Bytes` to give to a framer implies that you started out with a `BytesMut`.
+Since we want to pool these buffers, we need to pool them in their mutable form -- `BytesMut` -- so that they can
+actually be used for socket reads. 
 
 ### Converting between `Bytes`/`BytesMut` and the risk of leaks
 
-`Bytes` and `BytesMut` have corresponding methods for converting between the two types, but notably, the translation from `Bytes` to `BytesMut` is fallible because other live instances of `Bytes` may point to the same underlying `BytesMut`. Again, this follows the underlying design of `Bytes` looking almost identical to `Arc<Vec<u8>>`.
+`Bytes` and `BytesMut` have corresponding methods for converting between the two types, but notably, the translation
+from `Bytes` to `BytesMut` is fallible because other live instances of `Bytes` may point to the same underlying
+`BytesMut`. Again, this follows the underlying design of `Bytes` looking almost identical to `Arc<Vec<u8>>`.
 
-What this means, however, is that without careful usage, code using `Bytes` could inadvertantly keep around an instance that makes it impossible to get back the original `BytesMut`, which could quickly lead to exhausting all buffers in a buffer pool unless replaced, or require replishment in the form of allocating additional buffers.
+What this means, however, is that without careful usage, code using `Bytes` could inadvertently keep around an instance
+that makes it impossible to get back the original `BytesMut`, which could quickly lead to exhausting all buffers in a
+buffer pool unless replaced, or require replenishment in the form of allocating additional buffers.
 
-This _also_ applies to `BytesMut`, which can be sliced and have two or more outstanding instances all pointing to the same underlying buffer (albeit with non-overlapping regions).
+This _also_ applies to `BytesMut`, which can be sliced and have two or more outstanding instances all pointing to the
+same underlying buffer (albeit with non-overlapping regions).
 
 ### Difficulty in collapsing `BytesMut`
 
-`BytesMut` is designed to used in a way that involves roughly knowing how much data to expect so that particular methods, such as `BytesMut::reserve` and `BytesMut::try_reclaim`, can be used to ensure there's available capacity, and to handle trying to reclaim any regions of the buffer that were previously shared but no longer are, and so on.
+`BytesMut` is designed to be used in a way that involves roughly knowing how much data to expect so that particular
+methods, such as `BytesMut::reserve` and `BytesMut::try_reclaim`, can be used to ensure there's available capacity, and
+to handle trying to reclaim any regions of the buffer that were previously shared but no longer are, and so on.
 
-We encounter this problem ourselves already, such as when a buffer is completely filled, and has a partially-written frame at the end: we can decode all of the complete frames, but in order to allow for the partially-written frame to be completely written, it may require the _entire_ buffer, which means we need to shift that partial write to the front of the buffer so the remainder can be written to.
+We encounter this problem ourselves already, such as when a buffer is completely filled, and has a partially-written
+frame at the end: we can decode all of the complete frames, but in order to allow for the partially-written frame to be
+completely written, it may require the _entire_ buffer, which means we need to shift that partial write to the front of
+the buffer so the remainder can be written to.
 
-`BytesMut` does not easily support this. At best, `BytesMut::try_reclaim` can be used to be approximate this by, for example, always setting the `additional` value to `1` to ensure we maximize our chance of triggering the behavior. We would be restricted to using `try_reclaim`, rather than `reserve`, to ensure our buffers stayed fixed-size. Even then, `try_reclaim` is fallible, so it may fail and leave us in a situation where we have to clear the buffer and lose data.
+`BytesMut` does not easily support this. At best, `BytesMut::try_reclaim` can be used to be approximate this by, for
+example, always setting the `additional` value to `1` to ensure we maximize our chance of triggering the behavior. We
+would be restricted to using `try_reclaim`, rather than `reserve`, to ensure our buffers stayed fixed-size. Even then,
+`try_reclaim` is fallible, so it may fail and leave us in a situation where we have to clear the buffer and lose data.
 
 ## Proposed solution: `BytesBufferView<'a>`
 
-In order to solve both the issue of being unable to return immutably borrowed buffers, as well as ensuring that buffers cannot be kept alive the point of framing and decoding, I'm proposing a new type, `BytesBufferView<'a>`, that would interoperate directly with `BytesBuffer`.
+In order to solve both the issue of being unable to return immutably borrowed buffers, as well as ensuring that buffers
+cannot be kept alive the point of framing and decoding, I'm proposing a new type, `BytesBufferView<'a>`, that would
+interoperate directly with `BytesBuffer`.
 
-At a high-level, `BytesBufferView<'a>` is simply a specific slice of a `BytesBuffer` (or a `BytesBufferView<'a>`, more on that later), taken via _mutable_ borrow which ensures that when the view drops, the parent buffer is properly advanced.
+At a high-level, `BytesBufferView<'a>` is simply a specific slice of a `BytesBuffer` (or a `BytesBufferView<'a>`, more
+on that later), taken via _mutable_ borrow which ensures that when the view drops, the parent buffer is properly
+advanced.
 
 Below is a rough sketch of what `BytesBufferView<'a>` might look like:
 
@@ -96,7 +123,8 @@ impl<'a> BytesBufferView<'a> {
 
 ### Solving lifetime issues
 
-Our first issue to solve is that of borrowing from an input buffer while also trying to return the frame data. We illustrate below how `Framer` currently looks and how it would change:
+Our first issue to solve is that of borrowing from an input buffer while also trying to return the frame data. We
+illustrate below how `Framer` currently looks and how it would change:
 
 ```rust
 // Before:
@@ -110,15 +138,24 @@ pub trait Framer {
 }
 ```
 
-Firstly, while not germane to solving the lifetime issues, we would drop the generic input buffer and always take `BytesBufferView<'_>` as our input, to provide continuity from input to output, including when framers are nested. This would semantically be equivalent to a "frozen" buffer: once the mutating operation on the buffer is over, we operate on the buffer in a "frozen" mode until we need to read more data, etc.
+Firstly, while not germane to solving the lifetime issues, we would drop the generic input buffer and always take
+`BytesBufferView<'_>` as our input, to provide continuity from input to output, including when framers are nested. This
+would semantically be equivalent to a "frozen" buffer: once the mutating operation on the buffer is over, we operate on
+the buffer in a "frozen" mode until we need to read more data, etc.
 
-As `BytesBufferView<'_>` would only advance its parent buffer/view on drop, we need longer need to do a song-and-dance of getting the frame data first before then advancing the buffer. This means no immutable-and-then-mutable borrow weirdness.
+As `BytesBufferView<'_>` would only advance its parent buffer/view on drop, we need longer need to do a song-and-dance
+of getting the frame data first before then advancing the buffer. This means no immutable-and-then-mutable borrow
+weirdness.
 
 ### Buffer advancement through RAII
 
-A key aspect of our problem is that we want to be able to slice up the input buffer as we extract frames and decode, and ensure that the parent buffer reflects that: if we successfully extract a frame, that frame data should be consumed from the origin buffer, and so on.
+A key aspect of our problem is that we want to be able to slice up the input buffer as we extract frames and decode, and
+ensure that the parent buffer reflects that: if we successfully extract a frame, that frame data should be consumed from
+the origin buffer, and so on.
 
-In order to do this _without_ needing to handle mutable/immutable constraints, we defer advancing until `BytesBufferView<'a>` is dropped. We do so by tracking the total amount to advance internally, and then advancing by that amount on drop.
+In order to do this _without_ needing to handle mutable/immutable constraints, we defer advancing until
+`BytesBufferView<'a>` is dropped. We do so by tracking the total amount to advance internally, and then advancing by
+that amount on drop.
 
 Below is a simple example of how this might look in practice, using a mock socket receive loop:
 
@@ -168,16 +205,24 @@ loop {
 
 ### Integrating with the rest of Saluki and ecosystem
 
-In principle, what we're advocating for here is eschewing both the use of `Bytes` _and_ `bytes::Buf` in favor of `BytesBufferView<'a>` and concrete methods on it. While I think this is good for the purposes of clarity, it does mean we will hit some sharp edges when touching other parts of the ecosystem.
+In principle, what we're advocating for here is eschewing both the use of `Bytes` _and_ `bytes::Buf` in favor of
+`BytesBufferView<'a>` and concrete methods on it. While I think this is good for the purposes of clarity, it does mean
+we will hit some sharp edges when touching other parts of the ecosystem.
 
 #### Libraries that require `bytes::Buf`
 
-Some libraries, such as `http-body`, have specific generic type constraints on types implementing `bytes::Buf`, which means we would need to also implement it for `BytesBuffer`/`BytesBufferView<'a>` in order to allow for interoperability.
+Some libraries, such as `http-body`, have specific generic type constraints on types implementing `bytes::Buf`, which
+means we would need to also implement it for `BytesBuffer`/`BytesBufferView<'a>` in order to allow for interoperability.
 
-This should be doable without issue, as `bytes::Buf` is fundamentally the blueprint for how `BytesBufferView<'a>` is structured.
+This should be doable without issue, as `bytes::Buf` is fundamentally the blueprint for how `BytesBufferView<'a>` is
+structured.
 
 #### Deciding what to do about `ReadIoBuffer`, `WriteIoBuffer`, `ReadWriteIoBuffer`, `CollapsibleReadWriteIoBuffer`, and so on
 
-It's not presently clear to me just how much we would want to merge these, or get rid of them entirely. `BytesBuffer` has been pretty consistent and constant in the codebase since it was introduced, and so we could likely stand to de-future-proof ourselves by dropping some of these traits and making them concrete methods on `BytesBuffer` and/or `BytesBufferView<'a>`.
+It's not presently clear to me just how much we would want to merge these, or get rid of them entirely. `BytesBuffer`
+has been pretty consistent and constant in the codebase since it was introduced, and so we could likely stand to
+de-future-proof ourselves by dropping some of these traits and making them concrete methods on `BytesBuffer` and/or
+`BytesBufferView<'a>`.
 
-That said, the traits are sometimes useful in test code since `BytesBuffer` is inherently tied to being object pooled, which makes constructing one far less easy than just typing `let mut buf = Vec::new();` and so on.
+That said, the traits are sometimes useful in test code since `BytesBuffer` is inherently tied to being object pooled,
+which makes constructing one far less easy than just typing `let mut buf = Vec::new();` and so on.
