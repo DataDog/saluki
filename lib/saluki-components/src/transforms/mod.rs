@@ -11,3 +11,6 @@ pub use self::host_enrichment::HostEnrichmentConfiguration;
 
 mod dogstatsd_prefix_filter;
 pub use self::dogstatsd_prefix_filter::DogstatsDPrefixFilterConfiguration;
+
+mod dogstatsd_mapper;
+pub use self::dogstatsd_mapper::DogstatsDMapperConfiguration;
