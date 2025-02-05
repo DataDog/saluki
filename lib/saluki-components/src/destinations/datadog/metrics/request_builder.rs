@@ -119,6 +119,7 @@ where
     uncompressed_len: usize,
     compressed_len_limit: usize,
     uncompressed_len_limit: usize,
+    max_metrics_per_payload: usize,
     encoded_metrics: Vec<Metric>,
 }
 
@@ -127,7 +128,9 @@ where
     O: ObjectPool<Item = BytesBuffer> + 'static,
 {
     /// Creates a new `RequestBuilder` for the given endpoint.
-    pub async fn new(endpoint: MetricsEndpoint, buffer_pool: O) -> Result<Self, RequestBuilderError> {
+    pub async fn new(
+        endpoint: MetricsEndpoint, buffer_pool: O, max_metrics_per_payload: usize,
+    ) -> Result<Self, RequestBuilderError> {
         let chunked_buffer_pool = ChunkedBytesBufferObjectPool::new(buffer_pool);
         let compressor = create_compressor(&chunked_buffer_pool).await;
         Ok(Self {
@@ -140,6 +143,7 @@ where
             uncompressed_len: 0,
             compressed_len_limit: endpoint.compressed_size_limit(),
             uncompressed_len_limit: endpoint.uncompressed_size_limit(),
+            max_metrics_per_payload,
             encoded_metrics: Vec::new(),
         })
     }
@@ -170,6 +174,11 @@ where
                 metric_type: metric.values().as_str(),
                 endpoint: self.endpoint,
             });
+        }
+
+        // Make sure we haven't hit the maximum number of metrics per payload.
+        if self.encoded_metrics.len() >= self.max_metrics_per_payload {
+            return Ok(Some(metric));
         }
 
         // Encode the metric and then see if it will fit into the current request payload.
@@ -671,7 +680,7 @@ mod tests {
 
         // Create a regular ol' request builder with normal (un)compressed size limits.
         let buffer_pool = create_request_builder_buffer_pool();
-        let mut request_builder = RequestBuilder::new(MetricsEndpoint::Series, buffer_pool)
+        let mut request_builder = RequestBuilder::new(MetricsEndpoint::Series, buffer_pool, usize::MAX)
             .await
             .expect("should not fail to create request builder");
 
@@ -692,5 +701,42 @@ mod tests {
         request_builder.set_custom_len_limits(MetricsEndpoint::Series.compressed_size_limit(), 96);
         let requests = request_builder.flush().await;
         assert_eq!(requests.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn obeys_max_metrics_per_payload() {
+        // Generate some simple metrics.
+        let counter1 = Metric::counter(("abcdefg", &["345", "678"][..]), 1.0);
+        let counter2 = Metric::counter(("hijklmn", &["9!@", "#$%"][..]), 1.0);
+        let counter3 = Metric::counter(("opqrstu", &["^&*", "()A"][..]), 1.0);
+
+        // Create a regular ol' request builder with normal (un)compressed size limits, and no limit on the number of
+        // metrics per payload.
+        //
+        // We should be able to encode the three metrics without issue.
+        let buffer_pool = create_request_builder_buffer_pool();
+        let mut request_builder = RequestBuilder::new(MetricsEndpoint::Series, buffer_pool, usize::MAX)
+            .await
+            .expect("should not fail to create request builder");
+
+        assert_eq!(None, request_builder.encode(counter1.clone()).await.unwrap());
+        assert_eq!(None, request_builder.encode(counter2.clone()).await.unwrap());
+        assert_eq!(None, request_builder.encode(counter3.clone()).await.unwrap());
+
+        // Now create a request builder with normal (un)compressed size limits, but a limit of 2 metrics per payload.
+        //
+        // We should only be able to encode two of the three metrics before we're signaled to flush.
+        let buffer_pool = create_request_builder_buffer_pool();
+        let mut request_builder = RequestBuilder::new(MetricsEndpoint::Series, buffer_pool, 2)
+            .await
+            .expect("should not fail to create request builder");
+
+        assert_eq!(None, request_builder.encode(counter1.clone()).await.unwrap());
+        assert_eq!(None, request_builder.encode(counter2.clone()).await.unwrap());
+        assert_eq!(Some(counter3.clone()), request_builder.encode(counter3).await.unwrap());
+
+        // Since we know we could fit the same three metrics in the first request builder when there was no limit on the
+        // number of metrics per payload, we know we're not being instructed to flush here due to hitting (un)compressed
+        // size limits.
     }
 }
