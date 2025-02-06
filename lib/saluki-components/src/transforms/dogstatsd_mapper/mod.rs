@@ -207,7 +207,10 @@ impl DogstatsDMapperConfiguration {
 impl SynchronousTransformBuilder for DogstatsDMapperConfiguration {
     async fn build(&self) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         let metric_mapper = self.dogstatsd_mapper_profiles.build()?;
-        Ok(Box::new(DogstatsDMapper { metric_mapper }))
+        Ok(Box::new(DogstatsDMapper {
+            context_string_interner_bytes: self.context_string_interner_bytes,
+            metric_mapper,
+        }))
     }
 }
 
@@ -224,6 +227,7 @@ impl MemoryBounds for DogstatsDMapperConfiguration {
 }
 
 pub struct DogstatsDMapper {
+    context_string_interner_bytes: ByteSize,
     metric_mapper: MetricMapper,
 }
 
@@ -231,8 +235,7 @@ impl DogstatsDMapper {}
 
 impl SynchronousTransform for DogstatsDMapper {
     fn transform_buffer(&self, event_buffer: &mut FixedSizeEventBuffer) {
-        let context_string_interner_bytes = ByteSize::kib(512);
-        let context_string_interner_size = NonZeroUsize::new(context_string_interner_bytes.as_u64() as usize)
+        let context_string_interner_size = NonZeroUsize::new(self.context_string_interner_bytes.as_u64() as usize)
             .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))
             .unwrap();
         let mut context_resolver = ContextResolverBuilder::from_name("dogstatsd_mapper")
