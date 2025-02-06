@@ -87,7 +87,7 @@ impl Transform for Chained {
 
         // We have to re-associate each subtransform with their allocation group token here, as we don't have access to
         // it when the bounds are initially defined.
-        let subtransforms = self
+        let mut subtransforms = self
             .subtransforms
             .into_iter()
             .map(|(subtransform_id, subtransform)| {
@@ -106,7 +106,7 @@ impl Transform for Chained {
                 _ = health.live() => continue,
                 maybe_events = context.event_stream().next() => match maybe_events {
                     Some(mut event_buffer) => {
-                        for (allocation_token, transform) in &subtransforms {
+                        for (allocation_token, transform) in &mut subtransforms {
                             let _guard = allocation_token.enter();
                             transform.transform_buffer(&mut event_buffer);
                         }
