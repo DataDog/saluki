@@ -8,7 +8,7 @@ use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use regex::Regex;
 use saluki_config::GenericConfiguration;
-use saluki_context::{ContextResolver, ContextResolverBuilder};
+use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
 use saluki_core::{
     components::transforms::{SynchronousTransform, SynchronousTransformBuilder},
     topology::interconnect::FixedSizeEventBuffer,
@@ -26,7 +26,6 @@ static ALLOWED_WILDCARD_MATCH_PATTERN: LazyLock<Regex> =
 /// DogstatsD mapper transform.
 #[serde_as]
 #[derive(Deserialize)]
-#[allow(dead_code)]
 pub struct DogstatsDMapperConfiguration {
     #[serde(skip)]
     context_string_interner_bytes: ByteSize,
@@ -37,11 +36,9 @@ pub struct DogstatsDMapperConfiguration {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[allow(dead_code)]
 struct MapperProfileConfigs(pub Vec<MappingProfileConfig>);
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[allow(dead_code)]
 struct MappingProfileConfig {
     pub name: String,
     pub prefix: String,
@@ -49,7 +46,6 @@ struct MappingProfileConfig {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[allow(dead_code)]
 struct MetricMappingConfig {
     #[serde(rename = "match")]
     metric_match: String,
@@ -59,20 +55,41 @@ struct MetricMappingConfig {
     tags: HashMap<String, String>,
 }
 
-#[allow(dead_code)]
 struct MetricMapper {
     profiles: Vec<MappingProfile>,
-    context_resolver: ContextResolver,
 }
 
-#[allow(dead_code)]
+impl MetricMapper {
+    fn map(&self, context_resolver: &mut ContextResolver, metric_name: &str) -> Option<Context> {
+        for profile in &self.profiles {
+            if !metric_name.starts_with(&profile.prefix) && profile.prefix != "*" {
+                continue;
+            }
+
+            for mapping in &profile.mappings {
+                if let Some(captures) = mapping.regex.captures(metric_name) {
+                    let mut name = String::new();
+                    captures.expand(&mapping.name, &mut name);
+
+                    let mut tags = Vec::with_capacity(mapping.tags.len());
+                    for (tag_key, tag_value_expr) in &mapping.tags {
+                        let mut expanded_value = String::new();
+                        captures.expand(tag_value_expr, &mut expanded_value);
+                        tags.push(format!("{}:{}", tag_key, expanded_value));
+                    }
+                    return context_resolver.resolve(&name, tags, None);
+                }
+            }
+        }
+        None
+    }
+}
+
 struct MappingProfile {
-    name: String,
     prefix: String,
     mappings: Vec<MetricMapping>,
 }
 
-#[allow(dead_code)]
 struct MetricMapping {
     name: String,
     tags: HashMap<String, String>,
@@ -99,22 +116,18 @@ fn build_regex(match_re: &str, match_type: &str) -> Result<Regex, GenericError> 
                 ALLOWED_WILDCARD_MATCH_PATTERN.as_str()
             ));
         }
-        // Disallow "**"
         if pattern.contains("**") {
             return Err(generic_error!(
                 "invalid wildcard match pattern `{}`, it should not contain consecutive `*`",
                 pattern
             ));
         }
-        // Escape dots and replace '*' with '([^.]*)'
         pattern = pattern.replace(".", "\\.");
         pattern = pattern.replace("*", "([^.]*)");
     }
 
-    // Build final pattern as ^pattern$
     let final_pattern = format!("^{}$", pattern);
 
-    // Compile the regex, return a GenericError if it fails
     match Regex::new(&final_pattern) {
         Ok(re) => Ok(re),
         Err(e) => Err(generic_error!(
@@ -126,7 +139,7 @@ fn build_regex(match_re: &str, match_type: &str) -> Result<Regex, GenericError> 
 }
 
 impl MapperProfileConfigs {
-    fn build(&self, context_string_interner_bytes: ByteSize) -> Result<MetricMapper, GenericError> {
+    fn build(&self) -> Result<MetricMapper, GenericError> {
         let mut profiles = Vec::with_capacity(self.0.len());
         for (i, config_profile) in self.0.iter().enumerate() {
             if config_profile.name.is_empty() {
@@ -137,7 +150,6 @@ impl MapperProfileConfigs {
             }
 
             let mut profile = MappingProfile {
-                name: config_profile.name.clone(),
                 prefix: config_profile.prefix.clone(),
                 mappings: Vec::with_capacity(config_profile.mappings.len()),
             };
@@ -178,17 +190,7 @@ impl MapperProfileConfigs {
             profiles.push(profile);
         }
 
-        let context_string_interner_size = NonZeroUsize::new(context_string_interner_bytes.as_u64() as usize)
-            .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
-        let context_resolver = ContextResolverBuilder::from_name("agent_telemetry_remapper")
-            .expect("resolver name is not empty")
-            .with_interner_capacity_bytes(context_string_interner_size)
-            .build();
-
-        Ok(MetricMapper {
-            profiles,
-            context_resolver,
-        })
+        Ok(MetricMapper { profiles })
     }
 }
 
@@ -204,13 +206,7 @@ impl DogstatsDMapperConfiguration {
 #[async_trait]
 impl SynchronousTransformBuilder for DogstatsDMapperConfiguration {
     async fn build(&self) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
-        println!(
-            "rz6300 map config: {}",
-            serde_json::to_string_pretty(&self.dogstatsd_mapper_profiles).unwrap()
-        );
-        let metric_mapper = self
-            .dogstatsd_mapper_profiles
-            .build(self.context_string_interner_bytes)?;
+        let metric_mapper = self.dogstatsd_mapper_profiles.build()?;
         Ok(Box::new(DogstatsDMapper { metric_mapper }))
     }
 }
@@ -220,14 +216,13 @@ impl MemoryBounds for DogstatsDMapperConfiguration {
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
-            .with_single_value::<DogstatsDMapper>()
+            .with_single_value::<DogstatsDMapper>("component struct")
             // We also allocate the backing storage for the string interner up front, which is used by our context
             // resolver.
-            .with_fixed_amount(self.context_string_interner_bytes.as_u64() as usize);
+            .with_fixed_amount("string interner", self.context_string_interner_bytes.as_u64() as usize);
     }
 }
 
-#[allow(dead_code)]
 pub struct DogstatsDMapper {
     metric_mapper: MetricMapper,
 }
@@ -236,9 +231,20 @@ impl DogstatsDMapper {}
 
 impl SynchronousTransform for DogstatsDMapper {
     fn transform_buffer(&self, event_buffer: &mut FixedSizeEventBuffer) {
+        let context_string_interner_bytes = ByteSize::kib(512);
+        let context_string_interner_size = NonZeroUsize::new(context_string_interner_bytes.as_u64() as usize)
+            .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))
+            .unwrap();
+        let mut context_resolver = ContextResolverBuilder::from_name("dogstatsd_mapper")
+            .expect("resolver name is not empty")
+            .with_interner_capacity_bytes(context_string_interner_size)
+            .build();
+
         for event in event_buffer {
-            if let Some(_metric) = event.try_as_metric_mut() {
-                println!("rz6300 got metric {} from dogstatsd mapper", _metric.context().name());
+            if let Some(metric) = event.try_as_metric_mut() {
+                if let Some(new_context) = self.metric_mapper.map(&mut context_resolver, metric.context().name()) {
+                    *metric.context_mut() = new_context;
+                }
             }
         }
     }
