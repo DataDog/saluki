@@ -603,7 +603,7 @@ impl AggregationState {
                 aggregated.values.merge(values);
             }
             Entry::Vacant(entry) => {
-                self.telemetry.increment_contexts(&values);
+                self.telemetry.increment_contexts(entry.key(), &values);
 
                 entry.insert(AggregatedMetric {
                     values,
@@ -705,7 +705,7 @@ impl AggregationState {
             }
 
             if am.values.is_empty() && should_expire_if_empty {
-                self.telemetry.decrement_contexts(&am.values);
+                self.telemetry.decrement_contexts(context, &am.values);
                 self.contexts_remove_buf.push(context.clone());
             }
         }

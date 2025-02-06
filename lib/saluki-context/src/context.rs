@@ -1,4 +1,13 @@
-use std::{fmt, hash, sync::Arc};
+use std::{
+    fmt, hash,
+    sync::{
+        atomic::{
+            AtomicUsize,
+            Ordering::{Acquire, Relaxed, Release},
+        },
+        Arc,
+    },
+};
 
 use metrics::Gauge;
 use stringtheory::MetaString;
@@ -8,6 +17,8 @@ use crate::{
     origin::OriginTags,
     tags::{Tag, TagSet, Tagged},
 };
+
+const BASE_CONTEXT_SIZE: usize = std::mem::size_of::<Context>() + std::mem::size_of::<ContextInner>();
 
 /// A metric context.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -26,6 +37,7 @@ impl Context {
                 name: MetaString::from_static(name),
                 tags: TagSet::default(),
                 origin_tags: OriginTags::empty(),
+                origin_tags_size: AtomicUsize::new(0),
                 key,
                 active_count: Gauge::noop(),
             }),
@@ -45,6 +57,7 @@ impl Context {
                 name: MetaString::from_static(name),
                 tags: tag_set,
                 origin_tags: OriginTags::empty(),
+                origin_tags_size: AtomicUsize::new(0),
                 key,
                 active_count: Gauge::noop(),
             }),
@@ -60,6 +73,7 @@ impl Context {
                 name,
                 tags,
                 origin_tags: OriginTags::empty(),
+                origin_tags_size: AtomicUsize::new(0),
                 key,
                 active_count: Gauge::noop(),
             }),
@@ -68,16 +82,17 @@ impl Context {
 
     /// Clones this context, and uses the given name for the cloned context.
     pub fn with_name<S: Into<MetaString>>(&self, name: S) -> Self {
+        // Regenerate the context key to account for the new name.
         let name = name.into();
         let tags = self.inner.tags.clone();
-        let origin_tags = self.inner.origin_tags.clone();
         let key = hash_context(&name, &tags, None);
 
         Self {
             inner: Arc::new(ContextInner {
                 name,
                 tags,
-                origin_tags,
+                origin_tags: self.inner.origin_tags.clone(),
+                origin_tags_size: AtomicUsize::new(self.inner.origin_tags_size.load(Relaxed)),
                 key,
                 active_count: Gauge::noop(),
             }),
@@ -106,6 +121,37 @@ impl Context {
     /// Returns the origin tags of this context.
     pub fn origin_tags(&self) -> &OriginTags {
         &self.inner.origin_tags
+    }
+
+    /// Returns the size of this context in bytes.
+    ///
+    /// A context's size is the sum of the sizes of its fields and the size of the `Context` struct itself, and
+    /// includes:
+    /// - the context name
+    /// - the context tags (both instrumented and origin)
+    ///
+    /// Since origin tags can potentially be expensive to calculate, this method will cache the size of the origin tags
+    /// when this method is first called.
+    ///
+    /// Additionally, the value returned by this method does not compensate for externalities such as origin tags
+    /// potentially being shared by multiple contexts, or whether or not tags are are inlined, interned, or heap
+    /// allocated. This means that the value returned is essentially the worst-case usage, and should be used as a rough
+    /// estimate.
+    pub fn size_of(&self) -> usize {
+        let name_size = self.inner.name.len();
+        let tags_size = self.inner.tags.size_of();
+        let origin_tags_size = match self.inner.origin_tags_size.load(Acquire) {
+            // We use `usize::MAX` as a sentinel value to indicate that the size of the origin tags has not been
+            // calculated yet.
+            usize::MAX => {
+                let size = self.inner.origin_tags.size_of();
+                self.inner.origin_tags_size.store(size, Release);
+                size
+            }
+            size => size,
+        };
+
+        BASE_CONTEXT_SIZE + name_size + tags_size + origin_tags_size
     }
 }
 
@@ -155,12 +201,28 @@ impl Tagged for Context {
     }
 }
 
-pub struct ContextInner {
-    pub key: ContextKey,
-    pub name: MetaString,
-    pub tags: TagSet,
-    pub origin_tags: OriginTags,
-    pub active_count: Gauge,
+pub(super) struct ContextInner {
+    key: ContextKey,
+    name: MetaString,
+    tags: TagSet,
+    origin_tags: OriginTags,
+    origin_tags_size: AtomicUsize,
+    active_count: Gauge,
+}
+
+impl ContextInner {
+    pub fn from_parts(
+        key: ContextKey, name: MetaString, tags: TagSet, origin_tags: OriginTags, active_count: Gauge,
+    ) -> Self {
+        Self {
+            key,
+            name,
+            tags,
+            origin_tags,
+            origin_tags_size: AtomicUsize::new(0),
+            active_count,
+        }
+    }
 }
 
 impl Clone for ContextInner {
@@ -170,6 +232,7 @@ impl Clone for ContextInner {
             name: self.name.clone(),
             tags: self.tags.clone(),
             origin_tags: self.origin_tags.clone(),
+            origin_tags_size: AtomicUsize::new(self.origin_tags_size.load(Relaxed)),
 
             // We're specifically detaching this context from the statistics of the resolver from which `self`
             // originated, as we only want to track the statistics of the contexts created _directly_ through the
@@ -207,5 +270,143 @@ impl fmt::Debug for ContextInner {
             .field("tags", &self.tags)
             .field("key", &self.key)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::{
+        origin::{OriginKey, OriginTagsResolver, RawOrigin},
+        tags::TagVisitor,
+    };
+
+    const SIZE_OF_CONTEXT_NAME: &str = "size_of_test_metric";
+    const SIZE_OF_CONTEXT_CHANGED_NAME: &str = "size_of_test_metric_changed";
+    const SIZE_OF_CONTEXT_TAGS: &[&str] = &["size_of_test_tag1", "size_of_test_tag2"];
+    const SIZE_OF_CONTEXT_ORIGIN_TAGS: &[&str] = &["size_of_test_origin_tag1", "size_of_test_origin_tag2"];
+
+    fn tag_set(tags: &[&str]) -> TagSet {
+        tags.iter().map(|s| Tag::from(*s)).collect::<TagSet>()
+    }
+
+    #[derive(Clone, Default)]
+    struct MockOriginTagsResolver {
+        tags: Arc<Mutex<TagSet>>,
+    }
+
+    impl MockOriginTagsResolver {
+        fn set_tags(&self, tag_set: TagSet) {
+            let mut tags = self.tags.lock().unwrap();
+            *tags = tag_set;
+        }
+    }
+
+    impl OriginTagsResolver for MockOriginTagsResolver {
+        fn resolve_origin_key(&self, _: RawOrigin<'_>) -> Option<OriginKey> {
+            // Doesn't matter. We never call this.
+            None
+        }
+
+        fn visit_origin_tags(&self, _: OriginKey, visitor: &mut dyn TagVisitor) {
+            // Visit our internal tags, regardless of origin key.
+            self.tags.lock().unwrap().visit_tags(|tag| {
+                visitor.visit_tag(tag);
+            });
+        }
+    }
+
+    #[test]
+    fn size_of_context_from_static_name() {
+        let context = Context::from_static_name(SIZE_OF_CONTEXT_NAME);
+        assert_eq!(context.size_of(), BASE_CONTEXT_SIZE + SIZE_OF_CONTEXT_NAME.len());
+    }
+
+    #[test]
+    fn size_of_context_from_static_parts() {
+        let tags = tag_set(SIZE_OF_CONTEXT_TAGS);
+
+        let context = Context::from_static_parts(SIZE_OF_CONTEXT_NAME, SIZE_OF_CONTEXT_TAGS);
+        assert_eq!(
+            context.size_of(),
+            BASE_CONTEXT_SIZE + SIZE_OF_CONTEXT_NAME.len() + tags.size_of()
+        );
+    }
+
+    #[test]
+    fn size_of_context_from_parts() {
+        let tags = tag_set(SIZE_OF_CONTEXT_TAGS);
+
+        let context = Context::from_parts(SIZE_OF_CONTEXT_NAME, tags.clone());
+        assert_eq!(
+            context.size_of(),
+            BASE_CONTEXT_SIZE + SIZE_OF_CONTEXT_NAME.len() + tags.size_of()
+        );
+    }
+
+    #[test]
+    fn size_of_context_with_name() {
+        // Check the check after `with_name` when there's both tags and no tags.
+        let context = Context::from_static_name(SIZE_OF_CONTEXT_NAME).with_name(SIZE_OF_CONTEXT_CHANGED_NAME);
+        assert_eq!(
+            context.size_of(),
+            BASE_CONTEXT_SIZE + SIZE_OF_CONTEXT_CHANGED_NAME.len()
+        );
+
+        let tags = tag_set(SIZE_OF_CONTEXT_TAGS);
+
+        let context = Context::from_static_parts(SIZE_OF_CONTEXT_NAME, SIZE_OF_CONTEXT_TAGS)
+            .with_name(SIZE_OF_CONTEXT_CHANGED_NAME);
+        assert_eq!(
+            context.size_of(),
+            BASE_CONTEXT_SIZE + SIZE_OF_CONTEXT_CHANGED_NAME.len() + tags.size_of()
+        );
+    }
+
+    #[test]
+    fn size_of_context_origin_tags() {
+        let tags = tag_set(SIZE_OF_CONTEXT_TAGS);
+
+        let tags_resolver = MockOriginTagsResolver::default();
+        tags_resolver.set_tags(tag_set(SIZE_OF_CONTEXT_ORIGIN_TAGS));
+
+        // We're manually constructing our context here because we don't want to add an entire builder method to handle
+        // this test case, and it's annoying with how interconnected the hashing of the context key is with the origin
+        // key, and all of that.
+        //
+        // We just care about getting our mocked `OriginTags` into the right place.
+        let shared_tags_resolver = Arc::new(tags_resolver.clone());
+
+        let origin_key = OriginKey::from_opaque(42);
+        let origin_tags = OriginTags::from_resolved(origin_key, shared_tags_resolver);
+
+        let context = Context::from_inner(ContextInner {
+            key: hash_context(SIZE_OF_CONTEXT_NAME, SIZE_OF_CONTEXT_TAGS, None),
+            name: MetaString::from_static(SIZE_OF_CONTEXT_NAME),
+            tags: tags.clone(),
+            origin_tags: origin_tags.clone(),
+            origin_tags_size: AtomicUsize::new(usize::MAX),
+            active_count: Gauge::noop(),
+        });
+
+        // Check the first of the size of the context when the origin tags size hasn't yet been cached.
+        let initial_context_size = context.size_of();
+        assert_eq!(
+            initial_context_size,
+            BASE_CONTEXT_SIZE + SIZE_OF_CONTEXT_NAME.len() + tags.size_of() + origin_tags.size_of()
+        );
+
+        // Update the mock origin tags resolver with a different set of tags.
+        //
+        // We'll capture the before/after size of the origin tags to ensure that the size has changed, which ensures
+        // that when we check the size of the context again, we know that caching is working if the size stays the same
+        // as the first time around.
+        let initial_origin_tags_len = origin_tags.size_of();
+        tags_resolver.set_tags(tags.clone());
+
+        assert_ne!(initial_origin_tags_len, origin_tags.size_of());
+        assert_eq!(initial_context_size, context.size_of());
     }
 }
