@@ -8,10 +8,33 @@ pub fn get_aggregation_remappings() -> Vec<RemapperRule> {
             "aggregator.dogstatsd_contexts",
         ),
         RemapperRule::by_name_and_tags(
+            "adp.aggregate_active_contexts_by_type",
+            &["component_id:dsd_agg"],
+            "aggregator.dogstatsd_contexts_by_mtype",
+        )
+        .with_original_tags(["metric_type"]),
+        RemapperRule::by_name_and_tags(
+            "adp.aggregate_active_contexts_bytes_by_type",
+            &["component_id:dsd_agg"],
+            "aggregator.dogstatsd_contexts_bytes_by_mtype",
+        )
+        .with_original_tags(["metric_type"]),
+        RemapperRule::by_name_and_tags(
             "adp.component_events_received_total",
             &["component_id:dsd_agg"],
             "aggregator.processed",
         )
         .with_additional_tags(["data_type:dogstatsd_metrics"]),
+        RemapperRule::by_name_and_tags(
+            "adp.aggregate_passthrough_metrics_total",
+            &["component_id:dsd_agg"],
+            "no_aggregation.processed",
+        )
+        .with_additional_tags(["state:ok"]),
+        RemapperRule::by_name_and_tags(
+            "adp.aggregate_passthrough_flushes_total",
+            &["component_id:dsd_agg"],
+            "no_aggregation.flush",
+        ),
     ]
 }

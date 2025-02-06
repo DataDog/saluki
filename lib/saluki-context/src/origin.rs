@@ -270,6 +270,21 @@ impl OriginTags {
             },
         }
     }
+
+    /// Returns the size of the origin tag set, in bytes.
+    ///
+    /// This includes the size of each individual tag.
+    ///
+    /// Additionally, the value returned by this method does not compensate for externalities such as whether or not
+    /// tags are are inlined, interned, or heap allocated. This means that the value returned is essentially the
+    /// worst-case usage, and should be used as a rough estimate.
+    pub(super) fn size_of(&self) -> usize {
+        let mut tags_size = 0;
+        self.visit_tags(|tag| {
+            tags_size += tag.len();
+        });
+        tags_size
+    }
 }
 
 impl Tagged for OriginTags {
