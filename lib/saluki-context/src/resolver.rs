@@ -362,13 +362,13 @@ impl ContextResolver {
 
         self.stats.resolved_new_context_total().increment(1);
 
-        Some(Context::from_inner(ContextInner {
-            name: context_name,
-            tags: context_tags,
-            origin_tags,
+        Some(Context::from_inner(ContextInner::from_parts(
             key,
-            active_count: self.stats.active_contexts().clone(),
-        }))
+            context_name,
+            context_tags,
+            origin_tags,
+            self.stats.active_contexts().clone(),
+        )))
     }
 
     /// Resolves the given context.

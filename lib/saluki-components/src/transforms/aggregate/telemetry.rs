@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use metrics::{Counter, Gauge, Histogram};
+use saluki_context::Context;
 use saluki_event::metric::MetricValues;
 use saluki_metrics::MetricsBuilder;
 
@@ -54,6 +55,7 @@ impl MetricTypedGauge {
 pub struct Telemetry {
     active_contexts: Gauge,
     active_contexts_by_type: MetricTypedGauge,
+    active_contexts_bytes_by_type: MetricTypedGauge,
     events_dropped: Counter,
     flushes: Counter,
     passthrough_metrics: Counter,
@@ -66,6 +68,7 @@ impl Telemetry {
         Self {
             active_contexts: builder.register_debug_gauge("aggregate_active_contexts"),
             active_contexts_by_type: MetricTypedGauge::new(builder, "aggregate_active_contexts_by_type"),
+            active_contexts_bytes_by_type: MetricTypedGauge::new(builder, "aggregate_active_contexts_bytes_by_type"),
             events_dropped: builder
                 .register_debug_counter_with_tags("component_events_dropped_total", ["intentional:true"]),
             flushes: builder.register_debug_counter("aggregate_flushes_total"),
@@ -80,6 +83,7 @@ impl Telemetry {
         Self {
             active_contexts: Gauge::noop(),
             active_contexts_by_type: MetricTypedGauge::noop(),
+            active_contexts_bytes_by_type: MetricTypedGauge::noop(),
             events_dropped: Counter::noop(),
             flushes: Counter::noop(),
             passthrough_metrics: Counter::noop(),
@@ -88,14 +92,20 @@ impl Telemetry {
         }
     }
 
-    pub fn increment_contexts(&self, values: &MetricValues) {
+    pub fn increment_contexts(&self, context: &Context, values: &MetricValues) {
         self.active_contexts.increment(1);
         self.active_contexts_by_type.for_values(values).increment(1);
+        self.active_contexts_bytes_by_type
+            .for_values(values)
+            .increment(context.size_of() as f64);
     }
 
-    pub fn decrement_contexts(&self, values: &MetricValues) {
+    pub fn decrement_contexts(&self, context: &Context, values: &MetricValues) {
         self.active_contexts.decrement(1);
         self.active_contexts_by_type.for_values(values).decrement(1);
+        self.active_contexts_bytes_by_type
+            .for_values(values)
+            .decrement(context.size_of() as f64);
     }
 
     pub fn increment_events_dropped(&self) {

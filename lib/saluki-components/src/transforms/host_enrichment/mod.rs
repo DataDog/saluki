@@ -80,7 +80,7 @@ impl HostEnrichment {
 }
 
 impl SynchronousTransform for HostEnrichment {
-    fn transform_buffer(&self, event_buffer: &mut FixedSizeEventBuffer) {
+    fn transform_buffer(&mut self, event_buffer: &mut FixedSizeEventBuffer) {
         for event in event_buffer {
             if let Some(metric) = event.try_as_metric_mut() {
                 self.enrich_metric(metric)

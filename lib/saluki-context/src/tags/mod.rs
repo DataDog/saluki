@@ -326,6 +326,17 @@ impl TagSet {
     pub fn into_shared(self) -> SharedTagSet {
         SharedTagSet(Arc::new(self))
     }
+
+    /// Returns the size of the tag set, in bytes.
+    ///
+    /// This includes the size of the vector holding the tags as well as each individual tag.
+    ///
+    /// Additionally, the value returned by this method does not compensate for externalities such as whether or not
+    /// tags are are inlined, interned, or heap allocated. This means that the value returned is essentially the
+    /// worst-case usage, and should be used as a rough estimate.
+    pub(crate) fn size_of(&self) -> usize {
+        (self.len() * std::mem::size_of::<Tag>()) + self.0.iter().map(|tag| tag.len()).sum::<usize>()
+    }
 }
 
 impl PartialEq<TagSet> for TagSet {
