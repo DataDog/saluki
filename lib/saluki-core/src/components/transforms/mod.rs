@@ -40,5 +40,5 @@ pub trait Transform {
 /// within a single transform component for processing efficiency.
 pub trait SynchronousTransform {
     /// Transforms the events in the event buffer.
-    fn transform_buffer(&self, buffer: &mut FixedSizeEventBuffer);
+    fn transform_buffer(&mut self, buffer: &mut FixedSizeEventBuffer);
 }
