@@ -382,7 +382,7 @@ check-licenses: ## Check that the third-party license file is up to date
 check-features: check-rust-build-tools cargo-install-cargo-hack
 check-features: ## Check that ADP builds with all possible combinations of feature flags
 	@echo "[*] Checking feature flag compatibility matrix..."
-	@cargo hack check --feature-powerset --tests --quiet
+	@cargo hack --feature-powerset -p agent-data-plane -p ddsketch-agent -p saluki-app -p saluki-metrics -p stringtheory -p saluki-tls check --tests --quiet
 
 ##@ Testing
 
