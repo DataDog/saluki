@@ -31,5 +31,10 @@ pub fn get_aggregation_remappings() -> Vec<RemapperRule> {
             "no_aggregation.processed",
         )
         .with_additional_tags(["state:ok"]),
+        RemapperRule::by_name_and_tags(
+            "adp.aggregate_passthrough_flushes_total",
+            &["component_id:dsd_agg"],
+            "no_aggregation.flush",
+        ),
     ]
 }
