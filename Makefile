@@ -185,6 +185,9 @@ check-rust-build-tools:
 ifeq ($(shell command -v cargo >/dev/null || echo not-found), not-found)
 	$(error "Please install Rust: https://www.rust-lang.org/tools/install")
 endif
+ifeq ($(shell command -v jq >/dev/null || echo not-found), not-found)
+	$(error "Please install jq: https://jqlang.org/download/")
+endif
 
 ##@ Running
 
@@ -380,9 +383,12 @@ check-licenses: ## Check that the third-party license file is up to date
 
 .PHONY: check-features
 check-features: check-rust-build-tools cargo-install-cargo-hack
-check-features: ## Check that ADP builds with all possible combinations of feature flags
+check-features: ## Checks that all packages with feature flags can be built with different flag combinations
 	@echo "[*] Checking feature flag compatibility matrix..."
-	@cargo hack --feature-powerset -p agent-data-plane -p ddsketch-agent -p saluki-app -p saluki-metrics -p stringtheory -p saluki-tls check --tests --quiet
+	@find . -name Cargo.toml | grep -v '^./Cargo.toml' | \
+	xargs -I {} -- cargo read-manifest --manifest-path {} | \
+	jq -r "select(.features | del(.default) | length > 0) | .name" | \
+	xargs -I {} -- cargo hack --feature-powerset --package {} check --tests --quiet
 
 ##@ Testing
 
