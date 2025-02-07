@@ -1,6 +1,6 @@
 FROM registry.ddbuild.io/images/mirror/ubuntu:14.04
 
-ARG RUST_VERSION=1.80.0
+ARG RUST_VERSION=1.81.0
 ARG TARGETARCH
 
 # Install basic utilities and an updated compiler/binutils toolchain, which is necessary for compiling.
@@ -35,7 +35,15 @@ RUN rustup toolchain add nightly && \
 # Pre-install the relevant Cargo tools we use in the build process.
 COPY ./Makefile /
 RUN make cargo-preinstall
-    
+
+# Install mold, an alternative linker that is drastically faster than GNU ld. This is not strictly necessary, but it
+# helps speed up builds in CI which is important for reducing iteration times / resource consumption.
+RUN export ARCH=$(echo "${TARGETARCH}" | sed s/amd64/x86_64/g | sed s/arm64/aarch64/g) && \
+    curl -s -L -o /tmp/mold-2.36.0.tar.gz https://github.com/rui314/mold/releases/download/v2.36.0/mold-2.36.0-${ARCH}-linux.tar.gz && \
+    tar -C /tmp -xzf /tmp/mold-2.36.0.tar.gz && \
+    cp -a /tmp/mold-2.36.0-${ARCH}-linux/. /usr/local/ && \
+    rm -rf /tmp/mold-2.36.0-${ARCH}-linux
+
 COPY .ci/images/build/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT [ "/entrypoint.sh" ]
