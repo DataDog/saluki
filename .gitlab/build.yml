@@ -19,6 +19,7 @@ build-adp-image-amd64:
     KUBERNETES_CPU_REQUEST: "16"
     KUBERNETES_MEMORY_REQUEST: "8Gi"
     KUBERNETES_MEMORY_LIMIT: "12Gi"
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
   script:
     - docker buildx build
       --platform linux/amd64
@@ -52,6 +53,7 @@ build-adp-image-arm64:
     KUBERNETES_CPU_REQUEST: "16"
     KUBERNETES_MEMORY_REQUEST: "8Gi"
     KUBERNETES_MEMORY_LIMIT: "12Gi"
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
   script:
     - docker buildx build
       --platform linux/arm64
