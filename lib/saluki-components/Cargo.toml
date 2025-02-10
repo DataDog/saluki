@@ -12,7 +12,6 @@ async-trait = { workspace = true }
 bitmask-enum = { workspace = true }
 bytes = { workspace = true }
 bytesize = { workspace = true }
-chrono = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }
@@ -35,7 +34,6 @@ paste = { workspace = true }
 pin-project = { workspace = true }
 protobuf = { workspace = true }
 quanta = { workspace = true }
-rand = { workspace = true }
 regex = { workspace = true }
 rustls = { workspace = true }
 saluki-config = { workspace = true }
@@ -57,11 +55,9 @@ snafu = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
 tokio-util = { workspace = true }
-tonic = { workspace = true }
 tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tracing = { workspace = true }
 url = { workspace = true }
-uuid = { workspace = true, features = ["std", "v7"] }
 
 [dev-dependencies]
 saluki-metrics = { workspace = true, features = ["test"] }
