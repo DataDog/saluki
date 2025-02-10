@@ -24,7 +24,9 @@ dependencies = [
  "async-trait",
  "bytesize",
  "chrono",
+ "datadog-protos",
  "memory-accounting",
+ "rand",
  "saluki-app",
  "saluki-components",
  "saluki-config",
@@ -43,7 +45,9 @@ dependencies = [
  "tikv-jemallocator",
  "tokio",
  "tokio-rustls",
+ "tonic 0.12.3",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3433,7 +3437,6 @@ dependencies = [
  "bitmask-enum",
  "bytes",
  "bytesize",
- "chrono",
  "datadog-protos",
  "ddsketch-agent",
  "float-cmp",
@@ -3456,7 +3459,6 @@ dependencies = [
  "pin-project",
  "protobuf",
  "quanta",
- "rand",
  "regex",
  "rustls",
  "saluki-config",
@@ -3478,11 +3480,9 @@ dependencies = [
  "stringtheory",
  "tokio",
  "tokio-util",
- "tonic 0.12.3",
  "tower 0.5.2",
  "tracing",
  "url",
- "uuid",
 ]
 
 [[package]]

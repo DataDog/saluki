@@ -5,15 +5,12 @@
 
 #![deny(warnings)]
 #![deny(missing_docs)]
-use std:: time::{Duration, Instant};
+use std::time::{Duration, Instant};
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{api::APIBuilder, logging::LoggingAPIHandler, prelude::*};
 use saluki_components::{
-    destinations::{
-        new_remote_agent_service, DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration,
-        DatadogStatusFlareConfiguration, PrometheusConfiguration,
-    },
+    destinations::{DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration, PrometheusConfiguration},
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
     transforms::{
         AggregateConfiguration, ChainedConfiguration, DogstatsDPrefixFilterConfiguration, HostEnrichmentConfiguration,
@@ -120,7 +117,6 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
 
     let privileged_api = APIBuilder::new()
         .with_self_signed_tls()
-        .with_grpc_service(new_remote_agent_service())
         .with_handler(logging_api_handler)
         .with_optional_handler(env_provider.workload_api_handler());
 
@@ -226,40 +222,23 @@ async fn create_topology(
         .connect_component("dd_metrics_out", ["enrich"])?
         .connect_component("dd_events_sc_out", ["dsd_in.events", "dsd_in.service_checks"])?;
 
+    // When telemetry is enabled, we need to collect internal metrics, so add those components and route them here.
     let telemetry_enabled = configuration.get_typed_or_default::<bool>("telemetry_enabled");
-    let in_standalone_mode = configuration.get_typed_or_default::<bool>("adp.standalone_mode");
-
-    // When telemetry is enabled, or we're not in standalone mode, we need to collect internal metrics, so add those
-    // components and route them here.
-    if telemetry_enabled || !in_standalone_mode {
+    if telemetry_enabled {
         let int_metrics_config = InternalMetricsConfiguration;
         let int_metrics_remap_config = AgentTelemetryRemapperConfiguration::new();
-
-        blueprint
-            .add_source("internal_metrics_in", int_metrics_config)?
-            .add_transform("internal_metrics_remap", int_metrics_remap_config)?
-            .connect_component("internal_metrics_remap", ["internal_metrics_in"])?;
-    }
-
-    // When not in standalone mode, install the necessary components for registering ourselves with the Datadog Agent as
-    // a "remote agent", which wires up ADP to allow the Datadog Agent to query it for status and flare information.
-    if !in_standalone_mode {
-        let status_configuration = DatadogStatusFlareConfiguration::from_configuration(configuration).await?;
-        blueprint
-            .add_destination("dd_status_flare_out", status_configuration)?
-            .connect_component("dd_status_flare_out", ["internal_metrics_remap"])?;
-    }
-
-    // When internal telemetry is enabled, expose a Prometheus scrape endpoint that the Datadog Agent will pull from.
-    if telemetry_enabled {
         let prometheus_config = PrometheusConfiguration::from_configuration(configuration)?;
+
         info!(
             "Serving telemetry scrape endpoint on {}.",
             prometheus_config.listen_address()
         );
 
         blueprint
+            .add_source("internal_metrics_in", int_metrics_config)?
+            .add_transform("internal_metrics_remap", int_metrics_remap_config)?
             .add_destination("internal_metrics_out", prometheus_config)?
+            .connect_component("internal_metrics_remap", ["internal_metrics_in"])?
             .connect_component("internal_metrics_out", ["internal_metrics_remap"])?;
     }
 

@@ -1,4 +1,8 @@
-use std::{fmt, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, path::PathBuf};
+use std::{
+    fmt,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4},
+    path::PathBuf,
+};
 
 use axum::extract::connect_info::Connected;
 use serde::Deserialize;
@@ -40,6 +44,36 @@ impl ListenAddress {
     /// Creates a TCP address for the given port that listens on all interfaces.
     pub const fn any_tcp(port: u16) -> Self {
         Self::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)))
+    }
+
+    /// Returns a socket address that can be used to connect to the configured listen address with a bias for local clients.
+    ///
+    /// When the listen address is a TCP or UDP address, this method returns a socket address that can be used to
+    /// connect to the listener bound to this listen addresss, such that if the listen address is unspecified
+    /// (`0.0.0.0`), the client will connect locally using "localhost". When the listen address is not "unspecified" or
+    /// already uses "localhost", this method returns the listen address as-is.
+    ///
+    /// If the address is a Unix domain socket, this method returns `None`.
+    pub fn as_local_connect_addr(&self) -> Option<SocketAddr> {
+        match self {
+            Self::Tcp(addr) | Self::Udp(addr) => {
+                let mut connect_addr = *addr;
+                if connect_addr.ip().is_unspecified() {
+                    let localhost_ip = match connect_addr.is_ipv4() {
+                        true => IpAddr::V4(Ipv4Addr::LOCALHOST),
+                        false => IpAddr::V6(Ipv6Addr::LOCALHOST),
+                    };
+
+                    connect_addr.set_ip(localhost_ip);
+                }
+
+                Some(connect_addr)
+            }
+            #[cfg(unix)]
+            Self::Unixgram(_) => None,
+            #[cfg(unix)]
+            Self::Unix(_) => None,
+        }
     }
 }
 
@@ -192,5 +226,49 @@ impl From<ProcessCredentials> for ConnectionAddress {
 impl<'a> Connected<&'a Connection> for ConnectionAddress {
     fn connect_info(target: &'a Connection) -> Self {
         target.remote_addr()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_as_local_connect_addr() {
+        let tcp_any_addr = ListenAddress::try_from("tcp://0.0.0.0:1234").unwrap();
+        assert_eq!(
+            tcp_any_addr.as_local_connect_addr(),
+            Some(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 1234)))
+        );
+
+        let tcp_localhost_addr = ListenAddress::try_from("tcp://127.0.0.1:2345").unwrap();
+        assert_eq!(
+            tcp_localhost_addr.as_local_connect_addr(),
+            Some(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 2345)))
+        );
+
+        let tcp_private_addr = ListenAddress::try_from("tcp://192.168.10.2:3456").unwrap();
+        assert_eq!(
+            tcp_private_addr.as_local_connect_addr(),
+            Some(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 168, 10, 2), 3456)))
+        );
+
+        let udp_any_addr = ListenAddress::try_from("udp://0.0.0.0:4567").unwrap();
+        assert_eq!(
+            udp_any_addr.as_local_connect_addr(),
+            Some(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 4567)))
+        );
+
+        let udp_localhost_addr = ListenAddress::try_from("udp://127.0.0.1:5678").unwrap();
+        assert_eq!(
+            udp_localhost_addr.as_local_connect_addr(),
+            Some(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 5678)))
+        );
+
+        let udp_private_addr = ListenAddress::try_from("udp://192.168.10.2:6789").unwrap();
+        assert_eq!(
+            udp_private_addr.as_local_connect_addr(),
+            Some(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 168, 10, 2), 6789)))
+        );
     }
 }
