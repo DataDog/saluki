@@ -18,7 +18,6 @@ use tracing::{debug, error, trace};
 pub(super) const SCRATCH_BUF_CAPACITY: usize = 8192;
 
 static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("application/x-protobuf");
-static CONTENT_ENCODING_DEFLATE: HeaderValue = HeaderValue::from_static("deflate");
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -414,7 +413,7 @@ where
             .method(Method::POST)
             .uri(self.endpoint_uri.clone())
             .header(http::header::CONTENT_TYPE, CONTENT_TYPE_PROTOBUF.clone())
-            .header(http::header::CONTENT_ENCODING, CONTENT_ENCODING_DEFLATE.clone())
+            .header(http::header::CONTENT_ENCODING, self.compressor.header_value())
             .body(buffer)
             .context(Http)
     }
