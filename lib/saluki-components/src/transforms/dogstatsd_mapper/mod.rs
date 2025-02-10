@@ -255,6 +255,7 @@ impl SynchronousTransform for DogstatsDMapper {
     fn transform_buffer(&mut self, event_buffer: &mut FixedSizeEventBuffer) {
         for event in event_buffer {
             if let Some(metric) = event.try_as_metric_mut() {
+                // TODO: Origin tags should be added before we the mapper's context resolver is used.
                 if let Some(new_context) = self
                     .metric_mapper
                     .map(metric.context().name(), metric.context().tags().to_owned())
