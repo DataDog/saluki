@@ -19,6 +19,7 @@ RUN curl -s -L -o /tmp/go-1.23.0.tar.gz https://go.dev/dl/go1.23.0.linux-${TARGE
 RUN tar -C /usr/local -xzf /tmp/go-1.23.0.tar.gz
 
 # Install a number of packages/tools by hand, because the versions in Ubuntu 14.04 are too old or not available at all.
+COPY .ci/install-protoc.sh /
 RUN chmod +x /install-protoc.sh && /install-protoc.sh
 
 COPY .ci/install-awscli.sh /
