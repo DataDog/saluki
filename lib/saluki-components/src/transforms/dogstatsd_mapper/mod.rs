@@ -83,7 +83,7 @@ impl MapperProfileConfigs {
 
             for mapping in &config_profile.mappings {
                 let mut match_type = mapping.match_type.to_string();
-                if mapping.match_type == "" {
+                if mapping.match_type.is_empty() {
                     match_type = "wildcard".to_string();
                 }
                 if match_type != MATCH_TYPE_WILDCARD && match_type != MATCH_TYPE_REGEX {
@@ -201,7 +201,6 @@ impl MetricMapper {
                 if let Some(captures) = mapping.regex.captures(metric_name) {
                     let mut name = String::new();
                     captures.expand(&mapping.name, &mut name);
-
                     let mut tags = Vec::with_capacity(mapping.tags.len());
                     for (tag_key, tag_value_expr) in &mapping.tags {
                         let mut expanded_value = String::new();
@@ -263,6 +262,75 @@ impl SynchronousTransform for DogstatsDMapper {
                     *metric.context_mut() = new_context;
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use bytesize::ByteSize;
+    use saluki_context::tags::TagSet;
+    use stringtheory::MetaString;
+
+    use super::{MapperProfileConfigs, MetricMapper};
+
+    fn mapper(json_data: &str) -> MetricMapper {
+        let mpc: MapperProfileConfigs = serde_json::from_str(&json_data).unwrap();
+        let context_string_interner_bytes = ByteSize::kib(64);
+        mpc.build(context_string_interner_bytes).unwrap()
+    }
+
+    fn tags() -> TagSet {
+        let mut existing_tags = TagSet::with_capacity(2);
+        existing_tags.insert_tag(MetaString::from_static("foo:bar"));
+        existing_tags.insert_tag(MetaString::from_static("baz"));
+        existing_tags
+    }
+
+    #[test]
+    fn test_mapper_wildcard() {
+        let json_data = r#"[{"name":"my_custom_metric_profile","prefix":"custom_metric.","mappings":[{"match":"custom_metric.process.*.*","match_type":"wildcard","name":"custom_metric.process","tags":{"tag_key_1":"$1","tag_key_2":"$2"}}]}]"#;
+        let mut mapper = mapper(&json_data);
+        let input_metric_name = "custom_metric.process.value_1.value_2".to_string();
+        let existing_tags = tags();
+        let context = mapper.map(&input_metric_name, existing_tags.clone()).unwrap();
+        let expected_metric_name = MetaString::from_static("custom_metric.process");
+        assert_eq!(context.name(), &expected_metric_name);
+        assert!(context.tags().has_tag("tag_key_1:value_1"));
+        assert!(context.tags().has_tag("tag_key_2:value_2"));
+        for tag in existing_tags {
+            assert!(context.tags().has_tag(tag));
+        }
+    }
+
+    #[test]
+    fn test_mapper_regex() {
+        let json_data = r#"[{"name":"my_custom_metric_profile","prefix":"custom_metric.","mappings":[{"match":"custom_metric\\.process\\.([\\w_]+)\\.(.+)","match_type":"regex","name":"custom_metric.process","tags":{"tag_key_1":"$1","tag_key_2":"$2"}}]}]"#;
+        let mut mapper = mapper(&json_data);
+        let input_metric_name = "custom_metric.process.value_1.value.with.dots._2".to_string();
+        let existing_tags = tags();
+        let context = mapper.map(&input_metric_name, existing_tags.clone()).unwrap();
+        let expected_metric_name = MetaString::from_static("custom_metric.process");
+        assert_eq!(context.name(), &expected_metric_name);
+        assert!(context.tags().has_tag("tag_key_1:value_1"));
+        assert!(context.tags().has_tag("tag_key_2:value.with.dots._2"));
+        for tag in existing_tags {
+            assert!(context.tags().has_tag(tag));
+        }
+    }
+
+    #[test]
+    fn test_mapper_expand_group() {
+        let json_data = r#"[{"name":"my_custom_metric_profile","prefix":"custom_metric.","mappings":[{"match":"custom_metric.process.*.*","match_type":"wildcard","name":"custom_metric.process.prod.$1.live","tags":{"tag_key_2":"$2"}}]}]"#;
+        let mut mapper = mapper(&json_data);
+        let input_metric_name = "custom_metric.process.value_1.value_2".to_string();
+        let expected_metric_name = MetaString::from_static("custom_metric.process.prod.value_1.live");
+        let existing_tags = tags();
+        let context = mapper.map(&input_metric_name, existing_tags.clone()).unwrap();
+        assert_eq!(context.name(), &expected_metric_name);
+        for tag in existing_tags {
+            assert!(context.tags().has_tag(tag));
         }
     }
 }
