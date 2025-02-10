@@ -18,6 +18,7 @@ memchr = { workspace = true, features = ["std"] }
 memory-accounting = { workspace = true }
 metrics = { workspace = true }
 metrics-util = { workspace = true, features = ["handles", "recency", "registry"] }
+papaya = { workspace = true }
 paste = { workspace = true }
 pin-project = { workspace = true }
 protobuf = { workspace = true }

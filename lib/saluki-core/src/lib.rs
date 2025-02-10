@@ -6,5 +6,6 @@ pub mod components;
 pub mod constants;
 pub mod observability;
 pub mod pooling;
+pub mod state;
 pub mod task;
 pub mod topology;
