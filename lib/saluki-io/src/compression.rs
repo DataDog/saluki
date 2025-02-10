@@ -9,9 +9,13 @@ use async_compression::{
     Level,
 };
 use average::{Estimate as _, Variance};
+use http::HeaderValue;
 use pin_project::pin_project;
 use tokio::io::AsyncWrite;
 use tracing::trace;
+
+static CONTENT_ENCODING_DEFLATE: HeaderValue = HeaderValue::from_static("deflate");
+static CONTENT_ENCODING_ZSTD: HeaderValue = HeaderValue::from_static("zstd");
 
 /// Compression schemes supported by `Compressor`.
 pub enum CompressionScheme {
@@ -114,6 +118,14 @@ impl<W: AsyncWrite> Compressor<W> {
         match self {
             Self::Zlib(encoder) => encoder.into_inner(),
             Self::Zstd(encoder) => encoder.into_inner().into_inner(),
+        }
+    }
+
+    /// Returns the appropriate HTTP header value for the compression scheme.
+    pub fn header_value(&self) -> HeaderValue {
+        match self {
+            Self::Zlib(_) => CONTENT_ENCODING_DEFLATE.clone(),
+            Self::Zstd(_) => CONTENT_ENCODING_ZSTD.clone(),
         }
     }
 }
