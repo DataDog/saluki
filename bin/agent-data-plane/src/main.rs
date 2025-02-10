@@ -5,10 +5,7 @@
 
 #![deny(warnings)]
 #![deny(missing_docs)]
-use std::{
-    future::pending,
-    time::{Duration, Instant},
-};
+use std:: time::{Duration, Instant};
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{api::APIBuilder, logging::LoggingAPIHandler, prelude::*};
@@ -27,9 +24,11 @@ use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
-use saluki_io::net::ListenAddress;
 use tokio::select;
 use tracing::{error, info, warn};
+
+mod api;
+use self::api::configure_and_spawn_api_endpoints;
 
 mod components;
 use self::components::remapper::AgentTelemetryRemapperConfiguration;
@@ -146,9 +145,8 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     // Spawn the health checker.
     health_registry.spawn().await?;
 
-    // Spawn both of our API servers.
-    spawn_unprivileged_api(&configuration, unprivileged_api).await?;
-    spawn_privileged_api(&configuration, privileged_api).await?;
+    // Handle any final configuration of our API endpoints and spawn them.
+    configure_and_spawn_api_endpoints(&configuration, unprivileged_api, privileged_api).await?;
 
     let startup_time = started.elapsed();
 
@@ -286,50 +284,6 @@ fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
     }
     info!("Wrote sizing guide to sizing_guide.html");
     output.flush()?;
-
-    Ok(())
-}
-
-async fn spawn_unprivileged_api(
-    configuration: &GenericConfiguration, api_builder: APIBuilder,
-) -> Result<(), GenericError> {
-    let api_listen_address = configuration
-        .try_get_typed("api_listen_address")
-        .error_context("Failed to get API listen address.")?
-        .unwrap_or_else(|| ListenAddress::Tcp(([0, 0, 0, 0], 5100).into()));
-
-    // TODO: Use something better than `pending()`... perhaps something like a more generalized
-    // `ComponentShutdownCoordinator` that allows for triggering and waiting for all attached tasks to signal that
-    // they've shutdown.
-    tokio::spawn(async move {
-        info!("Serving unprivileged API on {}.", api_listen_address);
-
-        if let Err(e) = api_builder.serve(api_listen_address, pending()).await {
-            error!("Failed to serve unprivileged API: {}", e);
-        }
-    });
-
-    Ok(())
-}
-
-async fn spawn_privileged_api(
-    configuration: &GenericConfiguration, api_builder: APIBuilder,
-) -> Result<(), GenericError> {
-    let api_listen_address = configuration
-        .try_get_typed("secure_api_listen_address")
-        .error_context("Failed to get secure API listen address.")?
-        .unwrap_or_else(|| ListenAddress::Tcp(([0, 0, 0, 0], 5101).into()));
-
-    // TODO: Use something better than `pending()`... perhaps something like a more generalized
-    // `ComponentShutdownCoordinator` that allows for triggering and waiting for all attached tasks to signal that
-    // they've shutdown.
-    tokio::spawn(async move {
-        info!("Serving privileged API on {}.", api_listen_address);
-
-        if let Err(e) = api_builder.serve(api_listen_address, pending()).await {
-            error!("Failed to serve privileged API: {}", e);
-        }
-    });
 
     Ok(())
 }

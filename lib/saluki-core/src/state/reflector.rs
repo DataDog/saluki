@@ -95,6 +95,12 @@ impl<P: Processor> Reflector<P> {
     /// the processed results. It can be listened to for updates, and cheaply shared. This allows multiple interested
     /// components to subscribe to the same data source without having to duplicate the processing or storage of the
     /// data.
+    /// 
+    /// A task will be spawned that drives consumption of the data source and processes the items, feeding them into the
+    /// reflector state, which can be queried from the returned `Reflector.`
+    ///
+    /// `Reflector` is cheaply cloneable and can either be cloned for each caller or shared between them (e.g., via
+    /// `Arc<T>`).
     pub async fn new<S, I>(mut source: S, processor: P) -> Self
     where
         S: Stream<Item = I> + Unpin + Send + 'static,

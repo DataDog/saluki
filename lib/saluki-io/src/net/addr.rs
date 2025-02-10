@@ -1,4 +1,4 @@
-use std::{fmt, net::SocketAddr, path::PathBuf};
+use std::{fmt, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, path::PathBuf};
 
 use axum::extract::connect_info::Connected;
 use serde::Deserialize;
@@ -34,6 +34,13 @@ pub enum ListenAddress {
     /// A Unix stream listen address.
     #[cfg(unix)]
     Unix(PathBuf),
+}
+
+impl ListenAddress {
+    /// Creates a TCP address for the given port that listens on all interfaces.
+    pub const fn any_tcp(port: u16) -> Self {
+        Self::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)))
+    }
 }
 
 impl fmt::Display for ListenAddress {
