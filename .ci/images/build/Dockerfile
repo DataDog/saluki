@@ -18,13 +18,15 @@ ENV PATH="/usr/local/go/bin:${PATH}"
 RUN curl -s -L -o /tmp/go-1.23.0.tar.gz https://go.dev/dl/go1.23.0.linux-${TARGETARCH}.tar.gz
 RUN tar -C /usr/local -xzf /tmp/go-1.23.0.tar.gz
 
-# Install Protocol Buffers compiler by hand, since Ubuntu 14.04 does not have a recent enough version.
-COPY .ci/install-protoc.sh /
+# Install a number of packages/tools by hand, because the versions in Ubuntu 14.04 are too old or not available at all.
 RUN chmod +x /install-protoc.sh && /install-protoc.sh
 
-# Install awscli by hand, for similar reasons to the Protocol Buffers compiler.
 COPY .ci/install-awscli.sh /
 RUN chmod +x /install-awscli.sh && /install-awscli.sh
+
+RUN curl -s -L -o /tmp/jq https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-${TARGETARCH} && \
+    mv /tmp/jq /usr/local/bin/jq && \
+    chmod +x /usr/local/bin/jq
 
 # Install Rust and common Cargo tooling that we depend on.
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain ${RUST_VERSION}
