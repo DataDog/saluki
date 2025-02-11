@@ -178,6 +178,7 @@ impl RemoteAgentWorkloadProvider {
 
 impl WorkloadProvider for RemoteAgentWorkloadProvider {
     fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
+        #[allow(clippy::manual_map)]
         match self.tags_querier.get_entity_tags(entity_id, cardinality) {
             Some(tags) => Some(tags),
             None => {
