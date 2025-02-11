@@ -154,6 +154,7 @@ libm,https://github.com/rust-lang/libm,MIT AND (MIT OR Apache-2.0),Jorge Aparici
 linux-raw-sys,https://github.com/sunfishcode/linux-raw-sys,Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT,Dan Gohman <dev@sunfishcode.online>
 litemap,https://github.com/unicode-org/icu4x,Unicode-3.0,The ICU4X Project Developers
 log,https://github.com/rust-lang/log,MIT OR Apache-2.0,The Rust Project Developers
+mach2,https://github.com/JohnTitor/mach2,BSD-2-Clause OR MIT OR Apache-2.0,The mach2 Authors
 matchers,https://github.com/hawkw/matchers,MIT,Eliza Weisman <eliza@buoyant.io>
 matchit,https://github.com/ibraheemdev/matchit,MIT AND BSD-3-Clause,Ibraheem Ahmed <ibraheem@ibraheem.ca>
 matrixmultiply,https://github.com/bluss/matrixmultiply,MIT OR Apache-2.0,"bluss, R. Janis Goldschmidt"

@@ -5,18 +5,12 @@
 
 #![deny(warnings)]
 #![deny(missing_docs)]
-use std::{
-    future::pending,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{api::APIBuilder, logging::LoggingAPIHandler, prelude::*};
 use saluki_components::{
-    destinations::{
-        new_remote_agent_service, DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration,
-        DatadogStatusFlareConfiguration, PrometheusConfiguration,
-    },
+    destinations::{DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration, PrometheusConfiguration},
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
     transforms::{
         AggregateConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration, DogstatsDPrefixFilterConfiguration,
@@ -28,9 +22,11 @@ use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
-use saluki_io::net::ListenAddress;
 use tokio::select;
 use tracing::{error, info, warn};
+
+mod api;
+use self::api::configure_and_spawn_api_endpoints;
 
 mod components;
 use self::components::remapper::AgentTelemetryRemapperConfiguration;
@@ -122,7 +118,6 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
 
     let privileged_api = APIBuilder::new()
         .with_self_signed_tls()
-        .with_grpc_service(new_remote_agent_service())
         .with_handler(logging_api_handler)
         .with_optional_handler(env_provider.workload_api_handler());
 
@@ -147,9 +142,8 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     // Spawn the health checker.
     health_registry.spawn().await?;
 
-    // Spawn both of our API servers.
-    spawn_unprivileged_api(&configuration, unprivileged_api).await?;
-    spawn_privileged_api(&configuration, privileged_api).await?;
+    // Handle any final configuration of our API endpoints and spawn them.
+    configure_and_spawn_api_endpoints(&configuration, unprivileged_api, privileged_api).await?;
 
     let startup_time = started.elapsed();
 
@@ -232,40 +226,23 @@ async fn create_topology(
         .connect_component("dd_metrics_out", ["enrich"])?
         .connect_component("dd_events_sc_out", ["dsd_in.events", "dsd_in.service_checks"])?;
 
+    // When telemetry is enabled, we need to collect internal metrics, so add those components and route them here.
     let telemetry_enabled = configuration.get_typed_or_default::<bool>("telemetry_enabled");
-    let in_standalone_mode = configuration.get_typed_or_default::<bool>("adp.standalone_mode");
-
-    // When telemetry is enabled, or we're not in standalone mode, we need to collect internal metrics, so add those
-    // components and route them here.
-    if telemetry_enabled || !in_standalone_mode {
+    if telemetry_enabled {
         let int_metrics_config = InternalMetricsConfiguration;
         let int_metrics_remap_config = AgentTelemetryRemapperConfiguration::new();
-
-        blueprint
-            .add_source("internal_metrics_in", int_metrics_config)?
-            .add_transform("internal_metrics_remap", int_metrics_remap_config)?
-            .connect_component("internal_metrics_remap", ["internal_metrics_in"])?;
-    }
-
-    // When not in standalone mode, install the necessary components for registering ourselves with the Datadog Agent as
-    // a "remote agent", which wires up ADP to allow the Datadog Agent to query it for status and flare information.
-    if !in_standalone_mode {
-        let status_configuration = DatadogStatusFlareConfiguration::from_configuration(configuration).await?;
-        blueprint
-            .add_destination("dd_status_flare_out", status_configuration)?
-            .connect_component("dd_status_flare_out", ["internal_metrics_remap"])?;
-    }
-
-    // When internal telemetry is enabled, expose a Prometheus scrape endpoint that the Datadog Agent will pull from.
-    if telemetry_enabled {
         let prometheus_config = PrometheusConfiguration::from_configuration(configuration)?;
+
         info!(
             "Serving telemetry scrape endpoint on {}.",
             prometheus_config.listen_address()
         );
 
         blueprint
+            .add_source("internal_metrics_in", int_metrics_config)?
+            .add_transform("internal_metrics_remap", int_metrics_remap_config)?
             .add_destination("internal_metrics_out", prometheus_config)?
+            .connect_component("internal_metrics_remap", ["internal_metrics_in"])?
             .connect_component("internal_metrics_out", ["internal_metrics_remap"])?;
     }
 
@@ -290,50 +267,6 @@ fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
     }
     info!("Wrote sizing guide to sizing_guide.html");
     output.flush()?;
-
-    Ok(())
-}
-
-async fn spawn_unprivileged_api(
-    configuration: &GenericConfiguration, api_builder: APIBuilder,
-) -> Result<(), GenericError> {
-    let api_listen_address = configuration
-        .try_get_typed("api_listen_address")
-        .error_context("Failed to get API listen address.")?
-        .unwrap_or_else(|| ListenAddress::Tcp(([0, 0, 0, 0], 5100).into()));
-
-    // TODO: Use something better than `pending()`... perhaps something like a more generalized
-    // `ComponentShutdownCoordinator` that allows for triggering and waiting for all attached tasks to signal that
-    // they've shutdown.
-    tokio::spawn(async move {
-        info!("Serving unprivileged API on {}.", api_listen_address);
-
-        if let Err(e) = api_builder.serve(api_listen_address, pending()).await {
-            error!("Failed to serve unprivileged API: {}", e);
-        }
-    });
-
-    Ok(())
-}
-
-async fn spawn_privileged_api(
-    configuration: &GenericConfiguration, api_builder: APIBuilder,
-) -> Result<(), GenericError> {
-    let api_listen_address = configuration
-        .try_get_typed("secure_api_listen_address")
-        .error_context("Failed to get secure API listen address.")?
-        .unwrap_or_else(|| ListenAddress::Tcp(([0, 0, 0, 0], 5101).into()));
-
-    // TODO: Use something better than `pending()`... perhaps something like a more generalized
-    // `ComponentShutdownCoordinator` that allows for triggering and waiting for all attached tasks to signal that
-    // they've shutdown.
-    tokio::spawn(async move {
-        info!("Serving privileged API on {}.", api_listen_address);
-
-        if let Err(e) = api_builder.serve(api_listen_address, pending()).await {
-            error!("Failed to serve privileged API: {}", e);
-        }
-    });
 
     Ok(())
 }

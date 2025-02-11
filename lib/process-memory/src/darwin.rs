@@ -1,9 +1,10 @@
 use std::mem::MaybeUninit;
 
 use libc::{
-    mach_msg_type_number_t, mach_task_basic_info_data_t, mach_task_self, task_info, task_info_t, KERN_SUCCESS,
-    MACH_TASK_BASIC_INFO, MACH_TASK_BASIC_INFO_COUNT,
+    mach_msg_type_number_t, mach_task_basic_info_data_t, task_info, task_info_t, KERN_SUCCESS, MACH_TASK_BASIC_INFO,
+    MACH_TASK_BASIC_INFO_COUNT,
 };
+use mach2::traps::mach_task_self;
 
 /// A memory usage querier.
 #[derive(Default)]

@@ -8,6 +8,7 @@ fn main() {
     println!("cargo:rerun-if-changed=proto/datadog/api/v1/api.proto");
     println!("cargo:rerun-if-changed=proto/datadog/workloadmeta/workloadmeta.proto");
     println!("cargo:rerun-if-changed=proto/datadog/remoteagent/remoteagent.proto");
+    println!("cargo:rerun-if-changed=proto/datadog/autodiscovery/autodiscovery.proto");
 
     // Handle code generation for pure Protocol Buffers message types.
     let codegen_customize = protobuf_codegen::Customize::default()
@@ -38,6 +39,7 @@ fn main() {
                 "proto/datadog/api/v1/api.proto",
                 "proto/datadog/workloadmeta/workloadmeta.proto",
                 "proto/datadog/remoteagent/remoteagent.proto",
+                "proto/datadog/autodiscovery/autodiscovery.proto",
             ],
             &["proto"],
         )

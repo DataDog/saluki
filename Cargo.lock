@@ -24,7 +24,9 @@ dependencies = [
  "async-trait",
  "bytesize",
  "chrono",
+ "datadog-protos",
  "memory-accounting",
+ "rand",
  "saluki-app",
  "saluki-components",
  "saluki-config",
@@ -43,7 +45,9 @@ dependencies = [
  "tikv-jemallocator",
  "tokio",
  "tokio-rustls",
+ "tonic 0.12.3",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -203,9 +207,9 @@ dependencies = [
 
 [[package]]
 name = "async-trait"
-version = "0.1.85"
+version = "0.1.86"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f934833b4b7233644e5848f235df3f57ed8c80f1528a26c3dfa13d2147fa056"
+checksum = "644dd749086bf3771a2fbc5f256fdb982d53f011c7d5d560304eafeecebce79d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -586,9 +590,9 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "bytes"
-version = "1.9.0"
+version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "325918d6fe32f23b19878fe4b34794ae41fc19ddbe53b10571a4874d44ffd39b"
+checksum = "f61dac84819c6588b558454b194026eb1f09c293b9036ae9b159e74e73ab6cf9"
 
 [[package]]
 name = "bytesize"
@@ -2141,6 +2145,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mach2"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19b955cdeb2a02b9117f121ce63aa52d08ade45de53e48fe6a38b39c10f6f709"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "matchers"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2834,6 +2847,7 @@ version = "0.1.0"
 dependencies = [
  "dhat",
  "libc",
+ "mach2",
  "windows-sys 0.59.0",
 ]
 
@@ -3028,9 +3042,9 @@ dependencies = [
 
 [[package]]
 name = "quick_cache"
-version = "0.6.9"
+version = "0.6.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d7c94f8935a9df96bb6380e8592c70edf497a643f94bd23b2f76b399385dbf4"
+checksum = "3f67cfc9c723c39f3615eb0840b00c4cb9e2b068d2fa761a30d845ec91730a59"
 dependencies = [
  "ahash",
  "equivalent",
@@ -3433,7 +3447,6 @@ dependencies = [
  "bitmask-enum",
  "bytes",
  "bytesize",
- "chrono",
  "datadog-protos",
  "ddsketch-agent",
  "float-cmp",
@@ -3456,7 +3469,6 @@ dependencies = [
  "pin-project",
  "protobuf",
  "quanta",
- "rand",
  "regex",
  "rustls",
  "saluki-config",
@@ -3478,11 +3490,9 @@ dependencies = [
  "stringtheory",
  "tokio",
  "tokio-util",
- "tonic 0.12.3",
  "tower 0.5.2",
  "tracing",
  "url",
- "uuid",
 ]
 
 [[package]]
@@ -3540,6 +3550,7 @@ dependencies = [
  "memory-accounting",
  "metrics",
  "metrics-util",
+ "papaya",
  "paste",
  "pin-project",
  "protobuf",

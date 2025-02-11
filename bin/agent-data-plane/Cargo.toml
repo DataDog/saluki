@@ -12,7 +12,10 @@ fips = ["saluki-app/tls-fips"]
 [dependencies]
 async-trait = { workspace = true }
 bytesize = { workspace = true }
+chrono = { workspace = true }
+datadog-protos = { workspace = true }
 memory-accounting = { workspace = true }
+rand = { workspace = true }
 saluki-app = { workspace = true, features = ["full"] }
 saluki-components = { workspace = true }
 saluki-config = { workspace = true }
@@ -34,7 +37,9 @@ tokio = { workspace = true, features = [
   "signal",
 ] }
 tokio-rustls = { workspace = true }
+tonic = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true, features = ["std", "v7"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tikv-jemalloc-ctl = { workspace = true, features = ["use_std"] }
