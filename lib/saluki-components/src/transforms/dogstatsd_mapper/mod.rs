@@ -275,7 +275,7 @@ mod tests {
     use super::{MapperProfileConfigs, MetricMapper};
 
     fn mapper(json_data: &str) -> MetricMapper {
-        let mpc: MapperProfileConfigs = serde_json::from_str(&json_data).unwrap();
+        let mpc: MapperProfileConfigs = serde_json::from_str(json_data).unwrap();
         let context_string_interner_bytes = ByteSize::kib(64);
         mpc.build(context_string_interner_bytes).unwrap()
     }
@@ -283,7 +283,7 @@ mod tests {
     #[test]
     fn test_mapper_wildcard() {
         let json_data = r#"[{"name":"my_custom_metric_profile","prefix":"custom_metric.","mappings":[{"match":"custom_metric.process.*.*","match_type":"wildcard","name":"custom_metric.process","tags":{"tag_key_1":"$1","tag_key_2":"$2"}}]}]"#;
-        let mut mapper = mapper(&json_data);
+        let mut mapper = mapper(json_data);
         let context = Context::from_static_parts("custom_metric.process.value_1.value_2", &["foo:bar", "baz"]);
         let input_metric_name = context.name().clone();
         let metric = Metric::counter(context, 1.0);
@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn test_mapper_regex() {
         let json_data = r#"[{"name":"my_custom_metric_profile","prefix":"custom_metric.","mappings":[{"match":"custom_metric\\.process\\.([\\w_]+)\\.(.+)","match_type":"regex","name":"custom_metric.process","tags":{"tag_key_1":"$1","tag_key_2":"$2"}}]}]"#;
-        let mut mapper = mapper(&json_data);
+        let mut mapper = mapper(json_data);
         let context =
             Context::from_static_parts("custom_metric.process.value_1.value.with.dots._2", &["foo:bar", "baz"]);
         let input_metric_name = context.name().clone();
@@ -332,7 +332,7 @@ mod tests {
     #[test]
     fn test_mapper_expand_group() {
         let json_data = r#"[{"name":"my_custom_metric_profile","prefix":"custom_metric.","mappings":[{"match":"custom_metric.process.*.*","match_type":"wildcard","name":"custom_metric.process.prod.$1.live","tags":{"tag_key_2":"$2"}}]}]"#;
-        let mut mapper = mapper(&json_data);
+        let mut mapper = mapper(json_data);
         let context = Context::from_static_parts("custom_metric.process.value_1.value_2", &["foo:bar", "baz"]);
         let input_metric_name = context.name().clone();
         let metric = Metric::counter(context, 1.0);
