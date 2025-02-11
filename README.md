@@ -1,5 +1,5 @@
 # saluki
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/DataDog/datadog-agent/blob/master/LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/DataDog/saluki/blob/main/LICENSE)
 
 Saluki is an experimental toolkit for building telemetry data planes in Rust.
 
@@ -13,12 +13,13 @@ In the event that we cease further development, the repository will be put into 
 Everything under `lib` contains reusable/common code, and everything under `bin` contains dedicated crates for building
 application-specific binaries.
 
-### Binaries (data planes)
+### Binaries / applications
 
 - `bin/agent-data-plane`: data plane used for testing Saluki, which emulates the [standalone DogStatsD server][standalone-dsd]
   in the Datadog Agent
+- `bin/correctness`: a number of binaries that are used to run "correctness" tests on ADP/standalone DogStatsD
 
-### Helper crates
+### Shared libraries
 
 - `lib/datadog-protos`: Rust bindings generated from Protocol Buffers definitions for metrics/trace intake APIs
 - `lib/ddsketch-agent`: Rust implementation of the [DDSketch][ddsketch] algorithm matched to the implementation
@@ -28,7 +29,7 @@ application-specific binaries.
 - `lib/process-memory`: cross-platform library for querying the RSS of the current process with few to no allocations
 - `lib/stringtheory`: custom string types and string interning implementations for high-performance string handling
 
-### Saluki
+### Saluki (core libraries)
 
 All remaining crates are part of Saluki itself, and all have a name with the prefix `saluki-`:
 
@@ -61,6 +62,11 @@ All remaining crates are part of Saluki itself, and all have a name with the pre
 If you find an issue with this package and have a fix, or simply want to report it, please review our
 [contributing][contributing] guide.
 
+## Documentation
+
+Saluki has no public-facing _code_ documentation at this time (2025-02-11). Procedural documentation -- architecture,
+releasing, etc -- can be found in the [docs](docs) directory.
+
 ## Security
 
 Please refer to our [Security Policy][security-policy] if you believe you have found a security vulnerability.
@@ -68,5 +74,5 @@ Please refer to our [Security Policy][security-policy] if you believe you have f
 [standalone-dsd]: https://github.com/DataDog/datadog-agent/tree/main/cmd/dogstatsd
 [ddsketch]: https://www.vldb.org/pvldb/vol12/p2195-masson.pdf
 [ddsketch-agent]: https://github.com/DataDog/opentelemetry-mapping-go/blob/main/pkg/quantile/sparse.go
-[contributing]: CONTRIBUTING.md
+[contributing]: docs/CONTRIBUTING.md
 [security-policy]: SECURITY.md
