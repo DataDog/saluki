@@ -46,9 +46,9 @@ impl HostTagsConfiguration {
 impl SynchronousTransformBuilder for HostTagsConfiguration {
     async fn build(&self) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         // Request the host tags from the Datadog Agent only once.
-        let host_tags_response = self.client.get_host_tags().await?.into_inner();
-        let mut host_tags = host_tags_response.system.to_owned();
-        host_tags.extend(host_tags_response.google_cloud_platform);
+        let host_tags_reply = self.client.get_host_tags().await?.into_inner();
+        // `HostTagReply` consists of `system` and `google_cloud_platform` tags but only `system` tags are attached.
+        let host_tags = host_tags_reply.system.to_owned();
 
         let context_string_interner_size = NonZeroUsize::new(self.context_string_interner_bytes.as_u64() as usize)
             .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))
