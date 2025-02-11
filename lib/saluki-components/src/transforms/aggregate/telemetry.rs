@@ -58,6 +58,8 @@ pub struct Telemetry {
     active_contexts_bytes_by_type: MetricTypedGauge,
     events_dropped: Counter,
     flushes: Counter,
+    series_flushed: Counter,
+    sketches_flushed: Counter,
     passthrough_metrics: Counter,
     passthrough_flushes: Counter,
     passthrough_batch_duration: Histogram,
@@ -72,6 +74,9 @@ impl Telemetry {
             events_dropped: builder
                 .register_debug_counter_with_tags("component_events_dropped_total", ["intentional:true"]),
             flushes: builder.register_debug_counter("aggregate_flushes_total"),
+            series_flushed: builder.register_debug_counter_with_tags("aggregate_flushed_total", ["data_type:series"]),
+            sketches_flushed: builder
+                .register_debug_counter_with_tags("aggregate_flushed_total", ["data_type:sketches"]),
             passthrough_metrics: builder.register_debug_counter("aggregate_passthrough_metrics_total"),
             passthrough_flushes: builder.register_debug_counter("aggregate_passthrough_flushes_total"),
             passthrough_batch_duration: builder.register_debug_histogram("aggregate_passthrough_batch_duration_secs"),
@@ -86,6 +91,8 @@ impl Telemetry {
             active_contexts_bytes_by_type: MetricTypedGauge::noop(),
             events_dropped: Counter::noop(),
             flushes: Counter::noop(),
+            series_flushed: Counter::noop(),
+            sketches_flushed: Counter::noop(),
             passthrough_metrics: Counter::noop(),
             passthrough_flushes: Counter::noop(),
             passthrough_batch_duration: Histogram::noop(),
@@ -114,6 +121,14 @@ impl Telemetry {
 
     pub fn increment_flushes(&self) {
         self.flushes.increment(1);
+    }
+
+    pub fn increment_flushed(&self, values: &MetricValues) {
+        if values.is_serie() {
+            self.series_flushed.increment(1);
+        } else if values.is_sketch() {
+            self.sketches_flushed.increment(1);
+        }
     }
 
     pub fn increment_passthrough_metrics(&self) {

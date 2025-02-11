@@ -36,5 +36,11 @@ pub fn get_aggregation_remappings() -> Vec<RemapperRule> {
             &["component_id:dsd_agg"],
             "no_aggregation.flush",
         ),
+        RemapperRule::by_name_and_tags(
+            "adp.aggregate_flushed_total",
+            &["component_id:dsd_agg"],
+            "aggregator.flush",
+        )
+        .with_original_tags(["data_type"]),
     ]
 }
