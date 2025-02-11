@@ -271,6 +271,13 @@ impl OriginTags {
         }
     }
 
+    pub(super) fn key(&self) -> Option<OriginKey> {
+        match self.inner {
+            OriginTagsInner::Empty => None,
+            OriginTagsInner::Resolved { key, .. } => Some(key),
+        }
+    }
+
     /// Returns the size of the origin tag set, in bytes.
     ///
     /// This includes the size of each individual tag.

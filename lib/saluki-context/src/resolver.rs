@@ -317,28 +317,26 @@ impl ContextResolver {
             })
     }
 
-    fn create_context_key<I, T>(
-        &mut self, name: &str, tags: I, maybe_origin: Option<RawOrigin<'_>>,
-    ) -> (ContextKey, Option<OriginKey>)
+    fn resolve_origin_tags(&self, maybe_origin: Option<RawOrigin<'_>>) -> OriginTags {
+        self.origin_tags_resolver
+            .as_ref()
+            .and_then(|resolver| {
+                maybe_origin
+                    .and_then(|origin| resolver.resolve_origin_key(origin))
+                    .map(|origin_key| OriginTags::from_resolved(origin_key, Arc::clone(resolver)))
+            })
+            .unwrap_or_else(OriginTags::empty)
+    }
+
+    fn create_context_key<I, T>(&mut self, name: &str, tags: I, maybe_origin_key: Option<OriginKey>) -> ContextKey
     where
         I: IntoIterator<Item = T>,
         T: AsRef<str>,
     {
-        // If we have an origin enricher configured, and the resolvable value has origin information defined, attempt to
-        // look up the origin key for it. We'll pass that along to the hasher to include as part of the context key.
-        let origin_key = self
-            .origin_tags_resolver
-            .as_ref()
-            .and_then(|resolver| maybe_origin.and_then(|origin| resolver.resolve_origin_key(origin)));
-
-        let context_key = hash_context_with_seen(name, tags, origin_key, &mut self.hash_seen_buffer);
-
-        (context_key, origin_key)
+        hash_context_with_seen(name, tags, maybe_origin_key, &mut self.hash_seen_buffer)
     }
 
-    fn create_context<I, T>(
-        &self, key: ContextKey, name: &str, tags: I, origin_key: Option<OriginKey>,
-    ) -> Option<Context>
+    fn create_context<I, T>(&self, key: ContextKey, name: &str, tags: I, origin_tags: OriginTags) -> Option<Context>
     where
         I: IntoIterator<Item = T>,
         T: AsRef<str>,
@@ -351,14 +349,6 @@ impl ContextResolver {
             let tag = self.intern(tag.as_ref())?;
             context_tags.insert_tag(tag);
         }
-
-        // Collect any enriched tags based on the origin key of the context, if any.
-        let origin_tags = match self.origin_tags_resolver.as_ref() {
-            Some(resolver) => origin_key
-                .map(|key| OriginTags::from_resolved(key, Arc::clone(resolver)))
-                .unwrap_or_else(OriginTags::empty),
-            None => OriginTags::empty(),
-        };
 
         self.stats.resolved_new_context_total().increment(1);
 
@@ -374,55 +364,94 @@ impl ContextResolver {
     /// Resolves the given context.
     ///
     /// If the context has not yet been resolved, the name and tags are interned and a new context is created and
-    /// stored. Otherwise, the existing context is returned. If an origin enricher is configured, and origin info is
-    /// available, any enriched tags will be added to the context.
+    /// stored. Otherwise, the existing context is returned. If an origin tags resolver is configured, and origin info
+    /// is available, any enriched tags will be added to the context.
     ///
     /// `None` may be returned if the interner is full and outside allocations are disallowed. See
     /// `allow_heap_allocations` for more information.
-    pub fn resolve<I, T>(&mut self, name: &str, tags: I, origin: Option<RawOrigin<'_>>) -> Option<Context>
+    pub fn resolve<I, T>(&mut self, name: &str, tags: I, maybe_origin: Option<RawOrigin<'_>>) -> Option<Context>
     where
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str>,
     {
-        let (context_key, origin_key) = self.create_context_key(name, tags.clone(), origin);
+        // Try and resolve our origin tags from the provided origin information, if any.
+        let origin_tags = self.resolve_origin_tags(maybe_origin);
+
+        self.resolve_inner(name, tags, origin_tags)
+    }
+
+    /// Resolves the given context using the provided origin tags.
+    ///
+    /// If the context has not yet been resolved, the name and tags are interned and a new context is created and
+    /// stored. Otherwise, the existing context is returned. The provided origin tags are used to enrich the context.
+    ///
+    /// `None` may be returned if the interner is full and outside allocations are disallowed. See
+    /// `allow_heap_allocations` for more information.
+    ///
+    /// ## Origin tags resolver mismatch
+    ///
+    /// When passing in origin tags, they will be inherently tied to a specific `OriginTagsResolver`, which may
+    /// differ from the configured origin tags resolver in this context resolver. This means that the context that is
+    /// generated and cached may not be reused in the future if an attempt is made to resolve it using the raw origin
+    /// information instead.
+    ///
+    /// This method is intended primarily to allow for resolving contexts in a consistent way while _reusing_ the origin
+    /// tags from another context, such as when remapping the name and/or instrumented tags of a given metric, while
+    /// maintaining its origin association.
+    pub fn resolve_with_origin_tags<I, T>(&mut self, name: &str, tags: I, origin_tags: OriginTags) -> Option<Context>
+    where
+        I: IntoIterator<Item = T> + Clone,
+        T: AsRef<str>,
+    {
+        self.resolve_inner(name, tags, origin_tags)
+    }
+
+    fn resolve_inner<I, T>(&mut self, name: &str, tags: I, origin_tags: OriginTags) -> Option<Context>
+    where
+        I: IntoIterator<Item = T> + Clone,
+        T: AsRef<str>,
+    {
+        let context_key = self.create_context_key(name, tags.clone(), origin_tags.key());
         match self.context_cache.get(&context_key) {
             Some(context) => {
                 self.stats.resolved_existing_context_total().increment(1);
                 self.expiration.mark_entry_accessed(context_key);
                 Some(context)
             }
-            None => match self.create_context(context_key, name, tags, origin_key) {
-                Some(context) => {
-                    debug!(?context_key, ?context, "Resolved new context.");
+            None => {
+                match self.create_context(context_key, name, tags, origin_tags) {
+                    Some(context) => {
+                        debug!(?context_key, ?context, "Resolved new context.");
 
-                    self.context_cache.insert(context_key, context.clone());
-                    self.expiration.mark_entry_accessed(context_key);
+                        self.context_cache.insert(context_key, context.clone());
+                        self.expiration.mark_entry_accessed(context_key);
 
-                    // TODO: This is lazily updated during resolve, which means this metric might lag behind the actual
-                    // count as interned strings are dropped/reclaimed... but we don't have a way to figure out if a given
-                    // `MetaString` is an interned string and if dropping it would actually reclaim the interned string...
-                    // so this is our next best option short of instrumenting `GenericMapInterner` directly.
-                    //
-                    // We probably want to do that in the future, but this is just a little cleaner without adding extra
-                    // fluff to `GenericMapInterner` which is already complex as-is.
-                    self.stats.interner_entries().set(self.interner.len() as f64);
-                    self.stats.interner_len_bytes().set(self.interner.len_bytes() as f64);
-                    self.stats.resolved_new_context_total().increment(1);
-                    self.stats.active_contexts().increment(1);
+                        // TODO: This is lazily updated during resolve, which means this metric might lag behind the actual
+                        // count as interned strings are dropped/reclaimed... but we don't have a way to figure out if a given
+                        // `MetaString` is an interned string and if dropping it would actually reclaim the interned string...
+                        // so this is our next best option short of instrumenting `GenericMapInterner` directly.
+                        //
+                        // We probably want to do that in the future, but this is just a little cleaner without adding extra
+                        // fluff to `GenericMapInterner` which is already complex as-is.
+                        self.stats.interner_entries().set(self.interner.len() as f64);
+                        self.stats.interner_len_bytes().set(self.interner.len_bytes() as f64);
+                        self.stats.resolved_new_context_total().increment(1);
+                        self.stats.active_contexts().increment(1);
 
-                    // TODO: This is crappy to have to do every time we resolve, because we need to read all cache
-                    // shards. Realistically, what we could do -- to avoid having to do this as a background task --
-                    // would be to increment the `cached_contexts` metric here and then decrement it when an entry is
-                    // evicted, by pushing that logic into the lifecycle implementation.
-                    //
-                    // That wouldn't cover direct removals, though, which we only do as a result of expiration, to be
-                    // fair... but would still be a little janky as well.
-                    self.stats.cached_contexts().set(self.context_cache.len() as f64);
+                        // TODO: This is crappy to have to do every time we resolve, because we need to read all cache
+                        // shards. Realistically, what we could do -- to avoid having to do this as a background task --
+                        // would be to increment the `cached_contexts` metric here and then decrement it when an entry is
+                        // evicted, by pushing that logic into the lifecycle implementation.
+                        //
+                        // That wouldn't cover direct removals, though, which we only do as a result of expiration, to be
+                        // fair... but would still be a little janky as well.
+                        self.stats.cached_contexts().set(self.context_cache.len() as f64);
 
-                    Some(context)
+                        Some(context)
+                    }
+                    None => None,
                 }
-                None => None,
-            },
+            }
         }
     }
 }
