@@ -8,7 +8,7 @@ use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use regex::Regex;
 use saluki_config::GenericConfiguration;
-use saluki_context::{tags::TagSet, Context, ContextResolver, ContextResolverBuilder};
+use saluki_context::{origin::OriginTags, tags::TagSet, Context, ContextResolver, ContextResolverBuilder};
 use saluki_core::{
     components::transforms::{SynchronousTransform, SynchronousTransformBuilder},
     topology::interconnect::FixedSizeEventBuffer,
@@ -100,7 +100,7 @@ impl MapperProfileConfigs {
                         i
                     ));
                 }
-                if mapping.match_type.is_empty() {
+                if mapping.metric_match.is_empty() {
                     return Err(generic_error!(
                         "profile: {}, mapping num {}: match is required",
                         config_profile.name,
@@ -191,7 +191,7 @@ struct MetricMapper {
 }
 
 impl MetricMapper {
-    fn map(&mut self, metric_name: &str, existing_tags: TagSet) -> Option<Context> {
+    fn map(&mut self, metric_name: &str, existing_tags: TagSet, origin_tags: OriginTags) -> Option<Context> {
         for profile in &self.profiles {
             if !metric_name.starts_with(&profile.prefix) && profile.prefix != "*" {
                 continue;
@@ -201,16 +201,13 @@ impl MetricMapper {
                 if let Some(captures) = mapping.regex.captures(metric_name) {
                     let mut name = String::new();
                     captures.expand(&mapping.name, &mut name);
-                    let mut tags = Vec::with_capacity(mapping.tags.len());
+                    let mut tags: Vec<String> = existing_tags.into_iter().map(|tag| tag.as_str().to_owned()).collect();
                     for (tag_key, tag_value_expr) in &mapping.tags {
                         let mut expanded_value = String::new();
                         captures.expand(tag_value_expr, &mut expanded_value);
                         tags.push(format!("{}:{}", tag_key, expanded_value));
                     }
-                    for tag in existing_tags {
-                        tags.push(tag.as_str().to_owned());
-                    }
-                    return self.context_resolver.resolve(&name, tags, None);
+                    return self.context_resolver.resolve_with_origin_tags(&name, tags, origin_tags);
                 }
             }
         }
@@ -255,11 +252,11 @@ impl SynchronousTransform for DogstatsDMapper {
     fn transform_buffer(&mut self, event_buffer: &mut FixedSizeEventBuffer) {
         for event in event_buffer {
             if let Some(metric) = event.try_as_metric_mut() {
-                // TODO: Origin tags should be added before we the mapper's context resolver is used.
-                if let Some(new_context) = self
-                    .metric_mapper
-                    .map(metric.context().name(), metric.context().tags().to_owned())
-                {
+                if let Some(new_context) = self.metric_mapper.map(
+                    metric.context().name(),
+                    metric.context().tags().to_owned(),
+                    metric.context().origin_tags().clone(),
+                ) {
                     *metric.context_mut() = new_context;
                 }
             }
@@ -271,7 +268,8 @@ impl SynchronousTransform for DogstatsDMapper {
 mod tests {
 
     use bytesize::ByteSize;
-    use saluki_context::tags::TagSet;
+    use saluki_context::Context;
+    use saluki_event::metric::Metric;
     use stringtheory::MetaString;
 
     use super::{MapperProfileConfigs, MetricMapper};
@@ -282,20 +280,21 @@ mod tests {
         mpc.build(context_string_interner_bytes).unwrap()
     }
 
-    fn tags() -> TagSet {
-        let mut existing_tags = TagSet::with_capacity(2);
-        existing_tags.insert_tag(MetaString::from_static("foo:bar"));
-        existing_tags.insert_tag(MetaString::from_static("baz"));
-        existing_tags
-    }
-
     #[test]
     fn test_mapper_wildcard() {
         let json_data = r#"[{"name":"my_custom_metric_profile","prefix":"custom_metric.","mappings":[{"match":"custom_metric.process.*.*","match_type":"wildcard","name":"custom_metric.process","tags":{"tag_key_1":"$1","tag_key_2":"$2"}}]}]"#;
         let mut mapper = mapper(&json_data);
-        let input_metric_name = "custom_metric.process.value_1.value_2".to_string();
-        let existing_tags = tags();
-        let context = mapper.map(&input_metric_name, existing_tags.clone()).unwrap();
+        let context = Context::from_static_parts("custom_metric.process.value_1.value_2", &["foo:bar", "baz"]);
+        let input_metric_name = context.name().clone();
+        let metric = Metric::counter(context, 1.0);
+        let existing_tags = metric.context().tags();
+        let context = mapper
+            .map(
+                &input_metric_name,
+                existing_tags.clone(),
+                metric.context().origin_tags().clone(),
+            )
+            .unwrap();
         let expected_metric_name = MetaString::from_static("custom_metric.process");
         assert_eq!(context.name(), &expected_metric_name);
         assert!(context.tags().has_tag("tag_key_1:value_1"));
@@ -309,9 +308,18 @@ mod tests {
     fn test_mapper_regex() {
         let json_data = r#"[{"name":"my_custom_metric_profile","prefix":"custom_metric.","mappings":[{"match":"custom_metric\\.process\\.([\\w_]+)\\.(.+)","match_type":"regex","name":"custom_metric.process","tags":{"tag_key_1":"$1","tag_key_2":"$2"}}]}]"#;
         let mut mapper = mapper(&json_data);
-        let input_metric_name = "custom_metric.process.value_1.value.with.dots._2".to_string();
-        let existing_tags = tags();
-        let context = mapper.map(&input_metric_name, existing_tags.clone()).unwrap();
+        let context =
+            Context::from_static_parts("custom_metric.process.value_1.value.with.dots._2", &["foo:bar", "baz"]);
+        let input_metric_name = context.name().clone();
+        let metric = Metric::counter(context, 1.0);
+        let existing_tags = metric.context().tags();
+        let context = mapper
+            .map(
+                &input_metric_name,
+                existing_tags.clone(),
+                metric.context().origin_tags().clone(),
+            )
+            .unwrap();
         let expected_metric_name = MetaString::from_static("custom_metric.process");
         assert_eq!(context.name(), &expected_metric_name);
         assert!(context.tags().has_tag("tag_key_1:value_1"));
@@ -325,10 +333,18 @@ mod tests {
     fn test_mapper_expand_group() {
         let json_data = r#"[{"name":"my_custom_metric_profile","prefix":"custom_metric.","mappings":[{"match":"custom_metric.process.*.*","match_type":"wildcard","name":"custom_metric.process.prod.$1.live","tags":{"tag_key_2":"$2"}}]}]"#;
         let mut mapper = mapper(&json_data);
-        let input_metric_name = "custom_metric.process.value_1.value_2".to_string();
+        let context = Context::from_static_parts("custom_metric.process.value_1.value_2", &["foo:bar", "baz"]);
+        let input_metric_name = context.name().clone();
+        let metric = Metric::counter(context, 1.0);
+        let existing_tags = metric.context().tags();
         let expected_metric_name = MetaString::from_static("custom_metric.process.prod.value_1.live");
-        let existing_tags = tags();
-        let context = mapper.map(&input_metric_name, existing_tags.clone()).unwrap();
+        let context = mapper
+            .map(
+                &input_metric_name,
+                existing_tags.clone(),
+                metric.context().origin_tags().clone(),
+            )
+            .unwrap();
         assert_eq!(context.name(), &expected_metric_name);
         for tag in existing_tags {
             assert!(context.tags().has_tag(tag));
