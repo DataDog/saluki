@@ -1,10 +1,13 @@
 //! Internal metrics support.
 use std::{
     num::NonZeroUsize,
+    pin::Pin,
     sync::{atomic::Ordering, Arc, LazyLock, OnceLock},
+    task::{self, ready, Poll},
     time::Duration,
 };
 
+use futures::Stream;
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SetRecorderError, SharedString, Unit};
 use metrics_util::registry::{AtomicStorage, Registry};
 use saluki_context::{
@@ -13,7 +16,8 @@ use saluki_context::{
     Context, ContextResolver, ContextResolverBuilder,
 };
 use saluki_event::{metric::*, Event};
-use tokio::sync::broadcast::{self, error::RecvError};
+use tokio::sync::broadcast::{self, error::RecvError, Receiver};
+use tokio_util::sync::ReusableBoxFuture;
 use tracing::debug;
 
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
@@ -21,9 +25,12 @@ const INTERNAL_METRICS_INTERNER_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_
 
 static RECEIVER_STATE: OnceLock<Arc<State>> = OnceLock::new();
 
+/// A collection of events that can be cheaply cloned and shared between multiple consumers.
+pub type SharedEvents = Arc<Vec<Event>>;
+
 struct State {
     registry: Registry<Key, AtomicStorage>,
-    flush_tx: broadcast::Sender<Arc<Vec<Event>>>,
+    flush_tx: broadcast::Sender<SharedEvents>,
     metrics_prefix: String,
 }
 
@@ -86,40 +93,51 @@ impl Recorder for MetricsRecorder {
     }
 }
 
-/// Internal metrics receiver.
+/// Internal metrics stream
 ///
 /// Used to receive periodic snapshots of the internal metrics registry, which contains all metrics that are currently
 /// active within the process.
-pub struct MetricsReceiver {
-    flush_rx: broadcast::Receiver<Arc<Vec<Event>>>,
+pub struct MetricsStream {
+    inner: ReusableBoxFuture<'static, (Result<SharedEvents, RecvError>, Receiver<SharedEvents>)>,
 }
 
-impl MetricsReceiver {
-    /// Creates a new `MetricsReceiver` and registers it for updates.
+impl MetricsStream {
+    /// Creates a new `MetricsStream` that receives updates from the internal metrics registry.
     pub fn register() -> Self {
         let state = RECEIVER_STATE.get().expect("metrics receiver should be set");
         Self {
-            flush_rx: state.flush_tx.subscribe(),
+            inner: ReusableBoxFuture::new(make_rx_future(state.flush_tx.subscribe())),
         }
     }
+}
 
-    /// Waits for the next metrics snapshot.
-    pub async fn next(&mut self) -> Arc<Vec<Event>> {
+impl Stream for MetricsStream {
+    type Item = SharedEvents;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            match self.flush_rx.recv().await {
-                Ok(metrics) => return metrics,
-                Err(RecvError::Closed) => {
-                    panic!("metrics receiver should never be closed");
-                }
-                Err(RecvError::Lagged(missed_payloads)) => {
+            // Poll the receiver, and rearm the future once we actually resolve it.
+            let (result, rx) = ready!(self.inner.poll(cx));
+            self.inner.set(make_rx_future(rx));
+
+            match result {
+                Ok(item) => return Poll::Ready(Some(item)),
+                Err(RecvError::Closed) => return Poll::Ready(None),
+                Err(RecvError::Lagged(n)) => {
                     debug!(
-                        missed_payloads,
-                        "Receiver lagging behind internal metrics producer. Internal metrics may have been lost."
+                        missed_payloads = n,
+                        "Stream lagging behind internal metrics producer. Internal metrics may have been lost."
                     );
+                    continue;
                 }
             }
         }
     }
+}
+
+async fn make_rx_future(mut rx: Receiver<SharedEvents>) -> (Result<SharedEvents, RecvError>, Receiver<SharedEvents>) {
+    let result = rx.recv().await;
+    (result, rx)
 }
 
 async fn flush_metrics(flush_interval: Duration) {

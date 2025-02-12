@@ -14,7 +14,9 @@ async-trait = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
 datadog-protos = { workspace = true }
+futures = { workspace = true }
 memory-accounting = { workspace = true }
+papaya = { workspace = true }
 rand = { workspace = true }
 saluki-app = { workspace = true, features = ["full"] }
 saluki-components = { workspace = true }
