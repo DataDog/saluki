@@ -8,9 +8,10 @@ use std::{
 
 use backon::{BackoffBuilder, ConstantBuilder, Retryable as _};
 use datadog_protos::agent::{
-    AgentClient, AgentSecureClient, EntityId, FetchEntityRequest, HostnameRequest, RegisterRemoteAgentRequest,
-    RegisterRemoteAgentResponse, StreamTagsRequest, StreamTagsResponse, TagCardinality, WorkloadmetaEventType,
-    WorkloadmetaFilter, WorkloadmetaKind, WorkloadmetaSource, WorkloadmetaStreamRequest, WorkloadmetaStreamResponse,
+    AgentClient, AgentSecureClient, EntityId, FetchEntityRequest, HostTagReply, HostTagRequest, HostnameRequest,
+    RegisterRemoteAgentRequest, RegisterRemoteAgentResponse, StreamTagsRequest, StreamTagsResponse, TagCardinality,
+    WorkloadmetaEventType, WorkloadmetaFilter, WorkloadmetaKind, WorkloadmetaSource, WorkloadmetaStreamRequest,
+    WorkloadmetaStreamResponse,
 };
 use futures::Stream;
 use pin_project_lite::pin_project;
@@ -227,6 +228,17 @@ impl RemoteAgentClient {
                 auth_token: auth_token.to_string(),
             })
             .await?;
+        Ok(response)
+    }
+
+    /// Gets the host tags from the Agent.
+    ///
+    /// # Errors
+    ///
+    /// If there is an error querying the Agent API, an error will be returned.
+    pub async fn get_host_tags(&self) -> Result<Response<HostTagReply>, GenericError> {
+        let mut client = self.secure_client.clone();
+        let response = client.get_host_tags(HostTagRequest {}).await?;
         Ok(response)
     }
 }
