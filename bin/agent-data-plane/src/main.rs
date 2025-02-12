@@ -33,6 +33,9 @@ use self::components::remapper::AgentTelemetryRemapperConfiguration;
 mod env_provider;
 use self::env_provider::ADPEnvironmentProvider;
 
+mod state;
+use self::state::metrics::initialize_shared_metrics_state;
+
 #[cfg(target_os = "linux")]
 #[global_allocator]
 static ALLOC: memory_accounting::allocator::TrackingAllocator<tikv_jemallocator::Jemalloc> =
@@ -100,6 +103,8 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
 
+    let internal_metrics = initialize_shared_metrics_state().await;
+
     let env_provider =
         ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry).await?;
 
@@ -142,7 +147,7 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     health_registry.spawn().await?;
 
     // Handle any final configuration of our API endpoints and spawn them.
-    configure_and_spawn_api_endpoints(&configuration, unprivileged_api, privileged_api).await?;
+    configure_and_spawn_api_endpoints(&configuration, internal_metrics, unprivileged_api, privileged_api).await?;
 
     let startup_time = started.elapsed();
 
