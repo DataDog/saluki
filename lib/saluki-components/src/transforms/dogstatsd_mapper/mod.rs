@@ -759,6 +759,30 @@ mod tests {
     }
 
     #[test]
+    fn test_retain_existing_tags() {
+        let json_data = json!([{
+          "name": "test",
+          "prefix": "test.",
+          "mappings": [
+            {
+              "match": "test.job.duration.*.*",
+              "name": "test.job.duration.$2",
+              "tags": {
+                "job_type": "$1",
+                "job_name": "$2"
+              }
+            },
+          ]
+        }]);
+        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
+        let metric = counter_metric("test.job.duration.abc.def", &["foo:bar", "baz"]);
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "test.job.duration.def");
+        assert!(context.tags().has_tag("foo:bar"));
+        assert!(context.tags().has_tag("baz"));
+    }
+
+    #[test]
     fn test_empty_name() {
         let json_data = json!([{
             "name": "test",
