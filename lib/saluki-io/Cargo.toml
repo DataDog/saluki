@@ -61,4 +61,5 @@ url = { workspace = true, features = ["std"] }
 [dev-dependencies]
 http-body-util = { workspace = true }
 proptest = { workspace = true }
+tempfile = { workspace = true }
 tokio-test = { workspace = true }

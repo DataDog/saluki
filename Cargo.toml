@@ -148,6 +148,7 @@ tikv-jemalloc-ctl = "0.6"
 tikv-jemallocator = { version = "0.6", default-features = false }
 axum-extra = { version = "0.9", default-features = false }
 papaya = { version = "0.1.7", default-features = false }
+tempfile = { version = "3", default-features = false }
 
 [profile.release]
 lto = "thin"
