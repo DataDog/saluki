@@ -168,10 +168,19 @@ fn build_regex(match_re: &str, match_type: &str) -> Result<Regex, GenericError> 
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct MetricMappingConfig {
+    // The metric name to extract groups from with the Wildcard or Regex match logic.
     #[serde(rename = "match")]
     metric_match: String,
+
+    // The type of match to apply to the `metric_match`. Either wildcard or regex.
+    #[serde(default)]
     match_type: String,
+
+    // The new metric name to send to Datadog with the tags defined in the same group.
     name: String,
+
+    // Map with the tag key and tag values collected from the `match_type` to inline.
+    #[serde(default)]
     tags: HashMap<String, String>,
 }
 
@@ -272,102 +281,609 @@ mod tests {
 
     use bytesize::ByteSize;
     use saluki_context::Context;
+    use saluki_error::GenericError;
     use saluki_event::metric::Metric;
     use serde_json::{json, Value};
 
     use super::{MapperProfileConfigs, MetricMapper};
 
-    fn mapper(json_data: Value) -> MetricMapper {
-        let mpc: MapperProfileConfigs = serde_json::from_value(json_data).unwrap();
+    fn counter_metric(name: &'static str, tags: &[&'static str]) -> Metric {
+        let context = Context::from_static_parts(name, tags);
+        Metric::counter(context, 1.0)
+    }
+
+    fn mapper(json_data: Value) -> Result<MetricMapper, GenericError> {
+        let mpc: MapperProfileConfigs = serde_json::from_value(json_data)?;
         let context_string_interner_bytes = ByteSize::kib(64);
-        mpc.build(context_string_interner_bytes).unwrap()
+        mpc.build(context_string_interner_bytes)
+    }
+
+    fn assert_tags(context: &Context, expected_tags: &[&str]) {
+        for tag in expected_tags {
+            assert!(context.tags().has_tag(tag), "missing tag: {}", tag);
+        }
+        assert_eq!(context.tags().len(), expected_tags.len(), "unexpected number of tags");
     }
 
     #[test]
-    fn test_mapper_wildcard() {
+    fn test_mapper_wildcard_simple() {
         let json_data = json!([{
-          "name": "my_custom_metric_profile",
-          "prefix": "custom_metric.",
+          "name": "test",
+          "prefix": "test.",
           "mappings": [
             {
-              "match": "custom_metric.process.*.*",
-              "match_type": "wildcard",
-              "name": "custom_metric.process",
+              "match": "test.job.duration.*.*",
+              "name": "test.job.duration",
               "tags": {
-                "tag_key_1": "$1",
-                "tag_key_2": "$2"
+                "job_type": "$1",
+                "job_name": "$2"
+              }
+            },
+            {
+              "match": "test.job.size.*.*",
+              "name": "test.job.size",
+              "tags": {
+                "foo": "$1",
+                "bar": "$2"
               }
             }
           ]
         }]);
-        let mut mapper = mapper(json_data);
-        let context = Context::from_static_parts("custom_metric.process.value_1.value_2", &["foo:bar", "baz"]);
-        let metric = Metric::counter(context, 1.0);
-        let existing_tags = metric.context().tags();
-        let context = mapper.try_map(metric.context()).unwrap();
-        assert_eq!(context.name(), "custom_metric.process");
-        assert!(context.tags().has_tag("tag_key_1:value_1"));
-        assert!(context.tags().has_tag("tag_key_2:value_2"));
-        for tag in existing_tags {
-            assert!(context.tags().has_tag(tag));
-        }
+
+        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
+        let metric = counter_metric("test.job.duration.my_job_type.my_job_name", &[]);
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "test.job.duration");
+        assert_tags(&context, &["job_type:my_job_type", "job_name:my_job_name"]);
+
+        let metric = counter_metric("test.job.size.my_job_type.my_job_name", &[]);
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "test.job.size");
+        assert_tags(&context, &["foo:my_job_type", "bar:my_job_name"]);
+
+        let metric = counter_metric("test.job.size.not_match", &[]);
+        assert!(mapper.try_map(metric.context()).is_none(), "should not have remapped");
     }
 
     #[test]
-    fn test_mapper_regex() {
+    fn test_partial_match() {
         let json_data = json!([{
-          "name": "my_custom_metric_profile",
-          "prefix": "custom_metric.",
+          "name": "test",
+          "prefix": "test.",
           "mappings": [
             {
-              "match": "custom_metric\\.process\\.([\\w_]+)\\.(.+)",
-              "match_type": "regex",
-              "name": "custom_metric.process",
+              "match": "test.job.duration.*.*",
+              "name": "test.job.duration",
               "tags": {
-                "tag_key_1": "$1",
-                "tag_key_2": "$2"
+                "job_type": "$1"
               }
+            },
+            {
+              "match": "test.task.duration.*.*",
+              "name": "test.task.duration",
             }
           ]
         }]);
-        let mut mapper = mapper(json_data);
-        let context =
-            Context::from_static_parts("custom_metric.process.value_1.value.with.dots._2", &["foo:bar", "baz"]);
-        let metric = Metric::counter(context, 1.0);
-        let existing_tags = metric.context().tags();
-        let context = mapper.try_map(metric.context()).unwrap();
-        assert_eq!(context.name(), "custom_metric.process");
-        assert!(context.tags().has_tag("tag_key_1:value_1"));
-        assert!(context.tags().has_tag("tag_key_2:value.with.dots._2"));
-        for tag in existing_tags {
-            assert!(context.tags().has_tag(tag));
-        }
+        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
+        let metric = counter_metric("test.job.duration.my_job_type.my_job_name", &[]);
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "test.job.duration");
+        assert!(context.tags().has_tag("job_type:my_job_type"));
+
+        let metric = counter_metric("test.task.duration.my_job_type.my_job_name", &[]);
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "test.task.duration");
     }
 
     #[test]
-    fn test_mapper_expand_group() {
+    fn test_use_regex_expansion_alternative_syntax() {
         let json_data = json!([{
-            "name": "my_custom_metric_profile",
-            "prefix": "custom_metric.",
+            "name": "test",
+            "prefix": "test.",
             "mappings": [
                 {
-                    "match": "custom_metric.process.*.*",
-                    "match_type": "wildcard",
-                    "name": "custom_metric.process.prod.$1.live",
+                    "match": "test.job.duration.*.*",
+                    "name": "test.job.duration",
                     "tags": {
-                        "tag_key_2": "$2"
+                        "job_type": "${1}_x",
+                        "job_name": "${2}_y"
                     }
                 }
             ]
         }]);
-        let mut mapper = mapper(json_data);
-        let context = Context::from_static_parts("custom_metric.process.value_1.value_2", &["foo:bar", "baz"]);
-        let metric = Metric::counter(context, 1.0);
-        let existing_tags = metric.context().tags();
-        let context = mapper.try_map(metric.context()).unwrap();
-        assert_eq!(context.name(), "custom_metric.process.prod.value_1.live");
-        for tag in existing_tags {
-            assert!(context.tags().has_tag(tag));
-        }
+
+        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
+
+        let metric = counter_metric("test.job.duration.my_job_type.my_job_name", &[]);
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "test.job.duration");
+        assert_tags(&context, &["job_type:my_job_type_x", "job_name:my_job_name_y"]);
+    }
+
+    #[test]
+    fn test_expand_name() {
+        let json_data = json!([{
+            "name": "test",
+            "prefix": "test.",
+            "mappings": [
+                {
+                    "match": "test.job.duration.*.*",
+                    "name": "test.hello.$2.$1",
+                    "tags": {
+                        "job_type": "$1",
+                        "job_name": "$2"
+                    }
+                }
+            ]
+        }]);
+
+        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
+
+        let metric = counter_metric("test.job.duration.my_job_type.my_job_name", &[]);
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "test.hello.my_job_name.my_job_type");
+        assert_tags(&context, &["job_type:my_job_type", "job_name:my_job_name"]);
+    }
+
+    #[test]
+    fn test_match_before_underscore() {
+        let json_data = json!([{
+            "name": "test",
+            "prefix": "test.",
+            "mappings": [
+                {
+                    "match": "test.*_start",
+                    "name": "test.start",
+                    "tags": {
+                        "job": "$1"
+                    }
+                }
+            ]
+        }]);
+
+        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
+
+        let metric = counter_metric("test.my_job_start", &[]);
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "test.start");
+        assert!(context.tags().has_tag("job:my_job"));
+    }
+
+    #[test]
+    fn test_no_tags() {
+        let json_data = json!([{
+            "name": "test",
+            "prefix": "test.",
+            "mappings": [
+                {
+                    "match": "test.my-worker.start",
+                    "name": "test.worker.start"
+                },
+                {
+                    "match": "test.my-worker.stop.*",
+                    "name": "test.worker.stop"
+                }
+            ]
+        }]);
+
+        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
+
+        let metric = counter_metric("test.my-worker.start", &[]);
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "test.worker.start");
+        assert!(context.tags().is_empty(), "Expected no tags");
+
+        let metric = counter_metric("test.my-worker.stop.worker-name", &[]);
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "test.worker.stop");
+        assert!(context.tags().is_empty(), "Expected no tags");
+    }
+
+    #[test]
+    fn test_all_allowed_characters() {
+        let json_data = json!([{
+            "name": "test",
+            "prefix": "test.",
+            "mappings": [
+                {
+                    "match": "test.abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ-01234567.*",
+                    "name": "test.alphabet"
+                }
+            ]
+        }]);
+
+        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
+
+        let metric = counter_metric(
+            "test.abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ-01234567.123",
+            &[],
+        );
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "test.alphabet");
+        assert!(context.tags().is_empty(), "Expected no tags");
+    }
+
+    #[test]
+    fn test_regex_match_type() {
+        let json_data = json!([{
+            "name": "test",
+            "prefix": "test.",
+            "mappings": [
+                {
+                    "match": "test\\.job\\.duration\\.(.*)",
+                    "match_type": "regex",
+                    "name": "test.job.duration",
+                    "tags": {
+                        "job_name": "$1"
+                    }
+                },
+                {
+                    "match": "test\\.task\\.duration\\.(.*)",
+                    "match_type": "regex",
+                    "name": "test.task.duration",
+                    "tags": {
+                        "task_name": "$1"
+                    }
+                }
+            ]
+        }]);
+
+        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
+        let metric = counter_metric("test.job.duration.my.funky.job$name-abc/123", &[]);
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "test.job.duration");
+        assert!(context.tags().has_tag("job_name:my.funky.job$name-abc/123"));
+
+        let metric = counter_metric("test.task.duration.MY_task_name", &[]);
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "test.task.duration");
+        assert!(context.tags().has_tag("task_name:MY_task_name"));
+    }
+
+    #[test]
+    fn test_complex_regex_match_type() {
+        let json_data = json!([{
+            "name": "test",
+            "prefix": "test.",
+            "mappings": [
+                {
+                    "match": "test\\.job\\.([a-z][0-9]-\\w+)\\.(.*)",
+                    "match_type": "regex",
+                    "name": "test.job",
+                    "tags": {
+                        "job_type": "$1",
+                        "job_name": "$2"
+                    }
+                }
+            ]
+        }]);
+
+        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
+
+        let metric = counter_metric("test.job.a5-foo.bar", &[]);
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "test.job");
+        assert_tags(&context, &["job_type:a5-foo", "job_name:bar"]);
+
+        let metric = counter_metric("test.job.foo.bar-not-match", &[]);
+        assert!(mapper.try_map(metric.context()).is_none(), "should not have remapped");
+    }
+
+    #[test]
+    fn test_profile_and_prefix() {
+        let json_data = json!([{
+            "name": "test",
+            "prefix": "foo.",
+            "mappings": [
+                {
+                    "match": "foo.duration.*",
+                    "name": "foo.duration",
+                    "tags": {
+                        "name": "$1"
+                    }
+                }
+            ]
+        },
+        {
+            "name": "test",
+            "prefix": "bar.",
+            "mappings": [
+                {
+                    "match": "bar.count.*",
+                    "name": "bar.count",
+                    "tags": {
+                        "name": "$1"
+                    }
+                },
+                {
+                    "match": "foo.duration2.*",
+                    "name": "foo.duration2",
+                    "tags": {
+                        "name": "$1"
+                    }
+                }
+            ]
+        }]);
+
+        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
+
+        let metric = counter_metric("foo.duration.foo_name1", &[]);
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "foo.duration");
+        assert!(context.tags().has_tag("name:foo_name1"));
+
+        let metric = counter_metric("foo.duration2.foo_name1", &[]);
+        assert!(
+            mapper.try_map(metric.context()).is_none(),
+            "should not have remapped due to wrong group"
+        );
+
+        let metric = counter_metric("bar.count.bar_name1", &[]);
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "bar.count");
+        assert!(context.tags().has_tag("name:bar_name1"));
+
+        let metric = counter_metric("z.not.mapped", &[]);
+        assert!(mapper.try_map(metric.context()).is_none(), "should not have remapped");
+    }
+
+    #[test]
+    fn test_wildcard_prefix() {
+        let json_data = json!([{
+            "name": "test",
+            "prefix": "*",
+            "mappings": [
+                {
+                    "match": "foo.duration.*",
+                    "name": "foo.duration",
+                    "tags": {
+                        "name": "$1"
+                    }
+                }
+            ]
+        }]);
+
+        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
+
+        let metric = counter_metric("foo.duration.foo_name1", &[]);
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "foo.duration");
+        assert!(context.tags().has_tag("name:foo_name1"));
+    }
+
+    #[test]
+    fn test_wildcard_prefix_order() {
+        let json_data = json!([{
+            "name": "test",
+            "prefix": "*",
+            "mappings": [
+                {
+                    "match": "foo.duration.*",
+                    "name": "foo.duration",
+                    "tags": {
+                        "name1": "$1"
+                    }
+                }
+            ]
+        },
+        {
+            "name": "test",
+            "prefix": "*",
+            "mappings": [
+                {
+                    "match": "foo.duration.*",
+                    "name": "foo.duration",
+                    "tags": {
+                        "name2": "$1"
+                    }
+                }
+            ]
+        }]);
+
+        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
+        let metric = counter_metric("foo.duration.foo_name", &[]);
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "foo.duration");
+        assert!(context.tags().has_tag("name1:foo_name"));
+        assert!(
+            !context.tags().has_tag("name2:foo_name"),
+            "Only the first matching profile should apply"
+        );
+    }
+
+    #[test]
+    fn test_multiple_profiles_order() {
+        let json_data = json!([{
+            "name": "test",
+            "prefix": "foo.",
+            "mappings": [
+                {
+                    "match": "foo.*.duration.*",
+                    "name": "foo.bar1.duration",
+                    "tags": {
+                        "bar": "$1",
+                        "foo": "$2"
+                    }
+                }
+            ]
+        },
+        {
+            "name": "test",
+            "prefix": "foo.bar.",
+            "mappings": [
+                {
+                    "match": "foo.bar.duration.*",
+                    "name": "foo.bar2.duration",
+                    "tags": {
+                        "foo_bar": "$1"
+                    }
+                }
+            ]
+        }]);
+
+        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
+
+        let metric = counter_metric("foo.bar.duration.foo_name", &[]);
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "foo.bar1.duration");
+        assert_tags(&context, &["bar:bar", "foo:foo_name"]);
+        assert!(
+            !context.tags().has_tag("foo_bar:foo_name"),
+            "Only the first matching profile should apply"
+        );
+    }
+
+    #[test]
+    fn test_different_regex_expansion_syntax() {
+        let json_data = json!([{
+            "name": "test",
+            "prefix": "test.",
+            "mappings": [
+                {
+                    "match": "test.user.(\\w+).action.(\\w+)",
+                    "match_type": "regex",
+                    "name": "test.user.action",
+                    "tags": {
+                        "user": "$1",
+                        "action": "$2"
+                    }
+                }
+            ]
+        }]);
+
+        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
+        let metric = counter_metric("test.user.john_doe.action.login", &[]);
+        let context = mapper.try_map(metric.context()).expect("should have remapped");
+        assert_eq!(context.name(), "test.user.action");
+        assert_tags(&context, &["user:john_doe", "action:login"]);
+    }
+
+    #[test]
+    fn test_empty_name() {
+        let json_data = json!([{
+            "name": "test",
+            "prefix": "test.",
+            "mappings": [
+                {
+                    "match": "test.job.duration.*.*",
+                    "name": "",
+                    "tags": {
+                        "job_type": "$1"
+                    }
+                }
+            ]
+        }]);
+        assert!(mapper(json_data).is_err())
+    }
+
+    #[test]
+    fn test_missing_name() {
+        let json_data = json!([{
+            "name": "test",
+            "prefix": "test.",
+            "mappings": [
+                {
+                    "match": "test.job.duration.*.*",
+                    "tags": {
+                        "job_type": "$1",
+                        "job_name": "$2"
+                    }
+                }
+            ]
+        }]);
+        assert!(mapper(json_data).is_err());
+    }
+
+    #[test]
+    fn test_invalid_match_regex_brackets() {
+        let json_data = json!([{
+            "name": "test",
+            "prefix": "test.",
+            "mappings": [
+                {
+                    "match": "test.[]duration.*.*", // Invalid regex
+                    "name": "test.job.duration"
+                }
+            ]
+        }]);
+        assert!(mapper(json_data).is_err());
+    }
+
+    #[test]
+    fn test_invalid_match_regex_caret() {
+        let json_data = json!([{
+            "name": "test",
+            "prefix": "test.",
+            "mappings": [
+                {
+                    "match": "^test.invalid.duration.*.*", // Invalid regex
+                    "name": "test.job.duration"
+                }
+            ]
+        }]);
+        assert!(mapper(json_data).is_err());
+    }
+
+    #[test]
+    fn test_consecutive_wildcards() {
+        let json_data = json!([{
+            "name": "test",
+            "prefix": "test.",
+            "mappings": [
+                {
+                    "match": "test.invalid.duration.**", // Consecutive *
+                    "name": "test.job.duration"
+                }
+            ]
+        }]);
+        assert!(mapper(json_data).is_err());
+    }
+
+    #[test]
+    fn test_invalid_match_type() {
+        let json_data = json!([{
+            "name": "test",
+            "prefix": "test.",
+            "mappings": [
+                {
+                    "match": "test.invalid.duration",
+                    "match_type": "invalid", // Invalid match_type
+                    "name": "test.job.duration"
+                }
+            ]
+        }]);
+        assert!(mapper(json_data).is_err());
+    }
+
+    #[test]
+    fn test_missing_profile_name() {
+        let json_data = json!([{
+            // "name" is missing here
+            "prefix": "test.",
+            "mappings": [
+                {
+                    "match": "test.invalid.duration",
+                    "match_type": "invalid",
+                    "name": "test.job.duration"
+                }
+            ]
+        }]);
+        assert!(mapper(json_data).is_err());
+    }
+
+    #[test]
+    fn test_missing_profile_prefix() {
+        let json_data = json!([{
+            "name": "test",
+            // "prefix" is missing here
+            "mappings": [
+                {
+                    "match": "test.invalid.duration",
+                    "match_type": "invalid",
+                    "name": "test.job.duration"
+                }
+            ]
+        }]);
+        assert!(mapper(json_data).is_err());
     }
 }
