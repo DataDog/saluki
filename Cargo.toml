@@ -142,7 +142,7 @@ chrono-tz = { version = "0.10", default-features = false }
 iana-time-zone = { version = "0.1", default-features = false }
 backon = { version = "1", default-features = false }
 http-serde-ext = { version = "1", default-features = false }
-uuid = { version = "1.11.0", default-features = false }
+uuid = { version = "1.13", default-features = false }
 rcgen = { version = "0.13.1", default-features = false }
 tikv-jemalloc-ctl = "0.6"
 tikv-jemallocator = { version = "0.6", default-features = false }
