@@ -56,7 +56,8 @@ where
     pub async fn with_disk_persistence(
         mut self, root_path: PathBuf, max_disk_size_bytes: u64,
     ) -> Result<Self, GenericError> {
-        let persisted_pending = PersistedQueue::from_root_path(root_path, max_disk_size_bytes).await?;
+        let named_root_path = root_path.join(&self.queue_name);
+        let persisted_pending = PersistedQueue::from_root_path(named_root_path, max_disk_size_bytes).await?;
         self.persisted_pending = Some(persisted_pending);
         Ok(self)
     }
