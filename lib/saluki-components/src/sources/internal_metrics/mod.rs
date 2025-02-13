@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::StreamExt as _;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{sources::*, ComponentContext},
-    observability::metrics::MetricsReceiver,
+    observability::metrics::MetricsStream,
     topology::OutputDefinition,
 };
 use saluki_error::GenericError;
@@ -47,7 +48,7 @@ impl Source for InternalMetrics {
         let mut global_shutdown = context.take_shutdown_handle();
         let mut health = context.take_health_handle();
 
-        let mut receiver = MetricsReceiver::register();
+        let mut metrics_stream = MetricsStream::register();
 
         health.mark_ready();
         debug!("Internal Metrics source started.");
@@ -59,13 +60,19 @@ impl Source for InternalMetrics {
                     break;
                 },
                 _ = health.live() => continue,
-                metrics = receiver.next() => {
-                    debug!(metrics_len = metrics.len(), "Received internal metrics.");
+                maybe_metrics = metrics_stream.next() => match maybe_metrics {
+                    Some(metrics) => {
+                        debug!(metrics_len = metrics.len(), "Received internal metrics.");
 
-                    let events = Arc::unwrap_or_clone(metrics);
-                    if let Err(e) = context.forwarder().forward(events).await {
-                        error!(error = %e, "Failed to forward events.");
-                    }
+                        let events = Arc::unwrap_or_clone(metrics);
+                        if let Err(e) = context.forwarder().forward(events).await {
+                            error!(error = %e, "Failed to forward events.");
+                        }
+                    },
+                    None => {
+                        error!("Internal metrics stream ended unexpectedly.");
+                        break;
+                    },
                 },
             }
         }
