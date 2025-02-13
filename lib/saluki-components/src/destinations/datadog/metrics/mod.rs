@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 use http::{Request, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -13,7 +15,7 @@ use saluki_io::buf::{BytesBuffer, FixedSizeVec, FrozenChunkedBytesBuffer};
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use stringtheory::MetaString;
-use tokio::select;
+use tokio::{select, time::sleep};
 use tracing::{debug, error};
 
 use super::common::{config::ForwarderConfiguration, io::TransactionForwarder, telemetry::ComponentTelemetry};
@@ -21,6 +23,7 @@ use super::common::{config::ForwarderConfiguration, io::TransactionForwarder, te
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
 
+const FLUSH_IDLE_TIMEOUT: Duration = Duration::from_secs(1);
 const RB_BUFFER_POOL_COUNT: usize = 128;
 const RB_BUFFER_POOL_BUF_SIZE: usize = 32_768;
 
@@ -171,6 +174,10 @@ where
         health.mark_ready();
         debug!("Datadog Metrics destination started.");
 
+        let mut pending_flush = false;
+        let mut flush_timeout = sleep(FLUSH_IDLE_TIMEOUT);
+        tokio::pin!(flush_timeout);
+
         loop {
             select! {
                 _ = health.live() => continue,
@@ -235,49 +242,60 @@ where
 
                         debug!("All event buffers processed.");
 
-                        // Once we've encoded and written all metrics, we flush the request builders to generate a request with
-                        // anything left over. Again, we'll  enqueue those requests to be sent immediately.
-                        let maybe_series_requests = series_request_builder.flush().await;
-                        for maybe_request in maybe_series_requests {
-                            match maybe_request {
-                                Ok((events, request)) => {
-                                    debug!("Flushed request from series request builder. Sending to I/O task...");
-                                    forwarder_handle.send_request(events, request).await?;
-                                },
-                                Err(e) => {
-                                    // TODO: Increment a counter here that metrics were dropped due to a flush failure.
-                                    if e.is_recoverable() {
-                                        // If the error is recoverable, we'll hold on to the metric to retry it later.
-                                        continue;
-                                    } else {
-                                        return Err(GenericError::from(e).context("Failed to flush request."));
-                                    }
-                                }
-                            }
+                        // If we're not already pending a flush, we'll start the countdown.
+                        if !pending_flush {
+                            flush_timeout.as_mut().reset(tokio::time::Instant::now() + FLUSH_IDLE_TIMEOUT);
+                            pending_flush = true;
                         }
-
-                        let maybe_sketches_requests = sketches_request_builder.flush().await;
-                        for maybe_request in maybe_sketches_requests {
-                            match maybe_request {
-                                Ok((events, request)) => {
-                                    debug!("Flushed request from sketches request builder. Sending to I/O task...");
-                                    forwarder_handle.send_request(events, request).await?;
-                                },
-                                Err(e) => {
-                                    // TODO: Increment a counter here that metrics were dropped due to a flush failure.
-                                    if e.is_recoverable() {
-                                        // If the error is recoverable, we'll hold on to the metric to retry it later.
-                                        continue;
-                                    } else {
-                                        return Err(GenericError::from(e).context("Failed to flush request."));
-                                    }
-                                }
-                            }
-                        }
-
-                        debug!("All flushed requests sent to I/O task. Waiting for next event buffer...");
                     },
                     None => break,
+                },
+                _ = &mut flush_timeout, if pending_flush => {
+                    debug!("Flushing pending request(s).");
+
+                    pending_flush = false;
+
+                    // Once we've encoded and written all metrics, we flush the request builders to generate a request with
+                    // anything left over. Again, we'll enqueue those requests to be sent immediately.
+                    let maybe_series_requests = series_request_builder.flush().await;
+                    for maybe_request in maybe_series_requests {
+                        match maybe_request {
+                            Ok((events, request)) => {
+                                debug!("Flushed request from series request builder. Sending to I/O task...");
+                                forwarder_handle.send_request(events, request).await?;
+                            },
+                            Err(e) => {
+                                // TODO: Increment a counter here that metrics were dropped due to a flush failure.
+                                if e.is_recoverable() {
+                                    // If the error is recoverable, we'll hold on to the metric to retry it later.
+                                    continue;
+                                } else {
+                                    return Err(GenericError::from(e).context("Failed to flush request."));
+                                }
+                            }
+                        }
+                    }
+
+                    let maybe_sketches_requests = sketches_request_builder.flush().await;
+                    for maybe_request in maybe_sketches_requests {
+                        match maybe_request {
+                            Ok((events, request)) => {
+                                debug!("Flushed request from sketches request builder. Sending to I/O task...");
+                                forwarder_handle.send_request(events, request).await?;
+                            },
+                            Err(e) => {
+                                // TODO: Increment a counter here that metrics were dropped due to a flush failure.
+                                if e.is_recoverable() {
+                                    // If the error is recoverable, we'll hold on to the metric to retry it later.
+                                    continue;
+                                } else {
+                                    return Err(GenericError::from(e).context("Failed to flush request."));
+                                }
+                            }
+                        }
+                    }
+
+                    debug!("All flushed requests sent to I/O task. Waiting for next event buffer...");
                 }
             }
         }
