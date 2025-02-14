@@ -8,7 +8,7 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use rand::Rng;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::{de::DeserializeOwned, Serialize};
-use tracing::warn;
+use tracing::{debug, warn};
 
 /// A persisted entry.
 ///
@@ -44,7 +44,8 @@ impl PersistedEntry {
 pub struct PersistedQueue<T> {
     root_path: PathBuf,
     entries: Vec<PersistedEntry>,
-    max_size_bytes: u64,
+    total_on_disk_bytes: u64,
+    max_on_disk_bytes: u64,
     _entry: PhantomData<T>,
 }
 
@@ -61,7 +62,7 @@ where
     ///
     /// If there is an error creating the root directory, or scanning it for existing entries, or deleting entries to
     /// shrink the directory to fit the given maximum size, an error is returned.
-    pub async fn from_root_path(root_path: PathBuf, max_size_bytes: u64) -> Result<Self, GenericError> {
+    pub async fn from_root_path(root_path: PathBuf, max_on_disk_bytes: u64) -> Result<Self, GenericError> {
         // Make sure the directory exists first.
         create_directory_recursive(root_path.clone())
             .await
@@ -70,7 +71,8 @@ where
         let mut persisted_requests = Self {
             root_path,
             entries: Vec::new(),
-            max_size_bytes,
+            total_on_disk_bytes: 0,
+            max_on_disk_bytes,
             _entry: PhantomData,
         };
         persisted_requests.refresh_entry_state().await?;
@@ -91,7 +93,7 @@ where
         let serialized = serde_json::to_vec(&entry)
             .with_error_context(|| format!("Failed to serialize entry for '{}'.", entry_path.display()))?;
 
-        if serialized.len() as u64 > self.max_size_bytes {
+        if serialized.len() as u64 > self.max_on_disk_bytes {
             return Err(generic_error!("Entry is too large to persist."));
         }
 
@@ -113,6 +115,9 @@ where
             timestamp,
             serialized.len() as u64,
         ));
+        self.total_on_disk_bytes += serialized.len() as u64;
+
+        debug!(entry.len = serialized.len(), "Enqueued persisted entry.");
 
         Ok(())
     }
@@ -129,32 +134,26 @@ where
 
         loop {
             let entry = self.entries.remove(0);
-            let serialized = match tokio::fs::read(&entry.path).await {
-                Ok(serialized) => serialized,
-                Err(e) => match e.kind() {
-                    io::ErrorKind::NotFound => {
-                        // We tried to delete an entry that no longer exists on disk, which means our internal entry state
-                        // is corrupted for some reason. We'll refresh our entry state and then try again.
-                        self.refresh_entry_state().await?;
-                        continue;
-                    }
-                    _ => {
-                        return Err(e).with_error_context(|| {
-                            format!("Failed to read persisted entry '{}'.", entry.path.display())
-                        })
-                    }
-                },
-            };
+            match try_deserialize_entry(&entry).await {
+                Ok(Some(deserialized)) => {
+                    // We got the deserialized entry, so remove it from our state and return it.
+                    self.total_on_disk_bytes -= entry.size_bytes;
+                    debug!(entry.len = entry.size_bytes, "Dequeued persisted entry.");
 
-            let deserialized = serde_json::from_slice(&serialized)
-                .with_error_context(|| format!("Failed to deserialize persisted entry '{}'.", entry.path.display()))?;
-
-            // Delete the entry from disk before returning, so that we don't risk sending duplicates.
-            tokio::fs::remove_file(&entry.path)
-                .await
-                .with_error_context(|| format!("Failed to remove persisted entry '{}'.", entry.path.display()))?;
-
-            return Ok(Some(deserialized));
+                    return Ok(Some(deserialized));
+                }
+                Ok(None) => {
+                    // We couldn't read the entry from disk, which points to us potentially having invalid state about
+                    // what entries _are_ on disk, so we'll refresh our entry state and try again.
+                    self.refresh_entry_state().await?;
+                    continue;
+                }
+                Err(e) => {
+                    // We couldn't read the file, so add it back to our entries list and return the error.
+                    self.entries.insert(0, entry);
+                    return Err(e);
+                }
+            }
         }
     }
 
@@ -183,6 +182,7 @@ where
         // Sort the entries by their inherent timestamp, and then do any necessary trimming to ensure we're within our
         // configured maximum size bound.
         entries.sort_by_key(|entry| entry.timestamp);
+        self.total_on_disk_bytes = entries.iter().map(|entry| entry.size_bytes).sum();
         self.entries = entries;
 
         self.ensure_within_size_limit().await?;
@@ -203,18 +203,55 @@ where
     ///
     /// If there is an error while deleting persisted entries, an error is returned.
     async fn remove_until_available_space(&mut self, required_bytes: u64) -> io::Result<()> {
-        let mut total_size_bytes = self.entries.iter().map(|entry| entry.size_bytes).sum::<u64>();
-        while !self.entries.is_empty() && total_size_bytes + required_bytes > self.max_size_bytes {
+        while !self.entries.is_empty() && self.total_on_disk_bytes + required_bytes > self.max_on_disk_bytes {
             let entry = self.entries.remove(0);
-            tokio::fs::remove_file(&entry.path).await?;
 
-            total_size_bytes -= entry.size_bytes;
-
-            // TODO: Log that we're dropping an entry on the floor.
+            match tokio::fs::remove_file(&entry.path).await {
+                Ok(_) => {
+                    self.total_on_disk_bytes -= entry.size_bytes;
+                    debug!(entry.path = %entry.path.display(), entry.len = entry.size_bytes, "Dropped persisted entry.");
+                }
+                Err(e) => {
+                    // We didn't delete the file, so add it back to our entries list and return the error.
+                    self.entries.insert(0, entry);
+                    return Err(e);
+                }
+            }
         }
 
         Ok(())
     }
+}
+
+async fn try_deserialize_entry<T: DeserializeOwned>(entry: &PersistedEntry) -> Result<Option<T>, GenericError> {
+    let serialized = match tokio::fs::read(&entry.path).await {
+        Ok(serialized) => serialized,
+        Err(e) => match e.kind() {
+            io::ErrorKind::NotFound => {
+                // We tried to delete an entry that no longer exists on disk, which means our internal entry state
+                // is corrupted for some reason.
+                //
+                // Tell the caller that we couldn't find the entry on disk, so that they need to refresh the entry state
+                // to make sure it's up-to-date before trying again.
+                return Ok(None);
+            }
+            _ => {
+                return Err(e)
+                    .with_error_context(|| format!("Failed to read persisted entry '{}'.", entry.path.display()))
+            }
+        },
+    };
+
+    let deserialized = serde_json::from_slice(&serialized)
+        .with_error_context(|| format!("Failed to deserialize persisted entry '{}'.", entry.path.display()))?;
+
+    // Delete the entry from disk before returning, so that we don't risk sending duplicates.
+    tokio::fs::remove_file(&entry.path)
+        .await
+        .with_error_context(|| format!("Failed to delete persisted entry '{}'.", entry.path.display()))?;
+
+    debug!(entry.path = %entry.path.display(), entry.len = entry.size_bytes, "Consumed persisted entry and removed from disk.");
+    Ok(Some(deserialized))
 }
 
 fn generate_timestamped_filename() -> (PathBuf, u128) {
