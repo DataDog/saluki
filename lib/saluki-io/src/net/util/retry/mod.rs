@@ -10,6 +10,8 @@ pub use self::lifecycle::StandardHttpRetryLifecycle;
 mod policy;
 pub use self::policy::{NoopRetryPolicy, RollingExponentialBackoffRetryPolicy};
 
+mod queue;
+
 /// A batteries-included retry policy suitable for HTTP-based clients.
 pub type DefaultHttpRetryPolicy =
     RollingExponentialBackoffRetryPolicy<StandardHttpClassifier, StandardHttpRetryLifecycle>;
