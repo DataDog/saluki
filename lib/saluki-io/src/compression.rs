@@ -177,6 +177,13 @@ impl CompressionEstimator {
     /// Estimates if writing `len` bytes to the compressor would cause the final compressed size to exceed `threshold`
     /// bytes.
     pub fn would_write_exceed_threshold(&self, len: usize, threshold: usize) -> bool {
+        // If we have yet to see any compressed data, we can't make a meaningful estimate, and this likely means that
+        // the compressor is still actively able to compress more data into the first block, which when eventually
+        // written, should never exceed the compressed size limit... so we choose to not block writes in this case.
+        if self.known_compressed_len == 0 {
+            return false;
+        }
+
         // We adjust the given threshold down by a small amount to account for the fact that the final block written by
         // the compressor has more variability in size than the rest, due to being more likely to be flushed before
         // internal buffers are full and having the chance to most efficiently compress the data. Essentially, if we
