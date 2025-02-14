@@ -235,6 +235,7 @@ async fn run_endpoint_io_loop<S, B>(
                             debug!(endpoint = endpoint_url, %status, "Request sent.");
 
                             telemetry.events_sent().increment(events as u64);
+                            telemetry.events_sent_batch_size().record(events as f64);
                         } else {
                             telemetry.http_failed_send().increment(1);
                             telemetry.events_dropped_http().increment(events as u64);

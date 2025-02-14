@@ -1,4 +1,4 @@
-use metrics::Counter;
+use metrics::{Counter, Histogram};
 use saluki_metrics::MetricsBuilder;
 
 /// Component-specific telemetry.
@@ -8,6 +8,7 @@ use saluki_metrics::MetricsBuilder;
 #[derive(Clone)]
 pub struct ComponentTelemetry {
     events_sent: Counter,
+    events_sent_batch_size: Histogram,
     bytes_sent: Counter,
     events_dropped_http: Counter,
     events_dropped_encoder: Counter,
@@ -19,6 +20,7 @@ impl ComponentTelemetry {
     pub fn from_builder(builder: &MetricsBuilder) -> Self {
         Self {
             events_sent: builder.register_debug_counter("component_events_sent_total"),
+            events_sent_batch_size: builder.register_debug_histogram("component_events_sent_batch_size"),
             bytes_sent: builder.register_debug_counter("component_bytes_sent_total"),
             events_dropped_http: builder.register_debug_counter_with_tags(
                 "component_events_dropped_total",
@@ -35,6 +37,10 @@ impl ComponentTelemetry {
 
     pub fn events_sent(&self) -> &Counter {
         &self.events_sent
+    }
+
+    pub fn events_sent_batch_size(&self) -> &Histogram {
+        &self.events_sent_batch_size
     }
 
     pub fn bytes_sent(&self) -> &Counter {

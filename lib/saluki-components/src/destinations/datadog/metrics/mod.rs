@@ -23,12 +23,15 @@ use super::common::{config::ForwarderConfiguration, io::TransactionForwarder, te
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
 
-const FLUSH_IDLE_TIMEOUT: Duration = Duration::from_secs(1);
 const RB_BUFFER_POOL_COUNT: usize = 128;
 const RB_BUFFER_POOL_BUF_SIZE: usize = 32_768;
 
 const fn default_max_metrics_per_payload() -> usize {
     10_000
+}
+
+const fn default_flush_timeout_secs() -> u64 {
+    2
 }
 
 /// Datadog Metrics destination.
@@ -63,6 +66,18 @@ pub struct DatadogMetricsConfiguration {
         default = "default_max_metrics_per_payload"
     )]
     max_metrics_per_payload: usize,
+
+    /// Flush timeout for  pending requests, in seconds.
+    ///
+    /// When the destination has written metrics to the in-flight request payload, but it has not yet reached the
+    /// payload size limits that would force the payload to be flushed, the destination will wait for a period of time
+    /// before flushing the in-flight request payload. This allows for the possibility of other events to be processed
+    /// and written into the request payload, thereby maximizing the payload size and reducing the number of requests
+    /// generated and sent overall.
+    ///
+    /// Defaults to 2 seconds.
+    #[serde(default = "default_flush_timeout_secs")]
+    flush_timeout_secs: u64,
 }
 
 impl DatadogMetricsConfiguration {
@@ -105,11 +120,19 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         let sketches_request_builder =
             RequestBuilder::new(MetricsEndpoint::Sketches, rb_buffer_pool, self.max_metrics_per_payload).await?;
 
+        let flush_timeout = match self.flush_timeout_secs {
+            // We always give ourselves a minimum flush timeout of 10ms to allow for some very minimal amount of
+            // batching, while still practically flushing things almost immediately.
+            0 => Duration::from_millis(10),
+            secs => Duration::from_secs(secs),
+        };
+
         Ok(Box::new(DatadogMetrics {
             series_request_builder,
             sketches_request_builder,
             forwarder,
             telemetry,
+            flush_timeout,
         }))
     }
 }
@@ -150,6 +173,7 @@ where
     sketches_request_builder: RequestBuilder<O>,
     forwarder: TransactionForwarder<FrozenChunkedBytesBuffer>,
     telemetry: ComponentTelemetry,
+    flush_timeout: Duration,
 }
 
 #[allow(unused)]
@@ -164,6 +188,7 @@ where
             mut sketches_request_builder,
             forwarder,
             telemetry,
+            flush_timeout,
         } = *self;
 
         let mut health = context.take_health_handle();
@@ -175,8 +200,8 @@ where
         debug!("Datadog Metrics destination started.");
 
         let mut pending_flush = false;
-        let mut flush_timeout = sleep(FLUSH_IDLE_TIMEOUT);
-        tokio::pin!(flush_timeout);
+        let mut pending_flush_timeout = sleep(flush_timeout);
+        tokio::pin!(pending_flush_timeout);
 
         loop {
             select! {
@@ -244,13 +269,13 @@ where
 
                         // If we're not already pending a flush, we'll start the countdown.
                         if !pending_flush {
-                            flush_timeout.as_mut().reset(tokio::time::Instant::now() + FLUSH_IDLE_TIMEOUT);
+                            pending_flush_timeout.as_mut().reset(tokio::time::Instant::now() + flush_timeout);
                             pending_flush = true;
                         }
                     },
                     None => break,
                 },
-                _ = &mut flush_timeout, if pending_flush => {
+                _ = &mut pending_flush_timeout, if pending_flush => {
                     debug!("Flushing pending request(s).");
 
                     pending_flush = false;
