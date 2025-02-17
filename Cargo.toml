@@ -123,7 +123,7 @@ loom = { version = "0.7", default-features = false }
 trybuild = { version = "1", default-features = false }
 tokio-test = { version = "0.4.4", default-features = false }
 simdutf8 = { version = "0.1.5", default-features = false }
-smallvec = { version = "1.13", default-features = false }
+smallvec = { version = "1.14", default-features = false }
 windows-sys = { version = "0.59", default-features = false }
 rustls-native-certs = { version = "0.8", default-features = false }
 hashbrown = { version = "0.15", default-features = false }
