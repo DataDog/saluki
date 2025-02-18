@@ -36,8 +36,8 @@ async function fetchStatistics() {
   let fetchDuration = 2000;
 
   try {
-    const { pid, uptimeSecs, rssBytes } = await client.getProcessInformation();
-    stats.value = { pid, uptimeSecs: Number(uptimeSecs), cpuUsage: 0.0, rssBytes: Number(rssBytes), metrics: 0, logs: 0, traces: 0 };
+    const { pid, uptimeSecs, rssBytes, metricsIngested, logsIngested, tracesIngested } = await client.getProcessInformation();
+    stats.value = { pid, uptimeSecs: Number(uptimeSecs), cpuUsage: 0.0, rssBytes: Number(rssBytes), metrics: Number(metricsIngested), logs: Number(logsIngested), traces: Number(tracesIngested) };
 
     toast.removeGroup('dashboardErrors');
     loading.value = false;
@@ -111,7 +111,7 @@ async function fetchStatistics() {
         <div>
           <span class="block text-muted-color font-medium mb-2 text-xl">Metrics Ingested</span>
           <div v-if="loading"><SpinningLoader /></div>
-          <div v-if="stats" class="text-surface-900 dark:text-surface-0 font-medium text-3xl">{{ stats.metrics }}</div>
+          <div v-if="stats" class="text-surface-900 dark:text-surface-0 font-medium text-3xl">{{ stats.metrics.toLocaleString() }}</div>
         </div>
       </div>
     </div>
@@ -122,7 +122,7 @@ async function fetchStatistics() {
         <div>
           <span class="block text-muted-color font-medium mb-2 text-xl">Logs Ingested</span>
           <div v-if="loading"><SpinningLoader /></div>
-          <div v-if="stats" class="text-surface-900 dark:text-surface-0 font-medium text-3xl">{{ stats.logs }}</div>
+          <div v-if="stats" class="text-surface-900 dark:text-surface-0 font-medium text-3xl">{{ stats.logs.toLocaleString() }}</div>
         </div>
       </div>
     </div>
@@ -133,7 +133,7 @@ async function fetchStatistics() {
         <div>
           <span class="block text-muted-color font-medium mb-2 text-xl">Traces Ingested</span>
           <div v-if="loading"><SpinningLoader /></div>
-          <div v-if="stats" class="text-surface-900 dark:text-surface-0 font-medium text-3xl">{{ stats.traces }}</div>
+          <div v-if="stats" class="text-surface-900 dark:text-surface-0 font-medium text-3xl">{{ stats.traces.toLocaleString() }}</div>
         </div>
       </div>
     </div>

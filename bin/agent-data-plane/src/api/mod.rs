@@ -7,16 +7,20 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
 use tracing::{error, info};
 
+use crate::state::metrics::AggregatedMetricsProcessor;
+
 mod remote_agent;
 use self::remote_agent::RemoteAgentHelperConfiguration;
-use crate::state::metrics::AggregatedMetricsProcessor;
+
+mod telemetry;
+use self::telemetry::build_telemetry_service;
 
 const PRIMARY_UNPRIVILEGED_API_PORT: u16 = 5100;
 const PRIMARY_PRIVILEGED_API_PORT: u16 = 5101;
 
 pub async fn configure_and_spawn_api_endpoints(
     config: &GenericConfiguration, internal_metrics: Reflector<AggregatedMetricsProcessor>,
-    unprivileged_api: APIBuilder, mut privileged_api: APIBuilder,
+    mut unprivileged_api: APIBuilder, mut privileged_api: APIBuilder,
 ) -> Result<(), GenericError> {
     let api_listen_address = config
         .try_get_typed("api_listen_address")
@@ -38,13 +42,17 @@ pub async fn configure_and_spawn_api_endpoints(
 
         // Build and spawn our helper task for registering ourselves with the Datadog Agent as a remote agent.
         let remote_agent_config =
-            RemoteAgentHelperConfiguration::from_configuration(config, local_secure_api_listen_addr, internal_metrics)
+            RemoteAgentHelperConfiguration::from_configuration(config, local_secure_api_listen_addr, internal_metrics.clone())
                 .await?;
         let remote_agent_service = remote_agent_config.spawn().await;
 
         // Register our Remote Agent gRPC service with the privileged API.
         privileged_api = privileged_api.with_grpc_service(remote_agent_service);
     }
+
+    // Initialize the telemetry service.
+    let telemetry_service = build_telemetry_service(internal_metrics);
+    unprivileged_api = unprivileged_api.with_grpc_service(telemetry_service);
 
     spawn_unprivileged_api(unprivileged_api, api_listen_address).await?;
     spawn_privileged_api(privileged_api, secure_api_listen_address).await?;

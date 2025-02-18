@@ -13,6 +13,9 @@ message GetProcessInformationResponse {
     uint32 pid = 1;
     uint64 uptime_secs = 2;
     uint64 rss_bytes = 3;
+    uint64 metrics_ingested = 4;
+    uint64 logs_ingested = 5;
+    uint64 traces_ingested = 6;
 }
 
 message GetAggregatedMetricsRequest {}

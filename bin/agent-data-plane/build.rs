@@ -1,7 +1,6 @@
 fn main() {
     // Always rerun if the build script itself changes.
     println!("cargo:rerun-if-changed=build.rs");
-
     println!("cargo:rerun-if-changed=../../proto/datadog/adp/v1/telemetry.proto");
 
     // Handle code generation for gRPC service definitions.

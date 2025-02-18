@@ -522,6 +522,11 @@ run-admin-ui-dev: ## Runs the Admin UI locally in development mode
 	@echo "[*] Running Admin UI in development mode..."
 	@cd web/admin-ui && bun run dev
 
+.PHONY: gen-admin-ui-proto
+gen-admin-ui-proto: ## Generates the gRPC bindings for the ADP telemetry API
+	@echo "[*] Building gRPC bindings for ADP telemetry API..."
+	@buf generate
+
 ##@ Utility
 
 .PHONY: clean
