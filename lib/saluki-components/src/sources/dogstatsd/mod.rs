@@ -4,7 +4,6 @@ use std::{num::NonZeroUsize, time::Duration};
 use async_trait::async_trait;
 use bytes::{Buf, BufMut};
 use bytesize::ByteSize;
-use filters::{allow_event_filters, allow_metric_filters, allow_service_check_filters};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use metrics::{Counter, Gauge, Histogram};
 use saluki_config::GenericConfiguration;
@@ -51,8 +50,7 @@ mod framer;
 use self::framer::{get_framer, DsdFramer};
 
 mod filters;
-use self::filters::{EnablePayloadsFilter, Filter};
-
+use self::filters::{is_event_allowed, is_metric_allowed, is_service_check_allowed, EnablePayloadsFilter, Filter};
 mod origin;
 use self::origin::{origin_from_metric_packet, DogStatsDOriginTagResolver, OriginEnrichmentConfiguration};
 
@@ -865,7 +863,7 @@ fn handle_frame(
     let event = match parsed {
         ParsedPacket::Metric(metric_packet) => {
             let events_len = metric_packet.num_points;
-            if !allow_metric_filters(filters.clone(), &metric_packet) {
+            if !is_metric_allowed(&filters, &metric_packet) {
                 debug!(%metric_packet.metric_name, "Metric filtered out.");
                 return Ok(None);
             }
@@ -883,7 +881,7 @@ fn handle_frame(
             }
         }
         ParsedPacket::Event(event) => {
-            if !allow_event_filters(filters.clone(), &event) {
+            if !is_event_allowed(&filters, &event) {
                 debug!("Event: {} filtered out.", event.title());
                 return Ok(None);
             }
@@ -891,7 +889,7 @@ fn handle_frame(
             Event::EventD(event)
         }
         ParsedPacket::ServiceCheck(service_check) => {
-            if !allow_service_check_filters(filters.clone(), &service_check) {
+            if !is_service_check_allowed(&filters, &service_check) {
                 debug!("Service Check: {} filtered out.", service_check.name());
                 return Ok(None);
             }

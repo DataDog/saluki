@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use saluki_event::{eventd::EventD, service_check::ServiceCheck};
 use saluki_io::deser::codec::dogstatsd::MetricPacket;
 
@@ -12,7 +10,7 @@ pub trait Filter {
 
 /// Filters payloads based on whether or not they are enabled.
 ///
-/// Defaults to `true` to allow every payload.
+/// All payloads are allowed by default.
 pub struct EnablePayloadsFilter {
     allow_series: bool,
     allow_sketches: bool,
@@ -75,17 +73,15 @@ impl Filter for EnablePayloadsFilter {
     }
 }
 
-pub fn allow_metric_filters(filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>, metric: &MetricPacket) -> bool {
+pub fn is_metric_allowed(filters: &[Box<dyn Filter + Send + Sync>], metric: &MetricPacket) -> bool {
     filters.iter().all(|filter| filter.allow_metric(metric))
 }
 
-pub fn allow_event_filters(filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>, event: &EventD) -> bool {
+pub fn is_event_allowed(filters: &[Box<dyn Filter + Send + Sync>], event: &EventD) -> bool {
     filters.iter().all(|filter| filter.allow_event(event))
 }
 
-pub fn allow_service_check_filters(
-    filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>, service_check: &ServiceCheck,
-) -> bool {
+pub fn is_service_check_allowed(filters: &[Box<dyn Filter + Send + Sync>], service_check: &ServiceCheck) -> bool {
     filters.iter().all(|filter| filter.allow_service_check(service_check))
 }
 
