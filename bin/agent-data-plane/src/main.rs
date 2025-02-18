@@ -13,8 +13,8 @@ use saluki_components::{
     destinations::{DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration, PrometheusConfiguration},
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
     transforms::{
-        AggregateConfiguration, ChainedConfiguration, DogstatsDPrefixFilterConfiguration, HostEnrichmentConfiguration,
-        HostTagsConfiguration,
+        AggregateConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration, DogstatsDPrefixFilterConfiguration,
+        HostEnrichmentConfiguration, HostTagsConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration, RefreshableConfiguration, RefresherConfiguration};
@@ -33,6 +33,9 @@ use self::components::remapper::AgentTelemetryRemapperConfiguration;
 
 mod env_provider;
 use self::env_provider::ADPEnvironmentProvider;
+
+mod state;
+use self::state::metrics::initialize_shared_metrics_state;
 
 #[cfg(target_os = "linux")]
 #[global_allocator]
@@ -101,6 +104,8 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
 
+    let internal_metrics = initialize_shared_metrics_state().await;
+
     let env_provider =
         ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry).await?;
 
@@ -143,7 +148,7 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     health_registry.spawn().await?;
 
     // Handle any final configuration of our API endpoints and spawn them.
-    configure_and_spawn_api_endpoints(&configuration, unprivileged_api, privileged_api).await?;
+    configure_and_spawn_api_endpoints(&configuration, internal_metrics, unprivileged_api, privileged_api).await?;
 
     let startup_time = started.elapsed();
 
@@ -189,8 +194,10 @@ async fn create_topology(
     let dsd_prefix_filter_configuration = DogstatsDPrefixFilterConfiguration::from_configuration(configuration)?;
     let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
     let host_tags_config = HostTagsConfiguration::from_configuration(configuration).await?;
+    let dsd_mapper_config = DogstatsDMapperConfiguration::from_configuration(configuration)?;
     let enrich_config = ChainedConfiguration::default()
         .with_transform_builder(host_enrichment_config)
+        .with_transform_builder(dsd_mapper_config)
         .with_transform_builder(host_tags_config);
     let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Metrics destination.")?;

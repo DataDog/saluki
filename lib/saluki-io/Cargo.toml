@@ -13,6 +13,7 @@ average = { workspace = true, features = ["std"] }
 axum = { workspace = true, features = ["tokio"] }
 bitmask-enum = { workspace = true }
 bytes = { workspace = true }
+chrono = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
 futures = { workspace = true }
@@ -42,6 +43,7 @@ saluki-event = { workspace = true }
 saluki-metrics = { workspace = true }
 saluki-tls = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 simdutf8 = { workspace = true, features = ["std"] }
 slab = { workspace = true }
 snafu = { workspace = true }
@@ -59,4 +61,5 @@ url = { workspace = true, features = ["std"] }
 [dev-dependencies]
 http-body-util = { workspace = true }
 proptest = { workspace = true }
+tempfile = { workspace = true }
 tokio-test = { workspace = true }
