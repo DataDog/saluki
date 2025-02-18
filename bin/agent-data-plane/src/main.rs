@@ -14,7 +14,7 @@ use saluki_components::{
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
     transforms::{
         AggregateConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration, DogstatsDPrefixFilterConfiguration,
-        HostEnrichmentConfiguration,
+        HostEnrichmentConfiguration, HostTagsConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration, RefreshableConfiguration, RefresherConfiguration};
@@ -193,10 +193,12 @@ async fn create_topology(
         .error_context("Failed to configure aggregate transform.")?;
     let dsd_prefix_filter_configuration = DogstatsDPrefixFilterConfiguration::from_configuration(configuration)?;
     let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
+    let host_tags_config = HostTagsConfiguration::from_configuration(configuration).await?;
     let dsd_mapper_config = DogstatsDMapperConfiguration::from_configuration(configuration)?;
     let enrich_config = ChainedConfiguration::default()
         .with_transform_builder(host_enrichment_config)
-        .with_transform_builder(dsd_mapper_config);
+        .with_transform_builder(dsd_mapper_config)
+        .with_transform_builder(host_tags_config);
     let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Metrics destination.")?;
 
