@@ -24,7 +24,7 @@ pub struct HostTagsConfiguration {
 }
 
 const DEFAULT_EXPECTED_TAGS_DURATION: u64 = 0;
-const DEFAULT_CONTEXT_STRING_INTERNER_BYTES: ByteSize = ByteSize::kib(64);
+const DEFAULT_HOST_TAGS_CONTEXT_STRING_INTERNER_BYTES: ByteSize = ByteSize::kib(64);
 
 impl HostTagsConfiguration {
     /// Creates a new `HostTagsConfiguration` from the given configuration.
@@ -33,13 +33,13 @@ impl HostTagsConfiguration {
         let expected_tags_duration = config
             .try_get_typed::<u64>("expected_tags_duration")?
             .unwrap_or(DEFAULT_EXPECTED_TAGS_DURATION);
-        let context_string_interner_bytes = config
-            .try_get_typed::<ByteSize>("context_string_interner_bytes")?
-            .unwrap_or(DEFAULT_CONTEXT_STRING_INTERNER_BYTES);
+        let host_tags_context_string_interner_bytes = config
+            .try_get_typed::<ByteSize>("host_tags_context_string_interner_bytes")?
+            .unwrap_or(DEFAULT_HOST_TAGS_CONTEXT_STRING_INTERNER_BYTES);
 
         Ok(Self {
             client,
-            host_tags_context_string_interner_bytes: context_string_interner_bytes,
+            host_tags_context_string_interner_bytes,
             expected_tags_duration,
         })
     }
