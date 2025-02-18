@@ -4,6 +4,7 @@ use std::{num::NonZeroUsize, time::Duration};
 use async_trait::async_trait;
 use bytes::{Buf, BufMut};
 use bytesize::ByteSize;
+use filters::{allow_event_filters, allow_metric_filters, allow_service_check_filters};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use metrics::{Counter, Gauge, Histogram};
 use saluki_config::GenericConfiguration;
@@ -101,6 +102,14 @@ const fn default_enable_payloads_series() -> bool {
 }
 
 const fn default_enable_payloads_sketches() -> bool {
+    true
+}
+
+const fn default_enable_payloads_events() -> bool {
+    true
+}
+
+const fn default_enable_payloads_service_checks() -> bool {
     true
 }
 
@@ -223,6 +232,18 @@ pub struct DogStatsDConfiguration {
     #[serde(default = "default_enable_payloads_sketches")]
     enable_payloads_sketches: bool,
 
+    /// Whether or not to enable sending event payloads.
+    ///
+    /// Defaults to `true`.
+    #[serde(default = "default_enable_payloads_events")]
+    enable_payloads_events: bool,
+
+    /// Whether or not to enable sending service check payloads.
+    ///
+    /// Defaults to `true`.
+    #[serde(default = "default_enable_payloads_service_checks")]
+    enable_payloads_service_checks: bool,
+
     /// Configuration related to origin detection and enrichment.
     #[serde(flatten, default)]
     origin_enrichment: OriginEnrichmentConfiguration,
@@ -320,6 +341,12 @@ impl SourceBuilder for DogStatsDConfiguration {
 
         let codec = DogstatsdCodec::from_configuration(codec_config);
 
+        let enable_payloads_filter = EnablePayloadsFilter::default()
+            .with_allow_series(self.enable_payloads_series)
+            .with_allow_sketches(self.enable_payloads_sketches)
+            .with_allow_events(self.enable_payloads_events)
+            .with_allow_service_checks(self.enable_payloads_service_checks);
+
         Ok(Box::new(DogStatsD {
             listeners,
             io_buffer_pool: FixedSizeObjectPool::with_builder("dsd_packet_bufs", self.buffer_count, || {
@@ -327,10 +354,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             }),
             codec,
             context_resolver,
-            pre_filters: Arc::new(vec![Box::new(EnablePayloadsFilter::new(
-                self.enable_payloads_series,
-                self.enable_payloads_sketches,
-            ))]),
+            pre_filters: Arc::new(vec![Box::new(enable_payloads_filter)]),
         }))
     }
 
@@ -841,11 +865,9 @@ fn handle_frame(
     let event = match parsed {
         ParsedPacket::Metric(metric_packet) => {
             let events_len = metric_packet.num_points;
-            for filter in filters.iter() {
-                if !filter.allow_metric(&metric_packet) {
-                    debug!(%metric_packet.metric_name, "Metric filtered out.");
-                    return Ok(None);
-                }
+            if !allow_metric_filters(filters.clone(), &metric_packet) {
+                debug!(%metric_packet.metric_name, "Metric filtered out.");
+                return Ok(None);
             }
 
             match handle_metric_packet(metric_packet, context_resolver, peer_addr) {
@@ -861,10 +883,18 @@ fn handle_frame(
             }
         }
         ParsedPacket::Event(event) => {
+            if !allow_event_filters(filters.clone(), &event) {
+                debug!("Event: {} filtered out.", event.title());
+                return Ok(None);
+            }
             source_metrics.events_received().increment(1);
             Event::EventD(event)
         }
         ParsedPacket::ServiceCheck(service_check) => {
+            if !allow_service_check_filters(filters.clone(), &service_check) {
+                debug!("Service Check: {} filtered out.", service_check.name());
+                return Ok(None);
+            }
             source_metrics.service_checks_received().increment(1);
             Event::ServiceCheck(service_check)
         }
