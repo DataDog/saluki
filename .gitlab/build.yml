@@ -43,6 +43,47 @@ build-adp-image:
       --label git.commit=${CI_COMMIT_SHA}
       --label ci.pipeline_id=${CI_PIPELINE_ID}
       --label ci.job_id=${CI_JOB_ID}
+      --label config.fips=false
+      --push
+      .
+
+build-adp-image-fips:
+  stage: build
+  image: ${DOCKER_BUILD_IMAGE}
+  needs:
+    - calculate-build-metadata
+  variables:
+    # Compiling Rust is intensive. ¯\_(ツ)_/¯
+    KUBERNETES_CPU_REQUEST: "16"
+    KUBERNETES_MEMORY_REQUEST: "8Gi"
+    KUBERNETES_MEMORY_LIMIT: "12Gi"
+  script:
+    # As it turns out, doing the multi-platform build in a single step means we're sacrificing build performance. For
+    # example, building the ARM64 image on an AMD64 runner is anywhere between 2-3x slower, which then slows downs
+    # things like the correctness test.
+    #
+    # We should consider bringing back the individual build steps, and then constructing the multi-image manifest
+    # ourselves.
+    - docker buildx build
+      --platform linux/amd64,linux/arm64
+      --file ./docker/Dockerfile.agent-data-plane
+      --tag ${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}-fips
+      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
+      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
+      --build-arg BUILD_PROFILE=optimized-debug-release
+      --build-arg BUILD_FEATURES=fips
+      --build-arg APP_FULL_NAME=${APP_FULLNAME}
+      --build-arg APP_SHORT_NAME=${APP_SHORT_NAME}
+      --build-arg APP_IDENTIFIER=${APP_IDENTIFIER}
+      --build-arg APP_VERSION=${APP_VERSION}
+      --build-arg APP_GIT_HASH=${APP_GIT_HASH}
+      --build-arg APP_BUILD_TIME=${APP_BUILD_TIME}
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --label config.fips=true
       --push
       .
 

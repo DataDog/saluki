@@ -5,6 +5,7 @@ FROM ${BUILD_IMAGE} AS builder
 
 ARG TARGETARCH
 ARG BUILD_PROFILE=release
+ARG BUILD_FEATURES=default
 ARG APP_FULL_NAME=""
 ARG APP_SHORT_NAME=""
 ARG APP_IDENTIFIER=""
@@ -43,7 +44,7 @@ RUN chmod +x /install-protoc.sh && /install-protoc.sh
 # Build ADP.
 WORKDIR /adp
 COPY . /adp
-RUN cargo build --profile ${BUILD_PROFILE} --bin agent-data-plane
+RUN cargo build --profile ${BUILD_PROFILE} --bin agent-data-plane --features ${BUILD_FEATURES}
 
 # Calculate the necessary licenses that we need to include in the final image.
 FROM ${BUILD_IMAGE} AS license-builder
