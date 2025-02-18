@@ -14,9 +14,12 @@ use saluki_error::{generic_error, GenericError};
 use saluki_event::metric::Metric;
 
 /// Host Tags synchronous transform.
+///
+/// Temporarily adds host tags to metrics to compensate for backend delays when a new host comes online,
+/// preventing gaps in queryability until the backend starts adding these tags automatically.
 pub struct HostTagsConfiguration {
     client: RemoteAgentClient,
-    context_string_interner_bytes: ByteSize,
+    host_tags_context_string_interner_bytes: ByteSize,
     expected_tags_duration: u64,
 }
 
@@ -36,7 +39,7 @@ impl HostTagsConfiguration {
 
         Ok(Self {
             client,
-            context_string_interner_bytes,
+            host_tags_context_string_interner_bytes: context_string_interner_bytes,
             expected_tags_duration,
         })
     }
@@ -50,10 +53,11 @@ impl SynchronousTransformBuilder for HostTagsConfiguration {
         // `HostTagReply` consists of `system` and `google_cloud_platform` tags but only `system` tags are attached.
         let host_tags = host_tags_reply.system.to_owned();
 
-        let context_string_interner_size = NonZeroUsize::new(self.context_string_interner_bytes.as_u64() as usize)
-            .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))
-            .unwrap();
-        let context_resolver = ContextResolverBuilder::from_name("dogstatsd_mapper")
+        let context_string_interner_size =
+            NonZeroUsize::new(self.host_tags_context_string_interner_bytes.as_u64() as usize)
+                .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))
+                .unwrap();
+        let context_resolver = ContextResolverBuilder::from_name("host_tags")
             .expect("resolver name is not empty")
             .with_interner_capacity_bytes(context_string_interner_size)
             .build();
@@ -74,7 +78,10 @@ impl MemoryBounds for HostTagsConfiguration {
             .with_single_value::<HostTagsEnrichment>("component struct")
             // We also allocate the backing storage for the string interner up front, which is used by our context
             // resolver.
-            .with_fixed_amount("string interner", self.context_string_interner_bytes.as_u64() as usize);
+            .with_fixed_amount(
+                "string interner",
+                self.host_tags_context_string_interner_bytes.as_u64() as usize,
+            );
     }
 }
 
@@ -106,11 +113,11 @@ impl HostTagsEnrichment {
 
 impl SynchronousTransform for HostTagsEnrichment {
     fn transform_buffer(&mut self, event_buffer: &mut FixedSizeEventBuffer) {
+        // Skip adding host tags if duration has elapsed
+        if self.start.elapsed() >= self.expected_tags_duration {
+            return;
+        }
         for event in event_buffer {
-            // Skip adding host tags since duration has elapsed
-            if self.start.elapsed() >= self.expected_tags_duration {
-                break;
-            }
             if let Some(metric) = event.try_as_metric_mut() {
                 self.enrich_metric(metric);
             }
