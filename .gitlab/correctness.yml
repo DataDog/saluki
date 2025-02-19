@@ -2,6 +2,8 @@ build-metrics-intake-image:
   stage: correctness
   image: ${DOCKER_BUILD_IMAGE}
   needs: []
+  retry: 2
+  timeout: 10m
   variables:
     # Compiling Rust is intensive. ¯\_(ツ)_/¯
     KUBERNETES_CPU_REQUEST: "16"
@@ -27,6 +29,8 @@ build-millstone-image:
   stage: correctness
   image: ${DOCKER_BUILD_IMAGE}
   needs: []
+  retry: 2
+  timeout: 10m
   variables:
     # Compiling Rust is intensive. ¯\_(ツ)_/¯
     KUBERNETES_CPU_REQUEST: "16"
@@ -55,7 +59,8 @@ run-ground-truth:
     - build-adp-image
     - build-metrics-intake-image
     - build-millstone-image
-  allow_failure: true
+  retry: 2
+  timeout: 10m
   image: "${SALUKI_BUILD_CI_IMAGE}"
   artifacts:
     expire_in: 1 weeks

@@ -13,6 +13,8 @@ build-adp-image:
   image: ${DOCKER_BUILD_IMAGE}
   needs:
     - calculate-build-metadata
+  retry: 2
+  timeout: 20m
   variables:
     # Compiling Rust is intensive. ¯\_(ツ)_/¯
     KUBERNETES_CPU_REQUEST: "16"
@@ -52,6 +54,8 @@ build-adp-image-fips:
   image: ${DOCKER_BUILD_IMAGE}
   needs:
     - calculate-build-metadata
+  retry: 2
+  timeout: 20m
   variables:
     # Compiling Rust is intensive. ¯\_(ツ)_/¯
     KUBERNETES_CPU_REQUEST: "16"
@@ -92,6 +96,8 @@ build-converged-adp-image:
   image: ${DOCKER_BUILD_IMAGE}
   needs:
     - build-adp-image
+  retry: 2
+  timeout: 5m
   variables:
     IMAGE_TAG: "${INTERNAL_DD_AGENT_IMAGE}-adp-${CI_COMMIT_SHORT_SHA}"
   id_tokens:
@@ -120,6 +126,8 @@ build-converged-adp-image-nightly:
   image: ${DOCKER_BUILD_IMAGE}
   needs:
     - build-adp-image
+  retry: 2
+  timeout: 5m
   variables:
     IMAGE_TAG: "${INTERNAL_DD_AGENT_IMAGE_NIGHTLY}-adp-${CI_COMMIT_SHORT_SHA}"
   id_tokens:
