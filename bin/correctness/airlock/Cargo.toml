@@ -6,7 +6,7 @@ license = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
-bollard = { workspace = true }
+bollard = { workspace = true, features = ["http"] }
 clap = { workspace = true, features = ["std", "color", "derive", "help", "wrap_help", "usage", "error-context", "suggestions"] }
 futures = { workspace = true }
 saluki-app = { workspace = true, features = ["logging"] }
