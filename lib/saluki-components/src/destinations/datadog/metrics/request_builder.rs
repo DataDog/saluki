@@ -492,7 +492,7 @@ fn encode_series_metric(metric: &Metric) -> proto::MetricSeries {
     // and then setting the rest as generic tags.
     let mut tags = Vec::new();
 
-    metric.context().visit_tags(|tag| {
+    metric.context().visit_tags_deduped(|tag| {
         // If this is a resource tag, we'll convert it directly to a resource entry.
         if tag.name() == "dd.internal.resource" {
             if let Some((resource_type, resource_name)) = tag.value().and_then(|s| s.split_once(':')) {
@@ -575,7 +575,7 @@ fn encode_sketch_metric(metric: &Metric) -> proto::Sketch {
     // Collect and set all of our metric tags.
     let mut tags = Vec::new();
 
-    metric.context().visit_tags(|tag| {
+    metric.context().visit_tags_deduped(|tag| {
         tags.push(tag.as_str().into());
     });
 
