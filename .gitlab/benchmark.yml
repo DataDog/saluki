@@ -18,6 +18,7 @@ build-adp-baseline-image:
   image: "${DOCKER_BUILD_IMAGE}"
   needs: []
   retry: 2
+  timeout: 20m
   before_script:
     - *setup-smp-env
   variables:
@@ -58,6 +59,7 @@ build-adp-comparison-image:
   image: "${DOCKER_BUILD_IMAGE}"
   needs: []
   retry: 2
+  timeout: 20m
   before_script:
     - *setup-smp-env
   variables:
@@ -89,11 +91,10 @@ build-adp-comparison-image:
 
 run-benchmarks-adp:
   stage: benchmark
-  timeout: 2h
+  timeout: 1h
   needs:
     - build-adp-baseline-image
     - build-adp-comparison-image
-  allow_failure: true
   image: "${SALUKI_SMP_CI_IMAGE}"
   before_script:
     - *setup-smp-env
@@ -157,10 +158,9 @@ run-benchmarks-adp:
 
 run-benchmarks-dsd:
   stage: benchmark
-  timeout: 2h
+  timeout: 1h
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
-  allow_failure: true
   before_script:
     - *setup-smp-env
   artifacts:
