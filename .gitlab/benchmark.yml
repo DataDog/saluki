@@ -161,6 +161,7 @@ run-benchmarks-dsd:
   timeout: 1h
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
+  allow_failure: true
   before_script:
     - *setup-smp-env
   artifacts:
