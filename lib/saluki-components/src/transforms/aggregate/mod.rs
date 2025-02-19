@@ -232,14 +232,21 @@ impl TransformBuilder for AggregateConfiguration {
             telemetry.clone(),
         );
 
+        let passthrough_batcher = PassthroughBatcher::new(
+            self.passthrough_event_buffer_len,
+            self.passthrough_idle_flush_timeout,
+            self.window_duration,
+            telemetry.clone(),
+        )
+        .await;
+
         Ok(Box::new(Aggregate {
             state,
             telemetry,
             primary_flush_interval: self.primary_flush_interval,
             flush_open_windows: self.flush_open_windows,
+            passthrough_batcher,
             passthrough_timestamped_metrics: self.passthrough_timestamped_metrics,
-            passthrough_idle_flush_timeout: self.passthrough_idle_flush_timeout,
-            passthrough_event_buffer_len: self.passthrough_event_buffer_len,
         }))
     }
 
@@ -298,9 +305,8 @@ pub struct Aggregate {
     telemetry: Telemetry,
     primary_flush_interval: Duration,
     flush_open_windows: bool,
+    passthrough_batcher: PassthroughBatcher,
     passthrough_timestamped_metrics: bool,
-    passthrough_idle_flush_timeout: Duration,
-    passthrough_event_buffer_len: usize,
 }
 
 #[async_trait]
@@ -315,12 +321,6 @@ impl Transform for Aggregate {
         let mut final_primary_flush = false;
 
         let passthrough_flush = interval(PASSTHROUGH_IDLE_FLUSH_CHECK_INTERVAL);
-        let mut passthrough_batcher = PassthroughBatcher::new(
-            self.passthrough_event_buffer_len,
-            self.passthrough_idle_flush_timeout,
-            self.telemetry.clone(),
-        )
-        .await;
 
         health.mark_ready();
         debug!("Aggregation transform started.");
@@ -358,7 +358,7 @@ impl Transform for Aggregate {
                         break
                     }
                 },
-                _ = passthrough_flush.tick() => passthrough_batcher.try_flush(context.forwarder()).await,
+                _ = passthrough_flush.tick() => self.passthrough_batcher.try_flush(context.forwarder()).await,
                 maybe_events = context.event_stream().next(), if !final_primary_flush => match maybe_events {
                     Some(events) => {
                         trace!(events_len = events.len(), "Received events.");
@@ -376,7 +376,7 @@ impl Transform for Aggregate {
 
                                     // If we have a timestamped metric, then batch it up out-of-band.
                                     if let Some(timestamped_metric) = maybe_timestamped_metric {
-                                        passthrough_batcher.push_metric(timestamped_metric, context.forwarder()).await;
+                                        self.passthrough_batcher.push_metric(timestamped_metric, context.forwarder()).await;
                                         processed_passthrough_metrics = true;
                                     }
 
@@ -399,7 +399,7 @@ impl Transform for Aggregate {
                         }
 
                         if processed_passthrough_metrics {
-                            passthrough_batcher.update_last_processed_at();
+                            self.passthrough_batcher.update_last_processed_at();
                         }
                     },
                     None => {
@@ -415,7 +415,7 @@ impl Transform for Aggregate {
         }
 
         // Do a final flush of any timestamped metrics that we've buffered up.
-        passthrough_batcher.try_flush(context.forwarder()).await;
+        self.passthrough_batcher.try_flush(context.forwarder()).await;
 
         debug!("Aggregation transform stopped.");
 
@@ -444,11 +444,14 @@ struct PassthroughBatcher {
     active_buffer_start: Instant,
     last_processed_at: Instant,
     idle_flush_timeout: Duration,
+    bucket_width: Duration,
     telemetry: Telemetry,
 }
 
 impl PassthroughBatcher {
-    async fn new(event_buffer_len: usize, idle_flush_timeout: Duration, telemetry: Telemetry) -> Self {
+    async fn new(
+        event_buffer_len: usize, idle_flush_timeout: Duration, bucket_width: Duration, telemetry: Telemetry,
+    ) -> Self {
         let (buffer_pool, pool_shrinker) = ElasticObjectPool::<FixedSizeEventBuffer>::with_builder(
             "agg_passthrough_event_buffers",
             1,
@@ -465,11 +468,21 @@ impl PassthroughBatcher {
             active_buffer_start: Instant::now(),
             last_processed_at: Instant::now(),
             idle_flush_timeout,
+            bucket_width,
             telemetry,
         }
     }
 
     async fn push_metric(&mut self, metric: Metric, forwarder: &Forwarder) {
+        // Convert counters to rates before we batch them up.
+        //
+        // This involves specifying the rate interval as the bucket width of the aggregate transform itself, which when
+        // you say it out loud is sort of confusing and nonsensical since the whole point is that these are
+        // _pre-aggregated_ metrics but we have to match the behavior of the Datadog Agent. ¯\_(ツ)_/¯
+        let (context, values, metadata) = metric.into_parts();
+        let adjusted_values = counter_values_to_rate(values, self.bucket_width);
+        let metric = Metric::from_parts(context, adjusted_values, metadata);
+
         // Try pushing the metric into our active buffer.
         //
         // If our active buffer is full, then we'll flush the buffer, grab a new one, and push the metric into it.
@@ -730,6 +743,8 @@ async fn transform_and_push_metric<O>(
 where
     O: ObjectPool<Item = FixedSizeEventBuffer>,
 {
+    let bucket_width = Duration::from_secs(bucket_width_secs);
+
     match values {
         // If we're dealing with a histogram, we calculate a configured set of aggregates/percentiles from it, and emit
         // them as individual metrics.
@@ -750,7 +765,7 @@ where
                     .collect::<ScalarPoints>();
 
                 let new_values = if statistic.is_rate_statistic() {
-                    MetricValues::rate(new_points, Duration::from_secs(bucket_width_secs))
+                    MetricValues::rate(new_points, bucket_width)
                 } else {
                     MetricValues::gauge(new_points)
                 };
@@ -766,14 +781,18 @@ where
         // If we're not dealing with a histogram, then all we need to worry about is converting counters to rates before
         // forwarding our single, aggregated metric.
         values => {
-            let adjusted_values = match values {
-                MetricValues::Counter(values) => MetricValues::rate(values, Duration::from_secs(bucket_width_secs)),
-                values => values,
-            };
+            let adjusted_values = counter_values_to_rate(values, bucket_width);
 
             let metric = Metric::from_parts(context, adjusted_values, metadata);
             forwarder.push(Event::Metric(metric)).await
         }
+    }
+}
+
+fn counter_values_to_rate(values: MetricValues, interval: Duration) -> MetricValues {
+    match values {
+        MetricValues::Counter(points) => MetricValues::rate(points, interval),
+        values => values,
     }
 }
 
@@ -845,18 +864,42 @@ mod tests {
         BUCKET_WIDTH_SECS * (step + 1)
     }
 
-    async fn get_flushed_metrics(timestamp: u64, state: &mut AggregationState) -> Vec<Metric> {
-        // Create the forwarder that we'll use to flush the metrics into.
-        //
-        // NOTE: This is more involved than it really ought to be, but alas.
-        let (sender, mut receiver) = mpsc::channel(1);
+    struct ForwarderReceiver {
+        receiver: mpsc::Receiver<FixedSizeEventBuffer>,
+    }
 
-        let (object_pool, _) =
+    impl ForwarderReceiver {
+        fn collect_next(&mut self) -> Vec<Metric> {
+            match self.receiver.try_recv() {
+                Ok(event_buffer) => {
+                    let mut metrics = event_buffer
+                        .into_iter()
+                        .filter_map(|event| event.try_into_metric())
+                        .collect::<Vec<Metric>>();
+
+                    metrics.sort_by(|a, b| a.context().name().cmp(b.context().name()));
+                    metrics
+                }
+                Err(_) => Vec::new(),
+            }
+        }
+    }
+
+    /// Constructs a basic `Forwarder` with a fixed-size event buf
+    fn build_basic_forwarder() -> (Forwarder, ForwarderReceiver) {
+        let (event_buffer_pool, _) =
             ElasticObjectPool::with_builder("test", 1, 1, || FixedSizeEventBufferInner::with_capacity(8));
         let component_id = ComponentId::try_from("test").expect("should not fail to create component ID");
-        let mut forwarder = Forwarder::new(ComponentContext::transform(component_id), object_pool);
-        forwarder.add_output(OutputName::Default, sender);
+        let mut forwarder = Forwarder::new(ComponentContext::transform(component_id), event_buffer_pool);
 
+        let (buffer_tx, buffer_rx) = mpsc::channel(1);
+        forwarder.add_output(OutputName::Default, buffer_tx);
+
+        (forwarder, ForwarderReceiver { receiver: buffer_rx })
+    }
+
+    async fn get_flushed_metrics(timestamp: u64, state: &mut AggregationState) -> Vec<Metric> {
+        let (forwarder, mut forwarder_receiver) = build_basic_forwarder();
         let mut buffered_forwarder = forwarder.buffered().expect("default output should always exist");
 
         // Flush the metrics to an event buffer.
@@ -872,19 +915,7 @@ mod tests {
             .await
             .expect("should not fail to flush buffered sender");
 
-        match receiver.try_recv() {
-            Ok(event_buffer) => {
-                // Map all of the metrics from their `Event` representation back to `Metric`, and sort them by name.
-                let mut metrics = event_buffer
-                    .into_iter()
-                    .filter_map(|event| event.try_into_metric())
-                    .collect::<Vec<_>>();
-
-                metrics.sort_by(|a, b| a.context().name().cmp(b.context().name()));
-                metrics
-            }
-            Err(_) => Vec::new(),
-        }
+        forwarder_receiver.collect_next()
     }
 
     macro_rules! compare_points {
@@ -900,7 +931,7 @@ mod tests {
                 );
                 assert!(
                     expected_point.approx_eq_ratio(&actual_point, $error_ratio),
-                    "point for value #{} does not match: {} (expected) vs {} actual",
+                    "point for value #{} does not match: {} (expected) vs {} (actual)",
                     idx,
                     expected_point,
                     actual_point
@@ -1230,6 +1261,60 @@ mod tests {
         assert_eq!(flushed_metrics.len(), 1);
 
         assert_flushed_distribution_metric!(&input_metric, &flushed_metrics[0], [bucket_ts(1) => &values[..]]);
+    }
+
+    #[tokio::test]
+    async fn nonaggregated_counters_to_rate() {
+        let counter_value = 42.0;
+        let bucket_width = BUCKET_WIDTH;
+
+        // Create a basic aggregation state.
+        let mut state = AggregationState::new(
+            bucket_width,
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+
+        // Create a simple non-aggregated counter, and insert it.
+        let input_metric = Metric::counter("metric1", counter_value);
+        assert!(state.insert(insert_ts(1), input_metric.clone()));
+
+        // Flush the aggregation state, and observe that we've emitted the expected counter and that it has the right
+        // value, but specifically that it's a rate with an interval that matches our configured bucket width:
+        let flushed_metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
+        assert_eq!(flushed_metrics.len(), 1);
+        let flushed_metric = &flushed_metrics[0];
+
+        assert_flushed_scalar_metric!(&input_metric, flushed_metric, [bucket_ts(1) => counter_value]);
+        assert_eq!(flushed_metric.values().as_str(), "rate");
+    }
+
+    #[tokio::test]
+    async fn preaggregated_counters_to_rate() {
+        let counter_value = 42.0;
+        let timestamp = 123456;
+        let bucket_width = BUCKET_WIDTH;
+
+        // Create a basic passthrough batcher and forwarder.
+        let mut batcher = PassthroughBatcher::new(1, Duration::from_nanos(1), bucket_width, Telemetry::noop()).await;
+        let (forwarder, mut forwarder_receiver) = build_basic_forwarder();
+
+        // Create a simple pre-aggregated counter, and batch it.
+        let input_metric = Metric::counter("metric1", (timestamp, counter_value));
+        batcher.push_metric(input_metric.clone(), &forwarder).await;
+
+        // Flush the batcher, and observe that we've emitted the expected counter and that it has the right
+        // value, but specifically that it's a rate with an interval that matches our configured bucket width:
+        batcher.try_flush(&forwarder).await;
+
+        let mut flushed_metrics = forwarder_receiver.collect_next();
+        assert_eq!(flushed_metrics.len(), 1);
+        assert_eq!(
+            Metric::rate("metric1", (timestamp, counter_value), bucket_width),
+            flushed_metrics.remove(0)
+        );
     }
 
     #[tokio::test]
