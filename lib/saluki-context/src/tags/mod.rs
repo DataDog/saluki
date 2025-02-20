@@ -1,6 +1,6 @@
 //! Metric tags.
 
-use std::{fmt, hash, ops::Deref as _, sync::Arc};
+use std::{collections::HashSet, fmt, hash, ops::Deref as _, sync::Arc};
 
 use serde::Serialize;
 use stringtheory::MetaString;
@@ -14,6 +14,22 @@ pub trait Tagged {
     fn visit_tags<F>(&self, visitor: F)
     where
         F: FnMut(&Tag);
+
+    /// Visits the tags in this value, only calling the visitor once for each unique tag.
+    ///
+    /// This method allocates in order to track which tags have been visited.
+    fn visit_tags_deduped<F>(&self, mut visitor: F)
+    where
+        F: FnMut(&Tag),
+    {
+        let mut seen = HashSet::<Tag, ahash::RandomState>::default();
+        self.visit_tags(|tag| {
+            if !seen.contains(tag) {
+                seen.insert(tag.clone());
+                visitor(tag);
+            }
+        });
+    }
 }
 
 /// A tag visitor.
