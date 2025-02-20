@@ -34,7 +34,7 @@ where
 
 struct SanitizedRequestUri<'a>(&'a http::Uri);
 
-impl<'a> fmt::Display for SanitizedRequestUri<'a> {
+impl fmt::Display for SanitizedRequestUri<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // We _should_ always have a scheme and a host, but we'll just make sure they exist first, to be safe. We'll
         // require needing both to be present to print either of them.

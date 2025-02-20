@@ -1,6 +1,6 @@
 FROM registry.ddbuild.io/images/mirror/ubuntu:14.04
 
-ARG RUST_VERSION=1.80.0
+ARG RUST_VERSION=1.85.0
 ARG TARGETARCH
 
 # Install basic utilities and an updated compiler/binutils toolchain, which is necessary for compiling.

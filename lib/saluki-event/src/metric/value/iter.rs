@@ -61,7 +61,7 @@ impl<'a> PointsIterRef<'a> {
     }
 }
 
-impl<'a> Iterator for PointsIterRef<'a> {
+impl Iterator for PointsIterRef<'_> {
     type Item = (Option<NonZeroU64>, f64);
 
     fn next(&mut self) -> Option<Self::Item> {

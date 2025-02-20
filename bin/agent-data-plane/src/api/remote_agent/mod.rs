@@ -249,7 +249,7 @@ struct StatusSectionWriter<'a> {
     section: &'a mut StatusSection,
 }
 
-impl<'a> StatusSectionWriter<'a> {
+impl StatusSectionWriter<'_> {
     fn set_field<S: AsRef<str>, V: AsRef<str>>(&mut self, name: S, value: V) -> &mut Self {
         self.section
             .fields

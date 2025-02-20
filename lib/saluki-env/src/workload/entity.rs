@@ -131,13 +131,13 @@ impl<'a> From<&'a EntityId> for HighestPrecedenceEntityIdRef<'a> {
     }
 }
 
-impl<'a> PartialOrd for HighestPrecedenceEntityIdRef<'a> {
+impl PartialOrd for HighestPrecedenceEntityIdRef<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<'a> Ord for HighestPrecedenceEntityIdRef<'a> {
+impl Ord for HighestPrecedenceEntityIdRef<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
         // Do the initial comparison based on the implicit precedence of each entity ID.
         let self_precedence = self.0.precedence_value();

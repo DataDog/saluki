@@ -276,7 +276,7 @@ impl MemoryBoundsBuilder<'static> {
     }
 }
 
-impl<'a> MemoryBoundsBuilder<'a> {
+impl MemoryBoundsBuilder<'_> {
     /// Gets a builder object for defining the minimum bounds of the current component.
     pub fn minimum(&mut self) -> BoundsBuilder<'_, Minimum> {
         let bounds = self.inner.inner.lock().unwrap();

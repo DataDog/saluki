@@ -101,7 +101,7 @@ pub trait MemoryBounds {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder);
 }
 
-impl<'a, T> MemoryBounds for &'a T
+impl<T> MemoryBounds for &T
 where
     T: MemoryBounds,
 {

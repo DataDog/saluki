@@ -102,7 +102,6 @@ impl Resolver for ExternalProcessResolver {
         let command_stdin = command
             .stdin
             .as_mut()
-            .take()
             .expect("should always be able to acquire stdin for backend command process");
         command_stdin.write_all(&request).await.context(FailedToCallBackend)?;
 
