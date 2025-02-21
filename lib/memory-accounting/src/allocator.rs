@@ -287,7 +287,7 @@ pub struct TrackingGuard<'a> {
     _token: PhantomData<&'a AllocationGroupToken>,
 }
 
-impl<'a> Drop for TrackingGuard<'a> {
+impl Drop for TrackingGuard<'_> {
     fn drop(&mut self) {
         // Reset the current group to the one that existed before we entered.
         CURRENT_GROUP.with(|current_group| {

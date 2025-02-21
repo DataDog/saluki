@@ -91,7 +91,7 @@ impl<T, const N: usize> TimestampedValues<T, N> {
 
         let new_values = self
             .values
-            .drain_filter(|value| value.timestamp.map_or(false, |ts| ts.get() <= timestamp));
+            .drain_filter(|value| value.timestamp.is_some_and(|ts| ts.get() <= timestamp));
         Some(Self::from(new_values))
     }
 

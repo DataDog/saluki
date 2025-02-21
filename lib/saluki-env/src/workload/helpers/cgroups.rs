@@ -284,7 +284,6 @@ impl HierarchyReader {
         let base_controller_path = controllers
             .get(CGROUPS_V1_BASE_CONTROLLER_NAME)
             .cloned()
-            .map(PathBuf::from)
             .ok_or_else(|| {
                 generic_error!(
                     "Failed to find base controller ({}) in cgroups v1 hierarchy.",

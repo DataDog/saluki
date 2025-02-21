@@ -153,7 +153,7 @@ impl TagStore {
                 .or_default(),
             OriginTagCardinality::High => self.high_cardinality_entity_tags.entry(entity_id.clone()).or_default(),
         };
-        existing_tags.extend(tags.into_iter().map(Into::into));
+        existing_tags.extend(tags);
 
         self.regenerate_entity_tags(entity_id);
     }

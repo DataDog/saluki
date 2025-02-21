@@ -153,7 +153,7 @@ pub struct Framed<'a, F, B> {
     is_eof: bool,
 }
 
-impl<'a, F, B> Iterator for Framed<'a, F, B>
+impl<F, B> Iterator for Framed<'_, F, B>
 where
     F: Framer,
     B: ReadIoBuffer,

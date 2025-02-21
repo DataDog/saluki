@@ -79,7 +79,7 @@ struct RemoteAgentClientConfiguration {
     connect_retry_backoff: Duration,
 }
 
-impl<'a> BackoffBuilder for &'a RemoteAgentClientConfiguration {
+impl BackoffBuilder for &RemoteAgentClientConfiguration {
     type Backoff = <ConstantBuilder as BackoffBuilder>::Backoff;
 
     fn build(self) -> Self::Backoff {
