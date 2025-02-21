@@ -23,8 +23,8 @@ use super::common::{config::ForwarderConfiguration, io::TransactionForwarder, te
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
 
-const RB_BUFFER_POOL_COUNT: usize = 128;
-const RB_BUFFER_POOL_BUF_SIZE: usize = 32_768;
+const RB_BUFFER_POOL_COUNT: usize = 256;
+const RB_BUFFER_POOL_BUF_SIZE: usize = 2 ^ 16;
 
 const fn default_max_metrics_per_payload() -> usize {
     10_000
