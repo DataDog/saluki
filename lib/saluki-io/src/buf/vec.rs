@@ -79,6 +79,10 @@ impl BytesBuffer {
             data: ManuallyDrop::new(data),
         }
     }
+
+    pub fn as_view(&mut self) -> BytesBufferView<'_> {
+        BytesBufferView::from_buffer(self)
+    }
 }
 
 impl Buf for BytesBuffer {
@@ -211,15 +215,121 @@ impl Drop for FrozenBytesBuffer {
     }
 }
 
+trait BufferView {
+    fn len(&self) -> usize;
+    fn as_bytes(&self) -> &[u8];
+    fn advance_idx(&mut self, cnt: usize);
+}
+
+impl BufferView for BytesBuffer {
+    fn len(&self) -> usize {
+        self.remaining()
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        self.chunk()
+    }
+
+    fn advance_idx(&mut self, cnt: usize) {
+        Buf::advance(self, cnt);
+    }
+}
+
+pub struct BytesBufferView<'a> {
+    parent: &'a mut dyn BufferView,
+    len: usize,
+    idx_advance: usize,
+}
+
+impl<'a> BytesBufferView<'a> {
+    pub fn from_buffer(parent: &'a mut BytesBuffer) -> Self {
+        let len = parent.chunk().len();
+        Self {
+            parent,
+            len,
+            idx_advance: 0,
+        }
+    }
+
+    fn slice_inner(&mut self, len: usize) -> BytesBufferView<'_> {
+        assert!(
+            len <= self.len(),
+            "index out of bounds: the len is {} but the index is {}",
+            self.len(),
+            len,
+        );
+
+        BytesBufferView {
+            parent: self,
+            len,
+            idx_advance: 0,
+        }
+    }
+
+    /// Advances the view by the given number of bytes, effectively skipping over them.
+    pub fn skip(&mut self, len: usize) {
+        assert!(
+            len <= self.len(),
+            "buffer too small to skip {} bytes, only {} bytes remaining",
+            self.len(),
+            len,
+        );
+
+        self.advance_idx(len);
+    }
+
+    /// Creates a new view by slicing this view from the current position to the given index, relative to the view.
+    ///
+    /// Advances this view by the length of the new view.
+    pub fn slice_to(&mut self, idx: usize) -> BytesBufferView<'_> {
+        self.slice_inner(idx)
+    }
+
+    /// Creates a new view by slicing this view from the given index, relative to the view, to the end of this view.
+    ///
+    /// Advances this view by the length of the new view, plus whatever bytes were skipped prior to the new view.
+    pub fn slice_from(&mut self, idx: usize) -> BytesBufferView<'_> {
+        self.advance_idx(idx);
+        self.slice_inner(self.len())
+    }
+}
+
+impl Drop for BytesBufferView<'_> {
+    fn drop(&mut self) {
+        self.parent.advance_idx(self.len);
+    }
+}
+
+impl BufferView for BytesBufferView<'_> {
+    fn len(&self) -> usize {
+        self.len - self.idx_advance
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        let buf = self.parent.as_bytes();
+        let start = self.idx_advance;
+        let end = self.len;
+        &buf[start..end]
+    }
+
+    fn advance_idx(&mut self, cnt: usize) {
+        self.idx_advance += cnt;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use saluki_core::pooling::helpers::get_pooled_object_via_builder;
 
     use super::*;
 
+    fn get_bytes_buffer(cap: usize) -> BytesBuffer {
+        get_pooled_object_via_builder::<_, BytesBuffer>(|| FixedSizeVec::with_capacity(cap))
+    }
+
     #[test]
     fn basic() {
-        let mut buf = get_pooled_object_via_builder::<_, BytesBuffer>(|| FixedSizeVec::with_capacity(13));
+        let mut buf = get_bytes_buffer(13);
 
         let first_write = b"hello";
         let second_write = b", worl";
@@ -270,7 +380,7 @@ mod tests {
 
     #[test]
     fn collapsible_empty() {
-        let mut buf = get_pooled_object_via_builder::<_, BytesBuffer>(|| FixedSizeVec::with_capacity(13));
+        let mut buf = get_bytes_buffer(13);
 
         // Buffer is empty.
         assert_eq!(buf.remaining(), 0);
@@ -285,7 +395,7 @@ mod tests {
 
     #[test]
     fn collapsible_remaining_already_collapsed() {
-        let mut buf = get_pooled_object_via_builder::<_, BytesBuffer>(|| FixedSizeVec::with_capacity(24));
+        let mut buf =get_bytes_buffer(24);
 
         // Write a simple string to the buffer.
         buf.put_slice(b"hello, world!");
@@ -301,7 +411,7 @@ mod tests {
 
     #[test]
     fn collapsible_remaining_not_collapsed_no_overlap() {
-        let mut buf = get_pooled_object_via_builder::<_, BytesBuffer>(|| FixedSizeVec::with_capacity(24));
+        let mut buf = get_bytes_buffer(24);
 
         // Write a simple string to the buffer.
         buf.put_slice(b"hello, world!");
@@ -332,7 +442,7 @@ mod tests {
 
     #[test]
     fn collapsible_remaining_not_collapsed_with_overlap() {
-        let mut buf = get_pooled_object_via_builder::<_, BytesBuffer>(|| FixedSizeVec::with_capacity(24));
+        let mut buf = get_bytes_buffer(24);
 
         // Write a simple string to the buffer.
         buf.put_slice(b"huzzah!");
@@ -359,5 +469,129 @@ mod tests {
         assert_eq!(buf.remaining(), 13);
         assert_eq!(buf.remaining_mut(), 11);
         assert_eq!(buf.chunk(), b"hello, world!");
+    }
+
+    #[test]
+    fn bytesbufferview_slice_to() {
+        let first_part = b"hello, world!";
+        let second_part = b"it's a beautiful day!";
+
+        let mut combined = Vec::new();
+        combined.extend_from_slice(first_part);
+        combined.push(b' ');
+        combined.extend_from_slice(second_part);
+
+        // Create our initial I/O buffer and write some data to it:
+        let mut io_buf = get_bytes_buffer(128);
+        io_buf.put_slice(&combined);
+
+        // Create the initial view over the I/O buffer, and make sure it represents the entirety of the data:
+        let mut io_buf_view = io_buf.as_view();
+        let io_buf_view_len = io_buf_view.len();
+        assert_eq!(io_buf_view_len, combined.len());
+        assert_eq!(io_buf_view.as_bytes(), combined);
+
+        // Slice the initial view to get the first sentence:
+        let first_sentence_view = io_buf_view.slice_to(13);
+        let first_sentence_view_len = first_sentence_view.len();
+        assert_eq!(first_sentence_view_len, 13);
+        assert_eq!(first_sentence_view.as_bytes(), first_part);
+
+        // Drop the first sentence view, and make sure we've properly advanced the initial view we sliced from:
+        drop(first_sentence_view);
+        assert_eq!(io_buf_view.len(), io_buf_view_len - first_sentence_view_len);
+        assert_eq!(io_buf_view.as_bytes(), &combined[first_sentence_view_len..]);
+
+        // Slice the initial view to the end to get the remainder of the data.
+        let second_sentence_view = io_buf_view.slice_to(22);
+        assert_eq!(second_sentence_view.len(), 22);
+        assert_eq!(second_sentence_view.as_bytes(), &combined[first_sentence_view_len..]);
+
+        // Drop the second sentence view, and make sure we've properly advanced the initial view we sliced from, which
+        // should now be entirely empty:
+        drop(second_sentence_view);
+        assert_eq!(io_buf_view.len(), 0);
+        assert_eq!(io_buf_view.as_bytes(), b"");
+
+        // Drop the initial view, and make sure we've properly advanced the initial I/O buffer we sliced from, which
+        // should now also be entirely empty:
+        drop(io_buf_view);
+        assert_eq!(io_buf.len(), 0);
+        assert_eq!(io_buf.chunk(), b"");
+    }
+
+    #[test]
+    fn bytesbufferview_slice_from() {
+        let first_part = b"hello, world!";
+        let second_part = b"it's a beautiful day!";
+
+        let mut combined = Vec::new();
+        combined.extend_from_slice(first_part);
+        combined.push(b' ');
+        combined.extend_from_slice(second_part);
+
+        // Create our initial I/O buffer and write some data to it:
+        let mut io_buf = get_bytes_buffer(128);
+        io_buf.put_slice(&combined);
+
+        // Create the initial view over the I/O buffer, and make sure it represents the entirety of the data:
+        let mut io_buf_view = io_buf.as_view();
+        let io_buf_view_len = io_buf_view.len();
+        assert_eq!(io_buf_view_len, combined.len());
+        assert_eq!(io_buf_view.as_bytes(), combined);
+
+        // Slice the initial view specifically to skip over the first sentence and get us just the second sentence:
+        let second_sentence_view = io_buf_view.slice_from(14);
+        let second_sentence_view_len = second_sentence_view.len();
+        assert_eq!(second_sentence_view_len, second_part.len());
+        assert_eq!(second_sentence_view.as_bytes(), second_part);
+
+        // Drop the sentence view, and make sure we've properly advanced the initial view we sliced from, which should
+        // now be entirely empty:
+        drop(second_sentence_view);
+        assert_eq!(io_buf_view.len(), 0);
+        assert_eq!(io_buf_view.as_bytes(), b"");
+
+        // Drop the initial view, and make sure we've properly advanced the initial I/O buffer we sliced from, which
+        // should now also be entirely empty:
+        drop(io_buf_view);
+        assert_eq!(io_buf.len(), 0);
+        assert_eq!(io_buf.chunk(), b"");
+    }
+
+    #[test]
+    fn bytesbufferview_skip() {
+        let first_part = b"dead";
+        let second_part = b"beefaroni";
+
+        let mut combined = Vec::new();
+        combined.extend_from_slice(first_part);
+        combined.extend_from_slice(second_part);
+
+        // Create our initial I/O buffer and write some data to it:
+        let mut io_buf = get_bytes_buffer(128);
+        io_buf.put_slice(&combined);
+
+        // Create the initial view over the I/O buffer, and make sure it represents the entirety of the data:
+        let mut io_buf_view = io_buf.as_view();
+        let io_buf_view_len = io_buf_view.len();
+        assert_eq!(io_buf_view_len, combined.len());
+        assert_eq!(io_buf_view.as_bytes(), combined);
+
+        // Skip over the first part of the view:
+        io_buf_view.skip(first_part.len());
+        assert_eq!(io_buf_view.len(), io_buf_view_len - first_part.len());
+        assert_eq!(io_buf_view.as_bytes(), second_part);
+
+        // Skip over the second part in the view:
+        io_buf_view.skip(second_part.len());
+        assert_eq!(io_buf_view.len(), 0);
+        assert_eq!(io_buf_view.as_bytes(), b"");
+
+        // Drop the initial view, and make sure we've properly advanced the initial I/O buffer we sliced from, which
+        // should now also be entirely empty:
+        drop(io_buf_view);
+        assert_eq!(io_buf.len(), 0);
+        assert_eq!(io_buf.chunk(), b"");
     }
 }
