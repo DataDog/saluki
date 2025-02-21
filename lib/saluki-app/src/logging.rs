@@ -432,7 +432,7 @@ impl<'writer> AgentLikeFieldVisitor<'writer> {
     }
 }
 
-impl<'writer> field::Visit for AgentLikeFieldVisitor<'writer> {
+impl field::Visit for AgentLikeFieldVisitor<'_> {
     fn record_debug(&mut self, field: &field::Field, value: &dyn fmt::Debug) {
         self.try_write(field, |w| write!(w, "{:?}", value));
     }
@@ -442,7 +442,7 @@ impl<'writer> field::Visit for AgentLikeFieldVisitor<'writer> {
     }
 }
 
-impl<'writer> VisitOutput<fmt::Result> for AgentLikeFieldVisitor<'writer> {
+impl VisitOutput<fmt::Result> for AgentLikeFieldVisitor<'_> {
     fn finish(mut self) -> fmt::Result {
         // Check to see if our last write operation was successful or not before trying to write the `message` field.
         self.last_result?;

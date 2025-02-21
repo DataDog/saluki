@@ -98,7 +98,7 @@ where
 
     async fn push(&mut self, event: Event) -> Result<(), GenericError> {
         // If our buffer is full, consume it and forward it, before acquiring a new one.
-        let buffer_full = self.buffer.as_ref().map_or(false, |b| b.is_full());
+        let buffer_full = self.buffer.as_ref().is_some_and(|b| b.is_full());
         if buffer_full {
             self.try_flush_buffer().await?;
         }

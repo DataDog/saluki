@@ -82,7 +82,7 @@ pub struct HistogramSummary<'a> {
     sum: f64,
 }
 
-impl<'a> HistogramSummary<'a> {
+impl HistogramSummary<'_> {
     /// Returns the number of samples in the histogram.
     ///
     /// This is adjusted by the weight of each sample, based on the sample rate given during insertion.

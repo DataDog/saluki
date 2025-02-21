@@ -208,13 +208,13 @@ impl<'a> From<&'a str> for BorrowedTag<'a> {
     }
 }
 
-impl<'a> AsRef<str> for BorrowedTag<'a> {
+impl AsRef<str> for BorrowedTag<'_> {
     fn as_ref(&self) -> &str {
         self.raw
     }
 }
 
-impl<'a> hash::Hash for BorrowedTag<'a> {
+impl hash::Hash for BorrowedTag<'_> {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         self.raw.hash(state);
     }

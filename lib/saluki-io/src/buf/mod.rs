@@ -13,7 +13,7 @@ pub trait ReadIoBuffer: Buf {
     fn capacity(&self) -> usize;
 }
 
-impl<'a> ReadIoBuffer for &'a [u8] {
+impl ReadIoBuffer for &[u8] {
     fn capacity(&self) -> usize {
         self.len()
     }

@@ -37,7 +37,7 @@ pub enum OriginTagCardinality {
     High,
 }
 
-impl<'a> TryFrom<&'a str> for OriginTagCardinality {
+impl TryFrom<&str> for OriginTagCardinality {
     type Error = String;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
@@ -170,7 +170,7 @@ impl<'a> RawOrigin<'a> {
     }
 }
 
-impl<'a> fmt::Display for RawOrigin<'a> {
+impl fmt::Display for RawOrigin<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut has_written = false;
 
@@ -465,7 +465,7 @@ impl<'a> RawExternalData<'a> {
     }
 }
 
-impl<'a> std::hash::Hash for RawExternalData<'a> {
+impl std::hash::Hash for RawExternalData<'_> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.pod_uid.hash(state);
         self.container_name.hash(state);
@@ -473,7 +473,7 @@ impl<'a> std::hash::Hash for RawExternalData<'a> {
     }
 }
 
-impl<'a> fmt::Display for RawExternalData<'a> {
+impl fmt::Display for RawExternalData<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -483,7 +483,7 @@ impl<'a> fmt::Display for RawExternalData<'a> {
     }
 }
 
-impl<'a> Equivalent<ExternalData> for RawExternalData<'a> {
+impl Equivalent<ExternalData> for RawExternalData<'_> {
     fn equivalent(&self, other: &ExternalData) -> bool {
         self.pod_uid == &*other.pod_uid
             && self.container_name == &*other.container_name
