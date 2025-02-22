@@ -1,8 +1,7 @@
-use bytes::Bytes;
 use tracing::trace;
 
 use super::{Framer, FramingError};
-use crate::buf::ReadIoBuffer;
+use crate::buf::{BufferView as _, BytesBufferView};
 
 /// Frames incoming data by splitting on newlines.
 ///
@@ -30,24 +29,23 @@ impl NewlineFramer {
 }
 
 impl Framer for NewlineFramer {
-    fn next_frame<'a, B: ReadIoBuffer>(&mut self, buf: &mut B, is_eof: bool) -> Result<Option<Bytes>, FramingError> {
-        trace!(buf_len = buf.remaining(), "Processing buffer.");
+    fn next_frame<'buf>(&mut self, buf: &'buf mut BytesBufferView<'_>, is_eof: bool) -> Result<Option<BytesBufferView<'buf>>, FramingError> {
+        trace!(buf_len = buf.len(), "Processing buffer.");
 
-        let chunk = buf.chunk();
-        if chunk.is_empty() {
+        let data = buf.as_bytes();
+        if data.is_empty() {
             return Ok(None);
         }
 
-        trace!(chunk_len = chunk.len(), "Processing chunk.");
-
         // Search through the buffer for our delimiter.
-        match find_newline(chunk) {
+        match find_newline(data) {
             Some(idx) => {
-                // If we found the delimiter, then we can return the frame.
-                let frame = buf.copy_to_bytes(idx);
-
-                // Advance the buffer past the delimiter.
-                buf.advance(1);
+                // We found the delimiter, so carve out our frame.
+                //
+                // We include the delimiter to remove it from the input buffer, but we then immediately skip it so that
+                // the view we give back to the caller doesn't include it.
+                let mut frame = buf.slice_to(idx + 1);
+                frame.rskip(1);
 
                 Ok(Some(frame))
             }
@@ -59,14 +57,11 @@ impl Framer for NewlineFramer {
 
                 // If we're at EOF and we require the delimiter, then this is an invalid frame.
                 if self.required_on_eof {
-                    return Err(missing_delimiter_err(chunk.len()));
+                    return Err(missing_delimiter_err(data.len()));
                 }
 
-                // TODO: This is a bit inefficient, as we're copying the entire frame here. We could potentially avoid
-                // this by adding some specialized trait methods to `ReadIoBuffer` that could let us, potentially,
-                // implement equivalent slicing that is object pool aware (i.e., somehow utilizing `FrozenBytesBuffer`,
-                // etc).
-                Ok(Some(buf.copy_to_bytes(chunk.len())))
+                // We're at EOF, and we don't require the delimiter... so just consume the entire frame.
+                Ok(Some(buf.slice_from(0)))
             }
         }
     }
@@ -85,95 +80,117 @@ fn find_newline(haystack: &[u8]) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use bytes::BufMut as _;
+    use saluki_core::pooling::helpers::get_pooled_object_via_builder;
+
+    use crate::buf::{BytesBuffer, FixedSizeVec};
 
     use super::*;
 
-    fn get_delimited_payload(inner: &[u8], with_newline: bool) -> VecDeque<u8> {
-        let mut payload = VecDeque::new();
-        payload.extend(inner);
+    fn get_bytes_buffer(cap: usize) -> BytesBuffer {
+        get_pooled_object_via_builder::<_, BytesBuffer>(|| FixedSizeVec::with_capacity(cap))
+    }
+
+    fn get_delimited_payload(inner: &[u8], with_newline: bool) -> BytesBuffer {
+        let mut io_buf = get_bytes_buffer(inner.len() + 1);
+        io_buf.put_slice(inner);
         if with_newline {
-            payload.push_back(b'\n');
+            io_buf.put_u8(b'\n');
         }
 
-        payload
+        io_buf
     }
 
     #[test]
     fn newline_no_eof() {
         let payload = b"hello, world!";
-        let mut buf = get_delimited_payload(payload, true);
+        let mut io_buf = get_delimited_payload(payload, true);
+        let mut io_buf_view = io_buf.as_view();
 
         let mut framer = NewlineFramer::default();
 
         let frame = framer
-            .next_frame(&mut buf, false)
+            .next_frame(&mut io_buf_view, false)
             .expect("should not fail to read from payload")
             .expect("should not fail to extract frame from payload");
 
-        assert_eq!(&frame[..], payload);
-        assert!(buf.is_empty());
+        assert_eq!(frame.as_bytes(), payload);
+        drop(frame);
+
+        assert!(io_buf_view.is_empty());
     }
 
     #[test]
     fn no_newline_no_eof() {
         let payload = b"hello, world!";
-        let mut buf = get_delimited_payload(payload, false);
-        let buf_len = buf.len();
+        let mut io_buf = get_delimited_payload(payload, false);
+        let mut io_buf_view = io_buf.as_view();
+        let io_buf_view_len = io_buf_view.len();
 
         let mut framer = NewlineFramer::default();
 
         let maybe_frame = framer
-            .next_frame(&mut buf, false)
+            .next_frame(&mut io_buf_view, false)
             .expect("should not fail to read from payload");
 
         assert_eq!(maybe_frame, None);
-        assert_eq!(buf.len(), buf_len);
+        drop(maybe_frame);
+
+        assert_eq!(io_buf_view.len(), io_buf_view_len);
     }
 
     #[test]
     fn newline_eof() {
         let payload = b"hello, world!";
-        let mut buf = get_delimited_payload(payload, true);
+        let mut io_buf = get_delimited_payload(payload, true);
+        let mut io_buf_view = io_buf.as_view();
 
         let mut framer = NewlineFramer::default();
 
         let frame = framer
-            .next_frame(&mut buf, true)
+            .next_frame(&mut io_buf_view, true)
             .expect("should not fail to read from payload")
             .expect("should not fail to extract frame from payload");
 
-        assert_eq!(&frame[..], payload);
-        assert!(buf.is_empty());
+        assert_eq!(frame.as_bytes(), payload);
+        drop(frame);
+
+        assert!(io_buf_view.is_empty());
     }
 
     #[test]
     fn no_newline_eof_not_required_on_eof() {
         let payload = b"hello, world!";
-        let mut buf = get_delimited_payload(payload, false);
+        let mut io_buf = get_delimited_payload(payload, false);
+        let mut io_buf_view = io_buf.as_view();
 
         let mut framer = NewlineFramer::default();
 
         let frame = framer
-            .next_frame(&mut buf, true)
+            .next_frame(&mut io_buf_view, true)
             .expect("should not fail to read from payload")
             .expect("should not fail to extract frame from payload");
 
-        assert_eq!(&frame[..], payload);
-        assert!(buf.is_empty());
+        assert_eq!(frame.as_bytes(), payload);
+        drop(frame);
+
+        assert!(io_buf_view.is_empty());
     }
 
     #[test]
     fn no_newline_eof_required_on_eof() {
         let payload = b"hello, world!";
-        let mut buf = get_delimited_payload(payload, false);
-        let buf_len = buf.len();
+        let mut io_buf = get_delimited_payload(payload, false);
+        let mut io_buf_view = io_buf.as_view();
+        let io_buf_view_len = io_buf_view.len();
 
         let mut framer = NewlineFramer::default().required_on_eof(true);
 
-        let maybe_frame = framer.next_frame(&mut buf, true);
+        let maybe_frame = framer.next_frame(&mut io_buf_view, true);
 
-        assert_eq!(maybe_frame, Err(missing_delimiter_err(buf_len)));
-        assert_eq!(buf.len(), buf_len);
+        assert_eq!(maybe_frame, Err(missing_delimiter_err(io_buf_view_len)));
+        drop(maybe_frame);
+
+        assert_eq!(io_buf_view.len(), io_buf_view_len);
     }
 }

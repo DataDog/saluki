@@ -215,8 +215,13 @@ impl Drop for FrozenBytesBuffer {
     }
 }
 
-trait BufferView {
+pub trait BufferView {
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     fn len(&self) -> usize;
+    fn capacity(&self) -> usize;
     fn as_bytes(&self) -> &[u8];
     fn advance_idx(&mut self, cnt: usize);
 }
@@ -224,6 +229,10 @@ trait BufferView {
 impl BufferView for BytesBuffer {
     fn len(&self) -> usize {
         self.remaining()
+    }
+
+    fn capacity(&self) -> usize {
+        self.data().data.capacity()
     }
 
     fn as_bytes(&self) -> &[u8] {
@@ -278,6 +287,15 @@ impl<'a> BytesBufferView<'a> {
         self.advance_idx(len);
     }
 
+    pub fn rskip(&mut self, len: usize) {
+        assert!(
+            len <= self.len(),
+            "buffer too small to rskip {} bytes, only {} bytes remaining",
+            self.len(),
+            len,
+        );
+    }
+
     /// Creates a new view by slicing this view from the current position to the given index, relative to the view.
     ///
     /// Advances this view by the length of the new view.
@@ -300,9 +318,30 @@ impl Drop for BytesBufferView<'_> {
     }
 }
 
+impl std::fmt::Debug for BytesBufferView<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BytesBufferView")
+            .field("len", &self.len)
+            .field("idx_advance", &self.idx_advance)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for BytesBufferView<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self.parent, other.parent) &&
+            self.len == other.len &&
+            self.idx_advance == other.idx_advance
+    }
+}
+
 impl BufferView for BytesBufferView<'_> {
     fn len(&self) -> usize {
         self.len - self.idx_advance
+    }
+
+    fn capacity(&self) -> usize {
+        self.parent.capacity()
     }
 
     fn as_bytes(&self) -> &[u8] {
@@ -593,5 +632,49 @@ mod tests {
         drop(io_buf_view);
         assert_eq!(io_buf.len(), 0);
         assert_eq!(io_buf.chunk(), b"");
+    }
+
+    #[test]
+    fn bytesbufferview_rskip() {
+        let first_part = b"foobar";
+        let second_part = b"quux";
+
+        let mut combined = Vec::new();
+        combined.extend_from_slice(first_part);
+        combined.push(b'\n');
+        combined.extend_from_slice(second_part);
+        combined.push(b'\n');
+
+        // Create our initial I/O buffer and write some data to it:
+        let mut io_buf = get_bytes_buffer(128);
+        io_buf.put_slice(&combined);
+
+        // Create the initial view over the I/O buffer, and make sure it represents the entirety of the data:
+        let mut io_buf_view = io_buf.as_view();
+        let io_buf_view_len = io_buf_view.len();
+        assert_eq!(io_buf_view_len, combined.len());
+        assert_eq!(io_buf_view.as_bytes(), &combined);
+
+        // Find the first newline character, and slice to just after it so that we consume it from the initial view, but
+        // then skip the last character so that the view doesn't include the newline character:
+        let first_newline_idx = io_buf_view.as_bytes().iter().position(|&b| b == b'\n').unwrap();
+        let mut first_line_view = io_buf_view.slice_to(first_newline_idx + 1);
+        first_line_view.rskip(1);
+        assert_eq!(first_line_view.len(), first_part.len());
+        assert_eq!(first_line_view.as_bytes(), first_part);
+        drop(first_line_view);
+
+        // Now find the second newline character, and slice to just after it so that we consume it from the initial view,
+        // but then skip the last character so that the view doesn't include the newline character:
+        let second_newline_idx = io_buf_view.as_bytes().iter().position(|&b| b == b'\n').unwrap();
+        let mut second_line_view = io_buf_view.slice_to(second_newline_idx + 1);
+        second_line_view.rskip(1);
+        assert_eq!(second_line_view.len(), second_part.len());
+        assert_eq!(second_line_view.as_bytes(), second_part);
+        drop(second_line_view);
+
+        // After dropping both views, the initial view should be entirely empty:
+        assert_eq!(io_buf_view.len(), 0);
+        assert_eq!(io_buf_view.as_bytes(), b"");
     }
 }

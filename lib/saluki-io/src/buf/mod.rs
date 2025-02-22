@@ -6,7 +6,7 @@ mod chunked;
 pub use self::chunked::{ChunkedBytesBuffer, ChunkedBytesBufferObjectPool, FrozenChunkedBytesBuffer};
 
 mod vec;
-pub use self::vec::{BytesBuffer, FixedSizeVec};
+pub use self::vec::{BytesBuffer, BytesBufferView, BufferView, FixedSizeVec};
 
 /// An I/O buffer that can be read from.
 pub trait ReadIoBuffer: Buf {
