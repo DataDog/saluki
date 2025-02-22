@@ -9,14 +9,15 @@ use super::{Framer, FramingError};
 /// This framer takes two input framers -- the "outer" and "inner" framers -- and extracts outer frames, and once an
 /// outer frame has been extract, extracts as many inner frames from the outer frame as possible. Callers deal
 /// exclusively with the extracted inner frames.
-pub struct NestedFramer<'outer, Inner, Outer> {
+pub struct NestedFramer<'buf, Inner, Outer> {
     inner: Inner,
     outer: Outer,
-    current_outer_frame: Option<BytesBufferView<'outer>>,
+    buf: &'buf mut BytesBufferView<'buf>,
+    current_outer_frame: Option<BytesBufferView<'buf>>,
 }
 
-impl<'outer, Inner, Outer> NestedFramer<'outer, Inner, Outer> {
-    /// Creates a new `NestedFramer` from the given inner and outer framers.
+impl<'buf, Inner, Outer> NestedFramer<'buf, Inner, Outer> {
+    /// Creates a new `NestedFramer` from the given inner and outer framers, and the input buffer to extract frames from.
     pub fn new(inner: Inner, outer: Outer) -> Self {
         Self {
             inner,
@@ -26,7 +27,7 @@ impl<'outer, Inner, Outer> NestedFramer<'outer, Inner, Outer> {
     }
 }
 
-impl<'outer, Inner, Outer> Framer for NestedFramer<'outer, Inner, Outer>
+impl<'buf, Inner, Outer> Framer for NestedFramer<'buf, Inner, Outer>
 where
     Inner: Framer,
     Outer: Framer,
