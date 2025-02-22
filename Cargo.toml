@@ -147,6 +147,9 @@ axum-extra = { version = "0.9", default-features = false }
 papaya = { version = "0.2", default-features = false }
 tempfile = { version = "3", default-features = false }
 
+[patch.crates-io]
+async-compression = { git = "https://github.com/tobz/async-compression.git", branch = "main" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 4
