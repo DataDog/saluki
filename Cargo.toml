@@ -67,10 +67,12 @@ ahash = { version = "0.8", default-features = false, features = ["std", "runtime
 async-compression = { version = "0.4.13", default-features = false }
 bitmask-enum = { version = "2.2", default-features = false }
 figment = { version = "0.10", default-features = false }
+headers = { version = "0.4.0" }
 http = { version = "1", default-features = false }
 http-body = { version = "1", default-features = false }
 http-body-util = { version = "0.1.0", default-features = false }
 hyper = { version = "1", default-features = false }
+hyper-proxy2 = { version = "0.1.0" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http2", "rustls-native-certs"] }
 hyper-util = { version = "0.1.10", default-features = false }
 indexmap = { version = "2", default-features = false }

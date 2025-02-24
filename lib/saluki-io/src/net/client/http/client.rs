@@ -2,6 +2,7 @@ use std::{future::Future, pin::Pin, task::Poll, time::Duration};
 
 use http::{Request, Response, Uri};
 use hyper::body::{Body, Incoming};
+use hyper_proxy2::Proxy;
 use hyper_util::{
     client::legacy::{connect::capture_connection, Builder},
     rt::{TokioExecutor, TokioTimer},
@@ -106,6 +107,7 @@ pub struct HttpClientBuilder<P = NoopRetryPolicy> {
     retry_policy: P,
     request_timeout: Option<Duration>,
     endpoint_telemetry: Option<EndpointTelemetryLayer>,
+    proxies: Option<Vec<Proxy>>,
 }
 
 impl<P> HttpClientBuilder<P> {
@@ -183,7 +185,16 @@ impl<P> HttpClientBuilder<P> {
             request_timeout: self.request_timeout,
             retry_policy,
             endpoint_telemetry: self.endpoint_telemetry,
+            proxies: self.proxies,
         }
+    }
+
+    /// Sets the proxies to be used for outgoing requests.
+    ///
+    /// Defaults to no proxies. (i.e requests will be sent directly without using a proxy).
+    pub fn with_proxies(mut self, proxies: Vec<Proxy>) -> Self {
+        self.proxies = Some(proxies);
+        self
     }
 
     /// Enables per-endpoint telemetry for HTTP transactions.
@@ -252,7 +263,13 @@ impl<P> HttpClientBuilder<P> {
     {
         let tls_config = self.tls_builder.build()?;
         let connector = self.connector_builder.build(tls_config);
-        let client = self.hyper_builder.build(connector);
+        let mut proxy_connector = hyper_proxy2::ProxyConnector::new(connector)?;
+        if let Some(proxies) = &self.proxies {
+            for proxy in proxies {
+                proxy_connector.add_proxy(proxy.to_owned());
+            }
+        }
+        let client = self.hyper_builder.build(proxy_connector);
 
         let inner = ServiceBuilder::new()
             .retry(self.retry_policy)
@@ -280,6 +297,7 @@ impl Default for HttpClientBuilder {
             request_timeout: Some(Duration::from_secs(20)),
             retry_policy: NoopRetryPolicy,
             endpoint_telemetry: None,
+            proxies: None,
         }
     }
 }
