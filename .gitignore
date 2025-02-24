@@ -7,3 +7,10 @@ test/ddprof
 test/lading
 dhat-heap.json
 .DS_Store
+
+# JavaScript-y things related to documentation generation.
+yarn.lock
+.vitepress/
+docs/.vitepress/dist
+docs/.vitepress/cache
+node_modules/
