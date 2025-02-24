@@ -60,12 +60,12 @@ All remaining crates are part of Saluki itself, and all have a name with the pre
 ## Contributing
 
 If you find an issue with this package and have a fix, or simply want to report it, please review our
-[contributing][contributing] guide.
+[contributing](https://datadoghq.dev/saluki/development/contributing) guide.
 
 ## Documentation
 
 Saluki has no public-facing _code_ documentation at this time (2025-02-11). Procedural documentation -- architecture,
-releasing, etc -- can be found in the [docs](docs) directory.
+releasing, etc -- can be found [here](https://datadoghq.dev/saluki/)
 
 ## Security
 

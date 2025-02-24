@@ -1,0 +1,54 @@
+name: docs
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build documentation
+        run: |
+          yarn install
+          yarn run docs:build
+      - name: Compress generated documentation assets
+        run: tar -C ./docs/.vitepress/dist -c -z -f docs.tar.gz .
+      - name: Upload compressed documentation assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation
+          path: docs.tar.gz
+
+  publish:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs:
+      - build
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: documentation
+          path: docs
+      - name: Uncompress generated documentation assets
+        run: tar xzf docs/docs.tar.gz && rm docs/docs.tar.gz
+      - name: Publish to Github Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./docs
+          commit_message: ${{ github.event.head_commit.message }}
+          enable_jekyll: false
+          allow_empty_commit: false

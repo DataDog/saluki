@@ -1,61 +1,25 @@
-# Contributing to Saluki
+# Contributing
 
-First of all, thanks for contributing!
+First of all, thank you for looking to contribute to Saluki! We're excited to have you here.
 
-This document provides some basic guidelines for contributing to this repository. To propose improvements, feel free to submit a PR.
+This document covers some simple guidelines for both filing issues and contributing code to the project.
 
-* [Submitting Issues](#submitting-issues)
-* [Pull Requests](#pull-requests)
-	- [Keep it small, focused](#keep-it-small-focused)
-	- [Commit Messages](#commit-messages)
-	- [Pull request workflow](#pull-request-workflow)
-    + [Before the first PR review](#before-the-first-pr-review)
-    + [After the first review](#after-the-first-review)
-    + [How to merge to `main`](#how-to-merge-to-main)
+## Filing Issues
 
-## Submitting Issues
+If you've discovered a bug, have a feature request, or have discovered a security issue, start by [creating a new
+issue](https://github.com/DataDog/saluki/issues/new/choose). We use Github issue templates to provide a number of
+pre-defined issue types, which will prompt you for the necessary information to help us understand the problem.
 
-Please feel free to submit an issue if you believe you've discovered a bug.
-
-Make sure to pay attention to the issue template, filling out all sections to provide a sufficient amount of detail to
-allow us to verify your report and, hopefully, reproduce it.
+If none of the existing issue types fit your needs, simply create a **Blank issue** and provide as much information as
+you can.
 
 ## Pull Requests
 
-Have you fixed a bug or written a new piece of helper code? Many thanks!
+You've gotten to the point of working on a fix or a new feature, and now you want to contribute that upstream. This is
+awesome!
 
-In order to ease/speed up our review, here are some items you can check/improve when submitting your PR:
-
-<details open>
-<summary>Contributor Checklist</summary>
-
-- [ ] Have a proper commit history (we advise you to rebase if needed) with clear commit messages.
-
-- [ ] Write tests for the code you wrote.
-
-- [ ] Preferably make sure that all tests pass locally.
-
-- [ ] Summarize your PR with an explanatory title and a message describing your changes, cross-referencing any related bugs/PRs.
-
-- [ ] Open your PR against the `main` branch.
-
-- [ ] Provide adequate QA/testing plan information.
-
-</details>
-<br>
-
-<details>
-<summary open>Reviewer Checklist</summary>
-
-- [ ] The added code comes with tests.
-
-- [ ] The CI is green, all tests are passing (required or not).
-
-</details>
-<br>
-
-Your pull request must pass all CI tests before we will merge it. If you're seeing an error and don't think it's your
-fault, it may not be! Don't hesitate to comment on the PR and we'll work together to fix it.
+We strive for a high level of quality in terms of pull requests, and this guide is meant to help you understand what we
+expect from a PR so that you're not surprised during the review process.
 
 ### Keep it small, focused
 
@@ -65,7 +29,22 @@ For example, if you're working on changes to a component that requires adding ne
 (topology builder, event model, etc), then you should split up your changes into multiple PRs, focusing first on the
 supporting changes and then the final change that makes the component utilize the new functionality.
 
-### Commit Messages
+### Testing
+
+We generally require unit tests for bug fixes, as well as new features.
+
+Sometimes, this can be difficult to do depending on the type of code change: some areas of code don't have a great way
+to to be run independently and we often choose to not abstract code just to make it testable. This can sometimes
+require a little more thought and creativity to test the code.
+
+A good rule of thumb to follow is that if you don't have to change the code to make it testable, then you should
+probably write a test for it. For example, if you're fixing a bug in an existing type, and that type is already being
+tested in other ways... then the overhead to add an additional test is low, and so you should do it.
+
+Depending on the complexity of the change, we may insist that tests be included, even if it means adding additional
+abstractions. Reviewers will help guide you on this during the review process.
+
+### Commit messages
 
 Please don't be this person: `git commit -m "Fixed stuff"`. Take a moment to write meaningful commit messages.
 
@@ -124,4 +103,5 @@ Once reviews are complete, the merge to `main` should be done with either:
 - the **squash-merge** option, to keep the history of `main` clean (even though some context/details are lost in the
   squash). The commit message for this squash should always be edited to concisely describe the commit without
   extraneous "address review comments" text.
-- the **rebase-merge** option, after manually rewriting the PR’s commit history and force-pushing to the branch. When using this option, the branch must have a clean history.
+- the **rebase-merge** option, after manually rewriting the PR’s commit history and force-pushing to the branch. When
+  using this option, the branch must have a clean history.

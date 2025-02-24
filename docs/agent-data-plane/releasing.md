@@ -1,31 +1,24 @@
-# Releasing Saluki / Agent Data Plane
+# Releasing ADP
 
-This document describes the process of releasing new versions of Saluki and Agent Data Plane.
+This page covers the overall release process for Agent Data Plane, including the steps required to create a new release,
+as well as the technical details around how we determine the version of the release, what metadata is
+collected/generated, and more.
 
-## Saluki
+## High-level overview
 
-At this time (2025-02-11), Saluki is not yet officially released. This means that all usages of Saluki are driven either
-through pointing directly at the repository (using a specific branch, tag, or commit hash), or utilizing path-based
-dependencies, such as is done in Agent Data Plane.
+The release process for ADP roughly looks like this:
 
-## Agent Data Plane
+- create a Github release, which tags `main` at a particular point
+- creation of the Git tag triggers a CI pipeline that additionally unlocks jobs to publish release artifacts
+- the additional CI jobs, once manually triggered, will publish ADP container images to various public container image registries
 
-Agent Data Plane has official releases which show up in two forms:
-
-- tagged releases that are exposed through Github Releases
-- matching container image builds that are pushed to public container image repositories
-
-Agent Data Plane is a data plane built on Saluki, which is meant to operate in tandem with the Datadog Agent. This means
-that while we build ADP from the Saluki repository in a standalone way, we couple it to a specific version of the
-Datadog Agent, including the container image that we publish.
-
-### Quick steps
+## Quick steps
 
 - Ensure that `main` is up-to-date with all of the intended changes that should be present, and that CI tests are
   passing cleanly (this will get checked in the actual release CI pipeline, but easier to catch problems early)
 - Go to the [Releases](https://github.com/DataDog/saluki/releases) page on Github and click the `Draft a new release`
   button.
-- Fill in the appropriate version tag (see "Determining the version" below) and click `Create new tag ... on publish`.
+- Fill in the appropriate version tag (see ["Determining the version"](#determining-the-version) below) and click `Create new tag ... on publish`.
 - Leave `Previous tag` at `auto`, and change `Release title` to `Agent Data Plane <version>`, where `<version>` is the
   new version. (i.e., `Agent Data Plane 0.2.0`)
 - Click the `Generate release notes` to automatically populate the relevant changes since the last release.
@@ -46,11 +39,14 @@ Datadog Agent, including the container image that we publish.
   be able to see a recently-published image with a tag that looks like `<Agent version>-v0.2.0-adp-beta-jmx`. (See
   "Determining the version" below for more information on the container image tag format.)
 
-### Determining the version
+## Determining the version
 
 For ADP, we determine the version of the release solely from the Git tag that is created, which also drives the CI
 pipeline used to publish the resulting container images. We _do not_ use the `version` field of the `agent-data-plane`
 crate itself.
+
+> [!NOTE]
+> The Git tag **must** be in the format of `vX.Y.Z`.
 
 When deciding what version to use, we follow the [Semantic Versioning](https://semver.org/) specification. This means,
 in a nutshell:
@@ -69,7 +65,7 @@ version of the Datadog Agent that the image is based on. The Datadog Agent versi
 variable. We pull the Datadog Agent image from a public container image registry (Google Container Registry) and layer
 on the ADP binary, and supporting files, which results in our final "bundled" ADP container image.
 
-### Build metadata
+## Build metadata
 
 We calculate a number of values that are used to populate what we call "build metadata", which is information passed in
 during the build process and is used to drive a number of behaviors:
@@ -77,7 +73,7 @@ during the build process and is used to drive a number of behaviors:
 - outputting the version of ADP, when it was built, the build architecture, etc, as a log at startup
 - special constant identifiers that are used to populate things like HTTP request headers (user agent, etc)
 
-This build metadata is _normally_ calculated with a Make target -- `emit-build-metadata` -- which populates it during
+This build metadata is _normally_ calculated with a Make target — `emit-build-metadata` — which populates it during
 local builds or regular CI builds. However, for release builds, it is set manually when invoking the container image
 builds. These settings can be found in the `.gitlab/release.yml` file, under the `build-release-adp-image` job.
 
