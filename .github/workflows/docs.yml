@@ -41,14 +41,16 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: documentation
-          path: docs
+          path: .
+      - name: Create extract directory
+        run: mkdir -p /tmp/docs
       - name: Uncompress generated documentation assets
-        run: tar xzf docs/docs.tar.gz && rm docs/docs.tar.gz
+        run: tar -C /tmp/docs -x -z -f ./docs.tar.gz && rm ./docs.tar.gz
       - name: Publish to Github Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./docs
+          publish_dir: /tmp/docs
           commit_message: ${{ github.event.head_commit.message }}
           enable_jekyll: false
           allow_empty_commit: false
