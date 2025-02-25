@@ -10,7 +10,7 @@ dhat-heap.json
 
 # JavaScript-y things related to documentation generation.
 yarn.lock
-.vitepress/
+/.vitepress/
 docs/.vitepress/dist
 docs/.vitepress/cache
 node_modules/
