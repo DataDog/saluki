@@ -34,6 +34,14 @@ license-files = [
     { path = "LICENSE", hash = 0xbd0eed23 }
 ]
 
+[[licenses.clarify]]
+name = "webpki"
+version = "*"
+expression = "ISC"
+license-files = [
+    { path = "LICENSE", hash = 0x001c7e6c }
+]
+
 [sources]
 allow-git = [
     # Git dependency for `lading_payload`, which isn't published on crates.io. We use a tagged version, though, so this
