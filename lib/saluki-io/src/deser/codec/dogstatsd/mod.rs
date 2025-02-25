@@ -6,7 +6,7 @@ use nom::{
     error::{Error, ErrorKind},
     number::complete::double,
     sequence::{delimited, preceded, separated_pair, terminated},
-    IResult,
+    IResult, Parser as _,
 };
 use saluki_context::{
     origin::OriginTagCardinality,
@@ -190,7 +190,7 @@ fn parse_dogstatsd_metric<'a>(
         ascii_alphanum_and_seps
     };
     let (remaining, (metric_name, (metric_type, raw_metric_values))) =
-        separated_pair(metric_name_parser, tag(":"), raw_metric_values)(input)?;
+        separated_pair(metric_name_parser, tag(":"), raw_metric_values).parse(input)?;
 
     // At this point, we may have some of this additional data, and if so, we also then would have a pipe separator at
     // the very front, which we'd want to consume before going further.
@@ -216,29 +216,29 @@ fn parse_dogstatsd_metric<'a>(
                 // point downstream to calculate the true metric value.
                 b'@' => {
                     let (_, sample_rate) =
-                        all_consuming(preceded(tag("@"), map_res(double, SampleRate::try_from)))(chunk)?;
+                        all_consuming(preceded(tag("@"), map_res(double, SampleRate::try_from))).parse(chunk)?;
                     maybe_sample_rate = Some(sample_rate);
                 }
                 // Tags: additional tags to be added to the metric.
                 b'#' => {
-                    let (_, tags) = all_consuming(preceded(tag("#"), metric_tags(config)))(chunk)?;
+                    let (_, tags) = all_consuming(preceded(tag("#"), metric_tags(config))).parse(chunk)?;
                     maybe_tags = Some(tags);
                 }
                 // Container ID: client-provided container ID for the container that this metric originated from.
                 b'c' if chunk.len() > 1 && chunk[1] == b':' => {
-                    let (_, container_id) = all_consuming(preceded(tag("c:"), container_id))(chunk)?;
+                    let (_, container_id) = all_consuming(preceded(tag("c:"), container_id)).parse(chunk)?;
                     maybe_container_id = Some(container_id);
                 }
                 // Timestamp: client-provided timestamp for the metric, relative to the Unix epoch, in seconds.
                 b'T' => {
                     if config.timestamps {
-                        let (_, timestamp) = all_consuming(preceded(tag("T"), unix_timestamp))(chunk)?;
+                        let (_, timestamp) = all_consuming(preceded(tag("T"), unix_timestamp)).parse(chunk)?;
                         maybe_timestamp = Some(timestamp);
                     }
                 }
                 // External Data: client-provided data used for resolving the entity ID that this metric originated from.
                 b'e' if chunk.len() > 1 && chunk[1] == b':' => {
-                    let (_, external_data) = all_consuming(preceded(tag("e:"), external_data))(chunk)?;
+                    let (_, external_data) = all_consuming(preceded(tag("e:"), external_data)).parse(chunk)?;
                     maybe_external_data = Some(external_data);
                 }
                 _ => {
@@ -323,16 +323,18 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
     // We parse the title length and text length from `_e{<TITLE_UTF8_LENGTH>,<TEXT_UTF8_LENGTH>}:`
     let (remaining, (title_len, text_len)) = delimited(
         tag(message::EVENT_PREFIX),
-        separated_pair(parse_u32, tag(b","), parse_u32),
-        tag(b"}:"),
-    )(input)?;
+        separated_pair(parse_u32, tag(","), parse_u32),
+        tag("}:"),
+    )
+    .parse(input)?;
 
     // Title and Text are the required fields of an event.
     if title_len == 0 || text_len == 0 {
         return Err(nom::Err::Error(Error::new(input, ErrorKind::Verify)));
     }
 
-    let (remaining, (raw_title, raw_text)) = separated_pair(take(title_len), tag(b"|"), take(text_len))(remaining)?;
+    let (remaining, (raw_title, raw_text)) =
+        separated_pair(take(title_len), tag("|"), take(text_len)).parse(remaining)?;
 
     let title = match simdutf8::basic::from_utf8(raw_title) {
         Ok(title) => message::clean_data(title),
@@ -369,42 +371,46 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
                 // Timestamp: client-provided timestamp for the event, relative to the Unix epoch, in seconds.
                 message::TIMESTAMP_PREFIX => {
                     let (_, timestamp) =
-                        all_consuming(preceded(tag(message::TIMESTAMP_PREFIX), unix_timestamp))(chunk)?;
+                        all_consuming(preceded(tag(message::TIMESTAMP_PREFIX), unix_timestamp)).parse(chunk)?;
                     maybe_timestamp = Some(timestamp);
                 }
                 // Hostname: client-provided hostname for the host that this event originated from.
                 message::HOSTNAME_PREFIX => {
                     let (_, hostname) =
-                        all_consuming(preceded(tag(message::HOSTNAME_PREFIX), ascii_alphanum_and_seps))(chunk)?;
+                        all_consuming(preceded(tag(message::HOSTNAME_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
                     maybe_hostname = Some(hostname.into());
                 }
                 // Aggregation key: key to be used to group this event with others that have the same key.
                 message::AGGREGATION_KEY_PREFIX => {
                     let (_, aggregation_key) =
-                        all_consuming(preceded(tag(message::AGGREGATION_KEY_PREFIX), ascii_alphanum_and_seps))(chunk)?;
+                        all_consuming(preceded(tag(message::AGGREGATION_KEY_PREFIX), ascii_alphanum_and_seps))
+                            .parse(chunk)?;
                     maybe_aggregation_key = Some(aggregation_key.into());
                 }
                 // Priority: client-provided priority of the event.
                 message::PRIORITY_PREFIX => {
                     let (_, priority) =
-                        all_consuming(preceded(tag(message::PRIORITY_PREFIX), ascii_alphanum_and_seps))(chunk)?;
+                        all_consuming(preceded(tag(message::PRIORITY_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
                     maybe_priority = Priority::try_from_string(priority);
                 }
                 // Source type name: client-provided source type name of the event.
                 message::SOURCE_TYPE_PREFIX => {
                     let (_, source_type) =
-                        all_consuming(preceded(tag(message::SOURCE_TYPE_PREFIX), ascii_alphanum_and_seps))(chunk)?;
+                        all_consuming(preceded(tag(message::SOURCE_TYPE_PREFIX), ascii_alphanum_and_seps))
+                            .parse(chunk)?;
                     maybe_source_type = Some(source_type.into());
                 }
                 // Alert type: client-provided alert type of the event.
                 message::ALERT_TYPE_PREFIX => {
                     let (_, alert_type) =
-                        all_consuming(preceded(tag(message::ALERT_TYPE_PREFIX), ascii_alphanum_and_seps))(chunk)?;
+                        all_consuming(preceded(tag(message::ALERT_TYPE_PREFIX), ascii_alphanum_and_seps))
+                            .parse(chunk)?;
                     maybe_alert_type = AlertType::try_from_string(alert_type);
                 }
                 // Tags: additional tags to be added to the event.
                 _ if chunk.starts_with(message::TAGS_PREFIX) => {
-                    let (_, tags) = all_consuming(preceded(tag(message::TAGS_PREFIX), metric_tags(config)))(chunk)?;
+                    let (_, tags) =
+                        all_consuming(preceded(tag(message::TAGS_PREFIX), metric_tags(config))).parse(chunk)?;
                     maybe_tags = Some(tags.into_iter().map(|tag| tag.into()).collect());
                 }
                 _ => {
@@ -437,8 +443,9 @@ fn parse_dogstatsd_service_check<'a>(
 ) -> IResult<&'a [u8], ServiceCheck> {
     let (remaining, (name, raw_check_status)) = preceded(
         tag(message::SERVICE_CHECK_PREFIX),
-        separated_pair(ascii_alphanum_and_seps, tag(b"|"), parse_u8),
-    )(input)?;
+        separated_pair(ascii_alphanum_and_seps, tag("|"), parse_u8),
+    )
+    .parse(input)?;
 
     let check_status =
         CheckStatus::try_from(raw_check_status).map_err(|_| nom::Err::Error(Error::new(input, ErrorKind::Verify)))?;
@@ -464,24 +471,25 @@ fn parse_dogstatsd_service_check<'a>(
                 // Timestamp: client-provided timestamp for the event, relative to the Unix epoch, in seconds.
                 message::TIMESTAMP_PREFIX => {
                     let (_, timestamp) =
-                        all_consuming(preceded(tag(message::TIMESTAMP_PREFIX), unix_timestamp))(chunk)?;
+                        all_consuming(preceded(tag(message::TIMESTAMP_PREFIX), unix_timestamp)).parse(chunk)?;
                     maybe_timestamp = Some(timestamp);
                 }
                 // Hostname: client-provided hostname for the host that this service check originated from.
                 message::HOSTNAME_PREFIX => {
                     let (_, hostname) =
-                        all_consuming(preceded(tag(message::HOSTNAME_PREFIX), ascii_alphanum_and_seps))(chunk)?;
+                        all_consuming(preceded(tag(message::HOSTNAME_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
                     maybe_hostname = Some(hostname.into());
                 }
                 // Tags: additional tags to be added to the service check.
                 _ if chunk.starts_with(message::TAGS_PREFIX) => {
-                    let (_, tags) = all_consuming(preceded(tag(message::TAGS_PREFIX), metric_tags(config)))(chunk)?;
+                    let (_, tags) =
+                        all_consuming(preceded(tag(message::TAGS_PREFIX), metric_tags(config))).parse(chunk)?;
                     maybe_tags = Some(tags.into_iter().map(|tag| tag.into()).collect());
                 }
                 // Message: A message describing the current state of the service check.
                 message::SERVICE_CHECK_MESSAGE_PREFIX => {
                     let (_, message) =
-                        all_consuming(preceded(tag(message::SERVICE_CHECK_MESSAGE_PREFIX), utf8))(chunk)?;
+                        all_consuming(preceded(tag(message::SERVICE_CHECK_MESSAGE_PREFIX), utf8)).parse(chunk)?;
                     maybe_message = Some(message.into());
 
                     // This field must be positioned last among the metadata fields
@@ -550,7 +558,8 @@ fn ascii_alphanum_and_seps(input: &[u8]) -> IResult<&[u8], &str> {
         // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
         // interpret the bytes directly as UTF-8.
         unsafe { std::str::from_utf8_unchecked(b) }
-    })(input)
+    })
+    .parse(input)
 }
 
 #[inline]
@@ -561,13 +570,14 @@ fn permissive_metric_name(input: &[u8]) -> IResult<&[u8], &str> {
         // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
         // interpret the bytes directly as UTF-8.
         unsafe { std::str::from_utf8_unchecked(b) }
-    })(input)
+    })
+    .parse(input)
 }
 
 #[inline]
 fn raw_metric_values(input: &[u8]) -> IResult<&[u8], (MetricType, &[u8])> {
-    let (remaining, raw_values) = terminated(take_while1(|b| b != b'|'), tag("|"))(input)?;
-    let (remaining, raw_kind) = alt((tag(b"g"), tag(b"c"), tag(b"ms"), tag(b"h"), tag(b"s"), tag(b"d")))(remaining)?;
+    let (remaining, raw_values) = terminated(take_while1(|b| b != b'|'), tag("|")).parse(input)?;
+    let (remaining, raw_kind) = alt((tag("g"), tag("c"), tag("ms"), tag("h"), tag("s"), tag("d"))).parse(remaining)?;
 
     // Make sure the raw value(s) are valid UTF-8 before we use them later on.
     if raw_values.is_empty() || simdutf8::basic::from_utf8(raw_values).is_err() {
@@ -640,7 +650,8 @@ fn container_id(input: &[u8]) -> IResult<&[u8], &str> {
         // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
         // interpret the bytes directly as UTF-8.
         unsafe { std::str::from_utf8_unchecked(b) }
-    })(input)
+    })
+    .parse(input)
 }
 
 #[inline]
@@ -656,7 +667,8 @@ fn external_data(input: &[u8]) -> IResult<&[u8], &str> {
         // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
         // interpret the bytes directly as UTF-8.
         unsafe { std::str::from_utf8_unchecked(b) }
-    })(input)
+    })
+    .parse(input)
 }
 
 struct FloatIter<'a> {
