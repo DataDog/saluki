@@ -70,12 +70,15 @@ where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
     {
         let endpoints = config.endpoint().build_resolved_endpoints(maybe_refreshable_config)?;
-        let client = HttpClient::builder()
+        let mut client_builder = HttpClient::builder()
             .with_request_timeout(config.request_timeout())
             .with_retry_policy(config.retry().to_default_http_retry_policy())
             .with_bytes_sent_counter(telemetry.bytes_sent().clone())
-            .with_endpoint_telemetry(metrics_builder, Some(endpoint_name))
-            .build()?;
+            .with_endpoint_telemetry(metrics_builder, Some(endpoint_name));
+        if let Some(proxy) = config.proxy() {
+            client_builder = client_builder.with_proxies(proxy.build()?);
+        }
+        let client = client_builder.build()?;
 
         Ok(Self {
             config,

@@ -17,10 +17,12 @@ ddsketch-agent = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }
 futures = { workspace = true }
 hashbrown = { workspace = true }
+headers = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["client"] }
+hyper-proxy2 = { workspace = true }
 hyper-rustls = { workspace = true }
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "tokio"] }
 indexmap = { workspace = true, features = ["std"] }
