@@ -16,10 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Set up Node 23
+      - name: Set up Node 18
         uses: actions/setup-node@v4
         with:
-          node-version: 23
+          node-version: 18
       - name: Build documentation
         run: |
           yarn install
