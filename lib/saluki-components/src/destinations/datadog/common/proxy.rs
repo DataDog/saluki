@@ -16,25 +16,29 @@ pub struct ProxyConfiguration {
 }
 
 impl ProxyConfiguration {
-    /// Creates the list of proxies.
+    /// Builds the configured proxies.
+    ///
+    /// # Errors
+    ///
+    /// If the configured proxy URLs aree invalid, an error is returned.
     pub fn build(&self) -> Result<Vec<Proxy>, GenericError> {
         let mut proxies = Vec::new();
         if let Some(url) = &self.http_server {
-            proxies.push(self.new_proxy(url, Intercept::Http)?);
+            proxies.push(new_proxy(url, Intercept::Http)?);
         }
         if let Some(url) = &self.https_server {
-            proxies.push(self.new_proxy(url, Intercept::Https)?);
+            proxies.push(new_proxy(url, Intercept::Https)?);
         }
         Ok(proxies)
     }
+}
 
-    fn new_proxy(&self, proxy_url: &str, intercept: Intercept) -> Result<Proxy, GenericError> {
-        let url = Url::parse(proxy_url)?;
-        let mut proxy = Proxy::new(intercept, url.as_str().parse()?);
-        if let Some(password) = url.password() {
-            let username = url.username();
-            proxy.set_authorization(Authorization::basic(username, password));
-        }
-        Ok(proxy)
+fn new_proxy(proxy_url: &str, intercept: Intercept) -> Result<Proxy, GenericError> {
+    let url = Url::parse(proxy_url)?;
+    let mut proxy = Proxy::new(intercept, url.as_str().parse()?);
+    if let Some(password) = url.password() {
+        let username = url.username();
+        proxy.set_authorization(Authorization::basic(username, password));
     }
+    Ok(proxy)
 }
