@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use super::{endpoints::EndpointConfiguration, retry::RetryConfiguration};
+use super::{endpoints::EndpointConfiguration, proxy::ProxyConfiguration, retry::RetryConfiguration};
 
 const fn default_endpoint_concurrency() -> usize {
     1
@@ -48,6 +48,10 @@ pub struct ForwarderConfiguration {
     /// Retry configuration.
     #[serde(flatten)]
     retry: RetryConfiguration,
+
+    /// Proxy configuration.
+    #[serde(flatten)]
+    proxy: Option<ProxyConfiguration>,
 }
 
 impl ForwarderConfiguration {
@@ -74,5 +78,10 @@ impl ForwarderConfiguration {
     /// Returns a reference to the retry configuration.
     pub fn retry(&self) -> &RetryConfiguration {
         &self.retry
+    }
+
+    /// Returns a reference to the proxy configuration.
+    pub fn proxy(&self) -> &Option<ProxyConfiguration> {
+        &self.proxy
     }
 }

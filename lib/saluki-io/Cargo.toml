@@ -17,9 +17,11 @@ chrono = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
 futures = { workspace = true }
+headers = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 hyper = { workspace = true, features = ["client", "server"] }
+hyper-proxy2 = { workspace = true }
 hyper-rustls = { workspace = true }
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "http2", "server", "tokio"] }
 indexmap = { workspace = true, features = ["std"] }
