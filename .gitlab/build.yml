@@ -121,6 +121,36 @@ build-converged-adp-image:
       .
     - ddsign sign ${IMAGE_TAG} --docker-metadata-file /tmp/build.metadata
 
+build-converged-adp-image-fips:
+  stage: build
+  image: ${DOCKER_BUILD_IMAGE}
+  needs:
+    - build-adp-image-fips
+  retry: 2
+  timeout: 5m
+  variables:
+    IMAGE_TAG: "${INTERNAL_DD_AGENT_IMAGE_FIPS}-adp-${CI_COMMIT_SHORT_SHA}"
+  id_tokens:
+    DDSIGN_ID_TOKEN:
+      aud: image-integrity
+  script:
+    - docker buildx build
+      --platform linux/amd64,linux/arm64
+      --file ./docker/Dockerfile.datadog-agent
+      --metadata-file	/tmp/build.metadata
+      --build-arg "DD_AGENT_IMAGE=${INTERNAL_DD_AGENT_IMAGE_FIPS}"
+      --build-arg "ADP_IMAGE=${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}-fips"
+      --tag "${IMAGE_TAG}"
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --label target=prod
+      --push
+      .
+    - ddsign sign ${IMAGE_TAG} --docker-metadata-file /tmp/build.metadata
+
 build-converged-adp-image-nightly:
   stage: build
   image: ${DOCKER_BUILD_IMAGE}
