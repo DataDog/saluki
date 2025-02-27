@@ -8,7 +8,9 @@ use saluki_context::Context;
 pub use self::metadata::*;
 
 mod value;
-pub use self::value::{HistogramPoints, HistogramSummary, MetricValues, ScalarPoints, SetPoints, SketchPoints};
+pub use self::value::{
+    Histogram, HistogramPoints, HistogramSummary, MetricValues, ScalarPoints, SetPoints, SketchPoints,
+};
 
 /// A metric.
 ///

@@ -195,14 +195,14 @@ async fn flush_metrics(flush_interval: Duration) {
             //
             // If the histogram was empty, skip emitting a metric for this histogram entirely. Empty sketches don't make
             // sense to send.
-            let mut distribution_samples = Vec::<f64>::new();
-            histogram.clear_with(|samples| distribution_samples.extend(samples));
+            let mut histogram_samples = Vec::<f64>::new();
+            histogram.clear_with(|samples| histogram_samples.extend(samples));
 
-            if distribution_samples.is_empty() {
+            if histogram_samples.is_empty() {
                 continue;
             }
 
-            let metric = Metric::distribution(context, &distribution_samples[..]);
+            let metric = Metric::histogram(context, &histogram_samples[..]);
             metrics.push(Event::Metric(metric));
         }
 

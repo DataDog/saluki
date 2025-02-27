@@ -10,8 +10,7 @@ mod sketch;
 pub use self::sketch::SketchPoints;
 
 mod histogram;
-use self::histogram::Histogram;
-pub use self::histogram::{HistogramPoints, HistogramSummary};
+pub use self::histogram::{Histogram, HistogramPoints, HistogramSummary};
 
 mod scalar;
 pub use self::scalar::ScalarPoints;
