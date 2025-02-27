@@ -15,6 +15,7 @@ static VERSION_DETAILS: AppDetails = AppDetails {
         details::DETECTED_APP_VERSION_PATCH,
     ),
     build_time: details::DETECTED_APP_BUILD_TIME,
+    dev_build: details::DETECTED_APP_DEV_BUILD,
     target_arch: details::DETECTED_TARGET_ARCH,
 };
 
@@ -39,6 +40,7 @@ pub fn get_app_details() -> &'static AppDetails {
 /// - `APP_VERSION`: Version of the application. If this is not set, the default value is "0.0.0".
 /// - `APP_GIT_HASH`: Git hash of the application. If this is not set, the default value is "unknown".
 /// - `APP_BUILD_TIME`: Build time of the application. If this is not set, the default value is "0000-00-00 00:00:00".
+/// - `APP_DEV_BUILD`: Whether the application is a development build. If this is not set, the default value is `true`.
 /// - `TARGET`: Target architecture of the application. If this is not set, the default value is "unknown-arch".
 ///
 /// Environment variables prefixed with `APP_` are expected to be set by the build script/tooling, while others are
@@ -54,6 +56,7 @@ pub struct AppDetails {
     git_hash: &'static str,
     version: Version,
     build_time: &'static str,
+    dev_build: bool,
     target_arch: &'static str,
 }
 
@@ -106,6 +109,16 @@ impl AppDetails {
     /// If the build time could not be detected, this will return "0000-00-00 00:00:00".
     pub fn build_time(&self) -> &'static str {
         self.build_time
+    }
+
+    /// Returns `true` if this application is a development build.
+    ///
+    /// Development builds generally encompass all local builds, and any CI builds which are not related to versioned
+    /// artifacts intended for public release.
+    ///
+    /// If the development build flag could not be detected, this will return `true`.
+    pub fn is_dev_build(&self) -> bool {
+        self.dev_build
     }
 
     /// Returns the target architecture of the application.
