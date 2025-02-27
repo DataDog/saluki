@@ -38,11 +38,7 @@ pub async fn initialize_metrics(
 pub fn emit_startup_metrics() {
     let app_details = saluki_metadata::get_app_details();
     let app_version = if app_details.is_dev_build() {
-        format!(
-            "{}-dev-{}",
-            app_details.version().raw(),
-            app_details.git_hash(),
-        )
+        format!("{}-dev-{}", app_details.version().raw(), app_details.git_hash(),)
     } else {
         app_details.version().raw().to_string()
     };
