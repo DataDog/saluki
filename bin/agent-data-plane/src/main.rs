@@ -8,7 +8,7 @@
 use std::time::{Duration, Instant};
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
-use saluki_app::{api::APIBuilder, logging::LoggingAPIHandler, prelude::*};
+use saluki_app::{api::APIBuilder, logging::LoggingAPIHandler, metrics::emit_startup_metrics, prelude::*};
 use saluki_components::{
     destinations::{DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration, PrometheusConfiguration},
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
@@ -151,6 +151,9 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     configure_and_spawn_api_endpoints(&configuration, internal_metrics, unprivileged_api, privileged_api).await?;
 
     let startup_time = started.elapsed();
+
+    // Emit the startup metrics for the application.
+    emit_startup_metrics();
 
     info!(
         init_time_ms = startup_time.as_millis(),
