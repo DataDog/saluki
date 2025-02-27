@@ -41,7 +41,7 @@ const HISTOGRAM_LOWER_RANGE_BUCKETS: usize = 20;
 const HISTOGRAM_LOWER_RANGE_GROWTH_FACTOR: f64 = 2.25;
 const HISTOGRAM_UPPER_RANGE_START: f64 = 1.0;
 const HISTOGRAM_UPPER_RANGE_BUCKETS: usize = 10;
-const HISTOGRAM_UPPER_RANGE_GROWTH_FACTOR: f64 = 2.0;
+const HISTOGRAM_UPPER_RANGE_GROWTH_FACTOR: f64 = 4.0;
 const HISTOGRAM_MAX_BUCKETS: usize = HISTOGRAM_LOWER_RANGE_BUCKETS + HISTOGRAM_UPPER_RANGE_BUCKETS;
 static HISTOGRAM_BUCKETS: LazyLock<[(f64, &'static str); HISTOGRAM_MAX_BUCKETS]> = LazyLock::new(histogram_buckets);
 
@@ -569,6 +569,7 @@ fn is_valid_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == ':'
 }
 
+#[derive(Clone)]
 struct PrometheusHistogram {
     sum: f64,
     count: u64,
@@ -695,4 +696,73 @@ fn histogram_buckets() -> [(f64, &'static str); HISTOGRAM_MAX_BUCKETS] {
     }
 
     buckets
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prom_histogram_add_sample() {
+        let sample1 = (0.25, 1);
+        let sample2 = (1.0, 2);
+        let sample3 = (2.0, 3);
+
+        let mut histogram = PrometheusHistogram::new();
+        histogram.add_sample(sample1.0, sample1.1);
+        histogram.add_sample(sample2.0, sample2.1);
+        histogram.add_sample(sample3.0, sample3.1);
+
+        let sample1_weighted_value = sample1.0 * sample1.1 as f64;
+        let sample2_weighted_value = sample2.0 * sample2.1 as f64;
+        let sample3_weighted_value = sample3.0 * sample3.1 as f64;
+        let expected_sum = sample1_weighted_value + sample2_weighted_value + sample3_weighted_value;
+        let expected_count = sample1.1 + sample2.1 + sample3.1;
+        assert_eq!(histogram.sum, expected_sum);
+        assert_eq!(histogram.count, expected_count);
+
+        // Go through and make sure we have things in the right buckets.
+        let mut expected_bucket_count = 0;
+        for sample in [sample1, sample2, sample3] {
+            for bucket in &histogram.buckets {
+                // If we've finally hit a bucket that includes our sample value, it's count should be equal to or
+                // greater than our expected bucket count when we account for the current sample.
+                if sample.0 <= bucket.0 {
+                    assert!(bucket.1 >= expected_bucket_count + sample.1);
+                }
+            }
+
+            // Adjust the expected bucket count to fully account for the current sample before moving on.
+            expected_bucket_count += sample.1;
+        }
+    }
+
+    #[test]
+    fn prom_histogram_merge() {
+        let mut histogram1 = PrometheusHistogram::new();
+        let mut histogram2 = PrometheusHistogram::new();
+
+        histogram1.add_sample(0.5, 2);
+        histogram1.add_sample(1.0, 3);
+        histogram1.add_sample(0.25, 1);
+
+        histogram2.add_sample(0.25, 1);
+        histogram2.add_sample(1.0, 3);
+        histogram2.add_sample(2.0, 4);
+
+        let mut merged = histogram1.clone();
+        merged.merge(&histogram2);
+
+        // Make sure the sum and count are correct.
+        let expected_sum = histogram1.sum + histogram2.sum;
+        let expected_count = histogram1.count + histogram2.count;
+        assert_eq!(merged.sum, expected_sum);
+        assert_eq!(merged.count, expected_count);
+
+        // Make sure the buckets are correct.
+        for (i, bucket) in merged.buckets.iter().enumerate() {
+            let expected_bucket_count = histogram1.buckets[i].1 + histogram2.buckets[i].1;
+            assert_eq!(bucket.1, expected_bucket_count);
+        }
+    }
 }
