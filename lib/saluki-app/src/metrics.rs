@@ -29,6 +29,24 @@ pub async fn initialize_metrics(
     Ok(())
 }
 
+/// Emits the startup metrics for the application.
+///
+/// This is generally meant to be called after the application has been initialized, in order to indicate the
+/// application has completed start-up and is now running.
+///
+/// Must be called after the metrics subsystem has been initialized.
+pub fn emit_startup_metrics() {
+    let app_details = saluki_metadata::get_app_details();
+    let app_version = if app_details.is_dev_build() {
+        format!("{}-dev-{}", app_details.version().raw(), app_details.git_hash(),)
+    } else {
+        app_details.version().raw().to_string()
+    };
+
+    // Emit a "running" metric to indicate that the application is running.
+    gauge!("running", "version" => app_version).set(1.0);
+}
+
 async fn collect_runtime_metrics() {
     // Get the handle to the runtime we're executing in, and then grab the total number of runtime workers.
     //
