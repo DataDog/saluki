@@ -100,6 +100,7 @@ upload-adp-debug-symbols:
   before_script:
     - export DD_BETA_COMMANDS_ENABLED=1
     - export STAGING_DD_API_KEY=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.staging_dd_api_key --with-decryption --query "Parameter.Value" --out text)
+    - export PROD_DD_API_KEY=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.prod_dd_api_key --with-decryption --query "Parameter.Value" --out text)
   parallel:
     matrix:
       - IMAGE_SUFFIX: ["", "-fips"]
@@ -110,6 +111,10 @@ upload-adp-debug-symbols:
     - mkdir /tmp/adp-image && tar -C /tmp/adp-image -x -f /tmp/adp.tar
     # Upload the debug symbols to staging.
     - DATADOG_API_KEY="${STAGING_DD_API_KEY}" DATADOG_SITE="datad0g.com" datadog-ci elf-symbols upload
+      --repository-url https://github.com/DataDog/saluki
+      /tmp/adp-image/usr/local/bin/agent-data-plane
+    # Upload the debug symbols to production.
+    - DATADOG_API_KEY="${PROD_DD_API_KEY}" DATADOG_SITE="datadoghq.com" datadog-ci elf-symbols upload
       --repository-url https://github.com/DataDog/saluki
       /tmp/adp-image/usr/local/bin/agent-data-plane
 
