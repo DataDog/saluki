@@ -1,5 +1,4 @@
-# Build image
+# General image
 
-Build image used for running tests, linting, etc, as well as building Agent Data Plane.
-
-Pre-installs Rust and common helper tools to speed up CI jobs.
+General image used for tasks unrelated to building ADP/Saluki itself, such as building documentation or analyzing
+artifacts, and so on.
