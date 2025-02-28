@@ -91,6 +91,33 @@ build-adp-image-fips:
       --push
       .
 
+upload-adp-debug-symbols:
+  stage: build
+  image: ${SALUKI_GENERAL_CI_IMAGE}
+  needs:
+    - build-adp-image
+    - build-adp-image-fips
+  before_script:
+    - export DD_BETA_COMMANDS_ENABLED=1
+    - export STAGING_DD_API_KEY=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.staging_dd_api_key --with-decryption --query "Parameter.Value" --out text)
+    - export PROD_DD_API_KEY=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.prod_dd_api_key --with-decryption --query "Parameter.Value" --out text)
+  parallel:
+    matrix:
+      - IMAGE_SUFFIX: ["", "-fips"]
+        IMAGE_PLATFORM: ["linux/amd64", "linux/arm64"]
+  script:
+    # Pull the ADP container image and extract it to the filesystem so we can access the binaries.
+    - crane --platform ${IMAGE_PLATFORM} export ${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}${IMAGE_SUFFIX} /tmp/adp.tar
+    - mkdir /tmp/adp-image && tar -C /tmp/adp-image -x -f /tmp/adp.tar
+    # Upload the debug symbols to staging.
+    - DATADOG_API_KEY="${STAGING_DD_API_KEY}" DATADOG_SITE="datad0g.com" datadog-ci elf-symbols upload
+      --repository-url https://github.com/DataDog/saluki
+      /tmp/adp-image/usr/local/bin/agent-data-plane
+    # Upload the debug symbols to production.
+    - DATADOG_API_KEY="${PROD_DD_API_KEY}" DATADOG_SITE="datadoghq.com" datadog-ci elf-symbols upload
+      --repository-url https://github.com/DataDog/saluki
+      /tmp/adp-image/usr/local/bin/agent-data-plane
+
 build-converged-adp-image:
   stage: build
   image: ${DOCKER_BUILD_IMAGE}

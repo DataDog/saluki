@@ -71,7 +71,7 @@ build-bundled-agent-adp-image:
       --label "org.opencontainers.image.created=${CI_PIPELINE_CREATED_AT}"
       --label "org.opencontainers.image.ref.name=${PUBLIC_DD_AGENT_IMAGE_BASE}"
       --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}"
-      --label "org.opencontainers.image.source=https://githic.com/DataDog/saluki"
+      --label "org.opencontainers.image.source=https://github.com/DataDog/saluki"
       --label "org.opencontainers.image.title=Datadog Agent (with ADP)"
       --label "org.opencontainers.image.vendor=Datadog, Inc."
       --label "org.opencontainers.image.version=${CI_COMMIT_TAG}"
