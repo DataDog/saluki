@@ -1,5 +1,6 @@
 use memory_accounting::{ComponentRegistry, MemoryLimiter};
 use saluki_health::{Health, HealthRegistry};
+use tokio::runtime::Handle;
 
 use crate::{components::ComponentContext, topology::interconnect::EventStream};
 
@@ -11,6 +12,7 @@ pub struct DestinationContext {
     health_handle: Option<Health>,
     health_registry: HealthRegistry,
     component_registry: ComponentRegistry,
+    thread_pool: Handle,
 }
 
 impl DestinationContext {
@@ -18,6 +20,7 @@ impl DestinationContext {
     pub fn new(
         component_context: ComponentContext, events: EventStream, memory_limiter: MemoryLimiter,
         component_registry: ComponentRegistry, health_handle: Health, health_registry: HealthRegistry,
+        thread_pool: Handle,
     ) -> Self {
         Self {
             component_context,
@@ -26,6 +29,7 @@ impl DestinationContext {
             health_handle: Some(health_handle),
             health_registry,
             component_registry,
+            thread_pool,
         }
     }
 
@@ -61,5 +65,10 @@ impl DestinationContext {
     /// Gets a reference to the component registry.
     pub fn component_registry(&mut self) -> &ComponentRegistry {
         &self.component_registry
+    }
+
+    /// Gets a reference to the global thread pool.
+    pub fn global_thread_pool(&self) -> &Handle {
+        &self.thread_pool
     }
 }

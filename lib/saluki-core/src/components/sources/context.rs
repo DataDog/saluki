@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use memory_accounting::{ComponentRegistry, MemoryLimiter};
 use saluki_health::{Health, HealthRegistry};
+use tokio::runtime::Handle;
 
 use crate::{
     components::ComponentContext,
@@ -19,6 +20,7 @@ struct SourceContextInner {
     memory_limiter: MemoryLimiter,
     health_registry: HealthRegistry,
     component_registry: ComponentRegistry,
+    thread_pool: Handle,
 }
 
 /// Source context.
@@ -30,10 +32,12 @@ pub struct SourceContext {
 
 impl SourceContext {
     /// Creates a new `SourceContext`.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         component_context: ComponentContext, shutdown_handle: ComponentShutdownHandle, forwarder: Forwarder,
         event_buffer_pool: ElasticObjectPool<FixedSizeEventBuffer>, memory_limiter: MemoryLimiter,
         component_registry: ComponentRegistry, health_handle: Health, health_registry: HealthRegistry,
+        thread_pool: Handle,
     ) -> Self {
         Self {
             shutdown_handle: Some(shutdown_handle),
@@ -45,6 +49,7 @@ impl SourceContext {
                 memory_limiter,
                 health_registry,
                 component_registry,
+                thread_pool,
             }),
         }
     }
@@ -95,6 +100,11 @@ impl SourceContext {
     /// Gets a reference to the component registry.
     pub fn component_registry(&self) -> &ComponentRegistry {
         &self.inner.component_registry
+    }
+
+    /// Gets a reference to the global thread pool.
+    pub fn global_thread_pool(&self) -> &Handle {
+        &self.inner.thread_pool
     }
 }
 
