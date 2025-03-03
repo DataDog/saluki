@@ -206,64 +206,59 @@ where
         loop {
             select! {
                 _ = health.live() => continue,
-                maybe_events = context.events().next_ready() => match maybe_events {
-                    Some(event_buffers) => {
-                        debug!(event_buffers_len = event_buffers.len(), "Received event buffers.");
+                maybe_events = context.events().next() => match maybe_events {
+                    Some(event_buffer) => {
+                        for event in event_buffer {
+                            if let Some(metric) = event.try_into_metric() {
+                                let request_builder = match MetricsEndpoint::from_metric(&metric) {
+                                    MetricsEndpoint::Series => &mut series_request_builder,
+                                    MetricsEndpoint::Sketches => &mut sketches_request_builder,
+                                };
 
-                        for event_buffer in event_buffers {
-                            debug!(events_len = event_buffer.len(), "Processing event buffer.");
-
-                            for event in event_buffer {
-                                if let Some(metric) = event.try_into_metric() {
-                                    let request_builder = match MetricsEndpoint::from_metric(&metric) {
-                                        MetricsEndpoint::Series => &mut series_request_builder,
-                                        MetricsEndpoint::Sketches => &mut sketches_request_builder,
-                                    };
-
-                                    // Encode the metric. If we get it back, that means the current request is full, and we need to
-                                    // flush it before we can try to encode the metric again... so we'll hold on to it in that case
-                                    // before flushing and trying to encode it again.
-                                    let metric_to_retry = match request_builder.encode(metric).await {
-                                        Ok(None) => continue,
-                                        Ok(Some(metric)) => metric,
-                                        Err(e) => {
-                                            error!(error = %e, "Failed to encode metric.");
-                                            telemetry.events_dropped_encoder().increment(1);
-                                            continue;
-                                        }
-                                    };
-
-
-                                    let maybe_requests = request_builder.flush().await;
-                                    if maybe_requests.is_empty() {
-                                        panic!("builder told us to flush, but gave us nothing");
+                                // Encode the metric. If we get it back, that means the current request is full, and we need to
+                                // flush it before we can try to encode the metric again... so we'll hold on to it in that case
+                                // before flushing and trying to encode it again.
+                                let metric_to_retry = match request_builder.encode(metric).await {
+                                    Ok(None) => continue,
+                                    Ok(Some(metric)) => metric,
+                                    Err(e) => {
+                                        error!(error = %e, "Failed to encode metric.");
+                                        telemetry.events_dropped_encoder().increment(1);
+                                        continue;
                                     }
+                                };
 
-                                    for maybe_request in maybe_requests {
-                                        match maybe_request {
-                                            Ok((events, request)) => forwarder_handle.send_request(events, request).await?,
-                                            Err(e) => {
-                                                // TODO: Increment a counter here that metrics were dropped due to a flush failure.
-                                                if e.is_recoverable() {
-                                                    // If the error is recoverable, we'll hold on to the metric to retry it later.
-                                                    continue;
-                                                } else {
-                                                    return Err(GenericError::from(e).context("Failed to flush request."));
-                                                }
+
+                                let maybe_requests = request_builder.flush().await;
+                                if maybe_requests.is_empty() {
+                                    panic!("builder told us to flush, but gave us nothing");
+                                }
+
+                                for maybe_request in maybe_requests {
+                                    match maybe_request {
+                                        Ok((events, request)) => forwarder_handle.send_request(events, request).await?,
+                                        Err(e) => {
+                                            // TODO: Increment a counter here that metrics were dropped due to a flush failure.
+                                            if e.is_recoverable() {
+                                                // If the error is recoverable, we'll hold on to the metric to retry it later.
+                                                continue;
+                                            } else {
+                                                return Err(GenericError::from(e).context("Failed to flush request."));
                                             }
                                         }
                                     }
+                                }
 
-                                    // Now try to encode the metric again. If it fails again, we'll just log it because it shouldn't
-                                    // be possible to fail at this point, otherwise we would have already caught that the first
-                                    // time.
-                                    if let Err(e) = request_builder.encode(metric_to_retry).await {
-                                        error!(error = %e, "Failed to encode metric.");
-                                        telemetry.events_dropped_encoder().increment(1);
-                                    }
+                                // Now try to encode the metric again. If it fails again, we'll just log it because it shouldn't
+                                // be possible to fail at this point, otherwise we would have already caught that the first
+                                // time.
+                                if let Err(e) = request_builder.encode(metric_to_retry).await {
+                                    error!(error = %e, "Failed to encode metric.");
+                                    telemetry.events_dropped_encoder().increment(1);
                                 }
                             }
                         }
+
 
                         debug!("All event buffers processed.");
 
