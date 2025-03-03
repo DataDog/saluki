@@ -3284,6 +3284,7 @@ name = "saluki-health"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "metrics",
  "saluki-api",
  "saluki-error",
  "serde",
