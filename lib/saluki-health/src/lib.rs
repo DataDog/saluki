@@ -8,6 +8,7 @@ use std::{
 };
 
 use futures::StreamExt as _;
+use metrics::{gauge, histogram, Gauge, Histogram};
 use saluki_error::{generic_error, GenericError};
 use serde::Serialize;
 use stringtheory::MetaString;
@@ -34,7 +35,7 @@ struct ComponentHealth {
 
 /// A handle for updating the health of a component.
 pub struct Health {
-    ready: Arc<AtomicBool>,
+    shared: Arc<SharedComponentState>,
     request_rx: mpsc::Receiver<LivenessRequest>,
     response_tx: mpsc::Sender<LivenessResponse>,
 }
@@ -42,12 +43,17 @@ pub struct Health {
 impl Health {
     /// Marks the component as ready.
     pub fn mark_ready(&mut self) {
-        self.ready.store(true, Relaxed);
+        self.update_readiness(true);
     }
 
     /// Marks the component as not ready.
     pub fn mark_not_ready(&mut self) {
-        self.ready.store(false, Relaxed);
+        self.update_readiness(false);
+    }
+
+    fn update_readiness(&self, ready: bool) {
+        self.shared.ready.store(ready, Relaxed);
+        self.shared.telemetry.update_readiness(ready);
     }
 
     /// Waits for a liveness probe to be sent to the component, and then responds to it.
@@ -64,17 +70,56 @@ impl Health {
     }
 }
 
-#[derive(Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum HealthState {
     Live,
     Unknown,
     Dead,
 }
 
+struct Telemetry {
+    component_ready: Gauge,
+    component_live: Gauge,
+    component_liveness_latency_secs: Histogram,
+}
+
+impl Telemetry {
+    fn new(name: &str) -> Self {
+        let component_id: Arc<str> = Arc::from(name);
+
+        Self {
+            component_ready: gauge!("health.component.ready", "component_id" => Arc::clone(&component_id)),
+            component_live: gauge!("health.component.alive", "component_id" => Arc::clone(&component_id)),
+            component_liveness_latency_secs: histogram!("health.component.liveness_latency_secs", "component_id" => component_id),
+        }
+    }
+
+    fn update_readiness(&self, ready: bool) {
+        self.component_ready.set(if ready { 1.0 } else { 0.0 });
+    }
+
+    fn update_liveness(&self, state: HealthState, response_latency: Duration) {
+        let live = match state {
+            HealthState::Live => 1.0,
+            HealthState::Unknown => 0.0,
+            HealthState::Dead => -1.0,
+        };
+
+        self.component_live.set(live);
+        self.component_liveness_latency_secs
+            .record(response_latency.as_secs_f64());
+    }
+}
+
+struct SharedComponentState {
+    ready: AtomicBool,
+    telemetry: Telemetry,
+}
+
 struct ComponentState {
     name: MetaString,
     health: HealthState,
-    ready: Arc<AtomicBool>,
+    shared: Arc<SharedComponentState>,
     request_tx: mpsc::Sender<LivenessRequest>,
     last_response: Instant,
     last_response_latency: Duration,
@@ -82,20 +127,23 @@ struct ComponentState {
 
 impl ComponentState {
     fn new(name: MetaString, response_tx: mpsc::Sender<LivenessResponse>) -> (Self, Health) {
-        let ready = Arc::new(AtomicBool::new(false));
+        let shared = Arc::new(SharedComponentState {
+            ready: AtomicBool::new(false),
+            telemetry: Telemetry::new(&name),
+        });
         let (request_tx, request_rx) = mpsc::channel(1);
 
         let state = Self {
             name,
             health: HealthState::Unknown,
-            ready: Arc::clone(&ready),
+            shared: Arc::clone(&shared),
             request_tx,
             last_response: Instant::now(),
             last_response_latency: Duration::from_secs(0),
         };
 
         let handle = Health {
-            ready,
+            shared,
             request_rx,
             response_tx,
         };
@@ -108,7 +156,7 @@ impl ComponentState {
         //
         // Being "dead" is a special case as it means the component is very likely not even running at all, not just
         // responding slowly or deadlocked. In these cases, it can't possibly be ready since it's not even running.
-        self.ready.load(Relaxed) && self.health != HealthState::Dead
+        self.shared.ready.load(Relaxed) && self.health != HealthState::Dead
     }
 
     fn is_live(&self) -> bool {
@@ -119,14 +167,25 @@ impl ComponentState {
         self.health = HealthState::Live;
         self.last_response = response_sent;
         self.last_response_latency = response_latency;
+        self.shared.telemetry.update_liveness(self.health, response_latency);
     }
 
     fn mark_not_live(&mut self) {
         self.health = HealthState::Unknown;
+
+        // We use the default timeout as the latency for when the component is not considered alive.
+        self.shared
+            .telemetry
+            .update_liveness(self.health, DEFAULT_PROBE_TIMEOUT_DUR);
     }
 
     fn mark_dead(&mut self) {
         self.health = HealthState::Dead;
+
+        // We use the default timeout as the latency for when the component is not considered alive.
+        self.shared
+            .telemetry
+            .update_liveness(self.health, DEFAULT_PROBE_TIMEOUT_DUR);
     }
 }
 
@@ -206,6 +265,18 @@ impl Inner {
 /// `HealthRegistry` is responsible for tracking the health of all registered components, by storing both their
 /// readiness, which indicates whether or not they are initialized and generally ready to process data, as well as
 /// probing their liveness, which indicates if they're currently responding, or able to respond, to requests.
+///
+/// # Telemetry
+///
+/// The health registry emits some internal telemetry about the status of registered components. In particular, three
+/// metrics are emitted:
+///
+/// - `health.component_ready`: whether or not a component is ready (`gauge`, `0` for not ready, `1` for ready)
+/// - `health.component_alive`: whether or not a component is alive (`gauge`, `0` for not alive/unknown, `1` for alive, `-1` for dead)
+/// - `health.component_liveness_latency_secs`: the response latency of the component for liveness probes (`histogram`,
+///   in seconds)
+///
+/// All metrics have a `component_id` tag that corresponds to the name of the component that was given when registering it.
 #[derive(Clone)]
 pub struct HealthRegistry {
     inner: Arc<Mutex<Inner>>,
