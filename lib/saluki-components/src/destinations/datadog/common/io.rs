@@ -1,4 +1,4 @@
-use std::{error::Error as _, sync::Arc};
+use std::{collections::VecDeque, error::Error as _, sync::Arc};
 
 use futures::FutureExt as _;
 use http::{Request, Uri};
@@ -8,7 +8,13 @@ use hyper::body::Incoming;
 use saluki_config::RefreshableConfiguration;
 use saluki_core::task::spawn_traced;
 use saluki_error::{generic_error, GenericError};
-use saluki_io::net::client::http::HttpClient;
+use saluki_io::{
+    buf::ReadIoBuffer,
+    net::{
+        client::http::HttpClient,
+        util::retry::{RetryQueue, Retryable},
+    },
+};
 use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 use tokio::{
@@ -19,17 +25,28 @@ use tokio::{
 use tower::{BoxError, Service, ServiceBuilder, ServiceExt as _};
 use tracing::{debug, error};
 
-use super::{config::ForwarderConfiguration, endpoints::ResolvedEndpoint, telemetry::ComponentTelemetry};
+use super::{
+    config::ForwarderConfiguration,
+    endpoints::ResolvedEndpoint,
+    telemetry::ComponentTelemetry,
+    transaction::{Transaction, TransactionBody},
+};
 use crate::destinations::datadog::common::middleware::{for_resolved_endpoint, with_version_info};
 
-pub struct Handle<B> {
-    requests_tx: mpsc::Sender<(usize, Request<B>)>,
+pub struct Handle<B>
+where
+    B: ReadIoBuffer + Clone,
+{
+    transactions_tx: mpsc::Sender<Transaction<B>>,
     io_shutdown_rx: oneshot::Receiver<()>,
 }
 
-impl<B> Handle<B> {
-    pub async fn send_request(&self, events: usize, request: Request<B>) -> Result<(), GenericError> {
-        match self.requests_tx.send((events, request)).await {
+impl<B> Handle<B>
+where
+    B: ReadIoBuffer + Clone,
+{
+    pub async fn send_transaction(&self, transaction: Transaction<B>) -> Result<(), GenericError> {
+        match self.transactions_tx.send(transaction).await {
             Ok(()) => Ok(()),
             Err(_) => Err(generic_error!("Failed to send request to I/O task: receiver dropped.")),
         }
@@ -37,12 +54,12 @@ impl<B> Handle<B> {
 
     pub async fn shutdown(self) {
         let Self {
-            requests_tx,
+            transactions_tx,
             io_shutdown_rx,
         } = self;
 
-        // Drop the sender side of the request channel, which will propagate the actual closure to the main I/O task.
-        drop(requests_tx);
+        // Drop the sender side of the transaction channel, which will propagate the actual closure to the main I/O task.
+        drop(transactions_tx);
 
         // Wait for the main I/O task to signal that it has shutdown.
         io_shutdown_rx.await.expect("I/O task has already shutdown.");
@@ -52,13 +69,13 @@ impl<B> Handle<B> {
 pub struct TransactionForwarder<B> {
     config: ForwarderConfiguration,
     telemetry: ComponentTelemetry,
-    client: HttpClient<B>,
+    client: HttpClient<TransactionBody<B>>,
     endpoints: Vec<ResolvedEndpoint>,
 }
 
 impl<B> TransactionForwarder<B>
 where
-    B: Body + Clone + Unpin + Send + 'static,
+    B: Body + ReadIoBuffer + Clone + Unpin + Send + 'static,
     B::Data: Send,
     B::Error: std::error::Error + Send + Sync,
 {
@@ -89,7 +106,7 @@ where
     }
 
     pub async fn spawn(self) -> Handle<B> {
-        let (requests_tx, requests_rx) = mpsc::channel(32);
+        let (transactions_tx, transactions_rx) = mpsc::channel(8);
         let (io_shutdown_tx, io_shutdown_rx) = oneshot::channel();
 
         let Self {
@@ -100,7 +117,7 @@ where
         } = self;
 
         spawn_traced(run_io_loop(
-            requests_rx,
+            transactions_rx,
             io_shutdown_tx,
             config,
             client,
@@ -109,21 +126,21 @@ where
         ));
 
         Handle {
-            requests_tx,
+            transactions_tx,
             io_shutdown_rx,
         }
     }
 }
 
 async fn run_io_loop<S, B>(
-    mut requests_rx: mpsc::Receiver<(usize, Request<B>)>, io_shutdown_tx: oneshot::Sender<()>,
+    mut transactions_rx: mpsc::Receiver<Transaction<B>>, io_shutdown_tx: oneshot::Sender<()>,
     config: ForwarderConfiguration, service: S, telemetry: ComponentTelemetry,
     resolved_endpoints: Vec<ResolvedEndpoint>,
 ) where
-    S: Service<Request<B>, Response = hyper::Response<Incoming>> + Clone + Send + 'static,
+    S: Service<Request<TransactionBody<B>>, Response = hyper::Response<Incoming>> + Clone + Send + 'static,
     S::Future: Send,
     S::Error: Send + Into<BoxError>,
-    B: Body + Clone + Send + 'static,
+    B: Body + ReadIoBuffer + Clone + Send + 'static,
 {
     // Spawn an endpoint I/O task for each endpoint we're configured to send to.
     //
@@ -135,7 +152,7 @@ async fn run_io_loop<S, B>(
     for resolved_endpoint in resolved_endpoints {
         let endpoint_url = resolved_endpoint.endpoint().to_string();
 
-        let (endpoint_tx, endpoint_rx) = mpsc::channel(config.endpoint_buffer_size());
+        let (endpoint_tx, endpoint_rx) = mpsc::channel(8);
         let task_barrier = Arc::clone(&task_barrier);
         spawn_traced(run_endpoint_io_loop(
             endpoint_rx,
@@ -149,10 +166,10 @@ async fn run_io_loop<S, B>(
         endpoint_txs.push((endpoint_url, endpoint_tx));
     }
 
-    // Listen for requests to forward, and send a copy of each one to each endpoint I/O task.
-    while let Some((metrics_count, request)) = requests_rx.recv().await {
+    // Listen for transactions to forward, and send a copy of each one to each endpoint I/O task.
+    while let Some(transaction) = transactions_rx.recv().await {
         for (endpoint_url, endpoint_tx) in &endpoint_txs {
-            if endpoint_tx.send((metrics_count, request.clone())).await.is_err() {
+            if endpoint_tx.send(transaction.clone()).await.is_err() {
                 error!(
                     endpoint = endpoint_url,
                     "Failed to send request to endpoint I/O task: receiver dropped."
@@ -176,13 +193,13 @@ async fn run_io_loop<S, B>(
 }
 
 async fn run_endpoint_io_loop<S, B>(
-    mut requests_rx: mpsc::Receiver<(usize, Request<B>)>, task_barrier: Arc<Barrier>, config: ForwarderConfiguration,
+    mut transactions_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, config: ForwarderConfiguration,
     service: S, telemetry: ComponentTelemetry, endpoint: ResolvedEndpoint,
 ) where
-    S: Service<Request<B>, Response = hyper::Response<Incoming>> + Send + 'static,
+    S: Service<Request<TransactionBody<B>>, Response = hyper::Response<Incoming>> + Send + 'static,
     S::Future: Send + 'static,
     S::Error: Into<BoxError> + Send + 'static,
-    B: Body,
+    B: Body + ReadIoBuffer + Clone + Send + 'static,
 {
     let endpoint_url = endpoint.endpoint().to_string();
     debug!(
@@ -193,33 +210,48 @@ async fn run_endpoint_io_loop<S, B>(
 
     // Build our endpoint service.
     //
-    // This is where we'll modify the incoming request for our our specific endpoint, such as setting the host portion
+    // This is where we'll modify the incoming transaction for our our specific endpoint, such as setting the host portion
     // of the URI, adding the API key as a header, and so on.
     let mut service = ServiceBuilder::new()
         // Set the request's URI to the endpoint's URI, and add the API key as a header.
-        .map_request(for_resolved_endpoint::<B>(endpoint))
+        .map_request(for_resolved_endpoint(endpoint))
         // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
-        .map_request(with_version_info::<B>())
+        .map_request(with_version_info())
         .concurrency_limit(config.endpoint_concurrency())
         .service(service);
+
+    let retry_queue = RetryQueue::new(endpoint_url.clone(), config.retry().retry_queue_max_size_bytes);
+    let mut pending_transactions = PendingTransactions::new(config.endpoint_buffer_size(), retry_queue);
 
     let mut in_flight = JoinSet::new();
     let mut done = false;
 
     loop {
         select! {
-            // While we're still receiving requests, wait for the service to become ready, and then take the next
-            // request, and send it to the service.
-            svc = service.ready(), if !done => match svc {
-                Ok(svc) => match requests_rx.recv().await {
-                    Some((events, request)) => {
-                        let fut = svc.call(request).map(move |result| (events, result));
-                        in_flight.spawn(fut);
-                    }
-                    None => {
-                        done = true;
-                        debug!(endpoint = endpoint_url, "Consumed all incoming requests for endpoint I/O task. Completing any in-flight requests...");
-                    },
+            // Try and drain the next transaction from our channel, and push it into the pending transactions queue.
+            //
+            // Our goal is to read transactions off the channel as fast as possible and stick them into the pending
+            // transactions queue so that we can use that to manage our high-priority vs low-priority transactions.
+            maybe_transaction = transactions_rx.recv(), if !done => match maybe_transaction {
+                Some(transaction) => if let Err(e) = pending_transactions.push(transaction).await {
+                    error!(endpoint = endpoint_url, error = %e, "Failed to enqueue transaction.");
+                },
+                None => {
+                    done = true;
+                    debug!(endpoint = endpoint_url, "Requests channel for endpoint I/O task complete. Completing any in-flight requests...");
+                }
+            },
+
+            // While we're not done and there are pending transactions, wait for the service to become ready and then
+            // grab the next transaction to send, and start the request.
+            svc = service.ready(), if !done && !pending_transactions.is_empty() => match svc {
+                // We might not get an item from the pending transactions queue if there was only entries in the retry
+                // queue and an error occurred while trying to pop the next one out, so we just ignore that case know
+                // that we'll try again with the next transaction if pending transactions isn't empty.
+                Ok(svc) => if let Some(transaction) = pending_transactions.pop().await {
+                    let (event_count, request) = transaction.into_parts();
+                    let fut = svc.call(request).map(move |result| (event_count, result));
+                    in_flight.spawn(fut);
                 },
                 Err(e) => {
                     let e: tower::BoxError = e.into();
@@ -276,4 +308,64 @@ async fn run_endpoint_io_loop<S, B>(
 
     // Signal to the main I/O task that we've finished.
     task_barrier.wait().await;
+}
+
+struct PendingTransactions<T> {
+    high_priority: VecDeque<T>,
+    low_priority: RetryQueue<T>,
+}
+
+impl<T: Retryable> PendingTransactions<T> {
+    /// Creates a new `PendingTransactions` instance.
+    ///
+    /// The high-priority queue will have a maximum capacity of `max_enqueued`, and the retry queue will be used as the
+    /// low-priority queue.
+    pub fn new(max_enqueued: usize, retry_queue: RetryQueue<T>) -> Self {
+        Self {
+            high_priority: VecDeque::with_capacity(max_enqueued),
+            low_priority: retry_queue,
+        }
+    }
+
+    /// Returns `true` if there are no pending transactions.
+    ///
+    /// This includes both the high-priority and low-priority queues.
+    pub fn is_empty(&self) -> bool {
+        self.high_priority.is_empty() && self.low_priority.is_empty()
+    }
+
+    /// Pushes a transaction into the queue.
+    ///
+    /// If the high-priority queue is full, the transaction will be pushed into the low-priority queue.
+    pub async fn push(&mut self, transaction: T) -> Result<(), GenericError> {
+        if self.high_priority.len() < self.high_priority.capacity() {
+            self.high_priority.push_back(transaction);
+        } else {
+            self.low_priority.push(transaction).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Pops the next transaction from the queue.
+    ///
+    /// The high-priority queue is drained first before attempting to pop from the low-priority queue.
+    pub async fn pop(&mut self) -> Option<T> {
+        // We bias towards handling enqueued transactions first, since those are our "high priority" transactions, and we
+        // want to keep them flowing as fast as possible.
+        loop {
+            if let Some(transaction) = self.high_priority.pop_front() {
+                return Some(transaction);
+            }
+
+            match self.low_priority.pop().await {
+                Ok(Some(transaction)) => return Some(transaction),
+                Ok(None) => return None,
+                Err(e) => {
+                    error!(error = %e, "Failed to pop transaction from low-priority queue.");
+                    continue;
+                }
+            }
+        }
+    }
 }

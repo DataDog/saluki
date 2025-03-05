@@ -23,6 +23,10 @@ const fn default_request_recovery_reset() -> bool {
     false
 }
 
+const fn default_retry_queue_max_size_bytes() -> u64 {
+    15 * 1024 * 1024
+}
+
 /// Datadog Agent-specific forwarder retry configuration.
 #[derive(Clone, Deserialize)]
 pub struct RetryConfiguration {
@@ -65,9 +69,19 @@ pub struct RetryConfiguration {
 
     /// Whether or not a successful request should completely the error count.
     ///
-    /// Defaults to `false``.
+    /// Defaults to `false`.
     #[serde(default = "default_request_recovery_reset", rename = "forwarder_recovery_reset")]
     recovery_reset: bool,
+
+    /// The maximum in-memory size of the retry queue, in bytes.
+    ///
+    /// Defaults to 15MiB.
+    #[serde(
+        rename = "forwarder_retry_queue_payloads_max_size",
+        alias = "forwarder_retry_queue_max_size",
+        default = "default_retry_queue_max_size_bytes"
+    )]
+    pub retry_queue_max_size_bytes: u64,
 }
 
 impl RetryConfiguration {

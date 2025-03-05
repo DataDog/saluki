@@ -19,6 +19,7 @@ use tokio::{select, time::sleep};
 use tracing::{debug, error};
 
 use super::common::{config::ForwarderConfiguration, io::TransactionForwarder, telemetry::ComponentTelemetry};
+use crate::destinations::datadog::common::transaction::Transaction;
 
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
@@ -236,7 +237,10 @@ where
 
                                 for maybe_request in maybe_requests {
                                     match maybe_request {
-                                        Ok((events, request)) => forwarder_handle.send_request(events, request).await?,
+                                        Ok((events, request)) => {
+                                            let transaction = Transaction::from_original(events, request);
+                                            forwarder_handle.send_transaction(transaction).await?
+                                        },
                                         Err(e) => {
                                             // TODO: Increment a counter here that metrics were dropped due to a flush failure.
                                             if e.is_recoverable() {
@@ -282,7 +286,8 @@ where
                         match maybe_request {
                             Ok((events, request)) => {
                                 debug!("Flushed request from series request builder. Sending to I/O task...");
-                                forwarder_handle.send_request(events, request).await?;
+                                let transaction = Transaction::from_original(events, request);
+                                forwarder_handle.send_transaction(transaction).await?
                             },
                             Err(e) => {
                                 // TODO: Increment a counter here that metrics were dropped due to a flush failure.
@@ -301,7 +306,8 @@ where
                         match maybe_request {
                             Ok((events, request)) => {
                                 debug!("Flushed request from sketches request builder. Sending to I/O task...");
-                                forwarder_handle.send_request(events, request).await?;
+                                let transaction = Transaction::from_original(events, request);
+                                forwarder_handle.send_transaction(transaction).await?
                             },
                             Err(e) => {
                                 // TODO: Increment a counter here that metrics were dropped due to a flush failure.

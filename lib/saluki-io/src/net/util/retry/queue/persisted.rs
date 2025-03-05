@@ -80,6 +80,11 @@ where
         Ok(persisted_requests)
     }
 
+    /// Returns `true` if the queue is empty.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     /// Enqueues an entry and persists it to disk.
     ///
     /// # Errors
