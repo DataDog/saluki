@@ -8,13 +8,16 @@ use saluki_core::{
 };
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_event::{eventd::EventD, service_check::ServiceCheck, DataType, Event};
+use saluki_io::net::util::http::FixedBody;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, error};
 
-use super::common::{config::ForwarderConfiguration, io::TransactionForwarder, telemetry::ComponentTelemetry};
+use super::common::{
+    config::ForwarderConfiguration, io::TransactionForwarder, telemetry::ComponentTelemetry, transaction::Transaction,
+};
 
 static CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/json");
 
@@ -78,7 +81,7 @@ impl MemoryBounds for DatadogEventsServiceChecksConfiguration {
 }
 
 pub struct DatadogEventsServiceChecks {
-    forwarder: TransactionForwarder<String>,
+    forwarder: TransactionForwarder<FixedBody>,
 }
 
 #[async_trait]
@@ -102,19 +105,19 @@ impl Destination for DatadogEventsServiceChecks {
                         for event in event_buffer {
                             match event {
                                 Event::EventD(eventd) => {
-                                    match build_eventd_request(&eventd) {
-                                        Ok(request) => forwarder_handle.send_request(1, request).await?,
+                                    match build_eventd_transaction(&eventd) {
+                                        Ok(transaction) => forwarder_handle.send_transaction(transaction).await?,
                                         Err(e) => {
-                                            error!(error = %e, "Failed to create request for event.");
+                                            error!(error = %e, "Failed to create transaction for event.");
                                             continue;
                                         }
                                     }
                                 }
                                 Event::ServiceCheck(service_check) => {
-                                    match build_service_check_request(&service_check) {
-                                        Ok(request) => forwarder_handle.send_request(1, request).await?,
+                                    match build_service_check_transaction(&service_check) {
+                                        Ok(transaction) => forwarder_handle.send_transaction(transaction).await?,
                                         Err(e) => {
-                                            error!(error = %e, "Failed to create request for service check.");
+                                            error!(error = %e, "Failed to create transaction for service check.");
                                             continue;
                                         }
                                     }
@@ -138,23 +141,25 @@ impl Destination for DatadogEventsServiceChecks {
     }
 }
 
-fn build_request(data: String, relative_path: &'static str) -> Result<Request<String>, GenericError> {
-    Request::builder()
+fn build_transaction(data: String, relative_path: &'static str) -> Result<Transaction<FixedBody>, GenericError> {
+    let request = Request::builder()
         .method(Method::POST)
         .uri(Uri::from(PathAndQuery::from_static(relative_path)))
         .header(http::header::CONTENT_TYPE, CONTENT_TYPE_JSON.clone())
-        .body(data)
-        .error_context("Failed to build request body.")
+        .body(FixedBody::new(data))
+        .error_context("Failed to build request body.")?;
+
+    Ok(Transaction::from_original(1, request))
 }
 
-fn build_eventd_request(eventd: &EventD) -> Result<Request<String>, GenericError> {
+fn build_eventd_transaction(eventd: &EventD) -> Result<Transaction<FixedBody>, GenericError> {
     let json = serde_json::to_string(eventd).error_context("Failed to serialize eventd.")?;
-    build_request(json, "/api/v1/events")
+    build_transaction(json, "/api/v1/events")
 }
 
-fn build_service_check_request(service_check: &ServiceCheck) -> Result<Request<String>, GenericError> {
+fn build_service_check_transaction(service_check: &ServiceCheck) -> Result<Transaction<FixedBody>, GenericError> {
     let json = serde_json::to_string(service_check).error_context("Failed to serialize service check.")?;
-    build_request(json, "/api/v1/check_run")
+    build_transaction(json, "/api/v1/check_run")
 }
 
 fn get_events_checks_endpoint_name(uri: &Uri) -> Option<MetaString> {

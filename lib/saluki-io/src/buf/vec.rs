@@ -176,6 +176,11 @@ impl FrozenBytesBuffer {
     pub fn len(&self) -> usize {
         self.data.data.len() - self.data.read_idx
     }
+
+    /// Returns the total capacity of the buffer.
+    pub fn capacity(&self) -> usize {
+        self.data.data.capacity()
+    }
 }
 
 impl Buf for FrozenBytesBuffer {

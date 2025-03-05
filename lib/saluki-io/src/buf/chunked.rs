@@ -8,13 +8,13 @@ use std::{
     task::{Context, Poll},
 };
 
-use bytes::{Buf as _, BufMut as _};
+use bytes::{Buf, BufMut as _};
 use http_body::{Body, Frame, SizeHint};
 use saluki_core::pooling::ObjectPool;
 use tokio::io::AsyncWrite;
 use tokio_util::sync::ReusableBoxFuture;
 
-use super::{vec::FrozenBytesBuffer, BytesBuffer};
+use super::{vec::FrozenBytesBuffer, BytesBuffer, ReadIoBuffer};
 
 enum PollObjectPool<O>
 where
@@ -199,6 +199,37 @@ impl FrozenChunkedBytesBuffer {
     /// Returns the number of bytes written to the buffer.
     pub fn len(&self) -> usize {
         self.chunks.iter().map(|chunk| chunk.len()).sum()
+    }
+}
+
+impl ReadIoBuffer for FrozenChunkedBytesBuffer {
+    fn capacity(&self) -> usize {
+        self.chunks.iter().map(|chunk| chunk.capacity()).sum()
+    }
+}
+
+impl Buf for FrozenChunkedBytesBuffer {
+    fn remaining(&self) -> usize {
+        self.chunks.iter().map(|chunk| chunk.remaining()).sum()
+    }
+
+    fn chunk(&self) -> &[u8] {
+        self.chunks.front().map_or(&[], |chunk| chunk.chunk())
+    }
+
+    fn advance(&mut self, mut cnt: usize) {
+        while cnt > 0 {
+            let chunk = self.chunks.front_mut().expect("no chunks left");
+            let chunk_remaining = chunk.remaining();
+            if cnt < chunk_remaining {
+                chunk.advance(cnt);
+                break;
+            }
+
+            chunk.advance(chunk_remaining);
+            cnt -= chunk_remaining;
+            self.chunks.pop_front();
+        }
     }
 }
 

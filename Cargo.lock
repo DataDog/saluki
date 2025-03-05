@@ -3073,6 +3073,7 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "http-serde-ext",
  "hyper",
  "hyper-http-proxy",
  "hyper-rustls",
