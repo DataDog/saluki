@@ -67,7 +67,7 @@ pub struct RetryConfiguration {
     )]
     recovery_error_decrease_factor: u32,
 
-    /// Whether or not a successful request should completely the error count.
+    /// Whether or not a successful request should completely reset the error count.
     ///
     /// Defaults to `false`.
     #[serde(default = "default_request_recovery_reset", rename = "forwarder_recovery_reset")]
