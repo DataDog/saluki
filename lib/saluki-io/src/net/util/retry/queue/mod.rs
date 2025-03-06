@@ -77,6 +77,13 @@ where
         self.pending.is_empty() && self.persisted_pending.as_ref().is_none_or(|p| p.is_empty())
     }
 
+    /// Returns the number of entries in the queue
+    ///
+    /// This includes both in-memory and persisted entries.
+    pub fn len(&self) -> usize {
+        self.pending.len() + self.persisted_pending.as_ref().map_or(0, |p| p.len())
+    }
+
     /// Enqueues an entry.
     ///
     /// If the queue is full and the entry cannot be enqueue in-memory, and disk persistence is enabled, in-memory

@@ -1,4 +1,9 @@
-use std::{future::Future, pin::Pin, task::Poll, time::Duration};
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use http::{Request, Response, Uri};
 use hyper::body::{Body, Incoming};
@@ -66,8 +71,8 @@ where
     type Error = BoxError;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
-    fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
     }
 
     fn call(&mut self, mut req: Request<B>) -> Self::Future {

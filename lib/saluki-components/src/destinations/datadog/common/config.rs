@@ -13,7 +13,7 @@ const fn default_request_timeout_secs() -> u64 {
 }
 
 const fn default_endpoint_buffer_size() -> usize {
-    100
+    16
 }
 
 /// Forwarder configuration based on the Datadog Agent's forwarder configuration.
@@ -37,7 +37,7 @@ pub struct ForwarderConfiguration {
 
     /// Maximum number of pending requests for an individual endpoint.
     ///
-    /// Defaults to 100.
+    /// Defaults to 16.
     #[serde(default = "default_endpoint_buffer_size", rename = "forwarder_high_prio_buffer_size")]
     endpoint_buffer_size: usize,
 
