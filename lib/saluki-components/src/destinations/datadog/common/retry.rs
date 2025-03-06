@@ -81,10 +81,15 @@ pub struct RetryConfiguration {
         alias = "forwarder_retry_queue_max_size",
         default = "default_retry_queue_max_size_bytes"
     )]
-    pub retry_queue_max_size_bytes: u64,
+    retry_queue_max_size_bytes: u64,
 }
 
 impl RetryConfiguration {
+    /// Returns the maximum size of the retry queue in bytes.
+    pub fn queue_max_size_bytes(&self) -> u64 {
+        self.retry_queue_max_size_bytes
+    }
+
     /// Creates a new [`DefaultHttpRetryPolicy`] based on the forwarder configuration.
     pub fn to_default_http_retry_policy(&self) -> DefaultHttpRetryPolicy {
         let retry_backoff = ExponentialBackoff::with_jitter(
