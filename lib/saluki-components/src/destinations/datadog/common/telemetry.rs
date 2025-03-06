@@ -59,3 +59,46 @@ impl ComponentTelemetry {
         &self.http_failed_send
     }
 }
+
+/// Endpoint-specific transaction queue telemetry.
+///
+/// This type covers high-level transaction queue telemetry, such as number of queued transactions, transactions pending
+/// retry, etc.
+#[derive(Clone)]
+pub struct TransactionQueueTelemetry {
+    high_prio_queue_insertions: Counter,
+    high_prio_queue_removals: Counter,
+    low_prio_queue_insertions: Counter,
+    low_prio_queue_removals: Counter,
+}
+
+impl TransactionQueueTelemetry {
+    /// Creates a new `TransactionQueueTelemetry` instance with default tags derived from the given component context and the
+    /// endpoint URL.
+    pub fn from_builder(builder: &MetricsBuilder, endpoint_url: &str) -> Self {
+        let builder = builder.clone().add_default_tag(("endpoint", endpoint_url.to_string()));
+
+        Self {
+            high_prio_queue_insertions: builder.register_debug_counter("endpoint_high_prio_queue_insertions_total"),
+            high_prio_queue_removals: builder.register_debug_counter("endpoint_high_prio_queue_removals_total"),
+            low_prio_queue_insertions: builder.register_debug_counter("endpoint_low_prio_queue_insertions_total"),
+            low_prio_queue_removals: builder.register_debug_counter("endpoint_low_prio_queue_removals_total"),
+        }
+    }
+
+    pub fn high_prio_queue_insertions(&self) -> &Counter {
+        &self.high_prio_queue_insertions
+    }
+
+    pub fn high_prio_queue_removals(&self) -> &Counter {
+        &self.high_prio_queue_removals
+    }
+
+    pub fn low_prio_queue_insertions(&self) -> &Counter {
+        &self.low_prio_queue_insertions
+    }
+
+    pub fn low_prio_queue_removals(&self) -> &Counter {
+        &self.low_prio_queue_removals
+    }
+}

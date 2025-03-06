@@ -85,6 +85,11 @@ where
         self.entries.is_empty()
     }
 
+    /// Returns the number of entries in the queue.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
     /// Enqueues an entry and persists it to disk.
     ///
     /// # Errors
