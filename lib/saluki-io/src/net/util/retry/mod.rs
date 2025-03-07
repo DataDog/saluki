@@ -2,7 +2,7 @@ mod backoff;
 pub use self::backoff::ExponentialBackoff;
 
 mod classifier;
-pub use self::classifier::StandardHttpClassifier;
+pub use self::classifier::{RetryClassifier, StandardHttpClassifier};
 
 mod lifecycle;
 pub use self::lifecycle::StandardHttpRetryLifecycle;
