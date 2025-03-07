@@ -1,7 +1,4 @@
 [overrides]
-# `ring` has a custom license that is mostly "ISC-style" but parts of it also fall under OpenSSL licensing.
-"ring-0.17.9" = { license = "ISC AND Custom" }
-
 # `jsonpath-rust` is MIT licensed but its license file seems to not fit the precise template we match against.
 "jsonpath-rust-0.5.1" = { license = "MIT" }
 
