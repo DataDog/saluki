@@ -11,6 +11,7 @@ mod policy;
 pub use self::policy::{NoopRetryPolicy, RollingExponentialBackoffRetryPolicy};
 
 mod queue;
+pub use self::queue::{RetryQueue, Retryable};
 
 /// A batteries-included retry policy suitable for HTTP-based clients.
 pub type DefaultHttpRetryPolicy =
