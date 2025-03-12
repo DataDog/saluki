@@ -3104,6 +3104,7 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "http-serde-ext",
  "hyper",
  "hyper-proxy2",
  "hyper-rustls 0.27.5",
