@@ -5,7 +5,7 @@ use std::{
     io,
     pin::Pin,
     sync::Arc,
-    task::{ready, Context, Poll},
+    task::{Context, Poll},
 };
 
 use bytes::{Buf as _, BufMut as _};
@@ -124,21 +124,32 @@ where
     O: ObjectPool<Item = BytesBuffer> + 'static,
 {
     fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
-        while self.remaining_capacity < buf.len() {
-            let chunk = ready!(self.buffer_pool.poll_acquire(cx));
-            self.register_chunk(chunk);
-        }
-
         let mut written = 0;
 
-        while written < buf.len() && self.write_chunk_idx < self.chunks.len() {
-            // Grab the current write chunk and figure out how much available capacity it has.
+        while written < buf.len() {
+            // If we've used up all chunks or the current chunk is full, try to get a new one
+            if self.write_chunk_idx >= self.chunks.len() {
+                match self.buffer_pool.poll_acquire(cx) {
+                    Poll::Ready(chunk) => {
+                        self.register_chunk(chunk);
+                    }
+                    Poll::Pending => {
+                        // If we've written nothing yet, return Pending
+                        if written == 0 {
+                            return Poll::Pending;
+                        }
+                        // Otherwise return what we've written so far
+                        break;
+                    }
+                }
+            }
+
+            // Grab the current write chunk and figure out how much available capacity it has
             let write_chunk_idx = self.write_chunk_idx;
             let chunk = &mut self.chunks[write_chunk_idx];
             let chunk_available_len = chunk.remaining_mut();
             if chunk_available_len == 0 {
-                // No available capacity. Roll over to the next chunk. If there is no next chunk, the loop terminates
-                // and the caller needs to allocate another chunk before proceeding.
+                // No available capacity. Roll over to the next chunk.
                 self.write_chunk_idx += 1;
                 continue;
             }
