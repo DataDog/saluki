@@ -97,41 +97,33 @@ impl Destination for DatadogEventsServiceChecks {
         loop {
             select! {
                 _ = health.live() => continue,
-                maybe_events = context.events().next_ready() => match maybe_events {
-                    Some(event_buffers) => {
-                        debug!(event_buffers_len = event_buffers.len(), "Received event buffers.");
-
-                        for event_buffer in event_buffers {
-                            debug!(events_len = event_buffer.len(), "Processing event buffer.");
-
-                            for event in event_buffer {
-                                match event {
-                                    Event::EventD(eventd) => {
-                                        match build_eventd_request(&eventd) {
-                                            Ok(request) => forwarder_handle.send_request(1, request).await?,
-                                            Err(e) => {
-                                                error!(error = %e, "Failed to create request for event.");
-                                                continue;
-                                            }
+                maybe_events = context.events().next() => match maybe_events {
+                    Some(event_buffer) => {
+                        for event in event_buffer {
+                            match event {
+                                Event::EventD(eventd) => {
+                                    match build_eventd_request(&eventd) {
+                                        Ok(request) => forwarder_handle.send_request(1, request).await?,
+                                        Err(e) => {
+                                            error!(error = %e, "Failed to create request for event.");
+                                            continue;
                                         }
                                     }
-                                    Event::ServiceCheck(service_check) => {
-                                        match build_service_check_request(&service_check) {
-                                            Ok(request) => forwarder_handle.send_request(1, request).await?,
-                                            Err(e) => {
-                                                error!(error = %e, "Failed to create request for service check.");
-                                                continue;
-                                            }
+                                }
+                                Event::ServiceCheck(service_check) => {
+                                    match build_service_check_request(&service_check) {
+                                        Ok(request) => forwarder_handle.send_request(1, request).await?,
+                                        Err(e) => {
+                                            error!(error = %e, "Failed to create request for service check.");
+                                            continue;
                                         }
                                     }
-                                    _ => {
-                                        error!("Received non eventd/service checks event type.")
-                                    }
+                                }
+                                _ => {
+                                    error!("Received non eventd/service checks event type.")
                                 }
                             }
                         }
-
-                        debug!("All event buffers processed.");
                     },
                     None => break,
                 },
