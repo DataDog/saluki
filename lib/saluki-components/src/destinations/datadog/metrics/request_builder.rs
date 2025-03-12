@@ -1,5 +1,6 @@
 use std::{io, num::NonZeroU64};
 
+use async_compression::Level;
 use datadog_protos::metrics::{self as proto, Resource};
 use ddsketch_agent::DDSketch;
 use http::{uri::PathAndQuery, HeaderValue, Method, Request, Uri};
@@ -424,7 +425,7 @@ where
     O: ObjectPool<Item = BytesBuffer> + 'static,
 {
     let write_buffer = buffer_pool.acquire().await;
-    Compressor::from_scheme(CompressionScheme::zstd_default(), write_buffer)
+    Compressor::from_scheme(CompressionScheme::zstd_level(Level::Precise(9)), write_buffer)
 }
 
 enum EncodedMetric {

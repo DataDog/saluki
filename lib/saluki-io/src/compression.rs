@@ -35,6 +35,11 @@ impl CompressionScheme {
     pub const fn zstd_default() -> Self {
         Self::Zstd(Level::Default)
     }
+
+    /// Zstd compression, using the specified compression level.
+    pub const fn zstd_level(level: Level) -> Self {
+        Self::Zstd(level)
+    }
 }
 
 #[pin_project]
