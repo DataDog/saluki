@@ -115,10 +115,9 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
             MetricsEndpoint::Series,
             rb_buffer_pool.clone(),
             self.max_metrics_per_payload,
-        )
-        .await?;
+        )?;
         let sketches_request_builder =
-            RequestBuilder::new(MetricsEndpoint::Sketches, rb_buffer_pool, self.max_metrics_per_payload).await?;
+            RequestBuilder::new(MetricsEndpoint::Sketches, rb_buffer_pool, self.max_metrics_per_payload)?;
 
         let flush_timeout = match self.flush_timeout_secs {
             // We always give ourselves a minimum flush timeout of 10ms to allow for some very minimal amount of

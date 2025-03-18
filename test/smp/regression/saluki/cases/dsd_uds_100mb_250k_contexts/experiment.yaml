@@ -30,3 +30,6 @@ target:
 
     # Test out using allowing up to two concurrent requests when forwarding.
     DD_FORWARDER_NUM_WORKERS: "2"
+
+    # Additional logging for debugging.
+    DD_LOG_LEVEL: "saluki_components::destinations::datadog::metrics::request_builder=debug,info"
