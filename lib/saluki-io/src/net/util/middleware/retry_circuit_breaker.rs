@@ -370,7 +370,7 @@ mod tests {
         let svc = circuit_breaker.ready().await.expect("should never fail to be ready");
         let fut = svc.call(bad_req.clone());
         let result = fut.await;
-        assert_eq!(result, bad_req.as_open_response());
+        assert_eq!(result, bad_req.as_service_response());
     }
 
     #[tokio::test(start_paused = true)]
