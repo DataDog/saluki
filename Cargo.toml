@@ -148,6 +148,13 @@ tikv-jemallocator = { version = "0.6", default-features = false }
 axum-extra = { version = "0.9", default-features = false }
 papaya = { version = "0.2", default-features = false }
 tempfile = { version = "3", default-features = false }
+zstd-safe = { version = "7", default-features = false }
+test-strategy = "0.4"
+
+[patch.crates-io]
+# This fork adds support to query the frame progression state of a zstd compression context. We can remove this when/if
+# the upstream PR (https://github.com/gyscos/zstd-rs/pull/335) is accepted and released.
+zstd-safe = { git = "https://github.com/tobz/zstd-rs.git", branch = "tobz/expose-cctx-get-frame-progression" }
 
 [profile.release]
 lto = "thin"

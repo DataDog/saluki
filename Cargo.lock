@@ -3360,6 +3360,7 @@ dependencies = [
  "socket2",
  "stringtheory",
  "tempfile",
+ "test-strategy",
  "tokio",
  "tokio-rustls 0.26.2",
  "tokio-test",
@@ -3368,6 +3369,7 @@ dependencies = [
  "tracing",
  "triomphe",
  "url",
+ "zstd-safe",
 ]
 
 [[package]]
@@ -3773,6 +3775,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
+name = "structmeta"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e1575d8d40908d70f6fd05537266b90ae71b15dbbe7a8b7dffa2b759306d329"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "structmeta-derive",
+ "syn 2.0.99",
+]
+
+[[package]]
+name = "structmeta-derive"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "152a0b65a590ff6c3da95cabe2353ee04e6167c896b28e3b14478c2636c922fc"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.99",
+]
+
+[[package]]
 name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3857,6 +3882,18 @@ checksum = "5352447f921fda68cf61b4101566c0bdb5104eff6804d0678e5227580ab6a4e9"
 dependencies = [
  "rustix 0.38.44",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "test-strategy"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95eb2d223f5cd3ec8dd7874cf4ada95c9cf2b5ed84ecfb1046d9aefee0c28b12"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "structmeta",
+ "syn 2.0.99",
 ]
 
 [[package]]
@@ -4926,8 +4963,7 @@ dependencies = [
 [[package]]
 name = "zstd-safe"
 version = "7.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3051792fbdc2e1e143244dc28c60f73d8470e93f3f9cbd0ead44da5ed802722"
+source = "git+https://github.com/tobz/zstd-rs.git?branch=tobz%2Fexpose-cctx-get-frame-progression#4275e0dd374a4a17b43bcc76c1b40fe7258f5480"
 dependencies = [
  "zstd-sys",
 ]
@@ -4935,8 +4971,7 @@ dependencies = [
 [[package]]
 name = "zstd-sys"
 version = "2.0.14+zstd.1.5.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fb060d4926e4ac3a3ad15d864e99ceb5f343c6b34f5bd6d81ae6ed417311be5"
+source = "git+https://github.com/tobz/zstd-rs.git?branch=tobz%2Fexpose-cctx-get-frame-progression#4275e0dd374a4a17b43bcc76c1b40fe7258f5480"
 dependencies = [
  "cc",
  "pkg-config",

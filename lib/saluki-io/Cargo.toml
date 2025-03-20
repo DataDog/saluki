@@ -59,9 +59,11 @@ tracing = { workspace = true }
 # Adds support for `Arc::into_unique` to recover `UniqueArc` instances.
 triomphe = { workspace = true }
 url = { workspace = true, features = ["std"] }
+zstd-safe = { workspace = true, features = ["experimental", "std"] }
 
 [dev-dependencies]
 http-body-util = { workspace = true }
 proptest = { workspace = true }
 tempfile = { workspace = true }
+test-strategy = { workspace = true }
 tokio-test = { workspace = true }

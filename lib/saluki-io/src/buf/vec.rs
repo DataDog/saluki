@@ -3,6 +3,7 @@ use std::{mem::ManuallyDrop, sync::Arc};
 use bytes::{buf::UninitSlice, Buf, BufMut};
 use saluki_core::pooling::{helpers::pooled_newtype, Clearable, ReclaimStrategy};
 use triomphe::{Arc as TriompheArc, UniqueArc};
+use zstd_safe::WriteBuf;
 
 use super::{ClearableIoBuffer, CollapsibleReadWriteIoBuffer, ReadIoBuffer};
 
@@ -70,6 +71,27 @@ pooled_newtype! {
 }
 
 impl BytesBuffer {
+    /// Returns the number of bytes written to the buffer.
+    ///
+    /// This method does not consider the _read_ position of the buffer, only the _write_ position.
+    pub fn len(&self) -> usize {
+        self.data().data.len()
+    }
+
+    /// Returns `true` if the buffer is empty.
+    ///
+    /// This method does not consider the _read_ position of the buffer, only the _write_ position.
+    pub fn is_empty(&self) -> bool {
+        self.data().data.is_empty()
+    }
+
+    /// Returns `true` if the buffer is full.
+    ///
+    /// This method does not consider the _read_ position of the buffer, only the _write_ position.
+    pub fn is_full(&self) -> bool {
+        self.data().data.len() == self.data().data.capacity()
+    }
+
     /// Consumes this buffer and returns a read-only version of it.
     pub fn freeze(mut self) -> FrozenBytesBuffer {
         let data = self.data.take().unwrap().freeze();
@@ -147,6 +169,24 @@ impl CollapsibleReadWriteIoBuffer for BytesBuffer {
 impl ClearableIoBuffer for BytesBuffer {
     fn clear(&mut self) {
         self.data_mut().clear();
+    }
+}
+
+unsafe impl WriteBuf for BytesBuffer {
+    fn as_slice(&self) -> &[u8] {
+        self.data().data.as_slice()
+    }
+
+    fn capacity(&self) -> usize {
+        self.data().data.capacity()
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.data_mut().data.as_mut_ptr()
+    }
+
+    unsafe fn filled_until(&mut self, n: usize) {
+        self.data_mut().data.set_len(n);
     }
 }
 

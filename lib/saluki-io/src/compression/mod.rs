@@ -14,6 +14,8 @@ use pin_project::pin_project;
 use tokio::io::AsyncWrite;
 use tracing::trace;
 
+mod zstd;
+
 static CONTENT_ENCODING_DEFLATE: HeaderValue = HeaderValue::from_static("deflate");
 static CONTENT_ENCODING_ZSTD: HeaderValue = HeaderValue::from_static("zstd");
 
@@ -21,6 +23,7 @@ static CONTENT_ENCODING_ZSTD: HeaderValue = HeaderValue::from_static("zstd");
 pub enum CompressionScheme {
     /// Zlib.
     Zlib(Level),
+
     /// Zstd.
     Zstd(Level),
 }
