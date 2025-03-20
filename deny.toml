@@ -35,4 +35,9 @@ allow-git = [
 
     # Git dependency for `triomphe`, due to needing unreleased support for `Arc::into_unique`.
     "https://github.com/Manishearth/triomphe",
+
+    # Git dependency for `zstd-safe`, due to needing unreleased support for `CCtx::get_frame_progression`.
+    #
+    # We can remove this when/if the upstream PR (https://github.com/gyscos/zstd-rs/pull/335) is accepted and released.
+    "https://github.com/tobz/zstd-rs",
 ]
