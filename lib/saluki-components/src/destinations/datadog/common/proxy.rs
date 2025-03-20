@@ -1,5 +1,5 @@
 use headers::Authorization;
-use hyper_proxy2::{Intercept, Proxy};
+use hyper_http_proxy::{Intercept, Proxy};
 use saluki_error::GenericError;
 use serde::Deserialize;
 use url::Url;
@@ -20,7 +20,7 @@ impl ProxyConfiguration {
     ///
     /// # Errors
     ///
-    /// If the configured proxy URLs aree invalid, an error is returned.
+    /// If the configured proxy URLs are invalid, an error is returned.
     pub fn build(&self) -> Result<Vec<Proxy>, GenericError> {
         let mut proxies = Vec::new();
         if let Some(url) = &self.http_server {
