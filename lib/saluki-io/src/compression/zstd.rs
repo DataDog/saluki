@@ -1,5 +1,3 @@
-#![allow(warnings)]
-
 use std::io;
 
 use saluki_core::pooling::ObjectPool;
@@ -8,7 +6,7 @@ use zstd_safe::{
     CLEVEL_DEFAULT,
 };
 
-use crate::buf::{BytesBuffer, ReadWriteIoBuffer};
+use crate::buf::BytesBuffer;
 
 // Zstandard frame overhead is 4 bytes for the magic number, 14 bytes (maximum; minimum of 2 bytes) for the frame
 // header, and 4 bytes (maximum; minimum of 0 bytes) for the frame, and 3 bytes for a block header... and we always need
@@ -18,7 +16,7 @@ use crate::buf::{BytesBuffer, ReadWriteIoBuffer};
 // running block count, so this is ultimately a guess.
 const ZSTD_FRAME_OVERHEAD: usize = 4 + 14 + 4 + 3;
 
-static DEFAULT_CPARAMS: &[(&'static str, CParameter)] = &[
+static DEFAULT_CPARAMS: &[(&str, CParameter)] = &[
     // Use the "default" compression level.
     ("set compression level", CParameter::CompressionLevel(CLEVEL_DEFAULT)),
     // Enables checksumming, which adds a checksum at the end of each frame.
@@ -140,7 +138,7 @@ where
         loop {
             // When acquiring a new output buffer, or replacing a full one, we take advantage of the looping to handle
             // eventually getting to the point of returning `OutBuffer`.
-            let is_full_or_empty = self.output_buffer.as_ref().map_or(true, |b| b.is_full());
+            let is_full_or_empty = self.output_buffer.as_ref().is_none_or(|b| b.is_full());
             if !is_full_or_empty {
                 break;
             }
@@ -258,7 +256,7 @@ struct SimpleCCtx {
 
 impl SimpleCCtx {
     /// Returns the frame progression status of the compression context.
-    fn get_frame_progression(&self) -> zstd_safe::zstd_sys::ZSTD_frameProgression {
+    fn get_frame_progression(&self) -> zstd_safe::FrameProgression {
         self.cctx.get_frame_progression()
     }
 
@@ -420,11 +418,7 @@ fn custom_io_error(reason: &'static str) -> io::Error {
 mod tests {
     use std::{collections::VecDeque, ops::RangeInclusive};
 
-    use proptest::{
-        collection::{vec as arb_vec, vec_deque as arb_vecdeque},
-        prelude::*,
-        proptest,
-    };
+    use proptest::{collection::vec_deque as arb_vecdeque, prelude::*};
     use rand::{distributions::Alphanumeric, rngs::StdRng, SeedableRng as _};
     use saluki_core::pooling::FixedSizeObjectPool;
 
@@ -609,8 +603,8 @@ mod tests {
             // A simple input string with some different data in it. Small enough that it should all be buffered
             // internally and not trigger an implicit flush when writing... but will lead to enough output when we call
             // flush that it will fill up the output buffer.
-            let input_data = format!("{} my {} special {} string", i, i, i);
-            let mut input = InBuffer::around(b"hello world!");
+            let data = format!("{} my {} special {} string", i, i, i);
+            let mut input = InBuffer::around(data.as_bytes());
 
             match cctx.write_all(&mut input, &mut output) {
                 Ok(WriteStatus::Ok) => continue,
@@ -651,8 +645,8 @@ mod tests {
             // A simple input string with some different data in it. Small enough that it should all be buffered
             // internally and not trigger an implicit flush when writing... but will lead to enough output when we call
             // flush that it will fill up the output buffer.
-            let input_data = format!("{} my {} special {} string", i, i, i);
-            let mut input = InBuffer::around(b"hello world!");
+            let data = format!("{} my {} special {} string", i, i, i);
+            let mut input = InBuffer::around(data.as_bytes());
 
             match cctx.write_all(&mut input, &mut output) {
                 Ok(WriteStatus::Ok) => continue,

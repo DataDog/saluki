@@ -15,6 +15,7 @@ use tokio::io::AsyncWrite;
 use tracing::trace;
 
 mod zstd;
+pub use self::zstd::ZstdLimitedCompressor;
 
 static CONTENT_ENCODING_DEFLATE: HeaderValue = HeaderValue::from_static("deflate");
 static CONTENT_ENCODING_ZSTD: HeaderValue = HeaderValue::from_static("zstd");

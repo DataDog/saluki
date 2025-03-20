@@ -4963,7 +4963,7 @@ dependencies = [
 [[package]]
 name = "zstd-safe"
 version = "7.2.3"
-source = "git+https://github.com/tobz/zstd-rs.git?branch=tobz%2Fexpose-cctx-get-frame-progression#4275e0dd374a4a17b43bcc76c1b40fe7258f5480"
+source = "git+https://github.com/tobz/zstd-rs.git?branch=tobz%2Fexpose-cctx-get-frame-progression#76e9fe746634546e61ea9e32c71fff4076a1855e"
 dependencies = [
  "zstd-sys",
 ]
@@ -4971,7 +4971,7 @@ dependencies = [
 [[package]]
 name = "zstd-sys"
 version = "2.0.14+zstd.1.5.7"
-source = "git+https://github.com/tobz/zstd-rs.git?branch=tobz%2Fexpose-cctx-get-frame-progression#4275e0dd374a4a17b43bcc76c1b40fe7258f5480"
+source = "git+https://github.com/tobz/zstd-rs.git?branch=tobz%2Fexpose-cctx-get-frame-progression#76e9fe746634546e61ea9e32c71fff4076a1855e"
 dependencies = [
  "cc",
  "pkg-config",
