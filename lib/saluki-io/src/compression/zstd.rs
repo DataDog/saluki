@@ -9,8 +9,8 @@ use zstd_safe::{
 use crate::buf::BytesBuffer;
 
 // Zstandard frame overhead is 4 bytes for the magic number, 14 bytes (maximum; minimum of 2 bytes) for the frame
-// header, and 4 bytes (maximum; minimum of 0 bytes) for the frame, and 3 bytes for a block header... and we always need
-// at one block, so we throw that in here too.
+// header, and 4 bytes (maximum; minimum of 0 bytes) for the frame, and 3 bytes for a data block header... and a frame must
+// always have at least one data block.
 //
 // Really, we would want to calculate the data block header overhead separately but there's no way to actually get the
 // running block count, so this is ultimately a guess.
