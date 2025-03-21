@@ -1,4 +1,5 @@
 use std::{
+    fmt,
     future::Future,
     pin::Pin,
     sync::{Arc, Mutex},
@@ -7,7 +8,8 @@ use std::{
 
 use futures::FutureExt as _;
 use pin_project_lite::pin_project;
-use tower::{retry::Policy, Service};
+use tower::{retry::Policy, Layer, Service};
+use tracing::debug;
 
 /// An error from [`RetryCircuitBreaker`].
 #[derive(Debug)]
@@ -17,6 +19,31 @@ pub enum Error<E, R> {
 
     /// The circuit breaker is open and requests are being rejected.
     Open(R),
+}
+
+impl<E, R> std::error::Error for Error<E, R>
+where
+    E: std::error::Error + 'static,
+    R: fmt::Debug,
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Service(e) => Some(e),
+            Self::Open(_) => None,
+        }
+    }
+}
+
+impl<E, R> fmt::Display for Error<E, R>
+where
+    E: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Service(e) => write!(f, "service error: {}", e),
+            Self::Open(_) => write!(f, "circuit breaker open"),
+        }
+    }
 }
 
 impl<E, R> PartialEq for Error<E, R>
@@ -77,16 +104,24 @@ where
                         // breaker by setting the backoff future to use. Another request's retry decision may have
                         // already beat us to the punch, though, so don't overwrite it if it's already set.
                         if state.backoff.is_none() {
+                            debug!("no existing backoff future present, setting delay backoff");
                             state.backoff = Some(backoff.boxed());
                         }
 
                         Poll::Ready(Err(Error::Open(req)))
                     }
-                    None => Poll::Ready(result.map_err(Error::Service)),
+                    None => {
+                        debug!("request completed, no retry indicated");
+                        Poll::Ready(result.map_err(Error::Service))
+                    }
                 },
-                None => Poll::Ready(result.map_err(Error::Service)),
+                None => {
+                    debug!("request completed, but request not cloneable so returning response as-is");
+                    Poll::Ready(result.map_err(Error::Service))
+                }
             }
         } else {
+            debug!("circuit breaker open prior to call, returning error");
             Poll::Ready(Err(Error::Open(
                 this.req.take().expect("response future polled after completion"),
             )))
@@ -96,7 +131,7 @@ where
 
 struct State<P> {
     policy: P,
-    backoff: Option<Pin<Box<dyn Future<Output = ()>>>>,
+    backoff: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
 }
 
 impl<P> std::fmt::Debug for State<P>
@@ -109,6 +144,31 @@ where
             .field("policy", &self.policy)
             .field("backoff", &backoff)
             .finish()
+    }
+}
+
+/// Wraps a service in a [circuit breaker][circuit_breaker] and signals when a request must be retried at a later time.
+///
+/// [circuit_breaker]: https://en.wikipedia.org/wiki/Circuit_breaker_design_pattern
+pub struct RetryCircuitBreakerLayer<P> {
+    policy: P,
+}
+
+impl<P> RetryCircuitBreakerLayer<P> {
+    /// Creates a new [`RetryCircuitBreakerLayer`] with the given policy.
+    pub const fn new(policy: P) -> Self {
+        Self { policy }
+    }
+}
+
+impl<P, S> Layer<S> for RetryCircuitBreakerLayer<P>
+where
+    P: Clone,
+{
+    type Service = RetryCircuitBreaker<S, P>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        RetryCircuitBreaker::new(inner, self.policy.clone())
     }
 }
 
@@ -162,6 +222,8 @@ where
             if let Some(backoff) = state.backoff.as_mut() {
                 ready!(backoff.as_mut().poll(cx));
 
+                debug!("circuit breaker backoff complete");
+
                 // The backoff future has completed, so we can reset the circuit breaker state.
                 state.backoff = None;
             }
@@ -204,7 +266,7 @@ mod tests {
 
     use tokio::time::Sleep;
     use tokio_test::{assert_pending, assert_ready, assert_ready_ok};
-    use tower::ServiceExt as _;
+    use tower::{retry::Policy, ServiceExt as _};
 
     use super::*;
 
