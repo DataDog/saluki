@@ -19,8 +19,12 @@ use stringtheory::MetaString;
 use tokio::{select, time::sleep};
 use tracing::{debug, error};
 
-use super::common::{config::ForwarderConfiguration, io::TransactionForwarder, telemetry::ComponentTelemetry};
-use crate::destinations::datadog::common::transaction::Transaction;
+use super::common::{
+    config::ForwarderConfiguration,
+    io::TransactionForwarder,
+    telemetry::ComponentTelemetry,
+    transaction::{Metadata, Transaction},
+};
 
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
@@ -248,7 +252,7 @@ where
                                 for maybe_request in maybe_requests {
                                     match maybe_request {
                                         Ok((events, request)) => {
-                                            let transaction = Transaction::from_original(events, request);
+                                            let transaction = Transaction::from_original(Metadata::from_event_count(events), request);
                                             forwarder_handle.send_transaction(transaction).await?
                                         },
                                         Err(e) => {
@@ -296,7 +300,7 @@ where
                         match maybe_request {
                             Ok((events, request)) => {
                                 debug!("Flushed request from series request builder. Sending to I/O task...");
-                                let transaction = Transaction::from_original(events, request);
+                                let transaction = Transaction::from_original(Metadata::from_event_count(events), request);
                                 forwarder_handle.send_transaction(transaction).await?
                             },
                             Err(e) => {
@@ -316,7 +320,7 @@ where
                         match maybe_request {
                             Ok((events, request)) => {
                                 debug!("Flushed request from sketches request builder. Sending to I/O task...");
-                                let transaction = Transaction::from_original(events, request);
+                                let transaction = Transaction::from_original(Metadata::from_event_count(events), request);
                                 forwarder_handle.send_transaction(transaction).await?
                             },
                             Err(e) => {

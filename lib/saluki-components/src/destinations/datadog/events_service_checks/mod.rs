@@ -16,7 +16,10 @@ use tokio::select;
 use tracing::{debug, error};
 
 use super::common::{
-    config::ForwarderConfiguration, io::TransactionForwarder, telemetry::ComponentTelemetry, transaction::Transaction,
+    config::ForwarderConfiguration,
+    io::TransactionForwarder,
+    telemetry::ComponentTelemetry,
+    transaction::{Metadata, Transaction},
 };
 
 static CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/json");
@@ -149,7 +152,7 @@ fn build_transaction(data: String, relative_path: &'static str) -> Result<Transa
         .body(FixedBody::new(data))
         .error_context("Failed to build request body.")?;
 
-    Ok(Transaction::from_original(1, request))
+    Ok(Transaction::from_original(Metadata::from_event_count(1), request))
 }
 
 fn build_eventd_transaction(eventd: &EventD) -> Result<Transaction<FixedBody>, GenericError> {
