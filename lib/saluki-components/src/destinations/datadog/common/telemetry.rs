@@ -1,6 +1,8 @@
 use metrics::{Counter, Histogram};
 use saluki_metrics::MetricsBuilder;
 
+use super::transaction::Metadata;
+
 /// Component-specific telemetry.
 ///
 /// This type covers high-level component telemetry, such as events/bytes sent, tailored to the Datadog destinations and
@@ -35,28 +37,22 @@ impl ComponentTelemetry {
         }
     }
 
-    pub fn events_sent(&self) -> &Counter {
-        &self.events_sent
-    }
-
-    pub fn events_sent_batch_size(&self) -> &Histogram {
-        &self.events_sent_batch_size
-    }
-
     pub fn bytes_sent(&self) -> &Counter {
         &self.bytes_sent
-    }
-
-    pub fn events_dropped_http(&self) -> &Counter {
-        &self.events_dropped_http
     }
 
     pub fn events_dropped_encoder(&self) -> &Counter {
         &self.events_dropped_encoder
     }
 
-    pub fn http_failed_send(&self) -> &Counter {
-        &self.http_failed_send
+    pub fn track_successful_transaction(&self, metadata: &Metadata) {
+        self.events_sent.increment(metadata.event_count as u64);
+        self.events_sent_batch_size.record(metadata.event_count as f64);
+    }
+
+    pub fn track_failed_transaction(&self, metadata: &Metadata) {
+        self.http_failed_send.increment(1);
+        self.events_dropped_http.increment(metadata.event_count as u64);
     }
 }
 

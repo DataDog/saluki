@@ -116,7 +116,10 @@ where
     }
 }
 
-impl<B: Clone + ReadIoBuffer> Serialize for TransactionBody<B> {
+impl<B> Serialize for TransactionBody<B>
+where
+    B: ReadIoBuffer + Clone,
+{
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -156,6 +159,20 @@ impl<B> From<String> for TransactionBody<B> {
     }
 }
 
+/// Transaction metadata.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Metadata {
+    /// Number of events represented by this transaction.
+    pub event_count: usize,
+}
+
+impl Metadata {
+    /// Create a new `Metadata` instance with the given event count.
+    pub const fn from_event_count(event_count: usize) -> Self {
+        Self { event_count }
+    }
+}
+
 /// A generic HTTP transaction that can be serialized and deserialized.
 ///
 /// In order to support using the retry queue, which may need to serialize and deserialize the transaction to disk, we
@@ -170,9 +187,9 @@ impl<B> From<String> for TransactionBody<B> {
 #[serde(bound = "")]
 pub struct Transaction<B>
 where
-    B: Clone + ReadIoBuffer,
+    B: ReadIoBuffer + Clone,
 {
-    event_count: usize,
+    metadata: Metadata,
 
     #[serde(with = "http_serde_ext::request")]
     request: Request<TransactionBody<B>>,
@@ -180,19 +197,24 @@ where
 
 impl<B> Transaction<B>
 where
-    B: Clone + ReadIoBuffer,
+    B: ReadIoBuffer + Clone,
 {
     /// Create a new `Transaction` from an original request.
-    pub fn from_original(event_count: usize, request: Request<B>) -> Self {
+    pub fn from_original(metadata: Metadata, request: Request<B>) -> Self {
         Self {
-            event_count,
+            metadata,
             request: request.map(TransactionBody::Original),
         }
     }
 
-    /// Consumes the `Transaction` and returns the event count and original request.
-    pub fn into_parts(self) -> (usize, http::Request<TransactionBody<B>>) {
-        (self.event_count, self.request)
+    /// Reassembles a `Transaction` from a decomposed `Transaction<B>`.
+    pub fn reassemble(metadata: Metadata, request: Request<TransactionBody<B>>) -> Self {
+        Self { metadata, request }
+    }
+
+    /// Consumes the `Transaction` and returns the transaction metadata and original request.
+    pub fn into_parts(self) -> (Metadata, http::Request<TransactionBody<B>>) {
+        (self.metadata, self.request)
     }
 }
 

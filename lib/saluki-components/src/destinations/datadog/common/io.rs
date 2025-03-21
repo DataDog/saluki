@@ -12,7 +12,10 @@ use saluki_io::{
     buf::ReadIoBuffer,
     net::{
         client::http::HttpClient,
-        util::retry::{RetryQueue, Retryable},
+        util::{
+            middleware::{RetryCircuitBreakerError, RetryCircuitBreakerLayer},
+            retry::{RetryQueue, Retryable},
+        },
     },
 };
 use saluki_metrics::MetricsBuilder;
@@ -30,7 +33,7 @@ use super::{
     endpoints::ResolvedEndpoint,
     middleware::{for_resolved_endpoint, with_version_info},
     telemetry::{ComponentTelemetry, TransactionQueueTelemetry},
-    transaction::{Transaction, TransactionBody},
+    transaction::{Metadata, Transaction, TransactionBody},
 };
 
 /// A handle to the transaction forwarder.
@@ -95,25 +98,9 @@ where
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
     {
-        // TODO: Write some slightly new middleware to replace the retry middleware that still uses a retry policy, but
-        // essentially acts as a circuit breaker.
-        //
-        // We want to be able to feed it a request, and if that request _fails_ but is deemed retryable, it updates some
-        // internal state that ties the service's readiness to whether or not we're waiting to be able to try another
-        // request. Basically, the service should be not ready for as long as the retry backoff duration is.
-        //
-        // So either the future resolves with an enum variant that holds the response -- success or a non-retriable
-        // error -- or it resolves with an enum variant that indicates the circuit breaker is open, and we need to wait
-        // until the service is ready again.
-        //
-        // By doing this, we can have our service fail fast during backoff, while still getting our request back to
-        // stick it back in the retry queue, and our existing code for checking if the service is ready before
-        // dequeueing a transaction continues to work as expected, leading to us properly waiting for the computed
-        // backoff duration.
         let endpoints = config.endpoint().build_resolved_endpoints(maybe_refreshable_config)?;
         let mut client_builder = HttpClient::builder()
             .with_request_timeout(config.request_timeout())
-            .with_retry_policy(config.retry().to_default_http_retry_policy())
             .with_bytes_sent_counter(telemetry.bytes_sent().clone())
             .with_endpoint_telemetry(metrics_builder.clone(), Some(endpoint_name));
         if let Some(proxy) = config.proxy() {
@@ -170,7 +157,7 @@ async fn run_io_loop<S, B>(
 ) where
     S: Service<Request<TransactionBody<B>>, Response = Response<Incoming>> + Clone + Send + 'static,
     S::Future: Send,
-    S::Error: Send + Into<BoxError>,
+    S::Error: Into<BoxError> + Send + Sync,
     B: Body + ReadIoBuffer + Clone + Send + 'static,
 {
     // Spawn an endpoint I/O task for each endpoint we're configured to send to, which we'll forward transactions to.
@@ -224,17 +211,17 @@ async fn run_io_loop<S, B>(
 }
 
 async fn run_endpoint_io_loop<S, B>(
-    mut transactions_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, config: ForwarderConfiguration,
+    mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, config: ForwarderConfiguration,
     service: S, telemetry: ComponentTelemetry, txnq_telemetry: TransactionQueueTelemetry, endpoint: ResolvedEndpoint,
 ) where
     S: Service<Request<TransactionBody<B>>, Response = Response<Incoming>> + Send + 'static,
     S::Future: Send + 'static,
-    S::Error: Into<BoxError> + Send + 'static,
+    S::Error: Into<BoxError> + Send + Sync + 'static,
     B: Body + ReadIoBuffer + Clone + Send + 'static,
 {
     let endpoint_url = endpoint.endpoint().to_string();
     debug!(
-        endpoint = endpoint_url,
+        endpoint_url,
         num_workers = config.endpoint_concurrency(),
         "Starting endpoint I/O task."
     );
@@ -249,7 +236,10 @@ async fn run_endpoint_io_loop<S, B>(
         // Set the User-Agent and DD-Agent-Version headers indicating the version of the data plane sending the request.
         .map_request(with_version_info())
         .concurrency_limit(config.endpoint_concurrency())
-        .service(service);
+        .layer(RetryCircuitBreakerLayer::new(
+            config.retry().to_default_http_retry_policy(),
+        ))
+        .service(service.map_err(|e| e.into()));
 
     let retry_queue = RetryQueue::new(endpoint_url.clone(), config.retry().queue_max_size_bytes());
     let mut pending_txns = PendingTransactions::new(config.endpoint_buffer_size(), retry_queue, txnq_telemetry);
@@ -260,68 +250,65 @@ async fn run_endpoint_io_loop<S, B>(
     loop {
         select! {
             // Try and drain the next transaction from our channel, and push it into the pending transactions queue.
-            //
-            // Our goal is to read transactions off the channel as fast as possible and stick them into the pending
-            // transactions queue so that we can use that to manage our high-priority vs low-priority transactions.
-            maybe_transaction = transactions_rx.recv(), if !done => match maybe_transaction {
-                Some(transaction) => if let Err(e) = pending_txns.push_high_priority(transaction).await {
-                    error!(endpoint = endpoint_url, error = %e, "Failed to enqueue transaction.");
+            maybe_txn = txns_rx.recv(), if !done => match maybe_txn {
+                Some(txn) => if let Err(e) = pending_txns.push_high_priority(txn).await {
+                    error!(endpoint_url, error = %e, "Failed to enqueue transaction.");
                 },
                 None => {
+                    // Our transactions channel has been closed, so mark ourselves as done which will stop any further
+                    // transactions from being sent, but will allow in-flight transactions to complete.
                     done = true;
-                    debug!(endpoint = endpoint_url, "Requests channel for endpoint I/O task complete. Completing any in-flight requests...");
+                    debug!(endpoint_url, "Requests channel for endpoint I/O task complete. Completing any in-flight requests...");
                 }
             },
 
             // While we're not done and there are pending transactions, wait for the service to become ready and then
-            // grab the next transaction to send, and start the request.
+            // next the next available pending transaction.
             svc = service.ready(), if !done && !pending_txns.is_empty() => match svc {
-                Ok(svc) => if let Some(transaction) = pending_txns.pop().await {
-                    let (events, request) = transaction.into_parts();
-                    in_flight.spawn(svc.call(request).map(move |result| (events, result)));
+                Ok(svc) => if let Some(txn) = pending_txns.pop().await {
+                    let (metadata, request) = txn.into_parts();
+                    in_flight.spawn(svc.call(request).map(move |result| (metadata, result)));
 
-                    debug!(endpoint = endpoint_url, "Request sent.");
+                    debug!(endpoint_url, "Request sent.");
                 },
-                Err(e) => {
-                    let e: tower::BoxError = e.into();
-                    error!(endpoint = endpoint_url, error = %e, error_source = ?e.source(), "Unexpected error when querying service for readiness.");
-                    break;
+                Err(e) => match e {
+                    RetryCircuitBreakerError::Service(e) => {
+                        error!(endpoint_url, error = %e, error_source = ?e.source(), "Unexpected error when querying service for readiness.");
+                        break;
+                    },
+                    RetryCircuitBreakerError::Open(_) => unreachable!("should not get open error when querying service for readiness"),
                 }
             },
 
-            // Drive any in-flight requests to completion.
+            // Drive any in-flight transactions to completion.
             maybe_result = in_flight.join_next(), if !in_flight.is_empty() => {
                 let task_result = maybe_result.expect("in_flight marked as not being empty");
                 match task_result {
-                    Ok((events, Ok(response))) => {
-                        let status = response.status();
-                        if status.is_success() {
-                            debug!(endpoint = endpoint_url, %status, "Request completed.");
+                    Ok((metadata, result)) => match result {
+                        // We got a response -- maybe successful, maybe not -- so just process that.
+                        Ok(http_response) => process_http_response(http_response, metadata, &telemetry, &endpoint_url).await,
 
-                            telemetry.events_sent().increment(events as u64);
-                            telemetry.events_sent_batch_size().record(events as f64);
-                        } else {
-                            telemetry.http_failed_send().increment(1);
-                            telemetry.events_dropped_http().increment(events as u64);
+                        // The service itself encountered an error while sending the request or receiving the response:
+                        // connection reset by peer, I/O error, etc.
+                        Err(RetryCircuitBreakerError::Service(e)) => {
+                            telemetry.track_failed_transaction(&metadata);
+                            error!(endpoint_url, error = %e, error_source = ?e.source(), "Failed to send request.");
+                        },
 
-                            match response.into_body().collect().await {
-                                Ok(body) => {
-                                    let body = body.to_bytes();
-                                    let body_str = String::from_utf8_lossy(&body[..]);
-                                    error!(endpoint = endpoint_url, %status, "Received non-success response. Body: {}", body_str);
-                                }
-                                Err(e) => {
-                                    error!(endpoint = endpoint_url, %status, error = %e, "Failed to read response body of non-success response.");
-                                }
+                        // Our endpoint circuit breaker is open, which means this request either didn't go through at
+                        // all or needs to be retried... so we'll re-enqueue it to the low-priority queue to be retried
+                        // later.
+                        Err(RetryCircuitBreakerError::Open(req)) => {
+                            let reassembled_txn = Transaction::reassemble(metadata, req);
+                            if let Err(e) = pending_txns.push_low_priority(reassembled_txn).await {
+                                error!(endpoint_url, error = %e, "Failed to re-enqueue failed transaction.");
                             }
-                        }
-                    }
-                    Ok((_, Err(e))) => {
-                        let e: tower::BoxError = e.into();
-                        error!(endpoint = endpoint_url, error = %e, error_source = ?e.source(), "Failed to send request.");
-                    }
+                        },
+                    },
+
+                    // Our transaction task itself failed, which means something weirdly bad happened: panic, etc.
                     Err(e) => {
-                        error!(endpoint = endpoint_url, error = %e, error_source = ?e.source(), "Request task failed to run to completion.");
+                        error!(endpoint_url, error = %e, error_source = ?e.source(), "Request task failed to run to completion.");
                     }
                 }
             },
@@ -334,12 +321,36 @@ async fn run_endpoint_io_loop<S, B>(
     // TODO: Persist all entries in the retry queue to disk if disk persistence is enabled.
 
     debug!(
-        endpoint = endpoint_url,
+        endpoint_url,
         "Requests channel for endpoint I/O task complete. Synchronizing on shutdown."
     );
 
     // Signal to the main I/O task that we've finished.
     task_barrier.wait().await;
+}
+
+async fn process_http_response(
+    response: Response<Incoming>, metadata: Metadata, telemetry: &ComponentTelemetry, endpoint_url: &str,
+) {
+    let status = response.status();
+    if status.is_success() {
+        debug!(endpoint_url, %status, "Request completed.");
+
+        telemetry.track_successful_transaction(&metadata);
+    } else {
+        telemetry.track_failed_transaction(&metadata);
+
+        match response.into_body().collect().await {
+            Ok(body) => {
+                let body = body.to_bytes();
+                let body_str = String::from_utf8_lossy(&body[..]);
+                error!(endpoint_url, %status, "Received non-success response. Body: {}", body_str);
+            }
+            Err(e) => {
+                error!(endpoint_url, %status, error = %e, "Failed to read response body of non-success response.");
+            }
+        }
+    }
 }
 
 /// A queue of pending transactions waiting to be sent.
@@ -399,6 +410,19 @@ impl<T: Retryable> PendingTransactions<T> {
                 "Enqueued pending transaction to low-priority queue."
             );
         }
+
+        Ok(())
+    }
+
+    /// Pushes a low-priority transaction into the queue.
+    pub async fn push_low_priority(&mut self, transaction: T) -> Result<(), GenericError> {
+        self.low_priority.push(transaction).await?;
+        self.telemetry.low_prio_queue_insertions().increment(1);
+
+        debug!(
+            low_prio_queue_len = self.low_priority.len(),
+            "Enqueued pending transaction to low-priority queue."
+        );
 
         Ok(())
     }
