@@ -23,7 +23,7 @@ use super::common::{config::ForwarderConfiguration, io::TransactionForwarder, te
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
 
-const RB_BUFFER_POOL_COUNT: usize = 128;
+const RB_BUFFER_POOL_COUNT: usize = 512;
 const RB_BUFFER_POOL_BUF_SIZE: usize = 32_768;
 
 const fn default_max_metrics_per_payload() -> usize {
@@ -115,10 +115,9 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
             MetricsEndpoint::Series,
             rb_buffer_pool.clone(),
             self.max_metrics_per_payload,
-        )
-        .await?;
+        )?;
         let sketches_request_builder =
-            RequestBuilder::new(MetricsEndpoint::Sketches, rb_buffer_pool, self.max_metrics_per_payload).await?;
+            RequestBuilder::new(MetricsEndpoint::Sketches, rb_buffer_pool, self.max_metrics_per_payload)?;
 
         let flush_timeout = match self.flush_timeout_secs {
             // We always give ourselves a minimum flush timeout of 10ms to allow for some very minimal amount of

@@ -1,4 +1,8 @@
-use std::{io, num::NonZeroU64};
+use std::{
+    io,
+    num::{NonZeroU64, NonZeroUsize},
+    sync::Arc,
+};
 
 use datadog_protos::metrics::{self as proto, Resource};
 use ddsketch_agent::DDSketch;
@@ -8,7 +12,7 @@ use saluki_context::tags::Tagged as _;
 use saluki_core::pooling::ObjectPool;
 use saluki_event::metric::*;
 use saluki_io::{
-    buf::{BytesBuffer, ChunkedBytesBuffer, ChunkedBytesBufferObjectPool, FrozenChunkedBytesBuffer},
+    buf::{BytesBuffer, ChunkedBytesBuffer, FrozenChunkedBytesBuffer},
     compression::*,
 };
 use snafu::{ResultExt, Snafu};
@@ -111,10 +115,9 @@ where
 {
     endpoint: MetricsEndpoint,
     endpoint_uri: Uri,
-    buffer_pool: ChunkedBytesBufferObjectPool<O>,
+    buffer_pool: Arc<O>,
     scratch_buf: Vec<u8>,
     compressor: Compressor<ChunkedBytesBuffer<O>>,
-    compression_estimator: CompressionEstimator,
     uncompressed_len: usize,
     compressed_len_limit: usize,
     uncompressed_len_limit: usize,
@@ -127,18 +130,17 @@ where
     O: ObjectPool<Item = BytesBuffer> + 'static,
 {
     /// Creates a new `RequestBuilder` for the given endpoint.
-    pub async fn new(
+    pub fn new(
         endpoint: MetricsEndpoint, buffer_pool: O, max_metrics_per_payload: usize,
     ) -> Result<Self, RequestBuilderError> {
-        let chunked_buffer_pool = ChunkedBytesBufferObjectPool::new(buffer_pool);
-        let compressor = create_compressor(&chunked_buffer_pool).await;
+        let buffer_pool = Arc::new(buffer_pool);
+        let compressor = create_compressor(&buffer_pool);
         Ok(Self {
             endpoint,
             endpoint_uri: endpoint.endpoint_uri(),
-            buffer_pool: chunked_buffer_pool,
+            buffer_pool,
             scratch_buf: Vec::with_capacity(SCRATCH_BUF_CAPACITY),
             compressor,
-            compression_estimator: CompressionEstimator::default(),
             uncompressed_len: 0,
             compressed_len_limit: endpoint.compressed_size_limit(),
             uncompressed_len_limit: endpoint.uncompressed_size_limit(),
@@ -177,6 +179,10 @@ where
 
         // Make sure we haven't hit the maximum number of metrics per payload.
         if self.encoded_metrics.len() >= self.max_metrics_per_payload {
+            trace!(
+                "Hit maximum number ({}) of metrics per payload.",
+                self.max_metrics_per_payload
+            );
             return Ok(Some(metric));
         }
 
@@ -192,15 +198,10 @@ where
         // to the caller: this indicates that a flush must happen before trying to encode the same metric again.
         let encoded_len = self.scratch_buf.len();
         let new_uncompressed_len = self.uncompressed_len + encoded_len;
-        if new_uncompressed_len > self.uncompressed_len_limit
-            || self
-                .compression_estimator
-                .would_write_exceed_threshold(encoded_len, self.compressed_len_limit)
-        {
+        if new_uncompressed_len > self.uncompressed_len_limit {
             trace!(
                 encoded_len,
                 uncompressed_len = self.uncompressed_len,
-                estimated_compressed_len = self.compression_estimator.estimated_len(),
                 endpoint = ?self.endpoint,
                 "Metric would exceed endpoint size limits."
             );
@@ -209,14 +210,13 @@ where
 
         // Write the scratch buffer to the compressor.
         self.compressor.write_all(&self.scratch_buf[..]).await.context(Io)?;
-        self.compression_estimator.track_write(&self.compressor, encoded_len);
         self.uncompressed_len += encoded_len;
         self.encoded_metrics.push(metric);
 
         trace!(
             encoded_len,
             uncompressed_len = self.uncompressed_len,
-            estimated_compressed_len = self.compression_estimator.estimated_len(),
+            //estimated_compressed_len = self.compression_estimator.estimated_len(),
             "Wrote metric to compressor."
         );
 
@@ -234,7 +234,10 @@ where
     ///
     /// If an error occurs while finalizing the compressor or creating the request, an error will be returned.
     pub async fn flush(&mut self) -> Vec<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError>> {
+        debug!(endpoint = ?self.endpoint, "Flushing request builder.");
+
         if self.uncompressed_len == 0 {
+            debug!(endpoint = ?self.endpoint, "No data to flush.");
             return vec![];
         }
 
@@ -243,15 +246,14 @@ where
         let uncompressed_len = self.uncompressed_len;
         self.uncompressed_len = 0;
 
-        self.compression_estimator.reset();
-
-        let new_compressor = create_compressor(&self.buffer_pool).await;
+        let new_compressor = create_compressor(&self.buffer_pool);
         let mut compressor = std::mem::replace(&mut self.compressor, new_compressor);
         if let Err(e) = compressor.flush().await.context(Io) {
             let metrics_dropped = self.clear_encoded_metrics();
 
             // TODO: Propagate the number of metrics dropped in the returned error itself rather than logging here.
             error!(
+                endpoint = ?self.endpoint,
                 metrics_dropped,
                 "Failed to finalize compressor while building request. Metrics have been dropped."
             );
@@ -276,6 +278,8 @@ where
         let compressed_len = buffer.len();
         let compressed_limit = self.compressed_len_limit;
         if compressed_len > compressed_limit {
+            drop(buffer);
+
             // Single metric is unable to be split.
             if self.encoded_metrics.len() == 1 {
                 let _ = self.clear_encoded_metrics();
@@ -286,7 +290,18 @@ where
                 })];
             }
 
-            return self.split_request().await;
+            // Calculate the number of splits we need to make to get each request payload under the compressed size
+            // limit, based on how large the current payload was versus the limit. We round up to ensure we don't
+            // under-split.
+            //
+            // This isn't guaranteed to be the most efficient way to split the payloads, and some chunks may still end
+            // up being too big, but we're aiming for a best-effort approach here.
+            let mandatory_splits = compressed_len.div_ceil(compressed_limit);
+            let splits = NonZeroUsize::new(mandatory_splits + 1).expect("input value is always at least one");
+
+            debug!(endpoint = ?self.endpoint, compressed_len, compressed_limit, splits, "Encountered oversized request. Splitting.");
+
+            return self.split_request(splits).await;
         }
 
         let metrics_written = self.clear_encoded_metrics();
@@ -301,19 +316,21 @@ where
         len
     }
 
-    async fn split_request(&mut self) -> Vec<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError>> {
+    async fn split_request(
+        &mut self, splits: NonZeroUsize,
+    ) -> Vec<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError>> {
         // Nothing to do if we have no encoded metrics.
         let mut requests = Vec::new();
         if self.encoded_metrics.is_empty() {
             return requests;
         }
 
-        // We're going to attempt to split all of the previously-encoded metrics between two _new_ compressed payloads,
-        // with the goal that each payload will be under the compressed size limit.
-        //
-        // We achieve this by temporarily consuming the "encoded metrics" buffer, feeding the first half of it back to
-        // ourselves by re-encoding and then flushing, and then doing the same thing with the second half.  If either
-        // half fails to properly encode, we give up entirely.
+        debug!(endpoint = ?self.endpoint, splits, "Splitting oversized request.");
+
+        // We're going to attempt to split all of the previously-encoded metrics between `splits` compressed payloads,
+        // with the goal that each payload will be under the compressed size limit. We achieve this by temporarily
+        // consuming the "encoded metrics" buffer, splitting it into `splits` parts, and encoding each chunk into its
+        // own request.
         //
         // We specifically manage the control flow so that we always restore the original "encoded metrics" buffer to
         // the builder (albeit cleared) before returning, so that we don't waste its allocation as it's been sized up
@@ -321,22 +338,22 @@ where
         //
         // We can do this by swapping it out with a new `Vec<Metric>` since empty vectors don't allocate at all.
         let mut encoded_metrics = std::mem::take(&mut self.encoded_metrics);
-        let encoded_metrics_pivot = encoded_metrics.len() / 2;
-
-        let first_half_encoded_metrics = &encoded_metrics[0..encoded_metrics_pivot];
-        let second_half_encoded_metrics = &encoded_metrics[encoded_metrics_pivot..];
+        let mut chunk_size = encoded_metrics.len() / splits.get();
+        if encoded_metrics.len() % splits.get() > 0 {
+            chunk_size += 1;
+        };
+        let chunked_metrics = encoded_metrics.chunks(chunk_size);
 
         // TODO: We're duplicating functionality here between `encode`/`flush`, but this makes it a lot easier to skip
         // over the normal behavior that would do all the storing of encoded metrics, trying to split the payload, etc,
         // since we want to avoid that and avoid any recursion in general.
         //
         // We should consider if there's a better way to split out some of this into common methods or something.
-        if let Some(request) = self.try_split_request(first_half_encoded_metrics).await {
-            requests.push(request);
-        }
-
-        if let Some(request) = self.try_split_request(second_half_encoded_metrics).await {
-            requests.push(request);
+        for (i, subchunk) in chunked_metrics.enumerate() {
+            if let Some(request) = self.try_split_request(subchunk).await {
+                debug!(endpoint = ?self.endpoint, subchunk_idx = i, subchunk_len = subchunk.len(), "Successfully built split request.");
+                requests.push(request);
+            }
         }
 
         // Restore our original "encoded metrics" buffer before finishing up, but also clear it.
@@ -350,7 +367,7 @@ where
         &mut self, metrics: &[Metric],
     ) -> Option<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError>> {
         let mut uncompressed_len = 0;
-        let mut compressor = create_compressor(&self.buffer_pool).await;
+        let mut compressor = create_compressor(&self.buffer_pool);
 
         for metric in metrics {
             // Encode each metric and write it to our compressor.
@@ -378,7 +395,7 @@ where
             let metrics_dropped = metrics.len();
 
             // TODO: Propagate the number of metrics dropped in the returned error itself rather than logging here.
-            error!(uncompressed_len, metrics_dropped, "Uncompressed size limit exceeded while splitting request. This should never occur. Metrics have been dropped.");
+            error!(endpoint = ?self.endpoint, uncompressed_len, metrics_dropped, "Uncompressed size limit exceeded while splitting request. This should never occur. Metrics have been dropped.");
 
             return None;
         }
@@ -398,6 +415,11 @@ where
         let compressed_len = buffer.len();
         let compressed_limit = self.compressed_len_limit;
         if compressed_len > compressed_limit {
+            error!(
+                compressed_len,
+                compressed_limit, "Compressed size limit exceeded while finalizing request. This should never occur."
+            );
+
             return Err(RequestBuilderError::PayloadTooLarge {
                 compressed_size_bytes: compressed_len,
                 compressed_limit_bytes: compressed_limit,
@@ -419,12 +441,12 @@ where
     }
 }
 
-async fn create_compressor<O>(buffer_pool: &ChunkedBytesBufferObjectPool<O>) -> Compressor<ChunkedBytesBuffer<O>>
+fn create_compressor<O>(buffer_pool: &Arc<O>) -> Compressor<ChunkedBytesBuffer<O>>
 where
     O: ObjectPool<Item = BytesBuffer> + 'static,
 {
-    let write_buffer = buffer_pool.acquire().await;
-    Compressor::from_scheme(CompressionScheme::zstd_default(), write_buffer)
+    let chunked_buffer = ChunkedBytesBuffer::new(Arc::clone(buffer_pool));
+    Compressor::from_scheme(CompressionScheme::zstd_default(), chunked_buffer)
 }
 
 enum EncodedMetric {
@@ -680,7 +702,6 @@ mod tests {
         // Create a regular ol' request builder with normal (un)compressed size limits.
         let buffer_pool = create_request_builder_buffer_pool();
         let mut request_builder = RequestBuilder::new(MetricsEndpoint::Series, buffer_pool, usize::MAX)
-            .await
             .expect("should not fail to create request builder");
 
         // Encode the metrics, which should all fit into the request payload.
@@ -715,7 +736,6 @@ mod tests {
         // We should be able to encode the three metrics without issue.
         let buffer_pool = create_request_builder_buffer_pool();
         let mut request_builder = RequestBuilder::new(MetricsEndpoint::Series, buffer_pool, usize::MAX)
-            .await
             .expect("should not fail to create request builder");
 
         assert_eq!(None, request_builder.encode(counter1.clone()).await.unwrap());
@@ -727,7 +747,6 @@ mod tests {
         // We should only be able to encode two of the three metrics before we're signaled to flush.
         let buffer_pool = create_request_builder_buffer_pool();
         let mut request_builder = RequestBuilder::new(MetricsEndpoint::Series, buffer_pool, 2)
-            .await
             .expect("should not fail to create request builder");
 
         assert_eq!(None, request_builder.encode(counter1.clone()).await.unwrap());
