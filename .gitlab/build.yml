@@ -149,4 +149,4 @@ upload-adp-symbols-fips:
   needs:
     - build-adp-image-fips
   variables:
-    IMAGE_TAG: "${ADP_IMAGE_TAG_NON_FIPS}"
+    IMAGE_TAG: "${ADP_IMAGE_TAG_FIPS}"
