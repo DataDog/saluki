@@ -124,7 +124,7 @@ build-converged-adp-image:
   needs:
     - build-adp-image
   variables:
-    INTERNAL_DD_AGENT_IMAGE: "${INTERNAL_DD_AGENT_IMAGE}"
+    DD_AGENT_IMAGE: "${INTERNAL_DD_AGENT_IMAGE}"
     ADP_IMAGE: "${ADP_IMAGE_TAG_NON_FIPS}"
     CONVERGED_IMAGE_TAG: "${INTERNAL_DD_AGENT_IMAGE}-adp-${CI_COMMIT_SHORT_SHA}"
 
@@ -133,7 +133,7 @@ build-converged-adp-image-fips:
   needs:
     - build-adp-image-fips
   variables:
-    INTERNAL_DD_AGENT_IMAGE: "${INTERNAL_DD_AGENT_IMAGE_FIPS}"
+    DD_AGENT_IMAGE: "${INTERNAL_DD_AGENT_IMAGE_FIPS}"
     ADP_IMAGE: "${ADP_IMAGE_TAG_FIPS}"
     CONVERGED_IMAGE_TAG: "${INTERNAL_DD_AGENT_IMAGE_FIPS}-adp-${CI_COMMIT_SHORT_SHA}"
 
