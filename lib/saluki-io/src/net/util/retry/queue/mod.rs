@@ -15,6 +15,13 @@ pub trait Retryable: DeserializeOwned + Serialize {
     fn size_bytes(&self) -> u64;
 }
 
+impl Retryable for String {
+    fn size_bytes(&self) -> u64 {
+        self.len() as u64
+    }
+}
+
+/// A queue for storing requests to be retried.
 pub struct RetryQueue<T> {
     queue_name: String,
     pending: VecDeque<T>,
@@ -58,10 +65,23 @@ where
     pub async fn with_disk_persistence(
         mut self, root_path: PathBuf, max_disk_size_bytes: u64,
     ) -> Result<Self, GenericError> {
-        let named_root_path = root_path.join(&self.queue_name);
-        let persisted_pending = PersistedQueue::from_root_path(named_root_path, max_disk_size_bytes).await?;
+        let persisted_pending = PersistedQueue::from_root_path(root_path, max_disk_size_bytes).await?;
         self.persisted_pending = Some(persisted_pending);
         Ok(self)
+    }
+
+    /// Returns `true` if the queue is empty.
+    ///
+    /// This includes both in-memory and persisted entries.
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty() && self.persisted_pending.as_ref().is_none_or(|p| p.is_empty())
+    }
+
+    /// Returns the number of entries in the queue
+    ///
+    /// This includes both in-memory and persisted entries.
+    pub fn len(&self) -> usize {
+        self.pending.len() + self.persisted_pending.as_ref().map_or(0, |p| p.len())
     }
 
     /// Enqueues an entry.
