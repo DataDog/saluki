@@ -1,3 +1,78 @@
+.build-common-variables:
+  variables:
+    ADP_IMAGE_TAG_NON_FIPS: "${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}"
+    ADP_IMAGE_TAG_FIPS: "${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}-fips"
+    BUILD_PROFILE: "optimized-debug-release"
+    BUILD_FEATURES: "default"
+
+.build-adp-definition:
+  stage: build
+  image: ${DOCKER_BUILD_IMAGE}
+  needs:
+    - calculate-build-metadata
+  retry: 2
+  timeout: 20m
+  variables:
+    # Compiling Rust is intensive. ¯\_(ツ)_/¯
+    KUBERNETES_CPU_REQUEST: "16"
+    KUBERNETES_MEMORY_REQUEST: "8Gi"
+    KUBERNETES_MEMORY_LIMIT: "12Gi"
+  script:
+    # As it turns out, doing the multi-platform build in a single step means we're sacrificing build performance. For
+    # example, building the ARM64 image on an AMD64 runner is anywhere between 2-3x slower, which then slows downs
+    # things like the correctness test.
+    #
+    # We should consider bringing back the individual build steps, and then constructing the multi-image manifest
+    # ourselves.
+    - docker buildx build
+      --platform linux/amd64,linux/arm64
+      --file ./docker/Dockerfile.agent-data-plane
+      --tag ${ADP_IMAGE_TAG}
+      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
+      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
+      --build-arg BUILD_PROFILE=${BUILD_PROFILE}
+      --build-arg BUILD_FEATURES=${BUILD_FEATURES}
+      --build-arg APP_FULL_NAME=${APP_FULLNAME}
+      --build-arg APP_SHORT_NAME=${APP_SHORT_NAME}
+      --build-arg APP_IDENTIFIER=${APP_IDENTIFIER}
+      --build-arg APP_VERSION=${APP_VERSION}
+      --build-arg APP_GIT_HASH=${APP_GIT_HASH}
+      --build-arg APP_BUILD_TIME=${APP_BUILD_TIME}
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --label config.fips=${FIPS_ENABLED}
+      --push
+      .
+
+.build-converged-adp-definition:
+  stage: build
+  image: ${DOCKER_BUILD_IMAGE}
+  retry: 2
+  timeout: 5m
+  id_tokens:
+    DDSIGN_ID_TOKEN:
+      aud: image-integrity
+  script:
+    - docker buildx build
+      --platform linux/amd64,linux/arm64
+      --file ./docker/Dockerfile.datadog-agent
+      --metadata-file	/tmp/build.metadata
+      --build-arg "DD_AGENT_IMAGE=${DD_AGENT_IMAGE}"
+      --build-arg "ADP_IMAGE=${ADP_IMAGE}"
+      --tag "${CONVERGED_IMAGE_TAG}"
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --label target=prod
+      --push
+      .
+    - ddsign sign ${CONVERGED_IMAGE_TAG} --docker-metadata-file /tmp/build.metadata
+
 calculate-build-metadata:
   stage: build
   image: ${SALUKI_BUILD_CI_IMAGE}
@@ -9,89 +84,38 @@ calculate-build-metadata:
       dotenv: build.env
 
 build-adp-image:
-  stage: build
-  image: ${DOCKER_BUILD_IMAGE}
-  needs:
-    - calculate-build-metadata
-  retry: 2
-  timeout: 20m
+  extends: [.build-common-variables, .build-adp-definition]
   variables:
-    # Compiling Rust is intensive. ¯\_(ツ)_/¯
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_MEMORY_REQUEST: "8Gi"
-    KUBERNETES_MEMORY_LIMIT: "12Gi"
-  script:
-    # As it turns out, doing the multi-platform build in a single step means we're sacrificing build performance. For
-    # example, building the ARM64 image on an AMD64 runner is anywhere between 2-3x slower, which then slows downs
-    # things like the correctness test.
-    #
-    # We should consider bringing back the individual build steps, and then constructing the multi-image manifest
-    # ourselves.
-    - docker buildx build
-      --platform linux/amd64,linux/arm64
-      --file ./docker/Dockerfile.agent-data-plane
-      --tag ${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}
-      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
-      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
-      --build-arg BUILD_PROFILE=optimized-debug-release
-      --build-arg APP_FULL_NAME=${APP_FULLNAME}
-      --build-arg APP_SHORT_NAME=${APP_SHORT_NAME}
-      --build-arg APP_IDENTIFIER=${APP_IDENTIFIER}
-      --build-arg APP_VERSION=${APP_VERSION}
-      --build-arg APP_GIT_HASH=${APP_GIT_HASH}
-      --build-arg APP_BUILD_TIME=${APP_BUILD_TIME}
-      --label git.repository=${CI_PROJECT_NAME}
-      --label git.branch=${CI_COMMIT_REF_NAME}
-      --label git.commit=${CI_COMMIT_SHA}
-      --label ci.pipeline_id=${CI_PIPELINE_ID}
-      --label ci.job_id=${CI_JOB_ID}
-      --label config.fips=false
-      --push
-      .
+    ADP_IMAGE_TAG: "${ADP_IMAGE_TAG_NON_FIPS}"
+    FIPS_ENABLED: "false"
 
 build-adp-image-fips:
-  stage: build
-  image: ${DOCKER_BUILD_IMAGE}
-  needs:
-    - calculate-build-metadata
-  retry: 2
-  timeout: 20m
+  extends: [.build-common-variables, .build-adp-definition]
   variables:
-    # Compiling Rust is intensive. ¯\_(ツ)_/¯
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_MEMORY_REQUEST: "8Gi"
-    KUBERNETES_MEMORY_LIMIT: "12Gi"
-  script:
-    # As it turns out, doing the multi-platform build in a single step means we're sacrificing build performance. For
-    # example, building the ARM64 image on an AMD64 runner is anywhere between 2-3x slower, which then slows downs
-    # things like the correctness test.
-    #
-    # We should consider bringing back the individual build steps, and then constructing the multi-image manifest
-    # ourselves.
-    - docker buildx build
-      --platform linux/amd64,linux/arm64
-      --file ./docker/Dockerfile.agent-data-plane
-      --tag ${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}-fips
-      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
-      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
-      --build-arg BUILD_PROFILE=optimized-debug-release
-      --build-arg BUILD_FEATURES=fips
-      --build-arg APP_FULL_NAME=${APP_FULLNAME}
-      --build-arg APP_SHORT_NAME=${APP_SHORT_NAME}
-      --build-arg APP_IDENTIFIER=${APP_IDENTIFIER}
-      --build-arg APP_VERSION=${APP_VERSION}
-      --build-arg APP_GIT_HASH=${APP_GIT_HASH}
-      --build-arg APP_BUILD_TIME=${APP_BUILD_TIME}
-      --label git.repository=${CI_PROJECT_NAME}
-      --label git.branch=${CI_COMMIT_REF_NAME}
-      --label git.commit=${CI_COMMIT_SHA}
-      --label ci.pipeline_id=${CI_PIPELINE_ID}
-      --label ci.job_id=${CI_JOB_ID}
-      --label config.fips=true
-      --push
-      .
+    ADP_IMAGE_TAG: "${ADP_IMAGE_TAG_FIPS}"
+    BUILD_FEATURES: "fips"
+    FIPS_ENABLED: "true"
 
-upload-adp-debug-symbols:
+build-converged-adp-image:
+  extends: [.build-common-variables, .build-converged-adp-definition]
+  needs:
+    - build-adp-image
+  variables:
+    INTERNAL_DD_AGENT_IMAGE: "${INTERNAL_DD_AGENT_IMAGE}"
+    ADP_IMAGE: "${ADP_IMAGE_TAG_NON_FIPS}"
+    CONVERGED_IMAGE_TAG: "${INTERNAL_DD_AGENT_IMAGE}-adp-${CI_COMMIT_SHORT_SHA}"
+
+build-converged-adp-image-fips:
+  extends: [.build-common-variables, .build-converged-adp-definition]
+  needs:
+    - build-adp-image-fips
+  variables:
+    INTERNAL_DD_AGENT_IMAGE: "${INTERNAL_DD_AGENT_IMAGE_FIPS}"
+    ADP_IMAGE: "${ADP_IMAGE_TAG_FIPS}"
+    CONVERGED_IMAGE_TAG: "${INTERNAL_DD_AGENT_IMAGE_FIPS}-adp-${CI_COMMIT_SHORT_SHA}"
+
+upload-adp-symbols:
+  extends: [.build-common-variables]
   stage: build
   image: ${SALUKI_GENERAL_CI_IMAGE}
   needs:
@@ -103,11 +127,11 @@ upload-adp-debug-symbols:
     - export PROD_DD_API_KEY=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.prod_dd_api_key --with-decryption --query "Parameter.Value" --out text)
   parallel:
     matrix:
-      - IMAGE_SUFFIX: ["", "-fips"]
+      - IMAGE_TAG: ["${ADP_IMAGE_TAG_NON_FIPS}", "${ADP_IMAGE_TAG_FIPS}"]
         IMAGE_PLATFORM: ["linux/amd64", "linux/arm64"]
   script:
     # Pull the ADP container image and extract it to the filesystem so we can access the binaries.
-    - crane --platform ${IMAGE_PLATFORM} export ${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}${IMAGE_SUFFIX} /tmp/adp.tar
+    - crane --platform ${IMAGE_PLATFORM} export ${IMAGE_TAG} /tmp/adp.tar
     - mkdir /tmp/adp-image && tar -C /tmp/adp-image -x -f /tmp/adp.tar
     # Upload the debug symbols to staging.
     - DATADOG_API_KEY="${STAGING_DD_API_KEY}" DATADOG_SITE="datad0g.com" datadog-ci elf-symbols upload
@@ -117,93 +141,3 @@ upload-adp-debug-symbols:
     - DATADOG_API_KEY="${PROD_DD_API_KEY}" DATADOG_SITE="datadoghq.com" datadog-ci elf-symbols upload
       --repository-url https://github.com/DataDog/saluki
       /tmp/adp-image/usr/local/bin/agent-data-plane
-
-build-converged-adp-image:
-  stage: build
-  image: ${DOCKER_BUILD_IMAGE}
-  needs:
-    - build-adp-image
-  retry: 2
-  timeout: 5m
-  variables:
-    IMAGE_TAG: "${INTERNAL_DD_AGENT_IMAGE}-adp-${CI_COMMIT_SHORT_SHA}"
-  id_tokens:
-    DDSIGN_ID_TOKEN:
-      aud: image-integrity
-  script:
-    - docker buildx build
-      --platform linux/amd64,linux/arm64
-      --file ./docker/Dockerfile.datadog-agent
-      --metadata-file	/tmp/build.metadata
-      --build-arg "DD_AGENT_IMAGE=${INTERNAL_DD_AGENT_IMAGE}"
-      --build-arg "ADP_IMAGE=${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}"
-      --tag "${IMAGE_TAG}"
-      --label git.repository=${CI_PROJECT_NAME}
-      --label git.branch=${CI_COMMIT_REF_NAME}
-      --label git.commit=${CI_COMMIT_SHA}
-      --label ci.pipeline_id=${CI_PIPELINE_ID}
-      --label ci.job_id=${CI_JOB_ID}
-      --label target=prod
-      --push
-      .
-    - ddsign sign ${IMAGE_TAG} --docker-metadata-file /tmp/build.metadata
-
-build-converged-adp-image-fips:
-  stage: build
-  image: ${DOCKER_BUILD_IMAGE}
-  needs:
-    - build-adp-image-fips
-  retry: 2
-  timeout: 5m
-  variables:
-    IMAGE_TAG: "${INTERNAL_DD_AGENT_IMAGE_FIPS}-adp-${CI_COMMIT_SHORT_SHA}"
-  id_tokens:
-    DDSIGN_ID_TOKEN:
-      aud: image-integrity
-  script:
-    - docker buildx build
-      --platform linux/amd64,linux/arm64
-      --file ./docker/Dockerfile.datadog-agent
-      --metadata-file	/tmp/build.metadata
-      --build-arg "DD_AGENT_IMAGE=${INTERNAL_DD_AGENT_IMAGE_FIPS}"
-      --build-arg "ADP_IMAGE=${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}-fips"
-      --tag "${IMAGE_TAG}"
-      --label git.repository=${CI_PROJECT_NAME}
-      --label git.branch=${CI_COMMIT_REF_NAME}
-      --label git.commit=${CI_COMMIT_SHA}
-      --label ci.pipeline_id=${CI_PIPELINE_ID}
-      --label ci.job_id=${CI_JOB_ID}
-      --label target=prod
-      --push
-      .
-    - ddsign sign ${IMAGE_TAG} --docker-metadata-file /tmp/build.metadata
-
-build-converged-adp-image-nightly:
-  stage: build
-  image: ${DOCKER_BUILD_IMAGE}
-  needs:
-    - build-adp-image
-  retry: 2
-  timeout: 5m
-  variables:
-    IMAGE_TAG: "${INTERNAL_DD_AGENT_IMAGE_NIGHTLY}-adp-${CI_COMMIT_SHORT_SHA}"
-  id_tokens:
-    DDSIGN_ID_TOKEN:
-      aud: image-integrity
-  script:
-    - docker buildx build
-      --platform linux/amd64,linux/arm64
-      --file ./docker/Dockerfile.datadog-agent
-      --metadata-file	/tmp/build.metadata
-      --build-arg "DD_AGENT_IMAGE=${INTERNAL_DD_AGENT_IMAGE_NIGHTLY}"
-      --build-arg "ADP_IMAGE=${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}"
-      --tag "${IMAGE_TAG}"
-      --label git.repository=${CI_PROJECT_NAME}
-      --label git.branch=${CI_COMMIT_REF_NAME}
-      --label git.commit=${CI_COMMIT_SHA}
-      --label ci.pipeline_id=${CI_PIPELINE_ID}
-      --label ci.job_id=${CI_JOB_ID}
-      --label target=prod
-      --push
-      .
-    - ddsign sign ${IMAGE_TAG} --docker-metadata-file /tmp/build.metadata
