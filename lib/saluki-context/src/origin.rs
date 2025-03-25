@@ -232,6 +232,10 @@ impl OriginKey {
         opaque.hash(&mut hasher);
         Self(hasher.finish())
     }
+
+    pub(super) fn inner(&self) -> u64 {
+        self.0
+    }
 }
 
 impl std::hash::Hash for OriginKey {
