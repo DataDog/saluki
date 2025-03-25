@@ -350,6 +350,7 @@ impl ContextResolver {
             context_tags.insert_tag(tag);
         }
 
+        debug!(context_key = key.inner(), origin_key = origin_tags.key().map(|ok| ok.inner()), %context_name, %context_tags, "Resolved new context.");
         self.stats.resolved_new_context_total().increment(1);
 
         Some(Context::from_inner(ContextInner::from_parts(
@@ -421,8 +422,6 @@ impl ContextResolver {
             None => {
                 match self.create_context(context_key, name, tags, origin_tags) {
                     Some(context) => {
-                        debug!(?context_key, ?context, "Resolved new context.");
-
                         self.context_cache.insert(context_key, context.clone());
                         self.expiration.mark_entry_accessed(context_key);
 
