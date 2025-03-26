@@ -6,13 +6,13 @@
   - git fetch --verbose --deepen=999 origin ${CI_COMMIT_BRANCH} main
   - export BASELINE_SALUKI_SHA=$(git merge-base origin/main origin/${CI_COMMIT_BRANCH})
   - export COMPARISON_SALUKI_SHA="${CI_COMMIT_SHA}"
-  - export BASELINE_SALUKI_IMG="${SMP_ECR_HOST}/saluki/smp/agent-data-plane:${CI_PIPELINE_ID}-${BASELINE_SALUKI_SHA}"
-  - export COMPARISON_SALUKI_IMG="${SMP_ECR_HOST}/saluki/smp/agent-data-plane:${CI_PIPELINE_ID}-${COMPARISON_SALUKI_SHA}"
+  - export BASELINE_SALUKI_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki/smp/agent-data-plane:${CI_PIPELINE_ID}-${BASELINE_SALUKI_SHA}"
+  - export COMPARISON_SALUKI_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki/smp/agent-data-plane:${CI_PIPELINE_ID}-${COMPARISON_SALUKI_SHA}"
   - export BASELINE_DSD_VERSION="${BASE_DD_AGENT_VERSION}"
   - export COMPARISON_DSD_VERSION="${BASE_DD_AGENT_VERSION}"
   - export SOURCE_DSD_IMG="public.ecr.aws/datadog/dogstatsd:${BASE_DD_AGENT_VERSION}"
-  - export BASELINE_DSD_IMG="${SMP_ECR_HOST}/saluki/smp/dogstatsd:${BASE_DD_AGENT_VERSION}"
-  - export COMPARISON_DSD_IMG="${SMP_ECR_HOST}/saluki/smp/dogstatsd:${BASE_DD_AGENT_VERSION}"
+  - export BASELINE_DSD_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki/smp/dogstatsd:${BASE_DD_AGENT_VERSION}"
+  - export COMPARISON_DSD_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki/smp/dogstatsd:${BASE_DD_AGENT_VERSION}"
 
 build-adp-baseline-image:
   extends: .build-common-variables
@@ -96,6 +96,7 @@ build-adp-comparison-image:
 
 mirror-dsd-image-to-smp-ecr:
   stage: benchmark
+  tags: ["runner:docker"]
   needs: []
   image: "${DOCKER_BUILD_IMAGE}"
   before_script:
