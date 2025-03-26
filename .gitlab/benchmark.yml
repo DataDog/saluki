@@ -39,7 +39,7 @@ build-adp-baseline-image:
     - git fetch --all
     - git switch main
 
-    # Actually build
+    # Actually build.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx build
       --platform linux/amd64,linux/arm64
@@ -76,7 +76,7 @@ build-adp-comparison-image:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
 
-    # Actually build
+    # Actually build.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx build
       --platform linux/amd64,linux/arm64
