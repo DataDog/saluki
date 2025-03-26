@@ -97,7 +97,7 @@ build-adp-comparison-image:
 mirror-dsd-image-to-smp-ecr:
   stage: benchmark
   needs: []
-  image: "${DOCKER_BUILD_IMAGE}"
+  image: "${SALUKI_SMP_CI_IMAGE}"
   before_script:
     - *setup-smp-env
   variables:

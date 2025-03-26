@@ -1,13 +1,7 @@
 #!/usr/bin/env bash
 
 # Make sure we have the AWS CLI installed and that our named profile has been specified.
-command -v aws >/dev/null 2>&1 || { 
-    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-    unzip -qq awscliv2.zip
-    mkdir /tmp/awscli /tmp/bin
-    ./aws/install
-    rm -rf ./aws
-}
+command -v aws >/dev/null 2>&1 || { echo "AWS CLI not found. Please install it." >&2; exit 1; }
 if [[ -z "${AWS_NAMED_PROFILE}" ]]; then
     echo "\$AWS_NAMED_PROFILE must be present"
     exit 1
