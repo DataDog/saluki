@@ -1,5 +1,2 @@
 lading:
   version: 0.25.7
-target:
-  cpu_allotment: 4
-  memory_allotment: 2GiB
