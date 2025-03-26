@@ -15,7 +15,7 @@
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
-      --tag ${ADP_IMAGE_TAG}
+      --tag ${IMAGE_TAG}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
@@ -98,12 +98,12 @@ calculate-build-metadata:
 build-adp-image:
   extends: [.build-common-variables, .build-adp-definition]
   variables:
-    ADP_IMAGE_TAG: "${ADP_IMAGE_TAG}"
+    IMAGE_TAG: "${ADP_DEBUG_IMAGE_TAG}"
 
 build-adp-image-fips:
   extends: [.build-common-variables, .build-adp-definition]
   variables:
-    ADP_IMAGE_TAG: "${ADP_IMAGE_TAG_FIPS}"
+    IMAGE_TAG: "${ADP_DEBUG_IMAGE_TAG_FIPS}"
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
 
@@ -112,7 +112,7 @@ build-adp-image-release:
   rules:
     - if: !reference [.on_official_release, rules, if]
   variables:
-    ADP_IMAGE_TAG: "${ADP_RELEASE_IMAGE_TAG}"
+    IMAGE_TAG: "${ADP_RELEASE_IMAGE_TAG}"
     APP_DEV_BUILD: "false"
 
 build-adp-image-release-fips:
@@ -120,7 +120,7 @@ build-adp-image-release-fips:
   rules:
     - if: !reference [.on_official_release, rules, if]
   variables:
-    ADP_IMAGE_TAG: "${ADP_RELEASE_IMAGE_TAG_FIPS}"
+    IMAGE_TAG: "${ADP_RELEASE_IMAGE_TAG_FIPS}"
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
     APP_DEV_BUILD: "false"
