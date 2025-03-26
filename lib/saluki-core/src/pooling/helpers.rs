@@ -75,7 +75,7 @@ macro_rules! pooled {
         $($field_name:ident: $field_type:ty,)*
     }$(,)?
     clear => $clear:expr) => {
-        paste::paste! {
+        $crate::reexport::paste! {
             #[doc = "Inner representation of " $name "."]
             #[derive(Default)]
             pub struct [<$name Inner>] {
@@ -196,7 +196,7 @@ macro_rules! pooled {
 #[macro_export]
 macro_rules! pooled_newtype {
     (outer => $name:ident, inner => $inner_ty:ty $(,)?) => {
-        paste::paste! {
+        $crate::reexport::paste! {
             #[doc = "Poolable version of `" $inner_ty "`."]
             pub struct $name {
                 strategy_ref: ::std::sync::Arc<dyn $crate::pooling::ReclaimStrategy<$name> + Send + Sync>,

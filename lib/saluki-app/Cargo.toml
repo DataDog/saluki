@@ -24,7 +24,6 @@ http = { workspace = true }
 iana-time-zone = { workspace = true, optional = true }
 memory-accounting = { workspace = true, optional = true }
 metrics = { workspace = true, optional = true }
-metrics-util = { workspace = true, features = ["handles", "recency", "registry"], optional = true }
 rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
 rustls = { workspace = true, features = ["tls12"] }
 rustls-pemfile = { workspace = true, features = ["std"] }

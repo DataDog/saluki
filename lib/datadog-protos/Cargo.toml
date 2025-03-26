@@ -14,3 +14,8 @@ tonic = { workspace = true, features = ["codegen", "prost"] }
 [build-dependencies]
 protobuf-codegen = { workspace = true }
 tonic-build = { workspace = true, features = ["prost"] }
+
+# All our dependencies are used in the generated code, which `cargo-machete` can't see into, so we
+# ignore them explicitly to avoid false positives.
+[package.metadata.cargo-machete]
+ignored = ["bytes", "prost", "protobuf", "tonic"]

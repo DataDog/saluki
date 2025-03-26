@@ -8,36 +8,23 @@ repository = { workspace = true }
 [dependencies]
 ahash = { workspace = true }
 async-trait = { workspace = true }
-bytes = { workspace = true }
-bytesize = { workspace = true }
-datadog-protos = { workspace = true }
-ddsketch-agent = { workspace = true }
 futures = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
-memchr = { workspace = true, features = ["std"] }
 memory-accounting = { workspace = true }
 metrics = { workspace = true }
 metrics-util = { workspace = true, features = ["handles", "recency", "registry"] }
-papaya = { workspace = true }
 paste = { workspace = true }
 pin-project = { workspace = true }
-protobuf = { workspace = true }
-quanta = { workspace = true }
-saluki-api = { workspace = true }
 saluki-context = { workspace = true }
 saluki-error = { workspace = true }
 saluki-event = { workspace = true }
 saluki-health = { workspace = true }
 saluki-metrics = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 slab = { workspace = true }
 smallvec = { workspace = true }
 snafu = { workspace = true }
-stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-util = { workspace = true, features = ["time"] }
-tower = { workspace = true }
 tracing = { workspace = true, features = ["std"] }
 
 [dev-dependencies]

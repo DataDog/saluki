@@ -29,7 +29,6 @@ saluki-event = { workspace = true }
 saluki-health = { workspace = true }
 saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = [
@@ -38,7 +37,6 @@ tokio = { workspace = true, features = [
   "rt-multi-thread",
   "signal",
 ] }
-tokio-rustls = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["std", "v7"] }
