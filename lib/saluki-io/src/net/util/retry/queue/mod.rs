@@ -108,13 +108,16 @@ where
     /// provides priority to the most recent entries added to the queue, but allows for bursting over the configured
     /// in-memory size limit without having to immediately discard entries.
     ///
+    /// Files are stored in a subdirectory, with the same name as the given queue name, within the given `root_path`.
+    ///
     /// # Errors
     ///
     /// If there is an error initializing the disk persistence layer, an error is returned.
     pub async fn with_disk_persistence(
         mut self, root_path: PathBuf, max_disk_size_bytes: u64,
     ) -> Result<Self, GenericError> {
-        let persisted_pending = PersistedQueue::from_root_path(root_path, max_disk_size_bytes).await?;
+        let queue_root_path = root_path.join(&self.queue_name);
+        let persisted_pending = PersistedQueue::from_root_path(queue_root_path, max_disk_size_bytes).await?;
         self.persisted_pending = Some(persisted_pending);
         Ok(self)
     }
@@ -248,6 +251,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use rand::{distributions::Alphanumeric, Rng as _};
     use serde::Deserialize;
 
@@ -282,6 +287,20 @@ mod tests {
         fn size_bytes(&self) -> u64 {
             (self.name.len() + std::mem::size_of::<String>() + 4) as u64
         }
+    }
+
+    fn file_count_recursive<P: AsRef<Path>>(path: P) -> u64 {
+        let mut count = 0;
+        let entries = std::fs::read_dir(path).expect("should not fail to read directory");
+        for maybe_entry in entries {
+            let entry = maybe_entry.expect("should not fail to read directory entry");
+            if entry.file_type().expect("should not fail to get file type").is_file() {
+                count += 1;
+            } else if entry.file_type().expect("should not fail to get file type").is_dir() {
+                count += file_count_recursive(entry.path());
+            }
+        }
+        count
     }
 
     #[tokio::test]
@@ -346,5 +365,61 @@ mod tests {
             .expect("should not fail to pop data")
             .expect("should not be empty");
         assert_eq!(data2, actual);
+    }
+
+    #[tokio::test]
+    async fn flush_no_disk() {
+        let data1 = FakeData::random();
+        let data2 = FakeData::random();
+
+        // Create our retry queue such that it can hold both items.
+        let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), u64::MAX);
+
+        // Push our data to the queue.
+        let push_result1 = retry_queue.push(data1).await.expect("should not fail to push data");
+        assert_eq!(0, push_result1.items_dropped);
+        assert_eq!(0, push_result1.events_dropped);
+        let push_result2 = retry_queue.push(data2).await.expect("should not fail to push data");
+        assert_eq!(0, push_result2.items_dropped);
+        assert_eq!(0, push_result2.events_dropped);
+
+        // Flush the queue, which should drop all entries as we have no disk persistence layer configured.
+        let flush_result = retry_queue.flush().await.expect("should not fail to flush");
+        assert_eq!(2, flush_result.items_dropped);
+        assert_eq!(2, flush_result.events_dropped);
+    }
+
+    #[tokio::test]
+    async fn flush_disk() {
+        let data1 = FakeData::random();
+        let data2 = FakeData::random();
+
+        // Create our retry queue such that it can hold both items, and enable disk persistence.
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
+
+        // Just a sanity check to ensure our temp directory is empty.
+        assert_eq!(0, file_count_recursive(&root_path));
+
+        let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), u64::MAX)
+            .with_disk_persistence(root_path.clone(), u64::MAX)
+            .await
+            .expect("should not fail to create retry queue with disk persistence");
+
+        // Push our data to the queue.
+        let push_result1 = retry_queue.push(data1).await.expect("should not fail to push data");
+        assert_eq!(0, push_result1.items_dropped);
+        assert_eq!(0, push_result1.events_dropped);
+        let push_result2 = retry_queue.push(data2).await.expect("should not fail to push data");
+        assert_eq!(0, push_result2.items_dropped);
+        assert_eq!(0, push_result2.events_dropped);
+
+        // Flush the queue, which should push all entries to disk.
+        let flush_result = retry_queue.flush().await.expect("should not fail to flush");
+        assert_eq!(0, flush_result.items_dropped);
+        assert_eq!(0, flush_result.events_dropped);
+
+        // We should now have two files on disk after flushing.
+        assert_eq!(2, file_count_recursive(&root_path));
     }
 }

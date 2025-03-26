@@ -68,7 +68,7 @@ where
         // Make sure the directory exists first.
         create_directory_recursive(root_path.clone())
             .await
-            .error_context("Failed to create retry directory.")?;
+            .with_error_context(|| format!("Failed to create retry directory '{}'.", root_path.display()))?;
 
         let mut persisted_requests = Self {
             root_path,
