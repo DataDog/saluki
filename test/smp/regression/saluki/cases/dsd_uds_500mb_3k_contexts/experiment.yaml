@@ -4,6 +4,8 @@ erratic: false
 target:
   name: saluki
   command: /usr/local/bin/agent-data-plane
+  cpu_allotment: 4
+  memory_allotment: 2GiB
 
   environment:
     DD_API_KEY: foo00000001
