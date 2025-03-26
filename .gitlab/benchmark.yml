@@ -6,12 +6,13 @@
   - git fetch --verbose --deepen=999 origin ${CI_COMMIT_BRANCH} main
   - export BASELINE_SALUKI_SHA=$(git merge-base origin/main origin/${CI_COMMIT_BRANCH})
   - export COMPARISON_SALUKI_SHA="${CI_COMMIT_SHA}"
-  - export BASELINE_SALUKI_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:${CI_PIPELINE_ID}-${BASELINE_SALUKI_SHA}"
-  - export COMPARISON_SALUKI_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:${CI_PIPELINE_ID}-${COMPARISON_SALUKI_SHA}"
+  - export BASELINE_SALUKI_IMG="${SMP_ECR_HOST}/saluki/smp/agent-data-plane:${CI_PIPELINE_ID}-${BASELINE_SALUKI_SHA}"
+  - export COMPARISON_SALUKI_IMG="${SMP_ECR_HOST}/saluki/smp/agent-data-plane:${CI_PIPELINE_ID}-${COMPARISON_SALUKI_SHA}"
   - export BASELINE_DSD_VERSION="${BASE_DD_AGENT_VERSION}"
   - export COMPARISON_DSD_VERSION="${BASE_DD_AGENT_VERSION}"
-  - export BASELINE_DSD_IMG="public.ecr.aws/datadog/dogstatsd:${BASE_DD_AGENT_VERSION}"
-  - export COMPARISON_DSD_IMG="public.ecr.aws/datadog/dogstatsd:${BASE_DD_AGENT_VERSION}"
+  - export SOURCE_DSD_IMG="public.ecr.aws/datadog/dogstatsd:${BASE_DD_AGENT_VERSION}"
+  - export BASELINE_DSD_IMG="${SMP_ECR_HOST}/saluki/smp/dogstatsd:${BASE_DD_AGENT_VERSION}"
+  - export COMPARISON_DSD_IMG="${SMP_ECR_HOST}/saluki/smp/dogstatsd:${BASE_DD_AGENT_VERSION}"
 
 build-adp-baseline-image:
   extends: .build-common-variables
@@ -93,6 +94,27 @@ build-adp-comparison-image:
       --push
       .
 
+mirror-dsd-image-to-smp-ecr:
+  stage: benchmark
+  needs: []
+  image: "${DOCKER_BUILD_IMAGE}"
+  before_script:
+    - *setup-smp-env
+  variables:
+    AWS_NAMED_PROFILE: single-machine-performance
+  script:
+    # Initialize our AWS credentials.
+    - ./test/smp/configure-smp-aws-credentials.sh
+
+    # Mirror the public `dogstatsd` image to the SMP ECR as SMP expects all target images to be sourceable from their
+    # ECR instance.
+    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
+    - docker pull ${SOURCE_DSD_IMG}
+    - docker tag ${SOURCE_DSD_IMG} ${BASELINE_DSD_IMG}
+    - docker tag ${SOURCE_DSD_IMG} ${COMPARISON_DSD_IMG}
+    - docker push ${BASELINE_DSD_IMG}
+    - docker push ${COMPARISON_DSD_IMG}
+
 run-benchmarks-adp:
   stage: benchmark
   timeout: 1h
@@ -164,7 +186,8 @@ run-benchmarks-dsd:
   stage: benchmark
   timeout: 1h
   image: "${SALUKI_SMP_CI_IMAGE}"
-  needs: []
+  needs:
+    - mirror-dsd-image-to-smp-ecr
   allow_failure: true
   before_script:
     - *setup-smp-env
