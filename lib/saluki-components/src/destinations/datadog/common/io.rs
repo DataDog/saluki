@@ -323,7 +323,14 @@ async fn run_endpoint_io_loop<S, B>(
     // if we have disk persistent enabled for the retry queue.
     match pending_txns.flush().await {
         // If we successfully flushed the pending transactions, track the number of events that were dropped, if any.
-        Ok(flush_result) => telemetry.track_dropped_events(flush_result.events_dropped),
+        Ok(flush_result) => {
+            debug!(
+                items_dropped = flush_result.items_dropped,
+                events_dropped = flush_result.events_dropped,
+                "Flushed pending transactions prior to shutdown."
+            );
+            telemetry.track_dropped_events(flush_result.events_dropped);
+        }
         Err(e) => {
             error!(endpoint_url, error = %e, "Failed to flush pending transactions. Events may be permanently lost.")
         }
@@ -474,10 +481,13 @@ impl<T: Retryable> PendingTransactions<T> {
         }
     }
 
-    /// Flushes all transactions in the high-priority queue to the low-priority queue.
+    /// Flushes all transactions and finalizes the queue.
     ///
-    /// This allows for potentially capturing any pending transactions and persisting them through the retry queue's
-    /// disk persistent support, such that they can be (re)tried when the process starts again.
+    /// This will flush any pending high-priority transactions to the low-priority queue, and then flush the
+    /// low-priority queue, which will persist any transactions that are still in the queue to disk if the retry queue
+    /// has disk persistence enabled.
+    ///
+    /// If disk persistence is not enabled, all pending transactions will be dropped.
     ///
     /// # Errors
     ///
@@ -495,6 +505,10 @@ impl<T: Retryable> PendingTransactions<T> {
 
             push_result.merge(subpush_result);
         }
+
+        // Flush the low-priority queue.
+        let flush_result = self.low_priority.flush().await?;
+        push_result.merge(flush_result);
 
         Ok(push_result)
     }

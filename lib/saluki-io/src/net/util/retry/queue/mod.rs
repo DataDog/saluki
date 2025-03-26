@@ -214,6 +214,36 @@ where
 
         Ok(None)
     }
+
+    /// Flushes all entries, potentially persisting them to disk.
+    ///
+    /// When disk persistence is configured, this will flush all in-memory entries to disk. Flushing to disk still obeys
+    /// the the normal limiting behavior in terms of maximum on-disk size. When disk persistence is not enabled, all
+    /// in-memory entries will be dropped.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs while persisting an entry to disk, an error is returned.
+    pub async fn flush(mut self) -> Result<PushResult, GenericError> {
+        let mut push_result = PushResult::default();
+
+        while let Some(entry) = self.pending.pop_front() {
+            let entry_size = entry.size_bytes();
+
+            if let Some(persisted_pending) = &mut self.persisted_pending {
+                let persist_result = persisted_pending.push(entry).await?;
+                push_result.merge(persist_result);
+
+                debug!(entry.len = entry_size, "Flushed in-memory entry to disk.");
+            } else {
+                debug!(entry.len = entry_size, "Dropped in-memory entry during flush.");
+
+                push_result.track_dropped_item(entry.event_count());
+            }
+        }
+
+        Ok(push_result)
+    }
 }
 
 #[cfg(test)]
