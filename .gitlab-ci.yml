@@ -47,8 +47,8 @@ default:
 # Common build-specific variables that need to be shared across stages.
 .build-common-variables:
   variables:
-    ADP_IMAGE_TAG: "${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}"
-    ADP_IMAGE_TAG_FIPS: "${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}-fips"
+    ADP_DEBUG_IMAGE_TAG: "${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}"
+    ADP_DEBUG_IMAGE_TAG_FIPS: "${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}-fips"
     ADP_RELEASE_IMAGE_TAG: "${ADP_IMAGE_BASE}:${CI_COMMIT_TAG}-release"
     ADP_RELEASE_IMAGE_TAG_FIPS: "${ADP_IMAGE_BASE}:${CI_COMMIT_TAG}-fips-release"
     BUILD_PROFILE: "optimized-release"
