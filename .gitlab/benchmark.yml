@@ -96,7 +96,6 @@ build-adp-comparison-image:
 
 mirror-dsd-image-to-smp-ecr:
   stage: benchmark
-  tags: ["runner:docker"]
   needs: []
   image: "${DOCKER_BUILD_IMAGE}"
   before_script:
@@ -110,11 +109,8 @@ mirror-dsd-image-to-smp-ecr:
     # Mirror the public `dogstatsd` image to the SMP ECR as SMP expects all target images to be sourceable from their
     # ECR instance.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
-    - docker pull ${SOURCE_DSD_IMG}
-    - docker tag ${SOURCE_DSD_IMG} ${BASELINE_DSD_IMG}
-    - docker tag ${SOURCE_DSD_IMG} ${COMPARISON_DSD_IMG}
-    - docker push ${BASELINE_DSD_IMG}
-    - docker push ${COMPARISON_DSD_IMG}
+    - docker buildx imagetools create ${SOURCE_DSD_IMG} ${BASELINE_DSD_IMG}
+    - docker buildx imagetools create ${SOURCE_DSD_IMG}  ${COMPARISON_DSD_IMG}
 
 run-benchmarks-adp:
   stage: benchmark
