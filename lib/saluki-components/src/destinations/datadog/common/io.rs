@@ -14,7 +14,7 @@ use saluki_io::{
         client::http::HttpClient,
         util::{
             middleware::{RetryCircuitBreakerError, RetryCircuitBreakerLayer},
-            retry::{RetryQueue, Retryable},
+            retry::{PushResult, RetryQueue, Retryable},
         },
     },
 };
@@ -251,8 +251,9 @@ async fn run_endpoint_io_loop<S, B>(
         select! {
             // Try and drain the next transaction from our channel, and push it into the pending transactions queue.
             maybe_txn = txns_rx.recv(), if !done => match maybe_txn {
-                Some(txn) => if let Err(e) = pending_txns.push_high_priority(txn).await {
-                    error!(endpoint_url, error = %e, "Failed to enqueue transaction.");
+                Some(txn) => match pending_txns.push_high_priority(txn).await {
+                    Ok(push_result) => telemetry.track_dropped_events(push_result.events_dropped),
+                    Err(e) => error!(endpoint_url, error = %e, "Failed to enqueue transaction. Events may be permanently lost."),
                 },
                 None => {
                     // Our transactions channel has been closed, so mark ourselves as done which will stop any further
@@ -300,8 +301,9 @@ async fn run_endpoint_io_loop<S, B>(
                         // later.
                         Err(RetryCircuitBreakerError::Open(req)) => {
                             let reassembled_txn = Transaction::reassemble(metadata, req);
-                            if let Err(e) = pending_txns.push_low_priority(reassembled_txn).await {
-                                error!(endpoint_url, error = %e, "Failed to re-enqueue failed transaction.");
+                            match pending_txns.push_low_priority(reassembled_txn).await {
+                                Ok(push_result) => telemetry.track_dropped_events(push_result.events_dropped),
+                                Err(e) => error!(endpoint_url, error = %e, "Failed to re-enqueue failed transaction. Events may be permanently lost."),
                             }
                         },
                     },
@@ -317,8 +319,22 @@ async fn run_endpoint_io_loop<S, B>(
         }
     }
 
-    // TODO: Take all pending transactions and ensure they get pushed into the retry queue.
-    // TODO: Persist all entries in the retry queue to disk if disk persistence is enabled.
+    // Flush any outstanding transactions in the pending transactions queue, which will potentially enqueue them to disk
+    // if we have disk persistent enabled for the retry queue.
+    match pending_txns.flush().await {
+        // If we successfully flushed the pending transactions, track the number of events that were dropped, if any.
+        Ok(flush_result) => {
+            debug!(
+                items_dropped = flush_result.items_dropped,
+                events_dropped = flush_result.events_dropped,
+                "Flushed pending transactions prior to shutdown."
+            );
+            telemetry.track_dropped_events(flush_result.events_dropped);
+        }
+        Err(e) => {
+            error!(endpoint_url, error = %e, "Failed to flush pending transactions. Events may be permanently lost.")
+        }
+    }
 
     debug!(
         endpoint_url,
@@ -392,7 +408,7 @@ impl<T: Retryable> PendingTransactions<T> {
     /// Pushes a high-priority transaction into the queue.
     ///
     /// If the high-priority queue is full, the transaction will be pushed into the low-priority queue.
-    pub async fn push_high_priority(&mut self, transaction: T) -> Result<(), GenericError> {
+    pub async fn push_high_priority(&mut self, transaction: T) -> Result<PushResult, GenericError> {
         if self.high_priority.len() < self.high_priority.capacity() {
             self.high_priority.push_back(transaction);
             self.telemetry.high_prio_queue_insertions().increment(1);
@@ -401,22 +417,24 @@ impl<T: Retryable> PendingTransactions<T> {
                 high_prio_queue_len = self.high_priority.len(),
                 "Enqueued pending transaction to high-priority queue."
             );
+
+            Ok(PushResult::default())
         } else {
-            self.low_priority.push(transaction).await?;
+            let push_result = self.low_priority.push(transaction).await?;
             self.telemetry.low_prio_queue_insertions().increment(1);
 
             debug!(
                 low_prio_queue_len = self.low_priority.len(),
                 "Enqueued pending transaction to low-priority queue."
             );
-        }
 
-        Ok(())
+            Ok(push_result)
+        }
     }
 
     /// Pushes a low-priority transaction into the queue.
-    pub async fn push_low_priority(&mut self, transaction: T) -> Result<(), GenericError> {
-        self.low_priority.push(transaction).await?;
+    pub async fn push_low_priority(&mut self, transaction: T) -> Result<PushResult, GenericError> {
+        let push_result = self.low_priority.push(transaction).await?;
         self.telemetry.low_prio_queue_insertions().increment(1);
 
         debug!(
@@ -424,7 +442,7 @@ impl<T: Retryable> PendingTransactions<T> {
             "Enqueued pending transaction to low-priority queue."
         );
 
-        Ok(())
+        Ok(push_result)
     }
 
     /// Pops the next transaction from the queue.
@@ -461,5 +479,37 @@ impl<T: Retryable> PendingTransactions<T> {
                 }
             }
         }
+    }
+
+    /// Flushes all transactions and finalizes the queue.
+    ///
+    /// This will flush any pending high-priority transactions to the low-priority queue, and then flush the
+    /// low-priority queue, which will persist any transactions that are still in the queue to disk if the retry queue
+    /// has disk persistence enabled.
+    ///
+    /// If disk persistence is not enabled, all pending transactions will be dropped.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs flushing transactions to the low-priority queue, or occurs while flushing the low-priority
+    /// queue itself, an error will be returned.
+    pub async fn flush(mut self) -> Result<PushResult, GenericError> {
+        let mut push_result = PushResult::default();
+
+        // Push all high-priority transactions into the low-priority queue.
+        while let Some(transaction) = self.high_priority.pop_front() {
+            self.telemetry.high_prio_queue_removals().increment(1);
+
+            let subpush_result = self.low_priority.push(transaction).await?;
+            self.telemetry.low_prio_queue_insertions().increment(1);
+
+            push_result.merge(subpush_result);
+        }
+
+        // Flush the low-priority queue.
+        let flush_result = self.low_priority.flush().await?;
+        push_result.merge(flush_result);
+
+        Ok(push_result)
     }
 }
