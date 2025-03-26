@@ -9,15 +9,64 @@ use tracing::debug;
 
 use self::persisted::PersistedQueue;
 
+/// A container that holds events.
+///
+/// This trait is used as an incredibly generic way to expose the number of events within a "container", which we
+/// loosely define to be anything that is holding events in some form. This is primarily used to track the number of
+/// events dropped by `RetryQueue` (and `PersistedQueue`) when entries have to be dropped due to size limits.
+pub trait EventContainer {
+    /// Returns the number of events represented by this container.
+    fn event_count(&self) -> u64;
+}
+
 /// A value that can be retried.
-pub trait Retryable: DeserializeOwned + Serialize {
+pub trait Retryable: EventContainer + DeserializeOwned + Serialize {
     /// Returns the in-memory size of this value, in bytes.
     fn size_bytes(&self) -> u64;
+}
+
+impl EventContainer for String {
+    fn event_count(&self) -> u64 {
+        1
+    }
 }
 
 impl Retryable for String {
     fn size_bytes(&self) -> u64 {
         self.len() as u64
+    }
+}
+
+/// Result of a push operation.
+///
+/// As pushing items to `RetryQueue` may result in dropping older items to make room for new ones, this struct tracks
+/// the total number of items dropped, and the number of events represented by those items.
+#[derive(Default)]
+#[must_use = "`PushResult` carries information about potentially dropped items/events and should not be ignored"]
+pub struct PushResult {
+    /// Total number of items dropped.
+    pub items_dropped: u64,
+
+    /// Total number of events represented by the dropped items.
+    pub events_dropped: u64,
+}
+
+impl PushResult {
+    /// Returns `true` if any items were dropped.
+    pub fn had_drops(&self) -> bool {
+        self.items_dropped > 0
+    }
+
+    /// Merges `other` into `Self`.
+    pub fn merge(&mut self, other: Self) {
+        self.items_dropped += other.items_dropped;
+        self.events_dropped += other.events_dropped;
+    }
+
+    /// Tracks a single dropped item.
+    pub fn track_dropped_item(&mut self, event_count: u64) {
+        self.items_dropped += 1;
+        self.events_dropped += event_count;
     }
 }
 
@@ -94,7 +143,9 @@ where
     ///
     /// If the entry is too large to fit into the queue, or if there is an error when persisting entries to disk, an
     /// error is returned.
-    pub async fn push(&mut self, entry: T) -> Result<(), GenericError> {
+    pub async fn push(&mut self, entry: T) -> Result<PushResult, GenericError> {
+        let mut push_result = PushResult::default();
+
         // Make sure the entry, by itself, isn't too big to ever fit into the queue.
         let current_entry_size = entry.size_bytes();
         if current_entry_size > self.max_in_memory_bytes {
@@ -112,7 +163,8 @@ where
             let oldest_entry_size = oldest_entry.size_bytes();
 
             if let Some(persisted_pending) = &mut self.persisted_pending {
-                persisted_pending.push(oldest_entry).await?;
+                let persist_result = persisted_pending.push(oldest_entry).await?;
+                push_result.merge(persist_result);
 
                 debug!(entry.len = oldest_entry_size, "Moved in-memory entry to disk.");
             } else {
@@ -120,6 +172,8 @@ where
                     entry.len = oldest_entry_size,
                     "Dropped in-memory entry to increase available capacity."
                 );
+
+                push_result.track_dropped_item(oldest_entry.event_count());
             }
 
             self.total_in_memory_bytes -= oldest_entry_size;
@@ -129,7 +183,7 @@ where
         self.total_in_memory_bytes += current_entry_size;
         debug!(entry.len = current_entry_size, "Enqueued in-memory entry.");
 
-        Ok(())
+        Ok(push_result)
     }
 
     /// Consumes an entry.
@@ -188,6 +242,12 @@ mod tests {
         }
     }
 
+    impl EventContainer for FakeData {
+        fn event_count(&self) -> u64 {
+            1
+        }
+    }
+
     impl Retryable for FakeData {
         fn size_bytes(&self) -> u64 {
             (self.name.len() + std::mem::size_of::<String>() + 4) as u64
@@ -201,10 +261,12 @@ mod tests {
         let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), 1024);
 
         // Push our data to the queue.
-        retry_queue
+        let push_result = retry_queue
             .push(data.clone())
             .await
             .expect("should not fail to push data");
+        assert_eq!(0, push_result.items_dropped);
+        assert_eq!(0, push_result.events_dropped);
 
         // Now pop the data back out and ensure it matches what we pushed, and that the file has been removed from disk.
         let actual = retry_queue
@@ -234,13 +296,17 @@ mod tests {
         let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), 36);
 
         // Push our data to the queue.
-        retry_queue.push(data1).await.expect("should not fail to push data");
+        let push_result = retry_queue.push(data1).await.expect("should not fail to push data");
+        assert_eq!(0, push_result.items_dropped);
+        assert_eq!(0, push_result.events_dropped);
 
         // Push a second data entry, which should cause the first entry to be removed.
-        retry_queue
+        let push_result = retry_queue
             .push(data2.clone())
             .await
             .expect("should not fail to push data");
+        assert_eq!(1, push_result.items_dropped);
+        assert_eq!(1, push_result.events_dropped);
 
         // Now pop the data back out and ensure it matches the second item we pushed, indicating the first item was
         // removed from the queue to make room.

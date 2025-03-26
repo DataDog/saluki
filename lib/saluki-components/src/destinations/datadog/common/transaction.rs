@@ -7,7 +7,10 @@ use bytes::{Buf, Bytes};
 use http::Request;
 use http_body::{Body, Frame};
 use pin_project::pin_project;
-use saluki_io::{buf::ReadIoBuffer, net::util::retry::Retryable};
+use saluki_io::{
+    buf::ReadIoBuffer,
+    net::util::retry::{EventContainer, Retryable},
+};
 use serde::{ser::SerializeSeq as _, Deserialize, Serialize, Serializer};
 
 /// Data type for the body of `TransactionBody<B>`.
@@ -215,6 +218,15 @@ where
     /// Consumes the `Transaction` and returns the transaction metadata and original request.
     pub fn into_parts(self) -> (Metadata, http::Request<TransactionBody<B>>) {
         (self.metadata, self.request)
+    }
+}
+
+impl<B> EventContainer for Transaction<B>
+where
+    B: ReadIoBuffer + Clone,
+{
+    fn event_count(&self) -> u64 {
+        self.metadata.event_count as u64
     }
 }
 

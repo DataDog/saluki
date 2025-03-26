@@ -14,6 +14,7 @@ pub struct ComponentTelemetry {
     bytes_sent: Counter,
     events_dropped_http: Counter,
     events_dropped_encoder: Counter,
+    events_dropped_queue: Counter,
     http_failed_send: Counter,
 }
 
@@ -31,6 +32,10 @@ impl ComponentTelemetry {
             events_dropped_encoder: builder.register_debug_counter_with_tags(
                 "component_events_dropped_total",
                 ["intentional:false", "drop_reason:encoder_failure"],
+            ),
+            events_dropped_queue: builder.register_debug_counter_with_tags(
+                "component_events_dropped_total",
+                ["intentional:true", "drop_reason:queue_limit"],
             ),
             http_failed_send: builder
                 .register_debug_counter_with_tags("component_errors_total", ["error_type:http_send"]),
@@ -53,6 +58,10 @@ impl ComponentTelemetry {
     pub fn track_failed_transaction(&self, metadata: &Metadata) {
         self.http_failed_send.increment(1);
         self.events_dropped_http.increment(metadata.event_count as u64);
+    }
+
+    pub fn track_dropped_events(&self, event_count: u64) {
+        self.events_dropped_queue.increment(event_count);
     }
 }
 

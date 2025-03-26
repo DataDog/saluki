@@ -10,6 +10,8 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::{de::DeserializeOwned, Serialize};
 use tracing::{debug, warn};
 
+use super::{EventContainer, PushResult};
+
 /// A persisted entry.
 ///
 /// Represents the high-level metadata of a persisted entry, including the path to and size of the entry.
@@ -51,7 +53,7 @@ pub struct PersistedQueue<T> {
 
 impl<T> PersistedQueue<T>
 where
-    T: DeserializeOwned + Serialize,
+    T: EventContainer + DeserializeOwned + Serialize,
 {
     /// Creates a new `PersistedQueue` instance from the given root path and maximum size.
     ///
@@ -96,7 +98,7 @@ where
     ///
     /// If there is an error serializing the entry, or writing it to disk, or removing older entries to make space for
     /// the new entry, an error is returned.
-    pub async fn push(&mut self, entry: T) -> Result<(), GenericError> {
+    pub async fn push(&mut self, entry: T) -> Result<PushResult, GenericError> {
         // Serialize the entry to a temporary file.
         let (filename, timestamp) = generate_timestamped_filename();
         let entry_path = self.root_path.join(filename);
@@ -108,7 +110,8 @@ where
         }
 
         // Make sure we have enough space to persist the entry.
-        self.remove_until_available_space(serialized.len() as u64)
+        let push_result = self
+            .remove_until_available_space(serialized.len() as u64)
             .await
             .error_context(
                 "Failed to remove older persisted entries to make space for the incoming persisted entry.",
@@ -129,7 +132,7 @@ where
 
         debug!(entry.len = serialized.len(), "Enqueued persisted entry.");
 
-        Ok(())
+        Ok(push_result)
     }
 
     /// Consumes the oldest persisted entry on disk, if one exists.
@@ -189,21 +192,12 @@ where
             }
         }
 
-        // Sort the entries by their inherent timestamp, and then do any necessary trimming to ensure we're within our
-        // configured maximum size bound.
+        // Sort the entries by their inherent timestamp.
         entries.sort_by_key(|entry| entry.timestamp);
         self.total_on_disk_bytes = entries.iter().map(|entry| entry.size_bytes).sum();
         self.entries = entries;
 
-        self.ensure_within_size_limit().await?;
-
         Ok(())
-    }
-
-    async fn ensure_within_size_limit(&mut self) -> io::Result<()> {
-        // We just use `remove_until_available_space` with a value of 0 to remove entries until we're within the
-        // configured maximum size.
-        self.remove_until_available_space(0).await
     }
 
     /// Removes persisted entries (oldest first) until there is at least the required number of bytes in free space
@@ -212,24 +206,34 @@ where
     /// # Errors
     ///
     /// If there is an error while deleting persisted entries, an error is returned.
-    async fn remove_until_available_space(&mut self, required_bytes: u64) -> io::Result<()> {
+    async fn remove_until_available_space(&mut self, required_bytes: u64) -> Result<PushResult, GenericError> {
+        let mut push_result = PushResult::default();
+
         while !self.entries.is_empty() && self.total_on_disk_bytes + required_bytes > self.max_on_disk_bytes {
             let entry = self.entries.remove(0);
 
-            match tokio::fs::remove_file(&entry.path).await {
-                Ok(_) => {
-                    self.total_on_disk_bytes -= entry.size_bytes;
-                    debug!(entry.path = %entry.path.display(), entry.len = entry.size_bytes, "Dropped persisted entry.");
+            // Deserialize the entry, which gives us back the original event and removes the file from disk.
+            let event_count = match try_deserialize_entry::<T>(&entry).await {
+                Ok(Some(deserialized)) => deserialized.event_count(),
+                Ok(None) => {
+                    warn!(entry.path = %entry.path.display(), "Failed to find entry on disk. Persisted entry state may be inconsistent.");
+                    continue;
                 }
                 Err(e) => {
                     // We didn't delete the file, so add it back to our entries list and return the error.
                     self.entries.insert(0, entry);
                     return Err(e);
                 }
-            }
+            };
+
+            // Update our statistics.
+            self.total_on_disk_bytes -= entry.size_bytes;
+            push_result.track_dropped_item(event_count);
+
+            debug!(entry.path = %entry.path.display(), entry.len = entry.size_bytes, "Dropped persisted entry.");
         }
 
-        Ok(())
+        Ok(push_result)
     }
 }
 
@@ -347,6 +351,12 @@ mod tests {
         }
     }
 
+    impl EventContainer for FakeData {
+        fn event_count(&self) -> u64 {
+            1
+        }
+    }
+
     async fn files_in_dir(path: &Path) -> usize {
         let mut file_count = 0;
         let mut dir_reader = tokio::fs::read_dir(path).await.unwrap();
@@ -374,11 +384,13 @@ mod tests {
         assert_eq!(0, files_in_dir(&root_path).await);
 
         // Push our data to the queue and ensure it persisted it to disk.
-        persisted_queue
+        let push_result = persisted_queue
             .push(data.clone())
             .await
             .expect("should not fail to push data");
         assert_eq!(1, files_in_dir(&root_path).await);
+        assert_eq!(0, push_result.items_dropped);
+        assert_eq!(0, push_result.events_dropped);
 
         // Now pop the data back out and ensure it matches what we pushed, and that the file has been removed from disk.
         let actual = persisted_queue
@@ -431,15 +443,19 @@ mod tests {
         assert_eq!(0, files_in_dir(&root_path).await);
 
         // Push our data to the queue and ensure it persisted it to disk.
-        persisted_queue.push(data1).await.expect("should not fail to push data");
+        let push_result = persisted_queue.push(data1).await.expect("should not fail to push data");
         assert_eq!(1, files_in_dir(&root_path).await);
+        assert_eq!(0, push_result.items_dropped);
+        assert_eq!(0, push_result.events_dropped);
 
         // Push a second data entry, which should cause the first entry to be removed.
-        persisted_queue
+        let push_result = persisted_queue
             .push(data2.clone())
             .await
             .expect("should not fail to push data");
         assert_eq!(1, files_in_dir(&root_path).await);
+        assert_eq!(1, push_result.items_dropped);
+        assert_eq!(1, push_result.events_dropped);
 
         // Now pop the data back out and ensure it matches the second item we pushed -- indicating the first item was
         // removed -- and that we've consumed it, leaving no files on disk.
@@ -449,65 +465,6 @@ mod tests {
             .expect("should not fail to pop data")
             .expect("should not be empty");
         assert_eq!(data2, actual);
-        assert_eq!(0, files_in_dir(&root_path).await);
-    }
-
-    #[tokio::test]
-    async fn trim_excess_entries_on_create() {
-        let data1 = FakeData::random();
-        let data2 = FakeData::random();
-        let data3 = FakeData::random();
-
-        // Create our temporary directory and point our persisted queue at it.
-        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
-        let root_path = temp_dir.path().to_path_buf();
-
-        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(root_path.clone(), 1024)
-            .await
-            .expect("should not fail to create persisted queue");
-
-        // Ensure the directory is empty.
-        assert_eq!(0, files_in_dir(&root_path).await);
-
-        // Push all our data to the queue.
-        persisted_queue.push(data1).await.expect("should not fail to push data");
-        persisted_queue
-            .push(data2.clone())
-            .await
-            .expect("should not fail to push data");
-        persisted_queue
-            .push(data3.clone())
-            .await
-            .expect("should not fail to push data");
-        assert_eq!(3, files_in_dir(&root_path).await);
-
-        // Now recreate the persisted queue with a smaller size, which should cause the oldest entry to be removed, as
-        // we only have room for two entries based on our reduced maximum size.
-        drop(persisted_queue);
-
-        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(root_path.clone(), 64)
-            .await
-            .expect("should not fail to create persisted queue");
-
-        // Ensure we only have two entries left, and that the oldest entry was removed.
-        assert_eq!(2, files_in_dir(&root_path).await);
-
-        let actual = persisted_queue
-            .pop()
-            .await
-            .expect("should not fail to pop data")
-            .expect("should not be empty");
-        assert_eq!(data2, actual);
-
-        assert_eq!(1, files_in_dir(&root_path).await);
-
-        let actual = persisted_queue
-            .pop()
-            .await
-            .expect("should not fail to pop data")
-            .expect("should not be empty");
-        assert_eq!(data3, actual);
-
         assert_eq!(0, files_in_dir(&root_path).await);
     }
 }
