@@ -46,10 +46,6 @@ WORKDIR /adp
 COPY . /adp
 RUN cargo build --profile ${BUILD_PROFILE} --bin agent-data-plane --features ${BUILD_FEATURES}
 
-# Created a stripped version of the binary.
-RUN cp /adp/target/${BUILD_PROFILE}/agent-data-plane /adp/target/${BUILD_PROFILE}/agent-data-plane-stripped && \
-    strip --strip-debug --strip-unneeded /adp/target/${BUILD_PROFILE}/agent-data-plane-stripped
-
 # Calculate the necessary licenses that we need to include in the final image.
 FROM ${BUILD_IMAGE} AS license-builder
 
@@ -83,7 +79,6 @@ RUN test -d /usr/share/ca-certificates || (apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates=20240203~22.04.1 && \
     apt-get clean && rm -rf /var/lib/apt/lists)
 COPY --from=builder /adp/target/${BUILD_PROFILE}/agent-data-plane /usr/local/bin/agent-data-plane
-COPY --from=builder /adp/target/${BUILD_PROFILE}/agent-data-plane-stripped /usr/local/bin/agent-data-plane-stripped
 COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
 COPY --from=license-builder /licenses /opt/datadog/agent-data-plane/LICENSES
 

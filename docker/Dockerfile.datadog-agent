@@ -9,7 +9,6 @@ FROM ${ADP_IMAGE} AS adp
 FROM ${DD_AGENT_IMAGE}
 
 # Copy the ADP binary and all of the required licensing bits.
-COPY --from=adp /usr/local/bin/agent-data-plane /opt/datadog-agent/embedded/bin/agent-data-plane
 COPY --from=adp /opt/datadog/agent-data-plane /opt/datadog/agent-data-plane
 
 # Add the s6 service files for Agent Data Plane.

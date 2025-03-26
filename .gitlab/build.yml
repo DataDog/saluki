@@ -1,10 +1,3 @@
-.build-common-variables:
-  variables:
-    ADP_IMAGE_TAG_NON_FIPS: "${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}"
-    ADP_IMAGE_TAG_FIPS: "${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}-fips"
-    BUILD_PROFILE: "optimized-debug-release"
-    BUILD_FEATURES: "default"
-
 .build-adp-definition:
   stage: build
   image: ${DOCKER_BUILD_IMAGE}
@@ -17,13 +10,8 @@
     KUBERNETES_CPU_REQUEST: "16"
     KUBERNETES_MEMORY_REQUEST: "8Gi"
     KUBERNETES_MEMORY_LIMIT: "12Gi"
+    APP_BUILD_TIME: "${CI_PIPELINE_CREATED_AT}"
   script:
-    # As it turns out, doing the multi-platform build in a single step means we're sacrificing build performance. For
-    # example, building the ARM64 image on an AMD64 runner is anywhere between 2-3x slower, which then slows downs
-    # things like the correctness test.
-    #
-    # We should consider bringing back the individual build steps, and then constructing the multi-image manifest
-    # ourselves.
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
@@ -38,6 +26,7 @@
       --build-arg APP_VERSION=${APP_VERSION}
       --build-arg APP_GIT_HASH=${APP_GIT_HASH}
       --build-arg APP_BUILD_TIME=${APP_BUILD_TIME}
+      --build-arg APP_DEV_BUILD=${APP_DEV_BUILD}
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
@@ -109,8 +98,7 @@ calculate-build-metadata:
 build-adp-image:
   extends: [.build-common-variables, .build-adp-definition]
   variables:
-    ADP_IMAGE_TAG: "${ADP_IMAGE_TAG_NON_FIPS}"
-    FIPS_ENABLED: "false"
+    ADP_IMAGE_TAG: "${ADP_IMAGE_TAG}"
 
 build-adp-image-fips:
   extends: [.build-common-variables, .build-adp-definition]
@@ -119,13 +107,31 @@ build-adp-image-fips:
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
 
+build-adp-image-release:
+  extends: [.build-common-variables, .build-adp-definition]
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+  variables:
+    ADP_IMAGE_TAG: "${ADP_RELEASE_IMAGE_TAG}"
+    APP_DEV_BUILD: "false"
+
+build-adp-image-release-fips:
+  extends: [.build-common-variables, .build-adp-definition]
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+  variables:
+    ADP_IMAGE_TAG: "${ADP_RELEASE_IMAGE_TAG_FIPS}"
+    BUILD_FEATURES: "fips"
+    FIPS_ENABLED: "true"
+    APP_DEV_BUILD: "false"
+
 build-converged-adp-image:
   extends: [.build-common-variables, .build-converged-adp-definition]
   needs:
     - build-adp-image
   variables:
     DD_AGENT_IMAGE: "${INTERNAL_DD_AGENT_IMAGE}"
-    ADP_IMAGE: "${ADP_IMAGE_TAG_NON_FIPS}"
+    ADP_IMAGE: "${ADP_IMAGE_TAG}"
     CONVERGED_IMAGE_TAG: "${INTERNAL_DD_AGENT_IMAGE}-adp-${CI_COMMIT_SHORT_SHA}"
 
 build-converged-adp-image-fips:
@@ -142,7 +148,7 @@ upload-adp-symbols:
   needs:
     - build-adp-image
   variables:
-    IMAGE_TAG: "${ADP_IMAGE_TAG_NON_FIPS}"
+    IMAGE_TAG: "${ADP_IMAGE_TAG}"
 
 upload-adp-symbols-fips:
   extends: [.build-common-variables, .upload-adp-symbols-definition]
@@ -150,3 +156,21 @@ upload-adp-symbols-fips:
     - build-adp-image-fips
   variables:
     IMAGE_TAG: "${ADP_IMAGE_TAG_FIPS}"
+
+upload-adp-release-symbols:
+  extends: [.build-common-variables, .upload-adp-symbols-definition]
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+  needs:
+    - build-adp-image-release
+  variables:
+    IMAGE_TAG: "${ADP_RELEASE_IMAGE_TAG}"
+
+upload-adp-release-symbols-fips:
+  extends: [.build-common-variables, .upload-adp-symbols-definition]
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+  needs:
+    - build-adp-image-release-fips
+  variables:
+    IMAGE_TAG: "${ADP_RELEASE_IMAGE_TAG_FIPS}"

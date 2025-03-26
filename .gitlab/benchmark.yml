@@ -44,6 +44,7 @@ build-adp-baseline-image:
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${BASELINE_SALUKI_IMG}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
+      --build-arg BUILD_PROFILE=optimized-release
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${BASELINE_SALUKI_SHA}
       --label git.repository=${CI_PROJECT_NAME}
@@ -79,6 +80,7 @@ build-adp-comparison-image:
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${COMPARISON_SALUKI_IMG}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
+      --build-arg BUILD_PROFILE=optimized-release
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${COMPARISON_SALUKI_SHA}
       --label git.repository=${CI_PROJECT_NAME}
