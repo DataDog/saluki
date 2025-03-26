@@ -158,10 +158,6 @@ debug = true
 inherits = "release"
 lto = "fat"
 codegen-units = 1
-debug = false
-
-[profile.optimized-debug-release]
-inherits = "optimized-release"
 debug = true
 
 [workspace.lints.clippy]

@@ -14,6 +14,7 @@
   - export COMPARISON_DSD_IMG="public.ecr.aws/datadog/dogstatsd:${BASE_DD_AGENT_VERSION}"
 
 build-adp-baseline-image:
+  extends: .build-common-variables
   stage: benchmark
   image: "${DOCKER_BUILD_IMAGE}"
   needs: []
@@ -44,6 +45,7 @@ build-adp-baseline-image:
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${BASELINE_SALUKI_IMG}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
+      --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${BASELINE_SALUKI_SHA}
       --label git.repository=${CI_PROJECT_NAME}
@@ -55,6 +57,7 @@ build-adp-baseline-image:
       .
 
 build-adp-comparison-image:
+  extends: .build-common-variables
   stage: benchmark
   image: "${DOCKER_BUILD_IMAGE}"
   needs: []
@@ -79,6 +82,7 @@ build-adp-comparison-image:
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${COMPARISON_SALUKI_IMG}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
+      --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${COMPARISON_SALUKI_SHA}
       --label git.repository=${CI_PROJECT_NAME}
