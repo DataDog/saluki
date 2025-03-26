@@ -2,6 +2,11 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
+#[doc(hidden)]
+pub mod reexport {
+    pub use paste::paste;
+}
+
 pub mod components;
 pub mod constants;
 pub mod observability;

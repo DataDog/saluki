@@ -57,8 +57,8 @@ stringtheory = { path = "lib/stringtheory" }
 async-trait = { version = "0.1", default-features = false }
 axum = { version = "0.7", default-features = false }
 bytes = { version = "1", default-features = false }
-protobuf = { version = "3.3.0", default-features = false, features = ["with-bytes"] }
-protobuf-codegen = { version = "3.3.0", default-features = false }
+protobuf = { version = "3.7", default-features = false, features = ["with-bytes"] }
+protobuf-codegen = { version = "3.7", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
 snafu = { version = "0.8", default-features = false, features = ["std"] }
 tokio = { version = "1", default-features = false }
