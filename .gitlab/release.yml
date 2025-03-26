@@ -1,50 +1,10 @@
 .setup-release-env:
-  stage: release
   variables:
-    SOURCE_ADP_RELEASE_IMAGE: "${ADP_IMAGE_BASE}:${CI_COMMIT_TAG}-release"
+    SOURCE_ADP_RELEASE_IMAGE: "${ADP_RELEASE_IMAGE_TAG}"
     AGENT_ADP_IMAGE_BASE: "${SALUKI_IMAGE_REPO_BASE}/releases/agent"
     AGENT_ADP_IMAGE_TAG: "${BASE_DD_AGENT_VERSION}-v${CI_COMMIT_TAG}-adp-beta"
     AGENT_ADP_IMAGE: "${AGENT_ADP_IMAGE_BASE}:${AGENT_ADP_IMAGE_TAG}"
     TARGET_AGENT_ADP_RELEASE_IMAGE: "agent:${AGENT_ADP_IMAGE_TAG}"
-
-build-release-adp-image:
-  stage: release
-  image: ${DOCKER_BUILD_IMAGE}
-  rules:
-    - if: !reference [.on_official_release, rules, if]
-  needs: []
-  extends: .setup-release-env
-  variables:
-    # Compiling Rust is intensive. ¯\_(ツ)_/¯
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_MEMORY_REQUEST: "8Gi"
-    KUBERNETES_MEMORY_LIMIT: "12Gi"
-  script:
-    # We manually specify all of the build metadata (app name, Git hash, etc) instead of using the Make target, just to
-    # better insulate ourselves and make sure that we have a little more determinism: all of these values are either
-    # static or come from the GitLab CI environment, which we can work backwards from... but to use the Make target, we
-    # have to push it through a job artifact, which gets cleared after a period of time, and so on.
-    - docker buildx build
-      --platform linux/amd64,linux/arm64
-      --file ./docker/Dockerfile.agent-data-plane
-      --tag ${SOURCE_ADP_RELEASE_IMAGE}
-      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
-      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
-      --build-arg BUILD_PROFILE=optimized-release
-      --build-arg APP_FULL_NAME=agent-data-plane
-      --build-arg APP_SHORT_NAME=data-plane
-      --build-arg APP_IDENTIFIER=adp
-      --build-arg APP_VERSION=${CI_COMMIT_TAG}
-      --build-arg APP_GIT_HASH=${CI_COMMIT_TAG}
-      --build-arg APP_BUILD_TIME=${CI_PIPELINE_CREATED_AT}
-      --build-arg APP_DEV_BUILD=false
-      --label git.repository=${CI_PROJECT_NAME}
-      --label git.branch=${CI_COMMIT_REF_NAME}
-      --label git.commit=${CI_COMMIT_SHA}
-      --label ci.pipeline_id=${CI_PIPELINE_ID}
-      --label ci.job_id=${CI_JOB_ID}
-      --push
-      .
 
 build-bundled-agent-adp-image:
   stage: release
@@ -53,7 +13,7 @@ build-bundled-agent-adp-image:
     - if: !reference [.on_official_release, rules, if]
   extends: .setup-release-env
   needs:
-    - build-release-adp-image
+    - build-adp-image-release
   parallel:
     matrix:
       - JMX:
