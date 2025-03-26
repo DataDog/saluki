@@ -98,12 +98,12 @@ calculate-build-metadata:
 build-adp-image:
   extends: [.build-common-variables, .build-adp-definition]
   variables:
-    IMAGE_TAG: "${ADP_DEBUG_IMAGE_TAG}"
+    IMAGE_TAG: ${ADP_DEBUG_IMAGE_TAG}
 
 build-adp-image-fips:
   extends: [.build-common-variables, .build-adp-definition]
   variables:
-    IMAGE_TAG: "${ADP_DEBUG_IMAGE_TAG_FIPS}"
+    IMAGE_TAG: ${ADP_DEBUG_IMAGE_TAG_FIPS}
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
 
@@ -112,7 +112,7 @@ build-adp-image-release:
   rules:
     - if: !reference [.on_official_release, rules, if]
   variables:
-    IMAGE_TAG: "${ADP_RELEASE_IMAGE_TAG}"
+    IMAGE_TAG: ${ADP_RELEASE_IMAGE_TAG}
     APP_DEV_BUILD: "false"
 
 build-adp-image-release-fips:
@@ -120,7 +120,7 @@ build-adp-image-release-fips:
   rules:
     - if: !reference [.on_official_release, rules, if]
   variables:
-    IMAGE_TAG: "${ADP_RELEASE_IMAGE_TAG_FIPS}"
+    IMAGE_TAG: ${ADP_RELEASE_IMAGE_TAG_FIPS}
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
     APP_DEV_BUILD: "false"
@@ -130,8 +130,8 @@ build-converged-adp-image:
   needs:
     - build-adp-image
   variables:
-    DD_AGENT_IMAGE: "${INTERNAL_DD_AGENT_IMAGE}"
-    ADP_IMAGE: "${ADP_IMAGE_TAG}"
+    DD_AGENT_IMAGE: ${INTERNAL_DD_AGENT_IMAGE}
+    ADP_IMAGE: ${ADP_DEBUG_IMAGE_TAG}
     CONVERGED_IMAGE_TAG: "${INTERNAL_DD_AGENT_IMAGE}-adp-${CI_COMMIT_SHORT_SHA}"
 
 build-converged-adp-image-fips:
@@ -139,8 +139,8 @@ build-converged-adp-image-fips:
   needs:
     - build-adp-image-fips
   variables:
-    DD_AGENT_IMAGE: "${INTERNAL_DD_AGENT_IMAGE_FIPS}"
-    ADP_IMAGE: "${ADP_IMAGE_TAG_FIPS}"
+    DD_AGENT_IMAGE: ${INTERNAL_DD_AGENT_IMAGE_FIPS}
+    ADP_IMAGE: ${ADP_DEBUG_IMAGE_TAG_FIPS}
     CONVERGED_IMAGE_TAG: "${INTERNAL_DD_AGENT_IMAGE_FIPS}-adp-${CI_COMMIT_SHORT_SHA}"
 
 upload-adp-symbols:
@@ -148,14 +148,14 @@ upload-adp-symbols:
   needs:
     - build-adp-image
   variables:
-    IMAGE_TAG: "${ADP_IMAGE_TAG}"
+    IMAGE_TAG: ${ADP_DEBUG_IMAGE_TAG}
 
 upload-adp-symbols-fips:
   extends: [.build-common-variables, .upload-adp-symbols-definition]
   needs:
     - build-adp-image-fips
   variables:
-    IMAGE_TAG: "${ADP_IMAGE_TAG_FIPS}"
+    IMAGE_TAG: ${ADP_DEBUG_IMAGE_TAG_FIPS}
 
 upload-adp-release-symbols:
   extends: [.build-common-variables, .upload-adp-symbols-definition]
@@ -164,7 +164,7 @@ upload-adp-release-symbols:
   needs:
     - build-adp-image-release
   variables:
-    IMAGE_TAG: "${ADP_RELEASE_IMAGE_TAG}"
+    IMAGE_TAG: ${ADP_RELEASE_IMAGE_TAG}
 
 upload-adp-release-symbols-fips:
   extends: [.build-common-variables, .upload-adp-symbols-definition]
@@ -173,4 +173,4 @@ upload-adp-release-symbols-fips:
   needs:
     - build-adp-image-release-fips
   variables:
-    IMAGE_TAG: "${ADP_RELEASE_IMAGE_TAG_FIPS}"
+    IMAGE_TAG: ${ADP_RELEASE_IMAGE_TAG_FIPS}
