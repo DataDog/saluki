@@ -3,9 +3,11 @@
 # Make sure we have the AWS CLI installed and that our named profile has been specified.
 command -v aws >/dev/null 2>&1 || { 
     curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-    unzip awscliv2.zip
-    sudo ./aws/install --update
+    unzip -qq awscliv2.zip
+    mkdir /tmp/awscli /tmp/bin
+    ./aws/install --install-dir /tmp/awscli --bin-dir /tmp/bin
     rm -rf ./aws
+    export PATH=$PATH:/tmp/bin
 }
 if [[ -z "${AWS_NAMED_PROFILE}" ]]; then
     echo "\$AWS_NAMED_PROFILE must be present"
