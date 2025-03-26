@@ -17,7 +17,7 @@
 build-adp-baseline-image:
   extends: .build-common-variables
   stage: benchmark
-  image: "${DOCKER_BUILD_IMAGE}"
+  image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
   timeout: 20m
@@ -60,7 +60,7 @@ build-adp-baseline-image:
 build-adp-comparison-image:
   extends: .build-common-variables
   stage: benchmark
-  image: "${DOCKER_BUILD_IMAGE}"
+  image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
   timeout: 20m
