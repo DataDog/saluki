@@ -64,7 +64,7 @@ unit-tests-miri-macos-arm64:
   script:
     - make test-miri
 
-check-features-macos-ar 64:
+check-features-macos-arm64:
   extends: .macos-arm64-test-job
   stage: test
   script:
