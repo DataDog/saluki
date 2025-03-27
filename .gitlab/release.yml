@@ -7,14 +7,15 @@
     AGENT_ADP_IMAGE: "${AGENT_ADP_IMAGE_BASE}:${AGENT_ADP_IMAGE_TAG}"
     TARGET_AGENT_ADP_RELEASE_IMAGE: "agent:${AGENT_ADP_IMAGE_TAG}"
 
-build-bundled-agent-adp-image:
+build-bundled-agent-adp-image-linux:
   stage: release
   image: ${DOCKER_BUILD_IMAGE}
   rules:
     - if: !reference [.on_official_release, rules, if]
   extends: .setup-release-env
   needs:
-    - build-adp-image-release
+    - stage: test
+    - stage: correctness
   parallel:
     matrix:
       - JMX:
@@ -46,12 +47,9 @@ publish-bundled-agent-adp-image:
       when: manual
   extends: .setup-release-env
   needs:
-    - check-deny
-    - check-licenses
-    - unit-tests
-    - unit-tests-miri
-    - run-ground-truth
-    - job: build-bundled-agent-adp-image
+    - stage: test
+    - stage: correctness
+    - job: build-bundled-agent-adp-image-linux
       parallel:
         matrix:
           - JMX: [""]
@@ -72,12 +70,9 @@ publish-bundled-agent-adp-image-jmx:
       when: manual
   extends: .setup-release-env
   needs:
-    - check-deny
-    - check-licenses
-    - unit-tests
-    - unit-tests-miri
-    - run-ground-truth
-    - job: build-bundled-agent-adp-image
+    - stage: test
+    - stage: correctness
+    - job: build-bundled-agent-adp-image-linux
       parallel:
         matrix:
           - JMX: ["-jmx"]
