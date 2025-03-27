@@ -1,4 +1,5 @@
 .setup-release-env:
+  extends: .build-common-variables
   variables:
     SOURCE_ADP_RELEASE_IMAGE: "${ADP_RELEASE_IMAGE_TAG}"
     AGENT_ADP_IMAGE_BASE: "${SALUKI_IMAGE_REPO_BASE}/releases/agent"
