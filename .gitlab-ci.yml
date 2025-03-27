@@ -79,8 +79,7 @@ default:
 .linux-arm64-test-job-heavy:
   extends: .linux-arm64-test-job
   variables:
-    # Compiling Saluki is intensive, so we want to make sure we get
-    # a beefy-enough runner.
+    # Compiling Saluki is intensive, so we want a beefy runner.
     KUBERNETES_CPU_REQUEST: "16"
     KUBERNETES_MEMORY_REQUEST: "8Gi"
     KUBERNETES_MEMORY_LIMIT: "12Gi"
