@@ -17,10 +17,11 @@ impl Framer for LengthDelimitedFramer {
     where
         Self: 'a;
 
-    fn next_frame<'a, 'buf>(
-        &'a mut self, buf: &'a mut BytesBufferView<'buf>, is_eof: bool,
+    fn next_frame<'a, 'buf, B>(
+        &'a mut self, buf: &'a mut B, is_eof: bool,
     ) -> Result<Option<Self::Frame<'a>>, FramingError>
     where
+        B: BufferView,
         'buf: 'a,
     {
         trace!(buf_len = buf.len(), "Processing buffer.");

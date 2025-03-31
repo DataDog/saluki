@@ -1,6 +1,6 @@
 use snafu::Snafu;
 
-use crate::buf::BytesBufferView;
+use crate::buf::{BufferView, BytesBufferView};
 
 mod length_delimited;
 pub use self::length_delimited::LengthDelimitedFramer;
@@ -39,7 +39,7 @@ pub enum FramingError {
 
 /// A trait for reading framed messages from a buffer.
 pub trait Framer {
-    type Frame<'a>
+    type Frame<'a>: BufferView
     where
         Self: 'a;
 
@@ -54,10 +54,11 @@ pub trait Framer {
     /// # Errors
     ///
     /// If an error is detected when reading the next frame, an error is returned.
-    fn next_frame<'a, 'buf>(
-        &'a mut self, buf: &'a mut BytesBufferView<'buf>, is_eof: bool,
+    fn next_frame<'a, 'buf, B>(
+        &'a mut self, buf: &'a mut B, is_eof: bool,
     ) -> Result<Option<Self::Frame<'a>>, FramingError>
     where
+        B: BufferView,
         'buf: 'a;
 }
 

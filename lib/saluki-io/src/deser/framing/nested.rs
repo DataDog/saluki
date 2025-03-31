@@ -1,6 +1,6 @@
-/*use tracing::trace;
+use tracing::trace;
 
-use crate::buf::{BufferView as _, BytesBufferView};
+use crate::buf::{BufferView, BytesBufferView};
 
 use super::{Framer, FramingError};
 
@@ -9,15 +9,22 @@ use super::{Framer, FramingError};
 /// This framer takes two input framers -- the "outer" and "inner" framers -- and extracts outer frames, and once an
 /// outer frame has been extract, extracts as many inner frames from the outer frame as possible. Callers deal
 /// exclusively with the extracted inner frames.
-pub struct NestedFramer<'buf, Inner, Outer> {
+pub struct NestedFramer<'outer, Inner, Outer>
+where
+    Inner: Framer,
+    Outer: Framer + 'outer,
+{
     inner: Inner,
     outer: Outer,
-    buf: &'buf mut BytesBufferView<'buf>,
-    current_outer_frame: Option<BytesBufferView<'buf>>,
+    current_outer_frame: Option<Outer::Frame<'outer>>,
 }
 
-impl<'buf, Inner, Outer> NestedFramer<'buf, Inner, Outer> {
-    /// Creates a new `NestedFramer` from the given inner and outer framers, and the input buffer to extract frames from.
+impl<'outer, Inner, Outer> NestedFramer<'outer, Inner, Outer>
+where
+    Inner: Framer,
+    Outer: Framer + 'outer,
+{
+    /// Creates a new `NestedFramer` from the given inner and outer framers.
     pub fn new(inner: Inner, outer: Outer) -> Self {
         Self {
             inner,
@@ -27,74 +34,67 @@ impl<'buf, Inner, Outer> NestedFramer<'buf, Inner, Outer> {
     }
 }
 
-impl<'buf, Inner, Outer> Framer for NestedFramer<'buf, Inner, Outer>
+impl<'outer, Inner, Outer> Framer for NestedFramer<'outer, Inner, Outer>
 where
     Inner: Framer,
-    Outer: Framer,
-    for<'a> Inner::Frame<'a>: std::fmt::Debug,
-    for<'a> Outer::Frame<'a>: std::fmt::Debug,
+    Outer: Framer + 'outer,
+    Self: 'outer,
 {
-    type Frame<'a> = BytesBufferView<'a> where Self: 'a;
+    type Frame<'a> = Inner::Frame<'a> where Self: 'a;
 
-    fn next_frame<'a, 'buf>(&'a mut self, buf: &'buf mut BytesBufferView<'buf>, is_eof: bool) -> Result<Option<Self::Frame<'a>>, FramingError>
+    fn next_frame<'a, 'buf, B>(
+        &'a mut self, buf: &'a mut B, is_eof: bool,
+    ) -> Result<Option<Self::Frame<'a>>, FramingError>
     where
+        B: BufferView,
         'buf: 'a,
     {
         loop {
-            // Take our current outer frame, or if we have none, try to get the next one.
-            let outer_frame = match self.current_outer_frame.as_mut() {
-                Some(frame) => {
-                    trace!(frame_len = frame.len(), "Using existing outer frame.");
+            if self.current_outer_frame.is_none() {
+                //trace!(buf_len = buf.len(), "No existing outer frame.");
+                match self.outer.next_frame(buf, is_eof)? {
+                    Some(frame) => {
+                        /*trace!(
+                            buf_len = buf.len(),
+                            frame_len = frame.len(),
+                            ?frame,
+                            "Extracted outer frame."
+                        );*/
 
-                    frame
-                }
-                None => {
-                    trace!(buf_len = buf.len(), "No existing outer frame.");
-
-                    match self.outer.next_frame(buf, is_eof)? {
-                        Some(frame) => {
-                            trace!(
-                                buf_len = buf.len(),
-                                frame_len = frame.len(),
-                                ?frame,
-                                "Extracted outer frame."
-                            );
-
-                            self.current_outer_frame.get_or_insert(frame)
-                        }
-
-                        // If we can't get another outer frame, then we're done for now.
-                        None => return Ok(None),
+                        self.current_outer_frame.insert(frame);
                     }
+
+                    // If we can't get another outer frame, then we're done for now.
+                    None => return Ok(None),
                 }
-            };
+            }
+
+            let outer_frame = self.current_outer_frame.as_mut().unwrap();
+            trace!(frame_len = outer_frame.len(), "Using existing outer frame.");
 
             // Try to get the next inner frame.
             match self.inner.next_frame(outer_frame, true)? {
                 Some(frame) => {
-                    trace!(
+                    /*trace!(
                         buf_len = buf.len(),
                         outer_frame_len = outer_frame.len(),
                         inner_frame_len = frame.len(),
                         "Extracted inner frame."
-                    );
+                    );*/
 
                     return Ok(Some(frame));
                 }
                 None => {
                     // We can't get anything else from our inner frame. If our outer frame is empty, and our input buffer
                     // isn't empty, clear the current outer frame so that we can try to grab the next one.
-                    trace!(
+                    /*trace!(
                         buf_len = buf.len(),
                         outer_frame_len = outer_frame.len(),
                         "Couldn't extract inner frame from existing outer frame."
-                    );
+                    );*/
 
-                    if outer_frame.is_empty() && buf.len() != 0 {
+                    if outer_frame.is_empty() {
                         self.current_outer_frame = None;
-                        continue;
-                    } else {
-                        return Ok(None);
                     }
                 }
             }
@@ -230,4 +230,3 @@ mod tests {
         assert!(buf.is_empty());
     }
 }
-*/

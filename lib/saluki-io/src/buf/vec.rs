@@ -224,6 +224,35 @@ pub trait BufferView: Send {
     fn capacity(&self) -> usize;
     fn as_bytes(&self) -> &[u8];
     fn advance_idx(&mut self, cnt: usize);
+
+    fn slice_inner(&mut self, len: usize) -> BytesBufferView<'_>;
+
+    /// Advances the view by the given number of bytes, effectively skipping over them.
+    fn skip(&mut self, len: usize) {
+        assert!(
+            len <= self.len(),
+            "buffer too small to skip {} bytes, only {} bytes remaining",
+            self.len(),
+            len,
+        );
+
+        self.advance_idx(len);
+    }
+
+    /// Creates a new view by slicing this view from the current position to the given index, relative to the view.
+    ///
+    /// Advances this view by the length of the new view.
+    fn slice_to(&mut self, idx: usize) -> BytesBufferView<'_> {
+        self.slice_inner(idx)
+    }
+
+    /// Creates a new view by slicing this view from the given index, relative to the view, to the end of this view.
+    ///
+    /// Advances this view by the length of the new view, plus whatever bytes were skipped prior to the new view.
+    fn slice_from(&mut self, idx: usize) -> BytesBufferView<'_> {
+        self.advance_idx(idx);
+        self.slice_inner(self.len())
+    }
 }
 
 impl BufferView for BytesBuffer {
@@ -241,6 +270,22 @@ impl BufferView for BytesBuffer {
 
     fn advance_idx(&mut self, cnt: usize) {
         Buf::advance(self, cnt);
+    }
+
+    fn slice_inner(&mut self, len: usize) -> BytesBufferView<'_> {
+        assert!(
+            len <= self.len(),
+            "index out of bounds: the len is {} but the index is {}",
+            self.len(),
+            len,
+        );
+
+        BytesBufferView {
+            parent: self,
+            len,
+            idx_advance: 0,
+            ridx_advance: 0,
+        }
     }
 }
 
@@ -356,6 +401,23 @@ impl BufferView for BytesBufferView<'_> {
 
     fn advance_idx(&mut self, cnt: usize) {
         self.idx_advance += cnt;
+    }
+
+    fn slice_inner(&mut self, len: usize) -> BytesBufferView<'_> {
+        assert!(
+            len <= self.len(),
+            "index out of bounds: the len is {} but the index is {}",
+            self.len(),
+            len,
+        );
+
+
+        BytesBufferView {
+            parent: self,
+            len,
+            idx_advance: 0,
+            ridx_advance: 0,
+        }
     }
 }
 
