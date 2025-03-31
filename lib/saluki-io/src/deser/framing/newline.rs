@@ -56,6 +56,7 @@ impl Framer for NewlineFramer {
                 // the view we give back to the caller doesn't include it.
                 let mut frame = buf.slice_to(idx + 1);
                 frame.rskip(1);
+                trace!(frame_len = frame.len(), "Returning frame after finding delimiter.");
 
                 Ok(Some(frame))
             }
@@ -70,8 +71,11 @@ impl Framer for NewlineFramer {
                     return Err(missing_delimiter_err(data.len()));
                 }
 
+                let frame = buf.slice_from(0);
+                trace!(frame_len = frame.len(), "Returning frame without delimiter at EOF.");
+
                 // We're at EOF, and we don't require the delimiter... so just consume the entire frame.
-                Ok(Some(buf.slice_from(0)))
+                Ok(Some(frame))
             }
         }
     }

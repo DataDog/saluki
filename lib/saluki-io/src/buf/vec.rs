@@ -248,6 +248,7 @@ pub struct BytesBufferView<'a> {
     parent: &'a mut dyn BufferView,
     len: usize,
     idx_advance: usize,
+    ridx_advance: usize,
 }
 
 impl<'a> BytesBufferView<'a> {
@@ -257,6 +258,7 @@ impl<'a> BytesBufferView<'a> {
             parent,
             len,
             idx_advance: 0,
+            ridx_advance: 0,
         }
     }
 
@@ -272,6 +274,7 @@ impl<'a> BytesBufferView<'a> {
             parent: self,
             len,
             idx_advance: 0,
+            ridx_advance: 0,
         }
     }
 
@@ -294,6 +297,8 @@ impl<'a> BytesBufferView<'a> {
             self.len(),
             len,
         );
+
+        self.ridx_advance += len;
     }
 
     /// Creates a new view by slicing this view from the current position to the given index, relative to the view.
@@ -335,7 +340,7 @@ impl PartialEq for BytesBufferView<'_> {
 
 impl BufferView for BytesBufferView<'_> {
     fn len(&self) -> usize {
-        self.len - self.idx_advance
+        self.len - self.idx_advance - self.ridx_advance
     }
 
     fn capacity(&self) -> usize {
@@ -345,7 +350,7 @@ impl BufferView for BytesBufferView<'_> {
     fn as_bytes(&self) -> &[u8] {
         let buf = self.parent.as_bytes();
         let start = self.idx_advance;
-        let end = self.len;
+        let end = self.len - self.ridx_advance;
         &buf[start..end]
     }
 

@@ -761,12 +761,18 @@ async fn drive_stream(
                         bytes_read
                     );
 
+                    {
+                        let buffer_str = unsafe { std::str::from_utf8_unchecked(buffer.chunk()) };
+                        trace!(%listen_addr, %peer_addr, buffer = buffer_str, "Received buffer.");
+                    }
+
                     let mut io_buf_view = buffer.as_view();
                     let mut frames = Framed::from_view(&mut framer, &mut io_buf_view, reached_eof);
                     'frame: loop {
                         let frame = match frames.try_next() {
                             Ok(Some(frame)) => {
-                                trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
+                                let frame_str = unsafe { std::str::from_utf8_unchecked(frame.as_bytes()) };
+                                trace!(%listen_addr, %peer_addr, frame = frame_str, "Decoded frame.");
                                 frame
                             }
                             Err(e) => {
