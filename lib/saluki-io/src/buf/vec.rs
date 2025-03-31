@@ -8,7 +8,7 @@ use super::{ClearableIoBuffer, CollapsibleReadWriteIoBuffer, ReadIoBuffer};
 
 /// A fixed-size bytes buffer.
 ///
-/// This is a simple wrapper around a `BytesMut` that provides fixed-size semantics by disallowing writes that extend
+/// This is a simple wrapper around a `Vec<u8>` that provides fixed-size semantics by disallowing writes that extend
 /// beyond the initial capacity. `FixedSizeVec` cannot be used directly, and must be interacted with via the
 /// [`Buf`] and [`BufMut`] traits.
 ///
@@ -215,7 +215,7 @@ impl Drop for FrozenBytesBuffer {
     }
 }
 
-pub trait BufferView {
+pub trait BufferView: Send {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -329,9 +329,7 @@ impl std::fmt::Debug for BytesBufferView<'_> {
 
 impl PartialEq for BytesBufferView<'_> {
     fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self.parent, other.parent) &&
-            self.len == other.len &&
-            self.idx_advance == other.idx_advance
+        std::ptr::eq(self.parent, other.parent) && self.len == other.len && self.idx_advance == other.idx_advance
     }
 }
 
@@ -434,7 +432,7 @@ mod tests {
 
     #[test]
     fn collapsible_remaining_already_collapsed() {
-        let mut buf =get_bytes_buffer(24);
+        let mut buf = get_bytes_buffer(24);
 
         // Write a simple string to the buffer.
         buf.put_slice(b"hello, world!");

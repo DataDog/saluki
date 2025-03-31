@@ -29,7 +29,17 @@ impl NewlineFramer {
 }
 
 impl Framer for NewlineFramer {
-    fn next_frame<'buf>(&mut self, buf: &'buf mut BytesBufferView<'_>, is_eof: bool) -> Result<Option<BytesBufferView<'buf>>, FramingError> {
+    type Frame<'a>
+        = BytesBufferView<'a>
+    where
+        Self: 'a;
+
+    fn next_frame<'a, 'buf>(
+        &'a mut self, buf: &'a mut BytesBufferView<'buf>, is_eof: bool,
+    ) -> Result<Option<Self::Frame<'a>>, FramingError>
+    where
+        'buf: 'a,
+    {
         trace!(buf_len = buf.len(), "Processing buffer.");
 
         let data = buf.as_bytes();
@@ -83,9 +93,8 @@ mod tests {
     use bytes::BufMut as _;
     use saluki_core::pooling::helpers::get_pooled_object_via_builder;
 
-    use crate::buf::{BytesBuffer, FixedSizeVec};
-
     use super::*;
+    use crate::buf::{BytesBuffer, FixedSizeVec};
 
     fn get_bytes_buffer(cap: usize) -> BytesBuffer {
         get_pooled_object_via_builder::<_, BytesBuffer>(|| FixedSizeVec::with_capacity(cap))

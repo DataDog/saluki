@@ -1,4 +1,4 @@
-use tracing::trace;
+/*use tracing::trace;
 
 use crate::buf::{BufferView as _, BytesBufferView};
 
@@ -31,8 +31,15 @@ impl<'buf, Inner, Outer> Framer for NestedFramer<'buf, Inner, Outer>
 where
     Inner: Framer,
     Outer: Framer,
+    for<'a> Inner::Frame<'a>: std::fmt::Debug,
+    for<'a> Outer::Frame<'a>: std::fmt::Debug,
 {
-    fn next_frame<'buf>(&mut self, buf: &'buf mut BytesBufferView<'_>, is_eof: bool) -> Result<Option<BytesBufferView<'buf>>, FramingError> {
+    type Frame<'a> = BytesBufferView<'a> where Self: 'a;
+
+    fn next_frame<'a, 'buf>(&'a mut self, buf: &'buf mut BytesBufferView<'buf>, is_eof: bool) -> Result<Option<Self::Frame<'a>>, FramingError>
+    where
+        'buf: 'a,
+    {
         loop {
             // Take our current outer frame, or if we have none, try to get the next one.
             let outer_frame = match self.current_outer_frame.as_mut() {
@@ -97,7 +104,7 @@ where
 
 #[cfg(test)]
 mod tests {
-	use super::*;
+    use super::*;
 
     use saluki_core::pooling::helpers::get_pooled_object_via_builder;
 
@@ -223,3 +230,4 @@ mod tests {
         assert!(buf.is_empty());
     }
 }
+*/

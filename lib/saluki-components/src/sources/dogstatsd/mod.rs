@@ -24,13 +24,14 @@ use saluki_error::{generic_error, GenericError};
 use saluki_event::metric::{MetricMetadata, MetricOrigin};
 use saluki_event::{metric::Metric, DataType, Event};
 use saluki_io::{
-    buf::{BytesBuffer, CollapsibleReadWriteIoBuffer as _, FixedSizeVec},
+    buf::{BufferView as _, BytesBuffer, BytesBufferView, CollapsibleReadWriteIoBuffer as _, FixedSizeVec},
     deser::{
         codec::{
             dogstatsd::{parse_message_type, MessageType, MetricPacket, ParseError, ParsedPacket},
             DogstatsdCodec, DogstatsdCodecConfiguration,
         },
-        framing::FramerExt as _,
+        framing::Framed,
+        //framing::FramerExt as _,
     },
     net::{
         listener::{Listener, ListenerError},
@@ -760,34 +761,15 @@ async fn drive_stream(
                         bytes_read
                     );
 
-                    let mut frames = buffer.framed(&mut framer, reached_eof);
+                    let mut io_buf_view = buffer.as_view();
+                    let mut frames = Framed::from_view(&mut framer, &mut io_buf_view, reached_eof);
                     'frame: loop {
-                        match frames.next() {
-                            Some(Ok(frame)) => {
+                        let frame = match frames.try_next() {
+                            Ok(Some(frame)) => {
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
-                                match handle_frame(&frame[..], &codec, &mut context_resolver, &metrics, &peer_addr, filters.clone()) {
-                                    Ok(Some(event)) => {
-                                        if let Some(event) = event_buffer.try_push(event) {
-                                            debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
-                                            forward_events(&mut event_buffer, &source_context, &listen_addr).await;
-
-                                            // Try to push the event again now that we have a new event buffer.
-                                            if event_buffer.try_push(event).is_some() {
-                                                error!(%listen_addr, %peer_addr, "Event buffer is full even after forwarding events. Dropping event.");
-                                            }
-                                        }
-                                    },
-                                    Ok(None) => {
-                                        // We didn't decode an event, but there was no inherent error. This is likely
-                                        // due to hitting resource limits, etc.
-                                        //
-                                        // Simply continue on.
-                                        continue
-                                    },
-                                    Err(e) => warn!(%listen_addr, %peer_addr, error = %e, "Failed to parse frame."),
-                                }
+                                frame
                             }
-                            Some(Err(e)) => {
+                            Err(e) => {
                                 metrics.framing_errors().increment(1);
 
                                 if stream.is_connectionless() {
@@ -800,7 +782,7 @@ async fn drive_stream(
                                     break 'read;
                                 }
                             }
-                            None => {
+                            Ok(None) => {
                                 trace!(%listen_addr, %peer_addr, "Not enough data to decode another frame.");
                                 if eof && !stream.is_connectionless() {
                                     trace!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
@@ -809,6 +791,28 @@ async fn drive_stream(
                                     break 'frame;
                                 }
                             }
+                        };
+
+                        match handle_frame(frame, &codec, &mut context_resolver, &metrics, &peer_addr, filters.clone()) {
+                            Ok(Some(event)) => {
+                                if let Some(event) = event_buffer.try_push(event) {
+                                    debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
+                                    forward_events(&mut event_buffer, &source_context, &listen_addr).await;
+
+                                    // Try to push the event again now that we have a new event buffer.
+                                    if event_buffer.try_push(event).is_some() {
+                                        error!(%listen_addr, %peer_addr, "Event buffer is full even after forwarding events. Dropping event.");
+                                    }
+                                }
+                            },
+                            Ok(None) => {
+                                // We didn't decode an event, but there was no inherent error. This is likely
+                                // due to hitting resource limits, etc.
+                                //
+                                // Simply continue on.
+                                continue
+                            },
+                            Err(e) => warn!(%listen_addr, %peer_addr, error = %e, "Failed to parse frame."),
                         }
                     }
                 },
@@ -843,14 +847,14 @@ async fn drive_stream(
 }
 
 fn handle_frame(
-    frame: &[u8], codec: &DogstatsdCodec, context_resolver: &mut ContextResolver, source_metrics: &Metrics,
-    peer_addr: &ConnectionAddress, filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>,
+    frame: BytesBufferView<'_>, codec: &DogstatsdCodec, context_resolver: &mut ContextResolver,
+    source_metrics: &Metrics, peer_addr: &ConnectionAddress, filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>,
 ) -> Result<Option<Event>, ParseError> {
-    let parsed = match codec.decode_packet(frame) {
+    let parsed = match codec.decode_packet(frame.as_bytes()) {
         Ok(parsed) => parsed,
         Err(e) => {
             // Try and determine what the message type was, if possible, to increment the correct error counter.
-            match parse_message_type(frame) {
+            match parse_message_type(frame.as_bytes()) {
                 MessageType::MetricSample => source_metrics.metric_decode_failed().increment(1),
                 MessageType::Event => source_metrics.event_decode_failed().increment(1),
                 MessageType::ServiceCheck => source_metrics.service_check_decode_failed().increment(1),
