@@ -14,13 +14,7 @@ build-bundled-agent-adp-image-linux:
     - if: !reference [.on_official_release, rules, if]
   extends: .setup-release-env
   needs:
-    - unit-tests-linux-amd64
-    - unit-tests-miri-linux-amd64
-    - unit-tests-linux-arm64
-    - unit-tests-miri-linux-arm64
-    - check-deny
-    - check-licenses
-    - run-ground-truth
+    - build-adp-image-release
   parallel:
     matrix:
       - JMX:
