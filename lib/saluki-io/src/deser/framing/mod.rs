@@ -37,12 +37,19 @@ pub enum FramingError {
     PartialFrame { needed: usize, remaining: usize },
 }
 
-/// A trait for reading framed messages from a buffer.
-pub trait Framer {
-    type Frame<'a>: BufferView
-    where
-        Self: 'a;
+pub trait FramerLifetime<'this, ImplicitBounds: Sealed = Bounds<&'this Self>> {
+	type Frame;
+}
 
+mod sealed {
+	pub trait Sealed: Sized {}
+	pub struct Bounds<T>(T);
+	impl<T> Sealed for Bounds<T> {}
+}
+use self::sealed::{Bounds, Sealed};
+
+/// A trait for reading framed messages from a buffer.
+pub trait Framer: for<'this> FramerLifetime<'this> {
     /// Attempt to extract the next frame from the buffer.
     ///
     /// If enough data was present to extract a frame, `Ok(Some(frame))` is returned. If not enough data was present, and
@@ -56,7 +63,7 @@ pub trait Framer {
     /// If an error is detected when reading the next frame, an error is returned.
     fn next_frame<'a, 'buf, B>(
         &'a mut self, buf: &'a mut B, is_eof: bool,
-    ) -> Result<Option<Self::Frame<'a>>, FramingError>
+    ) -> Result<Option<<Self as FramerLifetime<'_>>::Frame, FramingError>
     where
         B: BufferView,
         'buf: 'a;
