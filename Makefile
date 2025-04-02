@@ -188,6 +188,9 @@ endif
 ifeq ($(shell command -v jq >/dev/null || echo not-found), not-found)
 	$(error "Please install jq: https://jqlang.org/download/")
 endif
+ifeq ($(shell command -v protoc >/dev/null || echo not-found), not-found)
+	$(error "Please install protoc: https://protobuf.dev/installation/")
+endif
 
 ##@ Running
 
