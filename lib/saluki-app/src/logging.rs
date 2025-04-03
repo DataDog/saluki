@@ -11,7 +11,7 @@
 use std::{
     fmt,
     str::FromStr as _,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, Once, OnceLock},
     time::Duration,
 };
 
@@ -20,12 +20,14 @@ use chrono::{
     Utc,
 };
 use chrono_tz::Tz;
+use console_subscriber::{ConsoleLayer, ServerParts};
 use saluki_api::{
     extract::{Query, State},
     response::IntoResponse,
     routing::{post, Router},
     APIHandler, StatusCode,
 };
+use saluki_error::generic_error;
 use serde::Deserialize;
 use tokio::{select, sync::mpsc, time::sleep};
 use tracing::{error, field, info, level_filters::LevelFilter, Event, Subscriber};
@@ -39,12 +41,50 @@ use tracing_subscriber::{
     EnvFilter, Layer, Registry,
 };
 
+static CONSOLE_SUBSCRIBER_INIT: Once = Once::new();
+static CONSOLE_LAYER: Mutex<Option<ConsoleLayer>> = Mutex::new(None);
+static CONSOLE_SERVER: Mutex<Option<console_subscriber::ServerParts>> = Mutex::new(None);
+
 type SharedEnvFilter = Arc<dyn Filter<Registry> + Send + Sync>;
 
 /// Logs a message to standard error and exits the process with a non-zero exit code.
 pub fn fatal_and_exit(message: String) {
     eprintln!("FATAL: {}", message);
     std::process::exit(1);
+}
+
+fn init_console_subscriber() {
+    CONSOLE_SUBSCRIBER_INIT.call_once(|| {
+        let (layer, server) = console_subscriber::Builder::default()
+            .poll_duration_histogram_max(Duration::from_secs(10))
+            .scheduled_duration_histogram_max(Duration::from_secs(10))
+            .build();
+
+        CONSOLE_LAYER
+            .lock()
+            .expect("failed to lock console layer")
+            .replace(layer);
+
+        CONSOLE_SERVER
+            .lock()
+            .expect("failed to lock console server")
+            .replace(server.into_parts());
+    });
+}
+
+fn get_console_layer() -> Option<ConsoleLayer> {
+    init_console_subscriber();
+
+    CONSOLE_LAYER.lock().expect("failed to lock console layer").take()
+}
+
+/// Returns the console server parts necessary for enabling runtime tracing.
+///
+/// If the console server parts have already been consumed, `None` is returned.
+pub fn get_console_server_parts() -> Option<ServerParts> {
+    init_console_subscriber();
+
+    CONSOLE_SERVER.lock().expect("failed to lock console server").take()
 }
 
 /// Initializes the logging subsystem for `tracing`.
@@ -117,15 +157,19 @@ fn initialize_logging_inner(
         None
     };
 
+    let console_layer = get_console_layer().ok_or(generic_error!("console layer already consumed"))?;
+
     if is_json {
         let json_layer = initialize_tracing_json();
         tracing_subscriber::registry()
             .with(json_layer.with_filter(filter_layer))
+            .with(console_layer)
             .try_init()?;
     } else {
         let pretty_layer = initialize_tracing_pretty();
         tracing_subscriber::registry()
             .with(pretty_layer.with_filter(filter_layer))
+            .with(console_layer)
             .try_init()?;
     }
 
