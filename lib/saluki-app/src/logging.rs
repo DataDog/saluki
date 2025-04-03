@@ -58,6 +58,8 @@ fn init_console_subscriber() {
         let (layer, server) = console_subscriber::Builder::default()
             .poll_duration_histogram_max(Duration::from_secs(10))
             .scheduled_duration_histogram_max(Duration::from_secs(10))
+            // Default is 60 minutes, which is wayyyyyyy too much.
+            .retention(Duration::from_secs(5 * 60))
             .build();
 
         CONSOLE_LAYER
@@ -97,7 +99,7 @@ pub fn get_console_server_parts() -> Option<ServerParts> {
 ///
 /// ## Errors
 ///
-/// If the logging subsystem was already initialized, an error will be returned.
+/// If the logging subsystem was already iniitialized, an error will be returned.
 pub fn initialize_logging(default_level: Option<LevelFilter>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if initialize_logging_inner(default_level, false)?.is_some() {
         return Err("logging API handler should not be present when dynamic logging is disabled".into());

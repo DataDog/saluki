@@ -133,15 +133,18 @@ where
             endpoints,
         } = self;
 
-        spawn_traced(run_io_loop(
-            transactions_rx,
-            io_shutdown_tx,
-            config,
-            client,
-            telemetry,
-            metrics_builder,
-            endpoints,
-        ));
+        spawn_traced(
+            "dd-tx-forwarder-main-io",
+            run_io_loop(
+                transactions_rx,
+                io_shutdown_tx,
+                config,
+                client,
+                telemetry,
+                metrics_builder,
+                endpoints,
+            ),
+        );
 
         Handle {
             transactions_tx,
@@ -164,22 +167,27 @@ async fn run_io_loop<S, B>(
     let mut endpoint_txs = Vec::new();
     let task_barrier = Arc::new(Barrier::new(resolved_endpoints.len() + 1));
 
-    for resolved_endpoint in resolved_endpoints {
+    for (i, resolved_endpoint) in resolved_endpoints.into_iter().enumerate() {
         let endpoint_url = resolved_endpoint.endpoint().to_string();
 
         let txnq_telemetry = TransactionQueueTelemetry::from_builder(&metrics_builder, &endpoint_url);
 
         let (endpoint_tx, endpoint_rx) = mpsc::channel(8);
         let task_barrier = Arc::clone(&task_barrier);
-        spawn_traced(run_endpoint_io_loop(
-            endpoint_rx,
-            task_barrier,
-            config.clone(),
-            service.clone(),
-            telemetry.clone(),
-            txnq_telemetry,
-            resolved_endpoint,
-        ));
+
+        let task_name = format!("dd-tx-forwarder-endpoint-io-{}", i);
+        spawn_traced(
+            &task_name,
+            run_endpoint_io_loop(
+                endpoint_rx,
+                task_barrier,
+                config.clone(),
+                service.clone(),
+                telemetry.clone(),
+                txnq_telemetry,
+                resolved_endpoint,
+            ),
+        );
 
         endpoint_txs.push((endpoint_url, endpoint_tx));
     }

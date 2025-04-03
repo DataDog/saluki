@@ -564,6 +564,8 @@ impl Source for DogStatsD {
 
         // For each listener, spawn a dedicated task to run it.
         for listener in self.listeners {
+            let task_name = format!("dsd-listener-{}", listener.listen_address().listener_type());
+
             // TODO: Create a health handle for each listener.
             //
             // We need to rework `HealthRegistry` to look a little more like `ComponentRegistry` so that we can have it
@@ -578,11 +580,10 @@ impl Source for DogStatsD {
                 context_resolver: self.context_resolver.clone(),
             };
 
-            spawn_traced(process_listener(
-                context.clone(),
-                listener_context,
-                self.pre_filters.clone(),
-            ));
+            spawn_traced(
+                &task_name,
+                process_listener(context.clone(), listener_context, self.pre_filters.clone()),
+            );
         }
 
         health.mark_ready();
@@ -647,7 +648,9 @@ async fn process_listener(
                         metrics: build_metrics(&listen_addr, source_context.component_context()),
                         context_resolver: context_resolver.clone(),
                     };
-                    spawn_traced(process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register(), filters.clone()));
+
+                    let task_name = format!("dsd-stream-{}", listener.listen_address().listener_type());
+                    spawn_traced(&task_name, process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register(), filters.clone()));
                 }
                 Err(e) => {
                     error!(%listen_addr, error = %e, "Failed to accept connection. Stopping listener.");
