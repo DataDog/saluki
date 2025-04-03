@@ -701,7 +701,7 @@ async fn drive_stream(
     let mut buffer_flush = interval(Duration::from_millis(100));
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-    let mut event_buffer = source_context.event_buffer_pool().acquire().await;
+    let mut maybe_event_buffer = None;
     let mut buffer = io_buffer_pool.acquire().await;
     if !buffer.has_remaining_mut() {
         error!(%listen_addr, "Newly acquired buffer has no capacity. This should never happen.");
@@ -770,12 +770,12 @@ async fn drive_stream(
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
                                 match handle_frame(&frame[..], &codec, &mut context_resolver, &metrics, &peer_addr, filters.clone()) {
                                     Ok(Some(event)) => {
-                                        if let Some(event) = event_buffer.try_push(event) {
+                                        if let Some((event, event_buffer)) = try_push_event(event, &mut maybe_event_buffer, &source_context).await {
                                             debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
-                                            forward_events(&mut event_buffer, &source_context, &listen_addr).await;
+                                            forward_events(event_buffer, &source_context, &listen_addr).await;
 
                                             // Try to push the event again now that we have a new event buffer.
-                                            if event_buffer.try_push(event).is_some() {
+                                            if try_push_event(event, &mut maybe_event_buffer, &source_context).await.is_some() {
                                                 error!(%listen_addr, %peer_addr, "Event buffer is full even after forwarding events. Dropping event.");
                                             }
                                         }
@@ -831,15 +831,19 @@ async fn drive_stream(
             },
 
             _ = buffer_flush.tick() => {
-                if !event_buffer.is_empty() {
-                    forward_events(&mut event_buffer, &source_context, &listen_addr).await;
+                if let Some(event_buffer) = maybe_event_buffer.take() {
+                    if !event_buffer.is_empty() {
+                        forward_events(event_buffer, &source_context, &listen_addr).await;
+                    }
                 }
             },
         }
     }
 
-    if !event_buffer.is_empty() {
-        forward_events(&mut event_buffer, &source_context, &listen_addr).await;
+    if let Some(event_buffer) = maybe_event_buffer.take() {
+        if !event_buffer.is_empty() {
+            forward_events(event_buffer, &source_context, &listen_addr).await;
+        }
     }
 
     metrics.connections_active().decrement(1);
@@ -929,14 +933,29 @@ fn handle_metric_packet(
     }
 }
 
+async fn try_push_event(
+    event: Event, maybe_event_buffer: &mut Option<FixedSizeEventBuffer>, source_context: &SourceContext,
+) -> Option<(Event, FixedSizeEventBuffer)> {
+    let mut event_buffer = match maybe_event_buffer.take() {
+        Some(buffer) => buffer,
+        None => source_context.event_buffer_pool().acquire().await,
+    };
+
+    // Try writing into the event buffer.
+    //
+    // If we can't, we'll return it which instructs the caller to flush the buffer and then try again to push the event.
+    if let Some(event) = event_buffer.try_push(event) {
+        Some((event, event_buffer))
+    } else {
+        maybe_event_buffer.replace(event_buffer);
+        None
+    }
+}
+
 async fn forward_events(
-    event_buffer: &mut FixedSizeEventBuffer, source_context: &SourceContext, listen_addr: &ListenAddress,
+    mut event_buffer: FixedSizeEventBuffer, source_context: &SourceContext, listen_addr: &ListenAddress,
 ) {
     debug!(%listen_addr, events_len = event_buffer.len(), "Forwarding events.");
-
-    // Acquire a new event buffer to replace the one we're about to forward, and swap them.
-    let new_event_buffer = source_context.event_buffer_pool().acquire().await;
-    let mut event_buffer = std::mem::replace(event_buffer, new_event_buffer);
 
     // TODO: This is maybe a little dicey because if we fail to forward the events, we may not have iterated over all of
     // them, so there might still be eventd events when get to the service checks point, and eventd events and/or service

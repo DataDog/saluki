@@ -130,7 +130,7 @@ impl BuiltTopology {
         let (event_buffer_pool, shrinker) = ElasticObjectPool::with_builder("global_event_buffers", 32, 512, || {
             FixedSizeEventBufferInner::with_capacity(1024)
         });
-        spawn_traced("shrinker-global-event-bufs", shrinker);
+        spawn_traced("pool-shrinker-global-event-bufs", shrinker);
 
         let (mut forwarders, mut event_streams) = self.create_component_interconnects(event_buffer_pool.clone());
 
