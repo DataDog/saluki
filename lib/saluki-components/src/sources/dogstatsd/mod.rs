@@ -14,7 +14,7 @@ use saluki_core::{
     pooling::{FixedSizeObjectPool, ObjectPool as _},
     task::spawn_traced,
     topology::{
-        interconnect::FixedSizeEventBuffer,
+        interconnect::{EventBufferManager, FixedSizeEventBuffer},
         shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
         OutputDefinition,
     },
@@ -700,7 +700,7 @@ async fn drive_stream(
     let mut buffer_flush = interval(Duration::from_millis(100));
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-    let mut event_buffer = source_context.event_buffer_pool().acquire().await;
+    let mut event_buffer_manager = EventBufferManager::new(source_context.event_buffer_pool());
     let mut buffer = io_buffer_pool.acquire().await;
     if !buffer.has_remaining_mut() {
         error!(%listen_addr, "Newly acquired buffer has no capacity. This should never happen.");
@@ -769,12 +769,12 @@ async fn drive_stream(
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
                                 match handle_frame(&frame[..], &codec, &mut context_resolver, &metrics, &peer_addr, filters.clone()) {
                                     Ok(Some(event)) => {
-                                        if let Some(event) = event_buffer.try_push(event) {
+                                        if let Some((event, event_buffer)) = event_buffer_manager.try_push(event).await {
                                             debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
-                                            forward_events(&mut event_buffer, &source_context, &listen_addr).await;
+                                            forward_events(event_buffer, &source_context, &listen_addr).await;
 
                                             // Try to push the event again now that we have a new event buffer.
-                                            if event_buffer.try_push(event).is_some() {
+                                            if event_buffer_manager.try_push(event).await.is_some() {
                                                 error!(%listen_addr, %peer_addr, "Event buffer is full even after forwarding events. Dropping event.");
                                             }
                                         }
@@ -830,15 +830,15 @@ async fn drive_stream(
             },
 
             _ = buffer_flush.tick() => {
-                if !event_buffer.is_empty() {
-                    forward_events(&mut event_buffer, &source_context, &listen_addr).await;
+                if let Some(event_buffer) = event_buffer_manager.consume() {
+                    forward_events(event_buffer, &source_context, &listen_addr).await;
                 }
             },
         }
     }
 
-    if !event_buffer.is_empty() {
-        forward_events(&mut event_buffer, &source_context, &listen_addr).await;
+    if let Some(event_buffer) = event_buffer_manager.consume() {
+        forward_events(event_buffer, &source_context, &listen_addr).await;
     }
 
     metrics.connections_active().decrement(1);
@@ -940,13 +940,9 @@ fn handle_metric_packet(
 }
 
 async fn forward_events(
-    event_buffer: &mut FixedSizeEventBuffer, source_context: &SourceContext, listen_addr: &ListenAddress,
+    mut event_buffer: FixedSizeEventBuffer, source_context: &SourceContext, listen_addr: &ListenAddress,
 ) {
     debug!(%listen_addr, events_len = event_buffer.len(), "Forwarding events.");
-
-    // Acquire a new event buffer to replace the one we're about to forward, and swap them.
-    let new_event_buffer = source_context.event_buffer_pool().acquire().await;
-    let mut event_buffer = std::mem::replace(event_buffer, new_event_buffer);
 
     // TODO: This is maybe a little dicey because if we fail to forward the events, we may not have iterated over all of
     // them, so there might still be eventd events when get to the service checks point, and eventd events and/or service
