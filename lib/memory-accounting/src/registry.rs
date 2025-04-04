@@ -98,6 +98,11 @@ impl ComponentMetadata {
         }
     }
 
+    fn reset(&mut self) {
+        self.bounds = ComponentBounds::default();
+        self.subcomponents.clear();
+    }
+
     pub fn self_bounds(&self) -> &ComponentBounds {
         &self.bounds
     }
@@ -156,7 +161,7 @@ pub struct ComponentRegistry {
 impl ComponentRegistry {
     /// Gets a component by name, or creates it if it doesn't exist.
     ///
-    /// The name provided can be given in a direct (`component_name`) or nested (`path/to/component_name`) form. If the
+    /// The name provided can be given in a direct (`component_name`) or nested (`path.to.component_name`) form. If the
     /// nested form is given, each component in the path will be created if it doesn't exist.
     ///
     /// Returns a `ComponentRegistry` scoped to the component.
@@ -277,6 +282,15 @@ impl MemoryBoundsBuilder<'static> {
 }
 
 impl MemoryBoundsBuilder<'_> {
+    /// Resets the bounds of the current component to a default state.
+    ///
+    /// This can be used in scenarios where the bounds of a component need to be redefined after they have been
+    /// specified, as not all components are able to be defined in a single pass.
+    pub fn reset(&mut self) {
+        let mut inner = self.inner.inner.lock().unwrap();
+        inner.reset();
+    }
+
     /// Gets a builder object for defining the minimum bounds of the current component.
     pub fn minimum(&mut self) -> BoundsBuilder<'_, Minimum> {
         let bounds = self.inner.inner.lock().unwrap();

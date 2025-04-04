@@ -11,7 +11,7 @@
 use std::{
     fmt,
     str::FromStr as _,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
@@ -40,6 +40,8 @@ use tracing_subscriber::{
     EnvFilter, Layer, Registry,
 };
 
+static API_HANDLER: Mutex<Option<LoggingAPIHandler>> = Mutex::new(None);
+
 type SharedEnvFilter = Arc<dyn Filter<Registry> + Send + Sync>;
 
 /// Logs a message to standard error and exits the process with a non-zero exit code.
@@ -56,15 +58,11 @@ pub fn fatal_and_exit(message: String) {
 /// formatted as JSON. If it is set to any other value, or not set at all, the logs will default to a rich, colored,
 /// human-readable format.
 ///
-/// ## Errors
+/// # Errors
 ///
 /// If the logging subsystem was already initialized, an error will be returned.
 pub fn initialize_logging(default_level: Option<LevelFilter>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if initialize_logging_inner(default_level, false)?.is_some() {
-        return Err("logging API handler should not be present when dynamic logging is disabled".into());
-    }
-
-    Ok(())
+    initialize_logging_inner(default_level, false)
 }
 
 /// Initializes the logging subsystem for `tracing` with the ability to dynamically update the log filtering directives
@@ -76,26 +74,24 @@ pub fn initialize_logging(default_level: Option<LevelFilter>) -> Result<(), Box<
 /// formatted as JSON. If it is set to any other value, or not set at all, the logs will default to a rich, colored,
 /// human-readable format.
 ///
-/// Additionally, the returned `LoggingAPIHandler` can be used to dynamically update the log filtering directives at
-/// runtime by installing API routes which allow for passing in the same values accepted by `DD_LOG_LEVEL`. See
-/// [`LoggingAPIHandler`] for more information about dynamic filtering.
+/// An API handler can be acquired (via [`acquires_logging_api_handler`]) to install the API routes which allow for
+/// dynamically controlling the logging level filtering. See [`LoggingAPIHandler`] for more information.
 ///
-/// ## Errors
+/// # Errors
 ///
 /// If the logging subsystem was already initialized, an error will be returned.
 pub async fn initialize_dynamic_logging(
     default_level: Option<LevelFilter>,
-) -> Result<LoggingAPIHandler, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // We go through this wrapped initialize approach so that we can mark `initialize_dynamic_logging` as `async`, which
     // ensures we call it in an asynchronous context, thereby all but ensuring we're in a Tokio context when we try to
     // spawn the background task that handles reloading the filtering layer.
-    initialize_logging_inner(default_level, true)?
-        .ok_or("logging API handler should be present when dynamic logging is enabled".into())
+    initialize_logging_inner(default_level, true)
 }
 
 fn initialize_logging_inner(
     default_level: Option<LevelFilter>, with_reload: bool,
-) -> Result<Option<LoggingAPIHandler>, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let is_json = std::env::var("DD_LOG_FORMAT_JSON")
         .map(|s| s.trim().to_lowercase())
         .map(|s| s == "true" || s == "1")
@@ -112,11 +108,12 @@ fn initialize_logging_inner(
 
     let shared_level_filter = Arc::new(level_filter);
     let (filter_layer, reload_handle) = ReloadLayer::new(into_shared_dyn_filter(Arc::clone(&shared_level_filter)));
-    let maybe_api_handler = if with_reload {
-        Some(LoggingAPIHandler::new(shared_level_filter, reload_handle))
-    } else {
-        None
-    };
+    if with_reload {
+        API_HANDLER
+            .lock()
+            .unwrap()
+            .replace(LoggingAPIHandler::new(shared_level_filter.clone(), reload_handle));
+    }
 
     if is_json {
         let json_layer = initialize_tracing_json();
@@ -130,7 +127,7 @@ fn initialize_logging_inner(
             .try_init()?;
     }
 
-    Ok(maybe_api_handler)
+    Ok(())
 }
 
 fn initialize_tracing_json<S>() -> impl Layer<S>
@@ -150,6 +147,17 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     tracing_subscriber::fmt::Layer::new().event_format(AgentLikeFormatter::new())
+}
+
+/// Acquires the logging API handler.
+///
+/// This function is mutable, and consumes the handler if it's present. This means it should only be called once, and
+/// only after logging has been initialized via `initialize_dynamic_logging`.
+///
+/// The logging API handler can be used to install API routes which allow dynamically controlling the logging level
+/// filtering. See [`LoggingAPIHandler`] for more information.
+pub fn acquire_logging_api_handler() -> Option<LoggingAPIHandler> {
+    API_HANDLER.lock().unwrap().take()
 }
 
 #[derive(Deserialize)]
