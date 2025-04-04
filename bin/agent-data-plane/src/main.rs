@@ -34,6 +34,8 @@ use self::components::remapper::AgentTelemetryRemapperConfiguration;
 mod env_provider;
 use self::env_provider::ADPEnvironmentProvider;
 
+mod internal;
+
 mod state;
 use self::state::metrics::initialize_shared_metrics_state;
 
