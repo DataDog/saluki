@@ -54,4 +54,4 @@ install_protoc() {
   mv --force --verbose "${TMP_DIR}/bin/protoc" "${install_path}"
 }
 
-install_protoc "3.19.5" "/usr/bin/protoc"
+install_protoc "29.3" "/usr/bin/protoc"

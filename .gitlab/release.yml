@@ -7,7 +7,7 @@
     AGENT_ADP_IMAGE: "${AGENT_ADP_IMAGE_BASE}:${AGENT_ADP_IMAGE_TAG}"
     TARGET_AGENT_ADP_RELEASE_IMAGE: "agent:${AGENT_ADP_IMAGE_TAG}"
 
-build-bundled-agent-adp-image:
+build-bundled-agent-adp-image-linux:
   stage: release
   image: ${DOCKER_BUILD_IMAGE}
   rules:
@@ -39,19 +39,21 @@ build-bundled-agent-adp-image:
       --push
       .
 
-publish-bundled-agent-adp-image:
+publish-bundled-agent-adp-image-linux:
   stage: release
   rules:
     - if: !reference [.on_official_release, rules, if]
       when: manual
   extends: .setup-release-env
   needs:
+    - unit-tests-linux-amd64
+    - unit-tests-miri-linux-amd64
+    - unit-tests-linux-arm64
+    - unit-tests-miri-linux-arm64
     - check-deny
     - check-licenses
-    - unit-tests
-    - unit-tests-miri
     - run-ground-truth
-    - job: build-bundled-agent-adp-image
+    - job: build-bundled-agent-adp-image-linux
       parallel:
         matrix:
           - JMX: [""]
@@ -65,19 +67,21 @@ publish-bundled-agent-adp-image:
     IMG_DESTINATIONS: ${TARGET_AGENT_ADP_RELEASE_IMAGE}
     IMG_SIGNING: "false"
 
-publish-bundled-agent-adp-image-jmx:
+publish-bundled-agent-adp-image-linux-jmx:
   stage: release
   rules:
     - if: !reference [.on_official_release, rules, if]
       when: manual
   extends: .setup-release-env
   needs:
+    - unit-tests-linux-amd64
+    - unit-tests-miri-linux-amd64
+    - unit-tests-linux-arm64
+    - unit-tests-miri-linux-arm64
     - check-deny
     - check-licenses
-    - unit-tests
-    - unit-tests-miri
     - run-ground-truth
-    - job: build-bundled-agent-adp-image
+    - job: build-bundled-agent-adp-image-linux
       parallel:
         matrix:
           - JMX: ["-jmx"]
