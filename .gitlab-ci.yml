@@ -27,14 +27,14 @@ variables:
 
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image, both for
   # internal and public releases.
-  BASE_DD_AGENT_VERSION: "7.64.0-rc.13"
-  BASE_DD_AGENT_VERSION_INTERNAL: "7-64-0-rc-13"
+  BASE_DD_AGENT_VERSION: "7.65.0-rc.6"
+  BASE_DD_AGENT_VERSION_INTERNAL: "7-65-0-rc-6"
   BASE_DD_AGENT_VERSION_INTERNAL_NIGHTLY: "main-jmx-17d25f22"
 
-  INTERNAL_DD_AGENT_IMAGE: "${IMAGE_REGISTRY}/datadog-agent:${BASE_DD_AGENT_VERSION_INTERNAL}-jmx"
+  INTERNAL_DD_AGENT_IMAGE: "${IMAGE_REGISTRY}/datadog-agent:${BASE_DD_AGENT_VERSION_INTERNAL}-full"
   INTERNAL_DD_AGENT_IMAGE_FIPS: "${IMAGE_REGISTRY}/datadog-agent:${BASE_DD_AGENT_VERSION_INTERNAL}-fips-jmx"
   PUBLIC_DD_AGENT_IMAGE_BASE: "gcr.io/datadoghq/agent"
-  PUBLIC_DD_AGENT_IMAGE: "${PUBLIC_DD_AGENT_IMAGE_BASE}:${BASE_DD_AGENT_VERSION}"
+  PUBLIC_DD_AGENT_IMAGE: "${PUBLIC_DD_AGENT_IMAGE_BASE}:${BASE_DD_AGENT_VERSION}-full"
 
 default:
   tags: ["arch:amd64"]
