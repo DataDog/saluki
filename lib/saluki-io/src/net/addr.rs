@@ -41,6 +41,30 @@ pub enum ListenAddress {
 }
 
 impl ListenAddress {
+    /// Returns a string identifier for the listener type represented by this address.
+    pub fn listener_type(&self) -> &'static str {
+        match self {
+            Self::Tcp(_) => "tcp",
+            Self::Udp(_) => "udp",
+            #[cfg(unix)]
+            Self::Unixgram(_) => "unixgram",
+            #[cfg(unix)]
+            Self::Unix(_) => "unix",
+        }
+    }
+
+    /// Returns the path that this listen address is bound to.
+    pub fn listen_path(&self) -> String {
+        match self {
+            Self::Tcp(addr) => addr.to_string(),
+            Self::Udp(addr) => addr.to_string(),
+            #[cfg(unix)]
+            Self::Unixgram(path) => path.display().to_string(),
+            #[cfg(unix)]
+            Self::Unix(path) => path.display().to_string(),
+        }
+    }
+
     /// Creates a TCP address for the given port that listens on all interfaces.
     pub const fn any_tcp(port: u16) -> Self {
         Self::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)))

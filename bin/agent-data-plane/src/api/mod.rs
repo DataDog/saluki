@@ -16,7 +16,7 @@ const PRIMARY_PRIVILEGED_API_PORT: u16 = 5101;
 
 pub async fn configure_and_spawn_api_endpoints(
     config: &GenericConfiguration, internal_metrics: Reflector<AggregatedMetricsProcessor>,
-    unprivileged_api: APIBuilder, mut privileged_api: APIBuilder,
+    mut unprivileged_api: APIBuilder, mut privileged_api: APIBuilder,
 ) -> Result<(), GenericError> {
     let api_listen_address = config
         .try_get_typed("api_listen_address")
@@ -46,6 +46,15 @@ pub async fn configure_and_spawn_api_endpoints(
         privileged_api = privileged_api.with_grpc_service(remote_agent_service);
     }
 
+    // Configure runtime tracing with `console_subscriber`.
+    let console_server_parts = saluki_app::logging::get_console_server_parts()
+        .ok_or(generic_error!("Console subscriber server parts already consumed."))?;
+
+    tokio::spawn(console_server_parts.aggregator.run());
+
+    unprivileged_api = unprivileged_api.with_grpc_service(console_server_parts.instrument_server);
+
+    // Finally, spawn the APIs.
     spawn_unprivileged_api(unprivileged_api, api_listen_address).await?;
     spawn_privileged_api(privileged_api, secure_api_listen_address).await?;
 

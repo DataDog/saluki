@@ -23,7 +23,7 @@ saluki-metrics = { workspace = true }
 slab = { workspace = true }
 smallvec = { workspace = true }
 snafu = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time", "tracing"] }
 tokio-util = { workspace = true, features = ["time"] }
 tracing = { workspace = true, features = ["std"] }
 

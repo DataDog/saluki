@@ -78,7 +78,12 @@ where
             ..
         } = self;
 
-        spawn_traced(async move {
+        let task_name = format!(
+            "http-server-{}-{}",
+            listener.listen_address().listener_type(),
+            listener.listen_address().listen_path()
+        );
+        spawn_traced(&task_name, async move {
             let tls_enabled = tls_config.is_some();
             let maybe_tls_acceptor = tls_config.map(|mut config| {
                 // Allow for HTTP/1.1 and HTTP/2.
@@ -106,14 +111,14 @@ where
                                         },
                                     };
 
-                                    spawn_traced(async move {
+                                    spawn_traced("http-server-conn-handler-tls", async move {
                                         if let Err(e) = conn_builder.serve_connection(TokioIo::new(tls_stream), service).await {
                                             error!(%listen_addr, error = %e, "Failed to serve HTTP connection.");
                                         }
                                     });
                                 },
                                 None => {
-                                    spawn_traced(async move {
+                                    spawn_traced("http-server-conn-handler-no-tls", async move {
                                         if let Err(e) = conn_builder.serve_connection(TokioIo::new(stream), service).await {
                                             error!(%listen_addr, error = %e, "Failed to serve HTTP connection.");
                                         }

@@ -11,7 +11,7 @@
 use std::{
     fmt,
     str::FromStr as _,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, Once, OnceLock},
     time::Duration,
 };
 
@@ -20,24 +20,24 @@ use chrono::{
     Utc,
 };
 use chrono_tz::Tz;
+use console_subscriber::{ConsoleLayer, ServerParts};
 use saluki_api::{
     extract::{Query, State},
     response::IntoResponse,
     routing::{post, Router},
     APIHandler, StatusCode,
 };
+use saluki_error::generic_error;
 use serde::Deserialize;
 use tokio::{select, sync::mpsc, time::sleep};
 use tracing::{error, field, info, level_filters::LevelFilter, Event, Subscriber};
 use tracing_subscriber::{
-    field::VisitOutput,
-    fmt::{format::Writer, FmtContext, FormatEvent, FormatFields},
-    layer::{Filter, SubscriberExt as _},
-    registry::LookupSpan,
-    reload::{Handle, Layer as ReloadLayer},
-    util::SubscriberInitExt as _,
-    EnvFilter, Layer, Registry,
+    field::VisitOutput, filter::FilterFn, fmt::{format::Writer, FmtContext, FormatEvent, FormatFields}, layer::{Filter, SubscriberExt as _}, registry::LookupSpan, reload::{Handle, Layer as ReloadLayer}, util::SubscriberInitExt as _, EnvFilter, Layer, Registry
 };
+
+static CONSOLE_SUBSCRIBER_INIT: Once = Once::new();
+static CONSOLE_LAYER: Mutex<Option<ConsoleLayer>> = Mutex::new(None);
+static CONSOLE_SERVER: Mutex<Option<console_subscriber::ServerParts>> = Mutex::new(None);
 
 type SharedEnvFilter = Arc<dyn Filter<Registry> + Send + Sync>;
 
@@ -45,6 +45,42 @@ type SharedEnvFilter = Arc<dyn Filter<Registry> + Send + Sync>;
 pub fn fatal_and_exit(message: String) {
     eprintln!("FATAL: {}", message);
     std::process::exit(1);
+}
+
+fn init_console_subscriber() {
+    CONSOLE_SUBSCRIBER_INIT.call_once(|| {
+        let (layer, server) = console_subscriber::Builder::default()
+            .poll_duration_histogram_max(Duration::from_secs(10))
+            .scheduled_duration_histogram_max(Duration::from_secs(10))
+            // Default is 60 minutes, which is wayyyyyyy too much.
+            .retention(Duration::from_secs(5 * 60))
+            .build();
+
+        CONSOLE_LAYER
+            .lock()
+            .expect("failed to lock console layer")
+            .replace(layer);
+
+        CONSOLE_SERVER
+            .lock()
+            .expect("failed to lock console server")
+            .replace(server.into_parts());
+    });
+}
+
+fn get_console_layer() -> Option<ConsoleLayer> {
+    init_console_subscriber();
+
+    CONSOLE_LAYER.lock().expect("failed to lock console layer").take()
+}
+
+/// Returns the console server parts necessary for enabling runtime tracing.
+///
+/// If the console server parts have already been consumed, `None` is returned.
+pub fn get_console_server_parts() -> Option<ServerParts> {
+    init_console_subscriber();
+
+    CONSOLE_SERVER.lock().expect("failed to lock console server").take()
 }
 
 /// Initializes the logging subsystem for `tracing`.
@@ -57,7 +93,7 @@ pub fn fatal_and_exit(message: String) {
 ///
 /// ## Errors
 ///
-/// If the logging subsystem was already initialized, an error will be returned.
+/// If the logging subsystem was already iniitialized, an error will be returned.
 pub fn initialize_logging(default_level: Option<LevelFilter>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if initialize_logging_inner(default_level, false)?.is_some() {
         return Err("logging API handler should not be present when dynamic logging is disabled".into());
@@ -118,21 +154,28 @@ fn initialize_logging_inner(
     };
 
     if is_json {
-        let json_layer = initialize_tracing_json();
+        let json_layer = tracing_subscriber::fmt::Layer::new()
+            .json()
+            .flatten_event(true)
+            .with_target(true)
+            .with_file(true)
+            .with_line_number(true);
         tracing_subscriber::registry()
             .with(json_layer.with_filter(filter_layer))
+            .with(get_filtered_console_layer())
             .try_init()?;
     } else {
-        let pretty_layer = initialize_tracing_pretty();
+        let pretty_layer = tracing_subscriber::fmt::Layer::new().event_format(AgentLikeFormatter::new());
         tracing_subscriber::registry()
             .with(pretty_layer.with_filter(filter_layer))
+            .with(get_filtered_console_layer())
             .try_init()?;
     }
 
     Ok(maybe_api_handler)
 }
 
-fn initialize_tracing_json<S>() -> impl Layer<S>
+fn get_json_layer<S>() -> impl Layer<S>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
@@ -144,11 +187,12 @@ where
         .with_line_number(true)
 }
 
-fn initialize_tracing_pretty<S>() -> impl Layer<S>
+fn get_filtered_console_layer<S>() -> impl Layer<S>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
-    tracing_subscriber::fmt::Layer::new().event_format(AgentLikeFormatter::new())
+    let console_layer = get_console_layer().expect("console layer should be present");
+    console_layer.with_filter(FilterFn::new(console_filter))
 }
 
 #[derive(Deserialize)]
@@ -477,4 +521,16 @@ fn get_delayed_format_now() -> DelayedFormat<impl Iterator<Item = &'static Item<
 
     let now = Utc::now().with_timezone(system_tz);
     now.format_with_items(format_items.iter())
+}
+
+fn console_filter(meta: &tracing::Metadata<'_>) -> bool {
+    // events will have *targets* beginning with "runtime"
+    if meta.is_event() {
+        return meta.target().starts_with("runtime") || meta.target().starts_with("tokio");
+    }
+
+    // spans will have *names* beginning with "runtime". for backwards
+    // compatibility with older Tokio versions, enable anything with the `tokio`
+    // target as well.
+    meta.name().starts_with("runtime.") || meta.target().starts_with("tokio")
 }
