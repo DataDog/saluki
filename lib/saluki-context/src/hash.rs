@@ -92,3 +92,10 @@ where
 pub struct ContextKey {
     hash: u64,
 }
+
+impl ContextKey {
+    /// Returns the hash value.
+    pub(super) fn inner(&self) -> u64 {
+        self.hash
+    }
+}
