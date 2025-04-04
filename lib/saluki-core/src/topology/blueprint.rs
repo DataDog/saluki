@@ -39,16 +39,20 @@ pub enum BlueprintError {
 
 /// A topology blueprint represents a directed graph of components.
 pub struct TopologyBlueprint {
+    name: String,
     graph: Graph,
-    sources: HashMap<ComponentId, RegisteredComponent<Box<dyn SourceBuilder>>>,
-    transforms: HashMap<ComponentId, RegisteredComponent<Box<dyn TransformBuilder>>>,
-    destinations: HashMap<ComponentId, RegisteredComponent<Box<dyn DestinationBuilder>>>,
+    sources: HashMap<ComponentId, RegisteredComponent<Box<dyn SourceBuilder + Send>>>,
+    transforms: HashMap<ComponentId, RegisteredComponent<Box<dyn TransformBuilder + Send>>>,
+    destinations: HashMap<ComponentId, RegisteredComponent<Box<dyn DestinationBuilder + Send>>>,
     component_registry: ComponentRegistry,
 }
 
 impl TopologyBlueprint {
-    /// Creates an empty `TopologyBlueprint` attached to the given `ComponentRegistry`.
-    pub fn from_component_registry(mut component_registry: ComponentRegistry) -> Self {
+    /// Creates an empty `TopologyBlueprint` with the given name.
+    pub fn new(name: &str, component_registry: &ComponentRegistry) -> Self {
+        // Create a nested component registry for this topology.
+        let mut component_registry = component_registry.get_or_create("topology").get_or_create(name);
+
         // Account for our global event buffer pool, which has a lower and upper bound for the pooled object limit, but
         // using fixed-size event buffers.
         //
@@ -73,6 +77,7 @@ impl TopologyBlueprint {
             .with_fixed_amount("global event buffer pool", GLOBAL_EVENT_BUFFER_POOL_SIZE_FIRM);
 
         Self {
+            name: name.to_string(),
             graph: Graph::default(),
             sources: HashMap::new(),
             transforms: HashMap::new(),
@@ -98,7 +103,7 @@ impl TopologyBlueprint {
     pub fn add_source<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, GenericError>
     where
         I: AsRef<str>,
-        B: SourceBuilder + 'static,
+        B: SourceBuilder + Send + 'static,
     {
         let component_id = self
             .graph
@@ -111,10 +116,10 @@ impl TopologyBlueprint {
         let mut bounds_builder = source_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
 
-        let builder: Box<dyn SourceBuilder> = Box::new(builder);
-        let _ = self
-            .sources
-            .insert(component_id, RegisteredComponent::new(builder, source_registry));
+        let _ = self.sources.insert(
+            component_id,
+            RegisteredComponent::new(Box::new(builder), source_registry),
+        );
 
         Ok(self)
     }
@@ -127,7 +132,7 @@ impl TopologyBlueprint {
     pub fn add_transform<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, GenericError>
     where
         I: AsRef<str>,
-        B: TransformBuilder + 'static,
+        B: TransformBuilder + Send + 'static,
     {
         let component_id = self
             .graph
@@ -142,10 +147,10 @@ impl TopologyBlueprint {
         let mut bounds_builder = transform_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
 
-        let builder: Box<dyn TransformBuilder> = Box::new(builder);
-        let _ = self
-            .transforms
-            .insert(component_id, RegisteredComponent::new(builder, transform_registry));
+        let _ = self.transforms.insert(
+            component_id,
+            RegisteredComponent::new(Box::new(builder), transform_registry),
+        );
 
         Ok(self)
     }
@@ -158,7 +163,7 @@ impl TopologyBlueprint {
     pub fn add_destination<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, GenericError>
     where
         I: AsRef<str>,
-        B: DestinationBuilder + 'static,
+        B: DestinationBuilder + Send + 'static,
     {
         let component_id = self
             .graph
@@ -173,10 +178,10 @@ impl TopologyBlueprint {
         let mut bounds_builder = destination_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
 
-        let builder: Box<dyn DestinationBuilder> = Box::new(builder);
-        let _ = self
-            .destinations
-            .insert(component_id, RegisteredComponent::new(builder, destination_registry));
+        let _ = self.destinations.insert(
+            component_id,
+            RegisteredComponent::new(Box::new(builder), destination_registry),
+        );
 
         Ok(self)
     }
@@ -219,16 +224,16 @@ impl TopologyBlueprint {
             let (builder, mut component_registry) = builder.into_parts();
             let allocation_token = component_registry.token();
 
-            let _guard = allocation_token.enter();
             let component_context = ComponentContext::source(id.clone());
             let source = builder
                 .build(component_context)
+                .track_allocations(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build source '{}'.", id))?;
 
             sources.insert(
                 id,
-                RegisteredComponent::new(source.in_current_allocation_group(), component_registry),
+                RegisteredComponent::new(source.track_allocations(allocation_token), component_registry),
             );
         }
 
@@ -237,16 +242,16 @@ impl TopologyBlueprint {
             let (builder, mut component_registry) = builder.into_parts();
             let allocation_token = component_registry.token();
 
-            let _guard = allocation_token.enter();
             let component_context = ComponentContext::transform(id.clone());
             let transform = builder
                 .build(component_context)
+                .track_allocations(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build transform '{}'.", id))?;
 
             transforms.insert(
                 id,
-                RegisteredComponent::new(transform.in_current_allocation_group(), component_registry),
+                RegisteredComponent::new(transform.track_allocations(allocation_token), component_registry),
             );
         }
 
@@ -255,20 +260,21 @@ impl TopologyBlueprint {
             let (builder, mut component_registry) = builder.into_parts();
             let allocation_token = component_registry.token();
 
-            let _guard = allocation_token.enter();
             let component_context = ComponentContext::destination(id.clone());
             let destination = builder
                 .build(component_context)
+                .track_allocations(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build destination '{}'.", id))?;
 
             destinations.insert(
                 id,
-                RegisteredComponent::new(destination.in_current_allocation_group(), component_registry),
+                RegisteredComponent::new(destination.track_allocations(allocation_token), component_registry),
             );
         }
 
         Ok(BuiltTopology::from_parts(
+            self.name,
             self.graph,
             sources,
             transforms,
