@@ -689,6 +689,8 @@ async fn drive_stream(
         mut context_resolver,
     } = handler_context;
 
+    debug!(%listen_addr, "Stream handler started.");
+
     if !stream.is_connectionless() {
         metrics.connections_active().increment(1);
     }
@@ -803,7 +805,7 @@ async fn drive_stream(
                             None => {
                                 trace!(%listen_addr, %peer_addr, "Not enough data to decode another frame.");
                                 if eof && !stream.is_connectionless() {
-                                    trace!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
+                                    debug!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
                                     break 'read;
                                 } else {
                                     break 'frame;
@@ -840,6 +842,8 @@ async fn drive_stream(
     }
 
     metrics.connections_active().decrement(1);
+
+    debug!(%listen_addr, "Stream handler stopped.");
 }
 
 fn handle_frame(
@@ -864,7 +868,10 @@ fn handle_frame(
         ParsedPacket::Metric(metric_packet) => {
             let events_len = metric_packet.num_points;
             if !is_metric_allowed(&filters, &metric_packet) {
-                debug!(%metric_packet.metric_name, "Metric filtered out.");
+                trace!(
+                    metric.name = metric_packet.metric_name,
+                    "Skipping metric due to filter configuration."
+                );
                 return Ok(None);
             }
 
@@ -882,7 +889,10 @@ fn handle_frame(
         }
         ParsedPacket::Event(event) => {
             if !is_event_allowed(&filters, &event) {
-                debug!("Event: {} filtered out.", event.title());
+                trace!(
+                    event.title = event.title(),
+                    "Skipping event due to filter configuration."
+                );
                 return Ok(None);
             }
             source_metrics.events_received().increment(1);
@@ -890,7 +900,10 @@ fn handle_frame(
         }
         ParsedPacket::ServiceCheck(service_check) => {
             if !is_service_check_allowed(&filters, &service_check) {
-                debug!("Service Check: {} filtered out.", service_check.name());
+                trace!(
+                    service_check.name = service_check.name(),
+                    "Skipping service check due to filter configuration."
+                );
                 return Ok(None);
             }
             source_metrics.service_checks_received().increment(1);
