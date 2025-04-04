@@ -32,13 +32,7 @@ use serde::Deserialize;
 use tokio::{select, sync::mpsc, time::sleep};
 use tracing::{error, field, info, level_filters::LevelFilter, Event, Subscriber};
 use tracing_subscriber::{
-    field::VisitOutput,
-    fmt::{format::Writer, FmtContext, FormatEvent, FormatFields},
-    layer::{Filter, SubscriberExt as _},
-    registry::LookupSpan,
-    reload::{Handle, Layer as ReloadLayer},
-    util::SubscriberInitExt as _,
-    EnvFilter, Layer, Registry,
+    field::VisitOutput, filter::FilterFn, fmt::{format::Writer, FmtContext, FormatEvent, FormatFields}, layer::{Filter, SubscriberExt as _}, registry::LookupSpan, reload::{Handle, Layer as ReloadLayer}, util::SubscriberInitExt as _, EnvFilter, Layer, Registry
 };
 
 static CONSOLE_SUBSCRIBER_INIT: Once = Once::new();
@@ -159,26 +153,29 @@ fn initialize_logging_inner(
         None
     };
 
-    let console_layer = get_console_layer().ok_or(generic_error!("console layer already consumed"))?;
-
     if is_json {
-        let json_layer = initialize_tracing_json();
+        let json_layer = tracing_subscriber::fmt::Layer::new()
+            .json()
+            .flatten_event(true)
+            .with_target(true)
+            .with_file(true)
+            .with_line_number(true);
         tracing_subscriber::registry()
             .with(json_layer.with_filter(filter_layer))
-            .with(console_layer)
+            .with(get_filtered_console_layer())
             .try_init()?;
     } else {
-        let pretty_layer = initialize_tracing_pretty();
+        let pretty_layer = tracing_subscriber::fmt::Layer::new().event_format(AgentLikeFormatter::new());
         tracing_subscriber::registry()
             .with(pretty_layer.with_filter(filter_layer))
-            .with(console_layer)
+            .with(get_filtered_console_layer())
             .try_init()?;
     }
 
     Ok(maybe_api_handler)
 }
 
-fn initialize_tracing_json<S>() -> impl Layer<S>
+fn get_json_layer<S>() -> impl Layer<S>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
@@ -190,11 +187,12 @@ where
         .with_line_number(true)
 }
 
-fn initialize_tracing_pretty<S>() -> impl Layer<S>
+fn get_filtered_console_layer<S>() -> impl Layer<S>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
-    tracing_subscriber::fmt::Layer::new().event_format(AgentLikeFormatter::new())
+    let console_layer = get_console_layer().expect("console layer should be present");
+    console_layer.with_filter(FilterFn::new(console_filter))
 }
 
 #[derive(Deserialize)]
@@ -523,4 +521,16 @@ fn get_delayed_format_now() -> DelayedFormat<impl Iterator<Item = &'static Item<
 
     let now = Utc::now().with_timezone(system_tz);
     now.format_with_items(format_items.iter())
+}
+
+fn console_filter(meta: &tracing::Metadata<'_>) -> bool {
+    // events will have *targets* beginning with "runtime"
+    if meta.is_event() {
+        return meta.target().starts_with("runtime") || meta.target().starts_with("tokio");
+    }
+
+    // spans will have *names* beginning with "runtime". for backwards
+    // compatibility with older Tokio versions, enable anything with the `tokio`
+    // target as well.
+    meta.name().starts_with("runtime.") || meta.target().starts_with("tokio")
 }
