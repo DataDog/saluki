@@ -156,7 +156,7 @@ pub struct ComponentRegistry {
 impl ComponentRegistry {
     /// Gets a component by name, or creates it if it doesn't exist.
     ///
-    /// The name provided can be given in a direct (`component_name`) or nested (`path/to/component_name`) form. If the
+    /// The name provided can be given in a direct (`component_name`) or nested (`path.to.component_name`) form. If the
     /// nested form is given, each component in the path will be created if it doesn't exist.
     ///
     /// Returns a `ComponentRegistry` scoped to the component.

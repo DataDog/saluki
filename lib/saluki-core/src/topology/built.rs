@@ -37,6 +37,7 @@ use crate::{
 ///
 /// A built topology must be spawned via [`spawn`][Self::spawn].
 pub struct BuiltTopology {
+    name: String,
     graph: Graph,
     sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
     transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
@@ -46,12 +47,14 @@ pub struct BuiltTopology {
 
 impl BuiltTopology {
     pub(crate) fn from_parts(
+        name: String,
         graph: Graph, sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
         transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
         destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
         component_token: AllocationGroupToken,
     ) -> Self {
         Self {
+            name,
             graph,
             sources,
             transforms,
@@ -121,6 +124,8 @@ impl BuiltTopology {
     pub async fn spawn(
         self, health_registry: &HealthRegistry, memory_limiter: MemoryLimiter,
     ) -> Result<RunningTopology, GenericError> {
+        let root_component_name = format!("topologies.{}", self.name);
+
         let _guard = self.component_token.enter();
 
         let mut component_tasks = JoinSet::new();
@@ -146,7 +151,7 @@ impl BuiltTopology {
 
             let shutdown_handle = shutdown_coordinator.register();
             let health_handle = health_registry
-                .register_component(format!("topology.sources.{}", component_id))
+                .register_component(format!("{}.sources.{}", root_component_name, component_id))
                 .expect("duplicate source component ID in health registry");
 
             let component_context = ComponentContext::source(component_id.clone());
@@ -178,7 +183,7 @@ impl BuiltTopology {
                 .ok_or_else(|| generic_error!("No event stream found for component '{}'", component_id))?;
 
             let health_handle = health_registry
-                .register_component(format!("topology.transforms.{}", component_id))
+                .register_component(format!("{}.transforms.{}", root_component_name, component_id))
                 .expect("duplicate transform component ID in health registry");
 
             let component_context = ComponentContext::transform(component_id.clone());
@@ -206,7 +211,7 @@ impl BuiltTopology {
                 .ok_or_else(|| generic_error!("No event stream found for component '{}'", component_id))?;
 
             let health_handle = health_registry
-                .register_component(format!("topology.destinations.{}", component_id))
+                .register_component(format!("{}.destinations.{}", root_component_name, component_id))
                 .expect("duplicate destination component ID in health registry");
 
             let component_context = ComponentContext::destination(component_id.clone());

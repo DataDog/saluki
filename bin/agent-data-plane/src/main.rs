@@ -7,6 +7,7 @@
 #![deny(missing_docs)]
 use std::time::{Duration, Instant};
 
+use internal::spawn_internal_processes;
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{api::APIBuilder, logging::LoggingAPIHandler, metrics::emit_startup_metrics, prelude::*};
 use saluki_components::{
@@ -103,30 +104,14 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
         .await?
         .into_generic()?;
 
+    // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
-
-    let internal_metrics = initialize_shared_metrics_state().await;
-
     let env_provider =
         ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry).await?;
 
-    // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
-    // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
+    // Create our primary data topology.
     let blueprint = create_topology(&configuration, &env_provider, &component_registry).await?;
-
-    // Build our unprivileged and privileged API server.
-    //
-    // The unprivileged API is purely for things like health checks or read-only information. The privileged API is
-    // meant for sensitive information or actions that require elevated permissions.
-    let unprivileged_api = APIBuilder::new()
-        .with_handler(health_registry.api_handler())
-        .with_handler(component_registry.api_handler());
-
-    let privileged_api = APIBuilder::new()
-        .with_self_signed_tls()
-        .with_handler(logging_api_handler)
-        .with_optional_handler(env_provider.workload_api_handler());
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
     let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;
@@ -146,11 +131,8 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     let built_topology = blueprint.build().await?;
     let mut running_topology = built_topology.spawn(&health_registry, memory_limiter).await?;
 
-    // Spawn the health checker.
-    health_registry.spawn().await?;
-
-    // Handle any final configuration of our API endpoints and spawn them.
-    configure_and_spawn_api_endpoints(&configuration, internal_metrics, unprivileged_api, privileged_api).await?;
+    // Spawn our internal processes.
+    spawn_internal_processes(&configuration, &component_registry, health_registry)?;
 
     let startup_time = started.elapsed();
 
@@ -226,9 +208,7 @@ async fn create_topology(
     let events_service_checks_config = DatadogEventsServiceChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Events/Service Checks destination.")?;
 
-    let topology_registry = component_registry.get_or_create("topology");
-    let mut blueprint = TopologyBlueprint::from_component_registry(topology_registry);
-
+    let mut blueprint = TopologyBlueprint::new("primary", &component_registry);
     blueprint
         .add_source("dsd_in", dsd_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
