@@ -16,7 +16,7 @@ use tokio::time::{interval, MissedTickBehavior};
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::state::metrics::AggregatedMetricsProcessor;
+use crate::state::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor};
 
 const EVENTS_RECEIVED: &str = "adp.component_events_received_total";
 const PACKETS_RECEIVED: &str = "adp.component_packets_received_total";
@@ -45,7 +45,6 @@ impl RemoteAgentHelperConfiguration {
     /// Creates a new `RemoteAgentHelperConfiguration` from the given configuration.
     pub async fn from_configuration(
         config: &GenericConfiguration, local_api_listen_addr: SocketAddr,
-        internal_metrics: Reflector<AggregatedMetricsProcessor>,
     ) -> Result<Self, GenericError> {
         let app_details = saluki_metadata::get_app_details();
         let formatted_full_name = app_details
@@ -60,7 +59,7 @@ impl RemoteAgentHelperConfiguration {
             display_name: formatted_full_name,
             local_api_listen_addr,
             client,
-            internal_metrics,
+            internal_metrics: get_shared_metrics_state().await,
         })
     }
 

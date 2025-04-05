@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use internal::spawn_internal_processes;
 use memory_accounting::{ComponentBounds, ComponentRegistry};
-use saluki_app::{api::APIBuilder, logging::LoggingAPIHandler, metrics::emit_startup_metrics, prelude::*};
+use saluki_app::{logging::LoggingAPIHandler, metrics::emit_startup_metrics, prelude::*};
 use saluki_components::{
     destinations::{DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration, PrometheusConfiguration},
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
@@ -26,8 +26,7 @@ use saluki_health::HealthRegistry;
 use tokio::select;
 use tracing::{error, info, warn};
 
-mod api;
-use self::api::configure_and_spawn_api_endpoints;
+pub(crate) mod api;
 
 mod components;
 use self::components::remapper::AgentTelemetryRemapperConfiguration;
@@ -37,8 +36,7 @@ use self::env_provider::ADPEnvironmentProvider;
 
 mod internal;
 
-mod state;
-use self::state::metrics::initialize_shared_metrics_state;
+pub(crate) mod state;
 
 #[cfg(target_os = "linux")]
 #[global_allocator]
@@ -132,7 +130,7 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     let mut running_topology = built_topology.spawn(&health_registry, memory_limiter).await?;
 
     // Spawn our internal processes.
-    spawn_internal_processes(&configuration, &component_registry, health_registry)?;
+    spawn_internal_processes(&configuration, &component_registry, health_registry, env_provider)?;
 
     let startup_time = started.elapsed();
 
