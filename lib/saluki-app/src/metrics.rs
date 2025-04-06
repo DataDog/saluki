@@ -83,7 +83,10 @@ struct WorkerMetrics {
 
 impl WorkerMetrics {
     fn with_worker_idx(runtime_id: &str, worker_idx: usize) -> Self {
-        let labels = [("runtime_id", runtime_id.to_string()), ("worker_idx", worker_idx.to_string())];
+        let labels = [
+            ("runtime_id", runtime_id.to_string()),
+            ("worker_idx", worker_idx.to_string()),
+        ];
 
         Self {
             local_queue_depth: gauge!("runtime.worker.local_queue_depth", &labels),

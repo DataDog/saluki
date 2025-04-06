@@ -35,8 +35,7 @@ pub async fn configure_and_spawn_api_endpoints(
 
         // Build and spawn our helper task for registering ourselves with the Datadog Agent as a remote agent.
         let remote_agent_config =
-            RemoteAgentHelperConfiguration::from_configuration(config, local_secure_api_addr)
-                .await?;
+            RemoteAgentHelperConfiguration::from_configuration(config, local_secure_api_addr).await?;
         let remote_agent_service = remote_agent_config.spawn().await;
 
         // Register our Remote Agent gRPC service with the privileged API.

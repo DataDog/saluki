@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use internal::spawn_internal_processes;
 use memory_accounting::{ComponentBounds, ComponentRegistry};
-use saluki_app::{logging::LoggingAPIHandler, metrics::emit_startup_metrics, prelude::*};
+use saluki_app::prelude::*;
 use saluki_components::{
     destinations::{DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration, PrometheusConfiguration},
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
@@ -52,13 +52,9 @@ static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System
 async fn main() {
     let started = Instant::now();
 
-    let logging_api_handler = match initialize_dynamic_logging(None).await {
-        Ok(handler) => handler,
-        Err(e) => {
-            fatal_and_exit(format!("failed to initialize logging: {}", e));
-            return;
-        }
-    };
+    if let Err(e) = initialize_dynamic_logging(None).await {
+        fatal_and_exit(format!("failed to initialize logging: {}", e));
+    }
 
     if let Err(e) = initialize_metrics("adp").await {
         fatal_and_exit(format!("failed to initialize metrics: {}", e));
@@ -72,18 +68,16 @@ async fn main() {
         fatal_and_exit(format!("failed to initialize TLS: {}", e));
     }
 
-    match run(started, logging_api_handler).await {
+    match run(started).await {
         Ok(()) => info!("Agent Data Plane stopped."),
         Err(e) => {
-            // TODO: It'd be better to take the error cause chain and write it out as a list of errors, instead of
-            // having it be multi-line, since the multi-line bit messes with the log formatting.
             error!("{:?}", e);
             std::process::exit(1);
         }
     }
 }
 
-async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result<(), GenericError> {
+async fn run(started: Instant) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
     info!(
         version = app_details.version().raw(),
@@ -108,8 +102,16 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     let env_provider =
         ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry).await?;
 
-    // Create our primary data topology.
+    // Create our primary data topology and spawn any internal processes, which will ensure all relevant components are
+    // registered and accounted for in terms of memory usage.
     let blueprint = create_topology(&configuration, &env_provider, &component_registry).await?;
+
+    spawn_internal_processes(
+        &configuration,
+        &component_registry,
+        health_registry.clone(),
+        env_provider,
+    )?;
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
     let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;
@@ -128,9 +130,6 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     // Bounds validation succeeded, so now we'll build and spawn the topology.
     let built_topology = blueprint.build().await?;
     let mut running_topology = built_topology.spawn(&health_registry, memory_limiter).await?;
-
-    // Spawn our internal processes.
-    spawn_internal_processes(&configuration, &component_registry, health_registry, env_provider)?;
 
     let startup_time = started.elapsed();
 
@@ -206,7 +205,7 @@ async fn create_topology(
     let events_service_checks_config = DatadogEventsServiceChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Events/Service Checks destination.")?;
 
-    let mut blueprint = TopologyBlueprint::new("primary", &component_registry);
+    let mut blueprint = TopologyBlueprint::new("primary", component_registry);
     blueprint
         .add_source("dsd_in", dsd_config)?
         .add_transform("dsd_agg", dsd_agg_config)?

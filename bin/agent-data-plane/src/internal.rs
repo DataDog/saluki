@@ -1,22 +1,28 @@
 use std::future::{pending, Future};
 
 use memory_accounting::{ComponentRegistry, MemoryLimiter};
-use saluki_app::{api::APIBuilder, metrics::collect_runtime_metrics};
+use saluki_app::{api::APIBuilder, metrics::collect_runtime_metrics, prelude::acquire_logging_api_handler};
 use saluki_components::{destinations::PrometheusConfiguration, sources::InternalMetricsConfiguration};
 use saluki_config::GenericConfiguration;
-use saluki_core::topology::{RunningTopology, TopologyBlueprint};
+use saluki_core::topology::TopologyBlueprint;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use tracing::info;
 
-use crate::{api::configure_and_spawn_api_endpoints, components::remapper::AgentTelemetryRemapperConfiguration, env_provider::ADPEnvironmentProvider};
+use crate::{
+    api::configure_and_spawn_api_endpoints, components::remapper::AgentTelemetryRemapperConfiguration,
+    env_provider::ADPEnvironmentProvider,
+};
 
 /// Spawns all relevant internal ADP processes, such as internal telemetry, API endpoints, and so on.
 ///
 /// # Errors
 ///
 /// If an error occurs while spawning any of the internal processes, an error is returned.
-pub fn spawn_internal_processes(config: &GenericConfiguration, component_registry: &ComponentRegistry, health_registry: HealthRegistry, env_provider: ADPEnvironmentProvider) -> Result<(), GenericError> {
+pub fn spawn_internal_processes(
+    config: &GenericConfiguration, component_registry: &ComponentRegistry, health_registry: HealthRegistry,
+    env_provider: ADPEnvironmentProvider,
+) -> Result<(), GenericError> {
     // We spawn two separate current-thread runtimes: one for APIs/health checks, and one for the internal observability topology.
     //
     // This is because we want to ensure these are isolated from any badness in the primary data topology, either in
@@ -24,12 +30,14 @@ pub fn spawn_internal_processes(config: &GenericConfiguration, component_registr
     // consuming event buffers and starving the internal observability components, and so on.
 
     spawn_internal_observability_topology(config, component_registry, health_registry.clone())?;
-    spawn_control_plane(config, component_registry, health_registry, env_provider)?;
+    spawn_control_plane(config.clone(), component_registry, health_registry, env_provider)?;
 
     Ok(())
 }
 
-fn spawn_internal_observability_topology(config: &GenericConfiguration, component_registry: &ComponentRegistry, health_registry: HealthRegistry) -> Result<(), GenericError> {
+fn spawn_internal_observability_topology(
+    config: &GenericConfiguration, component_registry: &ComponentRegistry, health_registry: HealthRegistry,
+) -> Result<(), GenericError> {
     // When telemetry is enabled, we need to collect internal metrics, so add those components and route them here.
     let telemetry_enabled = config.get_typed_or_default::<bool>("telemetry_enabled");
     if !telemetry_enabled {
@@ -42,7 +50,10 @@ fn spawn_internal_observability_topology(config: &GenericConfiguration, componen
     let int_metrics_remap_config = AgentTelemetryRemapperConfiguration::new();
     let prometheus_config = PrometheusConfiguration::from_configuration(config)?;
 
-    info!("Internal telemetry enabled. Spawning Prometheus scrape endpoint on {}.", prometheus_config.listen_address());
+    info!(
+        "Internal telemetry enabled. Spawning Prometheus scrape endpoint on {}.",
+        prometheus_config.listen_address()
+    );
 
     let mut blueprint = TopologyBlueprint::new("internal", component_registry);
     blueprint
@@ -57,12 +68,13 @@ fn spawn_internal_observability_topology(config: &GenericConfiguration, componen
         built_topology.spawn(&health_registry, MemoryLimiter::noop()).await
     };
 
-    let main = |_: RunningTopology| pending::<()>();
-
-    initialize_and_launch_runtime("runtime-internal-telemetry", init, main)
+    initialize_and_launch_runtime("rt-internal-telemetry", init, |_| pending())
 }
 
-fn spawn_control_plane(config: &GenericConfiguration, component_registry: &ComponentRegistry, health_registry: HealthRegistry, env_provider: ADPEnvironmentProvider) -> Result<(), GenericError> {
+fn spawn_control_plane(
+    config: GenericConfiguration, component_registry: &ComponentRegistry, health_registry: HealthRegistry,
+    env_provider: ADPEnvironmentProvider,
+) -> Result<(), GenericError> {
     // Build our unprivileged and privileged API server.
     //
     // The unprivileged API is purely for things like health checks or read-only information. The privileged API is
@@ -73,21 +85,19 @@ fn spawn_control_plane(config: &GenericConfiguration, component_registry: &Compo
 
     let privileged_api = APIBuilder::new()
         .with_self_signed_tls()
-        .with_handler(logging_api_handler)
+        .with_optional_handler(acquire_logging_api_handler())
         .with_optional_handler(env_provider.workload_api_handler());
 
     let init = async move {
         // Handle any final configuration of our API endpoints and spawn them.
         configure_and_spawn_api_endpoints(&config, unprivileged_api, privileged_api).await?;
-        
+
         health_registry.spawn().await?;
 
         Ok(())
     };
 
-    let main = |_: ()| pending::<()>();
-
-    initialize_and_launch_runtime("runtime-control-plane", init, main)
+    initialize_and_launch_runtime("rt-control-plane", init, |_| pending())
 }
 
 /// Creates a single-threaded Tokio runtime, initializing it and driving it to completion.
@@ -107,10 +117,11 @@ fn initialize_and_launch_runtime<F, T, F2, T2>(name: &str, init: F, main_task: F
 where
     F: Future<Output = Result<T, GenericError>> + Send + 'static,
     F2: FnOnce(T) -> T2 + Send + 'static,
-    T2: Future,
+    T2: Future<Output = ()>,
 {
     let mut builder = tokio::runtime::Builder::new_current_thread();
-    let runtime = builder.enable_all()
+    let runtime = builder
+        .enable_all()
         .max_blocking_threads(2)
         .build()
         .error_context("Failed to build current thread runtime.")?;
@@ -133,7 +144,7 @@ where
                         collect_runtime_metrics(&runtime_id).await;
                     });
 
-                    let _ = runtime.block_on(main_task(init_value));
+                    runtime.block_on(main_task(init_value));
                 }
                 Err(e) => {
                     // Initialization failed, so send the error back to the main thread.
@@ -147,6 +158,8 @@ where
     match init_rx.recv() {
         Ok(Ok(())) => Ok(()),
         Ok(Err(e)) => Err(e),
-        Err(_) => Err(generic_error!("Initialization result channel closed unexpectedly. Runtime likely in an unexpected/corrupted state.")),
+        Err(_) => Err(generic_error!(
+            "Initialization result channel closed unexpectedly. Runtime likely in an unexpected/corrupted state."
+        )),
     }
 }

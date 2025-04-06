@@ -47,8 +47,8 @@ pub struct BuiltTopology {
 
 impl BuiltTopology {
     pub(crate) fn from_parts(
-        name: String,
-        graph: Graph, sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
+        name: String, graph: Graph,
+        sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
         transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
         destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
         component_token: AllocationGroupToken,

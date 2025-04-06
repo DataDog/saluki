@@ -244,12 +244,13 @@ fn metric_values_to_aggregated(values: MetricValues) -> Option<AggregatedMetric>
 /// This is lazily initialized and will only be created when it is first accessed.
 pub async fn get_shared_metrics_state() -> Reflector<AggregatedMetricsProcessor> {
     static REFLECTOR: OnceCell<Reflector<AggregatedMetricsProcessor>> = OnceCell::const_new();
-    REFLECTOR.get_or_init(|| async {
-        let metrics_stream = MetricsStream::register().map(Arc::unwrap_or_clone);
-        Reflector::new(metrics_stream, AggregatedMetricsProcessor).await
-    })
-    .await
-    .clone()
+    REFLECTOR
+        .get_or_init(|| async {
+            let metrics_stream = MetricsStream::register().map(Arc::unwrap_or_clone);
+            Reflector::new(metrics_stream, AggregatedMetricsProcessor).await
+        })
+        .await
+        .clone()
 }
 
 #[cfg(test)]

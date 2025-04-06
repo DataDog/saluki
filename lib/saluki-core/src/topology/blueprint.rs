@@ -116,9 +116,10 @@ impl TopologyBlueprint {
         let mut bounds_builder = source_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
 
-        let _ = self
-            .sources
-            .insert(component_id, RegisteredComponent::new(Box::new(builder), source_registry));
+        let _ = self.sources.insert(
+            component_id,
+            RegisteredComponent::new(Box::new(builder), source_registry),
+        );
 
         Ok(self)
     }
@@ -146,9 +147,10 @@ impl TopologyBlueprint {
         let mut bounds_builder = transform_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
 
-        let _ = self
-            .transforms
-            .insert(component_id, RegisteredComponent::new(Box::new(builder), transform_registry));
+        let _ = self.transforms.insert(
+            component_id,
+            RegisteredComponent::new(Box::new(builder), transform_registry),
+        );
 
         Ok(self)
     }
@@ -176,9 +178,10 @@ impl TopologyBlueprint {
         let mut bounds_builder = destination_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
 
-        let _ = self
-            .destinations
-            .insert(component_id, RegisteredComponent::new(Box::new(builder), destination_registry));
+        let _ = self.destinations.insert(
+            component_id,
+            RegisteredComponent::new(Box::new(builder), destination_registry),
+        );
 
         Ok(self)
     }
@@ -224,7 +227,7 @@ impl TopologyBlueprint {
             let component_context = ComponentContext::source(id.clone());
             let source = builder
                 .build(component_context)
-                .track_allocations(allocation_token.clone())
+                .track_allocations(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build source '{}'.", id))?;
 
@@ -242,7 +245,7 @@ impl TopologyBlueprint {
             let component_context = ComponentContext::transform(id.clone());
             let transform = builder
                 .build(component_context)
-                .track_allocations(allocation_token.clone())
+                .track_allocations(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build transform '{}'.", id))?;
 
@@ -260,7 +263,7 @@ impl TopologyBlueprint {
             let component_context = ComponentContext::destination(id.clone());
             let destination = builder
                 .build(component_context)
-                .track_allocations(allocation_token.clone())
+                .track_allocations(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build destination '{}'.", id))?;
 
