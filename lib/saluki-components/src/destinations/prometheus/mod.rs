@@ -792,6 +792,7 @@ mod tests {
 
     #[test]
     fn prom_get_help_text() {
+        // Ensure that we catch when the help text changes for these metrics.
         assert_eq!(
             get_help_text("no_aggregation__flush"),
             Some("Count the number of flushes done by the no-aggregation pipeline worker")

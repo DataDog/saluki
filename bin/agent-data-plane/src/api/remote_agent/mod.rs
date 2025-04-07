@@ -9,8 +9,6 @@ use datadog_protos::agent::{
 };
 use http::{Request, Uri};
 use http_body_util::BodyExt;
-use http_body_util::Empty;
-use hyper::body::Bytes;
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use saluki_config::GenericConfiguration;
 use saluki_core::state::reflector::Reflector;
@@ -223,13 +221,13 @@ impl RemoteAgent for RemoteAgentImpl {
         }
 
         let prometheus_listen_addr = self.prometheus_listen_addr.unwrap();
-        let mut client: HttpClient<http_body_util::Empty<Bytes>> = HttpClient::builder().build().unwrap();
+        let mut client: HttpClient<String> = HttpClient::builder().build().unwrap();
 
         let uri_string = format!("http://{}", prometheus_listen_addr);
         let uri: Uri = uri_string.parse().unwrap();
         let request = Request::builder()
             .uri(uri)
-            .body(Empty::new())
+            .body(String::new())
             .map_err(|e| tonic::Status::internal(e.to_string()))?;
 
         let resp = client.send(request).await.unwrap();
