@@ -1,61 +1,95 @@
-unit-tests:
+unit-tests-linux-amd64:
+  extends: .linux-amd64-test-job-heavy
   stage: test
-  image: "${SALUKI_BUILD_CI_IMAGE}"
-  variables:
-    # Compiling Rust is intensive. ¯\_(ツ)_/¯
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_MEMORY_REQUEST: "8Gi"
-    KUBERNETES_MEMORY_LIMIT: "12Gi"
   script:
     - make test
 
-unit-tests-miri:
+unit-tests-miri-linux-amd64:
+  extends: .linux-amd64-test-job-heavy
   stage: test
-  image: "${SALUKI_BUILD_CI_IMAGE}"
-  variables:
-    # Compiling Rust is intensive. ¯\_(ツ)_/¯
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_MEMORY_REQUEST: "8Gi"
-    KUBERNETES_MEMORY_LIMIT: "12Gi"
   script:
     - make test-miri
 
-check-clippy:
+check-features-linux-amd64:
+  extends: .linux-amd64-test-job-heavy
   stage: test
-  image: "${SALUKI_BUILD_CI_IMAGE}"
-  variables:
-    # Compiling Rust is intensive. ¯\_(ツ)_/¯
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_MEMORY_REQUEST: "8Gi"
-    KUBERNETES_MEMORY_LIMIT: "12Gi"
+  script:
+    - make check-features
+
+unit-tests-linux-arm64:
+  extends: .linux-arm64-test-job-heavy
+  stage: test
+  script:
+    - make test
+
+unit-tests-miri-linux-arm64:
+  extends: .linux-arm64-test-job-heavy
+  stage: test
+  script:
+    - make test-miri
+
+check-features-linux-arm64:
+  extends: .linux-arm64-test-job-heavy
+  stage: test
+  script:
+    - make check-features
+
+unit-tests-macos-amd64:
+  extends: .macos-amd64-test-job
+  stage: test
+  script:
+    - make test
+
+unit-tests-miri-macos-amd64:
+  extends: .macos-amd64-test-job
+  stage: test
+  script:
+    - make test-miri
+
+check-features-macos-amd64:
+  extends: .macos-amd64-test-job
+  stage: test
+  script:
+    - make check-features
+
+unit-tests-macos-arm64:
+  extends: .macos-arm64-test-job
+  stage: test
+  script:
+    - make test
+
+unit-tests-miri-macos-arm64:
+  extends: .macos-arm64-test-job
+  stage: test
+  script:
+    - make test-miri
+
+check-features-macos-arm64:
+  extends: .macos-arm64-test-job
+  stage: test
+  script:
+    - make check-features
+
+check-clippy:
+  extends: .linux-arm64-test-job-heavy
+  stage: test
   script:
     - make check-clippy
 
 check-deny:
+  extends: .linux-arm64-test-job
   stage: test
-  image: "${SALUKI_BUILD_CI_IMAGE}"
   script:
     - make check-deny
 
 check-fmt:
+  extends: .linux-arm64-test-job
   stage: test
-  image: "${SALUKI_BUILD_CI_IMAGE}"
   script:
     - make check-fmt
 
 check-licenses:
+  extends: .linux-arm64-test-job
   stage: test
-  image: "${SALUKI_BUILD_CI_IMAGE}"
   script:
     - make check-licenses
-
-check-features:
-  stage: test
-  image: "${SALUKI_BUILD_CI_IMAGE}"
-  variables:
-    # Compiling Rust is intensive. ¯\_(ツ)_/¯
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_MEMORY_REQUEST: "8Gi"
-    KUBERNETES_MEMORY_LIMIT: "12Gi"
-  script:
-    - make check-features
