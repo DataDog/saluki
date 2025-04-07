@@ -88,11 +88,11 @@ impl Driver {
         info!(
             "Sent {} payloads ({}), with {} partial sends ({}% of total), over {:?} ({}/s).",
             payloads_sent,
-            payload_bytes_sent_human.to_string_as(true),
+            payload_bytes_sent_human.display().si(),
             partial_sends,
             pct_partial_sends,
             send_duration,
-            throughput_bps.to_string_as(true)
+            throughput_bps.display().si()
         );
 
         Ok(())
