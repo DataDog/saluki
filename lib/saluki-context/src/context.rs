@@ -22,6 +22,7 @@ const BASE_CONTEXT_SIZE: usize = std::mem::size_of::<Context>() + std::mem::size
 
 /// A metric context.
 #[derive(Clone, Debug)]
+#[allow(clippy::mutable_key_type)]
 pub struct Context {
     inner: Arc<ContextInner>,
 }

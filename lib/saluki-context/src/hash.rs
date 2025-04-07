@@ -1,14 +1,39 @@
 use std::{
     collections::HashSet,
-    hash::{Hash as _, Hasher as _},
+    hash::{BuildHasher, Hash as _, Hasher},
 };
 
 use crate::origin::OriginKey;
 
-pub type FastHashSet<T> = HashSet<T, ahash::RandomState>;
+pub type FastHashSet<T> = HashSet<T, NoopU64Hasher>;
 
 pub fn new_fast_hashset<T>() -> FastHashSet<T> {
-    HashSet::with_hasher(ahash::RandomState::default())
+    HashSet::with_hasher(NoopU64Hasher::default())
+}
+
+#[derive(Default)]
+pub struct NoopU64Hasher(u64);
+
+impl BuildHasher for NoopU64Hasher {
+    type Hasher = NoopU64Hasher;
+
+    fn build_hasher(&self) -> Self::Hasher {
+        NoopU64Hasher::default()
+    }
+}
+
+impl Hasher for NoopU64Hasher {
+    fn write(&mut self, _: &[u8]) {
+        panic!("write() should not be called on NoopU64Hasher");
+    }
+
+    fn write_u64(&mut self, v: u64) {
+        self.0 = v;
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
 }
 
 #[inline]

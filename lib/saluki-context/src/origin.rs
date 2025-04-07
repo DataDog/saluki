@@ -37,6 +37,25 @@ pub enum OriginTagCardinality {
     High,
 }
 
+#[cfg(test)]
+impl proptest::arbitrary::Arbitrary for OriginTagCardinality {
+    type Parameters = ();
+    type Strategy = proptest::strategy::BoxedStrategy<Self>;
+
+    fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
+        use proptest::prelude::Strategy as _;
+
+        proptest::prelude::any::<u8>()
+            .prop_map(|v| match v % 4 {
+                0 => Self::None,
+                1 => Self::Low,
+                2 => Self::Orchestrator,
+                _ => Self::High,
+            })
+            .boxed()
+    }
+}
+
 impl TryFrom<&str> for OriginTagCardinality {
     type Error = String;
 
@@ -89,12 +108,12 @@ pub struct RawOrigin<'a> {
     ///
     /// This will generally be the typical long hexadecimal string that is used by container runtimes like `containerd`,
     /// but may sometimes also be a different form, such as the container's cgroups inode.
-    container_id: Option<&'a str>,
+    container_id: Option<std::borrow::Cow<'a, str>>,
 
     /// Pod UID of the sender.
     ///
     /// This is generally only used in Kubernetes environments to uniquely identify the pod. UIDs are equivalent to UUIDs.
-    pod_uid: Option<&'a str>,
+    pod_uid: Option<std::borrow::Cow<'a, str>>,
 
     /// Desired cardinality of any tags associated with the entity.
     ///
@@ -130,23 +149,23 @@ impl<'a> RawOrigin<'a> {
     }
 
     /// Sets the container ID of the sender.
-    pub fn set_container_id(&mut self, container_id: impl Into<Option<&'a str>>) {
+    pub fn set_container_id(&mut self, container_id: impl Into<Option<std::borrow::Cow<'a, str>>>) {
         self.container_id = container_id.into();
     }
 
     /// Returns the container ID of the sender.
     pub fn container_id(&self) -> Option<&str> {
-        self.container_id
+        self.container_id.as_deref()
     }
 
     /// Sets the pod UID of the sender.
-    pub fn set_pod_uid(&mut self, pod_uid: impl Into<Option<&'a str>>) {
+    pub fn set_pod_uid(&mut self, pod_uid: impl Into<Option<std::borrow::Cow<'a, str>>>) {
         self.pod_uid = pod_uid.into();
     }
 
     /// Returns the pod UID of the sender.
     pub fn pod_uid(&self) -> Option<&str> {
-        self.pod_uid
+        self.pod_uid.as_deref()
     }
 
     /// Sets the desired cardinality of any tags associated with the entity.
@@ -170,6 +189,34 @@ impl<'a> RawOrigin<'a> {
     }
 }
 
+#[cfg(test)]
+impl proptest::arbitrary::Arbitrary for RawOrigin<'static> {
+    type Parameters = ();
+    type Strategy = proptest::strategy::BoxedStrategy<Self>;
+
+    fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
+        use proptest::prelude::Strategy as _;
+
+        proptest::prelude::any::<(
+            Option<u32>,
+            Option<String>,
+            Option<String>,
+            Option<OriginTagCardinality>,
+            Option<RawExternalData<'static>>,
+        )>()
+        .prop_map(
+            |(process_id, container_id, pod_uid, cardinality, external_data)| RawOrigin {
+                process_id: process_id.and_then(NonZeroU32::new),
+                container_id: container_id.map(std::borrow::Cow::Owned),
+                pod_uid: pod_uid.map(std::borrow::Cow::Owned),
+                cardinality,
+                external_data,
+            },
+        )
+        .boxed()
+    }
+}
+
 impl fmt::Display for RawOrigin<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut has_written = false;
@@ -180,7 +227,7 @@ impl fmt::Display for RawOrigin<'_> {
             write!(f, "process_id={}", process_id)?;
         }
 
-        if let Some(container_id) = self.container_id {
+        if let Some(container_id) = self.container_id.as_ref() {
             if has_written {
                 write!(f, " ")?;
             } else {
@@ -189,7 +236,7 @@ impl fmt::Display for RawOrigin<'_> {
             write!(f, "container_id={}", container_id)?;
         }
 
-        if let Some(pod_uid) = self.pod_uid {
+        if let Some(pod_uid) = self.pod_uid.as_ref() {
             if has_written {
                 write!(f, " ")?;
             } else {
@@ -418,8 +465,8 @@ impl std::hash::Hash for ExternalData {
 /// and can be used to look up map entries (such as when using `HashMap`) when the key is [`ExternalData`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RawExternalData<'a> {
-    pod_uid: &'a str,
-    container_name: &'a str,
+    pod_uid: std::borrow::Cow<'a, str>,
+    container_name: std::borrow::Cow<'a, str>,
     init_container: bool,
 }
 
@@ -433,8 +480,8 @@ impl<'a> RawExternalData<'a> {
         }
 
         let mut data = Self {
-            pod_uid: "",
-            container_name: "",
+            pod_uid: "".into(),
+            container_name: "".into(),
             init_container: false,
         };
 
@@ -452,8 +499,8 @@ impl<'a> RawExternalData<'a> {
 
             match key {
                 "it-" => data.init_container = value.parse().unwrap_or(false),
-                "pu-" => data.pod_uid = value,
-                "cn-" => data.container_name = value,
+                "pu-" => data.pod_uid = value.into(),
+                "cn-" => data.container_name = value.into(),
                 _ => {
                     // Unknown key, ignore.
                     warn!("Parsed external data with unknown key: {}", key);
@@ -462,6 +509,24 @@ impl<'a> RawExternalData<'a> {
         }
 
         Some(data)
+    }
+}
+
+#[cfg(test)]
+impl proptest::arbitrary::Arbitrary for RawExternalData<'static> {
+    type Parameters = ();
+    type Strategy = proptest::strategy::BoxedStrategy<Self>;
+
+    fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
+        use proptest::prelude::Strategy as _;
+
+        proptest::prelude::any::<(Option<String>, Option<String>, bool)>()
+            .prop_map(|(pod_uid, container_id, init_container)| RawExternalData {
+                pod_uid: pod_uid.unwrap_or_else(String::new).into(),
+                container_name: container_id.unwrap_or_else(String::new).into(),
+                init_container,
+            })
+            .boxed()
     }
 }
 
@@ -485,8 +550,8 @@ impl fmt::Display for RawExternalData<'_> {
 
 impl Equivalent<ExternalData> for RawExternalData<'_> {
     fn equivalent(&self, other: &ExternalData) -> bool {
-        self.pod_uid == &*other.pod_uid
-            && self.container_name == &*other.container_name
+        self.pod_uid == *other.pod_uid
+            && self.container_name == *other.container_name
             && self.init_container == other.init_container
     }
 }
@@ -507,8 +572,8 @@ mod tests {
         fn property_test_identical_hash_impls(pod_uid in "[a-z0-9]{1,64}", container_name in "[a-z0-9]{1,64}", init_container in any::<bool>()) {
             let external_data = ExternalData::new(pod_uid.clone().into(), container_name.clone().into(), init_container);
             let external_data_ref = RawExternalData {
-                pod_uid: &pod_uid,
-                container_name: &container_name,
+                pod_uid: pod_uid.into(),
+                container_name: container_name.into(),
                 init_container,
             };
 

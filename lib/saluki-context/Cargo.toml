@@ -24,3 +24,4 @@ tracing = { workspace = true }
 [dev-dependencies]
 metrics-util = { workspace = true, features = ["debugging"] }
 proptest = { workspace = true }
+proptest-derive = { workspace = true }

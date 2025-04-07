@@ -1,6 +1,5 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
-use quick_cache::{sync::Cache, UnitWeighter};
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::static_metrics;
 use stringtheory::{interning::GenericMapInterner, MetaString};
@@ -9,8 +8,8 @@ use tracing::debug;
 
 use crate::{
     context::{Context, ContextInner},
-    expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle},
-    hash::{hash_context_with_seen, new_fast_hashset, ContextKey, FastHashSet},
+    expiry::{Expiration, ExpirationBuilder},
+    hash::{hash_context_with_seen, new_fast_hashset, ContextKey, FastHashSet, NoopU64Hasher},
     origin::{OriginKey, OriginTags, OriginTagsResolver, RawOrigin},
     tags::TagSet,
 };
@@ -21,7 +20,7 @@ const DEFAULT_CONTEXT_RESOLVER_CACHED_CONTEXTS_LIMIT: usize = 500_000;
 const DEFAULT_CONTEXT_RESOLVER_INTERNER_CAPACITY_BYTES: NonZeroUsize =
     unsafe { NonZeroUsize::new_unchecked(2 * 1024 * 1024) };
 
-type ContextCache = Cache<ContextKey, Context, UnitWeighter, ahash::RandomState, ExpiryCapableLifecycle<ContextKey>>;
+type ContextCache = papaya::HashMap<ContextKey, Context, NoopU64Hasher>;
 
 static_metrics! {
     name => Statistics,
@@ -205,7 +204,7 @@ impl ContextResolverBuilder {
     pub fn for_tests() -> Self {
         ContextResolverBuilder::from_name("noop")
             .expect("resolver name not empty")
-            .with_cached_contexts_limit(usize::MAX)
+            .with_cached_contexts_limit(1000000)
             .with_interner_capacity_bytes(NonZeroUsize::new(1).expect("not zero"))
             .with_heap_allocations(true)
     }
@@ -231,7 +230,7 @@ impl ContextResolverBuilder {
         if let Some(time_to_idle) = self.idle_context_expiration {
             builder = builder.with_time_to_idle(time_to_idle);
         }
-        let (expiration, lifecycle) = builder.build();
+        let (expiration, _) = builder.build();
 
         // NOTE: We specifically use the cached context limit for both the estimated items capacity _and_ weight
         // capacity, where weight capacity relates to "maximum size in bytes", because we're using the unit weighter,
@@ -241,12 +240,9 @@ impl ContextResolverBuilder {
         // fully-interned contexts, etc -- then we would want to expose those, but for now, it's simpler to have users
         // simply configure a larger interner rather than having to consider the trade-offs between configuring the
         // interner capacity _and_ the overall cached contexts capacity, etc.
-        let context_cache = Arc::new(ContextCache::with(
+        let context_cache = Arc::new(papaya::HashMap::with_capacity_and_hasher(
             cached_context_limit,
-            cached_context_limit as u64,
-            UnitWeighter,
-            ahash::RandomState::default(),
-            lifecycle,
+            NoopU64Hasher::default(),
         ));
 
         // If an idle context expiration was specified, spawn a background task to actually drive expiration.
@@ -269,7 +265,7 @@ impl ContextResolverBuilder {
             hash_seen_buffer: new_fast_hashset(),
             origin_tags_resolver: self.origin_tags_resolver,
             allow_heap_allocations,
-            seen_origins: Arc::new(papaya::HashSet::new()),
+            seen_origins: Arc::new(papaya::HashSet::with_hasher(NoopU64Hasher::default())),
         }
     }
 }
@@ -305,7 +301,7 @@ pub struct ContextResolver {
     hash_seen_buffer: FastHashSet<u64>,
     origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
     allow_heap_allocations: bool,
-    seen_origins: Arc<papaya::HashSet<OriginKey>>,
+    seen_origins: Arc<papaya::HashSet<OriginKey, NoopU64Hasher>>,
 }
 
 impl ContextResolver {
@@ -427,18 +423,18 @@ impl ContextResolver {
         }
 
         let context_key = self.create_context_key(name, tags.clone(), origin_tags.key());
-        match self.context_cache.get(&context_key) {
+        match self.context_cache.pin().get(&context_key) {
             Some(context) => {
                 self.stats.resolved_existing_context_total().increment(1);
                 self.expiration.mark_entry_accessed(context_key);
-                Some(context)
+                Some(context.clone())
             }
             None => {
                 match self.create_context(context_key, name, tags, origin_tags) {
                     Some(context) => {
                         debug!(?context_key, ?context, "Resolved new context.");
 
-                        self.context_cache.insert(context_key, context.clone());
+                        self.context_cache.pin().insert(context_key, context.clone());
                         self.expiration.mark_entry_accessed(context_key);
 
                         // TODO: This is lazily updated during resolve, which means this metric might lag behind the actual
@@ -498,13 +494,16 @@ async fn drive_expiration(
         expiration.drain_expired_entries(&mut expired_entries);
 
         let num_expired_contexts = expired_entries.len();
-        stats.contexts_expired().increment(num_expired_contexts as u64);
-        stats.contexts_expired_batch_size().record(num_expired_contexts as f64);
+        if num_expired_contexts != 0 {
+            stats.contexts_expired().increment(num_expired_contexts as u64);
+            stats.contexts_expired_batch_size().record(num_expired_contexts as f64);
+        }
 
         debug!(num_expired_contexts, "Found expired contexts.");
 
+        let cache_guard = context_cache.pin();
         for entry in expired_entries.drain(..) {
-            context_cache.remove(&entry);
+            cache_guard.remove(&entry);
         }
 
         debug!(num_expired_contexts, "Removed expired contexts.");
@@ -515,14 +514,20 @@ async fn drive_expiration(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use metrics::{SharedString, Unit};
     use metrics_util::{
         debugging::{DebugValue, DebuggingRecorder},
         CompositeKey,
     };
+    use proptest::{
+        prelude::{any, Strategy},
+        prop_assert_eq, proptest,
+    };
 
     use super::*;
-    use crate::tags::TagVisitor;
+    use crate::tags::{Tag, TagVisitor};
 
     fn get_gauge_value(metrics: &[(CompositeKey, Option<Unit>, Option<SharedString>, DebugValue)], key: &str) -> f64 {
         metrics
@@ -683,9 +688,9 @@ mod tests {
         let name = "metric_name";
         let tags = ["tag1"];
         let mut origin1 = RawOrigin::default();
-        origin1.set_container_id("container1");
+        origin1.set_container_id(std::borrow::Cow::Borrowed("container1"));
         let mut origin2 = RawOrigin::default();
-        origin2.set_container_id("container2");
+        origin2.set_container_id(std::borrow::Cow::Borrowed("container2"));
 
         let context1 = resolver
             .resolve(name, &tags[..], Some(origin1.clone()))
@@ -711,5 +716,46 @@ mod tests {
             .expect("should not fail to resolve");
 
         assert_ne!(context1, context2);
+    }
+
+    fn arb_tag_set() -> impl Strategy<Value = TagSet> {
+        proptest::collection::vec(any::<Tag>(), 0..=6).prop_map(|tags| tags.into_iter().collect())
+    }
+
+    fn arb_raw_contexts() -> impl Strategy<Value = Vec<(String, TagSet, Option<RawOrigin<'static>>)>> {
+        proptest::collection::vec(
+            (any::<String>(), arb_tag_set(), any::<Option<RawOrigin<'static>>>()),
+            10..=1000,
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn property_test_contexts_with_origins_uniqueness(raw_contexts in arb_raw_contexts()) {
+            let mut resolver = ContextResolverBuilder::for_tests()
+                .with_origin_tags_resolver(Some(DummyOriginTagsResolver))
+                .build();
+
+            let mut seen_context_keys: HashSet<ContextKey> = HashSet::new();
+
+            #[allow(clippy::mutable_key_type)]
+            let mut seen_contexts: HashSet<Context> = HashSet::new();
+
+            for (raw_metric_name, raw_metric_tags, raw_origin) in raw_contexts {
+                let origin_tags = resolver.resolve_origin_tags(raw_origin);
+                let context_key = resolver.create_context_key(&raw_metric_name, &raw_metric_tags, origin_tags.key());
+                seen_context_keys.insert(context_key);
+
+                let context = resolver
+                    .resolve_with_origin_tags(&raw_metric_name, &raw_metric_tags, origin_tags)
+                    .expect("should not fail to resolve");
+                seen_contexts.insert(context);
+            }
+
+            // We should have seen the same number of unique contexts as we did context keys, since the context keys are
+            // meant to be equatable to the contexts themselves:
+            prop_assert_eq!(seen_context_keys.len(), seen_contexts.len());
+            prop_assert_eq!(seen_contexts.len(), resolver.context_cache.len());
+        }
     }
 }
