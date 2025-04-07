@@ -32,7 +32,7 @@ impl Corpus {
         info!(
             "Generated test corpus with {} payloads ({}) in {} format.",
             payloads.len(),
-            total_size_bytes.to_string_as(true),
+            total_size_bytes.display().si(),
             payload_name
         );
         Ok(Self { payloads })
