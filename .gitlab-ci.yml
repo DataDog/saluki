@@ -12,7 +12,7 @@ stages:
 variables:
   # High-level repository paths we build off of, and dedicated images needed for various jobs.
   IMAGE_REGISTRY: "registry.ddbuild.io"
-  DOCKER_BUILD_IMAGE: "486234852809.dkr.ecr.us-east-1.amazonaws.com/docker:20.10-py3"
+  DOCKER_BUILD_IMAGE: "486234852809.dkr.ecr.us-east-1.amazonaws.com/docker:24.0.4-gbi-focal"
   GBI_BASE_IMAGE: "${IMAGE_REGISTRY}/images/base/gbi-ubuntu_2204:release"
 
   # Base repository paths for where our CI images go, whether they're helper images or actual
@@ -27,15 +27,14 @@ variables:
 
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image, both for
   # internal and public releases.
-  BASE_DD_AGENT_VERSION: "7.64.0-rc.13"
-  BASE_DD_AGENT_VERSION_INTERNAL: "7-64-0-rc-13"
+  BASE_DD_AGENT_VERSION: "7.65.0-rc.6"
+  BASE_DD_AGENT_VERSION_INTERNAL: "7-65-0-rc-6"
   BASE_DD_AGENT_VERSION_INTERNAL_NIGHTLY: "main-jmx-17d25f22"
 
-  INTERNAL_DD_AGENT_IMAGE: "${IMAGE_REGISTRY}/datadog-agent:${BASE_DD_AGENT_VERSION_INTERNAL}-jmx"
+  INTERNAL_DD_AGENT_IMAGE: "${IMAGE_REGISTRY}/datadog-agent:${BASE_DD_AGENT_VERSION_INTERNAL}-full"
   INTERNAL_DD_AGENT_IMAGE_FIPS: "${IMAGE_REGISTRY}/datadog-agent:${BASE_DD_AGENT_VERSION_INTERNAL}-fips-jmx"
-  INTERNAL_DD_AGENT_IMAGE_NIGHTLY: "${IMAGE_REGISTRY}/datadog-agent:${BASE_DD_AGENT_VERSION_INTERNAL_NIGHTLY}"
   PUBLIC_DD_AGENT_IMAGE_BASE: "gcr.io/datadoghq/agent"
-  PUBLIC_DD_AGENT_IMAGE: "${PUBLIC_DD_AGENT_IMAGE_BASE}:${BASE_DD_AGENT_VERSION}"
+  PUBLIC_DD_AGENT_IMAGE: "${PUBLIC_DD_AGENT_IMAGE_BASE}:${BASE_DD_AGENT_VERSION}-full"
 
 default:
   tags: ["arch:amd64"]
@@ -44,3 +43,15 @@ default:
 .on_official_release:
   rules:
     if: $CI_COMMIT_TAG
+
+# Common build-specific variables that need to be shared across stages.
+.build-common-variables:
+  variables:
+    ADP_DEBUG_IMAGE_TAG: "${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}"
+    ADP_DEBUG_IMAGE_TAG_FIPS: "${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}-fips"
+    ADP_RELEASE_IMAGE_TAG: "${ADP_IMAGE_BASE}:${CI_COMMIT_TAG}-release"
+    ADP_RELEASE_IMAGE_TAG_FIPS: "${ADP_IMAGE_BASE}:${CI_COMMIT_TAG}-fips-release"
+    BUILD_PROFILE: "optimized-release"
+    BUILD_FEATURES: "default"
+    FIPS_ENABLED: "false"
+    APP_DEV_BUILD: "false"

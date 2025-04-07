@@ -1,4 +1,4 @@
-FROM registry.ddbuild.io/images/mirror/ubuntu:20.04
+FROM registry.ddbuild.io/docker:24.0.4-gbi-focal
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Etc/UTC

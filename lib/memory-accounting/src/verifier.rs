@@ -1,3 +1,4 @@
+use bytesize::ByteSize;
 use snafu::Snafu;
 
 use crate::{ComponentBounds, MemoryGrant};
@@ -18,8 +19,8 @@ pub enum VerifierError {
     /// Insufficient memory available to meet the minimum required memory for all components.
     #[snafu(display(
         "minimum require memory ({}) exceeds available memory ({})",
-        bytesize::to_string(*minimum_required_bytes as u64, true),
-        bytesize::to_string(*available_bytes as u64, true),
+        ByteSize::b(*minimum_required_bytes as u64).display().si(),
+        ByteSize::b(*available_bytes as u64).display().si(),
     ))]
     InsufficientMinimumMemory {
         /// Total number of bytes available.
@@ -32,8 +33,8 @@ pub enum VerifierError {
     /// Insufficient memory available to meet the firm limit for all components.
     #[snafu(display(
         "firm limit ({}) exceeds available memory ({})",
-        bytesize::to_string(*firm_limit_bytes as u64, true),
-        bytesize::to_string(*available_bytes as u64, true),
+        ByteSize::b(*firm_limit_bytes as u64).display().si(),
+        ByteSize::b(*available_bytes as u64).display().si(),
     ))]
     FirmLimitExceedsAvailable {
         /// Total number of bytes available.

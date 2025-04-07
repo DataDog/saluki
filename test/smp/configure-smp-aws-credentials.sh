@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Make sure we have the AWS CLI installed and that our named profile has been specified.
-command -v aws >/dev/null 2>&1 || { echo "AWS CLI (\`aws\`) must be installed and available on \$PATH" >&2; exit 1; }
+command -v aws >/dev/null 2>&1 || { echo "AWS CLI not found. Please install it." >&2; exit 1; }
 if [[ -z "${AWS_NAMED_PROFILE}" ]]; then
     echo "\$AWS_NAMED_PROFILE must be present"
     exit 1

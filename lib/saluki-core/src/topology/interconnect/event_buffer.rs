@@ -2,7 +2,7 @@ use std::{collections::VecDeque, fmt};
 
 use saluki_event::{DataType, Event};
 
-use crate::pooling::{helpers::pooled_newtype, Clearable};
+use crate::pooling::{helpers::pooled_newtype, Clearable, ObjectPool};
 
 /// A double-ended queue implemented with a ring buffer that has a fixed capacity at creation.
 struct FixedSizeVecDeque<T>(VecDeque<T>);
@@ -153,6 +153,65 @@ impl Iterator for IntoIter {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.data_mut().events.0.pop_front()
+    }
+}
+
+/// An ergonomic wrapper over fallibly writing to event buffers backed by an object pool.
+///
+/// As `FixedSizeEventBuffer` has a fixed capacity, callers have to handle the scenario where they attempt to push an
+/// event into the event buffer but the buffer has no more capacity. This generally involves having to swap it with a
+/// new buffer, as well as holding the event around until they acquire the new buffer. As these event buffers often come
+/// from an object pool, waiting for the object pool to have a buffer available _before_ sending the currently-full one
+/// can lead to a deadlock condition.
+///
+/// `EventBufferManager` provides a simple, ergonomic wrapper over a basic pattern of treating the current buffer as an
+/// optional value, and handling the logic of ensuring we have a buffer to write into only when actually attempting a
+/// write, rather than always holding on to one.
+pub struct EventBufferManager<'a, O>
+where
+    O: ObjectPool<Item = FixedSizeEventBuffer>,
+{
+    pool: &'a O,
+    current: Option<FixedSizeEventBuffer>,
+}
+
+impl<'a, O> EventBufferManager<'a, O>
+where
+    O: ObjectPool<Item = FixedSizeEventBuffer>,
+{
+    /// Creates a new `EventBufferManager` with the given object pool.
+    pub fn new(pool: &'a O) -> Self {
+        Self { pool, current: None }
+    }
+
+    /// Attempts to push an event into the current event buffer.
+    ///
+    /// This method will acquire an event buffer from the object pool if necessary.
+    ///
+    /// If the event buffer is full, the original event and the current event buffer are returned. Otherwise, `None` is
+    /// returned.
+    pub async fn try_push(&mut self, event: Event) -> Option<(Event, FixedSizeEventBuffer)> {
+        // Consume the event buffer if we have one, or acquire one from the pool on demand.
+        let mut buffer = match self.current.take() {
+            Some(current) => current,
+            None => self.pool.acquire().await,
+        };
+
+        // Try writing into the event buffer.
+        //
+        // If we can't, we'll return it which instructs the caller to flush the buffer and then try again to push the event.
+        if let Some(event) = buffer.try_push(event) {
+            Some((event, buffer))
+        } else {
+            // Return the event buffer to the caller to allow it to continue to be used.
+            self.current.replace(buffer);
+            None
+        }
+    }
+
+    /// Consumes the current event buffer, if one exists.
+    pub fn consume(&mut self) -> Option<FixedSizeEventBuffer> {
+        self.current.take()
     }
 }
 

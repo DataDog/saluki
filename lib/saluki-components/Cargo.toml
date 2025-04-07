@@ -7,9 +7,7 @@ repository = { workspace = true }
 
 [dependencies]
 ahash = { workspace = true }
-async-compression = { workspace = true, features = ["tokio", "zlib"] }
 async-trait = { workspace = true }
-bitmask-enum = { workspace = true }
 bytes = { workspace = true }
 bytesize = { workspace = true }
 datadog-protos = { workspace = true }
@@ -21,23 +19,15 @@ headers = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
+http-serde-ext = { workspace = true }
 hyper = { workspace = true, features = ["client"] }
 hyper-http-proxy = { workspace = true }
-hyper-rustls = { workspace = true }
-hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "tokio"] }
 indexmap = { workspace = true, features = ["std"] }
-memchr = { workspace = true, features = ["std"] }
 memory-accounting = { workspace = true }
 metrics = { workspace = true }
-metrics-util = { workspace = true, features = ["handles", "recency", "registry"] }
-nom = { workspace = true }
-papaya = { workspace = true }
-paste = { workspace = true }
 pin-project = { workspace = true }
 protobuf = { workspace = true }
-quanta = { workspace = true }
 regex = { workspace = true }
-rustls = { workspace = true }
 saluki-config = { workspace = true }
 saluki-context = { workspace = true }
 saluki-core = { workspace = true }
@@ -51,12 +41,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true, features = ["alloc"] }
 serde_yaml = { workspace = true }
-slab = { workspace = true }
 smallvec = { workspace = true }
 snafu = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
-tokio-util = { workspace = true }
 tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tracing = { workspace = true }
 url = { workspace = true }

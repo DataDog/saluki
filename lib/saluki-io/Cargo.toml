@@ -6,36 +6,24 @@ license = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
-ahash = { workspace = true }
 async-compression = { workspace = true, features = ["tokio", "zlib"] }
-async-trait = { workspace = true }
 average = { workspace = true, features = ["std"] }
 axum = { workspace = true, features = ["tokio"] }
-bitmask-enum = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
-datadog-protos = { workspace = true }
-ddsketch-agent = { workspace = true }
 futures = { workspace = true }
-headers = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 hyper = { workspace = true, features = ["client", "server"] }
 hyper-http-proxy = { workspace = true }
 hyper-rustls = { workspace = true }
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "http2", "server", "tokio"] }
-indexmap = { workspace = true, features = ["std"] }
 libc = { workspace = true }
 memchr = { workspace = true, features = ["std"] }
-memory-accounting = { workspace = true }
 metrics = { workspace = true }
-metrics-util = { workspace = true, features = ["handles", "recency", "registry"] }
 nom = { workspace = true, features = ["alloc"] }
-paste = { workspace = true }
 pin-project = { workspace = true }
 pin-project-lite = { workspace = true }
-protobuf = { workspace = true }
-quanta = { workspace = true }
 rand = { workspace = true, features = ["std", "std_rng"] }
 rustls = { workspace = true }
 saluki-context = { workspace = true }
@@ -47,7 +35,6 @@ saluki-tls = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 simdutf8 = { workspace = true, features = ["std"] }
-slab = { workspace = true }
 snafu = { workspace = true }
 socket2 = { workspace = true }
 stringtheory = { workspace = true }
