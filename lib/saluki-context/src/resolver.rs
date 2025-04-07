@@ -35,7 +35,8 @@ static_metrics! {
         gauge(interner_capacity_bytes),
         gauge(interner_len_bytes),
         gauge(interner_entries),
-        counter(intern_fallback_total)
+        counter(intern_fallback_total),
+        gauge(unique_origins),
     ],
 }
 
@@ -266,6 +267,7 @@ impl ContextResolverBuilder {
             hash_seen_buffer: new_fast_hashset(),
             origin_tags_resolver: self.origin_tags_resolver,
             allow_heap_allocations,
+            seen_origins: Arc::new(papaya::HashSet::new()),
         }
     }
 }
@@ -301,6 +303,7 @@ pub struct ContextResolver {
     hash_seen_buffer: FastHashSet<u64>,
     origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
     allow_heap_allocations: bool,
+    seen_origins: Arc<papaya::HashSet<OriginKey>>,
 }
 
 impl ContextResolver {
@@ -411,6 +414,16 @@ impl ContextResolver {
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str>,
     {
+        // Track the number of unique origins that have been seen so far.
+        //
+        // We use `papaya::HashSet` for this to ensure we can use a shared set across different clones of this resolver.
+        if let Some(origin_key) = origin_tags.key() {
+            if !self.seen_origins.pin().contains(&origin_key) {
+                self.seen_origins.pin().insert(origin_key);
+                self.stats.unique_origins().increment(1);
+            }
+        }
+
         let context_key = self.create_context_key(name, tags.clone(), origin_tags.key());
         match self.context_cache.get(&context_key) {
             Some(context) => {
@@ -466,6 +479,7 @@ impl Clone for ContextResolver {
             hash_seen_buffer: new_fast_hashset(),
             origin_tags_resolver: self.origin_tags_resolver.clone(),
             allow_heap_allocations: self.allow_heap_allocations,
+            seen_origins: Arc::clone(&self.seen_origins),
         }
     }
 }

@@ -3126,6 +3126,7 @@ dependencies = [
  "memchr",
  "metrics",
  "metrics-util",
+ "papaya",
  "proptest",
  "quick_cache",
  "saluki-error",
