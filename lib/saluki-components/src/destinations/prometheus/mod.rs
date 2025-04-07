@@ -262,6 +262,8 @@ async fn regenerate_payload(
 }
 
 fn get_help_text(metric_name: &str) -> Option<&'static str> {
+    // The HELP text for overlapped metrics MUST match the agent's HELP text exactly or else an error will occur on the
+    // agent's side when parsing the metrics.
     match metric_name {
         "no_aggregation__flush" => Some("Count the number of flushes done by the no-aggregation pipeline worker"),
         "no_aggregation__processed" => {
