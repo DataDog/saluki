@@ -21,7 +21,8 @@ use crate::{
 const BASE_CONTEXT_SIZE: usize = std::mem::size_of::<Context>() + std::mem::size_of::<ContextInner>();
 
 /// A metric context.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug)]
+#[allow(clippy::mutable_key_type)]
 pub struct Context {
     inner: Arc<ContextInner>,
 }
@@ -152,6 +153,20 @@ impl Context {
         };
 
         BASE_CONTEXT_SIZE + name_size + tags_size + origin_tags_size
+    }
+}
+
+impl PartialEq for Context {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.key == other.inner.key
+    }
+}
+
+impl Eq for Context {}
+
+impl hash::Hash for Context {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        self.inner.key.hash(state);
     }
 }
 

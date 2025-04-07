@@ -21,7 +21,7 @@ use tokio_util::sync::ReusableBoxFuture;
 use tracing::debug;
 
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
-const INTERNAL_METRICS_INTERNER_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(8192) };
+const INTERNAL_METRICS_INTERNER_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(16_384) };
 
 static RECEIVER_STATE: OnceLock<Arc<State>> = OnceLock::new();
 

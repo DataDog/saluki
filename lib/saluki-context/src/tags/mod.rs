@@ -103,6 +103,18 @@ impl Tag {
     }
 }
 
+#[cfg(test)]
+impl proptest::arbitrary::Arbitrary for Tag {
+    type Parameters = ();
+    type Strategy = proptest::strategy::BoxedStrategy<Self>;
+
+    fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
+        use proptest::prelude::Strategy as _;
+
+        "[a-zA-Z0-9_\\.]{1, 64}".prop_map(|s| Tag(MetaString::from(s))).boxed()
+    }
+}
+
 impl PartialEq<str> for Tag {
     fn eq(&self, other: &str) -> bool {
         self.0.deref() == other
@@ -222,6 +234,7 @@ impl hash::Hash for BorrowedTag<'_> {
 
 /// A set of tags.
 #[derive(Clone, Debug, Default, Serialize)]
+#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub struct TagSet(Vec<Tag>);
 
 impl TagSet {
