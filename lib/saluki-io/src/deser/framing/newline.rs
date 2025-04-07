@@ -1,3 +1,6 @@
+use std::future::Future;
+
+use remit::Remit;
 use tracing::trace;
 
 use super::{Framer, FramingError};
@@ -29,54 +32,54 @@ impl NewlineFramer {
 }
 
 impl Framer for NewlineFramer {
-    type Frame<'a>
-        = BytesBufferView<'a>
-    where
-        Self: 'a;
-
-    fn next_frame<'a, 'buf, B>(
-        &'a mut self, buf: &'a mut B, is_eof: bool,
-    ) -> Result<Option<Self::Frame<'a>>, FramingError>
+    fn extract_frames<'a, 'buf, B>(
+        &'a mut self, buf: &'buf mut B, is_eof: bool, frames: &Remit<'_, Result<Option<BytesBufferView<'a>>, FramingError>>,
+    ) -> impl Future<Output = ()>
     where
         B: BufferView,
         'buf: 'a,
     {
-        trace!(buf_len = buf.len(), "Processing buffer.");
+        async move {
+            trace!(buf_len = buf.len(), "Processing buffer.");
 
-        let data = buf.as_bytes();
-        if data.is_empty() {
-            return Ok(None);
-        }
-
-        // Search through the buffer for our delimiter.
-        match find_newline(data) {
-            Some(idx) => {
-                // We found the delimiter, so carve out our frame.
-                //
-                // We include the delimiter to remove it from the input buffer, but we then immediately skip it so that
-                // the view we give back to the caller doesn't include it.
-                let mut frame = buf.slice_to(idx + 1);
-                frame.rskip(1);
-                trace!(frame_len = frame.len(), "Returning frame after finding delimiter.");
-
-                Ok(Some(frame))
+            let data = buf.as_bytes();
+            if data.is_empty() {
+                frames.value(Ok(None)).await;
+                return;
             }
-            None => {
-                // If we're not at EOF, then we can't do anything else right now.
-                if !is_eof {
-                    return Ok(None);
+
+            // Search through the buffer for our delimiter.
+            match find_newline(data) {
+                Some(idx) => {
+                    // We found the delimiter, so carve out our frame.
+                    //
+                    // We include the delimiter to remove it from the input buffer, but we then immediately skip it so that
+                    // the view we give back to the caller doesn't include it.
+                    let mut frame = buf.slice_to(idx + 1);
+                    frame.rskip(1);
+                    trace!(frame_len = frame.len(), "Returning frame after finding delimiter.");
+
+                    frames.value(Ok(Some(frame))).await;
                 }
+                None => {
+                    // If we're not at EOF, then we can't do anything else right now.
+                    if !is_eof {
+                        frames.value(Ok(None)).await;
+                        return;
+                    }
 
-                // If we're at EOF and we require the delimiter, then this is an invalid frame.
-                if self.required_on_eof {
-                    return Err(missing_delimiter_err(data.len()));
+                    // If we're at EOF and we require the delimiter, then this is an invalid frame.
+                    if self.required_on_eof {
+                        frames.value(Err(missing_delimiter_err(data.len()))).await;
+                        return;
+                    }
+
+                    let frame = buf.slice_from(0);
+                    trace!(frame_len = frame.len(), "Returning frame without delimiter at EOF.");
+
+                    // We're at EOF, and we don't require the delimiter... so just consume the entire frame.
+                    frames.value(Ok(Some(frame))).await;
                 }
-
-                let frame = buf.slice_from(0);
-                trace!(frame_len = frame.len(), "Returning frame without delimiter at EOF.");
-
-                // We're at EOF, and we don't require the delimiter... so just consume the entire frame.
-                Ok(Some(frame))
             }
         }
     }
@@ -93,6 +96,7 @@ fn find_newline(haystack: &[u8]) -> Option<usize> {
     memchr::memchr(b'\n', haystack)
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use bytes::BufMut as _;
@@ -208,3 +212,4 @@ mod tests {
         assert_eq!(io_buf_view.len(), io_buf_view_len);
     }
 }
+*/

@@ -1,3 +1,6 @@
+use std::future::Future;
+
+use remit::Remit;
 use snafu::Snafu;
 
 use crate::buf::{BufferView, BytesBufferView};
@@ -37,67 +40,15 @@ pub enum FramingError {
     PartialFrame { needed: usize, remaining: usize },
 }
 
-pub trait FramerLifetime<'this, ImplicitBounds: Sealed = Bounds<&'this Self>> {
-	type Frame;
-}
-
-mod sealed {
-	pub trait Sealed: Sized {}
-	pub struct Bounds<T>(T);
-	impl<T> Sealed for Bounds<T> {}
-}
-use self::sealed::{Bounds, Sealed};
-
-/// A trait for reading framed messages from a buffer.
-pub trait Framer: for<'this> FramerLifetime<'this> {
-    /// Attempt to extract the next frame from the buffer.
-    ///
-    /// If enough data was present to extract a frame, `Ok(Some(frame))` is returned. If not enough data was present, and
-    /// EOF has not been reached, `Ok(None)` is returned.
-    ///
-    /// Behavior when EOF is reached is framer-specific and in some cases may allow for decoding a frame even when the
-    /// inherent delimiting data is not present.
-    ///
-    /// # Errors
-    ///
-    /// If an error is detected when reading the next frame, an error is returned.
-    fn next_frame<'a, 'buf, B>(
-        &'a mut self, buf: &'a mut B, is_eof: bool,
-    ) -> Result<Option<<Self as FramerLifetime<'_>>::Frame, FramingError>
+pub trait Framer {
+    /// Extracts frames from the buffer and sends them to the given generator.
+    fn extract_frames<'a, 'buf, B>(
+        &'a mut self,
+        buf: &'buf mut B,
+        is_eof: bool,
+        frames: &Remit<'_, Result<Option<BytesBufferView<'a>>, FramingError>>,
+    ) -> impl Future<Output = ()>
     where
         B: BufferView,
         'buf: 'a;
-}
-
-/// An iterator of framed messages over a generic buffer.
-pub struct Framed<'a, 'buf, F> {
-    framer: &'a mut F,
-    buffer: &'a mut BytesBufferView<'buf>,
-    is_eof: bool,
-}
-
-impl<'a, 'buf, F> Framed<'a, 'buf, F> {
-    /// Creates a new `Framed` over the given view, using the given framer.
-    pub fn from_view(framer: &'a mut F, buffer: &'a mut BytesBufferView<'buf>, is_eof: bool) -> Self {
-        Self { framer, buffer, is_eof }
-    }
-}
-
-impl<'a, 'buf, F> Framed<'a, 'buf, F>
-where
-    F: Framer,
-    'buf: 'a,
-{
-    /// Extracts the next frame from the buffer if one is available.
-    ///
-    /// If a frame is available, `Ok(Some(frame))` is returned. If no frame is available, and EOF has not yet been
-    /// reached, `Ok(None)` is returned.
-    ///
-    /// # Errors
-    ///
-    /// If an error is encountered while reading the next frame, which can potentially include encountering an invalid
-    /// frame prior to EOF, or failing to read a valid frame when EOF has been reached, an error is returned.
-    pub fn try_next<'b>(&'b mut self) -> Result<Option<F::Frame<'b>>, FramingError> {
-        self.framer.next_frame(self.buffer, self.is_eof)
-    }
 }

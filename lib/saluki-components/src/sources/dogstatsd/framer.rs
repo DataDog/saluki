@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use saluki_io::{
     buf::BytesBufferView,
     deser::framing::{Framer, FramingError, NewlineFramer},
@@ -6,25 +8,24 @@ use saluki_io::{
 
 pub enum DsdFramer {
     NonStream(NewlineFramer),
-    //Stream(NestedFramer<NewlineFramer, LengthDelimitedFramer>),
-    Stream(NewlineFramer),
+    Stream(NestedFramer<NewlineFramer, LengthDelimitedFramer>),
 }
 
 impl Framer for DsdFramer {
-    type Frame<'a>
-        = BytesBufferView<'a>
+     fn extract_frames<'buf, B>(
+        &mut self,
+        buf: &'buf mut B,
+        is_eof: bool,
+        frames: Remit<'_, Result<Option<BytesBufferView<'buf>>, FramingError>>,
+    ) -> impl Future<Output = ()>
     where
-        Self: 'a;
-
-    fn next_frame<'a, 'buf>(
-        &'a mut self, buf: &'a mut BytesBufferView<'buf>, is_eof: bool,
-    ) -> Result<Option<Self::Frame<'a>>, FramingError>
-    where
-        'buf: 'a,
+        B: BufferView
     {
-        match self {
-            Self::NonStream(framer) => framer.next_frame(buf, is_eof),
-            Self::Stream(framer) => framer.next_frame(buf, is_eof),
+        async move {
+            match self {
+                Self::NonStream(framer) => framer.extract_frames(buf, is_eof, frames).await,
+                Self::Stream(framer) => framer.extract_frames(buf, is_eof, frames).await,
+            }
         }
     }
 }
@@ -38,7 +39,6 @@ pub fn get_framer(listen_address: &ListenAddress) -> DsdFramer {
         #[cfg(unix)]
         ListenAddress::Unixgram(_) => DsdFramer::NonStream(newline_framer),
         #[cfg(unix)]
-        ListenAddress::Unix(_) => DsdFramer::Stream(newline_framer),
-        //ListenAddress::Unix(_) => DsdFramer::Stream(NestedFramer::new(newline_framer, LengthDelimitedFramer)),
+        ListenAddress::Unix(_) => DsdFramer::Stream(NestedFramer::new(newline_framer, LengthDelimitedFramer)),
     }
 }

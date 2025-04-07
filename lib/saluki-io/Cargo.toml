@@ -46,6 +46,7 @@ tracing = { workspace = true }
 # Adds support for `Arc::into_unique` to recover `UniqueArc` instances.
 triomphe = { workspace = true }
 url = { workspace = true, features = ["std"] }
+remit = { version = "0.1.4" }
 
 [dev-dependencies]
 http-body-util = { workspace = true }

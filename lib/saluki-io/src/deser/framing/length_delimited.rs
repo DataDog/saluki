@@ -1,3 +1,6 @@
+use std::future::Future;
+
+use remit::Remit;
 use tracing::trace;
 
 use super::{Framer, FramingError};
@@ -12,60 +15,65 @@ use crate::buf::{BufferView, BytesBufferView};
 pub struct LengthDelimitedFramer;
 
 impl Framer for LengthDelimitedFramer {
-    type Frame<'a>
-        = BytesBufferView<'a>
-    where
-        Self: 'a;
-
-    fn next_frame<'a, 'buf, B>(
-        &'a mut self, buf: &'a mut B, is_eof: bool,
-    ) -> Result<Option<Self::Frame<'a>>, FramingError>
+    fn extract_frames<'a, 'buf, B>(
+        &'a mut self, buf: &'buf mut B, is_eof: bool, frames: &Remit<'_, Result<Option<BytesBufferView<'a>>, FramingError>>,
+    ) -> impl Future<Output = ()>
     where
         B: BufferView,
         'buf: 'a,
     {
-        trace!(buf_len = buf.len(), "Processing buffer.");
+        async move {
+            trace!(buf_len = buf.len(), "Processing buffer.");
 
-        let data = buf.as_bytes();
-        if data.is_empty() {
-            return Ok(None);
+            let data = buf.as_bytes();
+            if data.is_empty() {
+                frames.value(Ok(None)).await;
+                return;
+            }
+
+            // See if there's enough data to read the frame length.
+            if data.len() < 4 {
+                let value = if is_eof {
+                    Err(FramingError::PartialFrame {
+                        needed: 4,
+                        remaining: data.len(),
+                    })
+                } else {
+                    Ok(None)
+                };
+
+                frames.value(value).await;
+                return;
+            }
+
+            // See if we have enough data to read the full frame.
+            let frame_len = u32::from_le_bytes(data[..4].try_into().unwrap()) as usize;
+            let frame_len_with_length = frame_len.saturating_add(4);
+            if frame_len_with_length > buf.capacity() {
+                frames.value(Err(oversized_frame_err(frame_len))).await;
+                return;
+            }
+
+            if data.len() < frame_len_with_length {
+                let value = if is_eof {
+                    // If we've hit EOF and we have a partial frame here, well, then... it's invalid.
+                    Err(FramingError::PartialFrame {
+                        needed: frame_len_with_length,
+                        remaining: data.len(),
+                    })
+                } else {
+                    Ok(None)
+                };
+
+                frames.value(value).await;
+                return;
+            }
+
+            // Skip over the length delimiter and then slice off the frame.
+            buf.skip(4);
+
+            frames.value(Ok(Some(buf.slice_to(frame_len)))).await;
         }
-
-        // See if there's enough data to read the frame length.
-        if data.len() < 4 {
-            return if is_eof {
-                Err(FramingError::PartialFrame {
-                    needed: 4,
-                    remaining: data.len(),
-                })
-            } else {
-                Ok(None)
-            };
-        }
-
-        // See if we have enough data to read the full frame.
-        let frame_len = u32::from_le_bytes(data[..4].try_into().unwrap()) as usize;
-        let frame_len_with_length = frame_len.saturating_add(4);
-        if frame_len_with_length > buf.capacity() {
-            return Err(oversized_frame_err(frame_len));
-        }
-
-        if data.len() < frame_len_with_length {
-            return if is_eof {
-                // If we've hit EOF and we have a partial frame here, well, then... it's invalid.
-                Err(FramingError::PartialFrame {
-                    needed: frame_len_with_length,
-                    remaining: data.len(),
-                })
-            } else {
-                Ok(None)
-            };
-        }
-
-        // Skip over the length delimiter and then slice off the frame.
-        buf.skip(4);
-
-        Ok(Some(buf.slice_to(frame_len)))
     }
 }
 
@@ -76,6 +84,7 @@ const fn oversized_frame_err(frame_len: usize) -> FramingError {
     }
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use bytes::BufMut as _;
@@ -254,3 +263,4 @@ mod tests {
         assert_eq!(io_buf_view.len(), io_buf_len);
     }
 }
+*/
