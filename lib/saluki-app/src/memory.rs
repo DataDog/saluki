@@ -81,7 +81,7 @@ impl MemoryBoundsConfiguration {
                     if let Some(memory) = cgroup_memory_reader.parse() {
                         info!(
                             "Setting memory limit to {} based on detected cgroups limit.",
-                            memory.to_string_as(true)
+                            memory.display().si()
                         );
                         config.memory_limit = Some(memory);
                     }
@@ -141,10 +141,10 @@ pub fn initialize_memory_bounds(
 
     info!(
 		"Verified memory bounds. Minimum memory requirement of {}, with a calculated firm memory bound of {} out of {} available, from an initial {} grant.",
-		bytesize::to_string(verified_bounds.total_minimum_required_bytes() as u64, true),
-		bytesize::to_string(verified_bounds.total_firm_limit_bytes() as u64, true),
-		bytesize::to_string(verified_bounds.total_available_bytes() as u64, true),
-		bytesize::to_string(initial_grant.initial_limit_bytes() as u64, true),
+		bytes_to_si_string(verified_bounds.total_minimum_required_bytes()),
+		bytes_to_si_string(verified_bounds.total_firm_limit_bytes()),
+		bytes_to_si_string(verified_bounds.total_available_bytes()),
+		bytes_to_si_string(initial_grant.initial_limit_bytes()),
 	);
 
     print_verified_bounds(verified_bounds);
@@ -156,8 +156,8 @@ fn print_verified_bounds(bounds: VerifiedBounds) {
     info!("Breakdown of verified bounds:");
     info!(
         "- (root): {} minimum, {} firm",
-        bytesize::to_string(bounds.bounds().total_minimum_required_bytes() as u64, true),
-        bytesize::to_string(bounds.bounds().total_firm_limit_bytes() as u64, true),
+        bytes_to_si_string(bounds.bounds().total_minimum_required_bytes()),
+        bytes_to_si_string(bounds.bounds().total_firm_limit_bytes()),
     );
 
     let mut to_visit = VecDeque::new();
@@ -174,8 +174,8 @@ fn print_verified_bounds(bounds: VerifiedBounds) {
             "{:indent$}- {}: {} minimum, {} firm",
             "",
             component_name,
-            bytesize::to_string(component_bounds.total_minimum_required_bytes() as u64, true),
-            bytesize::to_string(component_bounds.total_firm_limit_bytes() as u64, true),
+            bytes_to_si_string(component_bounds.total_minimum_required_bytes()),
+            bytes_to_si_string(component_bounds.total_firm_limit_bytes()),
             indent = depth * 2
         );
 
@@ -315,4 +315,8 @@ impl CgroupMemoryParser {
         }
         memory.parse::<ByteSize>().ok()
     }
+}
+
+fn bytes_to_si_string(bytes: usize) -> bytesize::Display {
+    ByteSize::b(bytes as u64).display().si()
 }
