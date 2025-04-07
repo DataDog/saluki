@@ -789,4 +789,36 @@ mod tests {
             assert_eq!(bucket.1, expected_bucket_count);
         }
     }
+
+    #[test]
+    fn prom_get_help_text() {
+        assert_eq!(
+            get_help_text("no_aggregation__flush"),
+            Some("Count the number of flushes done by the no-aggregation pipeline worker")
+        );
+        assert_eq!(
+            get_help_text("no_aggregation__processed"),
+            Some("Count the number of samples processed by the no-aggregation pipeline worker")
+        );
+        assert_eq!(
+            get_help_text("aggregator__dogstatsd_contexts_by_mtype"),
+            Some("Count the number of dogstatsd contexts in the aggregator, by metric type")
+        );
+        assert_eq!(
+            get_help_text("aggregator__flush"),
+            Some("Number of metrics/service checks/events flushed")
+        );
+        assert_eq!(
+            get_help_text("aggregator__dogstatsd_contexts_bytes_by_mtype"),
+            Some("Estimated count of bytes taken by contexts in the aggregator, by metric type")
+        );
+        assert_eq!(
+            get_help_text("aggregator__dogstatsd_contexts"),
+            Some("Count the number of dogstatsd contexts in the aggregator")
+        );
+        assert_eq!(
+            get_help_text("aggregator__processed"),
+            Some("Amount of metrics/services_checks/events processed by the aggregator")
+        );
+    }
 }
