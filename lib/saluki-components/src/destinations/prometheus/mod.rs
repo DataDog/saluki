@@ -261,6 +261,26 @@ async fn regenerate_payload(
     }
 }
 
+fn get_help_text(metric_name: &str) -> Option<&'static str> {
+    match metric_name {
+        "no_aggregation__flush" => Some("Count the number of flushes done by the no-aggregation pipeline worker"),
+        "no_aggregation__processed" => {
+            Some("Count the number of samples processed by the no-aggregation pipeline worker")
+        }
+        "aggregator__dogstatsd_contexts_by_mtype" => {
+            Some("Count the number of dogstatsd contexts in the aggregator, by metric type")
+        }
+        "aggregator__flush" => Some("Number of metrics/service checks/events flushed"),
+        "aggregator__dogstatsd_contexts_bytes_by_mtype" => {
+            Some("Estimated count of bytes taken by contexts in the aggregator, by metric type")
+        }
+        "aggregator__dogstatsd_contexts" => Some("Count the number of dogstatsd contexts in the aggregator"),
+        "aggregator__processed" => Some("Amount of metrics/services_checks/events processed by the aggregator"),
+        "dogstatsd__processed" => Some("Count of service checks/events/metrics processed by dogstatsd"),
+        _ => None,
+    }
+}
+
 fn write_metrics(
     payload_buffer: &mut String, tags_buffer: &mut String, prom_context: &PrometheusContext,
     contexts: &IndexMap<Context, PrometheusValue>,
@@ -272,6 +292,10 @@ fn write_metrics(
 
     payload_buffer.clear();
 
+    // Write HELP if available
+    if let Some(help_text) = get_help_text(prom_context.metric_name.as_ref()) {
+        writeln!(payload_buffer, "# HELP {} {}", prom_context.metric_name, help_text).unwrap();
+    }
     // Write the metric header.
     writeln!(
         payload_buffer,
