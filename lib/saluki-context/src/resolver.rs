@@ -37,6 +37,8 @@ static_metrics! {
         gauge(interner_entries),
         counter(intern_fallback_total),
         gauge(unique_origins),
+        counter(contexts_expired),
+        histogram(contexts_expired_batch_size),
     ],
 }
 
@@ -496,6 +498,9 @@ async fn drive_expiration(
         expiration.drain_expired_entries(&mut expired_entries);
 
         let num_expired_contexts = expired_entries.len();
+        stats.contexts_expired().increment(num_expired_contexts as u64);
+        stats.contexts_expired_batch_size().record(num_expired_contexts as f64);
+
         debug!(num_expired_contexts, "Found expired contexts.");
 
         for entry in expired_entries.drain(..) {
