@@ -60,12 +60,14 @@ impl SynchronousTransformBuilder for HostTagsConfiguration {
         let context_resolver = ContextResolverBuilder::from_name("host_tags")
             .expect("resolver name is not empty")
             .with_interner_capacity_bytes(context_string_interner_size)
+            .with_idle_context_expiration(Duration::from_secs(self.expected_tags_duration))
+            .with_expiration_interval(Duration::from_secs(1))
             .build();
         Ok(Box::new(HostTagsEnrichment {
             start: Instant::now(),
-            context_resolver,
+            context_resolver: Some(context_resolver),
             expected_tags_duration: Duration::from_secs(self.expected_tags_duration),
-            host_tags,
+            host_tags: Some(host_tags),
         }))
     }
 }
@@ -87,25 +89,23 @@ impl MemoryBounds for HostTagsConfiguration {
 
 pub struct HostTagsEnrichment {
     start: Instant,
-    context_resolver: ContextResolver,
+    context_resolver: Option<ContextResolver>,
     expected_tags_duration: Duration,
-    host_tags: Vec<String>,
+    host_tags: Option<Vec<String>>,
 }
 
 impl HostTagsEnrichment {
     fn enrich_metric(&mut self, metric: &mut Metric) {
-        let mut tags: Vec<String> = metric
-            .context()
-            .tags()
-            .into_iter()
-            .map(|tag| tag.as_str().to_owned())
-            .collect();
-        tags.extend(self.host_tags.clone());
-        if let Some(context) = self.context_resolver.resolve_with_origin_tags(
-            metric.context().name(),
-            tags,
-            metric.context().origin_tags().clone(),
-        ) {
+        let resolver = self.context_resolver.as_mut().unwrap();
+        let host_tags = self.host_tags.as_ref().unwrap();
+
+        let mut tags = Vec::with_capacity(metric.context().tags().len() + host_tags.len());
+        tags.extend(metric.context().tags().into_iter().map(|t| t.as_str()));
+        tags.extend(host_tags.iter().map(|t| t.as_str()));
+
+        if let Some(context) =
+            resolver.resolve_with_origin_tags(metric.context().name(), tags, metric.context().origin_tags().clone())
+        {
             *metric.context_mut() = context;
         }
     }
@@ -115,6 +115,8 @@ impl SynchronousTransform for HostTagsEnrichment {
     fn transform_buffer(&mut self, event_buffer: &mut FixedSizeEventBuffer) {
         // Skip adding host tags if duration has elapsed
         if self.start.elapsed() >= self.expected_tags_duration {
+            self.context_resolver = None;
+            self.host_tags = None;
             return;
         }
         for event in event_buffer {
