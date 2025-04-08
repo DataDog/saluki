@@ -133,14 +133,14 @@ impl SynchronousTransform for HostTagsEnrichment {
 #[cfg(test)]
 mod tests {
 
-    use std::time::Instant;
-    use std::{num::NonZeroUsize, time::Duration};
-
+    use super::*;
     use bytesize::ByteSize;
     use saluki_context::{Context, ContextResolverBuilder};
     use saluki_event::metric::Metric;
-
-    use crate::transforms::host_tags::HostTagsEnrichment;
+    use std::{
+        num::NonZeroUsize,
+        time::{Duration, Instant},
+    };
 
     #[tokio::test]
     async fn test_host_tags_enrichment() {
