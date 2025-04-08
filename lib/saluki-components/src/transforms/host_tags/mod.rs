@@ -132,35 +132,30 @@ impl SynchronousTransform for HostTagsEnrichment {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
 
-    use std::{
-        num::NonZeroUsize,
-        time::{Duration, Instant},
-    };
-
-    use bytesize::ByteSize;
     use saluki_context::{Context, ContextResolverBuilder};
     use saluki_event::metric::Metric;
 
     use super::*;
 
     #[tokio::test]
-    async fn test_host_tags_enrichment() {
-        let context_resolver = ContextResolverBuilder::from_name("host_tags")
-            .expect("resolver name is not empty")
-            .with_interner_capacity_bytes(NonZeroUsize::new(ByteSize::kib(64).as_u64() as usize).unwrap())
-            .build();
-
+    async fn basic() {
+        let context_resolver = ContextResolverBuilder::for_tests().build();
+        let host_tags = vec!["hosttag1".to_string(), "hosttag2".to_string()];
         let mut host_tags_enrichment = HostTagsEnrichment {
             start: Instant::now(),
             context_resolver: Some(context_resolver),
             expected_tags_duration: Duration::from_secs(30),
-            host_tags: Some(vec!["hosttag1".to_string(), "hosttag2".to_string()]),
+            host_tags: Some(host_tags.clone()),
         };
 
         let mut metric1 = Metric::gauge(Context::from_static_parts("test", &[]), 1.0);
         host_tags_enrichment.enrich_metric(&mut metric1);
-        assert_eq!(metric1.context().tags().len(), 2);
+        assert_eq!(metric1.context().tags().len(), host_tags.len());
+        for tag in host_tags {
+            assert!(metric1.context().tags().has_tag(tag));
+        }
 
         // Simulate expected_tags_duration elapsing with context_resolver and host_tags being None
         host_tags_enrichment.context_resolver = None;
