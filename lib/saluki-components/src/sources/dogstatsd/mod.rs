@@ -1,5 +1,5 @@
 use std::sync::{Arc, LazyLock};
-use std::{num::NonZeroUsize, time::Duration};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::{Buf, BufMut};
@@ -7,7 +7,6 @@ use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use metrics::{Counter, Gauge, Histogram};
 use saluki_config::GenericConfiguration;
-use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::{
     components::{sources::*, ComponentContext},
     observability::ComponentMetricsExt as _,
@@ -20,7 +19,7 @@ use saluki_core::{
     },
 };
 use saluki_env::WorkloadProvider;
-use saluki_error::{generic_error, GenericError};
+use saluki_error::{ErrorContext as _, GenericError};
 use saluki_event::metric::{MetricMetadata, MetricOrigin};
 use saluki_event::{metric::Metric, DataType, Event};
 use saluki_io::{
@@ -51,8 +50,12 @@ use self::framer::{get_framer, DsdFramer};
 
 mod filters;
 use self::filters::{is_event_allowed, is_metric_allowed, is_service_check_allowed, EnablePayloadsFilter, Filter};
+
 mod origin;
 use self::origin::{origin_from_metric_packet, DogStatsDOriginTagResolver, OriginEnrichmentConfiguration};
+
+mod resolver;
+use self::resolver::ContextResolvers;
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -322,16 +325,8 @@ impl SourceBuilder for DogStatsDConfiguration {
             .workload_provider
             .clone()
             .map(|provider| DogStatsDOriginTagResolver::new(self.origin_enrichment.clone(), provider));
-        let context_string_interner_size = NonZeroUsize::new(self.context_string_interner_bytes.as_u64() as usize)
-            .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
-        let context_resolver = ContextResolverBuilder::from_name("dogstatsd")
-            .expect("resolver name is not empty")
-            .with_interner_capacity_bytes(context_string_interner_size)
-            .with_idle_context_expiration(Duration::from_secs(30))
-            .with_expiration_interval(Duration::from_secs(1))
-            .with_heap_allocations(self.allow_context_heap_allocations)
-            .with_origin_tags_resolver(maybe_origin_tags_resolver)
-            .build();
+        let context_resolvers = ContextResolvers::new(self, maybe_origin_tags_resolver)
+            .error_context("Failed to create context resolvers.")?;
 
         let codec_config = DogstatsdCodecConfiguration::default()
             .with_timestamps(self.no_aggregation_pipeline_support)
@@ -351,7 +346,7 @@ impl SourceBuilder for DogStatsDConfiguration {
                 FixedSizeVec::with_capacity(get_adjusted_buffer_size(self.buffer_size))
             }),
             codec,
-            context_resolver,
+            context_resolvers,
             pre_filters: Arc::new(vec![Box::new(enable_payloads_filter)]),
         }))
     }
@@ -394,7 +389,7 @@ pub struct DogStatsD {
     listeners: Vec<Listener>,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     codec: DogstatsdCodec,
-    context_resolver: ContextResolver,
+    context_resolvers: ContextResolvers,
     pre_filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>,
 }
 
@@ -403,7 +398,7 @@ struct ListenerContext {
     listener: Listener,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     codec: DogstatsdCodec,
-    context_resolver: ContextResolver,
+    context_resolvers: ContextResolvers,
 }
 
 struct HandlerContext {
@@ -412,7 +407,7 @@ struct HandlerContext {
     codec: DogstatsdCodec,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     metrics: Metrics,
-    context_resolver: ContextResolver,
+    context_resolvers: ContextResolvers,
 }
 
 struct Metrics {
@@ -575,7 +570,7 @@ impl Source for DogStatsD {
                 listener,
                 io_buffer_pool: self.io_buffer_pool.clone(),
                 codec: self.codec.clone(),
-                context_resolver: self.context_resolver.clone(),
+                context_resolvers: self.context_resolvers.clone(),
             };
 
             spawn_traced(process_listener(
@@ -620,7 +615,7 @@ async fn process_listener(
         mut listener,
         io_buffer_pool,
         codec,
-        context_resolver,
+        context_resolvers,
     } = listener_context;
     tokio::pin!(shutdown_handle);
 
@@ -645,7 +640,7 @@ async fn process_listener(
                         codec: codec.clone(),
                         io_buffer_pool: io_buffer_pool.clone(),
                         metrics: build_metrics(&listen_addr, source_context.component_context()),
-                        context_resolver: context_resolver.clone(),
+                        context_resolvers: context_resolvers.clone(),
                     };
                     spawn_traced(process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register(), filters.clone()));
                 }
@@ -686,7 +681,7 @@ async fn drive_stream(
         codec,
         io_buffer_pool,
         metrics,
-        mut context_resolver,
+        mut context_resolvers,
     } = handler_context;
 
     debug!(%listen_addr, "Stream handler started.");
@@ -767,7 +762,7 @@ async fn drive_stream(
                         match frames.next() {
                             Some(Ok(frame)) => {
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
-                                match handle_frame(&frame[..], &codec, &mut context_resolver, &metrics, &peer_addr, filters.clone()) {
+                                match handle_frame(&frame[..], &codec, &mut context_resolvers, &metrics, &peer_addr, filters.clone()) {
                                     Ok(Some(event)) => {
                                         if let Some((event, event_buffer)) = event_buffer_manager.try_push(event).await {
                                             debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
@@ -847,7 +842,7 @@ async fn drive_stream(
 }
 
 fn handle_frame(
-    frame: &[u8], codec: &DogstatsdCodec, context_resolver: &mut ContextResolver, source_metrics: &Metrics,
+    frame: &[u8], codec: &DogstatsdCodec, context_resolvers: &mut ContextResolvers, source_metrics: &Metrics,
     peer_addr: &ConnectionAddress, filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>,
 ) -> Result<Option<Event>, ParseError> {
     let parsed = match codec.decode_packet(frame) {
@@ -875,7 +870,7 @@ fn handle_frame(
                 return Ok(None);
             }
 
-            match handle_metric_packet(metric_packet, context_resolver, peer_addr) {
+            match handle_metric_packet(metric_packet, context_resolvers, peer_addr) {
                 Some(metric) => {
                     source_metrics.metrics_received().increment(events_len);
                     Event::Metric(metric)
@@ -915,13 +910,20 @@ fn handle_frame(
 }
 
 fn handle_metric_packet(
-    packet: MetricPacket, context_resolver: &mut ContextResolver, peer_addr: &ConnectionAddress,
+    packet: MetricPacket, context_resolvers: &mut ContextResolvers, peer_addr: &ConnectionAddress,
 ) -> Option<Metric> {
     // Capture the origin from the packet, including any process ID information if we have it.
     let mut origin = origin_from_metric_packet(&packet);
     if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
         origin.set_process_id(creds.pid as u32);
     }
+
+    // Choose the right context resolver based on whether or not this metric is pre-aggregated.
+    let context_resolver = if packet.timestamp.is_some() {
+        context_resolvers.no_agg()
+    } else {
+        context_resolvers.primary()
+    };
 
     // Try to resolve the context for this metric.
     match context_resolver.resolve(packet.metric_name, packet.tags.clone(), Some(origin)) {
@@ -1012,7 +1014,7 @@ mod tests {
         net::ConnectionAddress,
     };
 
-    use super::handle_metric_packet;
+    use super::{handle_metric_packet, ContextResolvers};
 
     #[test]
     fn no_metrics_when_interner_full_allocations_disallowed() {
@@ -1024,7 +1026,8 @@ mod tests {
         // We set our metric name to be longer than 31 bytes (the inlining limit) to ensure this.
 
         let codec = DogstatsdCodec::from_configuration(DogstatsdCodecConfiguration::default());
-        let mut context_resolver = ContextResolverBuilder::for_tests().with_heap_allocations(false).build();
+        let context_resolver = ContextResolverBuilder::for_tests().with_heap_allocations(false).build();
+        let mut context_resolvers = ContextResolvers::manual(context_resolver.clone(), context_resolver);
         let peer_addr = ConnectionAddress::from("1.1.1.1:1234".parse::<SocketAddr>().unwrap());
 
         let input = "big_metric_name_that_cant_possibly_be_inlined:1|c|#tag1:value1,tag2:value2,tag3:value3";
@@ -1033,7 +1036,7 @@ mod tests {
             panic!("Failed to parse packet.");
         };
 
-        let maybe_metric = handle_metric_packet(packet, &mut context_resolver, &peer_addr);
+        let maybe_metric = handle_metric_packet(packet, &mut context_resolvers, &peer_addr);
         assert!(maybe_metric.is_none());
     }
 }

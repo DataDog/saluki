@@ -74,6 +74,7 @@ impl Default for OriginEnrichmentConfiguration {
     }
 }
 
+#[derive(Clone)]
 pub(super) struct DogStatsDOriginTagResolver {
     config: OriginEnrichmentConfiguration,
     workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
