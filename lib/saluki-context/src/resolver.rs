@@ -46,6 +46,7 @@ static_metrics! {
 /// - Support for configuring the size limit of cached contexts. (See note in [`ContextResolver::new`])
 pub struct ContextResolverBuilder {
     name: String,
+    caching_enabled: bool,
     cached_contexts_limit: Option<usize>,
     idle_context_expiration: Option<Duration>,
     expiration_interval: Option<Duration>,
@@ -72,6 +73,7 @@ impl ContextResolverBuilder {
 
         Ok(Self {
             name,
+            caching_enabled: true,
             cached_contexts_limit: None,
             idle_context_expiration: None,
             expiration_interval: None,
@@ -79,6 +81,25 @@ impl ContextResolverBuilder {
             allow_heap_allocations: None,
             origin_tags_resolver: None,
         })
+    }
+
+    /// Sets whether or not to enable caching of resolved contexts.
+    ///
+    /// [`ContextResolver`] provides two main benefits: consistent behavior for resolving contexts (interning, origin
+    /// tags, etc), and the caching of those resolved contexts to speed up future resolutions. However, caching contexts
+    /// means that we pay a memory cost for the cache itself, even if the contexts are not ever reused or are seen
+    /// infrequently. While expiration can help free up cache capacity, it cannot help recover the memory used by the
+    /// underlying cache data structure once they have expanded to hold the contexts.
+    ///
+    /// Disabling caching allows normal resolving to take place without the overhead of caching the contexts. This can
+    /// lead to lower average memory usage, as contexts will only live as long as they are needed, but it will reduce
+    /// memory determinism as memory will be allocated for every resolved context (minus interned strings), which means
+    /// that resolving the same context ten times in a row will result in ten separate allocations, and so on.
+    ///
+    /// Defaults to caching enabled.
+    pub fn without_caching(mut self) -> Self {
+        self.caching_enabled = false;
+        self
     }
 
     /// Sets the limit on the number of cached contexts.
@@ -226,7 +247,9 @@ impl ContextResolverBuilder {
 
         let mut builder = ExpirationBuilder::new();
         if let Some(time_to_idle) = self.idle_context_expiration {
-            builder = builder.with_time_to_idle(time_to_idle);
+            if self.caching_enabled {
+                builder = builder.with_time_to_idle(time_to_idle);
+            }
         }
         let (expiration, lifecycle) = builder.build();
 
@@ -248,19 +271,22 @@ impl ContextResolverBuilder {
 
         // If an idle context expiration was specified, spawn a background task to actually drive expiration.
         if let Some(expiration_interval) = self.expiration_interval {
-            let context_cache = Arc::clone(&context_cache);
-            let expiration = expiration.clone();
-            tokio::spawn(drive_expiration(
-                context_cache,
-                stats.clone(),
-                expiration,
-                expiration_interval,
-            ));
+            if self.caching_enabled {
+                let context_cache = Arc::clone(&context_cache);
+                let expiration = expiration.clone();
+                tokio::spawn(drive_expiration(
+                    context_cache,
+                    stats.clone(),
+                    expiration,
+                    expiration_interval,
+                ));
+            }
         }
 
         ContextResolver {
             stats,
             interner,
+            caching_enabled: self.caching_enabled,
             context_cache,
             expiration,
             hash_seen_buffer: new_fast_hashset(),
@@ -296,6 +322,7 @@ impl ContextResolverBuilder {
 pub struct ContextResolver {
     stats: Statistics,
     interner: GenericMapInterner,
+    caching_enabled: bool,
     context_cache: Arc<ContextCache>,
     expiration: Expiration<ContextKey>,
     hash_seen_buffer: FastHashSet<u64>,
@@ -412,6 +439,9 @@ impl ContextResolver {
         T: AsRef<str>,
     {
         let context_key = self.create_context_key(name, tags.clone(), origin_tags.key());
+
+        // NOTE: This is suboptimal to bother checking the cache if we know caching is disabled, but it also lets us
+        // avoid duplicating a bunch of the logic below, so we're just going with this approach for now.
         match self.context_cache.get(&context_key) {
             Some(context) => {
                 self.stats.resolved_existing_context_total().increment(1);
@@ -423,8 +453,10 @@ impl ContextResolver {
                     Some(context) => {
                         debug!(?context_key, ?context, "Resolved new context.");
 
-                        self.context_cache.insert(context_key, context.clone());
-                        self.expiration.mark_entry_accessed(context_key);
+                        if self.caching_enabled {
+                            self.context_cache.insert(context_key, context.clone());
+                            self.expiration.mark_entry_accessed(context_key);
+                        }
 
                         // TODO: This is lazily updated during resolve, which means this metric might lag behind the actual
                         // count as interned strings are dropped/reclaimed... but we don't have a way to figure out if a given
@@ -461,6 +493,7 @@ impl Clone for ContextResolver {
         Self {
             stats: self.stats.clone(),
             interner: self.interner.clone(),
+            caching_enabled: self.caching_enabled,
             context_cache: Arc::clone(&self.context_cache),
             expiration: self.expiration.clone(),
             hash_seen_buffer: new_fast_hashset(),
@@ -692,5 +725,35 @@ mod tests {
             .expect("should not fail to resolve");
 
         assert_ne!(context1, context2);
+    }
+
+    #[test]
+    fn caching_disabled() {
+        let mut resolver = ContextResolverBuilder::for_tests()
+            .without_caching()
+            .with_origin_tags_resolver(Some(DummyOriginTagsResolver))
+            .build();
+
+        let name = "metric_name";
+        let tags = ["tag1"];
+        let mut origin1 = RawOrigin::default();
+        origin1.set_container_id("container1");
+
+        // Create a context with caching disabled, and verify that the context is not cached:
+        let context1 = resolver
+            .resolve(name, &tags[..], Some(origin1.clone()))
+            .expect("should not fail to resolve");
+        assert_eq!(resolver.context_cache.len(), 0);
+
+        // Create a second context with the same name and tags, and verify that it is not cached:
+        let context2 = resolver
+            .resolve(name, &tags[..], Some(origin1))
+            .expect("should not fail to resolve");
+        assert_eq!(resolver.context_cache.len(), 0);
+
+        // The contexts should be equal to each other, but the underlying `Arc` pointers should be different since
+        // they're two distinct contexts in terms of not being cached:
+        assert_eq!(context1, context2);
+        assert!(!context1.ptr_eq(&context2));
     }
 }
