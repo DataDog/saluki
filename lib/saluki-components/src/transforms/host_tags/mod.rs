@@ -60,12 +60,14 @@ impl SynchronousTransformBuilder for HostTagsConfiguration {
         let context_resolver = ContextResolverBuilder::from_name("host_tags")
             .expect("resolver name is not empty")
             .with_interner_capacity_bytes(context_string_interner_size)
+            .with_idle_context_expiration(Duration::from_secs(30))
+            .with_expiration_interval(Duration::from_secs(1))
             .build();
         Ok(Box::new(HostTagsEnrichment {
             start: Instant::now(),
-            context_resolver,
+            context_resolver: Some(context_resolver),
             expected_tags_duration: Duration::from_secs(self.expected_tags_duration),
-            host_tags,
+            host_tags: Some(host_tags),
         }))
     }
 }
@@ -87,25 +89,26 @@ impl MemoryBounds for HostTagsConfiguration {
 
 pub struct HostTagsEnrichment {
     start: Instant,
-    context_resolver: ContextResolver,
+    context_resolver: Option<ContextResolver>,
     expected_tags_duration: Duration,
-    host_tags: Vec<String>,
+    host_tags: Option<Vec<String>>,
 }
 
 impl HostTagsEnrichment {
     fn enrich_metric(&mut self, metric: &mut Metric) {
-        let mut tags: Vec<String> = metric
-            .context()
-            .tags()
-            .into_iter()
-            .map(|tag| tag.as_str().to_owned())
-            .collect();
-        tags.extend(self.host_tags.clone());
-        if let Some(context) = self.context_resolver.resolve_with_origin_tags(
-            metric.context().name(),
-            tags,
-            metric.context().origin_tags().clone(),
-        ) {
+        if self.context_resolver.is_none() || self.host_tags.is_none() {
+            return;
+        }
+        let resolver = self.context_resolver.as_mut().unwrap();
+        let host_tags = self.host_tags.as_ref().unwrap();
+
+        let mut tags = Vec::with_capacity(metric.context().tags().len() + host_tags.len());
+        tags.extend(metric.context().tags().into_iter().map(|t| t.as_str()));
+        tags.extend(host_tags.iter().map(|t| t.as_str()));
+
+        if let Some(context) =
+            resolver.resolve_with_origin_tags(metric.context().name(), tags, metric.context().origin_tags().clone())
+        {
             *metric.context_mut() = context;
         }
     }
@@ -115,6 +118,8 @@ impl SynchronousTransform for HostTagsEnrichment {
     fn transform_buffer(&mut self, event_buffer: &mut FixedSizeEventBuffer) {
         // Skip adding host tags if duration has elapsed
         if self.start.elapsed() >= self.expected_tags_duration {
+            self.context_resolver = None;
+            self.host_tags = None;
             return;
         }
         for event in event_buffer {
@@ -122,5 +127,41 @@ impl SynchronousTransform for HostTagsEnrichment {
                 self.enrich_metric(metric);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use saluki_context::{Context, ContextResolverBuilder};
+    use saluki_event::metric::Metric;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn basic() {
+        let context_resolver = ContextResolverBuilder::for_tests().build();
+        let host_tags = vec!["hosttag1".to_string(), "hosttag2".to_string()];
+        let mut host_tags_enrichment = HostTagsEnrichment {
+            start: Instant::now(),
+            context_resolver: Some(context_resolver),
+            expected_tags_duration: Duration::from_secs(30),
+            host_tags: Some(host_tags.clone()),
+        };
+
+        let mut metric1 = Metric::gauge(Context::from_static_parts("test", &[]), 1.0);
+        host_tags_enrichment.enrich_metric(&mut metric1);
+        assert_eq!(metric1.context().tags().len(), host_tags.len());
+        for tag in host_tags {
+            assert!(metric1.context().tags().has_tag(tag));
+        }
+
+        // Simulate expected_tags_duration elapsing with context_resolver and host_tags being None
+        host_tags_enrichment.context_resolver = None;
+        host_tags_enrichment.host_tags = None;
+        let mut metric2 = Metric::gauge(Context::from_static_parts("test", &[]), 1.0);
+        host_tags_enrichment.enrich_metric(&mut metric2);
+        assert_eq!(metric2.context().tags().len(), 0);
     }
 }
