@@ -178,6 +178,9 @@ tikv-jemallocator = { version = "0.6", default-features = false }
 axum-extra = { version = "0.9", default-features = false }
 papaya = { version = "0.2", default-features = false }
 tempfile = { version = "3", default-features = false }
+async-walkdir = "1.0.0"
+pyo3 = "0.22.5"
+tracing-test = "0.2.4"
 
 [profile.release]
 lto = "thin"
