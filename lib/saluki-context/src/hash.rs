@@ -5,10 +5,51 @@ use std::{
 
 use crate::origin::OriginKey;
 
-pub type FastHashSet<T> = HashSet<T, ahash::RandomState>;
+pub type PrehashedHashSet<T> = HashSet<T, NoopU64Hasher>;
 
-pub fn new_fast_hashset<T>() -> FastHashSet<T> {
-    HashSet::with_hasher(ahash::RandomState::default())
+pub fn new_prehashed_hashset<T>() -> PrehashedHashSet<T> {
+    HashSet::with_hasher(NoopU64Hasher::default())
+}
+
+/// A hasher implementation designed for pre-hashed values.
+///
+/// When dealing with contexts, and specifically context keys, we're already working with a pre-hashed value. When we
+/// want to then store those keys in hash maps or sets, they will need to be hashed again. However, we've already done
+/// the hashing: why hash them a _second_ time?
+///
+/// `NoopU64Hasher` is designed to be used for these types, where it will simply use the last `u64` value written into
+/// the hasher, and panic if any other value type is written. This ensures that we only use the pre-hashed value as-is,
+/// and that we don't unintentionally allow the hasher to be used with types that have non-`u64` fields.
+#[derive(Default)]
+pub struct NoopU64Hasher(u64);
+
+impl Clone for NoopU64Hasher {
+    fn clone(&self) -> Self {
+        NoopU64Hasher(0)
+    }
+}
+
+impl std::hash::BuildHasher for NoopU64Hasher {
+    type Hasher = Self;
+
+    fn build_hasher(&self) -> Self {
+        NoopU64Hasher::default()
+    }
+}
+
+impl std::hash::Hasher for NoopU64Hasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, _: &[u8]) {
+        // All default write methods defer to `write` in the end, so we only need to short-circuit from this method.
+        panic!("NoopU64Hasher only accepts u64 values");
+    }
+
+    fn write_u64(&mut self, i: u64) {
+        self.0 = i;
+    }
 }
 
 #[inline]
@@ -35,7 +76,7 @@ where
     I: IntoIterator<Item = T>,
     T: AsRef<str>,
 {
-    let mut seen = new_fast_hashset();
+    let mut seen = new_prehashed_hashset();
     hash_context_with_seen(name, tags, origin_key, &mut seen)
 }
 
@@ -51,7 +92,7 @@ where
 ///
 /// Returns a hash that uniquely identifies the combination of name, tags, and origin of the value.
 pub(super) fn hash_context_with_seen<I, T>(
-    name: &str, tags: I, origin_key: Option<OriginKey>, seen: &mut FastHashSet<u64>,
+    name: &str, tags: I, origin_key: Option<OriginKey>, seen: &mut PrehashedHashSet<u64>,
 ) -> ContextKey
 where
     I: IntoIterator<Item = T>,

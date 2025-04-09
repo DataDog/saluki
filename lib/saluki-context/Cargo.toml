@@ -12,6 +12,7 @@ hashbrown = { workspace = true }
 indexmap = { workspace = true }
 memchr = { workspace = true }
 metrics = { workspace = true }
+papaya = { workspace = true }
 quick_cache = { workspace = true, features = ["ahash", "parking_lot"] }
 saluki-error = { workspace = true }
 saluki-metrics = { workspace = true }

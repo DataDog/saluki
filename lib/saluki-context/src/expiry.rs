@@ -1,29 +1,29 @@
 use std::{
-    marker::PhantomData,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{
+            AtomicU32, AtomicU64,
+            Ordering::{Acquire, Relaxed, Release},
+        },
+        Arc,
+    },
     time::{Duration, SystemTime},
 };
 
 use crossbeam_queue::ArrayQueue;
-use hashbrown::HashMap;
+use papaya::{HashMap, LocalGuard};
 use quick_cache::Lifecycle;
 
+use crate::hash::ContextKey;
+
 /// Builder for creating an expiration configuration.
-pub struct ExpirationBuilder<K> {
+pub struct ExpirationBuilder {
     time_to_idle: Option<Duration>,
-    _k: PhantomData<K>,
 }
 
-impl<K> ExpirationBuilder<K>
-where
-    K: Clone + Eq + std::hash::Hash,
-{
+impl ExpirationBuilder {
     /// Creates a new `ExpirationBuilder`.
     pub fn new() -> Self {
-        Self {
-            time_to_idle: None,
-            _k: PhantomData,
-        }
+        Self { time_to_idle: None }
     }
 
     /// Sets the time-to-idle for entries in the cache.
@@ -41,7 +41,7 @@ where
     }
 
     /// Builds the expiration configuration.
-    pub fn build(self) -> (Expiration<K>, ExpiryCapableLifecycle<K>) {
+    pub fn build(self) -> (Expiration, ExpiryCapableLifecycle) {
         match self.time_to_idle {
             None => (Expiration::disabled(), ExpiryCapableLifecycle::disabled()),
             Some(time_to_idle) => {
@@ -55,106 +55,88 @@ where
     }
 }
 
-enum ExpirationOp<K> {
-    Accessed(K),
-    Evicted(K),
+enum ExpirationOp {
+    Accessed(ContextKey),
+    Evicted(ContextKey),
 }
 
 #[derive(Debug)]
 struct AccessState {
-    accesses: u32,
-    last_accessed: u64,
+    accesses: AtomicU32,
+    last_accessed: AtomicU64,
 }
 
 impl AccessState {
     fn new() -> Self {
         Self {
-            accesses: 1,
-            last_accessed: 0,
+            accesses: AtomicU32::new(0),
+            last_accessed: AtomicU64::new(0),
         }
     }
 
-    fn mark_accessed(&mut self) {
-        self.accesses += 1;
+    fn mark_accessed(&self) {
+        self.accesses.fetch_add(1, Relaxed);
     }
 
-    fn update_last_changed(&mut self, now: u64) {
-        if self.accesses > 0 {
-            self.last_accessed = now;
-            self.accesses = 0;
+    fn update_last_changed(&self, now: u64) {
+        if self.accesses.swap(0, Relaxed) > 0 {
+            self.last_accessed.store(now, Release);
         }
     }
 
     fn accessed_since(&self, since: u64) -> bool {
-        self.last_accessed >= since
+        self.last_accessed.load(Acquire) >= since
     }
 }
 
 #[derive(Debug)]
-struct Inner<K> {
-    last_seen: HashMap<K, AccessState, ahash::RandomState>,
+struct State {
+    last_seen: HashMap<ContextKey, AccessState, ahash::RandomState>,
     time_to_idle: Duration,
+    pending_ops: ArrayQueue<ExpirationOp>,
 }
 
-impl<K> Inner<K>
-where
-    K: Clone + Eq + std::hash::Hash,
-{
-    fn process_operation(&mut self, op: ExpirationOp<K>) {
-        match op {
-            ExpirationOp::Accessed(key) => match self.last_seen.get_mut(&key) {
-                Some(state) => state.mark_accessed(),
-                None => {
-                    self.last_seen.insert(key, AccessState::new());
-                }
-            },
-            ExpirationOp::Evicted(key) => {
-                self.last_seen.remove(&key);
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-struct State<K> {
-    inner: Mutex<Inner<K>>,
-    pending_ops: ArrayQueue<ExpirationOp<K>>,
-}
-
-impl<K> State<K>
-where
-    K: Clone + Eq + std::hash::Hash,
-{
+impl State {
     fn new(time_to_idle: Duration) -> Self {
         Self {
-            inner: Mutex::new(Inner {
-                last_seen: HashMap::with_hasher(ahash::RandomState::default()),
-                time_to_idle,
-            }),
+            last_seen: HashMap::with_hasher(ahash::RandomState::default()),
+            time_to_idle,
             pending_ops: ArrayQueue::new(128),
         }
     }
 
-    fn mark_entry_accessed(&self, key: K) {
+    fn mark_entry_accessed(&self, key: ContextKey) {
         if let Err(op) = self.pending_ops.push(ExpirationOp::Accessed(key)) {
             self.process_pending_operations(Some(op));
         }
     }
 
-    fn mark_entry_evicted(&self, key: K) {
+    fn mark_entry_evicted(&self, key: ContextKey) {
         if let Err(op) = self.pending_ops.push(ExpirationOp::Evicted(key)) {
             self.process_pending_operations(Some(op));
         }
     }
 
-    fn process_pending_operations(&self, pending_op: Option<ExpirationOp<K>>) {
-        let mut inner = self.inner.lock().unwrap();
+    fn process_pending_operations(&self, pending_op: Option<ExpirationOp>) {
+        let guard = self.last_seen.guard();
         while let Some(op) = self.pending_ops.pop() {
-            inner.process_operation(op);
+            self.process_operation(&guard, op);
         }
 
         if let Some(pending_op) = pending_op {
-            inner.process_operation(pending_op);
+            self.process_operation(&guard, pending_op);
+        }
+    }
+
+    fn process_operation(&self, guard: &LocalGuard<'_>, op: ExpirationOp) {
+        match op {
+            ExpirationOp::Accessed(key) => {
+                let state = self.last_seen.get_or_insert_with(key, AccessState::new, guard);
+                state.mark_accessed();
+            }
+            ExpirationOp::Evicted(key) => {
+                self.last_seen.remove(&key, guard);
+            }
         }
     }
 }
@@ -164,32 +146,27 @@ where
 /// This type provides an interface the core expiration logic, allowing the marking of entries when they're accessed as
 /// well as determining when a tracked entry has expired so it can be removed from the cache.
 #[derive(Clone, Debug)]
-pub struct Expiration<K> {
-    state: Option<Arc<State<K>>>,
+pub struct Expiration {
+    state: Option<Arc<State>>,
 }
 
-impl<K> Expiration<K>
-where
-    K: Clone + Eq + std::hash::Hash,
-{
+impl Expiration {
     fn disabled() -> Self {
         Self { state: None }
     }
 
-    fn from_state(state: Arc<State<K>>) -> Self {
+    fn from_state(state: Arc<State>) -> Self {
         Self { state: Some(state) }
     }
 
-    pub fn mark_entry_accessed(&self, key: K) {
+    pub fn mark_entry_accessed(&self, key: ContextKey) {
         if let Some(state) = self.state.as_ref() {
             state.mark_entry_accessed(key);
         }
     }
 
-    pub fn drain_expired_entries(&self, entries: &mut Vec<K>) {
+    pub fn drain_expired_entries(&self, entries: &mut Vec<ContextKey>) {
         if let Some(state) = self.state.as_ref() {
-            let mut inner = state.inner.lock().unwrap();
-
             // Calculate the cutoff time for entries to be considered expired.
             //
             // Our math here shouldn't ever fail, but if it does, we just return and wait for the next attempt.
@@ -197,16 +174,26 @@ where
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
-            let last_seen_cutoff = match now.checked_sub(inner.time_to_idle.as_secs()) {
+            let last_seen_cutoff = match now.checked_sub(state.time_to_idle.as_secs()) {
                 Some(cutoff) => cutoff,
                 None => return,
             };
 
-            let expired_entries = inner.last_seen.extract_if(|_, state| {
+            // For every entry, handle updating the last accessed time and checking if it should be expired.
+            //
+            // If it should be expired, we'll add it to the expired entries list so it can be removed from the cache,
+            // and we'll also remove it from the last seen map.
+            state.last_seen.pin().retain(|k, state| {
                 state.update_last_changed(now);
-                !state.accessed_since(last_seen_cutoff)
+
+                let should_expire = !state.accessed_since(last_seen_cutoff);
+                if should_expire {
+                    entries.push(*k);
+                }
+
+                // We have to invert the value since retain will keep the entry if this returns `true`.
+                !should_expire
             });
-            entries.extend(expired_entries.map(|(k, _)| k));
         }
     }
 }
@@ -216,34 +203,28 @@ where
 /// This lifecycle implementation is used for [`quick_cache`] to ensure that we collect eviction events so that those
 /// entries can be removed from expiration tracking.
 #[derive(Clone)]
-pub struct ExpiryCapableLifecycle<K> {
-    state: Option<Arc<State<K>>>,
+pub struct ExpiryCapableLifecycle {
+    state: Option<Arc<State>>,
 }
 
-impl<K> ExpiryCapableLifecycle<K>
-where
-    K: Clone + Eq + std::hash::Hash,
-{
+impl ExpiryCapableLifecycle {
     fn disabled() -> Self {
         Self { state: None }
     }
 
-    fn from_state(state: Arc<State<K>>) -> Self {
+    fn from_state(state: Arc<State>) -> Self {
         Self { state: Some(state) }
     }
 }
 
-impl<K, V> Lifecycle<K, V> for ExpiryCapableLifecycle<K>
-where
-    K: Clone + Eq + std::hash::Hash,
-{
+impl<V> Lifecycle<ContextKey, V> for ExpiryCapableLifecycle {
     type RequestState = ();
 
     #[inline]
     fn begin_request(&self) -> Self::RequestState {}
 
     #[inline]
-    fn on_evict(&self, _state: &mut Self::RequestState, key: K, _value: V) {
+    fn on_evict(&self, _state: &mut Self::RequestState, key: ContextKey, _value: V) {
         if let Some(state) = self.state.as_ref() {
             state.mark_entry_evicted(key);
         }
