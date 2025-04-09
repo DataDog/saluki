@@ -4,14 +4,17 @@ use std::{collections::HashMap, net::SocketAddr};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use datadog_protos::agent::{
-    GetFlareFilesRequest, GetFlareFilesResponse, GetStatusDetailsRequest, GetStatusDetailsResponse, RemoteAgent,
-    RemoteAgentServer, StatusSection,
+    get_telemetry_response::Payload, GetFlareFilesRequest, GetFlareFilesResponse, GetStatusDetailsRequest,
+    GetStatusDetailsResponse, GetTelemetryRequest, GetTelemetryResponse, RemoteAgent, RemoteAgentServer, StatusSection,
 };
+use http::{Request, Uri};
+use http_body_util::BodyExt;
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use saluki_config::GenericConfiguration;
 use saluki_core::state::reflector::Reflector;
 use saluki_env::helpers::remote_agent::RemoteAgentClient;
 use saluki_error::GenericError;
+use saluki_io::net::client::http::HttpClient;
 use tokio::time::{interval, MissedTickBehavior};
 use tracing::debug;
 use uuid::Uuid;
@@ -39,13 +42,14 @@ pub struct RemoteAgentHelperConfiguration {
     local_api_listen_addr: SocketAddr,
     client: RemoteAgentClient,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
+    prometheus_listen_addr: Option<SocketAddr>,
 }
 
 impl RemoteAgentHelperConfiguration {
     /// Creates a new `RemoteAgentHelperConfiguration` from the given configuration.
     pub async fn from_configuration(
         config: &GenericConfiguration, local_api_listen_addr: SocketAddr,
-        internal_metrics: Reflector<AggregatedMetricsProcessor>,
+        internal_metrics: Reflector<AggregatedMetricsProcessor>, prometheus_listen_addr: Option<SocketAddr>,
     ) -> Result<Self, GenericError> {
         let app_details = saluki_metadata::get_app_details();
         let formatted_full_name = app_details
@@ -61,6 +65,7 @@ impl RemoteAgentHelperConfiguration {
             local_api_listen_addr,
             client,
             internal_metrics,
+            prometheus_listen_addr,
         })
     }
 
@@ -73,6 +78,7 @@ impl RemoteAgentHelperConfiguration {
         let service_impl = RemoteAgentImpl {
             started: Utc::now(),
             internal_metrics: self.internal_metrics.clone(),
+            prometheus_listen_addr: self.prometheus_listen_addr,
         };
         let service = RemoteAgentServer::new(service_impl);
 
@@ -123,6 +129,7 @@ async fn run_remote_agent_helper(
 pub struct RemoteAgentImpl {
     started: DateTime<Utc>,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
+    prometheus_listen_addr: Option<SocketAddr>,
 }
 
 impl RemoteAgentImpl {
@@ -203,6 +210,39 @@ impl RemoteAgent for RemoteAgentImpl {
             files: HashMap::default(),
         };
         Ok(tonic::Response::new(response))
+    }
+
+    async fn get_telemetry(
+        &self, _request: tonic::Request<GetTelemetryRequest>,
+    ) -> Result<tonic::Response<GetTelemetryResponse>, tonic::Status> {
+        // Telemetry is not enabled.
+        if self.prometheus_listen_addr.is_none() {
+            return Ok(tonic::Response::new(GetTelemetryResponse { payload: None }));
+        }
+
+        let prometheus_listen_addr = self.prometheus_listen_addr.unwrap();
+        let mut client: HttpClient<String> = HttpClient::builder().build().unwrap();
+
+        let uri_string = format!("http://{}", prometheus_listen_addr);
+        let uri: Uri = uri_string.parse().unwrap();
+        let request = Request::builder()
+            .uri(uri)
+            .body(String::new())
+            .map_err(|e| tonic::Status::internal(e.to_string()))?;
+
+        let resp = client.send(request).await.unwrap();
+
+        match resp.into_body().collect().await {
+            Ok(body) => {
+                let body = body.to_bytes();
+                let body_str = String::from_utf8_lossy(&body[..]);
+                let response = GetTelemetryResponse {
+                    payload: Some(Payload::PromText(body_str.to_string())),
+                };
+                Ok(tonic::Response::new(response))
+            }
+            Err(e) => Err(tonic::Status::internal(e.to_string())),
+        }
     }
 }
 
