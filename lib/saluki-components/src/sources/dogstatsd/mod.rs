@@ -10,7 +10,7 @@ use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{sources::*, ComponentContext},
     observability::ComponentMetricsExt as _,
-    pooling::{FixedSizeObjectPool, ObjectPool as _},
+    pooling::FixedSizeObjectPool,
     task::spawn_traced,
     topology::{
         interconnect::{EventBufferManager, FixedSizeEventBuffer},
@@ -23,7 +23,7 @@ use saluki_error::{ErrorContext as _, GenericError};
 use saluki_event::metric::{MetricMetadata, MetricOrigin};
 use saluki_event::{metric::Metric, DataType, Event};
 use saluki_io::{
-    buf::{BytesBuffer, CollapsibleReadWriteIoBuffer as _, FixedSizeVec},
+    buf::{BytesBuffer, FixedSizeVec},
     deser::{
         codec::{
             dogstatsd::{parse_message_type, MessageType, MetricPacket, ParseError, ParsedPacket},
@@ -50,6 +50,9 @@ use self::framer::{get_framer, DsdFramer};
 
 mod filters;
 use self::filters::{is_event_allowed, is_metric_allowed, is_service_check_allowed, EnablePayloadsFilter, Filter};
+
+mod io_buffer;
+use self::io_buffer::IoBufferManager;
 
 mod origin;
 use self::origin::{origin_from_metric_packet, DogStatsDOriginTagResolver, OriginEnrichmentConfiguration};
@@ -696,32 +699,18 @@ async fn drive_stream(
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let mut event_buffer_manager = EventBufferManager::new(source_context.event_buffer_pool());
-    let mut buffer = io_buffer_pool.acquire().await;
-    if !buffer.has_remaining_mut() {
-        error!(%listen_addr, "Newly acquired buffer has no capacity. This should never happen.");
-        return;
-    }
-
-    debug!(%listen_addr, capacity = buffer.remaining_mut(), "Acquired buffer for decoding.");
+    let mut io_buffer_manager = IoBufferManager::new(&io_buffer_pool);
 
     'read: loop {
         let mut eof = false;
 
-        source_context.memory_limiter().wait_for_capacity().await;
+        let mut io_buffer = io_buffer_manager.get_buffer_mut().await;
 
-        // If we have any remaining data in the buffer, we collapse it which shifts it to the front of the buffer to
-        // free up capacity. For datagrams, this should be a no-op because we'll often be receiving a single packet in a
-        // payload... but for streams, we may have multiple packets in the buffer, with the last packet being a partial
-        // frame... so we need to collapse the buffer so we can do another follow-up read to get the rest of it, etc.
-        //
-        // TODO: Should we just require `CollapsibleReadWriteIoBuffer` in the framer interface, and have the framer do
-        // it? Less cognitive burden for future developers, but not sure if we'd be hiding too much magic
-        // behind-the-scenes by doing so. :shrug:
-        buffer.collapse();
+        source_context.memory_limiter().wait_for_capacity().await;
 
         select! {
             // We read from the stream.
-            read_result = stream.receive(&mut buffer) => match read_result {
+            read_result = stream.receive(&mut io_buffer) => match read_result {
                 Ok((bytes_read, peer_addr)) => {
                     if bytes_read == 0 {
                         eof = true;
@@ -748,8 +737,8 @@ async fn drive_stream(
                     let reached_eof = eof || stream.is_connectionless();
 
                     trace!(
-                        buffer_len = buffer.remaining(),
-                        buffer_cap = buffer.remaining_mut(),
+                        buffer_len = io_buffer.remaining(),
+                        buffer_cap = io_buffer.remaining_mut(),
                         eof = reached_eof,
                         %listen_addr,
                         %peer_addr,
@@ -757,7 +746,7 @@ async fn drive_stream(
                         bytes_read
                     );
 
-                    let mut frames = buffer.framed(&mut framer, reached_eof);
+                    let mut frames = io_buffer.framed(&mut framer, reached_eof);
                     'frame: loop {
                         match frames.next() {
                             Some(Ok(frame)) => {
