@@ -1,0 +1,29 @@
+[package]
+name = "checks-agent"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+memory-accounting = { workspace = true }
+saluki-app = { workspace = true, features = ["full"] }
+saluki-error = { workspace = true }
+saluki-io = { workspace = true }
+saluki-core = { workspace = true }
+saluki-config = { workspace = true }
+saluki-health = { workspace = true }
+saluki-components = { workspace = true }
+saluki-env = { workspace = true }
+tokio = { workspace = true, features = [
+  "macros",
+  "rt",
+  "rt-multi-thread",
+  "signal",
+] }
+tokio-rustls = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["fmt"] }
+
+[lints]
+workspace = true
