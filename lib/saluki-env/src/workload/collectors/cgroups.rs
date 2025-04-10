@@ -6,7 +6,7 @@ use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, GenericError};
 use saluki_health::Health;
 use stringtheory::interning::GenericMapInterner;
-use tokio::{select, sync::mpsc, time::interval};
+use tokio::{select, sync::mpsc, time::sleep};
 use tracing::{debug, error};
 
 use super::MetadataCollector;
@@ -63,9 +63,12 @@ impl MetadataCollector for CgroupsMetadataCollector {
     async fn watch(&mut self, operations_tx: &mut mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {
         self.health.mark_ready();
 
-        let mut traverse_interval = interval(Duration::from_secs(2));
+        let traverse_tick = sleep(Duration::from_secs(2));
+        tokio::pin!(traverse_tick);
+
         let mut reader = Some(self.reader.clone());
         let mut operations = Some(Vec::with_capacity(64));
+        let mut traversals = tokio::task::JoinSet::new();
 
         // Repeatedly traverse the cgroups hierarchy in a loop, generating ancestry links for controller inode/container
         // ID pairs that we find. We do this using a simple heuristic to determine if the control group name is actually
@@ -75,25 +78,30 @@ impl MetadataCollector for CgroupsMetadataCollector {
         loop {
             select! {
                 _ = self.health.live() => {},
-                _ = traverse_interval.tick() => {
+                _ = &mut traverse_tick, if traversals.is_empty() => {
+                    // We have no active traversal running, so start a new one.
+
                     // This is a little clunky but necessary in order to reuse the reader/operations given that we have
                     // to transfer ownership when we spawn the blocking task.
                     let old_reader = reader.take().expect("reader should be present");
                     let old_operations = operations.take().expect("operations should be present");
 
-                    let traverse_result = tokio::task::spawn_blocking(|| traverse_cgroups(old_reader, old_operations));
-                    match traverse_result.await {
-                        Ok(Ok((new_reader, mut new_operations))) => {
-                            for operation in new_operations.drain(..) {
-                                operations_tx.send(operation).await?;
-                            }
+                    traversals.spawn_blocking(|| traverse_cgroups(old_reader, old_operations));
+                },
 
-                            reader = Some(new_reader);
-                            operations = Some(new_operations);
-                        },
-                        Ok(Err(e)) => error!(error = %e, "Failed to read cgroups."),
-                        Err(e) => error!(error = %e, "Failed to spawn cgroups traverse task."),
-                    }
+                Some(traversal_result) = traversals.join_next(), if !traversals.is_empty() => match traversal_result {
+                    Ok(Ok((new_reader, mut new_operations))) => {
+                        for operation in new_operations.drain(..) {
+                            operations_tx.send(operation).await?;
+                        }
+
+                        reader = Some(new_reader);
+                        operations = Some(new_operations);
+
+                        traverse_tick.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(2));
+                    },
+                    Ok(Err(e)) => error!(error = %e, "Failed to read cgroups."),
+                    Err(e) => error!(error = %e, "Failed to spawn/execute cgroups traverse task."),
                 },
             }
         }
