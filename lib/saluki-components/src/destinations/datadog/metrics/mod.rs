@@ -97,6 +97,8 @@ pub struct DatadogMetricsConfiguration {
     flush_timeout_secs: u64,
 
     /// Compression kind to use for the request payloads.
+    ///
+    /// Defaults to `zstd`.
     #[serde(
         rename = "serializer_compressor_kind",
         default = "default_serializer_compressor_kind"
