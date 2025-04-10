@@ -143,6 +143,7 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
             telemetry.clone(),
             metrics_builder,
         )?;
+        let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
 
         // Create our request builders.
         let rb_buffer_pool = create_request_builder_buffer_pool(&self.forwarder_config).await;
@@ -150,14 +151,14 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
             MetricsEndpoint::Series,
             rb_buffer_pool.clone(),
             self.max_metrics_per_payload,
-            CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level),
+            compression_scheme,
         )
         .await?;
         let sketches_request_builder = RequestBuilder::new(
             MetricsEndpoint::Sketches,
             rb_buffer_pool,
             self.max_metrics_per_payload,
-            CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level),
+            compression_scheme,
         )
         .await?;
 
