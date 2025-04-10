@@ -71,12 +71,9 @@ where
     pub async fn get_buffer_mut(&mut self) -> &mut BytesBuffer {
         // Consume the current buffer, if it exists.
         let current = self.current.take().and_then(|mut buffer| {
-            if buffer.has_remaining() {
+            if buffer.has_remaining() || self.should_retain {
                 // Collapse the remaining data in the buffer and continue using it.
                 buffer.collapse();
-                Some(buffer)
-            } else if self.should_retain {
-                // We're configured to always retain the buffer, so continue using it.
                 Some(buffer)
             } else {
                 // Release the buffer back to the pool.
