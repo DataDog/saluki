@@ -1,6 +1,9 @@
 use bytes::Buf as _;
 use saluki_core::pooling::ObjectPool;
-use saluki_io::buf::{BytesBuffer, CollapsibleReadWriteIoBuffer as _, ReadIoBuffer as _};
+use saluki_io::{
+    buf::{BytesBuffer, CollapsibleReadWriteIoBuffer as _, ReadIoBuffer as _},
+    net::Stream,
+};
 use tracing::trace;
 
 /// An ergonomic wrapper around fairly utilizing I/O buffers from an object pool.
@@ -30,11 +33,20 @@ use tracing::trace;
 ///
 /// When the current buffer has no remaining data, we can safely release it back to the pool prior to immediately
 /// reacquiring a new buffer.
+///
+/// ## Connectionless streams
+///
+/// For connectionless streams, the current buffer is never released and is always reused. This is because
+/// connectionless streams are often higher volume in terms of the number of socket reads that occur, and are a fixed
+/// number that does not change with the amount of traffic that is being sent. This allows us to reduce the overhead
+/// related to acquiring and releasing buffers, ensuring that these inherently lossy streams are not introducing
+/// additional overhead that might cause unnecessary packet loss.
 pub struct IoBufferManager<'a, O>
 where
     O: ObjectPool<Item = BytesBuffer>,
 {
     pool: &'a O,
+    should_retain: bool,
     current: Option<BytesBuffer>,
 }
 
@@ -42,9 +54,13 @@ impl<'a, O> IoBufferManager<'a, O>
 where
     O: ObjectPool<Item = BytesBuffer>,
 {
-    /// Creates a new `IoBufferManager` with the given object pool.
-    pub fn new(pool: &'a O) -> Self {
-        Self { pool, current: None }
+    /// Creates a new `IoBufferManager` for the given stream and object pool.
+    pub fn new(pool: &'a O, stream: &Stream) -> Self {
+        Self {
+            pool,
+            should_retain: stream.is_connectionless(),
+            current: None,
+        }
     }
 
     /// Returns a mutable reference to the current buffer.
@@ -53,22 +69,22 @@ where
     /// buffer is available (including after intentionally releasing it), a new buffer will be acquired before
     /// returning.
     pub async fn get_buffer_mut(&mut self) -> &mut BytesBuffer {
-        // Consume the current buffer, potentially keeping it around if it has remaining data.
-        let current = match self.current.take() {
-            Some(mut buffer) => {
-                if buffer.has_remaining() {
-                    // Buffer still has data, so collapse it and re-use it.
-                    buffer.collapse();
-                    Some(buffer)
-                } else {
-                    // Buffer has no more data, so release it.
-                    None
-                }
+        // Consume the current buffer, if it exists.
+        let current = self.current.take().and_then(|mut buffer| {
+            if buffer.has_remaining() {
+                // Collapse the remaining data in the buffer and continue using it.
+                buffer.collapse();
+                Some(buffer)
+            } else if self.should_retain {
+                // We're configured to always retain the buffer, so continue using it.
+                Some(buffer)
+            } else {
+                // Release the buffer back to the pool.
+                None
             }
-            None => None,
-        };
+        });
 
-        // Acquire a new buffer if we didn't keep the current buffer around, or if we had no current one.
+        // Determine our replacement buffer: either we're sticking with the current buffer, or reacquiring a new one.
         let new_current = match current {
             Some(buffer) => buffer,
             None => {
