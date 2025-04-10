@@ -452,7 +452,6 @@ impl ContextResolver {
                 match self.create_context(context_key, name, tags, origin_tags) {
                     Some(context) => {
                         debug!(?context_key, ?context, "Resolved new context.");
-
                         if self.caching_enabled {
                             self.context_cache.insert(context_key, context.clone());
                             self.expiration.mark_entry_accessed(context_key);

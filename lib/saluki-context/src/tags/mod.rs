@@ -6,7 +6,7 @@ use serde::Serialize;
 use stringtheory::MetaString;
 
 mod raw;
-pub use self::raw::RawTags;
+pub use self::raw::{RawTags, TagsWrapper};
 
 /// A value containing tags that can be visited.
 pub trait Tagged {
