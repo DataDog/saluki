@@ -12,7 +12,10 @@ use saluki_core::{
 };
 use saluki_error::GenericError;
 use saluki_event::{metric::Metric, DataType};
-use saluki_io::buf::{BytesBuffer, FixedSizeVec, FrozenChunkedBytesBuffer};
+use saluki_io::{
+    buf::{BytesBuffer, FixedSizeVec, FrozenChunkedBytesBuffer},
+    compression::CompressionScheme,
+};
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use stringtheory::MetaString;
@@ -30,6 +33,7 @@ mod request_builder;
 use self::request_builder::{MetricsEndpoint, RequestBuilder};
 
 const RB_BUFFER_POOL_BUF_SIZE: usize = 32_768;
+const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
 
 const fn default_max_metrics_per_payload() -> usize {
     10_000
@@ -37,6 +41,14 @@ const fn default_max_metrics_per_payload() -> usize {
 
 const fn default_flush_timeout_secs() -> u64 {
     2
+}
+
+fn default_serializer_compressor_kind() -> String {
+    DEFAULT_SERIALIZER_COMPRESSOR_KIND.to_owned()
+}
+
+const fn default_zstd_compressor_level() -> i32 {
+    3
 }
 
 /// Datadog Metrics destination.
@@ -83,6 +95,22 @@ pub struct DatadogMetricsConfiguration {
     /// Defaults to 2 seconds.
     #[serde(default = "default_flush_timeout_secs")]
     flush_timeout_secs: u64,
+
+    /// Compression kind to use for the request payloads.
+    #[serde(
+        rename = "serializer_compressor_kind",
+        default = "default_serializer_compressor_kind"
+    )]
+    compressor_kind: String,
+
+    /// Compressor level to use when the compressor kind is `zstd`.
+    ///
+    /// Defaults to 3.
+    #[serde(
+        rename = "serializer_zstd_compressor_level",
+        default = "default_zstd_compressor_level"
+    )]
+    zstd_compressor_level: i32,
 }
 
 impl DatadogMetricsConfiguration {
@@ -120,10 +148,16 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
             MetricsEndpoint::Series,
             rb_buffer_pool.clone(),
             self.max_metrics_per_payload,
+            CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level),
         )
         .await?;
-        let sketches_request_builder =
-            RequestBuilder::new(MetricsEndpoint::Sketches, rb_buffer_pool, self.max_metrics_per_payload).await?;
+        let sketches_request_builder = RequestBuilder::new(
+            MetricsEndpoint::Sketches,
+            rb_buffer_pool,
+            self.max_metrics_per_payload,
+            CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level),
+        )
+        .await?;
 
         let flush_timeout = match self.flush_timeout_secs {
             // We always give ourselves a minimum flush timeout of 10ms to allow for some very minimal amount of
