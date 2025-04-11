@@ -6,7 +6,6 @@ license = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
-ahash = { workspace = true }
 arc-swap = { workspace = true }
 async-stream = { workspace = true }
 async-trait = { workspace = true }
@@ -25,6 +24,7 @@ pin-project-lite = { workspace = true }
 prost = { workspace = true }
 regex = { workspace = true, features = ["std", "perf"] }
 saluki-api = { workspace = true }
+saluki-common = { workspace = true }
 saluki-config = { workspace = true }
 saluki-context = { workspace = true }
 saluki-error = { workspace = true }

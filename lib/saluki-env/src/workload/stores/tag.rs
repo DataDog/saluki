@@ -2,19 +2,17 @@ use std::{collections::VecDeque, num::NonZeroUsize, sync::Arc};
 
 use arc_swap::ArcSwap;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_common::collections::{FastConcurrentHashMap, FastConcurrentHashSet, FastHashMap};
 use saluki_context::{
     origin::OriginTagCardinality,
     tags::{SharedTagSet, TagSet},
 };
 use tracing::{debug, trace};
 
-use crate::{
-    prelude::*,
-    workload::{
-        aggregator::MetadataStore,
-        entity::EntityId,
-        metadata::{MetadataAction, MetadataOperation},
-    },
+use crate::workload::{
+    aggregator::MetadataStore,
+    entity::EntityId,
+    metadata::{MetadataAction, MetadataOperation},
 };
 
 // TODO: This will be very slow if we deliver metadata operations one-by-one, especially when collectors will likely be

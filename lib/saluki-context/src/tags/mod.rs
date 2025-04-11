@@ -1,7 +1,8 @@
 //! Metric tags.
 
-use std::{collections::HashSet, fmt, hash, ops::Deref as _, sync::Arc};
+use std::{fmt, hash, ops::Deref as _, sync::Arc};
 
+use saluki_common::collections::FastHashSet;
 use serde::Serialize;
 use stringtheory::MetaString;
 
@@ -22,7 +23,7 @@ pub trait Tagged {
     where
         F: FnMut(&Tag),
     {
-        let mut seen = HashSet::<Tag, ahash::RandomState>::default();
+        let mut seen = FastHashSet::default();
         self.visit_tags(|tag| {
             if !seen.contains(tag) {
                 seen.insert(tag.clone());
