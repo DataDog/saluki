@@ -305,8 +305,8 @@ mod tests {
         assert_eq!(context.tags().len(), expected_tags.len(), "unexpected number of tags");
     }
 
-    #[test]
-    fn test_mapper_wildcard_simple() {
+    #[tokio::test]
+    async fn test_mapper_wildcard_simple() {
         let json_data = json!([{
           "name": "test",
           "prefix": "test.",
@@ -345,8 +345,8 @@ mod tests {
         assert!(mapper.try_map(metric.context()).is_none(), "should not have remapped");
     }
 
-    #[test]
-    fn test_partial_match() {
+    #[tokio::test]
+    async fn test_partial_match() {
         let json_data = json!([{
           "name": "test",
           "prefix": "test.",
@@ -375,8 +375,8 @@ mod tests {
         assert_eq!(context.name(), "test.task.duration");
     }
 
-    #[test]
-    fn test_use_regex_expansion_alternative_syntax() {
+    #[tokio::test]
+    async fn test_use_regex_expansion_alternative_syntax() {
         let json_data = json!([{
             "name": "test",
             "prefix": "test.",
@@ -400,8 +400,8 @@ mod tests {
         assert_tags(&context, &["job_type:my_job_type_x", "job_name:my_job_name_y"]);
     }
 
-    #[test]
-    fn test_expand_name() {
+    #[tokio::test]
+    async fn test_expand_name() {
         let json_data = json!([{
             "name": "test",
             "prefix": "test.",
@@ -425,8 +425,8 @@ mod tests {
         assert_tags(&context, &["job_type:my_job_type", "job_name:my_job_name"]);
     }
 
-    #[test]
-    fn test_match_before_underscore() {
+    #[tokio::test]
+    async fn test_match_before_underscore() {
         let json_data = json!([{
             "name": "test",
             "prefix": "test.",
@@ -449,8 +449,8 @@ mod tests {
         assert!(context.tags().has_tag("job:my_job"));
     }
 
-    #[test]
-    fn test_no_tags() {
+    #[tokio::test]
+    async fn test_no_tags() {
         let json_data = json!([{
             "name": "test",
             "prefix": "test.",
@@ -479,8 +479,8 @@ mod tests {
         assert!(context.tags().is_empty(), "Expected no tags");
     }
 
-    #[test]
-    fn test_all_allowed_characters() {
+    #[tokio::test]
+    async fn test_all_allowed_characters() {
         let json_data = json!([{
             "name": "test",
             "prefix": "test.",
@@ -503,8 +503,8 @@ mod tests {
         assert!(context.tags().is_empty(), "Expected no tags");
     }
 
-    #[test]
-    fn test_regex_match_type() {
+    #[tokio::test]
+    async fn test_regex_match_type() {
         let json_data = json!([{
             "name": "test",
             "prefix": "test.",
@@ -540,8 +540,8 @@ mod tests {
         assert!(context.tags().has_tag("task_name:MY_task_name"));
     }
 
-    #[test]
-    fn test_complex_regex_match_type() {
+    #[tokio::test]
+    async fn test_complex_regex_match_type() {
         let json_data = json!([{
             "name": "test",
             "prefix": "test.",
@@ -569,8 +569,8 @@ mod tests {
         assert!(mapper.try_map(metric.context()).is_none(), "should not have remapped");
     }
 
-    #[test]
-    fn test_profile_and_prefix() {
+    #[tokio::test]
+    async fn test_profile_and_prefix() {
         let json_data = json!([{
             "name": "test",
             "prefix": "foo.",
@@ -627,8 +627,8 @@ mod tests {
         assert!(mapper.try_map(metric.context()).is_none(), "should not have remapped");
     }
 
-    #[test]
-    fn test_wildcard_prefix() {
+    #[tokio::test]
+    async fn test_wildcard_prefix() {
         let json_data = json!([{
             "name": "test",
             "prefix": "*",
@@ -651,8 +651,8 @@ mod tests {
         assert!(context.tags().has_tag("name:foo_name1"));
     }
 
-    #[test]
-    fn test_wildcard_prefix_order() {
+    #[tokio::test]
+    async fn test_wildcard_prefix_order() {
         let json_data = json!([{
             "name": "test",
             "prefix": "*",
@@ -691,8 +691,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_multiple_profiles_order() {
+    #[tokio::test]
+    async fn test_multiple_profiles_order() {
         let json_data = json!([{
             "name": "test",
             "prefix": "foo.",
@@ -733,8 +733,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_different_regex_expansion_syntax() {
+    #[tokio::test]
+    async fn test_different_regex_expansion_syntax() {
         let json_data = json!([{
             "name": "test",
             "prefix": "test.",
@@ -758,8 +758,8 @@ mod tests {
         assert_tags(&context, &["user:john_doe", "action:login"]);
     }
 
-    #[test]
-    fn test_retain_existing_tags() {
+    #[tokio::test]
+    async fn test_retain_existing_tags() {
         let json_data = json!([{
           "name": "test",
           "prefix": "test.",

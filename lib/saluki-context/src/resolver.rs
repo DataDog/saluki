@@ -481,7 +481,7 @@ impl ContextResolver {
             let context = self.create_context(context_key, name, tags, origin_tags)?;
 
             debug!(?context_key, ?context, "Resolved new non-cached context.");
-            return Some(context)
+            return Some(context);
         }
 
         match self.context_cache.get(&context_key) {
