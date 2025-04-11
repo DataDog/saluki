@@ -120,6 +120,7 @@ where
     uncompressed_len_limit: usize,
     max_metrics_per_payload: usize,
     encoded_metrics: Vec<Metric>,
+    compression_scheme: CompressionScheme,
 }
 
 impl<O> RequestBuilder<O>
@@ -129,9 +130,10 @@ where
     /// Creates a new `RequestBuilder` for the given endpoint.
     pub async fn new(
         endpoint: MetricsEndpoint, buffer_pool: O, max_metrics_per_payload: usize,
+        compression_scheme: CompressionScheme,
     ) -> Result<Self, RequestBuilderError> {
         let chunked_buffer_pool = ChunkedBytesBufferObjectPool::new(buffer_pool);
-        let compressor = create_compressor(&chunked_buffer_pool).await;
+        let compressor = create_compressor(&chunked_buffer_pool, compression_scheme).await;
         Ok(Self {
             endpoint,
             endpoint_uri: endpoint.endpoint_uri(),
@@ -144,6 +146,7 @@ where
             uncompressed_len_limit: endpoint.uncompressed_size_limit(),
             max_metrics_per_payload,
             encoded_metrics: Vec::new(),
+            compression_scheme,
         })
     }
 
@@ -245,7 +248,7 @@ where
 
         self.compression_estimator.reset();
 
-        let new_compressor = create_compressor(&self.buffer_pool).await;
+        let new_compressor = create_compressor(&self.buffer_pool, self.compression_scheme).await;
         let mut compressor = std::mem::replace(&mut self.compressor, new_compressor);
         if let Err(e) = compressor.flush().await.context(Io) {
             let metrics_dropped = self.clear_encoded_metrics();
@@ -350,7 +353,7 @@ where
         &mut self, metrics: &[Metric],
     ) -> Option<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError>> {
         let mut uncompressed_len = 0;
-        let mut compressor = create_compressor(&self.buffer_pool).await;
+        let mut compressor = create_compressor(&self.buffer_pool, self.compression_scheme).await;
 
         for metric in metrics {
             // Encode each metric and write it to our compressor.
@@ -419,12 +422,14 @@ where
     }
 }
 
-async fn create_compressor<O>(buffer_pool: &ChunkedBytesBufferObjectPool<O>) -> Compressor<ChunkedBytesBuffer<O>>
+async fn create_compressor<O>(
+    buffer_pool: &ChunkedBytesBufferObjectPool<O>, compression_scheme: CompressionScheme,
+) -> Compressor<ChunkedBytesBuffer<O>>
 where
     O: ObjectPool<Item = BytesBuffer> + 'static,
 {
     let write_buffer = buffer_pool.acquire().await;
-    Compressor::from_scheme(CompressionScheme::zstd_default(), write_buffer)
+    Compressor::from_scheme(compression_scheme, write_buffer)
 }
 
 enum EncodedMetric {
@@ -644,7 +649,10 @@ fn origin_metadata_to_proto_metadata(product: u32, subproduct: u32, product_deta
 mod tests {
     use saluki_core::pooling::FixedSizeObjectPool;
     use saluki_event::metric::Metric;
-    use saluki_io::buf::{BytesBuffer, FixedSizeVec};
+    use saluki_io::{
+        buf::{BytesBuffer, FixedSizeVec},
+        compression::CompressionScheme,
+    };
 
     use super::{encode_sketch_metric, MetricsEndpoint, RequestBuilder};
 
@@ -679,9 +687,14 @@ mod tests {
 
         // Create a regular ol' request builder with normal (un)compressed size limits.
         let buffer_pool = create_request_builder_buffer_pool();
-        let mut request_builder = RequestBuilder::new(MetricsEndpoint::Series, buffer_pool, usize::MAX)
-            .await
-            .expect("should not fail to create request builder");
+        let mut request_builder = RequestBuilder::new(
+            MetricsEndpoint::Series,
+            buffer_pool,
+            usize::MAX,
+            CompressionScheme::zstd_default(),
+        )
+        .await
+        .expect("should not fail to create request builder");
 
         // Encode the metrics, which should all fit into the request payload.
         let metrics = vec![counter1, counter2, counter3, counter4];
@@ -714,9 +727,14 @@ mod tests {
         //
         // We should be able to encode the three metrics without issue.
         let buffer_pool = create_request_builder_buffer_pool();
-        let mut request_builder = RequestBuilder::new(MetricsEndpoint::Series, buffer_pool, usize::MAX)
-            .await
-            .expect("should not fail to create request builder");
+        let mut request_builder = RequestBuilder::new(
+            MetricsEndpoint::Series,
+            buffer_pool,
+            usize::MAX,
+            CompressionScheme::zstd_default(),
+        )
+        .await
+        .expect("should not fail to create request builder");
 
         assert_eq!(None, request_builder.encode(counter1.clone()).await.unwrap());
         assert_eq!(None, request_builder.encode(counter2.clone()).await.unwrap());
@@ -726,9 +744,14 @@ mod tests {
         //
         // We should only be able to encode two of the three metrics before we're signaled to flush.
         let buffer_pool = create_request_builder_buffer_pool();
-        let mut request_builder = RequestBuilder::new(MetricsEndpoint::Series, buffer_pool, 2)
-            .await
-            .expect("should not fail to create request builder");
+        let mut request_builder = RequestBuilder::new(
+            MetricsEndpoint::Series,
+            buffer_pool,
+            2,
+            CompressionScheme::zstd_default(),
+        )
+        .await
+        .expect("should not fail to create request builder");
 
         assert_eq!(None, request_builder.encode(counter1.clone()).await.unwrap());
         assert_eq!(None, request_builder.encode(counter2.clone()).await.unwrap());
