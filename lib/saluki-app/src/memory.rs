@@ -14,7 +14,6 @@ use memory_accounting::{
 };
 use metrics::{counter, gauge, Counter, Gauge, Level};
 use saluki_api::{
-    response::IntoResponse,
     routing::{get, Router},
     APIHandler, StatusCode,
 };
@@ -280,10 +279,17 @@ pub async fn initialize_allocator_telemetry() -> Result<(), GenericError> {
 
 struct CgroupMemoryParser;
 
+#[cfg(target_os = "linux")]
 impl CgroupMemoryParser {
+    #[cfg(not(target_os = "linux"))]
+    fn parse(self) -> Option<ByteSize> {
+        None
+    }
+
     /// Parse memory limit from memory controller.
     ///
     /// Returns `None` if memory limit is set to max or if an error is encountered while parsing.
+    #[cfg(target_os = "linux")]
     fn parse(self) -> Option<ByteSize> {
         let contents = fs::read_to_string("/proc/self/cgroup").ok()?;
         let parts: Vec<&str> = contents.trim().split("\n").collect();
@@ -321,6 +327,7 @@ impl CgroupMemoryParser {
         memory.parse::<ByteSize>().ok()
     }
 }
+
 /// An API handler for memory profiling.
 ///
 /// This handler exposes a single route -- `/debug/pprof/heap` -- which returns a jemalloc heap profile in pprof
@@ -329,13 +336,28 @@ impl CgroupMemoryParser {
 pub struct MemoryProfilingAPIHandler;
 
 impl MemoryProfilingAPIHandler {
-    async fn pprof_handler() -> Result<impl IntoResponse, (StatusCode, String)> {
+    #[cfg(target_os = "linux")]
+    async fn pprof_handler() -> Result<Vec<u8>, (StatusCode, String)> {
         let mut prof_ctl = jemalloc_pprof::PROF_CTL.as_ref().unwrap().lock().await;
-        require_profiling_activated(&prof_ctl)?;
+        if !prof_ctl.activated() {
+            return Err((
+                axum::http::StatusCode::FORBIDDEN,
+                "heap profiling not activated".to_string(),
+            ));
+        }
+
         let pprof = prof_ctl
             .dump_pprof()
             .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
         Ok(pprof)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn pprof_handler() -> Result<Vec<u8>, (StatusCode, String)> {
+        Err((
+            StatusCode::NOT_IMPLEMENTED,
+            "heap profiling not supported on non-Linux systems".to_string(),
+        ))
     }
 }
 
@@ -346,14 +368,6 @@ impl APIHandler for MemoryProfilingAPIHandler {
 
     fn generate_routes(&self) -> Router<Self::State> {
         Router::new().route("/debug/pprof/heap", get(Self::pprof_handler))
-    }
-}
-
-fn require_profiling_activated(prof_ctl: &jemalloc_pprof::JemallocProfCtl) -> Result<(), (StatusCode, String)> {
-    if prof_ctl.activated() {
-        Ok(())
-    } else {
-        Err((axum::http::StatusCode::FORBIDDEN, "heap profiling not activated".into()))
     }
 }
 
