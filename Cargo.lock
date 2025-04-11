@@ -3120,6 +3120,7 @@ dependencies = [
  "pin-project",
  "protobuf",
  "regex",
+ "saluki-common",
  "saluki-config",
  "saluki-context",
  "saluki-core",
