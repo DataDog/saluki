@@ -198,13 +198,13 @@ async fn create_topology(
     let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
     let dsd_mapper_config = DogstatsDMapperConfiguration::from_configuration(configuration)?;
     let mut enrich_config = ChainedConfiguration::default()
-        .with_transform_builder(host_enrichment_config)
-        .with_transform_builder(dsd_mapper_config);
+        .with_transform_builder("host_enrichment", host_enrichment_config)
+        .with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
 
     let in_standalone_mode = configuration.get_typed_or_default::<bool>("adp.standalone_mode");
     if !in_standalone_mode {
         let host_tags_config = HostTagsConfiguration::from_configuration(configuration).await?;
-        enrich_config = enrich_config.with_transform_builder(host_tags_config);
+        enrich_config = enrich_config.with_transform_builder("host_tags", host_tags_config);
     }
     let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Metrics destination.")?;
