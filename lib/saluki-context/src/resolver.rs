@@ -1,6 +1,7 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 use quick_cache::{sync::Cache, UnitWeighter};
+use saluki_common::{collections::PrehashedHashSet, hash::NoopU64BuildHasher};
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::static_metrics;
 use stringtheory::{interning::GenericMapInterner, MetaString};
@@ -10,7 +11,7 @@ use tracing::debug;
 use crate::{
     context::{Context, ContextInner},
     expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle},
-    hash::{hash_context_with_seen, new_fast_hashset, ContextKey, FastHashSet},
+    hash::{hash_context_with_seen, ContextKey},
     origin::{OriginKey, OriginTags, OriginTagsResolver, RawOrigin},
     tags::TagSet,
 };
@@ -21,7 +22,9 @@ const DEFAULT_CONTEXT_RESOLVER_CACHED_CONTEXTS_LIMIT: usize = 500_000;
 const DEFAULT_CONTEXT_RESOLVER_INTERNER_CAPACITY_BYTES: NonZeroUsize =
     unsafe { NonZeroUsize::new_unchecked(2 * 1024 * 1024) };
 
-type ContextCache = Cache<ContextKey, Context, UnitWeighter, ahash::RandomState, ExpiryCapableLifecycle<ContextKey>>;
+const SEEN_HASHSET_INITIAL_CAPACITY: usize = 128;
+
+type ContextCache = Cache<ContextKey, Context, UnitWeighter, NoopU64BuildHasher, ExpiryCapableLifecycle<ContextKey>>;
 
 static_metrics! {
     name => Statistics,
@@ -265,7 +268,7 @@ impl ContextResolverBuilder {
             cached_context_limit,
             cached_context_limit as u64,
             UnitWeighter,
-            ahash::RandomState::default(),
+            NoopU64BuildHasher,
             lifecycle,
         ));
 
@@ -289,7 +292,10 @@ impl ContextResolverBuilder {
             caching_enabled: self.caching_enabled,
             context_cache,
             expiration,
-            hash_seen_buffer: new_fast_hashset(),
+            hash_seen_buffer: PrehashedHashSet::with_capacity_and_hasher(
+                SEEN_HASHSET_INITIAL_CAPACITY,
+                NoopU64BuildHasher,
+            ),
             origin_tags_resolver: self.origin_tags_resolver,
             allow_heap_allocations,
         }
@@ -325,7 +331,7 @@ pub struct ContextResolver {
     caching_enabled: bool,
     context_cache: Arc<ContextCache>,
     expiration: Expiration<ContextKey>,
-    hash_seen_buffer: FastHashSet<u64>,
+    hash_seen_buffer: PrehashedHashSet<u64>,
     origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
     allow_heap_allocations: bool,
 }
@@ -495,7 +501,10 @@ impl Clone for ContextResolver {
             caching_enabled: self.caching_enabled,
             context_cache: Arc::clone(&self.context_cache),
             expiration: self.expiration.clone(),
-            hash_seen_buffer: new_fast_hashset(),
+            hash_seen_buffer: PrehashedHashSet::with_capacity_and_hasher(
+                SEEN_HASHSET_INITIAL_CAPACITY,
+                NoopU64BuildHasher,
+            ),
             origin_tags_resolver: self.origin_tags_resolver.clone(),
             allow_heap_allocations: self.allow_heap_allocations,
         }

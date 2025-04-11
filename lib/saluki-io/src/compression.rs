@@ -18,6 +18,7 @@ static CONTENT_ENCODING_DEFLATE: HeaderValue = HeaderValue::from_static("deflate
 static CONTENT_ENCODING_ZSTD: HeaderValue = HeaderValue::from_static("zstd");
 
 /// Compression schemes supported by `Compressor`.
+#[derive(Copy, Clone, Debug)]
 pub enum CompressionScheme {
     /// Zlib.
     Zlib(Level),
@@ -34,6 +35,19 @@ impl CompressionScheme {
     /// Zstd compression, using the default compression level (3).
     pub const fn zstd_default() -> Self {
         Self::Zstd(Level::Default)
+    }
+
+    /// Create a new compression scheme from a string and level.
+    ///
+    /// Level is only used if the scheme is `zstd`.
+    ///
+    /// Defaults to zstd with level 3.
+    pub fn new(scheme: &str, level: i32) -> Self {
+        match scheme {
+            "zlib" => CompressionScheme::zlib_default(),
+            "zstd" => Self::Zstd(Level::Precise(level)),
+            _ => Self::Zstd(Level::Default),
+        }
     }
 }
 

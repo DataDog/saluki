@@ -6,13 +6,13 @@ license = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
-ahash = { workspace = true }
 crossbeam-queue = { workspace = true, features = ["alloc"] }
 hashbrown = { workspace = true }
 indexmap = { workspace = true }
 memchr = { workspace = true }
 metrics = { workspace = true }
-quick_cache = { workspace = true, features = ["ahash", "parking_lot"] }
+quick_cache = { workspace = true, features = ["parking_lot"] }
+saluki-common = { workspace = true }
 saluki-error = { workspace = true }
 saluki-metrics = { workspace = true }
 serde = { workspace = true }

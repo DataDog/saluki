@@ -6,13 +6,13 @@ license = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
-ahash = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 bytesize = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }
+foldhash = { workspace = true }
 futures = { workspace = true }
 hashbrown = { workspace = true }
 headers = { workspace = true }

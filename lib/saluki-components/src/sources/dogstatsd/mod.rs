@@ -20,7 +20,7 @@ use saluki_core::{
     },
 };
 use saluki_env::WorkloadProvider;
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_event::metric::{MetricMetadata, MetricOrigin};
 use saluki_event::{metric::Metric, DataType, Event};
 use saluki_io::{
@@ -50,7 +50,7 @@ mod framer;
 use self::framer::{get_framer, DsdFramer};
 
 mod filters;
-use self::filters::{is_event_allowed, is_metric_allowed, is_service_check_allowed, EnablePayloadsFilter, Filter};
+use self::filters::EnablePayloadsFilter;
 
 mod io_buffer;
 use self::io_buffer::IoBufferManager;
@@ -329,6 +329,15 @@ impl SourceBuilder for DogStatsDConfiguration {
             return Err(Error::NoListenersConfigured.into());
         }
 
+        // Every listener requires at least one I/O buffer to ensure that all listeners can be serviced without
+        // deadlocking any of the others.
+        if self.buffer_count < listeners.len() {
+            return Err(generic_error!(
+                "Must have a minimum of {} I/O buffers based on the number of listeners configured.",
+                listeners.len()
+            ));
+        }
+
         let maybe_origin_tags_resolver = self
             .workload_provider
             .clone()
@@ -355,8 +364,8 @@ impl SourceBuilder for DogStatsDConfiguration {
             }),
             codec,
             context_resolvers,
-            pre_filters: Arc::new(vec![Box::new(enable_payloads_filter)]),
-            additional_tags: self.additional_tags.clone(),
+            enabled_filter: enable_payloads_filter,
+            additional_tags: self.additional_tags.clone().into(),
         }))
     }
 
@@ -399,8 +408,8 @@ pub struct DogStatsD {
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     codec: DogstatsdCodec,
     context_resolvers: ContextResolvers,
-    pre_filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>,
-    additional_tags: Vec<String>,
+    enabled_filter: EnablePayloadsFilter,
+    additional_tags: Arc<[String]>,
 }
 
 struct ListenerContext {
@@ -409,7 +418,7 @@ struct ListenerContext {
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     codec: DogstatsdCodec,
     context_resolvers: ContextResolvers,
-    additional_tags: Vec<String>,
+    additional_tags: Arc<[String]>,
 }
 
 struct HandlerContext {
@@ -419,7 +428,7 @@ struct HandlerContext {
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     metrics: Metrics,
     context_resolvers: ContextResolvers,
-    additional_tags: Vec<String>,
+    additional_tags: Arc<[String]>,
 }
 
 struct Metrics {
@@ -586,11 +595,7 @@ impl Source for DogStatsD {
                 additional_tags: self.additional_tags.clone(),
             };
 
-            spawn_traced(process_listener(
-                context.clone(),
-                listener_context,
-                self.pre_filters.clone(),
-            ));
+            spawn_traced(process_listener(context.clone(), listener_context, self.enabled_filter));
         }
 
         health.mark_ready();
@@ -621,7 +626,7 @@ impl Source for DogStatsD {
 }
 
 async fn process_listener(
-    source_context: SourceContext, listener_context: ListenerContext, filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>,
+    source_context: SourceContext, listener_context: ListenerContext, enabled_filter: EnablePayloadsFilter,
 ) {
     let ListenerContext {
         shutdown_handle,
@@ -657,7 +662,7 @@ async fn process_listener(
                         context_resolvers: context_resolvers.clone(),
                         additional_tags: additional_tags.clone(),
                     };
-                    spawn_traced(process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register(), filters.clone()));
+                    spawn_traced(process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register(), enabled_filter));
                 }
                 Err(e) => {
                     error!(%listen_addr, error = %e, "Failed to accept connection. Stopping listener.");
@@ -674,7 +679,7 @@ async fn process_listener(
 
 async fn process_stream(
     stream: Stream, source_context: SourceContext, handler_context: HandlerContext,
-    shutdown_handle: DynamicShutdownHandle, filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>,
+    shutdown_handle: DynamicShutdownHandle, enabled_filter: EnablePayloadsFilter,
 ) {
     tokio::pin!(shutdown_handle);
 
@@ -682,13 +687,13 @@ async fn process_stream(
         _ = &mut shutdown_handle => {
             debug!("Stream handler received shutdown signal.");
         },
-        _ = drive_stream(stream, source_context, handler_context, filters) => {},
+        _ = drive_stream(stream, source_context, handler_context, enabled_filter) => {},
     }
 }
 
 async fn drive_stream(
     mut stream: Stream, source_context: SourceContext, handler_context: HandlerContext,
-    filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>,
+    enabled_filter: EnablePayloadsFilter,
 ) {
     let HandlerContext {
         listen_addr,
@@ -712,7 +717,7 @@ async fn drive_stream(
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let mut event_buffer_manager = EventBufferManager::new(source_context.event_buffer_pool());
-    let mut io_buffer_manager = IoBufferManager::new(&io_buffer_pool);
+    let mut io_buffer_manager = IoBufferManager::new(&io_buffer_pool, &stream);
 
     'read: loop {
         let mut eof = false;
@@ -764,7 +769,7 @@ async fn drive_stream(
                         match frames.next() {
                             Some(Ok(frame)) => {
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
-                                match handle_frame(&frame[..], &codec, &mut context_resolvers, &metrics, &peer_addr, filters.clone(), &additional_tags) {
+                                match handle_frame(&frame[..], &codec, &mut context_resolvers, &metrics, &peer_addr, enabled_filter, &additional_tags) {
                                     Ok(Some(event)) => {
                                         if let Some((event, event_buffer)) = event_buffer_manager.try_push(event).await {
                                             debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
@@ -845,7 +850,7 @@ async fn drive_stream(
 
 fn handle_frame(
     frame: &[u8], codec: &DogstatsdCodec, context_resolvers: &mut ContextResolvers, source_metrics: &Metrics,
-    peer_addr: &ConnectionAddress, filters: Arc<Vec<Box<dyn Filter + Send + Sync>>>, additional_tags: &[String],
+    peer_addr: &ConnectionAddress, enabled_filter: EnablePayloadsFilter, additional_tags: &Arc<[String]>,
 ) -> Result<Option<Event>, ParseError> {
     let parsed = match codec.decode_packet(frame) {
         Ok(parsed) => parsed,
@@ -864,7 +869,7 @@ fn handle_frame(
     let event = match parsed {
         ParsedPacket::Metric(metric_packet) => {
             let events_len = metric_packet.num_points;
-            if !is_metric_allowed(&filters, &metric_packet) {
+            if !enabled_filter.allow_metric(&metric_packet) {
                 trace!(
                     metric.name = metric_packet.metric_name,
                     "Skipping metric due to filter configuration."
@@ -885,7 +890,7 @@ fn handle_frame(
             }
         }
         ParsedPacket::Event(event) => {
-            if !is_event_allowed(&filters, &event) {
+            if !enabled_filter.allow_event(&event) {
                 trace!(
                     event.title = event.title(),
                     "Skipping event due to filter configuration."
@@ -896,7 +901,7 @@ fn handle_frame(
             Event::EventD(event)
         }
         ParsedPacket::ServiceCheck(service_check) => {
-            if !is_service_check_allowed(&filters, &service_check) {
+            if !enabled_filter.allow_service_check(&service_check) {
                 trace!(
                     service_check.name = service_check.name(),
                     "Skipping service check due to filter configuration."

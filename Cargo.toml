@@ -12,6 +12,7 @@ members = [
   "lib/process-memory",
   "lib/saluki-api",
   "lib/saluki-app",
+  "lib/saluki-common",
   "lib/saluki-components",
   "lib/saluki-config",
   "lib/saluki-context",
@@ -40,6 +41,7 @@ memory-accounting = { path = "lib/memory-accounting" }
 process-memory = { path = "lib/process-memory" }
 saluki-api = { path = "lib/saluki-api" }
 saluki-app = { path = "lib/saluki-app" }
+saluki-common = { path = "lib/saluki-common" }
 saluki-components = { path = "lib/saluki-components" }
 saluki-config = { path = "lib/saluki-config" }
 saluki-context = { path = "lib/saluki-context" }
@@ -63,10 +65,10 @@ serde = { version = "1", default-features = false, features = ["derive", "std"] 
 snafu = { version = "0.8", default-features = false, features = ["std"] }
 tokio = { version = "1", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
-ahash = { version = "0.8", default-features = false, features = ["std", "runtime-rng"] }
 async-compression = { version = "0.4.13", default-features = false, features = ["zlib", "zstd"] }
 bitmask-enum = { version = "2.2", default-features = false }
 figment = { version = "0.10", default-features = false }
+foldhash = { version = "0.1.5", default-features = false, features = ["std"] }
 headers = { version = "0.4.0" }
 http = { version = "1", default-features = false }
 http-body = { version = "1", default-features = false }

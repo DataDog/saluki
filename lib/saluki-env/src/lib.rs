@@ -11,7 +11,6 @@
 pub mod features;
 pub mod helpers;
 pub mod host;
-mod prelude;
 pub mod time;
 pub mod workload;
 

@@ -60,7 +60,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e89da841a80418a9b391ebaea17f5c112ffaaa96f621d2c285b5174da76b9011"
 dependencies = [
  "cfg-if",
- "getrandom 0.2.15",
  "once_cell",
  "version_check",
  "zerocopy 0.7.35",
@@ -463,7 +462,9 @@ dependencies = [
  "http",
  "http-body-util",
  "hyper",
+ "hyper-named-pipe",
  "hyper-util",
+ "hyperlocal",
  "log",
  "pin-project-lite",
  "serde",
@@ -1441,6 +1442,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyper-named-pipe"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73b7d8abf35697b81a825e386fc151e0d503e8cb5fcb93cc8669c376dfd6f278"
+dependencies = [
+ "hex",
+ "hyper",
+ "hyper-util",
+ "pin-project-lite",
+ "tokio",
+ "tower-service",
+ "winapi",
+]
+
+[[package]]
 name = "hyper-rustls"
 version = "0.27.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1489,6 +1505,21 @@ dependencies = [
  "tokio",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "hyperlocal"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "986c5ce3b994526b3cd75578e62554abd09f0899d6206de48b3e96ab34ccc8c7"
+dependencies = [
+ "hex",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "pin-project-lite",
+ "tokio",
+ "tower-service",
 ]
 
 [[package]]
@@ -2647,7 +2678,6 @@ version = "0.6.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f8ed0655cbaf18a26966142ad23b95d8ab47221c50c4f73a1db7d0d2d6e3da8"
 dependencies = [
- "ahash",
  "equivalent",
  "hashbrown 0.15.2",
  "parking_lot",
@@ -3055,16 +3085,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "saluki-common"
+version = "0.1.0"
+dependencies = [
+ "foldhash",
+ "hashbrown 0.15.2",
+ "indexmap 2.9.0",
+ "papaya",
+]
+
+[[package]]
 name = "saluki-components"
 version = "0.1.0"
 dependencies = [
- "ahash",
  "async-trait",
  "bytes",
  "bytesize",
  "datadog-protos",
  "ddsketch-agent",
  "float-cmp",
+ "foldhash",
  "futures",
  "hashbrown 0.15.2",
  "headers",
@@ -3122,7 +3162,6 @@ dependencies = [
 name = "saluki-context"
 version = "0.1.0"
 dependencies = [
- "ahash",
  "crossbeam-queue",
  "hashbrown 0.15.2",
  "indexmap 2.9.0",
@@ -3131,6 +3170,7 @@ dependencies = [
  "metrics-util",
  "proptest",
  "quick_cache",
+ "saluki-common",
  "saluki-error",
  "saluki-metrics",
  "serde",
@@ -3143,7 +3183,6 @@ dependencies = [
 name = "saluki-core"
 version = "0.1.0"
 dependencies = [
- "ahash",
  "async-trait",
  "futures",
  "indexmap 2.9.0",
@@ -3152,6 +3191,7 @@ dependencies = [
  "metrics-util",
  "paste",
  "pin-project",
+ "saluki-common",
  "saluki-context",
  "saluki-error",
  "saluki-event",
@@ -3172,7 +3212,6 @@ dependencies = [
 name = "saluki-env"
 version = "0.1.0"
 dependencies = [
- "ahash",
  "arc-swap",
  "async-stream",
  "async-trait",
@@ -3192,6 +3231,7 @@ dependencies = [
  "prost",
  "regex",
  "saluki-api",
+ "saluki-common",
  "saluki-config",
  "saluki-context",
  "saluki-error",
@@ -3681,7 +3721,7 @@ dependencies = [
 name = "stringtheory"
 version = "0.1.0"
 dependencies = [
- "ahash",
+ "foldhash",
  "loom",
  "proptest",
  "protobuf",

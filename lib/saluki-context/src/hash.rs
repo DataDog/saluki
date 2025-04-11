@@ -1,22 +1,11 @@
-use std::{
-    collections::HashSet,
-    hash::{Hash as _, Hasher as _},
+use std::hash::{Hash as _, Hasher as _};
+
+use saluki_common::{
+    collections::PrehashedHashSet,
+    hash::{get_fast_hasher, hash_single_fast},
 };
 
 use crate::origin::OriginKey;
-
-pub type FastHashSet<T> = HashSet<T, ahash::RandomState>;
-
-pub fn new_fast_hashset<T>() -> FastHashSet<T> {
-    HashSet::with_hasher(ahash::RandomState::default())
-}
-
-#[inline]
-fn hash_string(s: &str) -> u64 {
-    let mut hasher = ahash::AHasher::default();
-    s.hash(&mut hasher);
-    hasher.finish()
-}
 
 /// Hashes a `Resolvable`.
 ///
@@ -35,7 +24,7 @@ where
     I: IntoIterator<Item = T>,
     T: AsRef<str>,
 {
-    let mut seen = new_fast_hashset();
+    let mut seen = PrehashedHashSet::default();
     hash_context_with_seen(name, tags, origin_key, &mut seen)
 }
 
@@ -51,7 +40,7 @@ where
 ///
 /// Returns a hash that uniquely identifies the combination of name, tags, and origin of the value.
 pub(super) fn hash_context_with_seen<I, T>(
-    name: &str, tags: I, origin_key: Option<OriginKey>, seen: &mut FastHashSet<u64>,
+    name: &str, tags: I, origin_key: Option<OriginKey>, seen: &mut PrehashedHashSet<u64>,
 ) -> ContextKey
 where
     I: IntoIterator<Item = T>,
@@ -59,7 +48,7 @@ where
 {
     seen.clear();
 
-    let mut hasher = ahash::AHasher::default();
+    let mut hasher = get_fast_hasher();
 
     // Hash the metric name.
     name.hash(&mut hasher);
@@ -68,7 +57,7 @@ where
     let mut combined_tags_hash = 0;
 
     for tag in tags {
-        let tag_hash = hash_string(tag.as_ref());
+        let tag_hash = hash_single_fast(tag.as_ref());
 
         // If we've already seen this tag before, skip combining it again.
         if !seen.insert(tag_hash) {
