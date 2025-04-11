@@ -60,7 +60,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e89da841a80418a9b391ebaea17f5c112ffaaa96f621d2c285b5174da76b9011"
 dependencies = [
  "cfg-if",
- "getrandom 0.2.15",
  "once_cell",
  "version_check",
  "zerocopy 0.7.35",
@@ -2679,7 +2678,6 @@ version = "0.6.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f8ed0655cbaf18a26966142ad23b95d8ab47221c50c4f73a1db7d0d2d6e3da8"
 dependencies = [
- "ahash",
  "equivalent",
  "hashbrown 0.15.2",
  "parking_lot",
@@ -3087,16 +3085,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "saluki-common"
+version = "0.1.0"
+dependencies = [
+ "foldhash",
+ "hashbrown 0.15.2",
+ "indexmap 2.9.0",
+ "papaya",
+]
+
+[[package]]
 name = "saluki-components"
 version = "0.1.0"
 dependencies = [
- "ahash",
  "async-trait",
  "bytes",
  "bytesize",
  "datadog-protos",
  "ddsketch-agent",
  "float-cmp",
+ "foldhash",
  "futures",
  "hashbrown 0.15.2",
  "headers",
@@ -3154,7 +3162,6 @@ dependencies = [
 name = "saluki-context"
 version = "0.1.0"
 dependencies = [
- "ahash",
  "crossbeam-queue",
  "hashbrown 0.15.2",
  "indexmap 2.9.0",
@@ -3163,6 +3170,7 @@ dependencies = [
  "metrics-util",
  "proptest",
  "quick_cache",
+ "saluki-common",
  "saluki-error",
  "saluki-metrics",
  "serde",
@@ -3175,7 +3183,6 @@ dependencies = [
 name = "saluki-core"
 version = "0.1.0"
 dependencies = [
- "ahash",
  "async-trait",
  "futures",
  "indexmap 2.9.0",
@@ -3184,6 +3191,7 @@ dependencies = [
  "metrics-util",
  "paste",
  "pin-project",
+ "saluki-common",
  "saluki-context",
  "saluki-error",
  "saluki-event",
@@ -3204,7 +3212,6 @@ dependencies = [
 name = "saluki-env"
 version = "0.1.0"
 dependencies = [
- "ahash",
  "arc-swap",
  "async-stream",
  "async-trait",
@@ -3224,6 +3231,7 @@ dependencies = [
  "prost",
  "regex",
  "saluki-api",
+ "saluki-common",
  "saluki-config",
  "saluki-context",
  "saluki-error",
@@ -3713,7 +3721,7 @@ dependencies = [
 name = "stringtheory"
 version = "0.1.0"
 dependencies = [
- "ahash",
+ "foldhash",
  "loom",
  "proptest",
  "protobuf",

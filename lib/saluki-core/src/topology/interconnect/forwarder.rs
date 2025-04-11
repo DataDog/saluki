@@ -1,7 +1,7 @@
 use std::time::Instant;
 
-use ahash::AHashMap;
 use metrics::{Counter, Histogram, SharedString};
+use saluki_common::collections::FastHashMap;
 use saluki_error::{generic_error, GenericError};
 use saluki_event::Event;
 use saluki_metrics::MetricsBuilder;
@@ -252,7 +252,7 @@ pub struct Forwarder {
     context: ComponentContext,
     event_buffer_pool: ElasticObjectPool<FixedSizeEventBuffer>,
     default: Option<(ForwarderMetrics, Vec<mpsc::Sender<FixedSizeEventBuffer>>)>,
-    targets: AHashMap<String, (ForwarderMetrics, Vec<mpsc::Sender<FixedSizeEventBuffer>>)>,
+    targets: FastHashMap<String, (ForwarderMetrics, Vec<mpsc::Sender<FixedSizeEventBuffer>>)>,
 }
 
 impl Forwarder {
@@ -262,7 +262,7 @@ impl Forwarder {
             context,
             event_buffer_pool,
             default: None,
-            targets: AHashMap::new(),
+            targets: FastHashMap::default(),
         }
     }
 
