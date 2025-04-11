@@ -24,7 +24,7 @@ const DEFAULT_CONTEXT_RESOLVER_INTERNER_CAPACITY_BYTES: NonZeroUsize =
 
 const SEEN_HASHSET_INITIAL_CAPACITY: usize = 128;
 
-type ContextCache = Cache<ContextKey, Context, UnitWeighter, NoopU64BuildHasher, ExpiryCapableLifecycle<ContextKey>>;
+type ContextCache = Cache<ContextKey, Context, UnitWeighter, NoopU64BuildHasher, ExpiryCapableLifecycle>;
 
 static_metrics! {
     name => Statistics,
@@ -330,7 +330,7 @@ pub struct ContextResolver {
     interner: GenericMapInterner,
     caching_enabled: bool,
     context_cache: Arc<ContextCache>,
-    expiration: Expiration<ContextKey>,
+    expiration: Expiration,
     hash_seen_buffer: PrehashedHashSet<u64>,
     origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
     allow_heap_allocations: bool,
@@ -513,8 +513,7 @@ impl Clone for ContextResolver {
 }
 
 async fn drive_expiration(
-    context_cache: Arc<ContextCache>, stats: Statistics, expiration: Expiration<ContextKey>,
-    expiration_interval: Duration,
+    context_cache: Arc<ContextCache>, stats: Statistics, expiration: Expiration, expiration_interval: Duration,
 ) {
     let mut expired_entries = Vec::new();
 
