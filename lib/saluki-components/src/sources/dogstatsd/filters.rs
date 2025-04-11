@@ -1,16 +1,10 @@
 use saluki_event::{eventd::EventD, service_check::ServiceCheck};
 use saluki_io::deser::codec::dogstatsd::MetricPacket;
 
-/// A filter for determining whether a packet should be materialized into an `Event`.
-pub trait Filter {
-    fn allow_metric(&self, metric: &MetricPacket<'_>) -> bool;
-    fn allow_event(&self, event: &EventD) -> bool;
-    fn allow_service_check(&self, service_check: &ServiceCheck) -> bool;
-}
-
 /// Filters payloads based on whether or not they are enabled.
 ///
 /// All payloads are allowed by default.
+#[derive(Copy, Clone)]
 pub struct EnablePayloadsFilter {
     allow_series: bool,
     allow_sketches: bool,
@@ -49,10 +43,8 @@ impl EnablePayloadsFilter {
         self.allow_service_checks = allow_service_checks;
         self
     }
-}
 
-impl Filter for EnablePayloadsFilter {
-    fn allow_metric(&self, metric: &MetricPacket<'_>) -> bool {
+    pub fn allow_metric(&self, metric: &MetricPacket<'_>) -> bool {
         if !self.allow_series && metric.values.is_serie() {
             return false;
         }
@@ -64,25 +56,13 @@ impl Filter for EnablePayloadsFilter {
         true
     }
 
-    fn allow_event(&self, _event: &EventD) -> bool {
+    pub fn allow_event(&self, _event: &EventD) -> bool {
         self.allow_events
     }
 
-    fn allow_service_check(&self, _service_check: &ServiceCheck) -> bool {
+    pub fn allow_service_check(&self, _service_check: &ServiceCheck) -> bool {
         self.allow_service_checks
     }
-}
-
-pub fn is_metric_allowed(filters: &[Box<dyn Filter + Send + Sync>], metric: &MetricPacket) -> bool {
-    filters.iter().all(|filter| filter.allow_metric(metric))
-}
-
-pub fn is_event_allowed(filters: &[Box<dyn Filter + Send + Sync>], event: &EventD) -> bool {
-    filters.iter().all(|filter| filter.allow_event(event))
-}
-
-pub fn is_service_check_allowed(filters: &[Box<dyn Filter + Send + Sync>], service_check: &ServiceCheck) -> bool {
-    filters.iter().all(|filter| filter.allow_service_check(service_check))
 }
 
 #[cfg(test)]
