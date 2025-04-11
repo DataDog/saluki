@@ -551,7 +551,7 @@ struct AggregatedMetric {
 }
 
 struct AggregationState {
-    contexts: HashMap<Context, AggregatedMetric, ahash::RandomState>,
+    contexts: HashMap<Context, AggregatedMetric, foldhash::quality::RandomState>,
     contexts_remove_buf: Vec<Context>,
     context_limit: usize,
     bucket_width_secs: u64,

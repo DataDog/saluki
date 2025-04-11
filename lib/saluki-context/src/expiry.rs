@@ -5,8 +5,8 @@ use std::{
 };
 
 use crossbeam_queue::ArrayQueue;
-use hashbrown::HashMap;
 use quick_cache::Lifecycle;
+use saluki_common::collections::FastHashMap;
 
 /// Builder for creating an expiration configuration.
 pub struct ExpirationBuilder<K> {
@@ -92,7 +92,7 @@ impl AccessState {
 
 #[derive(Debug)]
 struct Inner<K> {
-    last_seen: HashMap<K, AccessState, ahash::RandomState>,
+    last_seen: FastHashMap<K, AccessState>,
     time_to_idle: Duration,
 }
 
@@ -128,7 +128,7 @@ where
     fn new(time_to_idle: Duration) -> Self {
         Self {
             inner: Mutex::new(Inner {
-                last_seen: HashMap::with_hasher(ahash::RandomState::default()),
+                last_seen: FastHashMap::default(),
                 time_to_idle,
             }),
             pending_ops: ArrayQueue::new(128),

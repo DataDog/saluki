@@ -2,12 +2,12 @@ use std::{num::NonZeroUsize, sync::Arc};
 
 use arc_swap::ArcSwap;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_common::collections::{FastHashSet, FastIndexMap};
 use saluki_context::origin::{ExternalData, RawExternalData};
 use tracing::{debug, trace};
 
-use crate::{
-    prelude::*,
-    workload::{aggregator::MetadataStore, origin::ResolvedExternalData, EntityId, MetadataAction, MetadataOperation},
+use crate::workload::{
+    aggregator::MetadataStore, origin::ResolvedExternalData, EntityId, MetadataAction, MetadataOperation,
 };
 
 /// A store for External Data entity mappings.
