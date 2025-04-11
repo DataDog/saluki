@@ -1,7 +1,7 @@
 use std::hash::{Hash as _, Hasher as _};
 
 use saluki_common::{
-    collections::FastHashSet,
+    collections::PrehashedHashSet,
     hash::{get_fast_hasher, hash_single_fast},
 };
 
@@ -24,7 +24,7 @@ where
     I: IntoIterator<Item = T>,
     T: AsRef<str>,
 {
-    let mut seen = FastHashSet::<u64>::default();
+    let mut seen = PrehashedHashSet::default();
     hash_context_with_seen(name, tags, origin_key, &mut seen)
 }
 
@@ -40,7 +40,7 @@ where
 ///
 /// Returns a hash that uniquely identifies the combination of name, tags, and origin of the value.
 pub(super) fn hash_context_with_seen<I, T>(
-    name: &str, tags: I, origin_key: Option<OriginKey>, seen: &mut FastHashSet<u64>,
+    name: &str, tags: I, origin_key: Option<OriginKey>, seen: &mut PrehashedHashSet<u64>,
 ) -> ContextKey
 where
     I: IntoIterator<Item = T>,
