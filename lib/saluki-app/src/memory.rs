@@ -2,7 +2,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    env, fs,
+    env,
     sync::atomic::{AtomicBool, Ordering::Relaxed},
     time::Duration,
 };
@@ -279,7 +279,6 @@ pub async fn initialize_allocator_telemetry() -> Result<(), GenericError> {
 
 struct CgroupMemoryParser;
 
-#[cfg(target_os = "linux")]
 impl CgroupMemoryParser {
     #[cfg(not(target_os = "linux"))]
     fn parse(self) -> Option<ByteSize> {
@@ -291,7 +290,7 @@ impl CgroupMemoryParser {
     /// Returns `None` if memory limit is set to max or if an error is encountered while parsing.
     #[cfg(target_os = "linux")]
     fn parse(self) -> Option<ByteSize> {
-        let contents = fs::read_to_string("/proc/self/cgroup").ok()?;
+        let contents = std::fs::read_to_string("/proc/self/cgroup").ok()?;
         let parts: Vec<&str> = contents.trim().split("\n").collect();
         // CgroupV2 has unified controllers.
         if parts.len() == 1 {
@@ -308,14 +307,14 @@ impl CgroupMemoryParser {
     fn parse_controller_v1(self, controller: &str) -> Option<ByteSize> {
         let path = controller.split(":").nth(2)?;
         let memory_path = format!("/sys/fs/cgroup/memory{}/memory.limit_in_bytes", path);
-        let raw_memory_limit = fs::read_to_string(memory_path).ok()?;
+        let raw_memory_limit =  std::fs::read_to_string(memory_path).ok()?;
         self.convert_to_bytesize(&raw_memory_limit)
     }
 
     fn parse_controller_v2(self, controller: &str) -> Option<ByteSize> {
         let path = controller.split(":").nth(2)?;
         let memory_path = format!("/sys/fs/cgroup{}/memory.max", path);
-        let raw_memory_limit = fs::read_to_string(memory_path).ok()?;
+        let raw_memory_limit =  std::fs::read_to_string(memory_path).ok()?;
         self.convert_to_bytesize(&raw_memory_limit)
     }
 
