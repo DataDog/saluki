@@ -1,0 +1,15 @@
+[package]
+name = "saluki-common"
+version = "0.1.0"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+foldhash = { workspace = true }
+hashbrown = { workspace = true }
+indexmap = { workspace = true }
+papaya = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,13 +1,16 @@
-use std::{alloc::Layout, hash::Hasher as _, num::NonZeroUsize};
+use std::{alloc::Layout, hash::BuildHasher as _, num::NonZeroUsize, sync::LazyLock};
 
 const PACKED_CAP_MASK: usize = usize::MAX << (usize::BITS / 2);
 const PACKED_CAP_SHIFT: u32 = usize::BITS / 2;
 const PACKED_LEN_MASK: usize = usize::MAX >> (usize::BITS / 2);
 
+#[inline]
 pub fn hash_string(s: &str) -> u64 {
-    let mut hasher = ahash::AHasher::default();
-    hasher.write(s.as_bytes());
-    hasher.finish()
+    // Single global instance of the hasher state since we need a consistently-seeded state for `hash_single_fast` to
+    // consistently hash things across the application.
+    static BUILD_HASHER: LazyLock<foldhash::fast::RandomState> = LazyLock::new(foldhash::fast::RandomState::default);
+
+    BUILD_HASHER.hash_one(s)
 }
 
 /// Rounds up `len` to the nearest multiple of the alignment of `T`.
