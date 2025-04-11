@@ -19,7 +19,7 @@ use saluki_core::{
     },
 };
 use saluki_env::WorkloadProvider;
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_event::metric::{MetricMetadata, MetricOrigin};
 use saluki_event::{metric::Metric, DataType, Event};
 use saluki_io::{
@@ -322,6 +322,15 @@ impl SourceBuilder for DogStatsDConfiguration {
         let listeners = self.build_listeners().await?;
         if listeners.is_empty() {
             return Err(Error::NoListenersConfigured.into());
+        }
+
+        // Every listener requires at least one I/O buffer to ensure that all listeners can be serviced without
+        // deadlocking any of the others.
+        if self.buffer_count < listeners.len() {
+            return Err(generic_error!(
+                "Must have a minimum of {} I/O buffers based on the number of listeners configured.",
+                listeners.len()
+            ));
         }
 
         let maybe_origin_tags_resolver = self
@@ -699,7 +708,7 @@ async fn drive_stream(
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let mut event_buffer_manager = EventBufferManager::new(source_context.event_buffer_pool());
-    let mut io_buffer_manager = IoBufferManager::new(&io_buffer_pool);
+    let mut io_buffer_manager = IoBufferManager::new(&io_buffer_pool, &stream);
 
     'read: loop {
         let mut eof = false;
