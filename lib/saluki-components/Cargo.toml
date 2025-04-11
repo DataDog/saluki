@@ -28,6 +28,7 @@ metrics = { workspace = true }
 pin-project = { workspace = true }
 protobuf = { workspace = true }
 regex = { workspace = true }
+saluki-common = { workspace = true }
 saluki-config = { workspace = true }
 saluki-context = { workspace = true }
 saluki-core = { workspace = true }
