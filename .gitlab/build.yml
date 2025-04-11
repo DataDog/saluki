@@ -11,6 +11,7 @@
     KUBERNETES_MEMORY_REQUEST: "8Gi"
     KUBERNETES_MEMORY_LIMIT: "12Gi"
     APP_BUILD_TIME: "${CI_PIPELINE_CREATED_AT}"
+    DDCI_CONFIGURE_OTEL_EXPORTER: true
   script:
     - docker buildx build
       --platform linux/amd64,linux/arm64
@@ -44,6 +45,8 @@
   id_tokens:
     DDSIGN_ID_TOKEN:
       aud: image-integrity
+  variables:
+    DDCI_CONFIGURE_OTEL_EXPORTER: true
   script:
     - docker buildx build
       --platform linux/amd64,linux/arm64
