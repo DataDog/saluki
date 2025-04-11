@@ -8,7 +8,10 @@
 use std::time::{Duration, Instant};
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
-use saluki_app::{api::APIBuilder, logging::LoggingAPIHandler, memory::MemoryProfilingAPIHandler, metrics::emit_startup_metrics, prelude::*};
+use saluki_app::{
+    api::APIBuilder, logging::LoggingAPIHandler, memory::MemoryProfilingAPIHandler, metrics::emit_startup_metrics,
+    prelude::*,
+};
 use saluki_components::{
     destinations::{DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration, PrometheusConfiguration},
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
