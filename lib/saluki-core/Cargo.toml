@@ -6,7 +6,6 @@ license = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
-ahash = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
@@ -15,6 +14,7 @@ metrics = { workspace = true }
 metrics-util = { workspace = true, features = ["handles", "recency", "registry"] }
 paste = { workspace = true }
 pin-project = { workspace = true }
+saluki-common = { workspace = true }
 saluki-context = { workspace = true }
 saluki-error = { workspace = true }
 saluki-event = { workspace = true }

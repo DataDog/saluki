@@ -1,8 +1,9 @@
 //! Metric origin.
 
-use std::{fmt, hash::Hasher as _, num::NonZeroU32, sync::Arc};
+use std::{fmt, num::NonZeroU32, sync::Arc};
 
 use indexmap::Equivalent;
+use saluki_common::hash::hash_single_fast;
 use serde::Deserialize;
 use stringtheory::MetaString;
 use tracing::warn;
@@ -228,9 +229,7 @@ impl OriginKey {
     where
         O: std::hash::Hash,
     {
-        let mut hasher = ahash::AHasher::default();
-        opaque.hash(&mut hasher);
-        Self(hasher.finish())
+        Self(hash_single_fast(opaque))
     }
 }
 

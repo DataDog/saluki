@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
+use saluki_common::collections::FastConcurrentHashMap;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, GenericError};
 use stringtheory::interning::GenericMapInterner;
 use tracing::{debug, trace};
 
 use super::helpers::cgroups::{CgroupsConfiguration, CgroupsReader};
-use crate::{features::FeatureDetector, prelude::*, workload::EntityId};
+use crate::{features::FeatureDetector, workload::EntityId};
 
 struct Inner {
     cgroups_reader: CgroupsReader,

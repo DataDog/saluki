@@ -1,6 +1,10 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 use quick_cache::{sync::Cache, UnitWeighter};
+use saluki_common::{
+    collections::FastHashSet,
+    hash::{get_fast_build_hasher, FastBuildHasher},
+};
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::static_metrics;
 use stringtheory::{interning::GenericMapInterner, MetaString};
@@ -10,7 +14,7 @@ use tracing::debug;
 use crate::{
     context::{Context, ContextInner},
     expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle},
-    hash::{hash_context_with_seen, new_fast_hashset, ContextKey, FastHashSet},
+    hash::{hash_context_with_seen, ContextKey},
     origin::{OriginKey, OriginTags, OriginTagsResolver, RawOrigin},
     tags::TagSet,
 };
@@ -21,7 +25,7 @@ const DEFAULT_CONTEXT_RESOLVER_CACHED_CONTEXTS_LIMIT: usize = 500_000;
 const DEFAULT_CONTEXT_RESOLVER_INTERNER_CAPACITY_BYTES: NonZeroUsize =
     unsafe { NonZeroUsize::new_unchecked(2 * 1024 * 1024) };
 
-type ContextCache = Cache<ContextKey, Context, UnitWeighter, ahash::RandomState, ExpiryCapableLifecycle<ContextKey>>;
+type ContextCache = Cache<ContextKey, Context, UnitWeighter, FastBuildHasher, ExpiryCapableLifecycle<ContextKey>>;
 
 static_metrics! {
     name => Statistics,
@@ -265,7 +269,7 @@ impl ContextResolverBuilder {
             cached_context_limit,
             cached_context_limit as u64,
             UnitWeighter,
-            ahash::RandomState::default(),
+            get_fast_build_hasher(),
             lifecycle,
         ));
 
@@ -289,7 +293,7 @@ impl ContextResolverBuilder {
             caching_enabled: self.caching_enabled,
             context_cache,
             expiration,
-            hash_seen_buffer: new_fast_hashset(),
+            hash_seen_buffer: FastHashSet::default(),
             origin_tags_resolver: self.origin_tags_resolver,
             allow_heap_allocations,
         }
@@ -496,7 +500,7 @@ impl Clone for ContextResolver {
             caching_enabled: self.caching_enabled,
             context_cache: Arc::clone(&self.context_cache),
             expiration: self.expiration.clone(),
-            hash_seen_buffer: new_fast_hashset(),
+            hash_seen_buffer: FastHashSet::default(),
             origin_tags_resolver: self.origin_tags_resolver.clone(),
             allow_heap_allocations: self.allow_heap_allocations,
         }
