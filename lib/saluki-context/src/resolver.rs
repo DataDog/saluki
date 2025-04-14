@@ -24,10 +24,10 @@ const DEFAULT_CONTEXT_RESOLVER_INTERNER_CAPACITY_BYTES: NonZeroUsize =
 
 const SEEN_HASHSET_INITIAL_CAPACITY: usize = 128;
 
-type ContextCache = Cache<ContextKey, Context, UnitWeighter, NoopU64BuildHasher, ExpiryCapableLifecycle<ContextKey>>;
+type ContextCache = Cache<ContextKey, Context, UnitWeighter, NoopU64BuildHasher, ExpiryCapableLifecycle>;
 
 static_metrics! {
-    name => Statistics,
+    name => Telemetry,
     prefix => context_resolver,
     labels => [resolver_id: String],
     metrics => [
@@ -38,7 +38,9 @@ static_metrics! {
         gauge(interner_capacity_bytes),
         gauge(interner_len_bytes),
         gauge(interner_entries),
-        counter(intern_fallback_total)
+        counter(intern_fallback_total),
+        counter(contexts_expired),
+        histogram(contexts_expired_batch_size),
     ],
 }
 
@@ -56,6 +58,7 @@ pub struct ContextResolverBuilder {
     interner_capacity_bytes: Option<NonZeroUsize>,
     allow_heap_allocations: Option<bool>,
     origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
+    telemetry_enabled: bool,
 }
 
 impl ContextResolverBuilder {
@@ -83,6 +86,7 @@ impl ContextResolverBuilder {
             interner_capacity_bytes: None,
             allow_heap_allocations: None,
             origin_tags_resolver: None,
+            telemetry_enabled: true,
         })
     }
 
@@ -212,6 +216,19 @@ impl ContextResolverBuilder {
         self
     }
 
+    /// Sets whether or not to enable telemetry for this resolver.
+    ///
+    /// Reporting the telemetry of the resolver requires running an asynchronous task to override adding additional
+    /// overhead in the hot path of resolving contexts. In some cases, it may be cumbersome to always create the
+    /// resolver in an asynchronous context so that the telemetry task can be spawned. This method allows disabling
+    /// telemetry reporting in those cases.
+    ///
+    /// Defaults to telemetry enabled.
+    pub fn without_telemetry(mut self) -> Self {
+        self.telemetry_enabled = false;
+        self
+    }
+
     /// Configures a [`ContextResolverBuilder`] that is suitable for tests.
     ///
     /// This configures the builder with the following defaults:
@@ -220,6 +237,7 @@ impl ContextResolverBuilder {
     /// - unlimited context cache size
     /// - no-op interner (all strings are heap-allocated)
     /// - heap allocations allowed
+    /// - telemetry disabled
     ///
     /// This is generally only useful for testing purposes, and is exposed publicly in order to be used in cross-crate
     /// testing scenarios.
@@ -229,6 +247,7 @@ impl ContextResolverBuilder {
             .with_cached_contexts_limit(usize::MAX)
             .with_interner_capacity_bytes(NonZeroUsize::new(1).expect("not zero"))
             .with_heap_allocations(true)
+            .without_telemetry()
     }
 
     /// Builds a [`ContextResolver`] from the current configuration.
@@ -245,8 +264,10 @@ impl ContextResolverBuilder {
 
         let interner = GenericMapInterner::new(interner_capacity_bytes);
 
-        let stats = Statistics::new(self.name);
-        stats.interner_capacity_bytes().set(interner.capacity_bytes() as f64);
+        let telemetry = Telemetry::new(self.name);
+        telemetry
+            .interner_capacity_bytes()
+            .set(interner.capacity_bytes() as f64);
 
         let mut builder = ExpirationBuilder::new();
         if let Some(time_to_idle) = self.idle_context_expiration {
@@ -279,15 +300,23 @@ impl ContextResolverBuilder {
                 let expiration = expiration.clone();
                 tokio::spawn(drive_expiration(
                     context_cache,
-                    stats.clone(),
+                    telemetry.clone(),
                     expiration,
                     expiration_interval,
                 ));
             }
         }
 
+        if self.telemetry_enabled {
+            tokio::spawn(drive_telemetry(
+                Arc::clone(&context_cache),
+                interner.clone(),
+                telemetry.clone(),
+            ));
+        }
+
         ContextResolver {
-            stats,
+            telemetry,
             interner,
             caching_enabled: self.caching_enabled,
             context_cache,
@@ -326,11 +355,11 @@ impl ContextResolverBuilder {
 /// cheaply cloned. It points directly to the underlying context data (name and tags) and provides access to these
 /// components.
 pub struct ContextResolver {
-    stats: Statistics,
+    telemetry: Telemetry,
     interner: GenericMapInterner,
     caching_enabled: bool,
     context_cache: Arc<ContextCache>,
-    expiration: Expiration<ContextKey>,
+    expiration: Expiration,
     hash_seen_buffer: PrehashedHashSet<u64>,
     origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
     allow_heap_allocations: bool,
@@ -344,7 +373,7 @@ impl ContextResolver {
             .or_else(|| self.interner.try_intern(s).map(MetaString::from))
             .or_else(|| {
                 self.allow_heap_allocations.then(|| {
-                    self.stats.intern_fallback_total().increment(1);
+                    self.telemetry.intern_fallback_total().increment(1);
                     MetaString::from(s)
                 })
             })
@@ -383,14 +412,15 @@ impl ContextResolver {
             context_tags.insert_tag(tag);
         }
 
-        self.stats.resolved_new_context_total().increment(1);
+        self.telemetry.resolved_new_context_total().increment(1);
+        self.telemetry.active_contexts().increment(1);
 
         Some(Context::from_inner(ContextInner::from_parts(
             key,
             context_name,
             context_tags,
             origin_tags,
-            self.stats.active_contexts().clone(),
+            self.telemetry.active_contexts().clone(),
         )))
     }
 
@@ -446,48 +476,29 @@ impl ContextResolver {
     {
         let context_key = self.create_context_key(name, tags.clone(), origin_tags.key());
 
-        // NOTE: This is suboptimal to bother checking the cache if we know caching is disabled, but it also lets us
-        // avoid duplicating a bunch of the logic below, so we're just going with this approach for now.
+        // Fast path to avoid looking up the context in the cache if caching is disabled.
+        if !self.caching_enabled {
+            let context = self.create_context(context_key, name, tags, origin_tags)?;
+
+            debug!(?context_key, ?context, "Resolved new non-cached context.");
+            return Some(context);
+        }
+
         match self.context_cache.get(&context_key) {
             Some(context) => {
-                self.stats.resolved_existing_context_total().increment(1);
+                self.telemetry.resolved_existing_context_total().increment(1);
                 self.expiration.mark_entry_accessed(context_key);
+
                 Some(context)
             }
             None => {
-                match self.create_context(context_key, name, tags, origin_tags) {
-                    Some(context) => {
-                        debug!(?context_key, ?context, "Resolved new context.");
-                        if self.caching_enabled {
-                            self.context_cache.insert(context_key, context.clone());
-                            self.expiration.mark_entry_accessed(context_key);
-                        }
+                let context = self.create_context(context_key, name, tags, origin_tags)?;
 
-                        // TODO: This is lazily updated during resolve, which means this metric might lag behind the actual
-                        // count as interned strings are dropped/reclaimed... but we don't have a way to figure out if a given
-                        // `MetaString` is an interned string and if dropping it would actually reclaim the interned string...
-                        // so this is our next best option short of instrumenting `GenericMapInterner` directly.
-                        //
-                        // We probably want to do that in the future, but this is just a little cleaner without adding extra
-                        // fluff to `GenericMapInterner` which is already complex as-is.
-                        self.stats.interner_entries().set(self.interner.len() as f64);
-                        self.stats.interner_len_bytes().set(self.interner.len_bytes() as f64);
-                        self.stats.resolved_new_context_total().increment(1);
-                        self.stats.active_contexts().increment(1);
+                self.context_cache.insert(context_key, context.clone());
+                self.expiration.mark_entry_accessed(context_key);
 
-                        // TODO: This is crappy to have to do every time we resolve, because we need to read all cache
-                        // shards. Realistically, what we could do -- to avoid having to do this as a background task --
-                        // would be to increment the `cached_contexts` metric here and then decrement it when an entry is
-                        // evicted, by pushing that logic into the lifecycle implementation.
-                        //
-                        // That wouldn't cover direct removals, though, which we only do as a result of expiration, to be
-                        // fair... but would still be a little janky as well.
-                        self.stats.cached_contexts().set(self.context_cache.len() as f64);
-
-                        Some(context)
-                    }
-                    None => None,
-                }
+                debug!(?context_key, ?context, "Resolved new context.");
+                Some(context)
             }
         }
     }
@@ -496,7 +507,7 @@ impl ContextResolver {
 impl Clone for ContextResolver {
     fn clone(&self) -> Self {
         Self {
-            stats: self.stats.clone(),
+            telemetry: self.telemetry.clone(),
             interner: self.interner.clone(),
             caching_enabled: self.caching_enabled,
             context_cache: Arc::clone(&self.context_cache),
@@ -512,8 +523,7 @@ impl Clone for ContextResolver {
 }
 
 async fn drive_expiration(
-    context_cache: Arc<ContextCache>, stats: Statistics, expiration: Expiration<ContextKey>,
-    expiration_interval: Duration,
+    context_cache: Arc<ContextCache>, telemetry: Telemetry, expiration: Expiration, expiration_interval: Duration,
 ) {
     let mut expired_entries = Vec::new();
 
@@ -523,6 +533,13 @@ async fn drive_expiration(
         expiration.drain_expired_entries(&mut expired_entries);
 
         let num_expired_contexts = expired_entries.len();
+        if num_expired_contexts != 0 {
+            telemetry.contexts_expired().increment(num_expired_contexts as u64);
+            telemetry
+                .contexts_expired_batch_size()
+                .record(num_expired_contexts as f64);
+        }
+
         debug!(num_expired_contexts, "Found expired contexts.");
 
         for entry in expired_entries.drain(..) {
@@ -530,8 +547,20 @@ async fn drive_expiration(
         }
 
         debug!(num_expired_contexts, "Removed expired contexts.");
+    }
+}
 
-        stats.cached_contexts().set(context_cache.len() as f64);
+async fn drive_telemetry(context_cache: Arc<ContextCache>, interner: GenericMapInterner, telemetry: Telemetry) {
+    loop {
+        sleep(Duration::from_secs(1)).await;
+
+        telemetry.interner_entries().set(interner.len() as f64);
+        telemetry
+            .interner_capacity_bytes()
+            .set(interner.capacity_bytes() as f64);
+        telemetry.interner_len_bytes().set(interner.len_bytes() as f64);
+
+        telemetry.cached_contexts().set(context_cache.len() as f64);
     }
 }
 
@@ -644,13 +673,13 @@ mod tests {
 
         // We should be able to see that the active context count is one, representing the context we created:
         let metrics_before = snapshotter.snapshot().into_vec();
-        let active_contexts = get_gauge_value(&metrics_before, Statistics::active_contexts_name());
+        let active_contexts = get_gauge_value(&metrics_before, Telemetry::active_contexts_name());
         assert_eq!(active_contexts, 1.0);
 
         // Now drop the context, and observe the active context count drop to zero:
         drop(context);
         let metrics_after = snapshotter.snapshot().into_vec();
-        let active_contexts = get_gauge_value(&metrics_after, Statistics::active_contexts_name());
+        let active_contexts = get_gauge_value(&metrics_after, Telemetry::active_contexts_name());
         assert_eq!(active_contexts, 0.0);
     }
 

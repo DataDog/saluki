@@ -8,7 +8,10 @@
 use std::time::{Duration, Instant};
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
-use saluki_app::{api::APIBuilder, logging::LoggingAPIHandler, metrics::emit_startup_metrics, prelude::*};
+use saluki_app::{
+    api::APIBuilder, logging::LoggingAPIHandler, memory::MemoryProfilingAPIHandler, metrics::emit_startup_metrics,
+    prelude::*,
+};
 use saluki_components::{
     destinations::{DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration, PrometheusConfiguration},
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
@@ -124,6 +127,7 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     let privileged_api = APIBuilder::new()
         .with_self_signed_tls()
         .with_handler(logging_api_handler)
+        .with_handler(MemoryProfilingAPIHandler)
         .with_optional_handler(env_provider.workload_api_handler());
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
@@ -198,13 +202,13 @@ async fn create_topology(
     let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
     let dsd_mapper_config = DogstatsDMapperConfiguration::from_configuration(configuration)?;
     let mut enrich_config = ChainedConfiguration::default()
-        .with_transform_builder(host_enrichment_config)
-        .with_transform_builder(dsd_mapper_config);
+        .with_transform_builder("host_enrichment", host_enrichment_config)
+        .with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
 
     let in_standalone_mode = configuration.get_typed_or_default::<bool>("adp.standalone_mode");
     if !in_standalone_mode {
         let host_tags_config = HostTagsConfiguration::from_configuration(configuration).await?;
-        enrich_config = enrich_config.with_transform_builder(host_tags_config);
+        enrich_config = enrich_config.with_transform_builder("host_tags", host_tags_config);
     }
     let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Metrics destination.")?;

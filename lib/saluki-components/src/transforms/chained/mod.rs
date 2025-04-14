@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_common::strings::lower_alphanumeric;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     topology::OutputDefinition,
@@ -25,11 +26,15 @@ pub struct ChainedConfiguration {
 
 impl ChainedConfiguration {
     /// Adds a new synchronous transform to the chain.
-    pub fn with_transform_builder<TB>(mut self, subtransform_builder: TB) -> Self
+    pub fn with_transform_builder<TB>(mut self, subtransform_name: &str, subtransform_builder: TB) -> Self
     where
         TB: SynchronousTransformBuilder + Send + Sync + 'static,
     {
-        let subtransform_id = format!("subtransform_{}", self.subtransform_builders.len());
+        let subtransform_id = format!(
+            "{}_{}",
+            self.subtransform_builders.len(),
+            lower_alphanumeric(subtransform_name)
+        );
         self.subtransform_builders
             .push((subtransform_id, Box::new(subtransform_builder)));
         self
