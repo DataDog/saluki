@@ -134,14 +134,14 @@ fn split_at_delimiter(input: &str, delimiter: u8) -> Option<(&str, &str)> {
 
 /// A wrapper over a `RawTags` iterator that allows for additional tags to be appended to the end of the iterator.
 #[derive(Clone)]
-pub struct TagsWrapper<'a> {
+pub struct ChainedRawTags<'a> {
     tags: RawTagsIter<'a>,
     additional_tags: &'a [String],
     idx: usize,
 }
 
-impl<'a> TagsWrapper<'a> {
-    /// Creates a new `TagsWrapper` from the given `RawTags` and additional tags.
+impl<'a> ChainedRawTags<'a> {
+    /// Creates a new `ChainedRawTags` from the given `RawTags` and additional tags.
     pub fn new(tags: RawTags<'a>, additional_tags: &'a [String]) -> Self {
         Self {
             tags: tags.into_iter(),
@@ -151,7 +151,7 @@ impl<'a> TagsWrapper<'a> {
     }
 }
 
-impl<'a> Iterator for TagsWrapper<'a> {
+impl<'a> Iterator for ChainedRawTags<'a> {
     type Item = &'a str;
 
     fn next(&mut self) -> Option<&'a str> {
@@ -174,15 +174,15 @@ mod tests {
     use crate::ContextResolverBuilder;
 
     #[test]
-    fn basic_tags_wrapper() {
+    fn basic_chained_raw_tags() {
         let existing_tags = ["tag1", "tag2", "tag3"];
         let existing_tags_str = existing_tags.join(",");
         let raw_tags = RawTags::new(&existing_tags_str, 10, 10);
         let additional_tags = ["tag4".to_string(), "tag5".to_string(), "tag6".to_string()];
-        let tags_wrapper = TagsWrapper::new(raw_tags, &additional_tags);
+        let chained_raw_tags = ChainedRawTags::new(raw_tags, &additional_tags);
 
         let mut resolver = ContextResolverBuilder::for_tests().build();
-        let context = resolver.resolve("test", tags_wrapper, None).unwrap();
+        let context = resolver.resolve("test", chained_raw_tags, None).unwrap();
 
         for tag in existing_tags {
             assert!(context.tags().has_tag(tag));

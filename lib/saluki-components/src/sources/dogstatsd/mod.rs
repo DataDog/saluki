@@ -7,7 +7,7 @@ use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use metrics::{Counter, Gauge, Histogram};
 use saluki_config::GenericConfiguration;
-use saluki_context::tags::TagsWrapper;
+use saluki_context::tags::ChainedRawTags;
 use saluki_core::{
     components::{sources::*, ComponentContext},
     observability::ComponentMetricsExt as _,
@@ -850,7 +850,7 @@ async fn drive_stream(
 
 fn handle_frame(
     frame: &[u8], codec: &DogstatsdCodec, context_resolvers: &mut ContextResolvers, source_metrics: &Metrics,
-    peer_addr: &ConnectionAddress, enabled_filter: EnablePayloadsFilter, additional_tags: &Arc<[String]>,
+    peer_addr: &ConnectionAddress, enabled_filter: EnablePayloadsFilter, additional_tags: &[String],
 ) -> Result<Option<Event>, ParseError> {
     let parsed = match codec.decode_packet(frame) {
         Ok(parsed) => parsed,
@@ -933,10 +933,10 @@ fn handle_metric_packet(
         context_resolvers.primary()
     };
 
-    let tags_wrapper = TagsWrapper::new(packet.tags.clone(), additional_tags);
+    let chained_raw_tags = ChainedRawTags::new(packet.tags.clone(), additional_tags);
 
     // Try to resolve the context for this metric.
-    match context_resolver.resolve(packet.metric_name, tags_wrapper, Some(origin)) {
+    match context_resolver.resolve(packet.metric_name, chained_raw_tags, Some(origin)) {
         Some(context) => {
             let metric_origin = packet
                 .jmx_check_name
