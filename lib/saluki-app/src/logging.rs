@@ -26,6 +26,7 @@ use saluki_api::{
     routing::{post, Router},
     APIHandler, StatusCode,
 };
+use saluki_common::task::spawn_traced_named;
 use serde::Deserialize;
 use tokio::{select, sync::mpsc, time::sleep};
 use tracing::{error, field, info, level_filters::LevelFilter, Event, Subscriber};
@@ -181,7 +182,10 @@ impl LoggingAPIHandler {
     fn new(original_filter: Arc<EnvFilter>, reload_handle: Handle<SharedEnvFilter, Registry>) -> Self {
         // Spawn our background task that will handle
         let (override_tx, override_rx) = mpsc::channel(1);
-        tokio::spawn(process_override_requests(original_filter, reload_handle, override_rx));
+        spawn_traced_named(
+            "dynamic-logging-override-processor",
+            process_override_requests(original_filter, reload_handle, override_rx),
+        );
 
         Self {
             state: LoggingHandlerState { override_tx },

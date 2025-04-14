@@ -10,6 +10,7 @@ use std::{
 use futures::Stream;
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SetRecorderError, SharedString, Unit};
 use metrics_util::registry::{AtomicStorage, Registry};
+use saluki_common::task::spawn_traced_named;
 use saluki_context::{
     origin::RawOrigin,
     tags::{Tag, TagSet},
@@ -243,7 +244,7 @@ pub async fn initialize_metrics(metrics_prefix: String) -> Result<(), Box<dyn st
     let recorder = MetricsRecorder::new(metrics_prefix);
     recorder.install()?;
 
-    tokio::spawn(flush_metrics(FLUSH_INTERVAL));
+    spawn_traced_named("internal-telemetry-metrics-flusher", flush_metrics(FLUSH_INTERVAL));
 
     Ok(())
 }
