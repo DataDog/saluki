@@ -62,7 +62,7 @@ async fn main() {
         }
     };
 
-    if let Err(e) = initialize_metrics("adp").await {
+    if let Err(e) = initialize_metrics("datadog.agent.adp").await {
         fatal_and_exit(format!("failed to initialize metrics: {}", e));
     }
 
@@ -249,19 +249,32 @@ async fn create_topology(
     if telemetry_enabled {
         let int_metrics_config = InternalMetricsConfiguration;
         let int_metrics_remap_config = AgentTelemetryRemapperConfiguration::new();
-        let prometheus_config = PrometheusConfiguration::from_configuration(configuration)?;
+
+        // We still send our metrics to the primary Datadog Metrics destination, but we use our own aggregator to avoid
+        // getting caught by any limiting behavior present in the primary aggregator.
+        let int_metrics_agg_config = AggregateConfiguration::with_defaults();
+        let int_metrics_scrape_config = PrometheusConfiguration::from_configuration(configuration)?;
 
         info!(
-            "Serving telemetry scrape endpoint on {}.",
-            prometheus_config.listen_address()
+            "Serving telemetry scrape endpoint on {}. Only remapped metrics will be available.",
+            int_metrics_scrape_config.listen_address()
         );
 
+        // We remap internal metrics and expose them on a Prometheus scrape endpoint, which the Datadog Agent will pull
+        // in and gets us all of the replacement metrics for the ones no longer emitted by DogStatsD in the Core Agent.
+        //
+        // We send all of the original internal metrics directly to the Datadog platform through the normal Datadog
+        // Metrics destination, which lets us utilize native DDSketch-based distributions instead of having to
+        // interpolate them from aggregated histograms, which leads to vastly less useful data when querying.
         blueprint
             .add_source("internal_metrics_in", int_metrics_config)?
             .add_transform("internal_metrics_remap", int_metrics_remap_config)?
-            .add_destination("internal_metrics_out", prometheus_config)?
+            .add_transform("internal_metrics_agg", int_metrics_agg_config)?
+            .add_destination("internal_metrics_scrape", int_metrics_scrape_config)?
             .connect_component("internal_metrics_remap", ["internal_metrics_in"])?
-            .connect_component("internal_metrics_out", ["internal_metrics_remap"])?;
+            .connect_component("internal_metrics_agg", ["internal_metrics_in"])?
+            .connect_component("internal_metrics_scrape", ["internal_metrics_remap"])?
+            .connect_component("enrich", ["internal_metrics_agg"])?;
     }
 
     Ok(blueprint)
