@@ -1,6 +1,10 @@
 use memory_accounting::ComponentRegistry;
 use saluki_app::{api::APIBuilder, metrics::emit_startup_metrics, prelude::*};
-use saluki_components::{destinations::BlackholeConfiguration, sources::HeartbeatConfiguration};
+use saluki_components::{
+    destinations::BlackholeConfiguration,
+    sources::ChecksConfiguration,
+    transforms::{AggregateConfiguration, ChainedConfiguration, HostEnrichmentConfiguration},
+};
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::topology::TopologyBlueprint;
 use saluki_error::{ErrorContext as _, GenericError};
@@ -141,22 +145,34 @@ async fn run(started: Instant) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn create_topology(
-    _configuration: &GenericConfiguration, _env_provider: &ADPEnvironmentProvider,
-    component_registry: &ComponentRegistry,
+    configuration: &GenericConfiguration, env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
 ) -> Result<TopologyBlueprint, GenericError> {
     // Create a simplified topology with minimal components for now
     let topology_registry = component_registry.get_or_create("topology");
     let mut blueprint = TopologyBlueprint::from_component_registry(topology_registry);
 
-    // Create a HeartbeatConfiguration source with heartbeat enabled to keep the topology running
-    let source_config = HeartbeatConfiguration::default();
-    // Add a destination component to receive data from the source
+    // Aggregation currently only supports time windows
+    // we'll need to add support for a "check sampler" like aggregator
+    // basically this _only_ does metric aggregation rules, no time rules.
+    // flushing is similar to current behavior, just need to think about 'counter' resets
+    // for now, just use time windows, if we make each window shorter than the check interval, it should be fine
+    let checks_agg_config = AggregateConfiguration::with_defaults();
+    let check_config = ChecksConfiguration::from_configuration(configuration)?;
+    let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
+    let enrich_config =
+        ChainedConfiguration::default().with_transform_builder("host_enrichment", host_enrichment_config);
+
+    // Add a destination component to receive data from the 'enrich' transform
     let blackhole_config = BlackholeConfiguration::default();
 
     blueprint
-        .add_source("checks_in", source_config)?
+        .add_source("checks_in", check_config)?
+        .add_transform("checks_agg", checks_agg_config)?
+        .add_transform("enrich", enrich_config)?
         .add_destination("metrics_out", blackhole_config)?
-        .connect_component("metrics_out", ["checks_in"])?;
+        .connect_component("checks_agg", ["checks_in"])?
+        .connect_component("enrich", ["checks_agg"])?
+        .connect_component("metrics_out", ["enrich"])?;
 
     Ok(blueprint)
 }
