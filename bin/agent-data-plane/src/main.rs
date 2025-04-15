@@ -17,10 +17,11 @@ use saluki_components::{
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
     transforms::{
         AggregateConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration, DogstatsDPrefixFilterConfiguration,
-        HostEnrichmentConfiguration, HostTagsConfiguration,
+        HostEnrichmentConfiguration, HostTagsConfiguration, OriginRemapperConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration, RefreshableConfiguration, RefresherConfiguration};
+use saluki_context::origin::OriginTagCardinality;
 use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{ErrorContext as _, GenericError};
@@ -253,6 +254,11 @@ async fn create_topology(
         // We still send our metrics to the primary Datadog Metrics destination, but we use our own aggregator to avoid
         // getting caught by any limiting behavior present in the primary aggregator.
         let int_metrics_agg_config = AggregateConfiguration::with_defaults();
+        let origin_remapper_config =
+            OriginRemapperConfiguration::new(env_provider.workload().clone(), OriginTagCardinality::Orchestrator)
+                .with_self_process_id();
+        let int_metrics_enrich_config =
+            ChainedConfiguration::default().with_transform_builder("origin_remapped", origin_remapper_config);
         let int_metrics_scrape_config = PrometheusConfiguration::from_configuration(configuration)?;
 
         info!(
@@ -270,11 +276,16 @@ async fn create_topology(
             .add_source("internal_metrics_in", int_metrics_config)?
             .add_transform("internal_metrics_remap", int_metrics_remap_config)?
             .add_transform("internal_metrics_agg", int_metrics_agg_config)?
+            .add_transform("internal_metrics_enrich", int_metrics_enrich_config)?
             .add_destination("internal_metrics_scrape", int_metrics_scrape_config)?
+            // Send the remapped metrics to the Prometheus scrape endpoint.
             .connect_component("internal_metrics_remap", ["internal_metrics_in"])?
-            .connect_component("internal_metrics_agg", ["internal_metrics_in"])?
             .connect_component("internal_metrics_scrape", ["internal_metrics_remap"])?
-            .connect_component("enrich", ["internal_metrics_agg"])?;
+            // Send the original metrics through the aggregator, update their origin tags, and then push them into the
+            // primary metrics pipeline at the enrichment stage.
+            .connect_component("internal_metrics_agg", ["internal_metrics_in"])?
+            .connect_component("internal_metrics_enrich", ["internal_metrics_agg"])?
+            .connect_component("enrich", ["internal_metrics_enrich"])?;
     }
 
     Ok(blueprint)

@@ -270,6 +270,17 @@ impl OriginTags {
         }
     }
 
+    /// Returns `true` if an origin is present.
+    ///
+    /// Metrics can have an origin, but still not have any tags related to that origin. This method allows
+    /// differentiating ahead of time if an origin is even present or not.
+    pub fn has_origin(&self) -> bool {
+        match self.inner {
+            OriginTagsInner::Empty => true,
+            OriginTagsInner::Resolved { .. } => false,
+        }
+    }
+
     pub(super) fn key(&self) -> Option<OriginKey> {
         match self.inner {
             OriginTagsInner::Empty => None,
