@@ -87,8 +87,8 @@ build-adp: ## Builds the ADP binary in debug mode
 
 .PHONY: build-checks-agent
 build-checks-agent: check-rust-build-tools
-build-checks-agent: ## Builds the Checks Agent binary in debug mode
-	@echo "[*] Building Checks Agent locally..."
+build-checks-agent: ## Builds the ADP binary in debug mode
+	@echo "[*] Building Check Agent locally..."
 	@cargo build --profile dev --package checks-agent
 
 .PHONY: build-adp-release
