@@ -14,7 +14,8 @@ struct CheckHandle(Py<PyAny>);
 
 impl Clone for CheckHandle {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        // Acquire the GIL before cloning the Python object
+        Python::with_gil(|_py| Self(self.0.clone()))
     }
 }
 
