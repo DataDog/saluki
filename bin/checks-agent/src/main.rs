@@ -10,36 +10,63 @@ use saluki_core::topology::TopologyBlueprint;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use saluki_io::net::ListenAddress;
+use std::time::{Duration, Instant};
 
 mod env_provider;
 use self::env_provider::ADPEnvironmentProvider;
 
 use std::future::pending;
 use tokio::select;
-use tracing::{error, info, Level};
-use tracing_subscriber::FmtSubscriber;
+use tracing::{error, info};
 
 const PRIMARY_UNPRIVILEGED_API_PORT: u16 = 5100;
 
+#[cfg(target_os = "linux")]
+#[global_allocator]
+static ALLOC: memory_accounting::allocator::TrackingAllocator<tikv_jemallocator::Jemalloc> =
+    memory_accounting::allocator::TrackingAllocator::new(tikv_jemallocator::Jemalloc);
+
+#[cfg(not(target_os = "linux"))]
+#[global_allocator]
+static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System> =
+    memory_accounting::allocator::TrackingAllocator::new(std::alloc::System);
+
 #[tokio::main]
 async fn main() {
-    // a builder for `FmtSubscriber`.
-    let subscriber = FmtSubscriber::builder()
-        // all spans/events with a level higher than TRACE (e.g, debug, info, warn, etc.)
-        // will be written to stdout.
-        .with_max_level(Level::TRACE)
-        // completes the builder.
-        .finish();
+    let started = Instant::now();
 
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    let _logging_api_handler = match initialize_dynamic_logging(None).await {
+        Ok(handler) => handler,
+        Err(e) => {
+            fatal_and_exit(format!("failed to initialize logging: {}", e));
+            return;
+        }
+    };
 
-    match run().await {
-        Ok(_) => (),
-        Err(e) => eprintln!("Error: {:?}", e),
+    if let Err(e) = initialize_metrics("checks-agent").await {
+        fatal_and_exit(format!("failed to initialize metrics: {}", e));
+    }
+
+    if let Err(e) = initialize_allocator_telemetry().await {
+        fatal_and_exit(format!("failed to initialize allocator telemetry: {}", e));
+    }
+
+    if let Err(e) = initialize_tls() {
+        fatal_and_exit(format!("failed to initialize TLS: {}", e));
+    }
+
+    match run(started).await {
+        Ok(()) => info!("Checks Agent stopped."),
+        Err(e) => {
+            // TODO: It'd be better to take the error cause chain and write it out as a list of errors, instead of
+            // having it be multi-line, since the multi-line bit messes with the log formatting.
+            error!("{:?}", e);
+            std::process::exit(1);
+        }
     }
 }
 
-async fn run() -> Result<(), Box<dyn std::error::Error>> {
+async fn run(started: Instant) -> Result<(), Box<dyn std::error::Error>> {
     let configuration = ConfigurationLoader::default()
         .try_from_yaml("./datadog.yaml")
         .from_environment("DD")?
@@ -76,6 +103,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .error_context("Failed to get API listen address.")?
         .unwrap_or_else(|| ListenAddress::any_tcp(PRIMARY_UNPRIVILEGED_API_PORT));
 
+    let startup_time = started.elapsed();
+
+    emit_startup_metrics();
+
+    info!(
+        init_time_ms = startup_time.as_millis(),
+        "Topology running, waiting for interrupt..."
+    );
+
     tokio::spawn(async move {
         info!("Serving unprivileged API on {}.", api_listen_address);
 
@@ -87,7 +123,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Spawn the health checker.
     health_registry.spawn().await?;
 
-    emit_startup_metrics();
     info!("Topology running, waiting for interrupt...");
 
     // Wait for the shutdown signal or unexpected component finish before exiting.
@@ -101,10 +136,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Gracefully shut down the topology
-    match running_topology
-        .shutdown_with_timeout(std::time::Duration::from_secs(30))
-        .await
-    {
+    match running_topology.shutdown_with_timeout(Duration::from_secs(30)).await {
         Ok(()) => info!("Topology shutdown successfully."),
         Err(e) => error!("Error shutting down topology: {:?}", e),
     }
@@ -127,7 +159,8 @@ async fn create_topology(
     let checks_agg_config = AggregateConfiguration::with_defaults();
     let check_config = ChecksConfiguration::from_configuration(configuration)?;
     let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
-    let enrich_config = ChainedConfiguration::default().with_transform_builder(host_enrichment_config);
+    let enrich_config =
+        ChainedConfiguration::default().with_transform_builder("host_enrichment", host_enrichment_config);
 
     // Add a destination component to receive data from the 'enrich' transform
     let blackhole_config = BlackholeConfiguration::default();
