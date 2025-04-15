@@ -579,6 +579,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
+name = "checks-agent"
+version = "0.1.0"
+dependencies = [
+ "memory-accounting",
+ "saluki-app",
+ "saluki-components",
+ "saluki-config",
+ "saluki-core",
+ "saluki-env",
+ "saluki-error",
+ "saluki-health",
+ "saluki-io",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
