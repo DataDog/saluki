@@ -19,9 +19,11 @@ use self::rules::get_datadog_agent_remappings;
 
 /// Agent telemetry remapper transform.
 ///
-/// Remaps internal telemetry metrics in their generic Saluki form to the corresponding for used by the Datadog Agent
-/// itself, based on how ADP is configured to mirror the Agent. This emits a duplicated set of metrics with their
-/// remapped names.
+/// Remaps internal telemetry metrics in their generic Saluki form to the corresponding form used by the Datadog Agent
+/// itself, based on how ADP is configured to mirror the Agent. This emits a replacement metric with an updated context,
+/// but does not emit the original.
+///
+/// Any metric that does not match a configured remapper rule is dropped.
 pub struct AgentTelemetryRemapperConfiguration {
     context_string_interner_bytes: ByteSize,
 }
@@ -82,14 +84,11 @@ pub struct AgentTelemetryRemapper {
 }
 
 impl AgentTelemetryRemapper {
-    fn try_remap_metric(&mut self, metric: &Metric) -> Option<Metric> {
+    fn try_remap_metric(&mut self, mut metric: Metric) -> Option<Metric> {
         for rule in &self.rules {
-            if let Some(new_context) = rule.try_match(metric, &mut self.context_resolver) {
-                return Some(Metric::from_parts(
-                    new_context,
-                    metric.values().clone(),
-                    metric.metadata().clone(),
-                ));
+            if let Some(new_context) = rule.try_match(&metric, &mut self.context_resolver) {
+                *metric.context_mut() = new_context;
+                return Some(metric)
             }
         }
 
@@ -111,8 +110,8 @@ impl Transform for AgentTelemetryRemapper {
                 maybe_events = context.event_stream().next() => match maybe_events {
                     Some(events) => {
                         let mut buffered_forwarder = context.forwarder().buffered().expect("default output must always exist");
-                        for event in &events {
-                            if let Some(new_event) = event.try_as_metric().and_then(|metric| self.try_remap_metric(metric).map(Event::Metric)) {
+                        for event in events {
+                            if let Some(new_event) = event.try_into_metric().and_then(|metric| self.try_remap_metric(metric).map(Event::Metric)) {
                                 if let Err(e) = buffered_forwarder.push(new_event).await {
                                     error!(error = %e, "Failed to forward event.");
                                 }
@@ -120,10 +119,6 @@ impl Transform for AgentTelemetryRemapper {
                         }
 
                         if let Err(e) = buffered_forwarder.flush().await {
-                            error!(error = %e, "Failed to forward events.");
-                        }
-
-                        if let Err(e) = context.forwarder().forward_buffer(events).await {
                             error!(error = %e, "Failed to forward events.");
                         }
                     },
@@ -278,6 +273,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn drops_non_matching_metric() {
+        let mut remapper = AgentTelemetryRemapper {
+            context_resolver: ContextResolverBuilder::for_tests().build(),
+            rules: get_datadog_agent_remappings(),
+        };
+
+        let context = Context::from_static_parts("adp.does_not_exist", &[]);
+        let metric = Metric::counter(context, 1.0);
+        let new_metric = remapper.try_remap_metric(metric);
+        assert!(new_metric.is_none());
+    }
+
+    #[test]
     fn test_remap_object_pool_metrics() {
         let mut remapper = AgentTelemetryRemapper {
             context_resolver: ContextResolverBuilder::for_tests().build(),
@@ -286,17 +294,17 @@ mod tests {
 
         let context = Context::from_static_parts("adp.object_pool_acquired", &["pool_name:dsd_packet_bufs"]);
         let metric = Metric::counter(context, 1.0);
-        let new_metric = remapper.try_remap_metric(&metric).expect("should have remapped");
+        let new_metric = remapper.try_remap_metric(metric).expect("should have remapped");
         assert_eq!(new_metric.context().name(), "dogstatsd.packet_pool_get");
 
         let context = Context::from_static_parts("adp.object_pool_released", &["pool_name:dsd_packet_bufs"]);
         let metric = Metric::counter(context, 1.0);
-        let new_metric = remapper.try_remap_metric(&metric).expect("should have remapped");
+        let new_metric = remapper.try_remap_metric(metric).expect("should have remapped");
         assert_eq!(new_metric.context().name(), "dogstatsd.packet_pool_put");
 
         let context = Context::from_static_parts("adp.object_pool_in_use", &["pool_name:dsd_packet_bufs"]);
         let metric = Metric::gauge(context, 1.0);
-        let new_metric = remapper.try_remap_metric(&metric).expect("should have remapped");
+        let new_metric = remapper.try_remap_metric(metric).expect("should have remapped");
         assert_eq!(new_metric.context().name(), "dogstatsd.packet_pool");
     }
 }
