@@ -57,6 +57,8 @@ pub struct ForwarderConfiguration {
     proxy: Option<ProxyConfiguration>,
 
     /// Connection reset interval, in seconds.
+    ///
+    /// Defaults to 0.
     #[serde(
         default = "default_forwarder_connection_reset_interval",
         rename = "forwarder_connection_reset_interval"
