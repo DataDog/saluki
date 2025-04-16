@@ -3,7 +3,7 @@
 use crate::buf::FrozenChunkedBytesBuffer;
 
 mod client;
-pub use self::client::HttpClient;
+pub use self::client::{HttpClient, ResetHttpClient};
 
 mod conn;
 pub use self::conn::HttpsCapableConnector;

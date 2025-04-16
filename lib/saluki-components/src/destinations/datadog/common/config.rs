@@ -16,6 +16,9 @@ const fn default_endpoint_buffer_size() -> usize {
     16
 }
 
+const fn default_forwarder_connection_reset_interval() -> u64 {
+    0
+}
 /// Forwarder configuration based on the Datadog Agent's forwarder configuration.
 ///
 /// This adapter provides a simple way to utilize the existing configuration values that are passed to the Datadog
@@ -52,6 +55,13 @@ pub struct ForwarderConfiguration {
     /// Proxy configuration.
     #[serde(flatten)]
     proxy: Option<ProxyConfiguration>,
+
+    /// Connection reset interval, in seconds.
+    #[serde(
+        default = "default_forwarder_connection_reset_interval",
+        rename = "forwarder_connection_reset_interval"
+    )]
+    connection_reset_interval_secs: u64,
 }
 
 impl ForwarderConfiguration {
@@ -83,5 +93,10 @@ impl ForwarderConfiguration {
     /// Returns a reference to the proxy configuration.
     pub fn proxy(&self) -> &Option<ProxyConfiguration> {
         &self.proxy
+    }
+
+    /// Returns the connection reset interval.
+    pub const fn connection_reset_interval(&self) -> Duration {
+        Duration::from_secs(self.connection_reset_interval_secs)
     }
 }
