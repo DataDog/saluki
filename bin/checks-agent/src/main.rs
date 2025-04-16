@@ -21,7 +21,7 @@ use tracing::{error, info};
 
 use self::env_provider::ADPEnvironmentProvider;
 
-const PRIMARY_UNPRIVILEGED_API_PORT: u16 = 5100;
+const PRIMARY_UNPRIVILEGED_API_PORT: u16 = 5105;
 
 #[cfg(target_os = "linux")]
 #[global_allocator]

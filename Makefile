@@ -87,8 +87,8 @@ build-adp: ## Builds the ADP binary in debug mode
 
 .PHONY: build-checks-agent
 build-checks-agent: check-rust-build-tools
-build-checks-agent: ## Builds the ADP binary in debug mode
-	@echo "[*] Building Check Agent locally..."
+build-checks-agent: ## Builds the Checks Agent binary in debug mode
+	@echo "[*] Building Checks Agent locally..."
 	@cargo build --profile dev --package checks-agent
 
 .PHONY: build-adp-release
@@ -242,8 +242,8 @@ run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 
 .PHONY: run-checks-agent-standalone
 run-checks-agent-standalone: build-checks-agent
-run-checks-agent-standalone: ## Runs Check Agent locally in standalone mode (debug)
-	@echo "[*] Running Check Agent..."
+run-checks-agent-standalone: ## Runs Checks Agent locally in standalone mode (debug)
+	@echo "[*] Running Checks Agent..."
 	@DD_ADP_STANDALONE_MODE=true \
 	DD_LOG_LEVEL=debug \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=check-agent-standalone \
