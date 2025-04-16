@@ -1,20 +1,20 @@
 [package]
 name = "checks-agent"
 version = "0.1.0"
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
 
 [dependencies]
 memory-accounting = { workspace = true }
 saluki-app = { workspace = true, features = ["full"] }
-saluki-error = { workspace = true }
-saluki-io = { workspace = true }
-saluki-core = { workspace = true }
-saluki-config = { workspace = true }
-saluki-health = { workspace = true }
 saluki-components = { workspace = true }
+saluki-config = { workspace = true }
+saluki-core = { workspace = true }
 saluki-env = { workspace = true }
+saluki-error = { workspace = true }
+saluki-health = { workspace = true }
+saluki-io = { workspace = true }
 tokio = { workspace = true, features = [
   "macros",
   "rt",
@@ -23,7 +23,6 @@ tokio = { workspace = true, features = [
 ] }
 tokio-rustls = { workspace = true }
 tracing = { workspace = true }
-
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tikv-jemalloc-ctl = { workspace = true, features = ["use_std"] }

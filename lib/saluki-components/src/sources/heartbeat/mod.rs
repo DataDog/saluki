@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_context::Context;
@@ -5,7 +7,6 @@ use saluki_core::components::{sources::*, ComponentContext};
 use saluki_core::topology::OutputDefinition;
 use saluki_error::GenericError;
 use saluki_event::{metric::Metric, DataType, Event};
-use std::time::Duration;
 use tokio::{select, time::interval};
 use tracing::{debug, error};
 

@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use memory_accounting::ComponentRegistry;
 use saluki_app::{api::APIBuilder, metrics::emit_startup_metrics, prelude::*};
 use saluki_components::{destinations::BlackholeConfiguration, sources::HeartbeatConfiguration};
@@ -6,11 +8,11 @@ use saluki_core::topology::TopologyBlueprint;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use saluki_io::net::ListenAddress;
-use std::time::{Duration, Instant};
 
 mod env_provider;
 
 use std::future::pending;
+
 use tokio::select;
 use tracing::{error, info};
 
