@@ -17,7 +17,6 @@ use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
 use saluki_tls::ClientTLSConfigBuilder;
 use stringtheory::MetaString;
-use tokio::time::Instant;
 use tower::{
     retry::Policy, timeout::TimeoutLayer, util::BoxCloneService, BoxError, Service, ServiceBuilder, ServiceExt as _,
 };
@@ -87,75 +86,6 @@ where
 
             result
         })
-    }
-}
-
-/// A wrapper around HttpClient that periodically resets connections
-#[derive(Clone)]
-#[allow(dead_code)]
-pub struct ResettableHttpClient<B = ()> {
-    client: HttpClient<B>,
-    client_builder: HttpClientBuilder,
-    reset_interval: Duration,
-    last_reset: Instant,
-}
-
-impl<B> ResettableHttpClient<B>
-where
-    B: Body + Clone + Send + Unpin + 'static,
-    B::Data: Send,
-    B::Error: std::error::Error + Send + Sync,
-{
-    /// Creates a new ResettableHttpClient with the specified reset interval
-    pub fn new(builder: HttpClientBuilder, reset_interval: Duration) -> Result<Self, GenericError> {
-        let client = builder.clone().build()?;
-
-        Ok(Self {
-            client,
-            client_builder: builder,
-            reset_interval,
-            last_reset: Instant::now(),
-        })
-    }
-
-    fn reset_if_needed(&mut self) -> Result<(), BoxError> {
-        // 0 means reset feature is disabled
-        if self.reset_interval.is_zero() {
-            return Ok(());
-        }
-
-        // If the last reset was less than the reset interval ago, do nothing
-        if self.last_reset.elapsed() < self.reset_interval {
-            return Ok(());
-        }
-
-        // Reset the client
-        self.client = self.client_builder.clone().build()?;
-        self.last_reset = Instant::now();
-
-        Ok(())
-    }
-}
-
-impl<B> Service<Request<B>> for ResettableHttpClient<B>
-where
-    B: Body + Clone + Send + Unpin + 'static,
-    B::Data: Send,
-    B::Error: std::error::Error + Send + Sync,
-{
-    type Response = Response<Incoming>;
-    type Error = BoxError;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
-
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.client.poll_ready(cx)
-    }
-
-    fn call(&mut self, req: Request<B>) -> Self::Future {
-        if let Err(e) = self.reset_if_needed() {
-            return Box::pin(async move { Err(e) });
-        }
-        self.client.call(req)
     }
 }
 

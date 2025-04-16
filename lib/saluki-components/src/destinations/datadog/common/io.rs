@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, error::Error as _, sync::Arc};
+use std::{collections::VecDeque, error::Error as _, sync::Arc, time::Duration};
 
 use futures::FutureExt as _;
 use http::{Request, Uri};
@@ -11,7 +11,7 @@ use saluki_error::{generic_error, GenericError};
 use saluki_io::{
     buf::ReadIoBuffer,
     net::{
-        client::http::{HttpClient, ResettableHttpClient},
+        client::http::HttpClient,
         util::{
             middleware::{RetryCircuitBreakerError, RetryCircuitBreakerLayer},
             retry::{PushResult, RetryQueue, Retryable},
@@ -80,7 +80,7 @@ pub struct TransactionForwarder<B> {
     config: ForwarderConfiguration,
     telemetry: ComponentTelemetry,
     metrics_builder: MetricsBuilder,
-    client: ResettableHttpClient<TransactionBody<B>>,
+    client: HttpClient<TransactionBody<B>>,
     endpoints: Vec<ResolvedEndpoint>,
 }
 
@@ -107,8 +107,11 @@ where
             client_builder = client_builder.with_proxies(proxy.build()?);
         }
 
-        let client: ResettableHttpClient<TransactionBody<B>> =
-            ResettableHttpClient::new(client_builder.clone(), config.connection_reset_interval())?;
+        if config.connection_reset_interval() > Duration::ZERO {
+            client_builder = client_builder.with_connection_age_limit(config.connection_reset_interval());
+        }
+
+        let client = client_builder.build()?;
 
         Ok(Self {
             config,
