@@ -93,20 +93,20 @@ where
 /// A wrapper around HttpClient that periodically resets connections
 #[derive(Clone)]
 #[allow(dead_code)]
-pub struct ResetHttpClient<B = ()> {
+pub struct ResettableHttpClient<B = ()> {
     client: HttpClient<B>,
     client_builder: HttpClientBuilder,
     reset_interval: Duration,
     last_reset: Instant,
 }
 
-impl<B> ResetHttpClient<B>
+impl<B> ResettableHttpClient<B>
 where
     B: Body + Clone + Send + Unpin + 'static,
     B::Data: Send,
     B::Error: std::error::Error + Send + Sync,
 {
-    /// Creates a new ResetHttpClient with the specified reset interval
+    /// Creates a new ResettableHttpClient with the specified reset interval
     pub fn new(builder: HttpClientBuilder, reset_interval: Duration) -> Result<Self, GenericError> {
         let client = builder.clone().build()?;
 
@@ -137,7 +137,7 @@ where
     }
 }
 
-impl<B> Service<Request<B>> for ResetHttpClient<B>
+impl<B> Service<Request<B>> for ResettableHttpClient<B>
 where
     B: Body + Clone + Send + Unpin + 'static,
     B::Data: Send,

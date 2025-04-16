@@ -11,7 +11,7 @@ use saluki_error::{generic_error, GenericError};
 use saluki_io::{
     buf::ReadIoBuffer,
     net::{
-        client::http::{HttpClient, ResetHttpClient},
+        client::http::{HttpClient, ResettableHttpClient},
         util::{
             middleware::{RetryCircuitBreakerError, RetryCircuitBreakerLayer},
             retry::{PushResult, RetryQueue, Retryable},
@@ -80,7 +80,7 @@ pub struct TransactionForwarder<B> {
     config: ForwarderConfiguration,
     telemetry: ComponentTelemetry,
     metrics_builder: MetricsBuilder,
-    client: ResetHttpClient<TransactionBody<B>>,
+    client: ResettableHttpClient<TransactionBody<B>>,
     endpoints: Vec<ResolvedEndpoint>,
 }
 
@@ -107,8 +107,8 @@ where
             client_builder = client_builder.with_proxies(proxy.build()?);
         }
 
-        let client: ResetHttpClient<TransactionBody<B>> =
-            ResetHttpClient::new(client_builder.clone(), config.connection_reset_interval())?;
+        let client: ResettableHttpClient<TransactionBody<B>> =
+            ResettableHttpClient::new(client_builder.clone(), config.connection_reset_interval())?;
 
         Ok(Self {
             config,
