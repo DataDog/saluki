@@ -73,8 +73,4 @@ COPY --from=builder /checks-agent/target/${BUILD_PROFILE}/checks-agent /usr/loca
 COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/checks-agent/
 COPY --from=license-builder /licenses /opt/datadog/checks-agent/LICENSES
 
-# HACK(GustavoCaso): SMP currently fails to run experiments if `/etc/<target name>` doesn't exist... so we're populating this
-# directory manually for the time being to get ADP benchmarks running.
-RUN mkdir /etc/checks-agent
-
 ENTRYPOINT [ "/usr/local/bin/checks-agent" ]
