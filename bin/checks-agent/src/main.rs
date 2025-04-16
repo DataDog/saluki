@@ -9,11 +9,12 @@ use saluki_io::net::ListenAddress;
 use std::time::{Duration, Instant};
 
 mod env_provider;
-use self::env_provider::ADPEnvironmentProvider;
 
 use std::future::pending;
 use tokio::select;
 use tracing::{error, info};
+
+use self::env_provider::ADPEnvironmentProvider;
 
 const PRIMARY_UNPRIVILEGED_API_PORT: u16 = 5100;
 
@@ -151,7 +152,7 @@ async fn create_topology(
     // Create a HeartbeatConfiguration source with heartbeat enabled to keep the topology running
     let source_config = HeartbeatConfiguration::default();
     // Add a destination component to receive data from the source
-    let blackhole_config = BlackholeConfiguration::default();
+    let blackhole_config = BlackholeConfiguration;
 
     blueprint
         .add_source("checks_in", source_config)?

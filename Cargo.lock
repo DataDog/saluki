@@ -591,10 +591,11 @@ dependencies = [
  "saluki-error",
  "saluki-health",
  "saluki-io",
+ "tikv-jemalloc-ctl",
+ "tikv-jemallocator",
  "tokio",
  "tokio-rustls",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

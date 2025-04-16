@@ -23,7 +23,16 @@ tokio = { workspace = true, features = [
 ] }
 tokio-rustls = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["fmt"] }
+
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tikv-jemalloc-ctl = { workspace = true, features = ["use_std"] }
+tikv-jemallocator = { workspace = true, features = [
+  "background_threads",
+  "profiling",
+  "unprefixed_malloc_on_supported_platforms",
+  "stats",
+] }
 
 [lints]
 workspace = true

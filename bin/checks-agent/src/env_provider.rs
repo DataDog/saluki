@@ -2,7 +2,7 @@ use memory_accounting::ComponentRegistry;
 use saluki_config::GenericConfiguration;
 use saluki_env::{
     host::providers::{BoxedHostProvider, FixedHostProvider, RemoteAgentHostProvider},
-    workload::providers::{RemoteAgentWorkloadAPIHandler, RemoteAgentWorkloadProvider},
+    workload::providers::RemoteAgentWorkloadProvider,
     EnvironmentProvider,
 };
 use saluki_error::GenericError;
@@ -67,13 +67,14 @@ impl ADPEnvironmentProvider {
         })
     }
 
-    /// Returns an API handler for interacting with the underlying data stores powering the workload provider, if one
-    /// has been configured.
-    ///
-    /// See [`RemoteAgentWorkloadAPIHandler`] for more information about routes and responses.
-    pub fn workload_api_handler(&self) -> Option<RemoteAgentWorkloadAPIHandler> {
-        self.workload_provider.as_ref().map(|provider| provider.api_handler())
-    }
+    // We do not use this in the Check Agent, for now, so we can safely comment it, to make clippy happy :)
+    // /// Returns an API handler for interacting with the underlying data stores powering the workload provider, if one
+    // /// has been configured.
+    // ///
+    // /// See [`RemoteAgentWorkloadAPIHandler`] for more information about routes and responses.
+    // pub fn workload_api_handler(&self) -> Option<RemoteAgentWorkloadAPIHandler> {
+    //     self.workload_provider.as_ref().map(|provider| provider.api_handler())
+    // }
 }
 
 impl EnvironmentProvider for ADPEnvironmentProvider {
