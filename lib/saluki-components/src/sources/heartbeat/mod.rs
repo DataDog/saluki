@@ -56,12 +56,10 @@ impl Source for Heartbeat {
 
                     if let Err(e) = buffered_forwarder.push(Event::Metric(metric)).await {
                         error!(error = %e, "Failed to forward event.");
+                    } else if let Err(e) = buffered_forwarder.flush().await {
+                        error!(error = %e, "Failed to forward events.");
                     } else {
-                        if let Err(e) = buffered_forwarder.flush().await {
-                            error!(error = %e, "Failed to forward events.");
-                        } else {
-                            debug!("Emitted heartbeat metric.");
-                        }
+                        debug!("Emitted heartbeat metric.");
                     }
                 }
             }
