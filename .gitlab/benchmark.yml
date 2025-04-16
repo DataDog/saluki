@@ -5,9 +5,13 @@
   - export SMP_ECR_HOST="${SMP_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com"
   - git fetch --verbose --deepen=999 origin ${CI_COMMIT_BRANCH} main
   - export BASELINE_SALUKI_SHA=$(git merge-base origin/main origin/${CI_COMMIT_BRANCH})
+  - export BASELINE_CHECKS_AGENT_SHA=$(git merge-base origin/poc-checks-agent-part-1 origin/${CI_COMMIT_BRANCH})
   - export COMPARISON_SALUKI_SHA="${CI_COMMIT_SHA}"
+  - export COMPARISON_CHECKS_AGENT_SHA="${CI_COMMIT_SHA}"
   - export BASELINE_SALUKI_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-${CI_PIPELINE_ID}-${BASELINE_SALUKI_SHA}"
+  - export BASELINE_CHECKS_AGENT_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:checks-agent-${CI_PIPELINE_ID}-${BASELINE_CHECKS_AGENT_SHA}"
   - export COMPARISON_SALUKI_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-${CI_PIPELINE_ID}-${COMPARISON_SALUKI_SHA}"
+  - export COMPARISON_CHECKS_AGENT_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:checks-agent-${CI_PIPELINE_ID}-${COMPARISON_CHECKS_AGENT_SHA}"
   - export BASELINE_DSD_VERSION="${BASE_DD_AGENT_VERSION}"
   - export COMPARISON_DSD_VERSION="${BASE_DD_AGENT_VERSION}"
   - export SOURCE_DSD_IMG="public.ecr.aws/datadog/dogstatsd:${BASE_DD_AGENT_VERSION}"
@@ -86,6 +90,86 @@ build-adp-comparison-image:
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${COMPARISON_SALUKI_SHA}
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --push
+      .
+
+build-checks-agent-image:
+  extends: .build-common-variables
+  stage: benchmark
+  image: "${SALUKI_SMP_CI_IMAGE}"
+  needs: []
+  retry: 2
+  timeout: 20m
+  before_script:
+    - *setup-smp-env
+  variables:
+    # Compiling Rust is intensive. ¯\_(ツ)_/¯
+    KUBERNETES_CPU_REQUEST: "16"
+    KUBERNETES_MEMORY_REQUEST: "8Gi"
+    KUBERNETES_MEMORY_LIMIT: "12Gi"
+    AWS_NAMED_PROFILE: single-machine-performance
+  script:
+    # Initialize our AWS credentials.
+    - ./test/smp/configure-smp-aws-credentials.sh
+
+    # Build baseline from `poc-checks-agent-part-1`. A more correct approach here would be to check
+    # out all but the dockerfile for saluki from the branch point and build that
+    # way but this should be Good Enough for a while.
+    - git fetch --all
+    - git switch poc-checks-agent-part-1
+
+    # Actually build.
+    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
+    - docker buildx build
+      --platform linux/amd64,linux/arm64
+      --file ./docker/Dockerfile.checks-agent
+      --tag ${BASELINE_CHECKS_AGENT_IMG}
+      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
+      --build-arg BUILD_PROFILE=${BUILD_PROFILE}
+      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
+      --build-arg APP_GIT_HASH=${BASELINE_CHECKS_AGENT_SHA}
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --push
+      .
+
+build-checks-agent-comparison-image:
+  extends: .build-common-variables
+  stage: benchmark
+  image: "${SALUKI_SMP_CI_IMAGE}"
+  needs: []
+  retry: 2
+  timeout: 20m
+  before_script:
+    - *setup-smp-env
+  variables:
+    # Compiling Rust is intensive. ¯\_(ツ)_/¯
+    KUBERNETES_CPU_REQUEST: "16"
+    KUBERNETES_MEMORY_REQUEST: "8Gi"
+    KUBERNETES_MEMORY_LIMIT: "12Gi"
+    AWS_NAMED_PROFILE: single-machine-performance
+  script:
+     # Initialize our AWS credentials.
+    - ./test/smp/configure-smp-aws-credentials.sh
+
+    # Actually build.
+    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
+    - docker buildx build
+      --platform linux/amd64,linux/arm64
+      --file ./docker/Dockerfile.checks-agent
+      --tag ${COMPARISON_CHECKS_AGENT_IMG}
+      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
+      --build-arg BUILD_PROFILE=${BUILD_PROFILE}
+      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
+      --build-arg APP_GIT_HASH=${COMPARISON_CHECKS_AGENT_SHA}
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
@@ -240,6 +324,73 @@ run-benchmarks-dsd:
     - cat outputs/report.md | sed "s/^\$/$(echo -ne '\uFEFF\u00A0\u200B')/g"
     # Post the HTML report to the PR.
     - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (DogStatsD)"
+    # Finally, exit 1 if the job signals a regression else 0.
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+            job result
+            --submission-metadata submission_metadata
+
+run-benchmarks-checks-agent:
+  stage: benchmark
+  timeout: 1h
+  image: "${SALUKI_SMP_CI_IMAGE}"
+  needs:
+    - build-checks-agent-image
+    - build-checks-agent-comparison-image
+  allow_failure: true
+  before_script:
+    - *setup-smp-env
+  artifacts:
+    expire_in: 1 weeks
+    paths:
+      - submission_metadata  # for provenance, debugging
+      - checks_job_start_time   # for generating PR comments
+      - checks_job_end_time     # for generating PR comments
+      - checks_run_id           # for generating PR comments
+      - outputs/report.md    # for debugging, also on S3
+      - outputs/report.html  # for debugging, also on S3
+    when: always
+  variables:
+    AWS_NAMED_PROFILE: single-machine-performance
+    SMP_VERSION: 0.21.0
+    RUST_LOG: info,aws_config::profile::credentials=error
+  script:
+    # Do some pre-flight steps like creating directories, installing helper utilities, setting
+    # credentials, and so on.
+    - mkdir outputs && touch outputs/report.md outputs/report.html
+    - ./test/smp/configure-smp-aws-credentials.sh
+    # Download the SMP binary.
+    - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-gnu/smp smp && chmod +x smp
+    # Run SMP against our converged Agent image.
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+            job submit
+            --baseline-image ${BASELINE_CHECKS_AGENT_IMG}
+            --comparison-image ${COMPARISON_CHECKS_AGENT_IMG}
+            --baseline-sha ${BASELINE_CHECKS_AGENT_SHA}
+            --comparison-sha ${COMPARISON_CHECKS_AGENT_SHA}
+            --target-config-dir ./test/smp/regression/checks-agent/
+            --submission-metadata submission_metadata
+    # Populate some data that we'll need later for generating links to experiment dashboards.
+    - date +%s > checks_job_start_time
+    - cat submission_metadata | jq -r '.jobId' > checks_run_id
+    # Wait for job to complete.
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+            job status
+            --wait
+            --wait-delay-seconds 60
+            --submission-metadata submission_metadata
+    # And populate some more data that we'll need later for generating links to experiment dashboards.
+    - date +%s > checks_job_end_time
+    # Pull the analysis report and output it to stdout.
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+            job sync
+            --submission-metadata submission_metadata
+            --output-path outputs
+    # Replace empty lines in the output with lines containing various unicode space characters.
+    #
+    # This avoids  https://gitlab.com/gitlab-org/gitlab/-/issues/217231.
+    - cat outputs/report.md | sed "s/^\$/$(echo -ne '\uFEFF\u00A0\u200B')/g"
+    # Post the HTML report to the PR.
+    - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Checks Agent)"
     # Finally, exit 1 if the job signals a regression else 0.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
             job result
