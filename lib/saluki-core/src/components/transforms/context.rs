@@ -1,5 +1,6 @@
 use memory_accounting::{ComponentRegistry, MemoryLimiter};
 use saluki_health::{Health, HealthRegistry};
+use tokio::runtime::Handle;
 
 use crate::{
     components::ComponentContext,
@@ -17,14 +18,17 @@ pub struct TransformContext {
     health_handle: Option<Health>,
     health_registry: HealthRegistry,
     component_registry: ComponentRegistry,
+    thread_pool: Handle,
 }
 
 impl TransformContext {
     /// Creates a new `TransformContext`.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         component_context: ComponentContext, forwarder: Forwarder, event_stream: EventStream,
         event_buffer_pool: ElasticObjectPool<FixedSizeEventBuffer>, memory_limiter: MemoryLimiter,
         component_registry: ComponentRegistry, health_handle: Health, health_registry: HealthRegistry,
+        thread_pool: Handle,
     ) -> Self {
         Self {
             component_context,
@@ -35,6 +39,7 @@ impl TransformContext {
             health_handle: Some(health_handle),
             health_registry,
             component_registry,
+            thread_pool,
         }
     }
 
@@ -80,5 +85,10 @@ impl TransformContext {
     /// Gets a mutable reference to the component registry.
     pub fn component_registry(&self) -> &ComponentRegistry {
         &self.component_registry
+    }
+
+    /// Gets a reference to the global thread pool.
+    pub fn global_thread_pool(&self) -> &Handle {
+        &self.thread_pool
     }
 }
