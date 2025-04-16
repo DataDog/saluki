@@ -401,6 +401,7 @@ comment-smp-result-links:
   needs:
     - run-benchmarks-adp
     - run-benchmarks-dsd
+    - run-benchmarks-checks-agent
   image: "${SALUKI_SMP_CI_IMAGE}"
   before_script:
     - *setup-smp-env
