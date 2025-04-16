@@ -27,13 +27,12 @@ impl Default for HeartbeatConfiguration {
     }
 }
 
-/// Source that doesn't produce any events or optionally emits heartbeat metrics.
-struct HeartbeatSource {
+struct Heartbeat {
     heartbeat_interval_secs: u64,
 }
 
 #[async_trait]
-impl Source for HeartbeatSource {
+impl Source for Heartbeat {
     async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
         let mut global_shutdown = context.take_shutdown_handle();
         let mut health = context.take_health_handle();
@@ -51,14 +50,18 @@ impl Source for HeartbeatSource {
                 _ = health.live() => continue,
                 _ = tick_interval.tick() => {
                     // Create a simple heartbeat metric
-                    let metric_context = Context::from_static_name("none_source.heartbeat");
+                    let metric_context = Context::from_static_name("heartbeat");
                     let metric = Metric::gauge(metric_context, 1.0);
+                    let mut buffered_forwarder = context.forwarder().buffered().expect("default output must always exist");
 
-                    let events = vec![Event::Metric(metric)];
-                    if let Err(e) = context.forwarder().forward(events).await {
-                        error!(error = %e, "Failed to forward heartbeat event.");
+                    if let Err(e) = buffered_forwarder.push(Event::Metric(metric)).await {
+                        error!(error = %e, "Failed to forward event.");
                     } else {
-                        debug!("Emitted heartbeat metric.");
+                        if let Err(e) = buffered_forwarder.flush().await {
+                            error!(error = %e, "Failed to forward events.");
+                        } else {
+                            debug!("Emitted heartbeat metric.");
+                        }
                     }
                 }
             }
@@ -72,7 +75,7 @@ impl Source for HeartbeatSource {
 #[async_trait]
 impl SourceBuilder for HeartbeatConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
-        Ok(Box::new(HeartbeatSource {
+        Ok(Box::new(Heartbeat {
             heartbeat_interval_secs: self.heartbeat_interval_secs,
         }))
     }
@@ -87,8 +90,6 @@ impl SourceBuilder for HeartbeatConfiguration {
 impl MemoryBounds for HeartbeatConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         // Minimal memory footprint when emitting heartbeat metrics
-        builder
-            .minimum()
-            .with_single_value::<HeartbeatSource>("component struct");
+        builder.minimum().with_single_value::<Heartbeat>("component struct");
     }
 }
