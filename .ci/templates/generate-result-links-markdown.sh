@@ -83,7 +83,7 @@ dsd_only_experiments=$(comm -13 adp-experiments dsd-experiments)
 common_experiments=$(comm -12 adp-experiments dsd-experiments)
 
 # Write out our table of links, doing common experiments first, then ADP-only, then DSD-only.
-echo "## Experiment Result Links"
+echo "## ADP Experiment Result Links"
 echo ""
 echo "| experiment | link(s) |"
 echo "|------------|---------|"
@@ -109,6 +109,11 @@ for experiment in $dsd_only_experiments; do
 
     echo "| $experiment (DSD only) | \\[[Profiling (DSD)]($dsd_continuous_profiler_url)\\] \\[[SMP Dashboard]($adp_smp_dashboard_url)\\] |"
 done
+
+echo "## Checks Agent Experiment Result Links"
+echo ""
+echo "| experiment | link(s) |"
+echo "|------------|---------|"
 
 checks_continuous_profiler_url=$(get_continuous_profiler_url "$checks_run_id" "$checks_start_time" "$checks_end_time" "quality_gates_idle_rss")
 checks_smp_dashboard_url=$(get_adp_smp_dashboard_url "$checks_run_id" "$dsd_run_id" "$checks_start_time" "$checks_end_time" "quality_gates_idle_rss")
