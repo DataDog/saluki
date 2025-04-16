@@ -155,7 +155,7 @@ impl Service<Uri> for HttpsCapableConnector {
 }
 
 /// A builder for `HttpsCapableConnector`.
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct HttpsCapableConnectorBuilder {
     connect_timeout: Option<Duration>,
     bytes_sent: Option<Counter>,

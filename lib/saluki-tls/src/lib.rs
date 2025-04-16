@@ -24,7 +24,6 @@ const DEFAULT_MAX_TLS12_RESUMPTION_SESSIONS: usize = 8;
 /// ## Missing
 ///
 /// - ability to configure client authentication
-#[derive(Clone)]
 pub struct ClientTLSConfigBuilder {
     max_tls12_resumption_sessions: Option<usize>,
     root_cert_store: Option<RootCertStore>,

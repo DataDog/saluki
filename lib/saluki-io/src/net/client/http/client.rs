@@ -105,7 +105,6 @@ where
 /// - support for FIPS-compliant cryptography (if the `fips` feature is enabled in the `saluki-tls` crate) via [AWS-LC][aws-lc]
 ///
 /// [aws-lc]: https://github.com/aws/aws-lc-rs
-#[derive(Clone)]
 pub struct HttpClientBuilder<P = NoopRetryPolicy> {
     connector_builder: HttpsCapableConnectorBuilder,
     hyper_builder: Builder,
