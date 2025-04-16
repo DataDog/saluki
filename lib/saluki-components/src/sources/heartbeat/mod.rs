@@ -40,7 +40,7 @@ impl Source for HeartbeatSource {
         let mut tick_interval = interval(Duration::from_secs(self.heartbeat_interval_secs));
 
         health.mark_ready();
-        debug!("None source with heartbeat started.");
+        debug!("Heartbeat source started.");
 
         loop {
             select! {
@@ -64,7 +64,7 @@ impl Source for HeartbeatSource {
             }
         }
 
-        debug!("heartbeat source stopped.");
+        debug!("Heartbeat source stopped.");
         Ok(())
     }
 }
