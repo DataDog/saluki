@@ -7,7 +7,6 @@ use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use metrics::{Counter, Gauge, Histogram};
 use saluki_config::GenericConfiguration;
-use saluki_context::tags::ChainedRawTags;
 use saluki_core::{
     components::{sources::*, ComponentContext},
     observability::ComponentMetricsExt as _,
@@ -933,10 +932,15 @@ fn handle_metric_packet(
         context_resolvers.primary()
     };
 
-    let chained_raw_tags = ChainedRawTags::new(packet.tags.clone(), additional_tags);
+    // Chain the existing tags with the additional tags.
+    let tags = packet
+        .tags
+        .clone()
+        .into_iter()
+        .chain(additional_tags.iter().map(|s| s.as_str()));
 
     // Try to resolve the context for this metric.
-    match context_resolver.resolve(packet.metric_name, chained_raw_tags, Some(origin)) {
+    match context_resolver.resolve(packet.metric_name, tags, Some(origin)) {
         Some(context) => {
             let metric_origin = packet
                 .jmx_check_name
@@ -1048,5 +1052,40 @@ mod tests {
 
         let maybe_metric = handle_metric_packet(packet, &mut context_resolvers, &peer_addr, &[]);
         assert!(maybe_metric.is_none());
+    }
+
+    #[test]
+    fn metric_with_additional_tags() {
+        let codec = DogstatsdCodec::from_configuration(DogstatsdCodecConfiguration::default());
+        let context_resolver = ContextResolverBuilder::for_tests().with_heap_allocations(false).build();
+        let mut context_resolvers = ContextResolvers::manual(context_resolver.clone(), context_resolver);
+        let peer_addr = ConnectionAddress::from("1.1.1.1:1234".parse::<SocketAddr>().unwrap());
+
+        let existing_tags = ["tag1:value1", "tag2:value2", "tag3:value3"];
+        let existing_tags_str = existing_tags.join(",");
+
+        let input = format!("test_metric_name:1|c|#{}", existing_tags_str);
+        let additional_tags = [
+            "tag4:value4".to_string(),
+            "tag5:value5".to_string(),
+            "tag6:value6".to_string(),
+        ];
+
+        let Ok(ParsedPacket::Metric(packet)) = codec.decode_packet(input.as_bytes()) else {
+            panic!("Failed to parse packet.");
+        };
+        let maybe_metric = handle_metric_packet(packet, &mut context_resolvers, &peer_addr, &additional_tags);
+        assert!(maybe_metric.is_some());
+
+        let metric = maybe_metric.unwrap();
+        let context = metric.context();
+
+        for tag in existing_tags {
+            assert!(context.tags().has_tag(tag));
+        }
+
+        for tag in additional_tags {
+            assert!(context.tags().has_tag(tag));
+        }
     }
 }
