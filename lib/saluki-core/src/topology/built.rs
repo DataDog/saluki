@@ -125,6 +125,7 @@ impl BuiltTopology {
 
         let thread_pool = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(8)
+            .enable_all()
             .build()
             .error_context("Failed to build asynchronous thread pool runtime.")?;
         let thread_pool_handle = thread_pool.handle().clone();
