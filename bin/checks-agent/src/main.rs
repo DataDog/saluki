@@ -2,7 +2,10 @@ use std::time::{Duration, Instant};
 
 use memory_accounting::ComponentRegistry;
 use saluki_app::{api::APIBuilder, metrics::emit_startup_metrics, prelude::*};
-use saluki_components::{destinations::BlackholeConfiguration, sources::HeartbeatConfiguration};
+use saluki_components::{
+    destinations::{BlackholeConfiguration, PrometheusConfiguration},
+    sources::{HeartbeatConfiguration, InternalMetricsConfiguration},
+};
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::topology::TopologyBlueprint;
 use saluki_error::{ErrorContext as _, GenericError};
@@ -144,7 +147,7 @@ async fn run(started: Instant) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn create_topology(
-    _configuration: &GenericConfiguration, _env_provider: &ADPEnvironmentProvider,
+    configuration: &GenericConfiguration, _env_provider: &ADPEnvironmentProvider,
     component_registry: &ComponentRegistry,
 ) -> Result<TopologyBlueprint, GenericError> {
     // Create a simplified topology with minimal components for now
@@ -160,6 +163,23 @@ async fn create_topology(
         .add_source("checks_in", source_config)?
         .add_destination("metrics_out", blackhole_config)?
         .connect_component("metrics_out", ["checks_in"])?;
+
+    // When telemetry is enabled, we need to collect internal metrics, so add those components and route them here.
+    let telemetry_enabled = configuration.get_typed_or_default::<bool>("telemetry_enabled");
+    if telemetry_enabled {
+        let int_metrics_config = InternalMetricsConfiguration;
+        let prometheus_config = PrometheusConfiguration::from_configuration(configuration)?;
+
+        info!(
+            "Serving telemetry scrape endpoint on {}.",
+            prometheus_config.listen_address()
+        );
+
+        blueprint
+            .add_source("internal_metrics_in", int_metrics_config)?
+            .add_destination("internal_metrics_out", prometheus_config)?
+            .connect_component("internal_metrics_out", ["internal_metrics_in"])?;
+    }
 
     Ok(blueprint)
 }

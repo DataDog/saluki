@@ -247,6 +247,7 @@ run-checks-agent-standalone: ## Runs Check Agent locally in standalone mode (deb
 	@DD_ADP_STANDALONE_MODE=true \
 	DD_LOG_LEVEL=debug \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=check-agent-standalone \
+	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/debug/checks-agent
 
 .PHONY: run-adp-standalone-release
