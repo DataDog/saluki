@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, error::Error as _, sync::Arc};
+use std::{collections::VecDeque, error::Error as _, sync::Arc, time::Duration};
 
 use futures::FutureExt as _;
 use http::{Request, Uri};
@@ -106,6 +106,11 @@ where
         if let Some(proxy) = config.proxy() {
             client_builder = client_builder.with_proxies(proxy.build()?);
         }
+
+        if config.connection_reset_interval() > Duration::ZERO {
+            client_builder = client_builder.with_connection_age_limit(config.connection_reset_interval());
+        }
+
         let client = client_builder.build()?;
 
         Ok(Self {
