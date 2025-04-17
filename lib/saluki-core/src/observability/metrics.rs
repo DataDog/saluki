@@ -10,7 +10,7 @@ use std::{
 use futures::Stream;
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SetRecorderError, SharedString, Unit};
 use metrics_util::registry::{AtomicStorage, Registry};
-use saluki_common::task::spawn_traced_named;
+use saluki_common::{collections::FastHashMap, task::spawn_traced_named};
 use saluki_context::{
     origin::RawOrigin,
     tags::{Tag, TagSet},
@@ -142,13 +142,7 @@ async fn make_rx_future(mut rx: Receiver<SharedEvents>) -> (Result<SharedEvents,
 }
 
 async fn flush_metrics(flush_interval: Duration) {
-    // TODO: This is only worth 8KB, but it would be good to find a proper spot to tie this into the memory
-    // bounds/accounting stuff since we currently just initialize metrics (and logging) with all-inclusive free
-    // functions that come way before we even construct a topology.
-    let mut context_resolver = ContextResolverBuilder::from_name("internal_metrics")
-        .expect("resolver name is not empty")
-        .with_interner_capacity_bytes(INTERNAL_METRICS_INTERNER_SIZE)
-        .build();
+    let mut context_resolver = MetricsContextResolver::new(INTERNAL_METRICS_INTERNER_SIZE);
 
     let mut flush_interval = tokio::time::interval(flush_interval);
     flush_interval.tick().await;
@@ -176,7 +170,7 @@ async fn flush_metrics(flush_interval: Duration) {
         let histograms = state.registry.get_histogram_handles();
 
         for (key, counter) in counters {
-            let context = context_from_key(&mut context_resolver, key);
+            let context = context_resolver.resolve_from_key(key);
             let value = counter.swap(0, Ordering::Relaxed) as f64;
 
             let metric = Metric::counter(context, value);
@@ -184,7 +178,7 @@ async fn flush_metrics(flush_interval: Duration) {
         }
 
         for (key, gauge) in gauges {
-            let context = context_from_key(&mut context_resolver, key);
+            let context = context_resolver.resolve_from_key(key);
             let value = f64::from_bits(gauge.load(Ordering::Relaxed));
 
             let metric = Metric::gauge(context, value);
@@ -192,7 +186,7 @@ async fn flush_metrics(flush_interval: Duration) {
         }
 
         for (key, histogram) in histograms {
-            let context = context_from_key(&mut context_resolver, key);
+            let context = context_resolver.resolve_from_key(key);
 
             // Collect all of the samples from the histogram.
             //
@@ -214,25 +208,50 @@ async fn flush_metrics(flush_interval: Duration) {
     }
 }
 
-fn context_from_key(context_resolver: &mut ContextResolver, key: Key) -> Context {
-    let tags = key
-        .labels()
-        .map(|l| Tag::from(format!("{}:{}", l.key(), l.value())))
-        .collect::<TagSet>();
-
-    context_resolver
-        .resolve(key.name(), &tags, Some(internal_telemetry_origin()))
-        .expect("resolver should always allow falling back")
+struct MetricsContextResolver {
+    context_resolver: ContextResolver,
+    key_context_cache: FastHashMap<Key, Context>,
 }
 
-fn internal_telemetry_origin() -> RawOrigin<'static> {
-    static SELF_ORIGIN_INFO: LazyLock<RawOrigin<'static>> = LazyLock::new(|| {
-        let mut origin_info = RawOrigin::default();
-        origin_info.set_process_id(std::process::id());
-        origin_info
-    });
+impl MetricsContextResolver {
+    fn new(resolver_interner_size_bytes: NonZeroUsize) -> Self {
+        Self {
+            // Set up our context resolver without caching, since we will be caching the contexts ourselves.
+            context_resolver: ContextResolverBuilder::from_name("internal_metrics")
+                .expect("resolver name is not empty")
+                .with_interner_capacity_bytes(resolver_interner_size_bytes)
+                .without_caching()
+                .build(),
+            key_context_cache: FastHashMap::default(),
+        }
+    }
 
-    (*SELF_ORIGIN_INFO).clone()
+    fn resolve_from_key(&mut self, key: Key) -> Context {
+        static SELF_ORIGIN_INFO: LazyLock<RawOrigin<'static>> = LazyLock::new(|| {
+            let mut origin_info = RawOrigin::default();
+            origin_info.set_process_id(std::process::id());
+            origin_info
+        });
+
+        // Check the cache first.
+        if let Some(context) = self.key_context_cache.get(&key) {
+            return context.clone();
+        }
+
+        // We don't have the context cached, so we need to resolve it.
+        let tags = key
+            .labels()
+            .map(|l| Tag::from(format!("{}:{}", l.key(), l.value())))
+            .collect::<TagSet>();
+
+        let context = self
+            .context_resolver
+            .resolve(key.name(), &tags, Some(SELF_ORIGIN_INFO.clone()))
+            .expect("resolver should always allow falling back");
+
+        self.key_context_cache.insert(key, context.clone());
+        context
+    }
 }
 
 /// Initializes the metrics subsystem with the given metrics prefix.
