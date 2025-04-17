@@ -3,7 +3,10 @@
 use std::future::Future;
 
 use memory_accounting::allocator::Track as _;
-use tokio::{runtime::Handle, task::{AbortHandle, JoinHandle, JoinSet}};
+use tokio::{
+    runtime::Handle,
+    task::{AbortHandle, JoinHandle, JoinSet},
+};
 use tracing::Instrument as _;
 
 /// Spawns a new asynchronous task, returning a [`JoinHandle`] for it.
