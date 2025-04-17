@@ -8,7 +8,7 @@ use saluki_core::{
     components::{destinations::*, ComponentContext},
     observability::ComponentMetricsExt as _,
     pooling::{ElasticObjectPool, ObjectPool},
-    task::spawn_traced,
+    task::{spawn_traced, HandleExt as _},
     topology::interconnect::FixedSizeEventBuffer,
 };
 use saluki_error::{ErrorContext as _, GenericError};
@@ -251,7 +251,7 @@ where
 
         // Spawn our request builder task.
         let (builder_tx, builder_rx) = mpsc::channel(8);
-        let request_builder_handle = context.global_thread_pool().spawn(run_request_builder(
+        let request_builder_handle = context.global_thread_pool().spawn_traced(run_request_builder(
             series_request_builder,
             sketches_request_builder,
             telemetry,
