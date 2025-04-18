@@ -1,4 +1,7 @@
-use std::future::{pending, Future};
+use std::{
+    future::{pending, Future},
+    num::NonZeroUsize,
+};
 
 use memory_accounting::{ComponentRegistry, MemoryLimiter};
 use saluki_app::{
@@ -16,6 +19,11 @@ use crate::{
     api::configure_and_spawn_api_endpoints, components::remapper::AgentTelemetryRemapperConfiguration,
     env_provider::ADPEnvironmentProvider,
 };
+
+// SAFETY: These are obviously all non-zero.
+const INTERNAL_TELEMETRY_EVENT_BUFFER_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(512) };
+const INTERNAL_TELEMETRY_EVENT_BUFFER_POOL_SIZE_MIN: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(2) };
+const INTERNAL_TELEMETRY_EVENT_BUFFER_POOL_SIZE_MAX: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(8) };
 
 /// Spawns all relevant internal ADP processes, such as internal telemetry, API endpoints, and so on.
 ///
@@ -60,6 +68,11 @@ fn spawn_internal_observability_topology(
 
     let mut blueprint = TopologyBlueprint::new("internal", component_registry);
     blueprint
+        .with_global_event_buffer_pool_size(
+            INTERNAL_TELEMETRY_EVENT_BUFFER_SIZE,
+            INTERNAL_TELEMETRY_EVENT_BUFFER_POOL_SIZE_MIN,
+            INTERNAL_TELEMETRY_EVENT_BUFFER_POOL_SIZE_MAX,
+        )
         .add_source("internal_metrics_in", int_metrics_config)?
         .add_transform("internal_metrics_remap", int_metrics_remap_config)?
         .add_destination("internal_metrics_out", prometheus_config)?
@@ -144,7 +157,7 @@ where
                     init_tx.send(Ok(())).unwrap();
 
                     // Start collecting runtime metrics.
-                    tokio::spawn(async move {
+                    runtime.spawn(async move {
                         collect_runtime_metrics(&runtime_id).await;
                     });
 

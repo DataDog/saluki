@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, num::NonZeroUsize};
 
 use memory_accounting::{allocator::Track as _, ComponentRegistry};
 use saluki_error::{ErrorContext as _, GenericError};
@@ -14,6 +14,11 @@ use super::{
 use crate::components::{
     destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder, ComponentContext,
 };
+
+// SAFETY: These are obviously all non-zero.
+const DEFAULT_EVENT_BUFFER_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(1024) };
+const DEFAULT_EVENT_BUFFER_POOL_SIZE_MIN: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(32) };
+const DEFAULT_EVENT_BUFFER_POOL_SIZE_MAX: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(512) };
 
 /// A topology blueprint error.
 #[derive(Debug, Snafu)]
@@ -45,45 +50,37 @@ pub struct TopologyBlueprint {
     transforms: HashMap<ComponentId, RegisteredComponent<Box<dyn TransformBuilder + Send>>>,
     destinations: HashMap<ComponentId, RegisteredComponent<Box<dyn DestinationBuilder + Send>>>,
     component_registry: ComponentRegistry,
+    event_buffer_pool_buffer_size: usize,
+    event_buffer_pool_size_min: usize,
+    event_buffer_pool_size_max: usize,
 }
 
 impl TopologyBlueprint {
     /// Creates an empty `TopologyBlueprint` with the given name.
     pub fn new(name: &str, component_registry: &ComponentRegistry) -> Self {
         // Create a nested component registry for this topology.
-        let mut component_registry = component_registry.get_or_create("topology").get_or_create(name);
+        let component_registry = component_registry.get_or_create("topology").get_or_create(name);
 
-        // Account for our global event buffer pool, which has a lower and upper bound for the pooled object limit, but
-        // using fixed-size event buffers.
-        //
-        // Based on how minimum/firm limits are calculated, we have to subtract the minimum size from our firm size.
-        //
-        // TODO: We should consider adding a helper to `MemoryBoundsBuilder` that does this for you, since it would also
-        // ensure that if we ever changed the logic of how minimum/firm limits are used in calculations, we could avoid
-        // having to change it in all places that need to do these manual minimum/firm calculations.
-        const GLOBAL_EVENT_BUFFER_SIZE: usize =
-            std::mem::size_of::<FixedSizeEventBufferInner>() + (1024 * std::mem::size_of::<Event>());
-        const GLOBAL_EVENT_BUFFER_POOL_SIZE_MIN: usize = 32 * GLOBAL_EVENT_BUFFER_SIZE;
-        const GLOBAL_EVENT_BUFFER_POOL_SIZE_FIRM: usize =
-            (512 * GLOBAL_EVENT_BUFFER_SIZE) - GLOBAL_EVENT_BUFFER_POOL_SIZE_MIN;
-
-        let mut bounds_builder = component_registry.bounds_builder();
-        let mut event_buffer_bounds_builder = bounds_builder.subcomponent("buffer_pools/event_buffer");
-        event_buffer_bounds_builder
-            .minimum()
-            .with_fixed_amount("global event buffer pool", GLOBAL_EVENT_BUFFER_POOL_SIZE_MIN);
-        event_buffer_bounds_builder
-            .firm()
-            .with_fixed_amount("global event buffer pool", GLOBAL_EVENT_BUFFER_POOL_SIZE_FIRM);
-
-        Self {
+        let mut blueprint = Self {
             name: name.to_string(),
             graph: Graph::default(),
             sources: HashMap::new(),
             transforms: HashMap::new(),
             destinations: HashMap::new(),
             component_registry,
-        }
+            event_buffer_pool_buffer_size: 0,
+            event_buffer_pool_size_min: 0,
+            event_buffer_pool_size_max: 0,
+        };
+
+        // Set our default event buffer pool sizing.
+        blueprint.with_global_event_buffer_pool_size(
+            DEFAULT_EVENT_BUFFER_SIZE,
+            DEFAULT_EVENT_BUFFER_POOL_SIZE_MIN,
+            DEFAULT_EVENT_BUFFER_POOL_SIZE_MAX,
+        );
+
+        blueprint
     }
 
     fn update_bounds_for_interconnect(&mut self) {
@@ -93,6 +90,44 @@ impl TopologyBlueprint {
             .bounds_builder()
             .minimum()
             .with_array::<FixedSizeEventBuffer>("fixed size event buffers", 128);
+    }
+
+    /// Sets the global event buffer pool sizing.
+    ///
+    /// The global event buffer pool is used by components to acquire an event buffer that can be used to forward events
+    /// to the next component in the topology.
+    ///
+    /// Each individual event buffer will be allocated to hold `buffer_size` events, and the pool will be sized to hold
+    /// a minimum of `size_min` buffer, and up to a maximum of `size_max` event buffers.
+    pub fn with_global_event_buffer_pool_size(
+        &mut self, buffer_size: NonZeroUsize, size_min: NonZeroUsize, size_max: NonZeroUsize,
+    ) -> &mut Self {
+        self.event_buffer_pool_buffer_size = buffer_size.get();
+        self.event_buffer_pool_size_min = size_min.get();
+        self.event_buffer_pool_size_max = size_max.get();
+
+        // Account for our global event buffer pool, which has a lower and upper bound for the pooled object limit, but
+        // using fixed-size event buffers.
+        //
+        // Based on how minimum/firm limits are calculated, we have to subtract the minimum size from our firm size.
+        let buffer_size_bytes = std::mem::size_of::<FixedSizeEventBufferInner>()
+            + (self.event_buffer_pool_buffer_size * std::mem::size_of::<Event>());
+        let event_buffer_pool_min_bytes = self.event_buffer_pool_size_min * buffer_size_bytes;
+        let event_buffer_pool_max_bytes =
+            (self.event_buffer_pool_size_max * buffer_size_bytes) - event_buffer_pool_min_bytes;
+
+        let mut bounds_builder = self.component_registry.bounds_builder();
+        let mut bounds_builder = bounds_builder.subcomponent("buffer_pools/event_buffer");
+
+        bounds_builder.reset();
+        bounds_builder
+            .minimum()
+            .with_fixed_amount("global event buffer pool", event_buffer_pool_min_bytes);
+        bounds_builder
+            .firm()
+            .with_fixed_amount("global event buffer pool", event_buffer_pool_max_bytes);
+
+        self
     }
 
     /// Adds a source component to the blueprint.

@@ -98,6 +98,11 @@ impl ComponentMetadata {
         }
     }
 
+    fn reset(&mut self) {
+        self.bounds = ComponentBounds::default();
+        self.subcomponents.clear();
+    }
+
     pub fn self_bounds(&self) -> &ComponentBounds {
         &self.bounds
     }
@@ -277,6 +282,15 @@ impl MemoryBoundsBuilder<'static> {
 }
 
 impl MemoryBoundsBuilder<'_> {
+    /// Resets the bounds of the current component to a default state.
+    ///
+    /// This can be used in scenarios where the bounds of a component need to be redefined after they have been
+    /// specified, as not all components are able to be defined in a single pass.
+    pub fn reset(&mut self) {
+        let mut inner = self.inner.inner.lock().unwrap();
+        inner.reset();
+    }
+
     /// Gets a builder object for defining the minimum bounds of the current component.
     pub fn minimum(&mut self) -> BoundsBuilder<'_, Minimum> {
         let bounds = self.inner.inner.lock().unwrap();

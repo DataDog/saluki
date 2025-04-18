@@ -25,7 +25,10 @@ pub async fn initialize_metrics(
     saluki_core::observability::metrics::initialize_metrics(metrics_prefix.into()).await?;
 
     // We also spawn a background task that collects and emits the Tokio runtime metrics.
-    spawn_traced_named("tokio-runtime-metrics-collector-primary", collect_runtime_metrics("primary"));
+    spawn_traced_named(
+        "tokio-runtime-metrics-collector-primary",
+        collect_runtime_metrics("primary"),
+    );
 
     Ok(())
 }
