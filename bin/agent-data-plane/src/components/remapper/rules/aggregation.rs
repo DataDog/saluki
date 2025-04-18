@@ -3,41 +3,41 @@ use crate::components::remapper::RemapperRule;
 pub fn get_aggregation_remappings() -> Vec<RemapperRule> {
     vec![
         RemapperRule::by_name_and_tags(
-            "datadog.agent.adp.context_resolver_active_contexts",
+            "adp.context_resolver_active_contexts",
             &["resolver_id:dogstatsd"],
             "aggregator.dogstatsd_contexts",
         ),
         RemapperRule::by_name_and_tags(
-            "datadog.agent.adp.aggregate_active_contexts_by_type",
+            "adp.aggregate_active_contexts_by_type",
             &["component_id:dsd_agg"],
             "aggregator.dogstatsd_contexts_by_mtype",
         )
         .with_original_tags(["metric_type"]),
         RemapperRule::by_name_and_tags(
-            "datadog.agent.adp.aggregate_active_contexts_bytes_by_type",
+            "adp.aggregate_active_contexts_bytes_by_type",
             &["component_id:dsd_agg"],
             "aggregator.dogstatsd_contexts_bytes_by_mtype",
         )
         .with_original_tags(["metric_type"]),
         RemapperRule::by_name_and_tags(
-            "datadog.agent.adp.component_events_received_total",
+            "adp.component_events_received_total",
             &["component_id:dsd_agg"],
             "aggregator.processed",
         )
         .with_additional_tags(["data_type:dogstatsd_metrics"]),
         RemapperRule::by_name_and_tags(
-            "datadog.agent.adp.aggregate_passthrough_metrics_total",
+            "adp.aggregate_passthrough_metrics_total",
             &["component_id:dsd_agg"],
             "no_aggregation.processed",
         )
         .with_additional_tags(["state:ok"]),
         RemapperRule::by_name_and_tags(
-            "datadog.agent.adp.aggregate_passthrough_flushes_total",
+            "adp.aggregate_passthrough_flushes_total",
             &["component_id:dsd_agg"],
             "no_aggregation.flush",
         ),
         RemapperRule::by_name_and_tags(
-            "datadog.agent.adp.aggregate_flushed_total",
+            "adp.aggregate_flushed_total",
             &["component_id:dsd_agg"],
             "aggregator.flush",
         )

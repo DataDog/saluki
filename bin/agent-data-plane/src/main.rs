@@ -17,11 +17,10 @@ use saluki_components::{
     sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
     transforms::{
         AggregateConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration, DogstatsDPrefixFilterConfiguration,
-        HostEnrichmentConfiguration, HostTagsConfiguration, OriginRemapperConfiguration,
+        HostEnrichmentConfiguration, HostTagsConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration, RefreshableConfiguration, RefresherConfiguration};
-use saluki_context::origin::OriginTagCardinality;
 use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{ErrorContext as _, GenericError};
@@ -63,7 +62,7 @@ async fn main() {
         }
     };
 
-    if let Err(e) = initialize_metrics("datadog.agent.adp").await {
+    if let Err(e) = initialize_metrics("adp").await {
         fatal_and_exit(format!("failed to initialize metrics: {}", e));
     }
 
@@ -250,42 +249,19 @@ async fn create_topology(
     if telemetry_enabled {
         let int_metrics_config = InternalMetricsConfiguration;
         let int_metrics_remap_config = AgentTelemetryRemapperConfiguration::new();
-
-        // We still send our metrics to the primary Datadog Metrics destination, but we use our own aggregator to avoid
-        // getting caught by any limiting behavior present in the primary aggregator.
-        let int_metrics_agg_config = AggregateConfiguration::with_defaults();
-        let origin_remapper_config =
-            OriginRemapperConfiguration::new(env_provider.workload().clone(), OriginTagCardinality::Orchestrator)
-                .with_self_process_id();
-        let int_metrics_enrich_config =
-            ChainedConfiguration::default().with_transform_builder("origin_remapped", origin_remapper_config);
-        let int_metrics_scrape_config = PrometheusConfiguration::from_configuration(configuration)?;
+        let prometheus_config = PrometheusConfiguration::from_configuration(configuration)?;
 
         info!(
-            "Serving telemetry scrape endpoint on {}. Only remapped metrics will be available.",
-            int_metrics_scrape_config.listen_address()
+            "Serving telemetry scrape endpoint on {}.",
+            prometheus_config.listen_address()
         );
 
-        // We remap internal metrics and expose them on a Prometheus scrape endpoint, which the Datadog Agent will pull
-        // in and gets us all of the replacement metrics for the ones no longer emitted by DogStatsD in the Core Agent.
-        //
-        // We send all of the original internal metrics directly to the Datadog platform through the normal Datadog
-        // Metrics destination, which lets us utilize native DDSketch-based distributions instead of having to
-        // interpolate them from aggregated histograms, which leads to vastly less useful data when querying.
         blueprint
             .add_source("internal_metrics_in", int_metrics_config)?
             .add_transform("internal_metrics_remap", int_metrics_remap_config)?
-            .add_transform("internal_metrics_agg", int_metrics_agg_config)?
-            .add_transform("internal_metrics_enrich", int_metrics_enrich_config)?
-            .add_destination("internal_metrics_scrape", int_metrics_scrape_config)?
-            // Send the remapped metrics to the Prometheus scrape endpoint.
+            .add_destination("internal_metrics_out", prometheus_config)?
             .connect_component("internal_metrics_remap", ["internal_metrics_in"])?
-            .connect_component("internal_metrics_scrape", ["internal_metrics_remap"])?
-            // Send the original metrics through the aggregator, update their origin tags, and then push them into the
-            // primary metrics pipeline at the enrichment stage.
-            .connect_component("internal_metrics_agg", ["internal_metrics_in"])?
-            .connect_component("internal_metrics_enrich", ["internal_metrics_agg"])?
-            .connect_component("enrich", ["internal_metrics_enrich"])?;
+            .connect_component("internal_metrics_out", ["internal_metrics_remap"])?;
     }
 
     Ok(blueprint)

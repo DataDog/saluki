@@ -334,13 +334,11 @@ fn write_metrics(
             PrometheusValue::Histogram(histogram) => {
                 // Write the histogram buckets.
                 for (upper_bound_str, count) in histogram.buckets() {
-                    if count != 0 {
-                        write!(payload_buffer, "{}_bucket{{{}", &prom_context.metric_name, tags_buffer).unwrap();
-                        if !tags_buffer.is_empty() {
-                            payload_buffer.push(',');
-                        }
-                        writeln!(payload_buffer, "le=\"{}\"}} {}", upper_bound_str, count).unwrap();
+                    write!(payload_buffer, "{}_bucket{{{}", &prom_context.metric_name, tags_buffer).unwrap();
+                    if !tags_buffer.is_empty() {
+                        payload_buffer.push(',');
                     }
+                    writeln!(payload_buffer, "le=\"{}\"}} {}", upper_bound_str, count).unwrap();
                 }
 
                 // Write the final bucket -- the +Inf bucket -- which is just equal to the count of the histogram.

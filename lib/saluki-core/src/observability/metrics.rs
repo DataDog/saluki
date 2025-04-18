@@ -205,7 +205,7 @@ async fn flush_metrics(flush_interval: Duration) {
                 continue;
             }
 
-            let metric = Metric::distribution(context, &histogram_samples[..]);
+            let metric = Metric::histogram(context, &histogram_samples[..]);
             metrics.push(Event::Metric(metric));
         }
 
