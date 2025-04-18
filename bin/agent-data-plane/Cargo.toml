@@ -23,6 +23,7 @@ memory-accounting = { workspace = true }
 papaya = { workspace = true }
 rand = { workspace = true }
 saluki-app = { workspace = true, features = ["full"] }
+saluki-common = { workspace = true }
 saluki-components = { workspace = true }
 saluki-config = { workspace = true }
 saluki-context = { workspace = true }

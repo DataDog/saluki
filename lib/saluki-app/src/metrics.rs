@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use metrics::{gauge, Gauge};
+use saluki_common::task::spawn_traced_named;
 use tokio::{runtime::Handle, time::sleep};
 
 /// Initializes the metrics subsystem for `metrics`.
@@ -24,7 +25,7 @@ pub async fn initialize_metrics(
     saluki_core::observability::metrics::initialize_metrics(metrics_prefix.into()).await?;
 
     // We also spawn a background task that collects and emits the Tokio runtime metrics.
-    tokio::spawn(collect_runtime_metrics());
+    spawn_traced_named("tokio-runtime-metrics-collector", collect_runtime_metrics());
 
     Ok(())
 }

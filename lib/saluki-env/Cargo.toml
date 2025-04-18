@@ -27,6 +27,7 @@ saluki-api = { workspace = true }
 saluki-common = { workspace = true }
 saluki-config = { workspace = true }
 saluki-context = { workspace = true }
+saluki-core = { workspace = true }
 saluki-error = { workspace = true }
 saluki-health = { workspace = true }
 serde = { workspace = true }

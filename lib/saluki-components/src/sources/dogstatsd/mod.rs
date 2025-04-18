@@ -6,12 +6,12 @@ use bytes::{Buf, BufMut};
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use metrics::{Counter, Gauge, Histogram};
+use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{sources::*, ComponentContext},
     observability::ComponentMetricsExt as _,
     pooling::FixedSizeObjectPool,
-    task::spawn_traced,
     topology::{
         interconnect::{EventBufferManager, FixedSizeEventBuffer},
         shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
@@ -579,6 +579,8 @@ impl Source for DogStatsD {
 
         // For each listener, spawn a dedicated task to run it.
         for listener in self.listeners {
+            let task_name = format!("dogstatsd-listener-{}", listener.listen_address().listener_type());
+
             // TODO: Create a health handle for each listener.
             //
             // We need to rework `HealthRegistry` to look a little more like `ComponentRegistry` so that we can have it
@@ -594,7 +596,10 @@ impl Source for DogStatsD {
                 additional_tags: self.additional_tags.clone(),
             };
 
-            spawn_traced(process_listener(context.clone(), listener_context, self.enabled_filter));
+            spawn_traced_named(
+                task_name,
+                process_listener(context.clone(), listener_context, self.enabled_filter),
+            );
         }
 
         health.mark_ready();
@@ -661,7 +666,9 @@ async fn process_listener(
                         context_resolvers: context_resolvers.clone(),
                         additional_tags: additional_tags.clone(),
                     };
-                    spawn_traced(process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register(), enabled_filter));
+
+                    let task_name = format!("dogstatsd-stream-handler-{}", listen_addr.listener_type());
+                    spawn_traced_named(task_name, process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register(), enabled_filter));
                 }
                 Err(e) => {
                     error!(%listen_addr, error = %e, "Failed to accept connection. Stopping listener.");

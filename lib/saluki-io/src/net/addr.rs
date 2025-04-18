@@ -46,6 +46,18 @@ impl ListenAddress {
         Self::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)))
     }
 
+    /// Returns the socket type of the listen address.
+    pub const fn listener_type(&self) -> &'static str {
+        match self {
+            Self::Tcp(_) => "tcp",
+            Self::Udp(_) => "udp",
+            #[cfg(unix)]
+            Self::Unixgram(_) => "unixgram",
+            #[cfg(unix)]
+            Self::Unix(_) => "unix",
+        }
+    }
+
     /// Returns a socket address that can be used to connect to the configured listen address with a bias for local clients.
     ///
     /// When the listen address is a TCP or UDP address, this method returns a socket address that can be used to

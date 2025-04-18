@@ -15,7 +15,7 @@ use hyper_util::{
     server::conn::auto::Builder,
 };
 use rustls::ServerConfig;
-use saluki_core::task::spawn_traced;
+use saluki_common::task::spawn_traced_named;
 use saluki_error::GenericError;
 use tokio::{select, sync::oneshot};
 use tokio_rustls::TlsAcceptor;
@@ -78,7 +78,7 @@ where
             ..
         } = self;
 
-        spawn_traced(async move {
+        spawn_traced_named("http-server-acceptor", async move {
             let tls_enabled = tls_config.is_some();
             let maybe_tls_acceptor = tls_config.map(|mut config| {
                 // Allow for HTTP/1.1 and HTTP/2.
@@ -106,14 +106,14 @@ where
                                         },
                                     };
 
-                                    spawn_traced(async move {
+                                    spawn_traced_named("http-server-tls-conn-handler", async move {
                                         if let Err(e) = conn_builder.serve_connection(TokioIo::new(tls_stream), service).await {
                                             error!(%listen_addr, error = %e, "Failed to serve HTTP connection.");
                                         }
                                     });
                                 },
                                 None => {
-                                    spawn_traced(async move {
+                                    spawn_traced_named("http-server-conn-handler", async move {
                                         if let Err(e) = conn_builder.serve_connection(TokioIo::new(stream), service).await {
                                             error!(%listen_addr, error = %e, "Failed to serve HTTP connection.");
                                         }

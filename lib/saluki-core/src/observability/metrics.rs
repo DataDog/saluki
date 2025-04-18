@@ -10,6 +10,7 @@ use std::{
 use futures::Stream;
 use metrics::{Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SetRecorderError, SharedString, Unit};
 use metrics_util::registry::{AtomicStorage, Registry};
+use saluki_common::task::spawn_traced_named;
 use saluki_context::{
     origin::RawOrigin,
     tags::{Tag, TagSet},
@@ -154,6 +155,8 @@ async fn flush_metrics(flush_interval: Duration) {
 
     let state = RECEIVER_STATE.get().expect("metrics receiver should be set");
 
+    let mut histogram_samples = Vec::<f64>::new();
+
     loop {
         flush_interval.tick().await;
 
@@ -195,7 +198,7 @@ async fn flush_metrics(flush_interval: Duration) {
             //
             // If the histogram was empty, skip emitting a metric for this histogram entirely. Empty sketches don't make
             // sense to send.
-            let mut histogram_samples = Vec::<f64>::new();
+            histogram_samples.clear();
             histogram.clear_with(|samples| histogram_samples.extend(samples));
 
             if histogram_samples.is_empty() {
@@ -241,7 +244,7 @@ pub async fn initialize_metrics(metrics_prefix: String) -> Result<(), Box<dyn st
     let recorder = MetricsRecorder::new(metrics_prefix);
     recorder.install()?;
 
-    tokio::spawn(flush_metrics(FLUSH_INTERVAL));
+    spawn_traced_named("internal-telemetry-metrics-flusher", flush_metrics(FLUSH_INTERVAL));
 
     Ok(())
 }

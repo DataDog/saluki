@@ -4,6 +4,7 @@ use memory_accounting::{
     allocator::{AllocationGroupToken, Tracked},
     MemoryLimiter,
 };
+use saluki_common::task::{spawn_traced_named, JoinSetExt as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use tokio::{
@@ -27,7 +28,6 @@ use crate::{
         ComponentContext,
     },
     pooling::ElasticObjectPool,
-    task::{spawn_traced, JoinSetExt as _},
 };
 
 /// A built topology.
@@ -137,7 +137,7 @@ impl BuiltTopology {
         let (event_buffer_pool, shrinker) = ElasticObjectPool::with_builder("global_event_buffers", 32, 512, || {
             FixedSizeEventBufferInner::with_capacity(1024)
         });
-        spawn_traced(shrinker);
+        spawn_traced_named("global-event-buffer-pool-shrinker", shrinker);
 
         let (mut forwarders, mut event_streams) = self.create_component_interconnects(event_buffer_pool.clone());
 
@@ -256,7 +256,8 @@ fn spawn_source(
     let _span = component_span.enter();
     let _guard = component_token.enter();
 
-    join_set.spawn_traced(async move { source.run(context).await })
+    let component_task_name = format!("topology-source-{}", context.component_context().component_id());
+    join_set.spawn_traced_named(component_task_name, async move { source.run(context).await })
 }
 
 fn spawn_transform(
@@ -274,7 +275,8 @@ fn spawn_transform(
     let _span = component_span.enter();
     let _guard = component_token.enter();
 
-    join_set.spawn_traced(async move { transform.run(context).await })
+    let component_task_name = format!("topology-transform-{}", context.component_context().component_id());
+    join_set.spawn_traced_named(component_task_name, async move { transform.run(context).await })
 }
 
 fn spawn_destination(
@@ -292,7 +294,8 @@ fn spawn_destination(
     let _span = component_span.enter();
     let _guard = component_token.enter();
 
-    join_set.spawn_traced(async move { destination.run(context).await })
+    let component_task_name = format!("topology-destination-{}", context.component_context().component_id());
+    join_set.spawn_traced_named(component_task_name, async move { destination.run(context).await })
 }
 
 fn build_interconnect_channel() -> (mpsc::Sender<FixedSizeEventBuffer>, mpsc::Receiver<FixedSizeEventBuffer>) {

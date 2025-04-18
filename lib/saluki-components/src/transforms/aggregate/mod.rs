@@ -6,6 +6,7 @@ use std::{
 use async_trait::async_trait;
 use hashbrown::{hash_map::Entry, HashMap};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
+use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
 use saluki_context::Context;
 use saluki_core::{
@@ -458,7 +459,7 @@ impl PassthroughBatcher {
             PASSTHROUGH_EVENT_BUFFERS_MAX,
             move || FixedSizeEventBufferInner::with_capacity(event_buffer_len),
         );
-        tokio::spawn(pool_shrinker);
+        spawn_traced_named("agg-passthrough-buffer-pool-shrinker", pool_shrinker);
 
         let active_buffer = buffer_pool.acquire().await;
 

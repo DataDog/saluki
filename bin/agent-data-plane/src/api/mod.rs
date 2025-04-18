@@ -1,6 +1,7 @@
 use std::future::pending;
 
 use saluki_app::api::APIBuilder;
+use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
 use saluki_core::state::reflector::Reflector;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -76,7 +77,7 @@ async fn spawn_unprivileged_api(
     // TODO: Use something better than `pending()`... perhaps something like a more generalized
     // `ComponentShutdownCoordinator` that allows for triggering and waiting for all attached tasks to signal that
     // they've shutdown.
-    tokio::spawn(async move {
+    spawn_traced_named("adp-unprivileged-http-api", async move {
         info!("Serving unprivileged API on {}.", api_listen_address);
 
         if let Err(e) = api_builder.serve(api_listen_address, pending()).await {
@@ -91,7 +92,7 @@ async fn spawn_privileged_api(api_builder: APIBuilder, api_listen_address: Liste
     // TODO: Use something better than `pending()`... perhaps something like a more generalized
     // `ComponentShutdownCoordinator` that allows for triggering and waiting for all attached tasks to signal that
     // they've shutdown.
-    tokio::spawn(async move {
+    spawn_traced_named("adp-privileged-http-api", async move {
         info!("Serving privileged API on {}.", api_listen_address);
 
         if let Err(e) = api_builder.serve(api_listen_address, pending()).await {
