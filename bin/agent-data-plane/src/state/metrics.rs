@@ -9,6 +9,7 @@ use saluki_core::{
     state::reflector::{Processor, Reflector},
 };
 use saluki_event::{metric::MetricValues, Event};
+use tokio::sync::OnceCell;
 
 /// Aggregated metric value.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -238,10 +239,18 @@ fn metric_values_to_aggregated(values: MetricValues) -> Option<AggregatedMetric>
     }
 }
 
-/// Initializes the shared metrics state, which provides unified access to internal metrics in a simplified interface.
-pub async fn initialize_shared_metrics_state() -> Reflector<AggregatedMetricsProcessor> {
-    let metrics_stream = MetricsStream::register().map(Arc::unwrap_or_clone);
-    Reflector::new(metrics_stream, AggregatedMetricsProcessor).await
+/// Gets the shared metrics state, which provides unified access to internal metrics in a simplified interface.
+///
+/// This is lazily initialized and will only be created when it is first accessed.
+pub async fn get_shared_metrics_state() -> Reflector<AggregatedMetricsProcessor> {
+    static REFLECTOR: OnceCell<Reflector<AggregatedMetricsProcessor>> = OnceCell::const_new();
+    REFLECTOR
+        .get_or_init(|| async {
+            let metrics_stream = MetricsStream::register().map(Arc::unwrap_or_clone);
+            Reflector::new(metrics_stream, AggregatedMetricsProcessor).await
+        })
+        .await
+        .clone()
 }
 
 #[cfg(test)]

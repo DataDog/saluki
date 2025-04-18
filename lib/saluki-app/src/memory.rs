@@ -10,7 +10,7 @@ use std::{
 use bytesize::ByteSize;
 use memory_accounting::{
     allocator::{AllocationGroupRegistry, AllocationStats, AllocationStatsSnapshot},
-    ComponentRegistry, MemoryGrant, MemoryLimiter, VerifiedBounds,
+    ComponentBounds, ComponentRegistry, MemoryGrant, MemoryLimiter,
 };
 use metrics::{counter, gauge, Counter, Gauge, Level};
 use saluki_api::{
@@ -22,7 +22,7 @@ use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tokio::time::sleep;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 const fn default_memory_slop_factor() -> f64 {
     0.25
@@ -134,7 +134,19 @@ pub fn initialize_memory_bounds(
         }
     };
 
-    let verified_bounds = component_registry.verify_bounds(initial_grant)?;
+    let verified_bounds = match component_registry.verify_bounds(initial_grant) {
+        Ok(verified_bounds) => verified_bounds,
+        Err(e) => {
+            error!("Failed to verify memory bounds: {}.", e);
+
+            let bounds = component_registry.as_bounds();
+            print_bounds(&bounds);
+
+            return Err(generic_error!(
+                "Configured memory limit is insufficient for the current configuration."
+            ));
+        }
+    };
 
     let limiter = configuration
         .enable_global_limiter
@@ -152,23 +164,22 @@ pub fn initialize_memory_bounds(
 		bytes_to_si_string(initial_grant.initial_limit_bytes()),
 	);
 
-    print_verified_bounds(verified_bounds);
+    print_bounds(verified_bounds.bounds());
 
     Ok(limiter)
 }
 
-fn print_verified_bounds(bounds: VerifiedBounds) {
+fn print_bounds(bounds: &ComponentBounds) {
     info!("Breakdown of verified bounds:");
     info!(
         "- (root): {} minimum, {} firm",
-        bytes_to_si_string(bounds.bounds().total_minimum_required_bytes()),
-        bytes_to_si_string(bounds.bounds().total_firm_limit_bytes()),
+        bytes_to_si_string(bounds.total_minimum_required_bytes()),
+        bytes_to_si_string(bounds.total_firm_limit_bytes()),
     );
 
     let mut to_visit = VecDeque::new();
     to_visit.extend(
         bounds
-            .bounds()
             .subcomponents()
             .into_iter()
             .map(|(name, bounds)| (1, name, bounds)),

@@ -3,21 +3,18 @@ use std::future::pending;
 use saluki_app::api::APIBuilder;
 use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
-use saluki_core::state::reflector::Reflector;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
 use tracing::{error, info};
 
 mod remote_agent;
 use self::remote_agent::RemoteAgentHelperConfiguration;
-use crate::state::metrics::AggregatedMetricsProcessor;
 
 const PRIMARY_UNPRIVILEGED_API_PORT: u16 = 5100;
 const PRIMARY_PRIVILEGED_API_PORT: u16 = 5101;
 
 pub async fn configure_and_spawn_api_endpoints(
-    config: &GenericConfiguration, internal_metrics: Reflector<AggregatedMetricsProcessor>,
-    unprivileged_api: APIBuilder, mut privileged_api: APIBuilder,
+    config: &GenericConfiguration, unprivileged_api: APIBuilder, mut privileged_api: APIBuilder,
 ) -> Result<(), GenericError> {
     let api_listen_address = config
         .try_get_typed("api_listen_address")
@@ -55,7 +52,6 @@ pub async fn configure_and_spawn_api_endpoints(
         let remote_agent_config = RemoteAgentHelperConfiguration::from_configuration(
             config,
             local_secure_api_listen_addr,
-            internal_metrics,
             prometheus_listen_addr,
         )
         .await?;

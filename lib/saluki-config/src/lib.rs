@@ -2,7 +2,7 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-use std::{borrow::Cow, collections::HashSet};
+use std::{borrow::Cow, collections::HashSet, sync::Arc};
 
 pub use figment::value;
 use figment::{error::Kind, providers::Env, value::Value, Figment};
@@ -314,10 +314,18 @@ impl ConfigurationLoader {
     pub fn into_generic(self) -> Result<GenericConfiguration, ConfigurationError> {
         let inner: Value = self.inner.extract()?;
         Ok(GenericConfiguration {
-            inner,
-            lookup_sources: self.lookup_sources,
+            inner: Arc::new(Inner {
+                value: inner,
+                lookup_sources: self.lookup_sources,
+            }),
         })
     }
+}
+
+#[derive(Debug)]
+struct Inner {
+    value: Value,
+    lookup_sources: HashSet<LookupSource>,
 }
 
 /// A generic configuration object.
@@ -341,15 +349,14 @@ impl ConfigurationLoader {
 ///
 /// Querying for the value of `a.b.c` would return `"value"`, and querying for `a.b` would return the nested object `{
 /// "c": "value" }`.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct GenericConfiguration {
-    inner: Value,
-    lookup_sources: HashSet<LookupSource>,
+    inner: Arc<Inner>,
 }
 
 impl GenericConfiguration {
     fn get(&self, key: &str) -> Option<&Value> {
-        match self.inner.find_ref(key) {
+        match self.inner.value.find_ref(key) {
             Some(value) => Some(value),
             None => {
                 // We might have been given a key that uses nested notation -- `foo.bar` -- but is only present in the
@@ -357,7 +364,7 @@ impl GenericConfiguration {
                 // variables to map to nested key separators, so we simply try again here but with all nested key
                 // separators (`.`) replaced with `_`, to match environment variables.
                 let key = key.replace('.', "_");
-                self.inner.find_ref(&key)
+                self.inner.value.find_ref(&key)
             }
         }
     }
@@ -380,7 +387,7 @@ impl GenericConfiguration {
                 Ok(deserialized)
             }
             None => Err(from_figment_error(
-                &self.lookup_sources,
+                &self.inner.lookup_sources,
                 Kind::MissingField(key.to_string().into()).into(),
             )),
         }
@@ -421,7 +428,7 @@ impl GenericConfiguration {
                 let deserialized = value
                     .deserialize()
                     .map_err(|e| e.with_path(key))
-                    .map_err(|e| from_figment_error(&self.lookup_sources, e))?;
+                    .map_err(|e| from_figment_error(&self.inner.lookup_sources, e))?;
                 Ok(Some(deserialized))
             }
             None => Ok(None),
@@ -438,8 +445,9 @@ impl GenericConfiguration {
         T: Deserialize<'a>,
     {
         self.inner
+            .value
             .deserialize()
-            .map_err(|e| from_figment_error(&self.lookup_sources, e))
+            .map_err(|e| from_figment_error(&self.inner.lookup_sources, e))
     }
 }
 

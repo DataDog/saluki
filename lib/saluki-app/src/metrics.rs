@@ -25,7 +25,10 @@ pub async fn initialize_metrics(
     saluki_core::observability::metrics::initialize_metrics(metrics_prefix.into()).await?;
 
     // We also spawn a background task that collects and emits the Tokio runtime metrics.
-    spawn_traced_named("tokio-runtime-metrics-collector", collect_runtime_metrics());
+    spawn_traced_named(
+        "tokio-runtime-metrics-collector-primary",
+        collect_runtime_metrics("primary"),
+    );
 
     Ok(())
 }
@@ -48,12 +51,16 @@ pub fn emit_startup_metrics() {
     gauge!("running", "version" => app_version).set(1.0);
 }
 
-async fn collect_runtime_metrics() {
+/// Collects Tokio runtime metrics on the current Tokio runtime.
+///
+/// All metrics generate will include a `runtime_id` label which maps to the given runtime ID. This allows for
+/// differentiating between multiple runtimes that may be running in the same process.
+pub async fn collect_runtime_metrics(runtime_id: &str) {
     // Get the handle to the runtime we're executing in, and then grab the total number of runtime workers.
     //
     // We need the number of workers to properly initialize/register our metrics.
     let handle = Handle::current();
-    let runtime_metrics = RuntimeMetrics::with_workers(handle.metrics().num_workers());
+    let runtime_metrics = RuntimeMetrics::with_workers(runtime_id, handle.metrics().num_workers());
 
     // With our metrics registered, enter the main loop where we periodically scrape the metrics.
     loop {
@@ -79,8 +86,11 @@ struct WorkerMetrics {
 }
 
 impl WorkerMetrics {
-    fn with_worker_idx(worker_idx: usize) -> Self {
-        let labels = [("worker_idx", worker_idx.to_string())];
+    fn with_worker_idx(runtime_id: &str, worker_idx: usize) -> Self {
+        let labels = [
+            ("runtime_id", runtime_id.to_string()),
+            ("worker_idx", worker_idx.to_string()),
+        ];
 
         Self {
             local_queue_depth: gauge!("runtime.worker.local_queue_depth", &labels),
@@ -136,25 +146,26 @@ struct RuntimeMetrics {
 }
 
 impl RuntimeMetrics {
-    fn with_workers(workers_len: usize) -> Self {
+    fn with_workers(runtime_id: &str, workers_len: usize) -> Self {
+        let labels = [("runtime_id", runtime_id.to_string())];
         let mut worker_metrics = Vec::with_capacity(workers_len);
         for i in 0..workers_len {
-            worker_metrics.push(WorkerMetrics::with_worker_idx(i));
+            worker_metrics.push(WorkerMetrics::with_worker_idx(runtime_id, i));
         }
 
         Self {
-            num_alive_tasks: gauge!("runtime.num_alive_tasks"),
-            blocking_queue_depth: gauge!("runtime.blocking_queue_depth"),
-            budget_forced_yield_count: gauge!("runtime.budget_forced_yield_count"),
-            global_queue_depth: gauge!("runtime.global_queue_depth"),
-            io_driver_fd_deregistered_count: gauge!("runtime.io_driver_fd_deregistered_count"),
-            io_driver_fd_registered_count: gauge!("runtime.io_driver_fd_registered_count"),
-            io_driver_ready_count: gauge!("runtime.io_driver_ready_count"),
-            num_blocking_threads: gauge!("runtime.num_blocking_threads"),
-            num_idle_blocking_threads: gauge!("runtime.num_idle_blocking_threads"),
-            num_workers: gauge!("runtime.num_workers"),
-            remote_schedule_count: gauge!("runtime.remote_schedule_count"),
-            spawned_tasks_count: gauge!("runtime.spawned_tasks_count"),
+            num_alive_tasks: gauge!("runtime.num_alive_tasks", &labels),
+            blocking_queue_depth: gauge!("runtime.blocking_queue_depth", &labels),
+            budget_forced_yield_count: gauge!("runtime.budget_forced_yield_count", &labels),
+            global_queue_depth: gauge!("runtime.global_queue_depth", &labels),
+            io_driver_fd_deregistered_count: gauge!("runtime.io_driver_fd_deregistered_count", &labels),
+            io_driver_fd_registered_count: gauge!("runtime.io_driver_fd_registered_count", &labels),
+            io_driver_ready_count: gauge!("runtime.io_driver_ready_count", &labels),
+            num_blocking_threads: gauge!("runtime.num_blocking_threads", &labels),
+            num_idle_blocking_threads: gauge!("runtime.num_idle_blocking_threads", &labels),
+            num_workers: gauge!("runtime.num_workers", &labels),
+            remote_schedule_count: gauge!("runtime.remote_schedule_count", &labels),
+            spawned_tasks_count: gauge!("runtime.spawned_tasks_count", &labels),
             worker_metrics,
         }
     }
