@@ -501,7 +501,7 @@ async fn create_request_builder_buffer_pool(config: &ForwarderConfiguration) -> 
             FixedSizeVec::with_capacity(RB_BUFFER_POOL_BUF_SIZE)
         });
 
-    spawn_traced_named("dd-metrics-req-builder-buffer-pool-shrinker", shrinker);
+    spawn_traced_named("dd-metrics-buffer-pool-shrinker", shrinker);
 
     debug!(minimum_size, maximum_size, "Created request builder buffer pool.");
 

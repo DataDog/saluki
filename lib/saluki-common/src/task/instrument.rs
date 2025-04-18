@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
     task::{Context, Poll},
 };
 
@@ -15,7 +15,7 @@ static TASK_INSTRUMENTATION_REGISTRY: OnceLock<InstrumentationRegistry> = OnceLo
 static_metrics!(
    name => Telemetry,
    prefix => runtime_task,
-   labels => [task_name: String],
+   labels => [task_name: Arc<str>],
    metrics => [
        counter(poll_count),
        histogram(poll_duration_seconds),
@@ -25,7 +25,7 @@ static_metrics!(
 /// Helper trait for instrumenting futures that are run as asynchronous tasks.
 pub trait TaskInstrument {
     /// Instruments the future, tracking task-specific metrics about its execution.
-    fn with_task_instrumentation(self, task_name: String) -> InstrumentedTask<Self>
+    fn with_task_instrumentation<S: AsRef<str>>(self, task_name: S) -> InstrumentedTask<Self>
     where
         Self: Sized;
 }
@@ -34,14 +34,14 @@ impl<F> TaskInstrument for F
 where
     F: Future + Send + 'static,
 {
-    fn with_task_instrumentation(self, task_name: String) -> InstrumentedTask<Self> {
-        InstrumentationRegistry::global().instrument_task(task_name, self)
+    fn with_task_instrumentation<S: AsRef<str>>(self, task_name: S) -> InstrumentedTask<Self> {
+        InstrumentationRegistry::global().instrument_task(Arc::from(task_name.as_ref()), self)
     }
 }
 
 #[pin_project(PinnedDrop)]
 pub struct InstrumentedTask<F> {
-    task_name: String,
+    task_name: Arc<str>,
     telemetry: Telemetry,
 
     #[pin]
@@ -75,11 +75,8 @@ impl<F> PinnedDrop for InstrumentedTask<F> {
     }
 }
 
-// TODO: Use `Arc<str>` instead of `String` for the task name so we can amortize allocations between having to allocate
-// for fixed, static strings as well as the multiple clones we need between the task map, telemetry struct, and the
-// instrumented wrapper struct.
 struct InstrumentationRegistry {
-    tasks: FastConcurrentHashMap<String, Telemetry>,
+    tasks: FastConcurrentHashMap<Arc<str>, Telemetry>,
 }
 
 impl InstrumentationRegistry {
@@ -94,7 +91,7 @@ impl InstrumentationRegistry {
         TASK_INSTRUMENTATION_REGISTRY.get_or_init(InstrumentationRegistry::new)
     }
 
-    fn instrument_task<F>(&self, task_name: String, f: F) -> InstrumentedTask<F>
+    fn instrument_task<F>(&self, task_name: Arc<str>, f: F) -> InstrumentedTask<F>
     where
         F: Future + Send + 'static,
     {
@@ -110,7 +107,7 @@ impl InstrumentationRegistry {
         }
     }
 
-    fn remove_task(&self, task_name: &str) {
+    fn remove_task(&self, task_name: &Arc<str>) {
         self.tasks.pin().remove(task_name);
     }
 }

@@ -151,7 +151,6 @@ tikv-jemallocator = { version = "0.6", default-features = false }
 axum-extra = { version = "0.9", default-features = false }
 papaya = { version = "0.2", default-features = false }
 tempfile = { version = "3", default-features = false }
-tokio-detectors = { git = "https://github.com/facebookexperimental/rust-shed", rev = "f935985d8391f7ce4ed2418dfa22f890ee6847bc", default-features = false }
 
 [profile.release]
 lto = "thin"

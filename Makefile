@@ -47,9 +47,6 @@ export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
 export DDPROF_VERSION ?= 0.19.0
 export LADING_VERSION ?= 0.23.3
 
-# Overrideable settings for running ADP.
-DD_API_KEY_STANDALONE ?= dummy-api-key-standalone
-
 FMT_YELLOW = \033[0;33m
 FMT_BLUE = \033[0;36m
 FMT_SALUKI_LOGO = \033[1m\033[38;5;55m
@@ -232,7 +229,7 @@ run-adp-standalone: build-adp
 run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	@echo "[*] Running ADP..."
 	@DD_ADP_STANDALONE_MODE=true \
-	DD_API_KEY=${DD_API_KEY_STANDALONE} DD_HOSTNAME=adp-standalone \
+	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/debug/agent-data-plane
@@ -242,7 +239,7 @@ run-adp-standalone-release: build-adp-release
 run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
 	@echo "[*] Running ADP..."
 	@DD_ADP_STANDALONE_MODE=true \
-	DD_API_KEY=${DD_API_KEY_STANDALONE} DD_HOSTNAME=adp-standalone \
+	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/release/agent-data-plane

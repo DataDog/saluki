@@ -14,16 +14,11 @@ use stringtheory::MetaString;
 
 use crate::{
     hash::{hash_context, ContextKey},
-    origin::{OriginKey, OriginTags, OriginTagsResolver},
+    origin::OriginTags,
     tags::{Tag, TagSet, Tagged},
 };
 
 const BASE_CONTEXT_SIZE: usize = std::mem::size_of::<Context>() + std::mem::size_of::<ContextInner>();
-
-// We use `usize::MAX` as the default size of the origin tags, as this is a sentinel value that indicates that the size
-// has not yet been calculated. The size of the origin tags should not ever, ever, ever be `usize::MAX`, so this is a
-// safe value to use.
-const UNINITIALIZED_ORIGIN_TAGS_SIZE: usize = usize::MAX;
 
 /// A metric context.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -104,26 +99,6 @@ impl Context {
         }
     }
 
-    /// Clones this context, and updates the origin tags using the given origin key and origin tags resolver.
-    pub fn with_origin(&self, origin_key: OriginKey, origin_tags_resolver: Arc<dyn OriginTagsResolver>) -> Self {
-        // Regenerate the context key to account for the new origin tags.
-        let name = self.inner.name.clone();
-        let tags = self.inner.tags.clone();
-        let key = hash_context(&name, &tags, Some(origin_key));
-        let origin_tags = OriginTags::from_resolved(origin_key, origin_tags_resolver);
-
-        Self {
-            inner: Arc::new(ContextInner {
-                name,
-                tags,
-                origin_tags,
-                origin_tags_size: AtomicUsize::new(UNINITIALIZED_ORIGIN_TAGS_SIZE),
-                key,
-                active_count: Gauge::noop(),
-            }),
-        }
-    }
-
     pub(crate) fn from_inner(inner: ContextInner) -> Self {
         Self { inner: Arc::new(inner) }
     }
@@ -166,7 +141,9 @@ impl Context {
         let name_size = self.inner.name.len();
         let tags_size = self.inner.tags.size_of();
         let origin_tags_size = match self.inner.origin_tags_size.load(Acquire) {
-            UNINITIALIZED_ORIGIN_TAGS_SIZE => {
+            // We use `usize::MAX` as a sentinel value to indicate that the size of the origin tags has not been
+            // calculated yet.
+            usize::MAX => {
                 let size = self.inner.origin_tags.size_of();
                 self.inner.origin_tags_size.store(size, Release);
                 size
@@ -242,7 +219,7 @@ impl ContextInner {
             name,
             tags,
             origin_tags,
-            origin_tags_size: AtomicUsize::new(UNINITIALIZED_ORIGIN_TAGS_SIZE),
+            origin_tags_size: AtomicUsize::new(0),
             active_count,
         }
     }
@@ -410,7 +387,7 @@ mod tests {
             name: MetaString::from_static(SIZE_OF_CONTEXT_NAME),
             tags: tags.clone(),
             origin_tags: origin_tags.clone(),
-            origin_tags_size: AtomicUsize::new(UNINITIALIZED_ORIGIN_TAGS_SIZE),
+            origin_tags_size: AtomicUsize::new(usize::MAX),
             active_count: Gauge::noop(),
         });
 
