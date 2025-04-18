@@ -255,6 +255,10 @@ pub struct DogStatsDConfiguration {
     /// Workload provider to utilize for origin detection/enrichment.
     #[serde(skip)]
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
+
+    /// Additional tags to add to all metrics.
+    #[serde(rename = "dogstatsd_tags", default)]
+    additional_tags: Vec<String>,
 }
 
 impl DogStatsDConfiguration {
@@ -360,6 +364,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             codec,
             context_resolvers,
             enabled_filter: enable_payloads_filter,
+            additional_tags: self.additional_tags.clone().into(),
         }))
     }
 
@@ -403,6 +408,7 @@ pub struct DogStatsD {
     codec: DogstatsdCodec,
     context_resolvers: ContextResolvers,
     enabled_filter: EnablePayloadsFilter,
+    additional_tags: Arc<[String]>,
 }
 
 struct ListenerContext {
@@ -411,6 +417,7 @@ struct ListenerContext {
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     codec: DogstatsdCodec,
     context_resolvers: ContextResolvers,
+    additional_tags: Arc<[String]>,
 }
 
 struct HandlerContext {
@@ -420,6 +427,7 @@ struct HandlerContext {
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     metrics: Metrics,
     context_resolvers: ContextResolvers,
+    additional_tags: Arc<[String]>,
 }
 
 struct Metrics {
@@ -583,6 +591,7 @@ impl Source for DogStatsD {
                 io_buffer_pool: self.io_buffer_pool.clone(),
                 codec: self.codec.clone(),
                 context_resolvers: self.context_resolvers.clone(),
+                additional_tags: self.additional_tags.clone(),
             };
 
             spawn_traced(process_listener(context.clone(), listener_context, self.enabled_filter));
@@ -624,6 +633,7 @@ async fn process_listener(
         io_buffer_pool,
         codec,
         context_resolvers,
+        additional_tags,
     } = listener_context;
     tokio::pin!(shutdown_handle);
 
@@ -649,6 +659,7 @@ async fn process_listener(
                         io_buffer_pool: io_buffer_pool.clone(),
                         metrics: build_metrics(&listen_addr, source_context.component_context()),
                         context_resolvers: context_resolvers.clone(),
+                        additional_tags: additional_tags.clone(),
                     };
                     spawn_traced(process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register(), enabled_filter));
                 }
@@ -690,6 +701,7 @@ async fn drive_stream(
         io_buffer_pool,
         metrics,
         mut context_resolvers,
+        additional_tags,
     } = handler_context;
 
     debug!(%listen_addr, "Stream handler started.");
@@ -756,7 +768,7 @@ async fn drive_stream(
                         match frames.next() {
                             Some(Ok(frame)) => {
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
-                                match handle_frame(&frame[..], &codec, &mut context_resolvers, &metrics, &peer_addr, enabled_filter) {
+                                match handle_frame(&frame[..], &codec, &mut context_resolvers, &metrics, &peer_addr, enabled_filter, &additional_tags) {
                                     Ok(Some(event)) => {
                                         if let Some((event, event_buffer)) = event_buffer_manager.try_push(event).await {
                                             debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
@@ -837,7 +849,7 @@ async fn drive_stream(
 
 fn handle_frame(
     frame: &[u8], codec: &DogstatsdCodec, context_resolvers: &mut ContextResolvers, source_metrics: &Metrics,
-    peer_addr: &ConnectionAddress, enabled_filter: EnablePayloadsFilter,
+    peer_addr: &ConnectionAddress, enabled_filter: EnablePayloadsFilter, additional_tags: &[String],
 ) -> Result<Option<Event>, ParseError> {
     let parsed = match codec.decode_packet(frame) {
         Ok(parsed) => parsed,
@@ -864,7 +876,7 @@ fn handle_frame(
                 return Ok(None);
             }
 
-            match handle_metric_packet(metric_packet, context_resolvers, peer_addr) {
+            match handle_metric_packet(metric_packet, context_resolvers, peer_addr, additional_tags) {
                 Some(metric) => {
                     source_metrics.metrics_received().increment(events_len);
                     Event::Metric(metric)
@@ -905,6 +917,7 @@ fn handle_frame(
 
 fn handle_metric_packet(
     packet: MetricPacket, context_resolvers: &mut ContextResolvers, peer_addr: &ConnectionAddress,
+    additional_tags: &[String],
 ) -> Option<Metric> {
     // Capture the origin from the packet, including any process ID information if we have it.
     let mut origin = origin_from_metric_packet(&packet);
@@ -919,8 +932,15 @@ fn handle_metric_packet(
         context_resolvers.primary()
     };
 
+    // Chain the existing tags with the additional tags.
+    let tags = packet
+        .tags
+        .clone()
+        .into_iter()
+        .chain(additional_tags.iter().map(|s| s.as_str()));
+
     // Try to resolve the context for this metric.
-    match context_resolver.resolve(packet.metric_name, packet.tags.clone(), Some(origin)) {
+    match context_resolver.resolve(packet.metric_name, tags, Some(origin)) {
         Some(context) => {
             let metric_origin = packet
                 .jmx_check_name
@@ -1030,7 +1050,42 @@ mod tests {
             panic!("Failed to parse packet.");
         };
 
-        let maybe_metric = handle_metric_packet(packet, &mut context_resolvers, &peer_addr);
+        let maybe_metric = handle_metric_packet(packet, &mut context_resolvers, &peer_addr, &[]);
         assert!(maybe_metric.is_none());
+    }
+
+    #[test]
+    fn metric_with_additional_tags() {
+        let codec = DogstatsdCodec::from_configuration(DogstatsdCodecConfiguration::default());
+        let context_resolver = ContextResolverBuilder::for_tests().with_heap_allocations(false).build();
+        let mut context_resolvers = ContextResolvers::manual(context_resolver.clone(), context_resolver);
+        let peer_addr = ConnectionAddress::from("1.1.1.1:1234".parse::<SocketAddr>().unwrap());
+
+        let existing_tags = ["tag1:value1", "tag2:value2", "tag3:value3"];
+        let existing_tags_str = existing_tags.join(",");
+
+        let input = format!("test_metric_name:1|c|#{}", existing_tags_str);
+        let additional_tags = [
+            "tag4:value4".to_string(),
+            "tag5:value5".to_string(),
+            "tag6:value6".to_string(),
+        ];
+
+        let Ok(ParsedPacket::Metric(packet)) = codec.decode_packet(input.as_bytes()) else {
+            panic!("Failed to parse packet.");
+        };
+        let maybe_metric = handle_metric_packet(packet, &mut context_resolvers, &peer_addr, &additional_tags);
+        assert!(maybe_metric.is_some());
+
+        let metric = maybe_metric.unwrap();
+        let context = metric.context();
+
+        for tag in existing_tags {
+            assert!(context.tags().has_tag(tag));
+        }
+
+        for tag in additional_tags {
+            assert!(context.tags().has_tag(tag));
+        }
     }
 }
