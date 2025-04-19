@@ -25,6 +25,9 @@ variables:
   # ADP-specific variables, controlling how we build ADP images, how we version them, and where we push them.
   ADP_IMAGE_BASE: "${SALUKI_IMAGE_REPO_BASE}/agent-data-plane"
 
+  # Checks-Agent specific variables, controlling how we build Checks-Agent images, how we version them, and where we push them.
+  CHECKS_AGENT_IMAGE_BASE: "${SALUKI_IMAGE_REPO_BASE}/checks-agent"
+
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image, both for
   # internal and public releases.
   BASE_DD_AGENT_VERSION: "7.65.0-rc.9"
