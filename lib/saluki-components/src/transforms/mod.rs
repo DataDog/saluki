@@ -17,3 +17,6 @@ pub use self::host_tags::HostTagsConfiguration;
 
 mod dogstatsd_mapper;
 pub use self::dogstatsd_mapper::DogstatsDMapperConfiguration;
+
+mod origin_remapper;
+pub use self::origin_remapper::OriginRemapperConfiguration;

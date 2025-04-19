@@ -154,6 +154,8 @@ async fn flush_metrics(flush_interval: Duration) {
 
     let state = RECEIVER_STATE.get().expect("metrics receiver should be set");
 
+    let mut histogram_samples = Vec::<f64>::new();
+
     loop {
         flush_interval.tick().await;
 
@@ -195,14 +197,14 @@ async fn flush_metrics(flush_interval: Duration) {
             //
             // If the histogram was empty, skip emitting a metric for this histogram entirely. Empty sketches don't make
             // sense to send.
-            let mut histogram_samples = Vec::<f64>::new();
+            histogram_samples.clear();
             histogram.clear_with(|samples| histogram_samples.extend(samples));
 
             if histogram_samples.is_empty() {
                 continue;
             }
 
-            let metric = Metric::histogram(context, &histogram_samples[..]);
+            let metric = Metric::distribution(context, &histogram_samples[..]);
             metrics.push(Event::Metric(metric));
         }
 
