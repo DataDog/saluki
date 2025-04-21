@@ -14,6 +14,7 @@ async fn main() {
 
     let mut supervisor = Supervisor::new("root");
     supervisor.add_process(WithDelay::never());
+    supervisor.add_process(WithDelay::panic(Duration::from_secs(9)));
 
     let mut nested_supervisor = Supervisor::new("nested");
     nested_supervisor.add_process(WithDelay::success(Duration::from_secs(6)));
@@ -28,6 +29,7 @@ async fn main() {
 
 struct WithDelay {
     result: Result<(), &'static str>,
+    panic: bool,
     delay: Duration,
 }
 
@@ -35,6 +37,7 @@ impl WithDelay {
     fn success(delay: Duration) -> Self {
         Self {
             result: Ok(()),
+            panic: false,
             delay,
         }
     }
@@ -42,6 +45,15 @@ impl WithDelay {
     fn failure(msg: &'static str, delay: Duration) -> Self {
         Self {
             result: Err(msg),
+            panic: false,
+            delay,
+        }
+    }
+
+    fn panic(delay: Duration) -> Self {
+        Self {
+            result: Ok(()),
+            panic: true,
             delay,
         }
     }
@@ -49,6 +61,7 @@ impl WithDelay {
     fn never() -> Self {
         Self {
             result: Ok(()),
+            panic: false,
             delay: Duration::from_secs(0),
         }
     }
@@ -58,12 +71,18 @@ impl Supervisable for WithDelay {
     fn initialize(&self) -> Option<Pin<Box<dyn Future<Output = Result<(), GenericError>> + Send>>> {
         let delay = self.delay;
         let result = self.result.clone();
+        let panic = self.panic;
         Some(Box::pin(async move {
             if delay.is_zero() {
                 pending::<()>().await;
             } else {
                 tokio::time::sleep(delay).await;
             }
+
+            if panic {
+                panic!("panic boom boom boom");
+            }
+
             result.map_err(|e| GenericError::msg(e))
         }))
     }
