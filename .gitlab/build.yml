@@ -19,7 +19,7 @@
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
-      --metadata-file	/tmp/build.metadata
+      --metadata-file /tmp/build.metadata
       --tag ${IMAGE_TAG}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
@@ -56,7 +56,7 @@
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.datadog-agent
-      --metadata-file	/tmp/build.metadata
+      --metadata-file /tmp/build.metadata
       --build-arg "DD_AGENT_IMAGE=${DD_AGENT_IMAGE}"
       --build-arg "ADP_IMAGE=${ADP_IMAGE}"
       --tag "${CONVERGED_IMAGE_TAG}"
