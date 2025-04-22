@@ -254,6 +254,29 @@ async fn create_topology(
             .connect_component("dd_metrics_out", ["host_tags_enrich"])?;
     }
 
+    // BEGIN EXPERIMENTAL PREAGGREGATION
+    // Leaving this unconditionally enabled for a simpler SMP test.
+    // if configuration.get_typed_or_default::<bool>("use_experimental_preaggregation") {
+    let mut preaggr_host_tags_enrich_config = ChainedConfiguration::default();
+    if !in_standalone_mode {
+        let mut preaggr_host_tags_config = host_tags_config;
+        preaggr_host_tags_config.ignore_duration();
+        preaggr_host_tags_enrich_config =
+            preaggr_host_tags_enrich_config.with_transform_builder("pre_aggr_host_tags", preaggr_host_tags_config);
+    }
+
+    let preaggr_dd_metrics_config = dd_metrics_config;
+    // Not overriding the path so that it works with the same test infra for now.
+    // preaggr_dd_metrics_config.override_series_path(Some("/api/intake/pipelines/ddseries"));
+
+    blueprint
+        .add_transform("preaggr_enrich", preaggr_host_tags_enrich_config)?
+        .add_destination("preaggr_dd_metrics_out", preaggr_dd_metrics_config)?
+        .connect_component("preaggr_enrich", ["enrich"])?
+        .connect_component("preaggr_dd_metrics_out", ["preaggr_enrich"])?;
+    // }
+    // END EXPERIMENTAL PRE-AGGR
+
     // When telemetry is enabled, we need to collect internal metrics, so add those components and route them here.
     let telemetry_enabled = configuration.get_typed_or_default::<bool>("telemetry_enabled");
     if telemetry_enabled {
