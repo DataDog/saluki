@@ -17,10 +17,12 @@ use saluki_event::metric::Metric;
 ///
 /// Temporarily adds host tags to metrics to compensate for backend delays when a new host comes online,
 /// preventing gaps in queryability until the backend starts adding these tags automatically.
+#[derive(Clone)]
 pub struct HostTagsConfiguration {
     client: RemoteAgentClient,
     host_tags_context_string_interner_bytes: ByteSize,
     expected_tags_duration: u64,
+    ignore_duration: bool,
 }
 
 const DEFAULT_EXPECTED_TAGS_DURATION: u64 = 0;
@@ -41,7 +43,18 @@ impl HostTagsConfiguration {
             client,
             host_tags_context_string_interner_bytes,
             expected_tags_duration,
+            ignore_duration: false,
         })
+    }
+
+    /// Ignore the expected tags duration and always add host tags.
+    pub fn ignore_duration(&mut self) {
+        self.ignore_duration = true;
+    }
+
+    /// Returns true if the transform is a no-op.
+    pub fn is_noop(&self) -> bool {
+        self.expected_tags_duration == 0 && !self.ignore_duration
     }
 }
 
@@ -68,6 +81,7 @@ impl SynchronousTransformBuilder for HostTagsConfiguration {
             context_resolver: Some(context_resolver),
             expected_tags_duration: Duration::from_secs(self.expected_tags_duration),
             host_tags: Some(host_tags),
+            ignore_duration: self.ignore_duration,
         }))
     }
 }
@@ -92,6 +106,7 @@ pub struct HostTagsEnrichment {
     context_resolver: Option<ContextResolver>,
     expected_tags_duration: Duration,
     host_tags: Option<Vec<String>>,
+    ignore_duration: bool,
 }
 
 impl HostTagsEnrichment {
@@ -117,7 +132,7 @@ impl HostTagsEnrichment {
 impl SynchronousTransform for HostTagsEnrichment {
     fn transform_buffer(&mut self, event_buffer: &mut FixedSizeEventBuffer) {
         // Skip adding host tags if duration has elapsed
-        if self.start.elapsed() >= self.expected_tags_duration {
+        if !self.ignore_duration && self.start.elapsed() >= self.expected_tags_duration {
             self.context_resolver = None;
             self.host_tags = None;
             return;
@@ -148,6 +163,7 @@ mod tests {
             context_resolver: Some(context_resolver),
             expected_tags_duration: Duration::from_secs(30),
             host_tags: Some(host_tags.clone()),
+            ignore_duration: false,
         };
 
         let mut metric1 = Metric::gauge(Context::from_static_parts("test", &[]), 1.0);

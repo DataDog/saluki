@@ -201,15 +201,17 @@ async fn create_topology(
     let dsd_prefix_filter_configuration = DogstatsDPrefixFilterConfiguration::from_configuration(configuration)?;
     let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
     let dsd_mapper_config = DogstatsDMapperConfiguration::from_configuration(configuration)?;
-    let mut enrich_config = ChainedConfiguration::default()
+    let enrich_config = ChainedConfiguration::default()
         .with_transform_builder("host_enrichment", host_enrichment_config)
         .with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
 
     let in_standalone_mode = configuration.get_typed_or_default::<bool>("adp.standalone_mode");
+    let mut host_tags_enrich_config = ChainedConfiguration::default();
+    let host_tags_config = HostTagsConfiguration::from_configuration(configuration).await?;
     if !in_standalone_mode {
-        let host_tags_config = HostTagsConfiguration::from_configuration(configuration).await?;
-        enrich_config = enrich_config.with_transform_builder("host_tags", host_tags_config);
+        host_tags_enrich_config = host_tags_enrich_config.with_transform_builder("host_tags", host_tags_config.clone());
     }
+
     let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Metrics destination.")?;
 
@@ -236,13 +238,21 @@ async fn create_topology(
         .add_transform("dsd_agg", dsd_agg_config)?
         .add_transform("enrich", enrich_config)?
         .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
-        .add_destination("dd_metrics_out", dd_metrics_config)?
+        .add_destination("dd_metrics_out", dd_metrics_config.clone())?
         .add_destination("dd_events_sc_out", events_service_checks_config)?
         .connect_component("dsd_agg", ["dsd_in.metrics"])?
         .connect_component("dsd_prefix_filter", ["dsd_agg"])?
         .connect_component("enrich", ["dsd_prefix_filter"])?
-        .connect_component("dd_metrics_out", ["enrich"])?
         .connect_component("dd_events_sc_out", ["dsd_in.events", "dsd_in.service_checks"])?;
+
+    if host_tags_config.is_noop() {
+        blueprint.connect_component("dd_metrics_out", ["enrich"])?;
+    } else {
+        blueprint
+            .add_transform("host_tags_enrich", host_tags_enrich_config)?
+            .connect_component("host_tags_enrich", ["enrich"])?
+            .connect_component("dd_metrics_out", ["host_tags_enrich"])?;
+    }
 
     // When telemetry is enabled, we need to collect internal metrics, so add those components and route them here.
     let telemetry_enabled = configuration.get_typed_or_default::<bool>("telemetry_enabled");

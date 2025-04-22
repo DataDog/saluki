@@ -62,7 +62,7 @@ const fn default_zstd_compressor_level() -> i32 {
 /// - ability to configure either the basic site _or_ a specific endpoint (requires a full URI at the moment, even if
 ///   it's just something like `https`)
 /// - retries, timeouts, rate limiting (no Tower middleware stack yet)
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[allow(dead_code)]
 pub struct DatadogMetricsConfiguration {
     /// Forwarder configuration settings.
@@ -114,6 +114,12 @@ pub struct DatadogMetricsConfiguration {
         default = "default_zstd_compressor_level"
     )]
     zstd_compressor_level: i32,
+
+    /// Override the path for series metrics.
+    ///
+    /// Defaults to `None`.
+    #[serde(default)]
+    series_path_override: Option<&'static str>,
 }
 
 impl DatadogMetricsConfiguration {
@@ -125,6 +131,11 @@ impl DatadogMetricsConfiguration {
     /// Add option to retrieve configuration values from a `RefreshableConfiguration`.
     pub fn add_refreshable_configuration(&mut self, refresher: RefreshableConfiguration) {
         self.config_refresher = Some(refresher);
+    }
+
+    /// Override the path for series metrics.
+    pub fn override_series_path(&mut self, override_path: Option<&'static str>) {
+        self.series_path_override = override_path;
     }
 }
 
@@ -149,7 +160,9 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         // Create our request builders.
         let rb_buffer_pool = create_request_builder_buffer_pool(&self.forwarder_config).await;
         let series_request_builder = RequestBuilder::new(
-            MetricsEndpoint::Series,
+            MetricsEndpoint::Series {
+                override_path: self.series_path_override,
+            },
             rb_buffer_pool.clone(),
             self.max_metrics_per_payload,
             compression_scheme,
@@ -314,7 +327,7 @@ where
                     };
 
                     let request_builder = match MetricsEndpoint::from_metric(&metric) {
-                        MetricsEndpoint::Series => &mut series_request_builder,
+                        MetricsEndpoint::Series { .. } => &mut series_request_builder,
                         MetricsEndpoint::Sketches => &mut sketches_request_builder,
                     };
 
@@ -441,8 +454,8 @@ fn get_metrics_endpoint_name(uri: &Uri) -> Option<MetaString> {
 }
 
 const fn get_maximum_compressed_payload_size() -> usize {
-    let series_max_size = MetricsEndpoint::Series.compressed_size_limit();
-    let sketches_max_size = MetricsEndpoint::Sketches.compressed_size_limit();
+    let series_max_size = MetricsEndpoint::series().compressed_size_limit();
+    let sketches_max_size = MetricsEndpoint::sketches().compressed_size_limit();
 
     let max_request_size = if series_max_size > sketches_max_size {
         series_max_size

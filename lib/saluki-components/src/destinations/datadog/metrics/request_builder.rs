@@ -63,26 +63,36 @@ impl RequestBuilderError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MetricsEndpoint {
     /// Intake for series metrics.
-    Series,
+    Series { override_path: Option<&'static str> },
 
     /// Intake for sketch metrics.
     Sketches,
 }
 
 impl MetricsEndpoint {
+    /// Intake for series metrics.
+    pub const fn series() -> Self {
+        Self::Series { override_path: None }
+    }
+
+    /// Intake for sketch metrics.
+    pub const fn sketches() -> Self {
+        Self::Sketches
+    }
+
     /// Gets the uncompressed payload size limit for this endpoint.
     pub const fn uncompressed_size_limit(&self) -> usize {
         match self {
-            Self::Series => 5_242_880,    // 5 MiB
-            Self::Sketches => 62_914_560, // 60 MiB
+            Self::Series { .. } => 5_242_880, // 5 MiB
+            Self::Sketches => 62_914_560,     // 60 MiB
         }
     }
 
     /// Gets the compressed payload size limit for this endpoint.
     pub const fn compressed_size_limit(&self) -> usize {
         match self {
-            Self::Series => 512_000,     // 500 kB
-            Self::Sketches => 3_200_000, // 3 MB
+            Self::Series { .. } => 512_000, // 500 kB
+            Self::Sketches => 3_200_000,    // 3 MB
         }
     }
 
@@ -90,7 +100,7 @@ impl MetricsEndpoint {
     pub fn from_metric(metric: &Metric) -> Self {
         match metric.values() {
             MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..) => {
-                Self::Series
+                Self::series()
             }
             MetricValues::Histogram(..) | MetricValues::Distribution(..) => Self::Sketches,
         }
@@ -99,7 +109,10 @@ impl MetricsEndpoint {
     /// Gets the relative URI for this endpoint.
     pub fn endpoint_uri(&self) -> Uri {
         match self {
-            Self::Series => PathAndQuery::from_static("/api/v2/series").into(),
+            Self::Series { override_path: None } => PathAndQuery::from_static("/api/v2/series").into(),
+            Self::Series {
+                override_path: Some(override_path),
+            } => PathAndQuery::from_static(override_path).into(),
             Self::Sketches => PathAndQuery::from_static("/api/beta/sketches").into(),
         }
     }
@@ -688,7 +701,7 @@ mod tests {
         // Create a regular ol' request builder with normal (un)compressed size limits.
         let buffer_pool = create_request_builder_buffer_pool();
         let mut request_builder = RequestBuilder::new(
-            MetricsEndpoint::Series,
+            MetricsEndpoint::series(),
             buffer_pool,
             usize::MAX,
             CompressionScheme::zstd_default(),
@@ -710,7 +723,7 @@ mod tests {
         //
         // We've chosen 96 because it's just under where the compressor should land when compressing all four metrics.
         // This value may need to change in the future if we change to a different compression algorithm.
-        request_builder.set_custom_len_limits(MetricsEndpoint::Series.compressed_size_limit(), 96);
+        request_builder.set_custom_len_limits(MetricsEndpoint::series().compressed_size_limit(), 96);
         let requests = request_builder.flush().await;
         assert_eq!(requests.len(), 2);
     }
@@ -728,7 +741,7 @@ mod tests {
         // We should be able to encode the three metrics without issue.
         let buffer_pool = create_request_builder_buffer_pool();
         let mut request_builder = RequestBuilder::new(
-            MetricsEndpoint::Series,
+            MetricsEndpoint::series(),
             buffer_pool,
             usize::MAX,
             CompressionScheme::zstd_default(),
@@ -745,7 +758,7 @@ mod tests {
         // We should only be able to encode two of the three metrics before we're signaled to flush.
         let buffer_pool = create_request_builder_buffer_pool();
         let mut request_builder = RequestBuilder::new(
-            MetricsEndpoint::Series,
+            MetricsEndpoint::series(),
             buffer_pool,
             2,
             CompressionScheme::zstd_default(),
