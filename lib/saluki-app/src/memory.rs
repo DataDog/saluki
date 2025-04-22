@@ -17,6 +17,7 @@ use saluki_api::{
     routing::{get, Router},
     APIHandler, StatusCode,
 };
+use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
@@ -255,7 +256,7 @@ pub async fn initialize_allocator_telemetry() -> Result<(), GenericError> {
     }
 
     // Spawn the background task that will periodically collect memory usage statistics.
-    tokio::spawn(async {
+    spawn_traced_named("allocator-telemetry-collector", async {
         let mut metrics = HashMap::new();
 
         loop {

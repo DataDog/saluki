@@ -3,6 +3,7 @@
 #![deny(missing_docs)]
 
 mod builder;
+
 pub use self::builder::{MetricTag, MetricsBuilder};
 
 mod macros;
@@ -12,6 +13,7 @@ pub mod test;
 
 #[doc(hidden)]
 pub mod reexport {
+    pub use ::metrics;
     pub use paste::paste;
 }
 

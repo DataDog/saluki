@@ -10,6 +10,7 @@ use datadog_protos::agent::{
 use http::{Request, Uri};
 use http_body_util::BodyExt;
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
+use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
 use saluki_core::state::reflector::Reflector;
 use saluki_env::helpers::remote_agent::RemoteAgentClient;
@@ -82,12 +83,10 @@ impl RemoteAgentHelperConfiguration {
         };
         let service = RemoteAgentServer::new(service_impl);
 
-        tokio::spawn(run_remote_agent_helper(
-            self.id,
-            self.display_name,
-            self.local_api_listen_addr,
-            self.client,
-        ));
+        spawn_traced_named(
+            "adp-remote-agent-task",
+            run_remote_agent_helper(self.id, self.display_name, self.local_api_listen_addr, self.client),
+        );
 
         service
     }

@@ -9,7 +9,12 @@ repository = { workspace = true }
 foldhash = { workspace = true }
 hashbrown = { workspace = true }
 indexmap = { workspace = true }
+memory-accounting = { workspace = true }
 papaya = { workspace = true }
+pin-project = { workspace = true }
+saluki-metrics = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
+tracing = { workspace = true }
 
 [lints]
 workspace = true
