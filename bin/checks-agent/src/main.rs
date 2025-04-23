@@ -37,11 +37,10 @@ static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System
 async fn main() {
     let started = Instant::now();
 
-    let _logging_api_handler = match initialize_dynamic_logging(None).await {
+    match initialize_dynamic_logging(None).await {
         Ok(handler) => handler,
         Err(e) => {
             fatal_and_exit(format!("failed to initialize logging: {}", e));
-            return;
         }
     };
 
@@ -152,7 +151,7 @@ async fn create_topology(
 ) -> Result<TopologyBlueprint, GenericError> {
     // Create a simplified topology with minimal components for now
     let topology_registry = component_registry.get_or_create("topology");
-    let mut blueprint = TopologyBlueprint::from_component_registry(topology_registry);
+    let mut blueprint = TopologyBlueprint::new("primary", &topology_registry);
 
     // Create a HeartbeatConfiguration source with heartbeat enabled to keep the topology running
     let source_config = HeartbeatConfiguration::default();
