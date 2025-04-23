@@ -22,14 +22,10 @@ variables:
   SALUKI_GENERAL_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/general-ci:latest"
   SALUKI_SMP_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:latest"
 
-  # ADP-specific variables, controlling how we build ADP images, how we version them, and where we push them.
-  ADP_IMAGE_BASE: "${SALUKI_IMAGE_REPO_BASE}/agent-data-plane"
-
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image, both for
   # internal and public releases.
   BASE_DD_AGENT_VERSION: "7.65.0-rc.9"
   BASE_DD_AGENT_VERSION_INTERNAL: "7-65-0-rc-9"
-  BASE_DD_AGENT_VERSION_INTERNAL_NIGHTLY: "main-jmx-17d25f22"
 
   INTERNAL_DD_AGENT_IMAGE: "${IMAGE_REGISTRY}/datadog-agent:${BASE_DD_AGENT_VERSION_INTERNAL}-full"
   INTERNAL_DD_AGENT_IMAGE_FIPS: "${IMAGE_REGISTRY}/datadog-agent:${BASE_DD_AGENT_VERSION_INTERNAL}-fips-jmx"
@@ -47,6 +43,13 @@ default:
 # Common build-specific variables that need to be shared across stages.
 .build-common-variables:
   variables:
+    ADP_IMAGE_BASE: "${SALUKI_IMAGE_REPO_BASE}/agent-data-plane"
+    # The only difference between the debug and release images are that debug images are marked in such a way that
+    # any part of the code that reports the ADP "build" info -- version, Git hash, etc -- will indicate that the build
+    # is a development build. This is meant to highlight the difference between running a one-off version of ADP and a
+    # versioned release.
+    #
+    # Beyond that, both debug and release builds are built with release optimizations _and_ include debug symbols. :)
     ADP_DEBUG_IMAGE_TAG: "${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}"
     ADP_DEBUG_IMAGE_TAG_FIPS: "${ADP_IMAGE_BASE}:${CI_COMMIT_SHORT_SHA}-fips"
     ADP_RELEASE_IMAGE_TAG: "${ADP_IMAGE_BASE}:${CI_COMMIT_TAG}-release"
