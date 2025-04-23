@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use ddsketch_agent::DDSketch;
 use http::{Request, Response};
 use hyper::{body::Incoming, service::service_fn};
-use indexmap::IndexMap;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_common::collections::FastIndexMap;
 use saluki_config::GenericConfiguration;
 use saluki_context::{tags::Tagged as _, Context};
 use saluki_core::components::{destinations::*, ComponentContext};
@@ -36,14 +36,13 @@ const TAGS_BUFFER_SIZE_LIMIT_BYTES: usize = 1024;
 const NAME_NORMALIZATION_BUFFER_SIZE: usize = 512;
 
 // Histogram-related constants and pre-calculated buckets.
-const HISTOGRAM_LOWER_RANGE_START: f64 = 0.0000001;
-const HISTOGRAM_LOWER_RANGE_BUCKETS: usize = 20;
-const HISTOGRAM_LOWER_RANGE_GROWTH_FACTOR: f64 = 2.25;
-const HISTOGRAM_UPPER_RANGE_START: f64 = 1.0;
-const HISTOGRAM_UPPER_RANGE_BUCKETS: usize = 10;
-const HISTOGRAM_UPPER_RANGE_GROWTH_FACTOR: f64 = 4.0;
-const HISTOGRAM_MAX_BUCKETS: usize = HISTOGRAM_LOWER_RANGE_BUCKETS + HISTOGRAM_UPPER_RANGE_BUCKETS;
-static HISTOGRAM_BUCKETS: LazyLock<[(f64, &'static str); HISTOGRAM_MAX_BUCKETS]> = LazyLock::new(histogram_buckets);
+const TIME_HISTOGRAM_BUCKET_COUNT: usize = 30;
+static TIME_HISTOGRAM_BUCKETS: LazyLock<[(f64, &'static str); TIME_HISTOGRAM_BUCKET_COUNT]> =
+    LazyLock::new(|| histogram_buckets::<TIME_HISTOGRAM_BUCKET_COUNT>(0.000000128, 4.0));
+
+const NON_TIME_HISTOGRAM_BUCKET_COUNT: usize = 30;
+static NON_TIME_HISTOGRAM_BUCKETS: LazyLock<[(f64, &'static str); NON_TIME_HISTOGRAM_BUCKET_COUNT]> =
+    LazyLock::new(|| histogram_buckets::<NON_TIME_HISTOGRAM_BUCKET_COUNT>(1.0, 2.0));
 
 // SAFETY: This is obviously not zero.
 const METRIC_NAME_STRING_INTERNER_BYTES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(65536) };
@@ -92,7 +91,7 @@ impl DestinationBuilder for PrometheusConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         Ok(Box::new(Prometheus {
             listener: ConnectionOrientedListener::from_listen_address(self.listen_addr.clone()).await?,
-            metrics: IndexMap::new(),
+            metrics: FastIndexMap::default(),
             payload: Arc::new(RwLock::new(String::new())),
             payload_buffer: String::with_capacity(PAYLOAD_BUFFER_SIZE_LIMIT_BYTES),
             tags_buffer: String::with_capacity(TAGS_BUFFER_SIZE_LIMIT_BYTES),
@@ -126,7 +125,7 @@ impl MemoryBounds for PrometheusConfiguration {
 
 struct Prometheus {
     listener: ConnectionOrientedListener,
-    metrics: IndexMap<PrometheusContext, IndexMap<Context, PrometheusValue>>,
+    metrics: FastIndexMap<PrometheusContext, FastIndexMap<Context, PrometheusValue>>,
     payload: Arc<RwLock<String>>,
     payload_buffer: String,
     tags_buffer: String,
@@ -226,7 +225,7 @@ fn spawn_prom_scrape_service(
 
 #[allow(clippy::mutable_key_type)]
 async fn regenerate_payload(
-    metrics: &IndexMap<PrometheusContext, IndexMap<Context, PrometheusValue>>, payload: &Arc<RwLock<String>>,
+    metrics: &FastIndexMap<PrometheusContext, FastIndexMap<Context, PrometheusValue>>, payload: &Arc<RwLock<String>>,
     payload_buffer: &mut String, tags_buffer: &mut String,
 ) {
     let mut payload = payload.write().await;
@@ -285,7 +284,7 @@ fn get_help_text(metric_name: &str) -> Option<&'static str> {
 
 fn write_metrics(
     payload_buffer: &mut String, tags_buffer: &mut String, prom_context: &PrometheusContext,
-    contexts: &IndexMap<Context, PrometheusValue>,
+    contexts: &FastIndexMap<Context, PrometheusValue>,
 ) -> bool {
     if contexts.is_empty() {
         debug!("No contexts for metric '{}'. Skipping.", prom_context.metric_name);
@@ -335,13 +334,11 @@ fn write_metrics(
             PrometheusValue::Histogram(histogram) => {
                 // Write the histogram buckets.
                 for (upper_bound_str, count) in histogram.buckets() {
-                    if count != 0 {
-                        write!(payload_buffer, "{}_bucket{{{}", &prom_context.metric_name, tags_buffer).unwrap();
-                        if !tags_buffer.is_empty() {
-                            payload_buffer.push(',');
-                        }
-                        writeln!(payload_buffer, "le=\"{}\"}} {}", upper_bound_str, count).unwrap();
+                    write!(payload_buffer, "{}_bucket{{{}", &prom_context.metric_name, tags_buffer).unwrap();
+                    if !tags_buffer.is_empty() {
+                        payload_buffer.push(',');
                     }
+                    writeln!(payload_buffer, "le=\"{}\"}} {}", upper_bound_str, count).unwrap();
                 }
 
                 // Write the final bucket -- the +Inf bucket -- which is just equal to the count of the histogram.
@@ -534,12 +531,13 @@ fn into_prometheus_metric(
             )
         }
         MetricValues::Histogram(histograms) => {
-            let prom_hist = histograms
-                .into_iter()
-                .fold(PrometheusHistogram::new(), |mut acc, (_, hist)| {
-                    acc.merge_histogram(&hist);
-                    acc
-                });
+            let prom_hist =
+                histograms
+                    .into_iter()
+                    .fold(PrometheusHistogram::new(&metric_name), |mut acc, (_, hist)| {
+                        acc.merge_histogram(&hist);
+                        acc
+                    });
             (PrometheusType::Histogram, PrometheusValue::Histogram(prom_hist))
         }
         MetricValues::Distribution(sketches) => {
@@ -599,15 +597,22 @@ fn is_valid_name_char(c: char) -> bool {
 struct PrometheusHistogram {
     sum: f64,
     count: u64,
-    buckets: Vec<(f64, u64)>,
+    buckets: Vec<(f64, &'static str, u64)>,
 }
 
 impl PrometheusHistogram {
-    fn new() -> Self {
-        let mut buckets = Vec::with_capacity(HISTOGRAM_BUCKETS.len());
-        for (upper_bound, _) in HISTOGRAM_BUCKETS.iter() {
-            buckets.push((*upper_bound, 0));
-        }
+    fn new(metric_name: &str) -> Self {
+        // Super hacky but effective way to decide when to switch to the time-oriented buckets.
+        let base_buckets = if metric_name.ends_with("_seconds") {
+            &TIME_HISTOGRAM_BUCKETS[..]
+        } else {
+            &NON_TIME_HISTOGRAM_BUCKETS[..]
+        };
+
+        let buckets = base_buckets
+            .iter()
+            .map(|(upper_bound, upper_bound_str)| (*upper_bound, *upper_bound_str, 0))
+            .collect();
 
         Self {
             sum: 0.0,
@@ -620,21 +625,13 @@ impl PrometheusHistogram {
         self.sum += other.sum;
         self.count += other.count;
 
-        // Extend our buckets to match the other buckets, if our bucket count is less than `other`.
-        if self.buckets.len() < other.buckets.len() {
-            for (upper_bound, _) in HISTOGRAM_BUCKETS.iter() {
-                if self.buckets.len() == other.buckets.len() {
-                    break;
-                }
+        assert!(
+            self.buckets.len() == other.buckets.len(),
+            "histograms should always have identical bucket counts when selected for merge"
+        );
 
-                self.buckets.push((*upper_bound, 0));
-            }
-        }
-
-        // Now just add the counts from `other`, in order, since we know our buckets are always in order and have
-        // identical bounds for the same indices.
-        for (i, (_, other_count)) in other.buckets.iter().enumerate() {
-            self.buckets[i].1 += other_count;
+        for (i, (_, _, other_count)) in other.buckets.iter().enumerate() {
+            self.buckets[i].2 += other_count;
         }
     }
 
@@ -649,13 +646,9 @@ impl PrometheusHistogram {
         self.count += weight;
 
         // Add the value to each bucket that it falls into, up to the maximum number of buckets.
-        for (i, (upper_bound, _)) in HISTOGRAM_BUCKETS.iter().enumerate() {
+        for (upper_bound, _, count) in &mut self.buckets {
             if value <= *upper_bound {
-                if self.buckets.len() <= i {
-                    self.buckets.push((*upper_bound, 0));
-                }
-
-                self.buckets[i].1 += weight;
+                *count += weight;
             }
         }
     }
@@ -663,58 +656,33 @@ impl PrometheusHistogram {
     fn buckets(&self) -> impl Iterator<Item = (&'static str, u64)> + '_ {
         self.buckets
             .iter()
-            .zip(HISTOGRAM_BUCKETS.iter())
-            .map(|((_, count), (_, upper_bound_str))| (*upper_bound_str, *count))
+            .map(|(_, upper_bound_str, count)| (*upper_bound_str, *count))
     }
 }
 
-fn histogram_buckets() -> [(f64, &'static str); HISTOGRAM_MAX_BUCKETS] {
-    // We generate two separate bucket ranges, meant to maximize resolution at different scale.
+fn histogram_buckets<const N: usize>(base: f64, scale: f64) -> [(f64, &'static str); N] {
+    // We generate a set of "log-linear" buckets: logarithmically spaced values which are then subdivided linearly.
     //
-    // The lower range is meant to cover values from 0 to 1, which generally includes time-based measurements for values
-    // that potentially reach down into the hundreds of nanoseconds range. We want a lot of granularity here.
+    // As an example, with base=2 and scale=4, we would get: 2, 5, 8, 20, 32, 80, 128, 320, 512, and so on.
     //
-    // The upper range is meant to extend from 1 to infinity, which generally includes count-based measurements for
-    // things like the number of events in an event buffer: values that are often in the tens or hundreds.
-    //
-    // This is a fairly customized bucket range based on our knowledge of our internal telemetry, but is still decently
-    // generic and should be useful for most use cases.
+    // We calculate buckets in pairs, where the n-th pair is `i` and `j`, such that `i` is `base * scale^n` and `j` is
+    // the midpoint between `i` and the next `i` (`base * scale^(n+1)`).
 
-    let mut buckets = [(0.0, ""); HISTOGRAM_MAX_BUCKETS];
+    let mut buckets = [(0.0, ""); N];
 
-    let mut lower_range_end_idx = 0;
+    let log_linear_buckets = std::iter::repeat(base).enumerate().flat_map(|(i, base)| {
+        let pow = scale.powf(i as f64);
+        let value = base * pow;
 
-    // Generate the buckets for the lower range (0-1), and stop ourselves if our upper bound would exceed the start of
-    // the upper range.
-    for (i, (bucket_le, bucket_le_str)) in &mut buckets[0..HISTOGRAM_LOWER_RANGE_BUCKETS].iter_mut().enumerate() {
-        let current_le = if i == 0 {
-            HISTOGRAM_LOWER_RANGE_START
-        } else {
-            HISTOGRAM_LOWER_RANGE_START * HISTOGRAM_LOWER_RANGE_GROWTH_FACTOR.powf(i as f64)
-        };
+        let next_pow = scale.powf((i + 1) as f64);
+        let next_value = base * next_pow;
+        let midpoint = (value + next_value) / 2.0;
 
-        if current_le > HISTOGRAM_UPPER_RANGE_START {
-            break;
-        }
+        [value, midpoint]
+    });
 
-        let current_le_str = format!("{}", current_le);
-
-        *bucket_le = current_le;
-        *bucket_le_str = current_le_str.leak();
-        lower_range_end_idx = i;
-    }
-
-    // Generate the buckets for the upper range (1 - infinity).
-    //
-    // We start from where the lower range left off, in case we stopped before reaching bucket range midpoint.
-    let upper_range_start_idx = lower_range_end_idx + 1;
-    for (i, (bucket_le, bucket_le_str)) in &mut buckets[upper_range_start_idx..].iter_mut().enumerate() {
-        let current_le = if i == 0 {
-            HISTOGRAM_UPPER_RANGE_START
-        } else {
-            HISTOGRAM_UPPER_RANGE_START * HISTOGRAM_UPPER_RANGE_GROWTH_FACTOR.powf(i as f64)
-        };
-
+    for (i, current_le) in log_linear_buckets.enumerate().take(N) {
+        let (bucket_le, bucket_le_str) = &mut buckets[i];
         let current_le_str = format!("{}", current_le);
 
         *bucket_le = current_le;
@@ -729,12 +697,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bucket_print() {
+        println!("time buckets: {:?}", *TIME_HISTOGRAM_BUCKETS);
+        println!("non-time buckets: {:?}", *NON_TIME_HISTOGRAM_BUCKETS);
+    }
+
+    #[test]
     fn prom_histogram_add_sample() {
         let sample1 = (0.25, 1);
         let sample2 = (1.0, 2);
         let sample3 = (2.0, 3);
 
-        let mut histogram = PrometheusHistogram::new();
+        let mut histogram = PrometheusHistogram::new("time_metric_seconds");
         histogram.add_sample(sample1.0, sample1.1);
         histogram.add_sample(sample2.0, sample2.1);
         histogram.add_sample(sample3.0, sample3.1);
@@ -754,7 +728,7 @@ mod tests {
                 // If we've finally hit a bucket that includes our sample value, it's count should be equal to or
                 // greater than our expected bucket count when we account for the current sample.
                 if sample.0 <= bucket.0 {
-                    assert!(bucket.1 >= expected_bucket_count + sample.1);
+                    assert!(bucket.2 >= expected_bucket_count + sample.1);
                 }
             }
 
@@ -765,8 +739,8 @@ mod tests {
 
     #[test]
     fn prom_histogram_merge() {
-        let mut histogram1 = PrometheusHistogram::new();
-        let mut histogram2 = PrometheusHistogram::new();
+        let mut histogram1 = PrometheusHistogram::new("");
+        let mut histogram2 = PrometheusHistogram::new("");
 
         histogram1.add_sample(0.5, 2);
         histogram1.add_sample(1.0, 3);
@@ -787,8 +761,8 @@ mod tests {
 
         // Make sure the buckets are correct.
         for (i, bucket) in merged.buckets.iter().enumerate() {
-            let expected_bucket_count = histogram1.buckets[i].1 + histogram2.buckets[i].1;
-            assert_eq!(bucket.1, expected_bucket_count);
+            let expected_bucket_count = histogram1.buckets[i].2 + histogram2.buckets[i].2;
+            assert_eq!(bucket.2, expected_bucket_count);
         }
     }
 

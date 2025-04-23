@@ -8,13 +8,10 @@
 use std::time::{Duration, Instant};
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
-use saluki_app::{
-    api::APIBuilder, logging::LoggingAPIHandler, memory::MemoryProfilingAPIHandler, metrics::emit_startup_metrics,
-    prelude::*,
-};
+use saluki_app::prelude::*;
 use saluki_components::{
-    destinations::{DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration, PrometheusConfiguration},
-    sources::{DogStatsDConfiguration, InternalMetricsConfiguration},
+    destinations::{DatadogEventsServiceChecksConfiguration, DatadogMetricsConfiguration},
+    sources::DogStatsDConfiguration,
     transforms::{
         AggregateConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration, DogstatsDPrefixFilterConfiguration,
         HostEnrichmentConfiguration, HostTagsConfiguration,
@@ -28,17 +25,15 @@ use saluki_health::HealthRegistry;
 use tokio::select;
 use tracing::{error, info, warn};
 
-mod api;
-use self::api::configure_and_spawn_api_endpoints;
-
 mod components;
-use self::components::remapper::AgentTelemetryRemapperConfiguration;
 
 mod env_provider;
 use self::env_provider::ADPEnvironmentProvider;
 
-mod state;
-use self::state::metrics::initialize_shared_metrics_state;
+mod internal;
+use self::internal::{spawn_control_plane, spawn_internal_observability_topology};
+
+pub(crate) mod state;
 
 #[cfg(target_os = "linux")]
 #[global_allocator]
@@ -54,13 +49,9 @@ static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System
 async fn main() {
     let started = Instant::now();
 
-    let logging_api_handler = match initialize_dynamic_logging(None).await {
-        Ok(handler) => handler,
-        Err(e) => {
-            fatal_and_exit(format!("failed to initialize logging: {}", e));
-            return;
-        }
-    };
+    if let Err(e) = initialize_dynamic_logging(None).await {
+        fatal_and_exit(format!("failed to initialize logging: {}", e));
+    }
 
     if let Err(e) = initialize_metrics("adp").await {
         fatal_and_exit(format!("failed to initialize metrics: {}", e));
@@ -74,18 +65,16 @@ async fn main() {
         fatal_and_exit(format!("failed to initialize TLS: {}", e));
     }
 
-    match run(started, logging_api_handler).await {
+    match run(started).await {
         Ok(()) => info!("Agent Data Plane stopped."),
         Err(e) => {
-            // TODO: It'd be better to take the error cause chain and write it out as a list of errors, instead of
-            // having it be multi-line, since the multi-line bit messes with the log formatting.
             error!("{:?}", e);
             std::process::exit(1);
         }
     }
 }
 
-async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result<(), GenericError> {
+async fn run(started: Instant) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
     info!(
         version = app_details.version().raw(),
@@ -104,31 +93,25 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
         .await?
         .into_generic()?;
 
+    // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
-
-    let internal_metrics = initialize_shared_metrics_state().await;
-
     let env_provider =
         ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry).await?;
 
-    // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
-    // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
+    // Create our primary data topology and spawn any internal processes, which will ensure all relevant components are
+    // registered and accounted for in terms of memory usage.
     let blueprint = create_topology(&configuration, &env_provider, &component_registry).await?;
 
-    // Build our unprivileged and privileged API server.
-    //
-    // The unprivileged API is purely for things like health checks or read-only information. The privileged API is
-    // meant for sensitive information or actions that require elevated permissions.
-    let unprivileged_api = APIBuilder::new()
-        .with_handler(health_registry.api_handler())
-        .with_handler(component_registry.api_handler());
-
-    let privileged_api = APIBuilder::new()
-        .with_self_signed_tls()
-        .with_handler(logging_api_handler)
-        .with_handler(MemoryProfilingAPIHandler)
-        .with_optional_handler(env_provider.workload_api_handler());
+    spawn_internal_observability_topology(&configuration, &component_registry, health_registry.clone())
+        .error_context("Failed to spawn internal observability topology.")?;
+    spawn_control_plane(
+        configuration.clone(),
+        &component_registry,
+        health_registry.clone(),
+        env_provider,
+    )
+    .error_context("Failed to spawn control plane.")?;
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
     let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;
@@ -147,12 +130,6 @@ async fn run(started: Instant, logging_api_handler: LoggingAPIHandler) -> Result
     // Bounds validation succeeded, so now we'll build and spawn the topology.
     let built_topology = blueprint.build().await?;
     let mut running_topology = built_topology.spawn(&health_registry, memory_limiter).await?;
-
-    // Spawn the health checker.
-    health_registry.spawn().await?;
-
-    // Handle any final configuration of our API endpoints and spawn them.
-    configure_and_spawn_api_endpoints(&configuration, internal_metrics, unprivileged_api, privileged_api).await?;
 
     let startup_time = started.elapsed();
 
@@ -228,9 +205,7 @@ async fn create_topology(
     let events_service_checks_config = DatadogEventsServiceChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Events/Service Checks destination.")?;
 
-    let topology_registry = component_registry.get_or_create("topology");
-    let mut blueprint = TopologyBlueprint::from_component_registry(topology_registry);
-
+    let mut blueprint = TopologyBlueprint::new("primary", component_registry);
     blueprint
         .add_source("dsd_in", dsd_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
@@ -243,26 +218,6 @@ async fn create_topology(
         .connect_component("enrich", ["dsd_prefix_filter"])?
         .connect_component("dd_metrics_out", ["enrich"])?
         .connect_component("dd_events_sc_out", ["dsd_in.events", "dsd_in.service_checks"])?;
-
-    // When telemetry is enabled, we need to collect internal metrics, so add those components and route them here.
-    let telemetry_enabled = configuration.get_typed_or_default::<bool>("telemetry_enabled");
-    if telemetry_enabled {
-        let int_metrics_config = InternalMetricsConfiguration;
-        let int_metrics_remap_config = AgentTelemetryRemapperConfiguration::new();
-        let prometheus_config = PrometheusConfiguration::from_configuration(configuration)?;
-
-        info!(
-            "Serving telemetry scrape endpoint on {}.",
-            prometheus_config.listen_address()
-        );
-
-        blueprint
-            .add_source("internal_metrics_in", int_metrics_config)?
-            .add_transform("internal_metrics_remap", int_metrics_remap_config)?
-            .add_destination("internal_metrics_out", prometheus_config)?
-            .connect_component("internal_metrics_remap", ["internal_metrics_in"])?
-            .connect_component("internal_metrics_out", ["internal_metrics_remap"])?;
-    }
 
     Ok(blueprint)
 }

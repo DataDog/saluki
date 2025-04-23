@@ -2,13 +2,13 @@
 #[macro_export]
 macro_rules! metric_type_from_lower {
     (counter) => {
-        ::metrics::Counter
+        $crate::reexport::metrics::Counter
     };
     (gauge) => {
-        ::metrics::Gauge
+        $crate::reexport::metrics::Gauge
     };
     (histogram) => {
-        ::metrics::Histogram
+        $crate::reexport::metrics::Histogram
     };
     ($($other:tt)*) => {
         ()
@@ -19,13 +19,13 @@ macro_rules! metric_type_from_lower {
 #[macro_export]
 macro_rules! register_metric {
     (counter, $metric_name:expr, $labels:expr) => {
-        ::metrics::counter!($metric_name, $labels)
+        $crate::reexport::metrics::counter!($metric_name, $labels)
     };
     (gauge, $metric_name:expr, $labels:expr) => {
-        ::metrics::gauge!($metric_name, $labels)
+        $crate::reexport::metrics::gauge!($metric_name, $labels)
     };
     (histogram, $metric_name:expr, $labels:expr) => {
-        ::metrics::histogram!($metric_name, $labels)
+        $crate::reexport::metrics::histogram!($metric_name, $labels)
     };
     ($($other:tt)*) => {
         compile_error!("metric type must be `counter`, `gauge`, or `histogram`");
@@ -112,7 +112,7 @@ macro_rules! static_metrics {
 
                 let labels = vec![
                     $(
-                        ::metrics::Label::new(stringify!($label_key), $label_key.to_shared_string()),
+                        $crate::reexport::metrics::Label::new(stringify!($label_key), $label_key.to_shared_string()),
                     )*
                 ];
 

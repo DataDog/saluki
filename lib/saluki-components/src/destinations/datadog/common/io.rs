@@ -1,12 +1,12 @@
-use std::{collections::VecDeque, error::Error as _, sync::Arc};
+use std::{collections::VecDeque, error::Error as _, sync::Arc, time::Duration};
 
 use futures::FutureExt as _;
 use http::{Request, Uri};
 use http_body::Body;
 use http_body_util::BodyExt as _;
 use hyper::{body::Incoming, Response};
+use saluki_common::task::spawn_traced_named;
 use saluki_config::RefreshableConfiguration;
-use saluki_core::task::spawn_traced;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::{
     buf::ReadIoBuffer,
@@ -106,6 +106,11 @@ where
         if let Some(proxy) = config.proxy() {
             client_builder = client_builder.with_proxies(proxy.build()?);
         }
+
+        if config.connection_reset_interval() > Duration::ZERO {
+            client_builder = client_builder.with_connection_age_limit(config.connection_reset_interval());
+        }
+
         let client = client_builder.build()?;
 
         Ok(Self {
@@ -133,15 +138,18 @@ where
             endpoints,
         } = self;
 
-        spawn_traced(run_io_loop(
-            transactions_rx,
-            io_shutdown_tx,
-            config,
-            client,
-            telemetry,
-            metrics_builder,
-            endpoints,
-        ));
+        spawn_traced_named(
+            "dd-txn-forwarder-io-loop",
+            run_io_loop(
+                transactions_rx,
+                io_shutdown_tx,
+                config,
+                client,
+                telemetry,
+                metrics_builder,
+                endpoints,
+            ),
+        );
 
         Handle {
             transactions_tx,
@@ -171,15 +179,20 @@ async fn run_io_loop<S, B>(
 
         let (endpoint_tx, endpoint_rx) = mpsc::channel(8);
         let task_barrier = Arc::clone(&task_barrier);
-        spawn_traced(run_endpoint_io_loop(
-            endpoint_rx,
-            task_barrier,
-            config.clone(),
-            service.clone(),
-            telemetry.clone(),
-            txnq_telemetry,
-            resolved_endpoint,
-        ));
+
+        let task_name = format!("dd-txn-forwarder-io-loop-{}", resolved_endpoint.endpoint().authority());
+        spawn_traced_named(
+            task_name,
+            run_endpoint_io_loop(
+                endpoint_rx,
+                task_barrier,
+                config.clone(),
+                service.clone(),
+                telemetry.clone(),
+                txnq_telemetry,
+                resolved_endpoint,
+            ),
+        );
 
         endpoint_txs.push((endpoint_url, endpoint_tx));
     }

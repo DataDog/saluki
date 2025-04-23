@@ -5,22 +5,27 @@
     - calculate-build-metadata
   retry: 2
   timeout: 20m
+  id_tokens:
+    DDSIGN_ID_TOKEN:
+      aud: image-integrity
   variables:
     # Compiling Rust is intensive. ¯\_(ツ)_/¯
     KUBERNETES_CPU_REQUEST: "16"
     KUBERNETES_MEMORY_REQUEST: "8Gi"
     KUBERNETES_MEMORY_LIMIT: "12Gi"
     APP_BUILD_TIME: "${CI_PIPELINE_CREATED_AT}"
+    DDCI_CONFIGURE_OTEL_EXPORTER: true
   script:
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
+      --metadata-file /tmp/build.metadata
       --tag ${IMAGE_TAG}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg BUILD_FEATURES=${BUILD_FEATURES}
-      --build-arg APP_FULL_NAME=${APP_FULLNAME}
+      --build-arg APP_FULL_NAME="${APP_FULL_NAME}"
       --build-arg APP_SHORT_NAME=${APP_SHORT_NAME}
       --build-arg APP_IDENTIFIER=${APP_IDENTIFIER}
       --build-arg APP_VERSION=${APP_VERSION}
@@ -35,6 +40,7 @@
       --label config.fips=${FIPS_ENABLED}
       --push
       .
+    - ddsign sign ${IMAGE_TAG} --docker-metadata-file /tmp/build.metadata
 
 .build-converged-adp-definition:
   stage: build
@@ -44,11 +50,13 @@
   id_tokens:
     DDSIGN_ID_TOKEN:
       aud: image-integrity
+  variables:
+    DDCI_CONFIGURE_OTEL_EXPORTER: true
   script:
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.datadog-agent
-      --metadata-file	/tmp/build.metadata
+      --metadata-file /tmp/build.metadata
       --build-arg "DD_AGENT_IMAGE=${DD_AGENT_IMAGE}"
       --build-arg "ADP_IMAGE=${ADP_IMAGE}"
       --tag "${CONVERGED_IMAGE_TAG}"

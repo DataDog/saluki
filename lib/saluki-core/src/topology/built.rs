@@ -4,7 +4,8 @@ use memory_accounting::{
     allocator::{AllocationGroupToken, Tracked},
     MemoryLimiter,
 };
-use saluki_error::{generic_error, GenericError};
+use saluki_common::task::{spawn_traced_named, JoinSetExt as _};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use tokio::{
     sync::mpsc,
@@ -27,7 +28,6 @@ use crate::{
         ComponentContext,
     },
     pooling::ElasticObjectPool,
-    task::{spawn_traced, JoinSetExt as _},
 };
 
 /// A built topology.
@@ -37,6 +37,7 @@ use crate::{
 ///
 /// A built topology must be spawned via [`spawn`][Self::spawn].
 pub struct BuiltTopology {
+    name: String,
     graph: Graph,
     sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
     transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
@@ -46,12 +47,14 @@ pub struct BuiltTopology {
 
 impl BuiltTopology {
     pub(crate) fn from_parts(
-        graph: Graph, sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
+        name: String, graph: Graph,
+        sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
         transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
         destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
         component_token: AllocationGroupToken,
     ) -> Self {
         Self {
+            name,
             graph,
             sources,
             transforms,
@@ -121,7 +124,16 @@ impl BuiltTopology {
     pub async fn spawn(
         self, health_registry: &HealthRegistry, memory_limiter: MemoryLimiter,
     ) -> Result<RunningTopology, GenericError> {
+        let root_component_name = format!("topology.{}", self.name);
+
         let _guard = self.component_token.enter();
+
+        let thread_pool = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(8)
+            .enable_all()
+            .build()
+            .error_context("Failed to build asynchronous thread pool runtime.")?;
+        let thread_pool_handle = thread_pool.handle().clone();
 
         let mut component_tasks = JoinSet::new();
         let mut component_task_map = HashMap::new();
@@ -130,7 +142,7 @@ impl BuiltTopology {
         let (event_buffer_pool, shrinker) = ElasticObjectPool::with_builder("global_event_buffers", 32, 512, || {
             FixedSizeEventBufferInner::with_capacity(1024)
         });
-        spawn_traced(shrinker);
+        spawn_traced_named("global-event-buffer-pool-shrinker", shrinker);
 
         let (mut forwarders, mut event_streams) = self.create_component_interconnects(event_buffer_pool.clone());
 
@@ -146,7 +158,7 @@ impl BuiltTopology {
 
             let shutdown_handle = shutdown_coordinator.register();
             let health_handle = health_registry
-                .register_component(format!("topology.sources.{}", component_id))
+                .register_component(format!("{}.sources.{}", root_component_name, component_id))
                 .expect("duplicate source component ID in health registry");
 
             let component_context = ComponentContext::source(component_id.clone());
@@ -159,6 +171,7 @@ impl BuiltTopology {
                 component_registry,
                 health_handle,
                 health_registry.clone(),
+                thread_pool_handle.clone(),
             );
 
             let task_handle = spawn_source(&mut component_tasks, source, context);
@@ -178,7 +191,7 @@ impl BuiltTopology {
                 .ok_or_else(|| generic_error!("No event stream found for component '{}'", component_id))?;
 
             let health_handle = health_registry
-                .register_component(format!("topology.transforms.{}", component_id))
+                .register_component(format!("{}.transforms.{}", root_component_name, component_id))
                 .expect("duplicate transform component ID in health registry");
 
             let component_context = ComponentContext::transform(component_id.clone());
@@ -191,6 +204,7 @@ impl BuiltTopology {
                 component_registry,
                 health_handle,
                 health_registry.clone(),
+                thread_pool_handle.clone(),
             );
 
             let task_handle = spawn_transform(&mut component_tasks, transform, context);
@@ -206,7 +220,7 @@ impl BuiltTopology {
                 .ok_or_else(|| generic_error!("No event stream found for component '{}'", component_id))?;
 
             let health_handle = health_registry
-                .register_component(format!("topology.destinations.{}", component_id))
+                .register_component(format!("{}.destinations.{}", root_component_name, component_id))
                 .expect("duplicate destination component ID in health registry");
 
             let component_context = ComponentContext::destination(component_id.clone());
@@ -217,6 +231,7 @@ impl BuiltTopology {
                 component_registry,
                 health_handle,
                 health_registry.clone(),
+                thread_pool_handle.clone(),
             );
 
             let task_handle = spawn_destination(&mut component_tasks, destination, context);
@@ -224,6 +239,7 @@ impl BuiltTopology {
         }
 
         Ok(RunningTopology::from_parts(
+            thread_pool,
             shutdown_coordinator,
             component_tasks,
             component_task_map,
@@ -245,7 +261,8 @@ fn spawn_source(
     let _span = component_span.enter();
     let _guard = component_token.enter();
 
-    join_set.spawn_traced(async move { source.run(context).await })
+    let component_task_name = format!("topology-source-{}", context.component_context().component_id());
+    join_set.spawn_traced_named(component_task_name, async move { source.run(context).await })
 }
 
 fn spawn_transform(
@@ -263,7 +280,8 @@ fn spawn_transform(
     let _span = component_span.enter();
     let _guard = component_token.enter();
 
-    join_set.spawn_traced(async move { transform.run(context).await })
+    let component_task_name = format!("topology-transform-{}", context.component_context().component_id());
+    join_set.spawn_traced_named(component_task_name, async move { transform.run(context).await })
 }
 
 fn spawn_destination(
@@ -281,7 +299,8 @@ fn spawn_destination(
     let _span = component_span.enter();
     let _guard = component_token.enter();
 
-    join_set.spawn_traced(async move { destination.run(context).await })
+    let component_task_name = format!("topology-destination-{}", context.component_context().component_id());
+    join_set.spawn_traced_named(component_task_name, async move { destination.run(context).await })
 }
 
 fn build_interconnect_channel() -> (mpsc::Sender<FixedSizeEventBuffer>, mpsc::Receiver<FixedSizeEventBuffer>) {

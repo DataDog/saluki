@@ -63,6 +63,7 @@ impl<'a> IntoIterator for RawTags<'a> {
     }
 }
 
+#[derive(Clone)]
 pub struct RawTagsIter<'a> {
     raw_tags: &'a str,
     parsed_tags: usize,

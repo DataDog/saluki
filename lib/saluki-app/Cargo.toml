@@ -9,9 +9,9 @@ repository = { workspace = true }
 default = []
 full = ["api", "logging", "memory", "metrics", "tls"]
 api = ["dep:axum", "dep:saluki-api", "dep:saluki-error", "dep:saluki-io", "dep:tokio", "dep:tower", "dep:tracing"]
-logging = ["api", "dep:chrono", "dep:chrono-tz", "dep:iana-time-zone", "dep:serde", "dep:tracing", "dep:tracing-subscriber"]
-memory = ["api", "metrics", "dep:bytesize", "dep:jemalloc_pprof", "dep:memory-accounting", "dep:saluki-config", "dep:saluki-error", "dep:serde", "dep:tokio", "dep:tracing"]
-metrics = ["dep:saluki-core", "dep:metrics", "dep:tokio"]
+logging = ["api", "dep:chrono", "dep:chrono-tz", "dep:iana-time-zone", "dep:saluki-common", "dep:serde", "dep:tracing", "dep:tracing-subscriber"]
+memory = ["api", "metrics", "dep:bytesize", "dep:jemalloc_pprof", "dep:memory-accounting", "dep:saluki-common", "dep:saluki-config", "dep:saluki-error", "dep:serde", "dep:tokio", "dep:tracing"]
+metrics = ["dep:saluki-common", "dep:saluki-core", "dep:metrics", "dep:tokio"]
 tls = ["dep:saluki-error", "dep:saluki-tls"]
 tls-fips = ["saluki-tls?/fips"]
 
@@ -29,6 +29,7 @@ rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
 rustls = { workspace = true, features = ["tls12"] }
 rustls-pemfile = { workspace = true, features = ["std"] }
 saluki-api = { workspace = true, optional = true }
+saluki-common = { workspace = true, optional = true }
 saluki-config = { workspace = true, optional = true }
 saluki-core = { workspace = true, optional = true }
 saluki-error = { workspace = true, optional = true }

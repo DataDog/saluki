@@ -10,6 +10,7 @@ use datadog_protos::agent::{
 use http::{Request, Uri};
 use http_body_util::BodyExt;
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
+use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
 use saluki_core::state::reflector::Reflector;
 use saluki_env::helpers::remote_agent::RemoteAgentClient;
@@ -19,7 +20,7 @@ use tokio::time::{interval, MissedTickBehavior};
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::state::metrics::AggregatedMetricsProcessor;
+use crate::state::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor};
 
 const EVENTS_RECEIVED: &str = "adp.component_events_received_total";
 const PACKETS_RECEIVED: &str = "adp.component_packets_received_total";
@@ -48,8 +49,7 @@ pub struct RemoteAgentHelperConfiguration {
 impl RemoteAgentHelperConfiguration {
     /// Creates a new `RemoteAgentHelperConfiguration` from the given configuration.
     pub async fn from_configuration(
-        config: &GenericConfiguration, local_api_listen_addr: SocketAddr,
-        internal_metrics: Reflector<AggregatedMetricsProcessor>, prometheus_listen_addr: Option<SocketAddr>,
+        config: &GenericConfiguration, local_api_listen_addr: SocketAddr, prometheus_listen_addr: Option<SocketAddr>,
     ) -> Result<Self, GenericError> {
         let app_details = saluki_metadata::get_app_details();
         let formatted_full_name = app_details
@@ -64,7 +64,7 @@ impl RemoteAgentHelperConfiguration {
             display_name: formatted_full_name,
             local_api_listen_addr,
             client,
-            internal_metrics,
+            internal_metrics: get_shared_metrics_state().await,
             prometheus_listen_addr,
         })
     }
@@ -82,12 +82,10 @@ impl RemoteAgentHelperConfiguration {
         };
         let service = RemoteAgentServer::new(service_impl);
 
-        tokio::spawn(run_remote_agent_helper(
-            self.id,
-            self.display_name,
-            self.local_api_listen_addr,
-            self.client,
-        ));
+        spawn_traced_named(
+            "adp-remote-agent-task",
+            run_remote_agent_helper(self.id, self.display_name, self.local_api_listen_addr, self.client),
+        );
 
         service
     }
