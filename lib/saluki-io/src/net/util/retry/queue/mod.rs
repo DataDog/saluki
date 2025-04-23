@@ -114,10 +114,11 @@ where
     ///
     /// If there is an error initializing the disk persistence layer, an error is returned.
     pub async fn with_disk_persistence(
-        mut self, root_path: PathBuf, max_disk_size_bytes: u64,
+        mut self, root_path: PathBuf, max_disk_size_bytes: u64, storage_max_disk_ratio: f64,
     ) -> Result<Self, GenericError> {
         let queue_root_path = root_path.join(&self.queue_name);
-        let persisted_pending = PersistedQueue::from_root_path(queue_root_path, max_disk_size_bytes).await?;
+        let persisted_pending =
+            PersistedQueue::from_root_path(queue_root_path, max_disk_size_bytes, storage_max_disk_ratio).await?;
         self.persisted_pending = Some(persisted_pending);
         Ok(self)
     }
@@ -402,7 +403,7 @@ mod tests {
         assert_eq!(0, file_count_recursive(&root_path));
 
         let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), u64::MAX)
-            .with_disk_persistence(root_path.clone(), u64::MAX)
+            .with_disk_persistence(root_path.clone(), u64::MAX, 0.8)
             .await
             .expect("should not fail to create retry queue with disk persistence");
 

@@ -64,19 +64,27 @@ where
     ///
     /// If there is an error creating the root directory, or scanning it for existing entries, or deleting entries to
     /// shrink the directory to fit the given maximum size, an error is returned.
-    pub async fn from_root_path(root_path: PathBuf, max_on_disk_bytes: u64) -> Result<Self, GenericError> {
+    pub async fn from_root_path(
+        root_path: PathBuf, max_on_disk_bytes: u64, storage_max_disk_ratio: f64,
+    ) -> Result<Self, GenericError> {
         // Make sure the directory exists first.
         create_directory_recursive(root_path.clone())
             .await
             .with_error_context(|| format!("Failed to create retry directory '{}'.", root_path.display()))?;
 
+        let total_space = fs2::total_space(&root_path)? as f64;
+        let available_space = fs2::available_space(&root_path)? as f64;
+        let disk_reserved = total_space * (1.0 - storage_max_disk_ratio);
+        let available_disk_usage = (available_space - disk_reserved).ceil() as u64;
+
         let mut persisted_requests = Self {
-            root_path,
+            root_path: root_path.clone(),
             entries: Vec::new(),
             total_on_disk_bytes: 0,
-            max_on_disk_bytes,
+            max_on_disk_bytes: max_on_disk_bytes.min(available_disk_usage),
             _entry: PhantomData,
         };
+
         persisted_requests.refresh_entry_state().await?;
 
         Ok(persisted_requests)
@@ -376,7 +384,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
         let root_path = temp_dir.path().to_path_buf();
 
-        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(root_path.clone(), 1024)
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(root_path.clone(), 1024, 0.8)
             .await
             .expect("should not fail to create persisted queue");
 
@@ -410,7 +418,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
         let root_path = temp_dir.path().to_path_buf();
 
-        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(root_path.clone(), 1)
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(root_path.clone(), 1, 0.8)
             .await
             .expect("should not fail to create persisted queue");
 
@@ -435,7 +443,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
         let root_path = temp_dir.path().to_path_buf();
 
-        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(root_path.clone(), 32)
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(root_path.clone(), 32, 0.8)
             .await
             .expect("should not fail to create persisted queue");
 

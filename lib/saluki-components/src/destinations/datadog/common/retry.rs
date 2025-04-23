@@ -27,6 +27,10 @@ const fn default_retry_queue_max_size_bytes() -> u64 {
     15 * 1024 * 1024
 }
 
+const fn default_storage_max_disk_ratio() -> f64 {
+    0.8
+}
+
 /// Datadog Agent-specific forwarder retry configuration.
 #[derive(Clone, Deserialize)]
 pub struct RetryConfiguration {
@@ -82,12 +86,32 @@ pub struct RetryConfiguration {
         default = "default_retry_queue_max_size_bytes"
     )]
     retry_queue_max_size_bytes: u64,
+
+    /// The maximum disk usage ratio for storing transactions on disk.
+    ///
+    /// Defaults to 0.80.
+    ///
+    /// `0.8` means the Agent can store transactions on disk until `forwarder_storage_max_size_in_bytes`
+    /// is reached or when the disk mount for `forwarder_storage_path` exceeds 80% of the disk capacity,
+    /// whichever is lower.
+    #[serde(
+        default = "default_storage_max_disk_ratio",
+        rename = "forwarder_storage_max_disk_ratio"
+    )]
+    #[allow(dead_code)]
+    storage_max_disk_ratio: f64,
 }
 
 impl RetryConfiguration {
     /// Returns the maximum size of the retry queue in bytes.
     pub fn queue_max_size_bytes(&self) -> u64 {
         self.retry_queue_max_size_bytes
+    }
+
+    /// Returns the maximum disk usage ratio for storing transactions on disk.
+    #[allow(unused)]
+    pub fn storage_max_disk_ratio(&self) -> f64 {
+        self.storage_max_disk_ratio
     }
 
     /// Creates a new [`DefaultHttpRetryPolicy`] based on the forwarder configuration.

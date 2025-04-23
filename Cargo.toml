@@ -177,6 +177,7 @@ tikv-jemallocator = { version = "0.6", default-features = false }
 axum-extra = { version = "0.9", default-features = false }
 papaya = { version = "0.2", default-features = false }
 tempfile = { version = "3", default-features = false }
+fs2 = { version = "0.4.3", default-features = false }
 
 [profile.release]
 lto = "thin"
