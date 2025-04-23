@@ -85,6 +85,12 @@ build-adp: ## Builds the ADP binary in debug mode
 	@echo "[*] Building ADP locally..."
 	@cargo build --profile dev --package agent-data-plane
 
+.PHONY: build-checks-agent
+build-checks-agent: check-rust-build-tools
+build-checks-agent: ## Builds the Checks Agent binary in debug mode
+	@echo "[*] Building Checks Agent locally..."
+	@cargo build --profile dev --package checks-agent
+
 .PHONY: build-adp-release
 build-adp-release: check-rust-build-tools
 build-adp-release: ## Builds the ADP binary in release mode
@@ -233,6 +239,16 @@ run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/debug/agent-data-plane
+
+.PHONY: run-checks-agent-standalone
+run-checks-agent-standalone: build-checks-agent
+run-checks-agent-standalone: ## Runs Checks Agent locally in standalone mode (debug)
+	@echo "[*] Running Checks Agent..."
+	@DD_ADP_STANDALONE_MODE=true \
+	DD_LOG_LEVEL=debug \
+	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=check-agent-standalone \
+	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	target/debug/checks-agent
 
 .PHONY: run-adp-standalone-release
 run-adp-standalone-release: build-adp-release

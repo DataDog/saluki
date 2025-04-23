@@ -44,6 +44,7 @@ default:
 .build-common-variables:
   variables:
     ADP_IMAGE_BASE: "${SALUKI_IMAGE_REPO_BASE}/agent-data-plane"
+    CHECKS_AGENT_IMAGE_BASE: "${SALUKI_IMAGE_REPO_BASE}/checks-agent"
     # The only difference between the debug and release images are that debug images are marked in such a way that
     # any part of the code that reports the ADP "build" info -- version, Git hash, etc -- will indicate that the build
     # is a development build. This is meant to highlight the difference between running a one-off version of ADP and a
