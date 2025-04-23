@@ -211,13 +211,32 @@ async fn create_topology(
         .add_transform("dsd_agg", dsd_agg_config)?
         .add_transform("enrich", enrich_config)?
         .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
-        .add_destination("dd_metrics_out", dd_metrics_config)?
+        .add_destination("dd_metrics_out", dd_metrics_config.clone())?
         .add_destination("dd_events_sc_out", events_service_checks_config)?
         .connect_component("dsd_agg", ["dsd_in.metrics"])?
         .connect_component("dsd_prefix_filter", ["dsd_agg"])?
         .connect_component("enrich", ["dsd_prefix_filter"])?
         .connect_component("dd_metrics_out", ["enrich"])?
         .connect_component("dd_events_sc_out", ["dsd_in.events", "dsd_in.service_checks"])?;
+
+    if configuration.get_typed_or_default::<bool>("dual_ship_to_preaggr_pipeline") {
+        dd_metrics_config.configure_for_preaggregation();
+        blueprint.add_destination("preaggr_dd_metrics_out", dd_metrics_config)?;
+
+        if !in_standalone_mode {
+            let mut host_tags_config = HostTagsConfiguration::from_configuration(configuration).await?;
+            host_tags_config.ignore_duration();
+            let host_tag_enrichment =
+                ChainedConfiguration::default().with_transform_builder("preaggr_host_tags", host_tags_config);
+
+            blueprint
+                .add_transform("preaggr_host_tags", host_tag_enrichment)?
+                .connect_component("preaggr_host_tags", ["enrich"])?
+                .connect_component("preaggr_dd_metrics_out", ["preaggr_host_tags"])?;
+        } else {
+            blueprint.connect_component("preaggr_dd_metrics_out", ["enrich"])?;
+        }
+    }
 
     Ok(blueprint)
 }

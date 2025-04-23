@@ -46,7 +46,7 @@ pub struct ForwarderConfiguration {
 
     /// Endpoint configuration.
     #[serde(flatten)]
-    endpoint: EndpointConfiguration,
+    pub(crate) endpoint: EndpointConfiguration,
 
     /// Retry configuration.
     #[serde(flatten)]
