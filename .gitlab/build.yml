@@ -154,8 +154,6 @@ build-converged-adp-image-fips:
 publish-internal-adp-image:
   stage: build
   extends: [.build-common-variables]
-  rules:
-    - when: manual
   needs:
     - build-adp-image
   trigger:
