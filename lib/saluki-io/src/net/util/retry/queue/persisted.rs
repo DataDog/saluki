@@ -5,6 +5,7 @@ use std::{
 };
 
 use chrono::{DateTime, NaiveDateTime, Utc};
+use fs4::{available_space, total_space};
 use rand::Rng;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::{de::DeserializeOwned, Serialize};
@@ -48,6 +49,7 @@ pub struct PersistedQueue<T> {
     entries: Vec<PersistedEntry>,
     total_on_disk_bytes: u64,
     max_on_disk_bytes: u64,
+    storage_max_disk_ratio: f64,
     _entry: PhantomData<T>,
 }
 
@@ -72,16 +74,12 @@ where
             .await
             .with_error_context(|| format!("Failed to create retry directory '{}'.", root_path.display()))?;
 
-        let total_space = fs2::total_space(&root_path)? as f64;
-        let available_space = fs2::available_space(&root_path)? as f64;
-        let disk_reserved = total_space * (1.0 - storage_max_disk_ratio);
-        let available_disk_usage = (available_space - disk_reserved).ceil() as u64;
-
         let mut persisted_requests = Self {
             root_path: root_path.clone(),
             entries: Vec::new(),
             total_on_disk_bytes: 0,
-            max_on_disk_bytes: max_on_disk_bytes.min(available_disk_usage),
+            max_on_disk_bytes,
+            storage_max_disk_ratio,
             _entry: PhantomData,
         };
 
@@ -98,6 +96,18 @@ where
     /// Returns the number of entries in the queue.
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    fn on_disk_bytes_limit(&self) -> Result<u64, GenericError> {
+        let total_space = total_space(&self.root_path)
+            .with_error_context(|| format!("Failed to get total space for '{}'.", self.root_path.display()))?
+            as f64;
+        let available_space = available_space(&self.root_path)
+            .with_error_context(|| format!("Failed to get available space for '{}'.", self.root_path.display()))?
+            as f64;
+        let disk_reserved = total_space * (1.0 - self.storage_max_disk_ratio);
+        let available_disk_usage = (available_space - disk_reserved).ceil() as u64;
+        Ok(self.max_on_disk_bytes.min(available_disk_usage))
     }
 
     /// Enqueues an entry and persists it to disk.
@@ -217,7 +227,7 @@ where
     async fn remove_until_available_space(&mut self, required_bytes: u64) -> Result<PushResult, GenericError> {
         let mut push_result = PushResult::default();
 
-        while !self.entries.is_empty() && self.total_on_disk_bytes + required_bytes > self.max_on_disk_bytes {
+        while !self.entries.is_empty() && self.total_on_disk_bytes + required_bytes > self.on_disk_bytes_limit()? {
             let entry = self.entries.remove(0);
 
             // Deserialize the entry, which gives us back the original event and removes the file from disk.

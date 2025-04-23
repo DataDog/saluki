@@ -81,7 +81,7 @@ float-cmp,https://github.com/mikedilger/float-cmp,MIT,Mike Dilger <mike@mikedilg
 float-ord,https://github.com/notriddle/rust-float-ord,MIT  OR  Apache-2.0,Michael Howell <michael@notriddle.com>
 fnv,https://github.com/servo/rust-fnv,Apache-2.0  OR  MIT,Alex Crichton <alex@alexcrichton.com>
 foldhash,https://github.com/orlp/foldhash,Zlib,Orson Peters <orsonpeters@gmail.com>
-fs2,https://github.com/danburkert/fs2-rs,MIT OR Apache-2.0,Dan Burkert <dan@danburkert.com>
+fs4,https://github.com/al8n/fs4-rs,MIT OR Apache-2.0,"Dan Burkert <dan@danburkert.com>, Al Liu <scygliu1@gmail.com>"
 futures,https://github.com/rust-lang/futures-rs,MIT OR Apache-2.0,The futures Authors
 futures-channel,https://github.com/rust-lang/futures-rs,MIT OR Apache-2.0,The futures-channel Authors
 futures-core,https://github.com/rust-lang/futures-rs,MIT OR Apache-2.0,The futures-core Authors
