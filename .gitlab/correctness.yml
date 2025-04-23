@@ -53,6 +53,7 @@ build-millstone-image:
       .
 
 run-ground-truth:
+  extends: [.build-common-variables]
   stage: correctness
   tags: ["docker-in-docker:amd64"]
   needs:
