@@ -27,8 +27,16 @@ const fn default_retry_queue_max_size_bytes() -> u64 {
     15 * 1024 * 1024
 }
 
+const fn default_storage_max_size_bytes() -> u64 {
+    0
+}
+
 const fn default_storage_max_disk_ratio() -> f64 {
     0.8
+}
+
+fn default_storage_path() -> String {
+    "/opt/datadog-agent/run/transactions_to_retry".to_string()
 }
 
 /// Datadog Agent-specific forwarder retry configuration.
@@ -87,6 +95,21 @@ pub struct RetryConfiguration {
     )]
     retry_queue_max_size_bytes: u64,
 
+    /// The maximum size of the retry queue on disk, in bytes.
+    ///
+    /// Defaults to 0 (disabled).
+    #[serde(
+        rename = "forwarder_storage_max_size_in_bytes",
+        default = "default_storage_max_size_bytes"
+    )]
+    storage_max_size_bytes: u64,
+
+    /// The path to the directory where the retry queue will be stored on disk.
+    ///
+    /// Defaults to `/opt/datadog-agent/run/transactions_to_retry`.
+    #[serde(default = "default_storage_path", rename = "forwarder_storage_path")]
+    storage_path: String,
+
     /// The maximum disk usage ratio for storing transactions on disk.
     ///
     /// Defaults to 0.80.
@@ -98,7 +121,6 @@ pub struct RetryConfiguration {
         default = "default_storage_max_disk_ratio",
         rename = "forwarder_storage_max_disk_ratio"
     )]
-    #[allow(dead_code)]
     storage_max_disk_ratio: f64,
 }
 
@@ -106,6 +128,18 @@ impl RetryConfiguration {
     /// Returns the maximum size of the retry queue in bytes.
     pub fn queue_max_size_bytes(&self) -> u64 {
         self.retry_queue_max_size_bytes
+    }
+
+    /// Returns the maximum size of the retry queue on disk, in bytes.
+    #[allow(unused)]
+    pub fn storage_max_size_bytes(&self) -> u64 {
+        self.storage_max_size_bytes
+    }
+
+    /// Returns the path to the directory where the retry queue will be stored on disk.
+    #[allow(unused)]
+    pub fn storage_path(&self) -> &str {
+        &self.storage_path
     }
 
     /// Returns the maximum disk usage ratio for storing transactions on disk.
