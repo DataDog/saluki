@@ -5,16 +5,17 @@
   - export SMP_ECR_HOST="${SMP_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com"
   - git fetch --verbose --deepen=999 origin ${CI_COMMIT_BRANCH} main
   - export BASELINE_SALUKI_SHA=$(git merge-base origin/main origin/${CI_COMMIT_BRANCH})
-  - export BASELINE_CHECKS_AGENT_SHA=$(git merge-base origin/poc-checks-agent-part-1 origin/${CI_COMMIT_BRANCH})
   - export COMPARISON_SALUKI_SHA="${CI_COMMIT_SHA}"
-  - export COMPARISON_CHECKS_AGENT_SHA="${CI_COMMIT_SHA}"
   - export BASELINE_SALUKI_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-${CI_PIPELINE_ID}-${BASELINE_SALUKI_SHA}"
-  - export BASELINE_CHECKS_AGENT_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:checks-agent-${CI_PIPELINE_ID}-${BASELINE_CHECKS_AGENT_SHA}"
+  - export BASELINE_CHECKS_AGENT_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:checks-agent-${CI_PIPELINE_ID}-${BASELINE_SALUKI_SHA}"
   - export COMPARISON_SALUKI_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-${CI_PIPELINE_ID}-${COMPARISON_SALUKI_SHA}"
-  - export COMPARISON_CHECKS_AGENT_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:checks-agent-${CI_PIPELINE_ID}-${COMPARISON_CHECKS_AGENT_SHA}"
+  - export COMPARISON_CHECKS_AGENT_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:checks-agent-${CI_PIPELINE_ID}-${COMPARISON_SALUKI_SHA}"
   - export BASELINE_DSD_VERSION="${BASE_DD_AGENT_VERSION}"
   - export COMPARISON_DSD_VERSION="${BASE_DD_AGENT_VERSION}"
   - export SOURCE_DSD_IMG="public.ecr.aws/datadog/dogstatsd:${BASE_DD_AGENT_VERSION}"
+  - export SOURCE_CHECK_AGENT_GO_SHA="f61d1f4e054b884cb1894254ab2714b84b4684cb"
+  - export SOURCE_CHECK_AGENT_GO_IMG="${SMP_ECR_HOST}/08450328-agent:${SOURCE_CHECK_AGENT_GO_SHA}-7-full-amd64"
+  - export BASELINE_CHECK_AGENT_GO_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:check-agent-go"
   - export BASELINE_DSD_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:dogstatsd-${BASE_DD_AGENT_VERSION}"
   - export COMPARISON_DSD_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:dogstatsd-${BASE_DD_AGENT_VERSION}"
 
@@ -117,11 +118,11 @@ build-checks-agent-image:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
 
-    # Build baseline from `poc-checks-agent-part-1`. A more correct approach here would be to check
+    # Build baseline from `main`. A more correct approach here would be to check
     # out all but the dockerfile for saluki from the branch point and build that
     # way but this should be Good Enough for a while.
     - git fetch --all
-    - git switch poc-checks-agent-part-1
+    - git switch main
 
     # Actually build.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
@@ -132,7 +133,7 @@ build-checks-agent-image:
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
-      --build-arg APP_GIT_HASH=${BASELINE_CHECKS_AGENT_SHA}
+      --build-arg APP_GIT_HASH=${BASELINE_SALUKI_SHA}
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
@@ -169,7 +170,7 @@ build-checks-agent-comparison-image:
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
-      --build-arg APP_GIT_HASH=${COMPARISON_CHECKS_AGENT_SHA}
+      --build-arg APP_GIT_HASH=${COMPARISON_SALUKI_SHA}
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
@@ -195,6 +196,23 @@ mirror-dsd-image-to-smp-ecr:
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx imagetools create -t ${BASELINE_DSD_IMG} ${SOURCE_DSD_IMG}
     - docker buildx imagetools create -t ${COMPARISON_DSD_IMG} ${SOURCE_DSD_IMG}
+
+mirror-checks-agent-go-image-to-smp-ecr:
+  stage: benchmark
+  needs: []
+  image: "${SALUKI_SMP_CI_IMAGE}"
+  before_script:
+    - *setup-smp-env
+  variables:
+    AWS_NAMED_PROFILE: single-machine-performance
+  script:
+    # Initialize our AWS credentials.
+    - ./test/smp/configure-smp-aws-credentials.sh
+
+    # Mirror the Docker image build on the checks-agent Go PR https://github.com/DataDog/datadog-agent/pull/31571
+    # to the SMP ECR as SMP expects all target images to be sourceable from their ECR instance.
+    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
+    - docker buildx imagetools create -t ${BASELINE_CHECK_AGENT_GO_IMG} ${SOURCE_CHECK_AGENT_GO_IMG}
 
 run-benchmarks-adp:
   stage: benchmark
@@ -365,8 +383,8 @@ run-benchmarks-checks-agent:
             job submit
             --baseline-image ${BASELINE_CHECKS_AGENT_IMG}
             --comparison-image ${COMPARISON_CHECKS_AGENT_IMG}
-            --baseline-sha ${BASELINE_CHECKS_AGENT_SHA}
-            --comparison-sha ${COMPARISON_CHECKS_AGENT_SHA}
+            --baseline-sha ${BASELINE_SALUKI_SHA}
+            --comparison-sha ${COMPARISON_SALUKI_SHA}
             --target-config-dir ./test/smp/regression/checks-agent/
             --submission-metadata submission_metadata
     # Populate some data that we'll need later for generating links to experiment dashboards.
@@ -396,12 +414,80 @@ run-benchmarks-checks-agent:
             job result
             --submission-metadata submission_metadata
 
+run-benchmarks-checks-agent-go:
+  stage: benchmark
+  timeout: 1h
+  image: "${SALUKI_SMP_CI_IMAGE}"
+  needs:
+    - mirror-checks-agent-go-image-to-smp-ecr
+  allow_failure: true
+  before_script:
+    - *setup-smp-env
+  artifacts:
+    expire_in: 1 weeks
+    paths:
+      - submission_metadata  # for provenance, debugging
+      - checks_go_job_start_time   # for generating PR comments
+      - checks_go_job_end_time     # for generating PR comments
+      - checks_go_run_id           # for generating PR comments
+      - outputs/report.md    # for debugging, also on S3
+      - outputs/report.html  # for debugging, also on S3
+    when: always
+  variables:
+    AWS_NAMED_PROFILE: single-machine-performance
+    SMP_VERSION: 0.21.0
+    RUST_LOG: info,aws_config::profile::credentials=error
+  script:
+    # Do some pre-flight steps like creating directories, installing helper utilities, setting
+    # credentials, and so on.
+    - mkdir outputs && touch outputs/report.md outputs/report.html
+    - ./test/smp/configure-smp-aws-credentials.sh
+    # Download the SMP binary.
+    - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-gnu/smp smp && chmod +x smp
+    # Run SMP against our converged Agent image.
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+            job submit
+            --baseline-image ${BASELINE_CHECK_AGENT_GO_IMG}
+            --comparison-image ${BASELINE_CHECK_AGENT_GO_IMG}
+            --baseline-sha ${SOURCE_CHECK_AGENT_GO_SHA}
+            --comparison-sha ${SOURCE_CHECK_AGENT_GO_SHA}
+            --target-config-dir ./test/smp/regression/checks-agent-go/
+            --submission-metadata submission_metadata
+    # Populate some data that we'll need later for generating links to experiment dashboards.
+    - date +%s > checks_go_job_start_time
+    - cat submission_metadata | jq -r '.jobId' > checks_go_run_id
+    # Wait for job to complete.
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+            job status
+            --wait
+            --wait-delay-seconds 60
+            --submission-metadata submission_metadata
+    # And populate some more data that we'll need later for generating links to experiment dashboards.
+    - date +%s > checks_go_job_end_time
+    # Pull the analysis report and output it to stdout.
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+            job sync
+            --submission-metadata submission_metadata
+            --output-path outputs
+    # Replace empty lines in the output with lines containing various unicode space characters.
+    #
+    # This avoids  https://gitlab.com/gitlab-org/gitlab/-/issues/217231.
+    - cat outputs/report.md | sed "s/^\$/$(echo -ne '\uFEFF\u00A0\u200B')/g"
+    # Post the HTML report to the PR.
+    - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Checks Agent Go)"
+    # Finally, exit 1 if the job signals a regression else 0.
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+            job result
+            --submission-metadata submission_metadata
+
+
 comment-smp-result-links:
   stage: benchmark
   needs:
     - run-benchmarks-adp
     - run-benchmarks-dsd
     - run-benchmarks-checks-agent
+    - run-benchmarks-checks-agent-go
   image: "${SALUKI_SMP_CI_IMAGE}"
   before_script:
     - *setup-smp-env
