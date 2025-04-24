@@ -18,7 +18,6 @@ futures = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }
-jemalloc_pprof = { workspace = true }
 memory-accounting = { workspace = true }
 papaya = { workspace = true }
 rand = { workspace = true }
@@ -50,7 +49,6 @@ uuid = { workspace = true, features = ["std", "v7"] }
 tikv-jemalloc-ctl = { workspace = true, features = ["use_std"] }
 tikv-jemallocator = { workspace = true, features = [
   "background_threads",
-  "profiling",
   "unprefixed_malloc_on_supported_platforms",
   "stats",
 ] }
