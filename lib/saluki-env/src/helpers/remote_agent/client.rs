@@ -8,10 +8,10 @@ use std::{
 
 use backon::{BackoffBuilder, ConstantBuilder, Retryable as _};
 use datadog_protos::agent::{
-    AgentClient, AgentSecureClient, EntityId, FetchEntityRequest, HostTagReply, HostTagRequest, HostnameRequest,
-    RegisterRemoteAgentRequest, RegisterRemoteAgentResponse, StreamTagsRequest, StreamTagsResponse, TagCardinality,
-    WorkloadmetaEventType, WorkloadmetaFilter, WorkloadmetaKind, WorkloadmetaSource, WorkloadmetaStreamRequest,
-    WorkloadmetaStreamResponse,
+    AgentClient, AgentSecureClient, AutodiscoveryStreamResponse, EntityId, FetchEntityRequest, HostTagReply,
+    HostTagRequest, HostnameRequest, RegisterRemoteAgentRequest, RegisterRemoteAgentResponse, StreamTagsRequest,
+    StreamTagsResponse, TagCardinality, WorkloadmetaEventType, WorkloadmetaFilter, WorkloadmetaKind,
+    WorkloadmetaSource, WorkloadmetaStreamRequest, WorkloadmetaStreamResponse,
 };
 use futures::Stream;
 use pin_project_lite::pin_project;
@@ -241,6 +241,15 @@ impl RemoteAgentClient {
         let response = client.get_host_tags(HostTagRequest {}).await?;
         Ok(response)
     }
+
+    /// Gets a stream of autodiscovery config updates.
+    ///
+    /// If there is an error with the initial request, or an error occurs while streaming, the next message in the
+    /// stream will be `Some(Err(status))`, where the status indicates the underlying error.
+    pub fn get_autodiscovery_stream(&mut self) -> StreamingResponse<AutodiscoveryStreamResponse> {
+        let mut client = self.secure_client.clone();
+        StreamingResponse::from_response_future(async move { client.autodiscovery_stream_config(()).await })
+    }
 }
 
 pin_project! {
@@ -259,7 +268,7 @@ pin_project! {
         /// Waiting for the server to stream the first message.
         Initial { inner: Pin<Box<dyn Future<Output = Result<Response<Streaming<T>>, Status>> + Send>> },
 
-        // Waiting for the server to stream the next message.
+        /// Waiting for the server to stream the next message.
         Streaming { #[pin] stream: Streaming<T> },
     }
 }
