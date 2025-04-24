@@ -17,7 +17,8 @@ variables:
 
   # Base repository paths for where our CI images go, whether they're helper images or actual
   # output artifacts like ADP itself.
-  SALUKI_IMAGE_REPO_BASE: "${IMAGE_REGISTRY}/saluki"
+  SALUKI_IMAGE_REPO_PREFIX: "saluki"
+  SALUKI_IMAGE_REPO_BASE: "${IMAGE_REGISTRY}/${SALUKI_IMAGE_REPO_PREFIX}"
   SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:latest"
   SALUKI_GENERAL_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/general-ci:latest"
   SALUKI_SMP_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:latest"
@@ -43,8 +44,11 @@ default:
 # Common build-specific variables that need to be shared across stages.
 .build-common-variables:
   variables:
-    ADP_IMAGE_BASE: "${SALUKI_IMAGE_REPO_BASE}/agent-data-plane"
-    CHECKS_AGENT_IMAGE_BASE: "${SALUKI_IMAGE_REPO_BASE}/checks-agent"
+    ADP_IMAGE_REPO_NAME: "${SALUKI_IMAGE_REPO_PREFIX}/agent-data-plane"
+    ADP_IMAGE_BASE: "${IMAGE_REGISTRY}/${ADP_IMAGE_REPO_NAME}"
+    CHECKS_AGENT_IMAGE_REPO_NAME: "${SALUKI_IMAGE_REPO_PREFIX}/checks-agent"
+    CHECKS_AGENT_IMAGE_BASE: "${IMAGE_REGISTRY}/${CHECKS_AGENT_IMAGE_REPO_NAME}"
+
     # The only difference between the debug and release images are that debug images are marked in such a way that
     # any part of the code that reports the ADP "build" info -- version, Git hash, etc -- will indicate that the build
     # is a development build. This is meant to highlight the difference between running a one-off version of ADP and a
