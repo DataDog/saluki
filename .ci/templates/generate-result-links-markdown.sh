@@ -55,6 +55,9 @@ dsd_end_time=$(cat dsd_job_end_time)
 checks_run_id=$(cat checks_run_id)
 checks_start_time=$(cat checks_job_start_time)
 checks_end_time=$(cat checks_job_end_time)
+checks_go_run_id=$(cat checks_go_run_id)
+checks_go_start_time=$(cat checks_go_job_start_time)
+checks_go_end_time=$(cat checks_go_job_end_time)
 
 # Load the job start/end times and figure out which job started first and which job ended last, which we'll use as the
 # start/end time for our dashboard, which shows both sides -- ADP and DSD -- in the same pane of glass.
@@ -72,6 +75,14 @@ if [ "$adp_end_time" -lt "$dsd_end_time" ]; then
 else
     common_start_time=$(echo "${dsd_end_time} - ${smp_negative_time_offset_secs}" | bc)
     common_end_time=$(echo "${adp_end_time} - ${smp_negative_time_offset_secs} + ${experiment_duration_secs}" | bc)
+fi
+
+if [ "$checks_end_time" -lt "$checks_go_end_time" ]; then
+    common_checks_start_time=$(echo "${checks_end_time} - ${smp_negative_time_offset_secs}" | bc)
+    common_checks_end_time=$(echo "${checks_go_end_time} - ${smp_negative_time_offset_secs} + ${experiment_duration_secs}" | bc)
+else
+    common_checks_start_time=$(echo "${checks_go_end_time} - ${smp_negative_time_offset_secs}" | bc)
+    common_checks_end_time=$(echo "${checks_end_time} - ${smp_negative_time_offset_secs} + ${experiment_duration_secs}" | bc)
 fi
 
 # Grab the experiments for both DSD and ADP, which may or may not overlap.
@@ -115,7 +126,7 @@ echo ""
 echo "| experiment | link(s) |"
 echo "|------------|---------|"
 
-checks_continuous_profiler_url=$(get_continuous_profiler_url "$checks_run_id" "$checks_start_time" "$checks_end_time" "quality_gates_idle_rss")
-checks_smp_dashboard_url=$(get_adp_smp_dashboard_url "$checks_run_id" "$dsd_run_id" "$checks_start_time" "$checks_end_time" "quality_gates_idle_rss")
+checks_continuous_profiler_url=$(get_continuous_profiler_url "$checks_run_id" "$common_checks_start_time" "$common_checks_end_time" "quality_gates_idle_rss")
+checks_smp_dashboard_url=$(get_adp_smp_dashboard_url "$checks_run_id" "$checks_go_run_id" "$common_checks_start_time" "$common_checks_end_time" "quality_gates_idle_rss")
 
-echo "| quality_gates_idle_rss | \\[[Profiling (Checks Agent)]($checks_continuous_profiler_url)\\] \\[[SMP Dashboard]($checks_smp_dashboard_url)\\] |"
+echo "| quality_gates_idle_rss | \\[[Profiling]($checks_continuous_profiler_url)\\] \\[[SMP Dashboard]($checks_smp_dashboard_url)\\] |"
