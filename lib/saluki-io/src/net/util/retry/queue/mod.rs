@@ -413,8 +413,8 @@ mod tests {
             .with_disk_persistence(
                 root_path.clone(),
                 u64::MAX,
-                0.8,
-                DiskUsageRetrieverWrapper::new(root_path.clone()),
+                1.0,
+                DiskUsageRetrieverWrapper::new(Box::new(MockDiskUsageRetriever {})),
             )
             .await
             .expect("should not fail to create retry queue with disk persistence");
@@ -466,7 +466,7 @@ mod tests {
                 root_path.clone(),
                 80,
                 0.35,
-                DiskUsageRetrieverWrapper::new_with_disk_usage_retriever(Box::new(MockDiskUsageRetriever {})),
+                DiskUsageRetrieverWrapper::new(Box::new(MockDiskUsageRetriever {})),
             )
             .await
             .expect("should not fail to create retry queue with disk persistence");

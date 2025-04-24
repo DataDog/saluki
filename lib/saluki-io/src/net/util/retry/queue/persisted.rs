@@ -70,13 +70,7 @@ pub struct DiskUsageRetrieverWrapper {
 }
 
 impl DiskUsageRetrieverWrapper {
-    pub fn new(root_path: PathBuf) -> Self {
-        Self {
-            inner: Box::new(DiskUsageRetrieverImpl { root_path }),
-        }
-    }
-
-    pub fn new_with_disk_usage_retriever(disk_usage_retriever: Box<dyn DiskUsageRetriever + Send + Sync>) -> Self {
+    pub fn new(disk_usage_retriever: Box<dyn DiskUsageRetriever + Send + Sync>) -> Self {
         Self {
             inner: disk_usage_retriever,
         }
@@ -435,7 +429,9 @@ mod tests {
             root_path.clone(),
             1024,
             0.8,
-            DiskUsageRetrieverWrapper::new(root_path.clone()),
+            DiskUsageRetrieverWrapper::new(Box::new(DiskUsageRetrieverImpl {
+                root_path: root_path.clone(),
+            })),
         )
         .await
         .expect("should not fail to create persisted queue");
@@ -474,7 +470,9 @@ mod tests {
             root_path.clone(),
             1,
             0.8,
-            DiskUsageRetrieverWrapper::new(root_path.clone()),
+            DiskUsageRetrieverWrapper::new(Box::new(DiskUsageRetrieverImpl {
+                root_path: root_path.clone(),
+            })),
         )
         .await
         .expect("should not fail to create persisted queue");
@@ -504,7 +502,9 @@ mod tests {
             root_path.clone(),
             32,
             0.8,
-            DiskUsageRetrieverWrapper::new(root_path.clone()),
+            DiskUsageRetrieverWrapper::new(Box::new(DiskUsageRetrieverImpl {
+                root_path: root_path.clone(),
+            })),
         )
         .await
         .expect("should not fail to create persisted queue");
