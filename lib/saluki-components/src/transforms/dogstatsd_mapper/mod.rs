@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytesize::ByteSize;
@@ -126,6 +127,8 @@ impl MapperProfileConfigs {
         let context_resolver = ContextResolverBuilder::from_name("dogstatsd_mapper")
             .expect("resolver name is not empty")
             .with_interner_capacity_bytes(context_string_interner_size)
+            .with_idle_context_expiration(Duration::from_secs(30))
+            .with_expiration_interval(Duration::from_secs(1))
             .build();
 
         Ok(MetricMapper {
