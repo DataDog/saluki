@@ -3,6 +3,7 @@
 mod persisted;
 use std::{collections::VecDeque, path::PathBuf};
 
+use persisted::DiskUsageRetrieverWrapper;
 use saluki_error::{generic_error, GenericError};
 use serde::{de::DeserializeOwned, Serialize};
 use tracing::debug;
@@ -115,10 +116,16 @@ where
     /// If there is an error initializing the disk persistence layer, an error is returned.
     pub async fn with_disk_persistence(
         mut self, root_path: PathBuf, max_disk_size_bytes: u64, storage_max_disk_ratio: f64,
+        disk_usage_retriever: DiskUsageRetrieverWrapper,
     ) -> Result<Self, GenericError> {
         let queue_root_path = root_path.join(&self.queue_name);
-        let persisted_pending =
-            PersistedQueue::from_root_path(queue_root_path, max_disk_size_bytes, storage_max_disk_ratio).await?;
+        let persisted_pending = PersistedQueue::from_root_path(
+            queue_root_path,
+            max_disk_size_bytes,
+            storage_max_disk_ratio,
+            disk_usage_retriever,
+        )
+        .await?;
         self.persisted_pending = Some(persisted_pending);
         Ok(self)
     }
@@ -257,7 +264,7 @@ mod tests {
     use rand::{distributions::Alphanumeric, Rng as _};
     use serde::Deserialize;
 
-    use super::*;
+    use super::{persisted::DiskUsageRetriever, *};
 
     #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
     struct FakeData {
@@ -403,7 +410,12 @@ mod tests {
         assert_eq!(0, file_count_recursive(&root_path));
 
         let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), u64::MAX)
-            .with_disk_persistence(root_path.clone(), u64::MAX, 0.8)
+            .with_disk_persistence(
+                root_path.clone(),
+                u64::MAX,
+                0.8,
+                DiskUsageRetrieverWrapper::new(root_path.clone()),
+            )
             .await
             .expect("should not fail to create retry queue with disk persistence");
 
@@ -422,5 +434,61 @@ mod tests {
 
         // We should now have two files on disk after flushing.
         assert_eq!(2, file_count_recursive(&root_path));
+    }
+
+    struct MockDiskUsageRetriever {}
+
+    impl DiskUsageRetriever for MockDiskUsageRetriever {
+        fn total_space(&self) -> Result<u64, GenericError> {
+            Ok(100)
+        }
+        fn available_space(&self) -> Result<u64, GenericError> {
+            Ok(100)
+        }
+    }
+
+    #[tokio::test]
+    async fn disk_usage_retriever() {
+        let data1 = FakeData::random();
+        let data2 = FakeData::random();
+
+        // Create our retry queue such that it can hold one item, and enable disk persistence.
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
+
+        // Just a sanity check to ensure our temp directory is empty.
+        assert_eq!(0, file_count_recursive(&root_path));
+
+        // With the storage_max_disk_ratio set to 0.35 and with the `MockDiskUsageRetriever` returning 100 for both
+        // total and available space on every call, the available disk usage is 35 bytes.
+        let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), u64::MAX)
+            .with_disk_persistence(
+                root_path.clone(),
+                80,
+                0.35,
+                DiskUsageRetrieverWrapper::new_with_disk_usage_retriever(Box::new(MockDiskUsageRetriever {})),
+            )
+            .await
+            .expect("should not fail to create retry queue with disk persistence");
+
+        // Push our data to the queue.
+        let push_result1 = retry_queue.push(data1).await.expect("should not fail to push data");
+        assert_eq!(0, push_result1.items_dropped);
+        assert_eq!(0, push_result1.events_dropped);
+        let push_result2 = retry_queue.push(data2).await.expect("should not fail to push data");
+        assert_eq!(0, push_result2.items_dropped);
+        assert_eq!(0, push_result2.events_dropped);
+
+        // The `storage_max_disk_ratio` is 0.35, and our `MockDiskUsageRetriever` returns 100 for both `total_space` and
+        // `available_space`, so `on_disk_bytes_limit()` returns min(80, 35) = 35.
+        //
+        // First entry: total_on_disk_bytes(0) + required_bytes(30) < on_disk_bytes_limit(35)
+        // Second entry: total_on_disk_bytes(30) + required_bytes(30) > on_disk_bytes_limit(35) so the first entry is dropped.
+        let flush_result = retry_queue.flush().await.expect("should not fail to flush");
+        assert_eq!(1, flush_result.items_dropped);
+        assert_eq!(1, flush_result.events_dropped);
+
+        // We should now have one file on disk.
+        assert_eq!(1, file_count_recursive(&root_path));
     }
 }
