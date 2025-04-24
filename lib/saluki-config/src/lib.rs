@@ -292,6 +292,7 @@ impl ConfigurationLoader {
             .await
             .context(Secrets)?;
 
+        // test
         let provider = secrets::Provider::new(resolver, &self.inner).await.context(Secrets)?;
 
         self.inner = self.inner.admerge(provider);
