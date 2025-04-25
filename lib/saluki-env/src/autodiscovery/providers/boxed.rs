@@ -13,7 +13,7 @@ pub struct BoxedAutodiscoveryProvider {
 }
 
 impl BoxedAutodiscoveryProvider {
-    /// Creates a new `BoxedAutodiscoveryProvider` from the given host provider.
+    /// Creates a new `BoxedAutodiscoveryProvider` from the given autodiscovery provider.
     pub fn from_provider<P>(provider: P) -> Self
     where
         P: AutoDiscoveryProvider<Error = GenericError> + Send + Sync + 'static,
