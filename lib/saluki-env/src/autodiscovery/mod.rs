@@ -37,6 +37,24 @@ impl From<i32> for EventType {
     }
 }
 
+/// Kubernetes namespaced name
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KubeNamespacedName {
+    /// Kubernetes resource name
+    pub name: String,
+    /// Kubernetes namespace
+    pub namespace: String,
+}
+
+/// Advanced autodiscovery identifier
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdvancedADIdentifier {
+    /// Kubernetes service
+    pub kube_service: Option<KubeNamespacedName>,
+    /// Kubernetes endpoints
+    pub kube_endpoints: Option<KubeNamespacedName>,
+}
+
 /// Configuration data
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -54,6 +72,8 @@ pub struct Config {
     pub logs_config: Vec<u8>,
     /// Auto-discovery identifiers
     pub ad_identifiers: Vec<String>,
+    /// Advanced auto-discovery identifiers
+    pub advanced_ad_identifiers: Vec<AdvancedADIdentifier>,
     /// Provider that discovered this config
     pub provider: String,
     /// Service ID
@@ -78,6 +98,28 @@ impl From<ProtoConfig> for Config {
     fn from(proto: ProtoConfig) -> Self {
         let event_type = EventType::from(proto.event_type);
 
+        // Convert advanced AD identifiers from proto
+        let advanced_ad_identifiers = proto
+            .advanced_ad_identifiers
+            .into_iter()
+            .map(|adv_id| {
+                let kube_service = adv_id.kube_service.map(|svc| KubeNamespacedName {
+                    name: svc.name,
+                    namespace: svc.namespace,
+                });
+
+                let kube_endpoints = adv_id.kube_endpoints.map(|endpoints| KubeNamespacedName {
+                    name: endpoints.name,
+                    namespace: endpoints.namespace,
+                });
+
+                AdvancedADIdentifier {
+                    kube_service,
+                    kube_endpoints,
+                }
+            })
+            .collect();
+
         Self {
             name: proto.name,
             event_type,
@@ -86,6 +128,7 @@ impl From<ProtoConfig> for Config {
             metric_config: proto.metric_config,
             logs_config: proto.logs_config,
             ad_identifiers: proto.ad_identifiers,
+            advanced_ad_identifiers,
             provider: proto.provider,
             service_id: proto.service_id,
             tagger_entity: proto.tagger_entity,
@@ -133,6 +176,8 @@ pub trait AutoDiscoveryProvider {
 
 #[cfg(test)]
 mod tests {
+    use datadog_protos::agent::{AdvancedAdIdentifier, KubeNamespacedName};
+
     use super::*;
 
     #[test]
@@ -155,7 +200,7 @@ mod tests {
     #[test]
     fn test_config_from_proto_config() {
         // Create a ProtoConfig with test values
-        let proto_config = ProtoConfig {
+        let mut proto_config = ProtoConfig {
             name: "test-config".to_string(),
             event_type: ConfigEventType::Schedule as i32,
             init_config: b"init-data".to_vec(),
@@ -175,10 +220,20 @@ mod tests {
             logs_excluded: false,
         };
 
-        // Convert to our Config
+        let kube_svc = KubeNamespacedName {
+            name: "nginx".to_string(),
+            namespace: "default".to_string(),
+        };
+
+        let adv_id = AdvancedAdIdentifier {
+            kube_service: Some(kube_svc),
+            kube_endpoints: None,
+        };
+
+        proto_config.advanced_ad_identifiers = vec![adv_id];
+
         let config = Config::from(proto_config);
 
-        // Verify fields were copied correctly
         assert_eq!(config.name, "test-config");
         assert_eq!(config.event_type, EventType::Schedule);
         assert_eq!(config.init_config, b"init-data");
@@ -186,5 +241,13 @@ mod tests {
         assert_eq!(config.provider, "test-provider");
         assert_eq!(config.ad_identifiers, vec!["id1".to_string(), "id2".to_string()]);
         assert!(config.cluster_check);
+
+        assert_eq!(config.advanced_ad_identifiers.len(), 1);
+        let adv_id = &config.advanced_ad_identifiers[0];
+        assert!(adv_id.kube_endpoints.is_none());
+        assert!(adv_id.kube_service.is_some());
+        let svc = adv_id.kube_service.as_ref().unwrap();
+        assert_eq!(svc.name, "nginx");
+        assert_eq!(svc.namespace, "default");
     }
 }

@@ -107,6 +107,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
         ignore_autodiscovery_tags: false,
         metrics_excluded: false,
         logs_excluded: false,
+        advanced_ad_identifiers: Vec::new(),
     };
 
     Ok((config_id, config))
@@ -185,6 +186,7 @@ async fn scan_and_emit_events(
             ignore_autodiscovery_tags: false,
             metrics_excluded: false,
             logs_excluded: false,
+            advanced_ad_identifiers: Vec::new(),
         };
 
         let event = AutodiscoveryEvent { config };
@@ -388,6 +390,7 @@ mod tests {
             ignore_autodiscovery_tags: false,
             metrics_excluded: false,
             logs_excluded: false,
+            advanced_ad_identifiers: Vec::new(),
         };
         let event = AutodiscoveryEvent { config };
 
