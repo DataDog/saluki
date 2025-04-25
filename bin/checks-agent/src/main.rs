@@ -4,7 +4,8 @@ use memory_accounting::ComponentRegistry;
 use saluki_app::{api::APIBuilder, metrics::emit_startup_metrics, prelude::*};
 use saluki_components::{
     destinations::{BlackholeConfiguration, PrometheusConfiguration},
-    sources::{HeartbeatConfiguration, InternalMetricsConfiguration},
+    sources::{ChecksConfiguration, HeartbeatConfiguration, InternalMetricsConfiguration},
+    transforms::{AggregateConfiguration, ChainedConfiguration, HostEnrichmentConfiguration},
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::topology::TopologyBlueprint;
@@ -146,8 +147,7 @@ async fn run(started: Instant) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn create_topology(
-    configuration: &GenericConfiguration, _env_provider: &ADPEnvironmentProvider,
-    component_registry: &ComponentRegistry,
+    configuration: &GenericConfiguration, env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
 ) -> Result<TopologyBlueprint, GenericError> {
     // Create a simplified topology with minimal components for now
     let topology_registry = component_registry.get_or_create("topology");
@@ -158,10 +158,26 @@ async fn create_topology(
     // Add a destination component to receive data from the source
     let blackhole_config = BlackholeConfiguration;
 
+    // Aggregation currently only supports time windows
+    // we'll need to add support for a "check sampler" like aggregator
+    // basically this _only_ does metric aggregation rules, no time rules.
+    // flushing is similar to current behavior, just need to think about 'counter' resets
+    // for now, just use time windows, if we make each window shorter than the check interval, it should be fine
+    let checks_agg_config = AggregateConfiguration::with_defaults();
+    let check_config = ChecksConfiguration::from_configuration(configuration)?;
+    let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
+    let enrich_config =
+        ChainedConfiguration::default().with_transform_builder("host_enrichment", host_enrichment_config);
+
     blueprint
-        .add_source("checks_in", source_config)?
+        .add_source("heartbeat", source_config)?
+        .add_source("checks_in", check_config)?
+        .add_transform("checks_agg", checks_agg_config)?
+        .add_transform("enrich", enrich_config)?
         .add_destination("metrics_out", blackhole_config)?
-        .connect_component("metrics_out", ["checks_in"])?;
+        .connect_component("checks_agg", ["checks_in"])?
+        .connect_component("enrich", ["checks_agg"])?
+        .connect_component("metrics_out", ["enrich"])?;
 
     // When telemetry is enabled, we need to collect internal metrics, so add those components and route them here.
     let telemetry_enabled = configuration.get_typed_or_default::<bool>("telemetry_enabled");
