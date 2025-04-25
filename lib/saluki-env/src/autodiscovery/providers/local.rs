@@ -82,12 +82,12 @@ impl LocalAutoDiscoveryProvider {
 async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericError> {
     let content = fs::read_to_string(path).await?;
 
-    // Build config ID from the file name
+    // Build config ID from the file path
     let config_id = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| GenericError::msg("Invalid file name"))?
-        .to_string();
+        .canonicalize()?
+        .to_string_lossy()
+        .to_string()
+        .replace(['/', '\\'], "_");
 
     // Create a Config
     let config = Config {
