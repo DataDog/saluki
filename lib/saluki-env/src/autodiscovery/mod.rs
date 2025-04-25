@@ -110,7 +110,7 @@ pub struct AutodiscoveryEvent {
 ///
 /// This trait is used to discover and monitor configuration files for checks.
 #[async_trait]
-pub trait AutoDiscovery {
+pub trait AutoDiscoveryProvider {
     /// Errors produced by the provider.
     type Error;
 

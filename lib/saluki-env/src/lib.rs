@@ -17,7 +17,7 @@ pub mod workload;
 
 use std::sync::Arc;
 
-pub use self::autodiscovery::AutoDiscovery;
+pub use self::autodiscovery::AutoDiscoveryProvider;
 pub use self::host::HostProvider;
 pub use self::workload::WorkloadProvider;
 

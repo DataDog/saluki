@@ -9,33 +9,19 @@ use tokio::sync::mpsc::{self, error::TrySendError};
 use tokio::time::{interval, Duration};
 use tracing::{debug, warn};
 
-use crate::autodiscovery::{AutoDiscovery, AutodiscoveryEvent, Config, EventType};
+use crate::autodiscovery::{AutoDiscoveryProvider, AutodiscoveryEvent, Config, EventType};
 
 /// A local auto-discovery provider that uses the file system.
-///
-/// This provider monitors a set of configured directories for configuration files.
 pub struct LocalAutoDiscoveryProvider {
-    /// Directories to monitor for configuration files
     search_paths: Vec<PathBuf>,
-    /// Currently known configurations by ID
     known_configs: HashSet<String>,
-    /// List of subscribers
     event_senders: Arc<Mutex<Vec<mpsc::Sender<AutodiscoveryEvent>>>>,
-    /// Flag indicating if background monitoring is active
     monitoring_active: bool,
 }
 
 impl LocalAutoDiscoveryProvider {
     /// Creates a new `LocalAutoDiscoveryProvider` that will monitor the specified paths.
-    ///
-    /// # Arguments
-    ///
-    /// * `paths` - Directories to monitor for configuration files
-    ///
-    /// # Errors
-    ///
-    /// If an error occurs while creating the listener, an error will be returned.
-    pub fn new<P: AsRef<std::path::Path>>(paths: Vec<P>) -> Result<Self, GenericError> {
+    pub fn new<P: AsRef<std::path::Path>>(paths: Vec<P>) -> Self {
         let search_paths: Vec<PathBuf> = paths
             .iter()
             .filter_map(|p| {
@@ -51,20 +37,16 @@ impl LocalAutoDiscoveryProvider {
             })
             .collect();
 
-        Ok(Self {
+        Self {
             search_paths,
             known_configs: HashSet::new(),
             event_senders: Arc::new(Mutex::new(Vec::new())),
             monitoring_active: false,
-        })
+        }
     }
 
     /// Starts a background task that periodically scans for configuration changes
-    ///
-    /// # Arguments
-    ///
-    /// * `interval_sec` - Interval in seconds between scans
-    pub fn start_background_monitor(&mut self, interval_sec: u64) -> Result<(), GenericError> {
+    fn start_background_monitor(&mut self, interval_sec: u64) -> Result<(), GenericError> {
         if self.monitoring_active {
             return Ok(());
         }
@@ -216,7 +198,6 @@ async fn scan_and_emit_events(
 async fn broadcast_event(senders: &Arc<Mutex<Vec<mpsc::Sender<AutodiscoveryEvent>>>>, event: AutodiscoveryEvent) {
     let mut to_remove = Vec::new();
 
-    // Send the event to all subscribers
     {
         let senders_guard = senders.lock().unwrap();
         for (idx, sender) in senders_guard.iter().enumerate() {
@@ -249,17 +230,21 @@ async fn broadcast_event(senders: &Arc<Mutex<Vec<mpsc::Sender<AutodiscoveryEvent
 }
 
 #[async_trait]
-impl AutoDiscovery for LocalAutoDiscoveryProvider {
+impl AutoDiscoveryProvider for LocalAutoDiscoveryProvider {
     type Error = GenericError;
 
     async fn subscribe(&mut self, sender: mpsc::Sender<AutodiscoveryEvent>) -> Result<(), Self::Error> {
-        // We need to make sure we don't hold the lock across await points
-        self.event_senders.lock().unwrap().push(sender);
+        {
+            let mut senders = self.event_senders.lock().unwrap();
 
-        // Perform an initial scan to send current configurations to the new subscriber
-        // If we have no subscribers, there's nothing to do (this should never happen since we just added one)
-        if self.event_senders.lock().unwrap().is_empty() {
-            return Ok(());
+            // Check if this sender's address is already in our list
+            let sender_addr = format!("{:p}", &sender);
+            if senders.iter().any(|s| format!("{:p}", s) == sender_addr) {
+                debug!("Attempt to subscribe with duplicate sender - ignoring");
+                return Ok(());
+            }
+
+            senders.push(sender);
         }
 
         // Scan for initial configurations
@@ -332,25 +317,20 @@ mod tests {
         let mut known_configs = HashSet::new();
         let event_senders = Arc::new(Mutex::new(Vec::new()));
 
-        // Create a channel to receive events
         let (tx, mut rx) = mpsc::channel(10);
         event_senders.lock().unwrap().push(tx);
 
-        // Scan for configurations
         scan_and_emit_events(&[dir.path().to_path_buf()], &mut known_configs, &event_senders)
             .await
             .unwrap();
 
-        // Should have found one config
         assert_eq!(known_configs.len(), 1);
         assert!(known_configs.contains("config1"));
 
-        // Should have received one event
         let event = rx.try_recv().unwrap();
         assert_eq!(event.config.name, "config1");
         assert_eq!(event.config.event_type, EventType::Schedule);
 
-        // No more events should be pending
         assert!(rx.try_recv().is_err());
     }
 
@@ -358,50 +338,39 @@ mod tests {
     async fn test_scan_and_emit_events_removed_config() {
         let dir = tempdir().unwrap();
 
-        // Setup known configs with an entry that doesn't exist
         let mut known_configs = HashSet::new();
         known_configs.insert("removed-config".to_string());
 
         let event_senders = Arc::new(Mutex::new(Vec::new()));
 
-        // Create a channel to receive events
         let (tx, mut rx) = mpsc::channel(10);
         event_senders.lock().unwrap().push(tx);
 
-        // Scan for configurations
         scan_and_emit_events(&[dir.path().to_path_buf()], &mut known_configs, &event_senders)
             .await
             .unwrap();
 
-        // Should have removed the non-existent config
         assert_eq!(known_configs.len(), 0);
 
-        // Should have received one event for the removal
         let event = rx.try_recv().unwrap();
         assert_eq!(event.config.name, "removed-config");
         assert_eq!(event.config.event_type, EventType::Unschedule);
 
-        // No more events should be pending
         assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]
     async fn test_broadcast_event_removes_closed_subscribers() {
-        // Setup event senders with one good and one closed channel
         let event_senders = Arc::new(Mutex::new(Vec::new()));
 
-        // Create an active channel
         let (tx1, _rx1) = mpsc::channel::<AutodiscoveryEvent>(10);
 
-        // Create a channel that will be dropped (closed)
         let (tx2, rx2) = mpsc::channel::<AutodiscoveryEvent>(10);
-        drop(rx2); // Close the channel
+        drop(rx2);
 
-        // Add both senders
         event_senders.lock().unwrap().push(tx1);
         event_senders.lock().unwrap().push(tx2);
 
-        // Create an event
         let config = Config {
             name: "test".to_string(),
             event_type: EventType::Schedule,
@@ -422,10 +391,8 @@ mod tests {
         };
         let event = AutodiscoveryEvent { config };
 
-        // Broadcast the event
         broadcast_event(&event_senders, event).await;
 
-        // Check that the closed sender was removed
         assert_eq!(event_senders.lock().unwrap().len(), 1);
     }
 }

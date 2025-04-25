@@ -54,7 +54,7 @@ impl ChecksAgentEnvProvider {
 
         let autodiscovery_provider = if in_standalone_mode {
             debug!("Using local autodiscovery provider due to standalone mode.");
-            BoxedAutodiscoveryProvider::from_provider(LocalAutoDiscoveryProvider::new(vec!["dist"])?)
+            BoxedAutodiscoveryProvider::from_provider(LocalAutoDiscoveryProvider::new(vec!["dist"]))
         } else {
             let client = RemoteAgentClient::from_configuration(config).await?;
             BoxedAutodiscoveryProvider::from_provider(RemoteAgentAutoDiscoveryProvider::new(client))
