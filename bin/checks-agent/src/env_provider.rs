@@ -1,17 +1,13 @@
 use memory_accounting::ComponentRegistry;
 use saluki_config::GenericConfiguration;
-use saluki_env::{
-    host::providers::{BoxedHostProvider, FixedHostProvider, RemoteAgentHostProvider},
-    workload::providers::RemoteAgentWorkloadProvider,
-    EnvironmentProvider,
-};
+use saluki_env::helpers::remote_agent::RemoteAgentClient;
+use saluki_env::host::providers::{BoxedHostProvider, FixedHostProvider, RemoteAgentHostProvider};
 use saluki_error::GenericError;
-use saluki_health::HealthRegistry;
 use tracing::{debug, warn};
 
-/// Agent Data Plane-specific environment provider.
+/// Checks-Agent specific environment provider.
 ///
-/// This environment provider is designed for ADP's normal deployment environment, which is running alongside the
+/// This environment provider is designed for Check Agent's normal deployment environment, which is running alongside the
 /// Datadog Agent. The underlying providers will communicate directly with the Datadog Agent to receive information such
 /// as the hostname, entity tags, workload metadata events, and more.
 ///
@@ -23,14 +19,15 @@ use tracing::{debug, warn};
 /// This will effectively disable origin enrichment (no entity tags) and cause metrics to be tagged with a fixed
 /// hostname based on the configuration value of `hostname`.
 #[derive(Clone)]
-pub struct ADPEnvironmentProvider {
+#[allow(dead_code)]
+pub struct ChecksAgentEnvProvider {
     host_provider: BoxedHostProvider,
-    workload_provider: Option<RemoteAgentWorkloadProvider>,
+    remote_agent_client: Option<RemoteAgentClient>,
 }
 
-impl ADPEnvironmentProvider {
+impl ChecksAgentEnvProvider {
     pub async fn from_configuration(
-        config: &GenericConfiguration, component_registry: &ComponentRegistry, health_registry: &HealthRegistry,
+        config: &GenericConfiguration, component_registry: &ComponentRegistry,
     ) -> Result<Self, GenericError> {
         let mut provider_component = component_registry.get_or_create("env_provider");
 
@@ -52,40 +49,17 @@ impl ADPEnvironmentProvider {
             BoxedHostProvider::from_provider(provider)
         };
 
-        let workload_provider = if in_standalone_mode {
-            debug!("Using no-op workload provider due to standalone mode. Origin detection/enrichment will not be available.");
+        let remote_agent_client: Option<RemoteAgentClient> = if in_standalone_mode {
+            debug!("Using no-op remote agent due to standalone mode.");
             None
         } else {
-            let component = component_registry.get_or_create("workload");
-            let provider = RemoteAgentWorkloadProvider::from_configuration(config, component, health_registry).await?;
-            Some(provider)
+            let client = RemoteAgentClient::from_configuration(config).await?;
+            Some(client)
         };
 
         Ok(Self {
             host_provider,
-            workload_provider,
+            remote_agent_client,
         })
-    }
-
-    // We do not use this in the Check Agent, for now, so we can safely comment it, to make clippy happy :)
-    // /// Returns an API handler for interacting with the underlying data stores powering the workload provider, if one
-    // /// has been configured.
-    // ///
-    // /// See [`RemoteAgentWorkloadAPIHandler`] for more information about routes and responses.
-    // pub fn workload_api_handler(&self) -> Option<RemoteAgentWorkloadAPIHandler> {
-    //     self.workload_provider.as_ref().map(|provider| provider.api_handler())
-    // }
-}
-
-impl EnvironmentProvider for ADPEnvironmentProvider {
-    type Host = BoxedHostProvider;
-    type Workload = Option<RemoteAgentWorkloadProvider>;
-
-    fn host(&self) -> &Self::Host {
-        &self.host_provider
-    }
-
-    fn workload(&self) -> &Self::Workload {
-        &self.workload_provider
     }
 }
