@@ -1,7 +1,7 @@
 use std::future::pending;
 
 use memory_accounting::ComponentRegistry;
-use saluki_app::{api::APIBuilder, memory::MemoryProfilingAPIHandler, prelude::acquire_logging_api_handler};
+use saluki_app::{api::APIBuilder, prelude::acquire_logging_api_handler};
 use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -38,7 +38,6 @@ pub fn spawn_control_plane(
 
     let privileged_api = APIBuilder::new()
         .with_self_signed_tls()
-        .with_handler(MemoryProfilingAPIHandler)
         .with_optional_handler(acquire_logging_api_handler())
         .with_optional_handler(env_provider.workload_api_handler());
 

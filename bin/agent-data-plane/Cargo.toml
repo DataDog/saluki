@@ -18,7 +18,6 @@ futures = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }
-jemalloc_pprof = { workspace = true }
 memory-accounting = { workspace = true }
 papaya = { workspace = true }
 rand = { workspace = true }
