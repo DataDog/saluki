@@ -1,5 +1,8 @@
 use memory_accounting::ComponentRegistry;
 use saluki_config::GenericConfiguration;
+use saluki_env::autodiscovery::providers::{
+    BoxedAutodiscoveryProvider, LocalAutoDiscoveryProvider, RemoteAgentAutoDiscoveryProvider,
+};
 use saluki_env::helpers::remote_agent::RemoteAgentClient;
 use saluki_env::host::providers::{BoxedHostProvider, FixedHostProvider, RemoteAgentHostProvider};
 use saluki_error::GenericError;
@@ -22,7 +25,7 @@ use tracing::{debug, warn};
 #[allow(dead_code)]
 pub struct ChecksAgentEnvProvider {
     host_provider: BoxedHostProvider,
-    remote_agent_client: Option<RemoteAgentClient>,
+    autodiscovery_provider: BoxedAutodiscoveryProvider,
 }
 
 impl ChecksAgentEnvProvider {
@@ -49,17 +52,17 @@ impl ChecksAgentEnvProvider {
             BoxedHostProvider::from_provider(provider)
         };
 
-        let remote_agent_client: Option<RemoteAgentClient> = if in_standalone_mode {
-            debug!("Using no-op remote agent due to standalone mode.");
-            None
+        let autodiscovery_provider = if in_standalone_mode {
+            debug!("Using local autodiscovery provider due to standalone mode.");
+            BoxedAutodiscoveryProvider::from_provider(LocalAutoDiscoveryProvider::new(vec!["dist"])?)
         } else {
             let client = RemoteAgentClient::from_configuration(config).await?;
-            Some(client)
+            BoxedAutodiscoveryProvider::from_provider(RemoteAgentAutoDiscoveryProvider::new(client))
         };
 
         Ok(Self {
             host_provider,
-            remote_agent_client,
+            autodiscovery_provider,
         })
     }
 }
