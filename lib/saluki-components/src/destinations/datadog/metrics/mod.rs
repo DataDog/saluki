@@ -49,7 +49,7 @@ fn default_serializer_compressor_kind() -> String {
 }
 
 const fn default_zstd_compressor_level() -> i32 {
-    3
+    9
 }
 
 /// Datadog Metrics destination.
