@@ -75,8 +75,6 @@ async fn run(started: Instant) -> Result<(), Box<dyn std::error::Error>> {
         .await?
         .into_generic()?;
 
-    println!("{:?}", configuration);
-
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
 
