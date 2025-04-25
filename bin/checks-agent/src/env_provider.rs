@@ -19,6 +19,7 @@ use tracing::{debug, warn};
 /// This will effectively disable origin enrichment (no entity tags) and cause metrics to be tagged with a fixed
 /// hostname based on the configuration value of `hostname`.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct ChecksAgentEnvProvider {
     host_provider: BoxedHostProvider,
     remote_agent_client: Option<RemoteAgentClient>,
@@ -52,7 +53,7 @@ impl ChecksAgentEnvProvider {
             debug!("Using no-op remote agent due to standalone mode.");
             None
         } else {
-            let client = RemoteAgentClient::from_configuration(&config).await?;
+            let client = RemoteAgentClient::from_configuration(config).await?;
             Some(client)
         };
 
