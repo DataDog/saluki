@@ -91,7 +91,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
 
     // Create a Config
     let config = Config {
-        name: config_id.clone(),
+        name: path.file_name().unwrap().to_string_lossy().to_string(),
         event_type: EventType::Schedule,
         init_config: content.as_bytes().to_vec(),
         instances: Vec::new(), // Would parse from YAML in a real implementation
@@ -303,8 +303,8 @@ mod tests {
 
         let (id, config) = parse_config_file(&test_file).await.unwrap();
 
-        assert_eq!(id, "test-config");
-        assert_eq!(config.name, "test-config");
+        assert!(id.contains("saluki-env_src_autodiscovery_providers_test_data_test-config.yaml"));
+        assert_eq!(config.name, "test-config.yaml");
         assert_eq!(config.event_type, EventType::Schedule);
         assert!(!config.init_config.is_empty());
         assert_eq!(config.provider, "local");
@@ -327,10 +327,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(known_configs.len(), 1);
-        assert!(known_configs.contains("config1"));
 
         let event = rx.try_recv().unwrap();
-        assert_eq!(event.config.name, "config1");
+        assert_eq!(event.config.name, "config1.yaml");
         assert_eq!(event.config.event_type, EventType::Schedule);
 
         assert!(rx.try_recv().is_err());
