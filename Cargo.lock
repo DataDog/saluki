@@ -3361,6 +3361,7 @@ dependencies = [
  "snafu",
  "socket2",
  "stringtheory",
+ "tempfile",
  "tokio",
  "tokio-rustls",
  "tonic",
