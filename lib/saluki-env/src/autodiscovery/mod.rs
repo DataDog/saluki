@@ -155,14 +155,25 @@ mod tests {
     #[test]
     fn test_config_from_proto_config() {
         // Create a ProtoConfig with test values
-        let mut proto_config = ProtoConfig::default();
-        proto_config.name = "test-config".to_string();
-        proto_config.event_type = ConfigEventType::Schedule as i32;
-        proto_config.init_config = b"init-data".to_vec();
-        proto_config.instances = vec![b"instance1".to_vec(), b"instance2".to_vec()];
-        proto_config.provider = "test-provider".to_string();
-        proto_config.ad_identifiers = vec!["id1".to_string(), "id2".to_string()];
-        proto_config.cluster_check = true;
+        let proto_config = ProtoConfig {
+            name: "test-config".to_string(),
+            event_type: ConfigEventType::Schedule as i32,
+            init_config: b"init-data".to_vec(),
+            instances: vec![b"instance1".to_vec(), b"instance2".to_vec()],
+            provider: "test-provider".to_string(),
+            ad_identifiers: vec!["id1".to_string(), "id2".to_string()],
+            cluster_check: true,
+            metric_config: vec![],
+            logs_config: vec![],
+            advanced_ad_identifiers: vec![],
+            service_id: "service-id".to_string(),
+            tagger_entity: "tagger-entity".to_string(),
+            node_name: "node-name".to_string(),
+            source: "source".to_string(),
+            ignore_autodiscovery_tags: false,
+            metrics_excluded: false,
+            logs_excluded: false,
+        };
 
         // Convert to our Config
         let config = Config::from(proto_config);
@@ -174,6 +185,6 @@ mod tests {
         assert_eq!(config.instances, vec![b"instance1".to_vec(), b"instance2".to_vec()]);
         assert_eq!(config.provider, "test-provider");
         assert_eq!(config.ad_identifiers, vec!["id1".to_string(), "id2".to_string()]);
-        assert_eq!(config.cluster_check, true);
+        assert!(config.cluster_check);
     }
 }

@@ -304,7 +304,7 @@ mod tests {
         assert_eq!(id, "test-config");
         assert_eq!(config.name, "test-config");
         assert_eq!(config.event_type, EventType::Schedule);
-        assert!(config.init_config.len() > 0);
+        assert!(!config.init_config.is_empty());
         assert_eq!(config.provider, "local");
         assert_eq!(config.source, test_file.to_string_lossy().to_string());
     }
