@@ -1,7 +1,7 @@
+use async_trait::async_trait;
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{components::transforms::*, topology::interconnect::FixedSizeEventBuffer};
 use saluki_error::GenericError;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use async_trait::async_trait;
 
 /// PreaggregationFilter synchronous transform.
 ///
@@ -53,17 +53,11 @@ mod tests {
         let mut buffer = FixedSizeEventBuffer::for_test(10);
 
         // Add a non-sketch metric
-        let non_sketch_metric = Metric::gauge(
-            Context::from_static_parts("test", &[]),
-            1.0,
-        );
+        let non_sketch_metric = Metric::gauge(Context::from_static_parts("test", &[]), 1.0);
         buffer.try_push(Event::Metric(non_sketch_metric));
 
         // Add a sketch metric
-        let sketch_metric = Metric::distribution(
-            Context::from_static_parts("test", &[]),
-            &[1.0, 2.0, 3.0][..],
-        );
+        let sketch_metric = Metric::distribution(Context::from_static_parts("test", &[]), &[1.0, 2.0, 3.0][..]);
         buffer.try_push(Event::Metric(sketch_metric));
 
         // Apply the filter
@@ -75,4 +69,4 @@ mod tests {
         let remaining_metric = remaining_event.try_as_metric().unwrap();
         assert!(!remaining_metric.values().is_sketch());
     }
-} 
+}
