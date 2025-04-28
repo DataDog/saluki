@@ -268,7 +268,10 @@ async fn run_endpoint_io_loop<S, B>(
                 ))),
             )
             .await
-            .expect("Failed to initialize disk persistence for retry queue.");
+            .unwrap_or_else(|e| {
+                error!(endpoint_url, error = %e, "Failed to initialize disk persistence for retry queue. Transactions will not be persisted.");
+                RetryQueue::new(endpoint_url.clone(), config.retry().queue_max_size_bytes())
+            });
     }
     let mut pending_txns = PendingTransactions::new(config.endpoint_buffer_size(), retry_queue, txnq_telemetry);
 
