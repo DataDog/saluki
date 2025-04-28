@@ -14,7 +14,7 @@ use saluki_components::{
     sources::DogStatsDConfiguration,
     transforms::{
         AggregateConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration, DogstatsDPrefixFilterConfiguration,
-        HostEnrichmentConfiguration, HostTagsConfiguration,
+        HostEnrichmentConfiguration, HostTagsConfiguration, PreaggregationFilterConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration, RefreshableConfiguration, RefresherConfiguration};
@@ -211,13 +211,32 @@ async fn create_topology(
         .add_transform("dsd_agg", dsd_agg_config)?
         .add_transform("enrich", enrich_config)?
         .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
-        .add_destination("dd_metrics_out", dd_metrics_config)?
+        .add_destination("dd_metrics_out", dd_metrics_config.clone())?
         .add_destination("dd_events_sc_out", events_service_checks_config)?
         .connect_component("dsd_agg", ["dsd_in.metrics"])?
         .connect_component("dsd_prefix_filter", ["dsd_agg"])?
         .connect_component("enrich", ["dsd_prefix_filter"])?
         .connect_component("dd_metrics_out", ["enrich"])?
         .connect_component("dd_events_sc_out", ["dsd_in.events", "dsd_in.service_checks"])?;
+
+    if configuration.get_typed_or_default::<bool>("enable_preaggr_pipeline") {
+        let mut preaggr_processing = ChainedConfiguration::default()
+            .with_transform_builder("preaggr_filter", PreaggregationFilterConfiguration::default());
+
+        if !in_standalone_mode {
+            let mut host_tags_config = HostTagsConfiguration::from_configuration(configuration).await?;
+            host_tags_config.ignore_duration();
+            preaggr_processing = preaggr_processing.with_transform_builder("preaggr_host_tags", host_tags_config);
+        }
+
+        dd_metrics_config.configure_for_preaggregation();
+
+        blueprint
+            .add_transform("preaggr_processing", preaggr_processing)?
+            .add_destination("preaggr_dd_metrics_out", dd_metrics_config)?
+            .connect_component("preaggr_processing", ["enrich"])?
+            .connect_component("preaggr_dd_metrics_out", ["preaggr_processing"])?;
+    }
 
     Ok(blueprint)
 }

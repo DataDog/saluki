@@ -62,7 +62,7 @@ const fn default_zstd_compressor_level() -> i32 {
 /// - ability to configure either the basic site _or_ a specific endpoint (requires a full URI at the moment, even if
 ///   it's just something like `https`)
 /// - retries, timeouts, rate limiting (no Tower middleware stack yet)
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[allow(dead_code)]
 pub struct DatadogMetricsConfiguration {
     /// Forwarder configuration settings.
@@ -114,6 +114,10 @@ pub struct DatadogMetricsConfiguration {
         default = "default_zstd_compressor_level"
     )]
     zstd_compressor_level: i32,
+
+    /// Endpoint path override for all metric types.
+    #[serde(default)]
+    endpoint_path_override: Option<&'static str>,
 }
 
 impl DatadogMetricsConfiguration {
@@ -125,6 +129,12 @@ impl DatadogMetricsConfiguration {
     /// Add option to retrieve configuration values from a `RefreshableConfiguration`.
     pub fn add_refreshable_configuration(&mut self, refresher: RefreshableConfiguration) {
         self.config_refresher = Some(refresher);
+    }
+
+    /// Configure the destination for metric preaggregation.
+    pub fn configure_for_preaggregation(&mut self) {
+        self.forwarder_config.endpoint.additional_endpoints = Default::default();
+        self.endpoint_path_override = Some("/api/intake/pipelines/ddseries");
     }
 }
 
@@ -148,20 +158,25 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
 
         // Create our request builders.
         let rb_buffer_pool = create_request_builder_buffer_pool(&self.forwarder_config).await;
-        let series_request_builder = RequestBuilder::new(
+        let mut series_request_builder = RequestBuilder::new(
             MetricsEndpoint::Series,
             rb_buffer_pool.clone(),
             self.max_metrics_per_payload,
             compression_scheme,
         )
         .await?;
-        let sketches_request_builder = RequestBuilder::new(
+        let mut sketches_request_builder = RequestBuilder::new(
             MetricsEndpoint::Sketches,
             rb_buffer_pool,
             self.max_metrics_per_payload,
             compression_scheme,
         )
         .await?;
+
+        if let Some(override_path) = self.endpoint_path_override {
+            series_request_builder.set_endpoint_uri(override_path);
+            sketches_request_builder.set_endpoint_uri(override_path);
+        }
 
         let flush_timeout = match self.flush_timeout_secs {
             // We always give ourselves a minimum flush timeout of 10ms to allow for some very minimal amount of

@@ -137,7 +137,6 @@ is-terminal,https://github.com/sunfishcode/is-terminal,MIT,"softprops <d.tangren
 is_terminal_polyfill,https://github.com/polyfill-rs/is_terminal_polyfill,MIT OR Apache-2.0,The is_terminal_polyfill Authors
 itertools,https://github.com/rust-itertools/itertools,MIT OR Apache-2.0,bluss
 itoa,https://github.com/dtolnay/itoa,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
-jemalloc_pprof,https://github.com/polarsignals/rust-jemalloc-pprof,Apache-2.0,"Frederic Branczyk <frederic.branczyk@polarsignals.com>, Brennan Vincent <brennan.vincent@polarsignals.com>"
 jobserver,https://github.com/rust-lang/jobserver-rs,MIT OR Apache-2.0,Alex Crichton <alex@alexcrichton.com>
 js-sys,https://github.com/rustwasm/wasm-bindgen/tree/master/crates/js-sys,MIT OR Apache-2.0,The wasm-bindgen Developers
 lading-payload,https://github.com/datadog/lading,MIT,"Brian L. Troutwine <brian.troutwine@datadoghq.com>, George Hahn <george.hahn@datadoghq.com"
@@ -150,7 +149,6 @@ linux-raw-sys,https://github.com/sunfishcode/linux-raw-sys,Apache-2.0 WITH LLVM-
 litemap,https://github.com/unicode-org/icu4x,Unicode-3.0,The ICU4X Project Developers
 log,https://github.com/rust-lang/log,MIT OR Apache-2.0,The Rust Project Developers
 mach2,https://github.com/JohnTitor/mach2,BSD-2-Clause OR MIT OR Apache-2.0,The mach2 Authors
-mappings,https://github.com/polarsignals/rust-jemalloc-pprof,Apache-2.0,The mappings Authors
 matchers,https://github.com/hawkw/matchers,MIT,Eliza Weisman <eliza@buoyant.io>
 matchit,https://github.com/ibraheemdev/matchit,MIT AND BSD-3-Clause,Ibraheem Ahmed <ibraheem@ibraheem.ca>
 matrixmultiply,https://github.com/bluss/matrixmultiply,MIT OR Apache-2.0,"bluss, R. Janis Goldschmidt"
@@ -167,13 +165,9 @@ noisy_float,https://github.com/SergiusIW/noisy_float-rs,Apache-2.0,Matthew Miche
 nom,https://github.com/Geal/nom,MIT,contact@geoffroycouprie.com
 nom,https://github.com/rust-bakery/nom,MIT,contact@geoffroycouprie.com
 nu-ansi-term,https://github.com/nushell/nu-ansi-term,MIT,"ogham@bsago.me, Ryan Scheel (Havvy) <ryan.havvy@gmail.com>, Josh Triplett <josh@joshtriplett.org>, The Nushell Project Developers"
-num,https://github.com/rust-num/num,MIT OR Apache-2.0,The Rust Project Developers
-num-bigint,https://github.com/rust-num/num-bigint,MIT OR Apache-2.0,The Rust Project Developers
 num-complex,https://github.com/rust-num/num-complex,MIT OR Apache-2.0,The Rust Project Developers
 num-conv,https://github.com/jhpratt/num-conv,MIT OR Apache-2.0,Jacob Pratt <jacob@jhpratt.dev>
 num-integer,https://github.com/rust-num/num-integer,MIT OR Apache-2.0,The Rust Project Developers
-num-iter,https://github.com/rust-num/num-iter,MIT OR Apache-2.0,The Rust Project Developers
-num-rational,https://github.com/rust-num/num-rational,MIT OR Apache-2.0,The Rust Project Developers
 num-traits,https://github.com/rust-num/num-traits,MIT OR Apache-2.0,The Rust Project Developers
 num_threads,https://github.com/jhpratt/num_threads,MIT OR Apache-2.0,Jacob Pratt <open-source@jhpratt.dev>
 object,https://github.com/gimli-rs/object,Apache-2.0 OR MIT,The object Authors
@@ -202,7 +196,6 @@ plotters,https://github.com/plotters-rs/plotters,MIT,Hao Hou <haohou302@gmail.co
 portable-atomic,https://github.com/taiki-e/portable-atomic,Apache-2.0 OR MIT,The portable-atomic Authors
 portable-atomic-util,https://github.com/taiki-e/portable-atomic,Apache-2.0 OR MIT,The portable-atomic-util Authors
 powerfmt,https://github.com/jhpratt/powerfmt,MIT OR Apache-2.0,Jacob Pratt <jacob@jhpratt.dev>
-pprof_util,https://github.com/polarsignals/rust-jemalloc-pprof,Apache-2.0,The pprof_util Authors
 ppv-lite86,https://github.com/cryptocorrosion/cryptocorrosion,MIT OR Apache-2.0,The CryptoCorrosion Contributors
 prettyplease,https://github.com/dtolnay/prettyplease,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
 proc-macro2,https://github.com/dtolnay/proc-macro2,MIT OR Apache-2.0,"David Tolnay <dtolnay@gmail.com>, Alex Crichton <alex@alexcrichton.com>"

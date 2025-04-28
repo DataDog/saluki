@@ -19,7 +19,7 @@ use std::future::pending;
 use tokio::select;
 use tracing::{error, info};
 
-use self::env_provider::ADPEnvironmentProvider;
+use self::env_provider::ChecksAgentEnvProvider;
 
 const PRIMARY_UNPRIVILEGED_API_PORT: u16 = 5105;
 
@@ -75,13 +75,10 @@ async fn run(started: Instant) -> Result<(), Box<dyn std::error::Error>> {
         .await?
         .into_generic()?;
 
-    println!("{:?}", configuration);
-
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
 
-    let env_provider =
-        ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry).await?;
+    let env_provider = ChecksAgentEnvProvider::from_configuration(&configuration, &component_registry).await?;
 
     // Create a simple pipeline
     let blueprint = create_topology(&configuration, &env_provider, &component_registry).await?;
@@ -146,7 +143,7 @@ async fn run(started: Instant) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn create_topology(
-    configuration: &GenericConfiguration, _env_provider: &ADPEnvironmentProvider,
+    configuration: &GenericConfiguration, _env_provider: &ChecksAgentEnvProvider,
     component_registry: &ComponentRegistry,
 ) -> Result<TopologyBlueprint, GenericError> {
     // Create a simplified topology with minimal components for now

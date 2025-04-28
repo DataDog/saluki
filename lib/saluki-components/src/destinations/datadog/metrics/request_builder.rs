@@ -150,6 +150,11 @@ where
         })
     }
 
+    /// Set the endpoint URI for the request builder.
+    pub fn set_endpoint_uri(&mut self, endpoint_uri: &'static str) {
+        self.endpoint_uri = PathAndQuery::from_static(endpoint_uri).into();
+    }
+
     /// Configures custom (un)compressed length limits for the request builder.
     ///
     /// Used specifically for testing purposes.
