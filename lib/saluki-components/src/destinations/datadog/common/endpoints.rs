@@ -26,7 +26,7 @@ fn default_site() -> String {
 /// Error type for invalid endpoints.
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
-enum EndpointError {
+pub(crate) enum EndpointError {
     Parse { source: url::ParseError, endpoint: String },
 }
 
@@ -57,7 +57,7 @@ impl FromStr for MappedAPIKeys {
 /// Each endpoint can be associated with multiple API keys. Requests will be forwarded to each unique endpoint/API key pair.
 #[serde_as]
 #[derive(Clone, Debug, Default, Deserialize)]
-struct AdditionalEndpoints(#[serde_as(as = "PickFirst<(DisplayFromStr, _)>")] MappedAPIKeys);
+pub(crate) struct AdditionalEndpoints(#[serde_as(as = "PickFirst<(DisplayFromStr, _)>")] MappedAPIKeys);
 
 impl AdditionalEndpoints {
     /// Returns the resolved endpoints from the additional endpoint configuration.
@@ -126,7 +126,7 @@ pub struct EndpointConfiguration {
     ///
     /// Defaults to empty.
     #[serde(default)]
-    additional_endpoints: AdditionalEndpoints,
+    pub(crate) additional_endpoints: AdditionalEndpoints,
 }
 
 impl EndpointConfiguration {
