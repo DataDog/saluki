@@ -131,19 +131,16 @@ impl RetryConfiguration {
     }
 
     /// Returns the maximum size of the retry queue on disk, in bytes.
-    #[allow(unused)]
     pub fn storage_max_size_bytes(&self) -> u64 {
         self.storage_max_size_bytes
     }
 
     /// Returns the path to the directory where the retry queue will be stored on disk.
-    #[allow(unused)]
     pub fn storage_path(&self) -> &str {
         &self.storage_path
     }
 
     /// Returns the maximum disk usage ratio for storing transactions on disk.
-    #[allow(unused)]
     pub fn storage_max_disk_ratio(&self) -> f64 {
         self.storage_max_disk_ratio
     }
