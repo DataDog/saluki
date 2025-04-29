@@ -60,8 +60,6 @@ pub struct AdvancedADIdentifier {
 pub struct Config {
     /// Configuration name/identifier
     pub name: String,
-    /// Event type (schedule/unschedule)
-    pub event_type: EventType,
     /// Raw configuration data
     pub init_config: Vec<u8>,
     /// Instance configurations
@@ -96,8 +94,6 @@ pub struct Config {
 
 impl From<ProtoConfig> for Config {
     fn from(proto: ProtoConfig) -> Self {
-        let event_type = EventType::from(proto.event_type);
-
         // Convert advanced AD identifiers from proto
         let advanced_ad_identifiers = proto
             .advanced_ad_identifiers
@@ -122,7 +118,6 @@ impl From<ProtoConfig> for Config {
 
         Self {
             name: proto.name,
-            event_type,
             init_config: proto.init_config,
             instances: proto.instances,
             metric_config: proto.metric_config,
@@ -138,6 +133,20 @@ impl From<ProtoConfig> for Config {
             ignore_autodiscovery_tags: proto.ignore_autodiscovery_tags,
             metrics_excluded: proto.metrics_excluded,
             logs_excluded: proto.logs_excluded,
+        }
+    }
+}
+
+impl From<ProtoConfig> for AutodiscoveryEvent {
+    fn from(proto: ProtoConfig) -> AutodiscoveryEvent {
+        let event_type = EventType::from(proto.event_type);
+
+        if event_type == EventType::Schedule {
+            AutodiscoveryEvent::Schedule {
+                config: Config::from(proto),
+            }
+        } else {
+            AutodiscoveryEvent::Unscheduled { config_id: proto.name }
         }
     }
 }
@@ -229,7 +238,6 @@ mod tests {
         let config = Config::from(proto_config);
 
         assert_eq!(config.name, "test-config");
-        assert_eq!(config.event_type, EventType::Schedule);
         assert_eq!(config.init_config, b"init-data");
         assert_eq!(config.instances, vec![b"instance1".to_vec(), b"instance2".to_vec()]);
         assert_eq!(config.provider, "test-provider");
@@ -243,5 +251,57 @@ mod tests {
         let svc = adv_id.kube_service.as_ref().unwrap();
         assert_eq!(svc.name, "nginx");
         assert_eq!(svc.namespace, "default");
+    }
+
+    #[test]
+    fn test_autodiscovery_event_from_proto_config() {
+        // Create a ProtoConfig with test values
+        let mut proto_config = ProtoConfig {
+            name: "test-config".to_string(),
+            event_type: ConfigEventType::Schedule as i32,
+            init_config: b"init-data".to_vec(),
+            instances: vec![b"instance1".to_vec(), b"instance2".to_vec()],
+            provider: "test-provider".to_string(),
+            ad_identifiers: vec!["id1".to_string(), "id2".to_string()],
+            cluster_check: true,
+            metric_config: vec![],
+            logs_config: vec![],
+            advanced_ad_identifiers: vec![],
+            service_id: "service-id".to_string(),
+            tagger_entity: "tagger-entity".to_string(),
+            node_name: "node-name".to_string(),
+            source: "source".to_string(),
+            ignore_autodiscovery_tags: false,
+            metrics_excluded: false,
+            logs_excluded: false,
+        };
+
+        let kube_svc = KubeNamespacedName {
+            name: "nginx".to_string(),
+            namespace: "default".to_string(),
+        };
+
+        let adv_id = AdvancedAdIdentifier {
+            kube_service: Some(kube_svc),
+            kube_endpoints: None,
+        };
+
+        proto_config.advanced_ad_identifiers = vec![adv_id];
+
+        let event = AutodiscoveryEvent::from(proto_config.clone());
+
+        match event {
+            AutodiscoveryEvent::Schedule { config: _config } => {}
+            _ => panic!("Expected an Schedule event"),
+        }
+
+        proto_config.event_type = ConfigEventType::Unschedule as i32;
+
+        let event = AutodiscoveryEvent::from(proto_config);
+
+        match event {
+            AutodiscoveryEvent::Unscheduled { config_id: _config_id } => {}
+            _ => panic!("Expected an Unscheduled event"),
+        }
     }
 }

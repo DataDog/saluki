@@ -9,7 +9,7 @@ use tokio::sync::OnceCell;
 use tokio::time::{interval, Duration};
 use tracing::{debug, info, warn};
 
-use crate::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider, Config, EventType};
+use crate::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider, Config};
 
 /// A local auto-discovery provider that uses the file system.
 pub struct LocalAutoDiscoveryProvider {
@@ -85,7 +85,6 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
     // Create a Config
     let config = Config {
         name: path.file_name().unwrap().to_string_lossy().to_string(),
-        event_type: EventType::Schedule,
         init_config: content.as_bytes().to_vec(),
         instances: Vec::new(), // Would parse from YAML in a real implementation
         metric_config: Vec::new(),
@@ -232,7 +231,6 @@ mod tests {
 
         assert!(id.contains("saluki-env_src_autodiscovery_providers_test_data_test-config.yaml"));
         assert_eq!(config.name, "test-config.yaml");
-        assert_eq!(config.event_type, EventType::Schedule);
         assert!(!config.init_config.is_empty());
         assert_eq!(config.provider, "local");
         assert_eq!(config.source, test_file.to_string_lossy().to_string());
@@ -256,7 +254,6 @@ mod tests {
         match event {
             AutodiscoveryEvent::Schedule { config } => {
                 assert_eq!(config.name, "config1.yaml");
-                assert_eq!(config.event_type, EventType::Schedule);
             }
             _ => panic!("Expected a Schedule event"),
         }

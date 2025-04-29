@@ -6,7 +6,7 @@ use tokio::sync::broadcast::{self, Receiver, Sender};
 use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
 
-use crate::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider, Config, EventType};
+use crate::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider};
 use crate::helpers::remote_agent::RemoteAgentClient;
 
 /// An autodiscovery provider that uses the Datadog Agent's internal gRPC API to receive autodiscovery updates.
@@ -44,13 +44,7 @@ impl RemoteAgentAutoDiscoveryProvider {
                     match result {
                         Ok(response) => {
                             for proto_config in response.configs {
-                                let config = Config::from(proto_config.clone());
-                                let event: AutodiscoveryEvent = if config.event_type == EventType::Schedule {
-                                    AutodiscoveryEvent::Schedule { config }
-                                } else {
-                                    AutodiscoveryEvent::Unscheduled { config_id: config.name }
-                                };
-
+                                let event = AutodiscoveryEvent::from(proto_config);
                                 match sender.send(event) {
                                     Ok(_) => (),
                                     Err(e) => {
