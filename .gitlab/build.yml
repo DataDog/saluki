@@ -209,8 +209,6 @@ display-image-tags:
   needs:
     - build-adp-image
     - build-adp-image-fips
-    - build-adp-image-release
-    - build-adp-image-release-fips
     - build-converged-adp-image
     - build-converged-adp-image-fips
     - publish-internal-adp-image
@@ -220,11 +218,9 @@ display-image-tags:
       # Image Tags
 
       ## Barebones (ADP only, not suitable for deployments)
-      Debug (non-FIPS):   ${ADP_DEBUG_IMAGE_TAG}
-      Debug (FIPS):       ${ADP_DEBUG_IMAGE_TAG_FIPS}
-      Release (non-FIPS): ${ADP_RELEASE_IMAGE_TAG}
-      Release (FIPS):     ${ADP_RELEASE_IMAGE_TAG_FIPS}
+      Release (w/ debuginfo, non-FIPS): ${ADP_DEBUG_IMAGE_TAG}
+      Release (w/ debuginfo, FIPS):     ${ADP_DEBUG_IMAGE_TAG_FIPS}
 
       ## Internal (ADP only, baked with necessary tools for internal deployments)
-      Release (non-FIPS): ${IMAGE_REGISTRY}/agent-data-plane:${INTERNAL_ADP_RELEASE_IMAGE_TAG}
+      Release (w/ debuginfo, non-FIPS): ${IMAGE_REGISTRY}/agent-data-plane:${INTERNAL_ADP_RELEASE_IMAGE_TAG}
       EOF
