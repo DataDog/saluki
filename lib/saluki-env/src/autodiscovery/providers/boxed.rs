@@ -27,7 +27,7 @@ impl BoxedAutodiscoveryProvider {
 impl AutodiscoveryProvider for BoxedAutodiscoveryProvider {
     type Error = GenericError;
 
-    async fn subscribe(&self) -> Result<Receiver<AutodiscoveryEvent>, Self::Error> {
+    async fn subscribe(&self) -> Receiver<AutodiscoveryEvent> {
         self.inner.subscribe().await
     }
 }

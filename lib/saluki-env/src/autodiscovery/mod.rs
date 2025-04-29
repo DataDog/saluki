@@ -160,7 +160,7 @@ pub trait AutodiscoveryProvider {
     /// Subscribe for autodiscovery events.
     ///
     /// This method returns a channel where autodiscovery events will be sent.
-    async fn subscribe(&self) -> Result<Receiver<AutodiscoveryEvent>, Self::Error>;
+    async fn subscribe(&self) -> Receiver<AutodiscoveryEvent>;
 }
 
 #[cfg(test)]

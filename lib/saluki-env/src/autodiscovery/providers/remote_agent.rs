@@ -29,7 +29,7 @@ impl RemoteAgentAutoDiscoveryProvider {
         }
     }
 
-    async fn start_background_listener(&self) -> Result<(), GenericError> {
+    async fn start_background_listener(&self) {
         debug!("Starting autodiscovery background listener");
 
         let mut client = self.client.clone();
@@ -68,7 +68,6 @@ impl RemoteAgentAutoDiscoveryProvider {
                 }
             }
         });
-        Ok(())
     }
 }
 
@@ -76,13 +75,13 @@ impl RemoteAgentAutoDiscoveryProvider {
 impl AutodiscoveryProvider for RemoteAgentAutoDiscoveryProvider {
     type Error = GenericError;
 
-    async fn subscribe(&self) -> Result<Receiver<AutodiscoveryEvent>, Self::Error> {
+    async fn subscribe(&self) -> Receiver<AutodiscoveryEvent> {
         self.listener_init
             .get_or_init(|| async {
-                self.start_background_listener().await.unwrap();
+                self.start_background_listener().await;
             })
             .await;
 
-        Ok(self.sender.subscribe())
+        self.sender.subscribe()
     }
 }

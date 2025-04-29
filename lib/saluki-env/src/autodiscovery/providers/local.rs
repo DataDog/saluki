@@ -46,7 +46,7 @@ impl LocalAutoDiscoveryProvider {
     }
 
     /// Starts a background task that periodically scans for configuration changes
-    async fn start_background_monitor(&self, interval_sec: u64) -> Result<(), GenericError> {
+    async fn start_background_monitor(&self, interval_sec: u64) {
         let mut interval = interval(Duration::from_secs(interval_sec));
         let sender = self.sender.clone();
         let search_paths = self.search_paths.clone();
@@ -63,8 +63,6 @@ impl LocalAutoDiscoveryProvider {
                 }
             }
         });
-
-        Ok(())
     }
 }
 
@@ -198,14 +196,14 @@ fn emit_event(sender: &Sender<AutodiscoveryEvent>, event: AutodiscoveryEvent) {
 impl AutodiscoveryProvider for LocalAutoDiscoveryProvider {
     type Error = GenericError;
 
-    async fn subscribe(&self) -> Result<Receiver<AutodiscoveryEvent>, Self::Error> {
+    async fn subscribe(&self) -> Receiver<AutodiscoveryEvent> {
         self.listener_init
             .get_or_init(|| async {
-                self.start_background_monitor(30).await.unwrap();
+                self.start_background_monitor(30).await;
             })
             .await;
 
-        Ok(self.sender.subscribe())
+        self.sender.subscribe()
     }
 }
 
