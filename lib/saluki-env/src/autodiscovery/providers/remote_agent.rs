@@ -19,7 +19,7 @@ pub struct RemoteAgentAutoDiscoveryProvider {
 impl RemoteAgentAutoDiscoveryProvider {
     /// Creates a new `RemoteAgentAutoDiscoveryProvider` that uses the remote client to receive autodiscovery updates.
     pub fn new(client: RemoteAgentClient) -> Self {
-        let (sender, _) = broadcast::channel::<AutodiscoveryEvent>(100);
+        let (sender, _) = broadcast::channel::<AutodiscoveryEvent>(super::AD_STREAM_CAPACITY);
 
         Self {
             client,

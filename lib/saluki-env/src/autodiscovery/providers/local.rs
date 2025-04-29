@@ -11,6 +11,8 @@ use tracing::{debug, info, warn};
 
 use crate::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider, Config};
 
+const BG_MONITOR_INTERVAL: u64 = 30;
+
 /// A local auto-discovery provider that uses the file system.
 pub struct LocalAutoDiscoveryProvider {
     search_paths: Vec<PathBuf>,
@@ -36,7 +38,7 @@ impl LocalAutoDiscoveryProvider {
             })
             .collect();
 
-        let (sender, _) = broadcast::channel::<AutodiscoveryEvent>(100);
+        let (sender, _) = broadcast::channel::<AutodiscoveryEvent>(super::AD_STREAM_CAPACITY);
 
         Self {
             search_paths,
@@ -181,7 +183,7 @@ impl AutodiscoveryProvider for LocalAutoDiscoveryProvider {
     async fn subscribe(&self) -> Receiver<AutodiscoveryEvent> {
         self.listener_init
             .get_or_init(|| async {
-                self.start_background_monitor(30).await;
+                self.start_background_monitor(BG_MONITOR_INTERVAL).await;
             })
             .await;
 
