@@ -9,7 +9,7 @@ use tokio::sync::mpsc::{self, error::TrySendError};
 use tokio::time::{interval, Duration};
 use tracing::{debug, warn};
 
-use crate::autodiscovery::{AutoDiscoveryProvider, AutodiscoveryEvent, Config, EventType};
+use crate::autodiscovery::{AutodiscoveryProvider, AutodiscoveryEvent, Config, EventType};
 
 /// A local auto-discovery provider that uses the file system.
 pub struct LocalAutoDiscoveryProvider {
@@ -232,7 +232,7 @@ async fn broadcast_event(senders: &Arc<Mutex<Vec<mpsc::Sender<AutodiscoveryEvent
 }
 
 #[async_trait]
-impl AutoDiscoveryProvider for LocalAutoDiscoveryProvider {
+impl AutodiscoveryProvider for LocalAutoDiscoveryProvider {
     type Error = GenericError;
 
     async fn subscribe(&mut self, sender: mpsc::Sender<AutodiscoveryEvent>) -> Result<(), Self::Error> {

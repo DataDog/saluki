@@ -4,19 +4,19 @@ use async_trait::async_trait;
 use saluki_error::GenericError;
 use tokio::sync::{mpsc, Mutex};
 
-use crate::autodiscovery::{AutoDiscoveryProvider, AutodiscoveryEvent};
+use crate::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider};
 
 /// A boxed autodiscovery provider.
 #[derive(Clone)]
 pub struct BoxedAutodiscoveryProvider {
-    inner: Arc<Mutex<dyn AutoDiscoveryProvider<Error = GenericError> + Send + Sync>>,
+    inner: Arc<Mutex<dyn AutodiscoveryProvider<Error = GenericError> + Send + Sync>>,
 }
 
 impl BoxedAutodiscoveryProvider {
     /// Creates a new `BoxedAutodiscoveryProvider` from the given autodiscovery provider.
     pub fn from_provider<P>(provider: P) -> Self
     where
-        P: AutoDiscoveryProvider<Error = GenericError> + Send + Sync + 'static,
+        P: AutodiscoveryProvider<Error = GenericError> + Send + Sync + 'static,
     {
         let inner = Arc::new(Mutex::new(provider));
         Self { inner }
@@ -24,7 +24,7 @@ impl BoxedAutodiscoveryProvider {
 }
 
 #[async_trait]
-impl AutoDiscoveryProvider for BoxedAutodiscoveryProvider {
+impl AutodiscoveryProvider for BoxedAutodiscoveryProvider {
     type Error = GenericError;
 
     async fn subscribe(&mut self, sender: mpsc::Sender<AutodiscoveryEvent>) -> Result<(), Self::Error> {

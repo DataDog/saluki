@@ -1,4 +1,4 @@
-//! AutoDiscovery provider implementations.
+//! Autodiscovery provider implementations.
 
 mod boxed;
 pub use self::boxed::BoxedAutodiscoveryProvider;

@@ -1,6 +1,6 @@
-//! AutoDiscovery provider.
+//! Autodiscovery provider.
 //!
-//! This module provides the `AutoDiscovery` trait, which deals with providing information about autodiscovery.
+//! This module provides the `Autodiscovery` trait, which deals with providing information about autodiscovery.
 
 pub mod providers;
 
@@ -153,7 +153,7 @@ pub struct AutodiscoveryEvent {
 ///
 /// This trait is used to discover and monitor configuration files for checks.
 #[async_trait]
-pub trait AutoDiscoveryProvider {
+pub trait AutodiscoveryProvider {
     /// Errors produced by the provider.
     type Error;
 

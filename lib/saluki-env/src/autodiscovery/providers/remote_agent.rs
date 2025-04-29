@@ -6,7 +6,7 @@ use saluki_error::GenericError;
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tracing::{debug, error, info, warn};
 
-use crate::autodiscovery::{AutoDiscoveryProvider, AutodiscoveryEvent, Config};
+use crate::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider, Config};
 use crate::helpers::remote_agent::RemoteAgentClient;
 
 /// An autodiscovery provider that uses the Datadog Agent's internal gRPC API to receive autodiscovery updates.
@@ -103,7 +103,7 @@ async fn broadcast_event(senders: &Arc<Mutex<Vec<mpsc::Sender<AutodiscoveryEvent
 }
 
 #[async_trait]
-impl AutoDiscoveryProvider for RemoteAgentAutoDiscoveryProvider {
+impl AutodiscoveryProvider for RemoteAgentAutoDiscoveryProvider {
     type Error = GenericError;
 
     async fn subscribe(&mut self, sender: mpsc::Sender<AutodiscoveryEvent>) -> Result<(), Self::Error> {
