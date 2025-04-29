@@ -127,14 +127,14 @@ async fn scan_and_emit_events(
                                 debug!("New configuration found: {}", config_id);
 
                                 let event = AutodiscoveryEvent { config };
-                                sender.send(event).unwrap();
+                                emit_event(sender, event);
                                 known_configs.insert(config_id.clone());
                             } else {
                                 // Config ID exists, but the content might have changed
                                 debug!("Configuration updated: {}", config_id);
 
                                 let event: AutodiscoveryEvent = AutodiscoveryEvent { config };
-                                sender.send(event).unwrap();
+                                emit_event(sender, event);
                             }
                         }
                         Err(e) => {
@@ -179,10 +179,19 @@ async fn scan_and_emit_events(
         };
 
         let event = AutodiscoveryEvent { config };
-        sender.send(event).unwrap();
+        emit_event(sender, event);
     }
 
     Ok(())
+}
+
+fn emit_event(sender: &Sender<AutodiscoveryEvent>, event: AutodiscoveryEvent) {
+    match sender.send(event) {
+        Ok(_) => (),
+        Err(e) => {
+            warn!("Failed to send autodiscovery event: {}", e);
+        }
+    }
 }
 
 #[async_trait]

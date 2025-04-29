@@ -48,7 +48,12 @@ impl RemoteAgentAutoDiscoveryProvider {
                                 let config = Config::from(proto_config.clone());
                                 let event = AutodiscoveryEvent { config };
 
-                                sender.send(event).unwrap();
+                                match sender.send(event) {
+                                    Ok(_) => (),
+                                    Err(e) => {
+                                        warn!("Failed to send autodiscovery event: {}", e);
+                                    }
+                                }
                             }
                         }
                         Err(status) => {
