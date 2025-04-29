@@ -14,7 +14,7 @@
   - export COMPARISON_DSD_VERSION="${BASE_DD_AGENT_VERSION}"
   - export SOURCE_DSD_IMG="public.ecr.aws/datadog/dogstatsd:${BASE_DD_AGENT_VERSION}"
   - export SOURCE_CHECK_AGENT_GO_SHA="f61d1f4e054b884cb1894254ab2714b84b4684cb"
-  - export SOURCE_CHECK_AGENT_GO_IMG="${SMP_ECR_HOST}/08450328-agent:${SOURCE_CHECK_AGENT_GO_SHA}-7-full-amd64"
+  - export SOURCE_CHECK_AGENT_GO_IMG="registry.ddbuild.io/ci/datadog-agent/agent:v63008797-f61d1f4e-7-full-amd64"
   - export BASELINE_CHECK_AGENT_GO_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:check-agent-go"
   - export BASELINE_DSD_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:dogstatsd-${BASE_DD_AGENT_VERSION}"
   - export COMPARISON_DSD_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:dogstatsd-${BASE_DD_AGENT_VERSION}"
