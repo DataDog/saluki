@@ -194,8 +194,6 @@ fn emit_event(sender: &Sender<AutodiscoveryEvent>, event: AutodiscoveryEvent) {
 
 #[async_trait]
 impl AutodiscoveryProvider for LocalAutoDiscoveryProvider {
-    type Error = GenericError;
-
     async fn subscribe(&self) -> Receiver<AutodiscoveryEvent> {
         self.listener_init
             .get_or_init(|| async {

@@ -154,9 +154,6 @@ pub struct AutodiscoveryEvent {
 /// This trait is used to discover and monitor configuration files for checks.
 #[async_trait]
 pub trait AutodiscoveryProvider {
-    /// Errors produced by the provider.
-    type Error;
-
     /// Subscribe for autodiscovery events.
     ///
     /// This method returns a channel where autodiscovery events will be sent.

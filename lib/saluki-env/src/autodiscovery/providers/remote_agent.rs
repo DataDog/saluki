@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use saluki_error::GenericError;
 use tokio::sync::broadcast::{self, Receiver, Sender};
 use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
@@ -73,8 +72,6 @@ impl RemoteAgentAutoDiscoveryProvider {
 
 #[async_trait]
 impl AutodiscoveryProvider for RemoteAgentAutoDiscoveryProvider {
-    type Error = GenericError;
-
     async fn subscribe(&self) -> Receiver<AutodiscoveryEvent> {
         self.listener_init
             .get_or_init(|| async {
