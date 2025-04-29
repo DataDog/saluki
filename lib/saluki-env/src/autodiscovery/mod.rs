@@ -9,10 +9,9 @@ use datadog_protos::agent::{Config as ProtoConfig, ConfigEventType};
 use tokio::sync::broadcast::Receiver;
 
 /// Configuration event type
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventType {
     /// Schedule a configuration
-    #[default]
     Schedule,
     /// Unschedule a configuration
     Unschedule,
@@ -57,7 +56,7 @@ pub struct AdvancedADIdentifier {
 }
 
 /// Configuration data
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Config {
     /// Configuration name/identifier
     pub name: String,
@@ -145,9 +144,17 @@ impl From<ProtoConfig> for Config {
 
 /// An autodiscovery event
 #[derive(Debug, Clone)]
-pub struct AutodiscoveryEvent {
-    /// Configuration payload
-    pub config: Config,
+pub enum AutodiscoveryEvent {
+    /// Schedule a configuration
+    Schedule {
+        /// Configuration
+        config: Config,
+    },
+    /// Unschedule a configuration
+    Unscheduled {
+        /// Configuration ID
+        config_id: String,
+    },
 }
 
 /// Provides autodiscovery functionality.

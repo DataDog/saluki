@@ -129,14 +129,14 @@ async fn scan_and_emit_events(
                             if !known_configs.contains(&config_id) {
                                 debug!("New configuration found: {}", config_id);
 
-                                let event = AutodiscoveryEvent { config };
+                                let event = AutodiscoveryEvent::Schedule { config };
                                 emit_event(sender, event);
                                 known_configs.insert(config_id.clone());
                             } else {
                                 // Config ID exists, but the content might have changed
                                 debug!("Configuration updated: {}", config_id);
 
-                                let event: AutodiscoveryEvent = AutodiscoveryEvent { config };
+                                let event = AutodiscoveryEvent::Schedule { config };
                                 emit_event(sender, event);
                             }
                         }
@@ -160,12 +160,8 @@ async fn scan_and_emit_events(
         debug!("Configuration removed: {}", config_id);
         known_configs.remove(&config_id);
 
-        // Create an unschedule config
-        let mut config = Config::default();
-        config.event_type = EventType::Unschedule;
-        config.name = config_id;
-
-        let event = AutodiscoveryEvent { config };
+        // Create an unschedule Config event
+        let event = AutodiscoveryEvent::Unscheduled { config_id };
         emit_event(sender, event);
     }
 
@@ -257,8 +253,13 @@ mod tests {
         assert_eq!(known_configs.len(), 1);
 
         let event = receiver.try_recv().unwrap();
-        assert_eq!(event.config.name, "config1.yaml");
-        assert_eq!(event.config.event_type, EventType::Schedule);
+        match event {
+            AutodiscoveryEvent::Schedule { config } => {
+                assert_eq!(config.name, "config1.yaml");
+                assert_eq!(config.event_type, EventType::Schedule);
+            }
+            _ => panic!("Expected a Schedule event"),
+        }
 
         assert!(receiver.try_recv().is_err());
     }
@@ -279,8 +280,12 @@ mod tests {
         assert_eq!(known_configs.len(), 0);
 
         let event = receiver.try_recv().unwrap();
-        assert_eq!(event.config.name, "removed-config");
-        assert_eq!(event.config.event_type, EventType::Unschedule);
+        match event {
+            AutodiscoveryEvent::Unscheduled { config_id } => {
+                assert_eq!(config_id, "removed-config");
+            }
+            _ => panic!("Expected an Unscheduled event"),
+        }
 
         assert!(receiver.try_recv().is_err());
     }
