@@ -134,13 +134,22 @@ impl DatadogMetricsConfiguration {
     /// Configure the destination for metric preaggregation.
     pub fn configure_for_preaggregation(&mut self) {
         // Sanity check that we're dealing with datad0g.com (i.e. staging)
-        let site = self.forwarder_config.endpoint().dd_url().unwrap_or(self.forwarder_config.endpoint().site());
+        let site = self
+            .forwarder_config
+            .endpoint()
+            .dd_url()
+            .unwrap_or(self.forwarder_config.endpoint().site());
         if site.contains("datad0g.com") {
-            self.forwarder_config.endpoint_mut().set_dd_url("https://api.datad0g.com".to_string());
+            self.forwarder_config
+                .endpoint_mut()
+                .set_dd_url("https://api.datad0g.com".to_string());
             self.forwarder_config.endpoint.additional_endpoints = Default::default();
             self.endpoint_path_override = Some("/api/intake/pipelines/ddseries");
         } else {
-            warn!(?site, "Not a staging environment, skipping configuration for metric preaggregation.");
+            warn!(
+                ?site,
+                "Not a staging environment, skipping configuration for metric preaggregation."
+            );
         }
     }
 }
