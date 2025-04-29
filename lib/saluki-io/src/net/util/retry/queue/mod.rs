@@ -1,8 +1,9 @@
 #![allow(dead_code)]
 
 mod persisted;
-use std::{collections::VecDeque, path::PathBuf};
+use std::{collections::VecDeque, path::PathBuf, sync::Arc};
 
+pub use persisted::{DiskUsageRetriever, DiskUsageRetrieverImpl, DiskUsageRetrieverWrapper};
 use saluki_error::{generic_error, GenericError};
 use serde::{de::DeserializeOwned, Serialize};
 use tracing::debug;
@@ -114,10 +115,17 @@ where
     ///
     /// If there is an error initializing the disk persistence layer, an error is returned.
     pub async fn with_disk_persistence(
-        mut self, root_path: PathBuf, max_disk_size_bytes: u64,
+        mut self, root_path: PathBuf, max_disk_size_bytes: u64, storage_max_disk_ratio: f64,
+        disk_usage_retriever: Arc<dyn DiskUsageRetriever + Send + Sync>,
     ) -> Result<Self, GenericError> {
         let queue_root_path = root_path.join(&self.queue_name);
-        let persisted_pending = PersistedQueue::from_root_path(queue_root_path, max_disk_size_bytes).await?;
+        let persisted_pending = PersistedQueue::from_root_path(
+            queue_root_path,
+            max_disk_size_bytes,
+            storage_max_disk_ratio,
+            DiskUsageRetrieverWrapper::new(disk_usage_retriever),
+        )
+        .await?;
         self.persisted_pending = Some(persisted_pending);
         Ok(self)
     }
@@ -402,7 +410,12 @@ mod tests {
         assert_eq!(0, file_count_recursive(&root_path));
 
         let mut retry_queue = RetryQueue::<FakeData>::new("test".to_string(), u64::MAX)
-            .with_disk_persistence(root_path.clone(), u64::MAX)
+            .with_disk_persistence(
+                root_path.clone(),
+                u64::MAX,
+                1.0,
+                Arc::new(DiskUsageRetrieverImpl::new(root_path.clone())),
+            )
             .await
             .expect("should not fail to create retry queue with disk persistence");
 
