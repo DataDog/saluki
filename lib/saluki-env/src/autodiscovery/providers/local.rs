@@ -7,7 +7,7 @@ use tokio::fs;
 use tokio::sync::broadcast::{self, Receiver, Sender};
 use tokio::sync::OnceCell;
 use tokio::time::{interval, Duration};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider, Config, EventType};
 
@@ -50,6 +50,11 @@ impl LocalAutoDiscoveryProvider {
         let mut interval = interval(Duration::from_secs(interval_sec));
         let sender = self.sender.clone();
         let search_paths = self.search_paths.clone();
+
+        info!(
+            "Scanning for local autodiscovery events every {} seconds.",
+            interval_sec
+        );
 
         tokio::spawn(async move {
             let mut known_configs = HashSet::new();
@@ -156,25 +161,9 @@ async fn scan_and_emit_events(
         known_configs.remove(&config_id);
 
         // Create an unschedule config
-        let config = Config {
-            name: config_id,
-            event_type: EventType::Unschedule,
-            init_config: Vec::new(),
-            instances: Vec::new(),
-            metric_config: Vec::new(),
-            logs_config: Vec::new(),
-            ad_identifiers: Vec::new(),
-            provider: "local".to_string(),
-            service_id: String::new(),
-            tagger_entity: String::new(),
-            cluster_check: false,
-            node_name: String::new(),
-            source: String::new(),
-            ignore_autodiscovery_tags: false,
-            metrics_excluded: false,
-            logs_excluded: false,
-            advanced_ad_identifiers: Vec::new(),
-        };
+        let mut config = Config::default();
+        config.event_type = EventType::Unschedule;
+        config.name = config_id;
 
         let event = AutodiscoveryEvent { config };
         emit_event(sender, event);

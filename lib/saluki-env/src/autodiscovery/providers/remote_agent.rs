@@ -35,7 +35,7 @@ impl RemoteAgentAutoDiscoveryProvider {
         let sender = self.sender.clone();
 
         tokio::spawn(async move {
-            info!("Autodiscovery stream established");
+            info!("Listening to autodiscovery events from remote agent.");
 
             loop {
                 let mut autodiscovery_stream = client.get_autodiscovery_stream();
