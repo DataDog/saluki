@@ -28,7 +28,6 @@ tracing = { workspace = true }
 tikv-jemalloc-ctl = { workspace = true, features = ["use_std"] }
 tikv-jemallocator = { workspace = true, features = [
   "background_threads",
-  "profiling",
   "unprefixed_malloc_on_supported_platforms",
   "stats",
 ] }

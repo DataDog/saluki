@@ -37,7 +37,6 @@ pooled_newtype! {
 
 impl FixedSizeEventBuffer {
     /// Creates a new `FixedSizeEventBuffer` with the given capacity, for testing purposes.
-    #[cfg(test)]
     pub fn for_test(capacity: usize) -> Self {
         use crate::pooling::helpers::get_pooled_object_via_builder;
 
