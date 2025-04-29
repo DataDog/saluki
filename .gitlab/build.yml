@@ -166,8 +166,8 @@ publish-internal-adp-image:
     IMAGE_VERSION: tmpl-v1
     TMPL_SRC_REPO: ${ADP_IMAGE_REPO_NAME}
     TMPL_SRC_IMAGE: ${CI_COMMIT_SHORT_SHA}
-    RELEASE_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
-    BUILD_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
+    RELEASE_TAG: ${INTERNAL_ADP_RELEASE_IMAGE_TAG}
+    BUILD_TAG: ${INTERNAL_ADP_RELEASE_IMAGE_TAG}
     RELEASE_STAGING: "true"
     RELEASE_PROD: "true"
 
@@ -202,3 +202,29 @@ upload-adp-release-symbols-fips:
     - build-adp-image-release-fips
   variables:
     IMAGE_TAG: ${ADP_RELEASE_IMAGE_TAG_FIPS}
+
+display-image-tags:
+  extends: [.build-common-variables]
+  stage: build
+  needs:
+    - build-adp-image
+    - build-adp-image-fips
+    - build-adp-image-release
+    - build-adp-image-release-fips
+    - build-converged-adp-image
+    - build-converged-adp-image-fips
+    - publish-internal-adp-image
+  script:
+    - |-
+      cat <<EOF
+      # Image Tags
+
+      ## Barebones (ADP only, not suitable for deployments)
+      Debug (non-FIPS):   ${ADP_DEBUG_IMAGE_TAG}
+      Debug (FIPS):       ${ADP_DEBUG_IMAGE_TAG_FIPS}
+      Release (non-FIPS): ${ADP_RELEASE_IMAGE_TAG}
+      Release (FIPS):     ${ADP_RELEASE_IMAGE_TAG_FIPS}
+
+      ## Internal (ADP only, baked with necessary tools for internal deployments)
+      Release (non-FIPS): ${IMAGE_REGISTRY}/agent-data-plane:${INTERNAL_ADP_RELEASE_IMAGE_TAG}
+      EOF
