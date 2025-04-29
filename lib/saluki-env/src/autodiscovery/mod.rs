@@ -153,6 +153,7 @@ impl From<ProtoConfig> for AutodiscoveryEvent {
 
 /// An autodiscovery event
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum AutodiscoveryEvent {
     /// Schedule a configuration
     Schedule {
