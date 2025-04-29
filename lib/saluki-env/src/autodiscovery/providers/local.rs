@@ -1,22 +1,21 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use saluki_error::GenericError;
 use tokio::fs;
-use tokio::sync::mpsc::{self, error::TrySendError};
+use tokio::sync::broadcast::{self, Receiver, Sender};
+use tokio::sync::OnceCell;
 use tokio::time::{interval, Duration};
 use tracing::{debug, warn};
 
-use crate::autodiscovery::{AutodiscoveryProvider, AutodiscoveryEvent, Config, EventType};
+use crate::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider, Config, EventType};
 
 /// A local auto-discovery provider that uses the file system.
 pub struct LocalAutoDiscoveryProvider {
     search_paths: Vec<PathBuf>,
-    known_configs: HashSet<String>,
-    event_senders: Arc<Mutex<Vec<mpsc::Sender<AutodiscoveryEvent>>>>,
-    monitoring_active: bool,
+    sender: Sender<AutodiscoveryEvent>,
+    listener_init: OnceCell<()>,
 }
 
 impl LocalAutoDiscoveryProvider {
@@ -37,28 +36,20 @@ impl LocalAutoDiscoveryProvider {
             })
             .collect();
 
+        let (sender, _) = broadcast::channel::<AutodiscoveryEvent>(100);
+
         Self {
             search_paths,
-            known_configs: HashSet::new(),
-            event_senders: Arc::new(Mutex::new(Vec::new())),
-            monitoring_active: false,
+            sender,
+            listener_init: OnceCell::new(),
         }
     }
 
     /// Starts a background task that periodically scans for configuration changes
-    fn start_background_monitor(&mut self, interval_sec: u64) -> Result<(), GenericError> {
-        if self.monitoring_active {
-            return Ok(());
-        }
-
-        if self.event_senders.lock().unwrap().is_empty() {
-            return Err(GenericError::msg("Cannot start monitoring without subscribers"));
-        }
-
-        let search_paths = self.search_paths.clone();
-        let event_senders = self.event_senders.clone();
-
+    async fn start_background_monitor(&self, interval_sec: u64) -> Result<(), GenericError> {
         let mut interval = interval(Duration::from_secs(interval_sec));
+        let sender = self.sender.clone();
+        let search_paths = self.search_paths.clone();
 
         tokio::spawn(async move {
             let mut known_configs = HashSet::new();
@@ -67,13 +58,12 @@ impl LocalAutoDiscoveryProvider {
                 interval.tick().await;
 
                 // Scan for configurations and emit events for changes
-                if let Err(e) = scan_and_emit_events(&search_paths, &mut known_configs, &event_senders).await {
+                if let Err(e) = scan_and_emit_events(&search_paths, &mut known_configs, &sender).await {
                     warn!("Error scanning for configurations: {}", e);
                 }
             }
         });
 
-        self.monitoring_active = true;
         Ok(())
     }
 }
@@ -115,8 +105,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
 
 /// Scan and emit events based on configuration files in the directory
 async fn scan_and_emit_events(
-    paths: &[PathBuf], known_configs: &mut HashSet<String>,
-    event_senders: &Arc<Mutex<Vec<mpsc::Sender<AutodiscoveryEvent>>>>,
+    paths: &[PathBuf], known_configs: &mut HashSet<String>, sender: &Sender<AutodiscoveryEvent>,
 ) -> Result<(), GenericError> {
     let mut found_configs = HashSet::new();
 
@@ -138,14 +127,14 @@ async fn scan_and_emit_events(
                                 debug!("New configuration found: {}", config_id);
 
                                 let event = AutodiscoveryEvent { config };
-                                broadcast_event(event_senders, event).await;
+                                sender.send(event).unwrap();
                                 known_configs.insert(config_id.clone());
                             } else {
                                 // Config ID exists, but the content might have changed
                                 debug!("Configuration updated: {}", config_id);
 
-                                let event = AutodiscoveryEvent { config };
-                                broadcast_event(event_senders, event).await;
+                                let event: AutodiscoveryEvent = AutodiscoveryEvent { config };
+                                sender.send(event).unwrap();
                             }
                         }
                         Err(e) => {
@@ -190,76 +179,24 @@ async fn scan_and_emit_events(
         };
 
         let event = AutodiscoveryEvent { config };
-        broadcast_event(event_senders, event).await;
+        sender.send(event).unwrap();
     }
 
     Ok(())
-}
-
-/// Broadcasts an event to all subscribers, removing any that have closed their channels
-async fn broadcast_event(senders: &Arc<Mutex<Vec<mpsc::Sender<AutodiscoveryEvent>>>>, event: AutodiscoveryEvent) {
-    let mut to_remove = Vec::new();
-
-    {
-        let senders_guard = senders.lock().unwrap();
-        for (idx, sender) in senders_guard.iter().enumerate() {
-            match sender.try_send(event.clone()) {
-                Ok(_) => {}
-                Err(TrySendError::Closed(_)) => {
-                    // Channel is closed, mark for removal
-                    to_remove.push(idx);
-                }
-                Err(TrySendError::Full(_)) => {
-                    // Channel is full, this is a backpressure situation
-                    warn!("Channel full - subscriber cannot keep up with autodiscovery events");
-                }
-            }
-        }
-    }
-
-    // Remove closed senders if any
-    if !to_remove.is_empty() {
-        let removed_count = to_remove.len();
-        let mut senders_guard = senders.lock().unwrap();
-        // Remove from back to front to avoid index shifting issues
-        to_remove.sort_unstable_by(|a, b| b.cmp(a));
-        debug!("Removing {} closed autodiscovery subscribers", removed_count);
-
-        for idx in to_remove {
-            senders_guard.swap_remove(idx);
-        }
-    }
 }
 
 #[async_trait]
 impl AutodiscoveryProvider for LocalAutoDiscoveryProvider {
     type Error = GenericError;
 
-    async fn subscribe(&mut self, sender: mpsc::Sender<AutodiscoveryEvent>) -> Result<(), Self::Error> {
-        {
-            let mut senders = self.event_senders.lock().unwrap();
+    async fn subscribe(&self) -> Result<Receiver<AutodiscoveryEvent>, Self::Error> {
+        self.listener_init
+            .get_or_init(|| async {
+                self.start_background_monitor(30).await.unwrap();
+            })
+            .await;
 
-            // Check if this sender's address is already in our list
-            let sender_addr = format!("{:p}", &sender);
-            if senders.iter().any(|s| format!("{:p}", s) == sender_addr) {
-                debug!("Attempt to subscribe with duplicate sender - ignoring");
-                return Ok(());
-            }
-
-            senders.push(sender);
-        }
-
-        // Scan for initial configurations
-        let mut local_known = self.known_configs.clone();
-        scan_and_emit_events(&self.search_paths, &mut local_known, &self.event_senders).await?;
-        self.known_configs = local_known;
-
-        // Start background monitoring if not already active
-        if !self.monitoring_active {
-            self.start_background_monitor(30)?; // Check every 30 seconds
-        }
-
-        Ok(())
+        Ok(self.sender.subscribe())
     }
 }
 
@@ -317,22 +254,19 @@ mod tests {
         let _test_file = copy_test_file("config1.yaml", dir.path()).await;
 
         let mut known_configs = HashSet::new();
-        let event_senders = Arc::new(Mutex::new(Vec::new()));
+        let (sender, mut receiver) = broadcast::channel::<AutodiscoveryEvent>(10);
 
-        let (tx, mut rx) = mpsc::channel(10);
-        event_senders.lock().unwrap().push(tx);
-
-        scan_and_emit_events(&[dir.path().to_path_buf()], &mut known_configs, &event_senders)
+        scan_and_emit_events(&[dir.path().to_path_buf()], &mut known_configs, &sender)
             .await
             .unwrap();
 
         assert_eq!(known_configs.len(), 1);
 
-        let event = rx.try_recv().unwrap();
+        let event = receiver.try_recv().unwrap();
         assert_eq!(event.config.name, "config1.yaml");
         assert_eq!(event.config.event_type, EventType::Schedule);
 
-        assert!(rx.try_recv().is_err());
+        assert!(receiver.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -342,59 +276,18 @@ mod tests {
         let mut known_configs = HashSet::new();
         known_configs.insert("removed-config".to_string());
 
-        let event_senders = Arc::new(Mutex::new(Vec::new()));
+        let (sender, mut receiver) = broadcast::channel::<AutodiscoveryEvent>(10);
 
-        let (tx, mut rx) = mpsc::channel(10);
-        event_senders.lock().unwrap().push(tx);
-
-        scan_and_emit_events(&[dir.path().to_path_buf()], &mut known_configs, &event_senders)
+        scan_and_emit_events(&[dir.path().to_path_buf()], &mut known_configs, &sender)
             .await
             .unwrap();
 
         assert_eq!(known_configs.len(), 0);
 
-        let event = rx.try_recv().unwrap();
+        let event = receiver.try_recv().unwrap();
         assert_eq!(event.config.name, "removed-config");
         assert_eq!(event.config.event_type, EventType::Unschedule);
 
-        assert!(rx.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn test_broadcast_event_removes_closed_subscribers() {
-        let event_senders = Arc::new(Mutex::new(Vec::new()));
-
-        let (tx1, _rx1) = mpsc::channel::<AutodiscoveryEvent>(10);
-
-        let (tx2, rx2) = mpsc::channel::<AutodiscoveryEvent>(10);
-        drop(rx2);
-
-        event_senders.lock().unwrap().push(tx1);
-        event_senders.lock().unwrap().push(tx2);
-
-        let config = Config {
-            name: "test".to_string(),
-            event_type: EventType::Schedule,
-            init_config: Vec::new(),
-            instances: Vec::new(),
-            metric_config: Vec::new(),
-            logs_config: Vec::new(),
-            ad_identifiers: Vec::new(),
-            provider: "test".to_string(),
-            service_id: String::new(),
-            tagger_entity: String::new(),
-            cluster_check: false,
-            node_name: String::new(),
-            source: String::new(),
-            ignore_autodiscovery_tags: false,
-            metrics_excluded: false,
-            logs_excluded: false,
-            advanced_ad_identifiers: Vec::new(),
-        };
-        let event = AutodiscoveryEvent { config };
-
-        broadcast_event(&event_senders, event).await;
-
-        assert_eq!(event_senders.lock().unwrap().len(), 1);
+        assert!(receiver.try_recv().is_err());
     }
 }

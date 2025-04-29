@@ -6,7 +6,7 @@ pub mod providers;
 
 use async_trait::async_trait;
 use datadog_protos::agent::{Config as ProtoConfig, ConfigEventType};
-use tokio::sync::mpsc;
+use tokio::sync::broadcast::Receiver;
 
 /// Configuration event type
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,21 +157,10 @@ pub trait AutodiscoveryProvider {
     /// Errors produced by the provider.
     type Error;
 
-    /// Starts listening for autodiscovery events.
+    /// Subscribe for autodiscovery events.
     ///
-    /// This method allows the caller to specify a channel where autodiscovery events should be sent.
-    /// The provider will deliver all autodiscovery events to this channel.
-    /// For most implementations, this will also trigger an initial discovery of configurations.
-    ///
-    /// # Arguments
-    ///
-    /// * `sender` - The channel where autodiscovery events should be sent
-    ///
-    /// # Returns
-    ///
-    /// Returns a Result with either success or an error. This doesn't mean events will start
-    /// flowing immediately, just that monitoring has been set up successfully.
-    async fn subscribe(&mut self, sender: mpsc::Sender<AutodiscoveryEvent>) -> Result<(), Self::Error>;
+    /// This method returns a channel where autodiscovery events will be sent.
+    async fn subscribe(&self) -> Result<Receiver<AutodiscoveryEvent>, Self::Error>;
 }
 
 #[cfg(test)]
