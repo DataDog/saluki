@@ -2,7 +2,7 @@ use std::fmt;
 
 use saluki_context::{
     origin::{ExternalData, OriginTagCardinality},
-    tags::{Tag, TagSet},
+    tags::TagSet,
 };
 
 use super::{entity::EntityId, helpers::OneOrMany};
@@ -34,35 +34,6 @@ impl MetadataOperation {
         Self {
             entity_id,
             actions: OneOrMany::One(MetadataAction::Delete),
-        }
-    }
-
-    /// Creates a new `MetadataOperation` that adds a tag to an entity.
-    pub fn tag<T>(entity_id: EntityId, cardinality: OriginTagCardinality, tag: T) -> Self
-    where
-        T: Into<Tag>,
-    {
-        Self {
-            entity_id,
-            actions: OneOrMany::One(MetadataAction::AddTag {
-                cardinality,
-                tag: tag.into(),
-            }),
-        }
-    }
-
-    /// Creates a new `MetadataOperation` that adds multiple tags to an entity.
-    pub fn tags<I, T>(entity_id: EntityId, cardinality: OriginTagCardinality, tags: I) -> Self
-    where
-        I: IntoIterator<Item = T>,
-        T: Into<Tag>,
-    {
-        Self {
-            entity_id,
-            actions: OneOrMany::One(MetadataAction::AddTags {
-                cardinality,
-                tags: tags.into_iter().map(Into::into).collect(),
-            }),
         }
     }
 
@@ -103,24 +74,6 @@ pub enum MetadataAction {
         descendant_entity_id: EntityId,
     },
 
-    /// Adds a key/value tag to the entity.
-    AddTag {
-        /// Cardinality to add the tag at.
-        cardinality: OriginTagCardinality,
-
-        /// Tag to add.
-        tag: Tag,
-    },
-
-    /// Adds multiple key/value tags to the entity.
-    AddTags {
-        /// Cardinality to add the tags at.
-        cardinality: OriginTagCardinality,
-
-        /// Tags to add.
-        tags: TagSet,
-    },
-
     /// Sets the tags for the entity.
     ///
     /// This overwrites any existing tags for the entity.
@@ -149,8 +102,6 @@ impl fmt::Debug for MetadataAction {
             Self::Delete => write!(f, "Delete"),
             Self::LinkAncestor { ancestor_entity_id } => write!(f, "LinkAncestor({:?})", ancestor_entity_id),
             Self::LinkDescendant { descendant_entity_id } => write!(f, "LinkDescendant({:?})", descendant_entity_id),
-            Self::AddTag { cardinality, tag } => write!(f, "AddTag(cardinality={:?}, tag={:?})", cardinality, tag),
-            Self::AddTags { cardinality, tags } => write!(f, "AddTags(cardinality={:?}, tags={:?})", cardinality, tags),
             Self::SetTags { cardinality, tags } => write!(f, "SetTags(cardinality={:?}, tags={:?})", cardinality, tags),
             Self::AttachExternalData { external_data } => write!(f, "AttachExternalData({:?})", external_data),
         }
