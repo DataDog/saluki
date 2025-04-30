@@ -58,7 +58,7 @@ impl TagStorage {
 pub struct TagStore {
     entity_limit: NonZeroUsize,
     active_entities: Arc<FastConcurrentHashSet<EntityId>>,
-    entity_hierarchy_mappings: Arc<FastConcurrentHashMap<EntityId, EntityId>>,
+    entity_aliases: Arc<FastConcurrentHashMap<EntityId, EntityId>>,
     entity_tags: TagStorage,
 }
 
@@ -71,7 +71,7 @@ impl TagStore {
         Self {
             entity_limit,
             active_entities: Arc::new(FastConcurrentHashSet::default()),
-            entity_hierarchy_mappings: Arc::new(FastConcurrentHashMap::default()),
+            entity_aliases: Arc::new(FastConcurrentHashMap::default()),
             entity_tags: TagStorage::default(),
         }
     }
@@ -99,11 +99,9 @@ impl TagStore {
     fn delete_entity(&mut self, entity_id: &EntityId) {
         self.active_entities.pin().remove(entity_id);
 
-        // Delete all of the tags for the entity, both raw and unified.
+        // Delete all of the tags for the entity, and any alias mapping that may exist.
         self.entity_tags.delete_entity(entity_id);
-
-        // Delete the entity hierarchy mapping for the entity.
-        self.entity_hierarchy_mappings.pin().remove(entity_id);
+        self.entity_aliases.pin().remove(entity_id);
     }
 
     fn set_entity_tags(&mut self, entity_id: EntityId, tags: TagSet, cardinality: OriginTagCardinality) {
@@ -119,11 +117,8 @@ impl TagStore {
         self.entity_tags.set_entity_tags(entity_id, tags, cardinality);
     }
 
-    fn add_hierarchy_mapping(&mut self, child_entity_id: EntityId, parent_entity_id: EntityId) {
-        let _ = self
-            .entity_hierarchy_mappings
-            .pin()
-            .insert(child_entity_id, parent_entity_id);
+    fn add_entity_alias(&mut self, source_entity_id: EntityId, target_entity_id: EntityId) {
+        let _ = self.entity_aliases.pin().insert(source_entity_id, target_entity_id);
     }
 
     /// Returns a `TagStoreQuerier` that can be used to concurrently query the tag store.
@@ -131,7 +126,7 @@ impl TagStore {
         TagStoreQuerier {
             entity_tags: self.entity_tags.clone(),
             entities: Arc::clone(&self.active_entities),
-            mappings: Arc::clone(&self.entity_hierarchy_mappings),
+            aliases: Arc::clone(&self.entity_aliases),
         }
     }
 }
@@ -150,8 +145,8 @@ impl MetadataStore for TagStore {
         for action in operation.actions {
             match action {
                 MetadataAction::Delete => self.delete_entity(&entity_id.clone()),
-                MetadataAction::LinkAncestor { ancestor_entity_id } => {
-                    self.add_hierarchy_mapping(entity_id.clone(), ancestor_entity_id)
+                MetadataAction::AddAlias { target_entity_id } => {
+                    self.add_entity_alias(entity_id.clone(), target_entity_id)
                 }
                 MetadataAction::SetTags { cardinality, tags } => {
                     self.set_entity_tags(entity_id.clone(), tags, cardinality)
@@ -200,14 +195,39 @@ impl MemoryBounds for TagStore {
 pub struct TagStoreQuerier {
     entity_tags: TagStorage,
     entities: Arc<FastConcurrentHashSet<EntityId>>,
-    mappings: Arc<FastConcurrentHashMap<EntityId, EntityId>>,
+    aliases: Arc<FastConcurrentHashMap<EntityId, EntityId>>,
 }
 
 impl TagStoreQuerier {
     /// Gets the tags for an entity at the given cardinality.
     ///
-    /// If no tags can be found for the entity, or at the given cardinality, `None` is returned.
+    /// If no entity tags are set for the entity itself, the querier will check if there is an alias for the entity, and
+    /// return the tags for the aliased entity if they exist.
+    ///
+    /// If no tags can be found for the entity (or aliased entity), or at the given cardinality, `None` is returned.
     pub fn get_entity_tags(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
+        match self.entity_tags.get_entity_tags(entity_id, cardinality) {
+            Some(tags) => Some(tags),
+            None => {
+                // If we don't have tags for the entity, check if we have an alias for it, and then query the aliased entity.
+                if let Some(alias) = self.aliases.pin().get(entity_id) {
+                    self.get_entity_tags(alias, cardinality)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Gets the tags for an entity at the given cardinality.
+    ///
+    /// Unlike `get_entity_tags`, this method does not check for an alias for the entity. It will only return tags set
+    /// for the entity itself.
+    ///
+    /// If no tags can be found for the entity, or at the given cardinality, `None` is returned.
+    pub fn get_unaliased_entity_tags(
+        &self, entity_id: &EntityId, cardinality: OriginTagCardinality,
+    ) -> Option<SharedTagSet> {
         self.entity_tags.get_entity_tags(entity_id, cardinality)
     }
 
@@ -221,13 +241,13 @@ impl TagStoreQuerier {
         }
     }
 
-    /// Visits each entity mapping in the tag store.
-    pub fn visit_entity_mappings<F>(&self, mut visitor: F)
+    /// Visits each entity alias in the tag store.
+    pub fn visit_entity_aliases<F>(&self, mut visitor: F)
     where
         F: FnMut(&EntityId, &EntityId),
     {
-        for (child_entity_id, parent_entity_id) in self.mappings.pin().iter() {
-            visitor(child_entity_id, parent_entity_id);
+        for (entity_id, target_entity_id) in self.aliases.pin().iter() {
+            visitor(entity_id, target_entity_id);
         }
     }
 }

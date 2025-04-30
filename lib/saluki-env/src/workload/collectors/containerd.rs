@@ -120,7 +120,7 @@ impl NamespaceWatcher {
             ContainerdEvent::TaskStarted { id, pid } => {
                 let pid_entity_id = EntityId::ContainerPid(pid);
                 let container_entity_id = EntityId::Container(id);
-                Some(MetadataOperation::link_ancestor(pid_entity_id, container_entity_id))
+                Some(MetadataOperation::add_alias(pid_entity_id, container_entity_id))
             }
             ContainerdEvent::TaskDeleted { pid, .. } => Some(MetadataOperation::delete(EntityId::ContainerPid(pid))),
         }
@@ -165,7 +165,7 @@ impl NamespaceWatcher {
                 match self.tag_interner.try_intern(container.id.as_str()) {
                     Some(container_id) => {
                         let container_entity_id = EntityId::Container(container_id.into());
-                        operations.push(MetadataOperation::link_ancestor(pid_entity_id, container_entity_id));
+                        operations.push(MetadataOperation::add_alias(pid_entity_id, container_entity_id));
                     }
                     None => {
                         warn!(

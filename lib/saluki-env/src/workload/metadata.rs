@@ -21,11 +21,11 @@ pub struct MetadataOperation {
 }
 
 impl MetadataOperation {
-    /// Creates a new `MetadataOperation` that links an entity to its ancestor.
-    pub fn link_ancestor(entity_id: EntityId, ancestor_entity_id: EntityId) -> Self {
+    /// Creates a new `MetadataOperation` that aliases an entity to another.
+    pub fn add_alias(entity_id: EntityId, target_entity_id: EntityId) -> Self {
         Self {
             entity_id,
-            actions: OneOrMany::One(MetadataAction::LinkAncestor { ancestor_entity_id }),
+            actions: OneOrMany::One(MetadataAction::AddAlias { target_entity_id }),
         }
     }
 
@@ -52,17 +52,16 @@ pub enum MetadataAction {
     /// Delete all metadata for the entity.
     Delete,
 
-    /// Establishes a link between the entity and its ancestor.
+    /// Adds an alias to the entity.
     ///
-    /// This creates an entity hierarchy, which allows for aggregation of entity metadata, such as including
-    /// higher-level metadata, from the cluster or pod level, when getting the metadata for a specific container.
-    ///
-    /// Additionally, it can be used for canonicalizing an entity ID, such as mapping a container PID to the container
-    /// ID which owns that process. This is useful because it can potentially help avoid the need to clone (allocate) the
-    /// canonicalized version.
-    LinkAncestor {
-        /// Entity ID of the ancestor to link with.
-        ancestor_entity_id: EntityId,
+    /// This can be used to allow for querying for information about an entity, where the information is not directly
+    /// associated with the entity itself. For example, process ID entities usually are aliased to an underlying
+    /// container ID entity, where the container ID entity itself is the one with associated tags and so on. When
+    /// querying for the tags of the process ID entity, an alias to the container ID entity can be established to
+    /// instead allow for getting the container ID entity's tags.
+    AddAlias {
+        /// Entity ID of the target to alias to.
+        target_entity_id: EntityId,
     },
 
     /// Sets the tags for the entity.
@@ -91,7 +90,7 @@ impl fmt::Debug for MetadataAction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Delete => write!(f, "Delete"),
-            Self::LinkAncestor { ancestor_entity_id } => write!(f, "LinkAncestor({:?})", ancestor_entity_id),
+            Self::AddAlias { target_entity_id } => write!(f, "AddAlias({:?})", target_entity_id),
             Self::SetTags { cardinality, tags } => write!(f, "SetTags(cardinality={:?}, tags={:?})", cardinality, tags),
             Self::AttachExternalData { external_data } => write!(f, "AttachExternalData({:?})", external_data),
         }
