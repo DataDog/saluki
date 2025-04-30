@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use saluki_error::GenericError;
 use serde::Deserialize;
+use stringtheory::MetaString;
 use tokio::fs;
 use tokio::sync::broadcast::{self, Receiver, Sender};
 use tokio::sync::OnceCell;
@@ -100,7 +101,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
         .to_string()
         .replace(['/', '\\'], "_");
 
-    let instances: Vec<HashMap<String, String>> = check_config
+    let instances: Vec<HashMap<MetaString, MetaString>> = check_config
         .instances
         .into_iter()
         .map(|instance| {
@@ -111,7 +112,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
                     // Strip leading and trailing quotes if present
                     let clean_value = value_str.trim().trim_matches('"').to_string();
                     let key_str = key.as_str().unwrap_or("unknown").to_string();
-                    result.insert(key_str, clean_value);
+                    result.insert(MetaString::from(key_str), MetaString::from(clean_value));
                 }
             }
             result
@@ -125,7 +126,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
                 // Strip leading and trailing quotes if present
                 let clean_value = value_str.trim().trim_matches('"').to_string();
                 let key_str = key.as_str().unwrap_or("unknown").to_string();
-                result.insert(key_str, clean_value);
+                result.insert(MetaString::from(key_str), MetaString::from(clean_value));
             }
         }
         result
@@ -133,18 +134,18 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
 
     // Create a Config
     let config = Config {
-        name: path.file_name().unwrap().to_string_lossy().to_string(),
+        name: MetaString::from(path.file_name().unwrap().to_string_lossy().to_string()),
         init_config,
         instances,
         metric_config: HashMap::new(),
         logs_config: HashMap::new(),
         ad_identifiers: Vec::new(),
-        provider: "".to_string(),
-        service_id: String::new(),
-        tagger_entity: String::new(),
+        provider: MetaString::from_static(""),
+        service_id: MetaString::from_static(""),
+        tagger_entity: MetaString::from_static(""),
         cluster_check: false,
-        node_name: String::new(),
-        source: "local".to_string(),
+        node_name: MetaString::from_static(""),
+        source: MetaString::from_static("local"),
         ignore_autodiscovery_tags: false,
         metrics_excluded: false,
         logs_excluded: false,

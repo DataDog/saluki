@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use datadog_protos::agent::{Config as ProtoConfig, ConfigEventType};
 use saluki_error::GenericError;
+use stringtheory::MetaString;
 use tokio::sync::broadcast::Receiver;
 
 /// Configuration event type
@@ -44,9 +45,9 @@ impl From<i32> for EventType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KubeNamespacedName {
     /// Kubernetes resource name
-    pub name: String,
+    pub name: MetaString,
     /// Kubernetes namespace
-    pub namespace: String,
+    pub namespace: MetaString,
 }
 
 /// Advanced autodiscovery identifier
@@ -62,31 +63,31 @@ pub struct AdvancedADIdentifier {
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Configuration name/identifier
-    pub name: String,
+    pub name: MetaString,
     /// Raw configuration data
-    pub init_config: HashMap<String, String>,
+    pub init_config: HashMap<MetaString, MetaString>,
     /// Instance configurations
-    pub instances: Vec<HashMap<String, String>>,
+    pub instances: Vec<HashMap<MetaString, MetaString>>,
     /// Metric configuration
-    pub metric_config: HashMap<String, String>,
+    pub metric_config: HashMap<MetaString, MetaString>,
     /// Logs configuration
-    pub logs_config: HashMap<String, String>,
+    pub logs_config: HashMap<MetaString, MetaString>,
     /// Auto-discovery identifiers
-    pub ad_identifiers: Vec<String>,
+    pub ad_identifiers: Vec<MetaString>,
     /// Advanced auto-discovery identifiers
     pub advanced_ad_identifiers: Vec<AdvancedADIdentifier>,
     /// Provider that discovered this config
-    pub provider: String,
+    pub provider: MetaString,
     /// Service ID
-    pub service_id: String,
+    pub service_id: MetaString,
     /// Tagger entity
-    pub tagger_entity: String,
+    pub tagger_entity: MetaString,
     /// Whether this is a cluster check
     pub cluster_check: bool,
     /// Node name
-    pub node_name: String,
+    pub node_name: MetaString,
     /// Source of the configuration
-    pub source: String,
+    pub source: MetaString,
     /// Whether to ignore autodiscovery tags
     pub ignore_autodiscovery_tags: bool,
     /// Whether metrics are excluded
@@ -103,13 +104,13 @@ impl From<ProtoConfig> for Config {
             .into_iter()
             .map(|adv_id| {
                 let kube_service = adv_id.kube_service.map(|svc| KubeNamespacedName {
-                    name: svc.name,
-                    namespace: svc.namespace,
+                    name: MetaString::from(svc.name),
+                    namespace: MetaString::from(svc.namespace),
                 });
 
                 let kube_endpoints = adv_id.kube_endpoints.map(|endpoints| KubeNamespacedName {
-                    name: endpoints.name,
-                    namespace: endpoints.namespace,
+                    name: MetaString::from(endpoints.name),
+                    namespace: MetaString::from(endpoints.namespace),
                 });
 
                 AdvancedADIdentifier {
@@ -127,19 +128,19 @@ impl From<ProtoConfig> for Config {
             .collect();
 
         Self {
-            name: proto.name,
+            name: MetaString::from(proto.name),
             init_config,
             instances,
             metric_config: bytes_to_hasmap(proto.metric_config).unwrap_or_default(),
             logs_config: bytes_to_hasmap(proto.logs_config).unwrap_or_default(),
-            ad_identifiers: proto.ad_identifiers,
+            ad_identifiers: proto.ad_identifiers.into_iter().map(MetaString::from).collect(),
             advanced_ad_identifiers,
-            provider: proto.provider,
-            service_id: proto.service_id,
-            tagger_entity: proto.tagger_entity,
+            provider: MetaString::from(proto.provider),
+            service_id: MetaString::from(proto.service_id),
+            tagger_entity: MetaString::from(proto.tagger_entity),
             cluster_check: proto.cluster_check,
-            node_name: proto.node_name,
-            source: proto.source,
+            node_name: MetaString::from(proto.node_name),
+            source: MetaString::from(proto.source),
             ignore_autodiscovery_tags: proto.ignore_autodiscovery_tags,
             metrics_excluded: proto.metrics_excluded,
             logs_excluded: proto.logs_excluded,
@@ -147,7 +148,7 @@ impl From<ProtoConfig> for Config {
     }
 }
 
-fn bytes_to_hasmap(bytes: Vec<u8>) -> Result<HashMap<String, String>, GenericError> {
+fn bytes_to_hasmap(bytes: Vec<u8>) -> Result<HashMap<MetaString, MetaString>, GenericError> {
     let parse_bytes = String::from_utf8(bytes)?;
 
     let map: HashMap<String, serde_yaml::Value> = serde_yaml::from_str(&parse_bytes)?;
@@ -157,7 +158,7 @@ fn bytes_to_hasmap(bytes: Vec<u8>) -> Result<HashMap<String, String>, GenericErr
     for (key, value) in map {
         if let Ok(value_str) = serde_yaml::to_string(&value) {
             let clean_value = value_str.trim().trim_matches('"').to_string();
-            result.insert(key, clean_value);
+            result.insert(MetaString::from(key), MetaString::from(clean_value));
         }
     }
 
@@ -270,7 +271,10 @@ mod tests {
 
         assert_eq!(config.name, "test-config");
         assert_eq!(config.provider, "test-provider");
-        assert_eq!(config.ad_identifiers, vec!["id1".to_string(), "id2".to_string()]);
+        assert_eq!(
+            config.ad_identifiers,
+            vec![MetaString::from_static("id1"), MetaString::from_static("id2")]
+        );
         assert!(config.cluster_check);
         assert_eq!(config.service_id, "service-id");
         assert_eq!(config.tagger_entity, "tagger-entity");
