@@ -89,7 +89,6 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
     let check_config: CheckConfig = match serde_yaml::from_str(&content) {
         Ok(read) => read,
         Err(e) => {
-            warn!("Can't decode yaml as check configuration: {}", content);
             return Err(GenericError::from(e).context("Failed to decode yaml as check configuration."));
         }
     };
@@ -300,17 +299,15 @@ mod tests {
         assert_eq!(known_configs.len(), 1);
 
         let event = receiver.try_recv().unwrap();
-        match event {
-            AutodiscoveryEvent::Schedule { config } => {
-                assert_eq!(config.name, "config1.yaml");
-                assert_eq!(config.instances.len(), 1);
-                assert_eq!(config.instances[0].len(), 2);
-                assert_eq!(config.instances[0]["server"], "localhost");
-                assert_eq!(config.instances[0]["port"], "8080");
-            }
-            _ => panic!("Expected a Schedule event"),
-        }
+        assert!(matches!(event, AutodiscoveryEvent::Schedule { .. }));
 
+        if let AutodiscoveryEvent::Schedule { config } = event {
+            assert_eq!(config.name, "config1.yaml");
+            assert_eq!(config.instances.len(), 1);
+            assert_eq!(config.instances[0].len(), 2);
+            assert_eq!(config.instances[0]["server"], "localhost");
+            assert_eq!(config.instances[0]["port"], "8080");
+        }
         assert!(receiver.try_recv().is_err());
     }
 
@@ -330,12 +327,7 @@ mod tests {
         assert_eq!(known_configs.len(), 0);
 
         let event = receiver.try_recv().unwrap();
-        match event {
-            AutodiscoveryEvent::Unscheduled { config_id } => {
-                assert_eq!(config_id, "removed-config");
-            }
-            _ => panic!("Expected an Unscheduled event"),
-        }
+        assert!(matches!(event, AutodiscoveryEvent::Unscheduled { config_id } if config_id == "removed-config"));
 
         assert!(receiver.try_recv().is_err());
     }
