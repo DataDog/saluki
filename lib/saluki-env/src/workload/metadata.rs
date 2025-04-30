@@ -65,15 +65,6 @@ pub enum MetadataAction {
         ancestor_entity_id: EntityId,
     },
 
-    /// Establishes a link between the entity and its descendant.
-    ///
-    /// This creates an entity hierarchy, which allows for aggregation of entity metadata, such as including
-    /// higher-level metadata, from the cluster or pod level, when getting the metadata for a specific container.
-    LinkDescendant {
-        /// Entity ID of the descendant to link with.
-        descendant_entity_id: EntityId,
-    },
-
     /// Sets the tags for the entity.
     ///
     /// This overwrites any existing tags for the entity.
@@ -101,7 +92,6 @@ impl fmt::Debug for MetadataAction {
         match self {
             Self::Delete => write!(f, "Delete"),
             Self::LinkAncestor { ancestor_entity_id } => write!(f, "LinkAncestor({:?})", ancestor_entity_id),
-            Self::LinkDescendant { descendant_entity_id } => write!(f, "LinkDescendant({:?})", descendant_entity_id),
             Self::SetTags { cardinality, tags } => write!(f, "SetTags(cardinality={:?}, tags={:?})", cardinality, tags),
             Self::AttachExternalData { external_data } => write!(f, "AttachExternalData({:?})", external_data),
         }

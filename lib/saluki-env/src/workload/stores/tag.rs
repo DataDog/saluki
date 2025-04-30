@@ -153,9 +153,6 @@ impl MetadataStore for TagStore {
                 MetadataAction::LinkAncestor { ancestor_entity_id } => {
                     self.add_hierarchy_mapping(entity_id.clone(), ancestor_entity_id)
                 }
-                MetadataAction::LinkDescendant { descendant_entity_id } => {
-                    self.add_hierarchy_mapping(descendant_entity_id.clone(), entity_id.clone())
-                }
                 MetadataAction::SetTags { cardinality, tags } => {
                     self.set_entity_tags(entity_id.clone(), tags, cardinality)
                 }
