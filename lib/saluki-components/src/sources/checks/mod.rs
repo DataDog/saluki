@@ -10,10 +10,11 @@ use saluki_core::{
     components::{sources::*, ComponentContext},
     topology::OutputDefinition,
 };
-use saluki_env::autodiscovery::AutodiscoveryProvider;
-use saluki_error::GenericError;
+use saluki_env::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider};
+use saluki_error::{generic_error, GenericError};
 use saluki_event::DataType;
 use serde::Deserialize;
+use tokio::sync::broadcast::Receiver;
 
 /// Configuration for the checks source.
 #[derive(Deserialize)]
@@ -42,7 +43,13 @@ impl ChecksConfiguration {
 #[async_trait]
 impl SourceBuilder for ChecksConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
-        Ok(Box::new(ChecksSource))
+        match &self.autodiscovery_provider {
+            Some(autodiscovery) => {
+                let event_rx = autodiscovery.subscribe().await;
+                Ok(Box::new(ChecksSource { event_rx }))
+            }
+            None => Err(generic_error!("No autodiscovery provider configured.")),
+        }
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
@@ -64,7 +71,9 @@ impl MemoryBounds for ChecksConfiguration {
     }
 }
 
-struct ChecksSource;
+struct ChecksSource {
+    event_rx: Receiver<AutodiscoveryEvent>,
+}
 
 #[async_trait]
 impl Source for ChecksSource {
