@@ -3267,6 +3267,7 @@ dependencies = [
  "saluki-health",
  "serde",
  "serde_json",
+ "serde_yaml",
  "snafu",
  "socket2",
  "stringtheory",

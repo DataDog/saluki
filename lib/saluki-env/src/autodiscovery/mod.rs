@@ -4,8 +4,11 @@
 
 pub mod providers;
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use datadog_protos::agent::{Config as ProtoConfig, ConfigEventType};
+use saluki_error::GenericError;
 use tokio::sync::broadcast::Receiver;
 
 /// Configuration event type
@@ -61,13 +64,13 @@ pub struct Config {
     /// Configuration name/identifier
     pub name: String,
     /// Raw configuration data
-    pub init_config: Vec<u8>,
+    pub init_config: HashMap<String, String>,
     /// Instance configurations
-    pub instances: Vec<Vec<u8>>,
+    pub instances: Vec<HashMap<String, String>>,
     /// Metric configuration
-    pub metric_config: Vec<u8>,
+    pub metric_config: HashMap<String, String>,
     /// Logs configuration
-    pub logs_config: Vec<u8>,
+    pub logs_config: HashMap<String, String>,
     /// Auto-discovery identifiers
     pub ad_identifiers: Vec<String>,
     /// Advanced auto-discovery identifiers
@@ -116,12 +119,19 @@ impl From<ProtoConfig> for Config {
             })
             .collect();
 
+        let init_config = bytes_to_hasmap(proto.init_config).unwrap_or_default();
+        let instances = proto
+            .instances
+            .into_iter()
+            .map(|instance| bytes_to_hasmap(instance).unwrap_or_default())
+            .collect();
+
         Self {
             name: proto.name,
-            init_config: proto.init_config,
-            instances: proto.instances,
-            metric_config: proto.metric_config,
-            logs_config: proto.logs_config,
+            init_config,
+            instances,
+            metric_config: bytes_to_hasmap(proto.metric_config).unwrap_or_default(),
+            logs_config: bytes_to_hasmap(proto.logs_config).unwrap_or_default(),
             ad_identifiers: proto.ad_identifiers,
             advanced_ad_identifiers,
             provider: proto.provider,
@@ -135,6 +145,23 @@ impl From<ProtoConfig> for Config {
             logs_excluded: proto.logs_excluded,
         }
     }
+}
+
+fn bytes_to_hasmap(bytes: Vec<u8>) -> Result<HashMap<String, String>, GenericError> {
+    let parse_bytes = String::from_utf8(bytes)?;
+
+    let map: HashMap<String, serde_yaml::Value> = serde_yaml::from_str(&parse_bytes)?;
+
+    let mut result = HashMap::new();
+
+    for (key, value) in map {
+        if let Ok(value_str) = serde_yaml::to_string(&value) {
+            let clean_value = value_str.trim().trim_matches('"').to_string();
+            result.insert(key, clean_value);
+        }
+    }
+
+    Ok(result)
 }
 
 impl From<ProtoConfig> for AutodiscoveryEvent {
@@ -207,13 +234,16 @@ mod tests {
         let mut proto_config = ProtoConfig {
             name: "test-config".to_string(),
             event_type: ConfigEventType::Schedule as i32,
-            init_config: b"init-data".to_vec(),
-            instances: vec![b"instance1".to_vec(), b"instance2".to_vec()],
+            init_config: b"key: value".to_vec(),
+            instances: vec![
+                b"instance_key: instance_value".to_vec(),
+                b"another_key: another_value".to_vec(),
+            ],
             provider: "test-provider".to_string(),
             ad_identifiers: vec!["id1".to_string(), "id2".to_string()],
             cluster_check: true,
-            metric_config: vec![],
-            logs_config: vec![],
+            metric_config: b"metric_key: metric_value".to_vec(),
+            logs_config: b"log_key: log_value".to_vec(),
             advanced_ad_identifiers: vec![],
             service_id: "service-id".to_string(),
             tagger_entity: "tagger-entity".to_string(),
@@ -239,11 +269,22 @@ mod tests {
         let config = Config::from(proto_config);
 
         assert_eq!(config.name, "test-config");
-        assert_eq!(config.init_config, b"init-data");
-        assert_eq!(config.instances, vec![b"instance1".to_vec(), b"instance2".to_vec()]);
         assert_eq!(config.provider, "test-provider");
         assert_eq!(config.ad_identifiers, vec!["id1".to_string(), "id2".to_string()]);
         assert!(config.cluster_check);
+        assert_eq!(config.service_id, "service-id");
+        assert_eq!(config.tagger_entity, "tagger-entity");
+        assert_eq!(config.node_name, "node-name");
+        assert_eq!(config.source, "source");
+        assert!(!config.ignore_autodiscovery_tags);
+        assert!(!config.metrics_excluded);
+        assert!(!config.logs_excluded);
+        assert_eq!(config.init_config["key"], "value");
+        assert_eq!(config.instances.len(), 2);
+        assert_eq!(config.instances[0]["instance_key"], "instance_value");
+        assert_eq!(config.instances[1]["another_key"], "another_value");
+        assert_eq!(config.metric_config["metric_key"], "metric_value");
+        assert_eq!(config.logs_config["log_key"], "log_value");
 
         assert_eq!(config.advanced_ad_identifiers.len(), 1);
         let adv_id = &config.advanced_ad_identifiers[0];

@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
 use async_trait::async_trait;
 use saluki_error::GenericError;
+use serde::Deserialize;
 use tokio::fs;
 use tokio::sync::broadcast::{self, Receiver, Sender};
 use tokio::sync::OnceCell;
@@ -73,9 +75,23 @@ impl LocalAutoDiscoveryProvider {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct CheckConfig {
+    init_config: serde_yaml::Mapping,
+    instances: Vec<serde_yaml::Mapping>,
+}
+
 /// Parse a YAML file into a Config object
 async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericError> {
     let content = fs::read_to_string(path).await?;
+
+    let check_config: CheckConfig = match serde_yaml::from_str(&content) {
+        Ok(read) => read,
+        Err(e) => {
+            warn!("Can't decode yaml as check configuration: {}", content);
+            return Err(GenericError::from(e).context("Failed to decode yaml as check configuration"));
+        }
+    };
 
     // Build config ID from the file path
     let config_id = path
@@ -84,20 +100,51 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
         .to_string()
         .replace(['/', '\\'], "_");
 
+    let instances: Vec<HashMap<String, String>> = check_config
+        .instances
+        .into_iter()
+        .map(|instance| {
+            let mut result = HashMap::new();
+            for (key, value) in instance {
+                // Use serde_yaml to convert Value to String
+                if let Ok(value_str) = serde_yaml::to_string(&value) {
+                    // Strip leading and trailing quotes if present
+                    let clean_value = value_str.trim().trim_matches('"').to_string();
+                    let key_str = key.as_str().unwrap_or("unknown").to_string();
+                    result.insert(key_str, clean_value);
+                }
+            }
+            result
+        })
+        .collect();
+
+    let init_config = {
+        let mut result = HashMap::new();
+        for (key, value) in check_config.init_config {
+            if let Ok(value_str) = serde_yaml::to_string(&value) {
+                // Strip leading and trailing quotes if present
+                let clean_value = value_str.trim().trim_matches('"').to_string();
+                let key_str = key.as_str().unwrap_or("unknown").to_string();
+                result.insert(key_str, clean_value);
+            }
+        }
+        result
+    };
+
     // Create a Config
     let config = Config {
         name: path.file_name().unwrap().to_string_lossy().to_string(),
-        init_config: content.as_bytes().to_vec(),
-        instances: Vec::new(), // Would parse from YAML in a real implementation
-        metric_config: Vec::new(),
-        logs_config: Vec::new(),
+        init_config,
+        instances,
+        metric_config: HashMap::new(),
+        logs_config: HashMap::new(),
         ad_identifiers: Vec::new(),
-        provider: "local".to_string(),
+        provider: "".to_string(),
         service_id: String::new(),
         tagger_entity: String::new(),
         cluster_check: false,
         node_name: String::new(),
-        source: path.to_string_lossy().to_string(),
+        source: "local".to_string(),
         ignore_autodiscovery_tags: false,
         metrics_excluded: false,
         logs_excluded: false,
@@ -233,9 +280,8 @@ mod tests {
 
         assert!(id.contains("saluki-env_src_autodiscovery_providers_test_data_test-config.yaml"));
         assert_eq!(config.name, "test-config.yaml");
-        assert!(!config.init_config.is_empty());
-        assert_eq!(config.provider, "local");
-        assert_eq!(config.source, test_file.to_string_lossy().to_string());
+        assert_eq!(config.init_config["service"], "test-service");
+        assert_eq!(config.source, "local");
     }
 
     #[tokio::test]
@@ -256,6 +302,10 @@ mod tests {
         match event {
             AutodiscoveryEvent::Schedule { config } => {
                 assert_eq!(config.name, "config1.yaml");
+                assert_eq!(config.instances.len(), 1);
+                assert_eq!(config.instances[0].len(), 2);
+                assert_eq!(config.instances[0]["server"], "localhost");
+                assert_eq!(config.instances[0]["port"], "8080");
             }
             _ => panic!("Expected a Schedule event"),
         }

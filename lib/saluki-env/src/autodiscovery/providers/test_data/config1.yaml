@@ -1,7 +1,6 @@
 ## This file is used for testing the scan_and_emit_events function
 
 init_config:
-  check_interval: 30
 
 instances:
   - server: localhost

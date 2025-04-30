@@ -32,6 +32,7 @@ saluki-error = { workspace = true }
 saluki-health = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["std"] }
+serde_yaml = { workspace = true }
 snafu = { workspace = true }
 socket2 = { workspace = true }
 stringtheory = { workspace = true }
