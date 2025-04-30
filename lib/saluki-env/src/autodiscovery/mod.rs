@@ -104,13 +104,13 @@ impl From<ProtoConfig> for Config {
             .into_iter()
             .map(|adv_id| {
                 let kube_service = adv_id.kube_service.map(|svc| KubeNamespacedName {
-                    name: MetaString::from(svc.name),
-                    namespace: MetaString::from(svc.namespace),
+                    name: svc.name.into(),
+                    namespace: svc.namespace.into(),
                 });
 
                 let kube_endpoints = adv_id.kube_endpoints.map(|endpoints| KubeNamespacedName {
-                    name: MetaString::from(endpoints.name),
-                    namespace: MetaString::from(endpoints.namespace),
+                    name: endpoints.name.into(),
+                    namespace: endpoints.namespace.into(),
                 });
 
                 AdvancedADIdentifier {
@@ -128,19 +128,19 @@ impl From<ProtoConfig> for Config {
             .collect();
 
         Self {
-            name: MetaString::from(proto.name),
+            name: proto.name.into(),
             init_config,
             instances,
             metric_config: bytes_to_hasmap(proto.metric_config).unwrap_or_default(),
             logs_config: bytes_to_hasmap(proto.logs_config).unwrap_or_default(),
             ad_identifiers: proto.ad_identifiers.into_iter().map(MetaString::from).collect(),
             advanced_ad_identifiers,
-            provider: MetaString::from(proto.provider),
-            service_id: MetaString::from(proto.service_id),
-            tagger_entity: MetaString::from(proto.tagger_entity),
+            provider: proto.provider.into(),
+            service_id: proto.service_id.into(),
+            tagger_entity: proto.tagger_entity.into(),
             cluster_check: proto.cluster_check,
-            node_name: MetaString::from(proto.node_name),
-            source: MetaString::from(proto.source),
+            node_name: proto.node_name.into(),
+            source: proto.source.into(),
             ignore_autodiscovery_tags: proto.ignore_autodiscovery_tags,
             metrics_excluded: proto.metrics_excluded,
             logs_excluded: proto.logs_excluded,
@@ -158,7 +158,7 @@ fn bytes_to_hasmap(bytes: Vec<u8>) -> Result<HashMap<MetaString, MetaString>, Ge
     for (key, value) in map {
         if let Ok(value_str) = serde_yaml::to_string(&value) {
             let clean_value = value_str.trim().trim_matches('"').to_string();
-            result.insert(MetaString::from(key), MetaString::from(clean_value));
+            result.insert(key.into(), clean_value.into());
         }
     }
 
