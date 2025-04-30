@@ -29,7 +29,7 @@ impl RemoteAgentAutoDiscoveryProvider {
     }
 
     async fn start_background_listener(&self) {
-        debug!("Starting autodiscovery background listener");
+        debug!("Starting autodiscovery background listener.");
 
         let mut client = self.client.clone();
         let sender = self.sender.clone();

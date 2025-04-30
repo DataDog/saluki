@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use saluki_error::GenericError;
@@ -25,7 +25,7 @@ pub struct LocalAutoDiscoveryProvider {
 
 impl LocalAutoDiscoveryProvider {
     /// Creates a new `LocalAutoDiscoveryProvider` that will monitor the specified paths.
-    pub fn new<P: AsRef<std::path::Path>>(paths: Vec<P>) -> Self {
+    pub fn new<P: AsRef<Path>>(paths: Vec<P>) -> Self {
         let search_paths: Vec<PathBuf> = paths
             .iter()
             .filter_map(|p| {
@@ -90,7 +90,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
         Ok(read) => read,
         Err(e) => {
             warn!("Can't decode yaml as check configuration: {}", content);
-            return Err(GenericError::from(e).context("Failed to decode yaml as check configuration"));
+            return Err(GenericError::from(e).context("Failed to decode yaml as check configuration."));
         }
     };
 
