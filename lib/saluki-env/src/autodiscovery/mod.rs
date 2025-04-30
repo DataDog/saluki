@@ -200,9 +200,7 @@ pub enum AutodiscoveryEvent {
 /// This trait is used to discover and monitor configuration files for checks.
 #[async_trait]
 pub trait AutodiscoveryProvider {
-    /// Subscribe for autodiscovery events.
-    ///
-    /// This method returns a channel where autodiscovery events will be sent.
+    /// Subscribe to autodiscovery events.
     async fn subscribe(&self) -> Receiver<AutodiscoveryEvent>;
 }
 
