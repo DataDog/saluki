@@ -5,3 +5,6 @@ init_config:
 instances:
   - server: localhost
     port: 8080
+    tags:
+      - test:true
+      - env:test

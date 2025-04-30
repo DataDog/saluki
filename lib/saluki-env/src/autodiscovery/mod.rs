@@ -65,13 +65,13 @@ pub struct Config {
     /// Configuration name/identifier
     pub name: MetaString,
     /// Raw configuration data
-    pub init_config: HashMap<MetaString, MetaString>,
+    pub init_config: HashMap<MetaString, serde_yaml::Value>,
     /// Instance configurations
-    pub instances: Vec<HashMap<MetaString, MetaString>>,
+    pub instances: Vec<HashMap<MetaString, serde_yaml::Value>>,
     /// Metric configuration
-    pub metric_config: HashMap<MetaString, MetaString>,
+    pub metric_config: HashMap<MetaString, serde_yaml::Value>,
     /// Logs configuration
-    pub logs_config: HashMap<MetaString, MetaString>,
+    pub logs_config: HashMap<MetaString, serde_yaml::Value>,
     /// Auto-discovery identifiers
     pub ad_identifiers: Vec<MetaString>,
     /// Advanced auto-discovery identifiers
@@ -148,18 +148,15 @@ impl From<ProtoConfig> for Config {
     }
 }
 
-fn bytes_to_hasmap(bytes: Vec<u8>) -> Result<HashMap<MetaString, MetaString>, GenericError> {
+fn bytes_to_hasmap(bytes: Vec<u8>) -> Result<HashMap<MetaString, serde_yaml::Value>, GenericError> {
     let parse_bytes = String::from_utf8(bytes)?;
 
     let map: HashMap<String, serde_yaml::Value> = serde_yaml::from_str(&parse_bytes)?;
 
-    let mut result = HashMap::new();
+    let mut result = HashMap::<MetaString, serde_yaml::Value>::new();
 
     for (key, value) in map {
-        if let Ok(value_str) = serde_yaml::to_string(&value) {
-            let clean_value = value_str.trim().trim_matches('"').to_string();
-            result.insert(key.into(), clean_value.into());
-        }
+        result.insert(key.into(), value);
     }
 
     Ok(result)

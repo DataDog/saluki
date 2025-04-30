@@ -100,19 +100,14 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
         .to_string()
         .replace(['/', '\\'], "_");
 
-    let instances: Vec<HashMap<MetaString, MetaString>> = check_config
+    let instances: Vec<HashMap<MetaString, serde_yaml::Value>> = check_config
         .instances
         .into_iter()
         .map(|instance| {
             let mut result = HashMap::new();
             for (key, value) in instance {
-                // Use serde_yaml to convert Value to String
-                if let Ok(value_str) = serde_yaml::to_string(&value) {
-                    // Strip leading and trailing quotes if present
-                    let clean_value = value_str.trim().trim_matches('"').to_string();
-                    let key_str = key.as_str().unwrap_or("unknown").to_string();
-                    result.insert(MetaString::from(key_str), MetaString::from(clean_value));
-                }
+                let key_str = key.as_str().unwrap_or("unknown").to_string();
+                result.insert(MetaString::from(key_str), value);
             }
             result
         })
@@ -121,12 +116,8 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
     let init_config = {
         let mut result = HashMap::new();
         for (key, value) in check_config.init_config {
-            if let Ok(value_str) = serde_yaml::to_string(&value) {
-                // Strip leading and trailing quotes if present
-                let clean_value = value_str.trim().trim_matches('"').to_string();
-                let key_str = key.as_str().unwrap_or("unknown").to_string();
-                result.insert(MetaString::from(key_str), MetaString::from(clean_value));
-            }
+            let key_str = key.as_str().unwrap_or("unknown").to_string();
+            result.insert(MetaString::from(key_str), value);
         }
         result
     };
@@ -304,9 +295,16 @@ mod tests {
         if let AutodiscoveryEvent::Schedule { config } = event {
             assert_eq!(config.name, "config1.yaml");
             assert_eq!(config.instances.len(), 1);
-            assert_eq!(config.instances[0].len(), 2);
+            assert_eq!(config.instances[0].len(), 3);
             assert_eq!(config.instances[0]["server"], "localhost");
-            assert_eq!(config.instances[0]["port"], "8080");
+            assert_eq!(config.instances[0]["port"], serde_yaml::Value::Number(8080.into()));
+            assert_eq!(
+                config.instances[0]["tags"],
+                serde_yaml::Value::Sequence(vec![
+                    serde_yaml::Value::String("test:true".to_string()),
+                    serde_yaml::Value::String("env:test".to_string())
+                ])
+            );
         }
         assert!(receiver.try_recv().is_err());
     }
