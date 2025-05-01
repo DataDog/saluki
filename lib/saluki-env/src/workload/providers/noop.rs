@@ -1,6 +1,6 @@
 use saluki_context::{
     origin::{OriginKey, OriginTagCardinality, RawOrigin},
-    tags::SharedTagSet,
+    tags::TagVisitor,
 };
 
 use crate::{
@@ -13,8 +13,10 @@ use crate::{
 pub struct NoopWorkloadProvider;
 
 impl WorkloadProvider for NoopWorkloadProvider {
-    fn get_tags_for_entity(&self, _: &EntityId, _alive_: OriginTagCardinality) -> Option<SharedTagSet> {
-        None
+    fn visit_tags_for_entity(
+        &self, _: &EntityId, _alive_: OriginTagCardinality, _tag_visitor: &mut dyn TagVisitor,
+    ) -> bool {
+        false
     }
 
     fn resolve_origin(&self, _: RawOrigin<'_>) -> Option<OriginKey> {

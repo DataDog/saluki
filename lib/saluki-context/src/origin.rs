@@ -38,6 +38,18 @@ pub enum OriginTagCardinality {
     High,
 }
 
+impl OriginTagCardinality {
+    /// Returns the string representation of the cardinality.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Low => "low",
+            Self::Orchestrator => "orchestrator",
+            Self::High => "high",
+        }
+    }
+}
+
 impl TryFrom<&str> for OriginTagCardinality {
     type Error = String;
 
