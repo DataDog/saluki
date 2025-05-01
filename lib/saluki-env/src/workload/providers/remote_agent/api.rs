@@ -59,15 +59,15 @@ impl RemoteAgentWorkloadState {
             let alias = entity_aliases.get(entity_id);
             let low_cardinality_tags = self
                 .tag_querier
-                .get_unaliased_entity_tags(entity_id, OriginTagCardinality::Low)
+                .get_exact_entity_tags(entity_id, OriginTagCardinality::Low)
                 .unwrap_or_else(|| empty_tagset.clone());
             let orchestrator_cardinality_tags = self
                 .tag_querier
-                .get_unaliased_entity_tags(entity_id, OriginTagCardinality::Orchestrator)
+                .get_exact_entity_tags(entity_id, OriginTagCardinality::Orchestrator)
                 .unwrap_or_else(|| empty_tagset.clone());
             let high_cardinality_tags = self
                 .tag_querier
-                .get_unaliased_entity_tags(entity_id, OriginTagCardinality::High)
+                .get_exact_entity_tags(entity_id, OriginTagCardinality::High)
                 .unwrap_or_else(|| empty_tagset.clone());
 
             let tags = EntityTags {

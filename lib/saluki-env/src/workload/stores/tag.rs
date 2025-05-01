@@ -4,7 +4,7 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::collections::{FastConcurrentHashMap, FastConcurrentHashSet};
 use saluki_context::{
     origin::OriginTagCardinality,
-    tags::{SharedTagSet, TagSet},
+    tags::{SharedTagSet, TagSet, TagVisitor},
 };
 use tracing::{debug, trace};
 
@@ -199,33 +199,73 @@ pub struct TagStoreQuerier {
 }
 
 impl TagStoreQuerier {
-    /// Gets the tags for an entity at the given cardinality.
+    /// Visits all tags for an entity at the requested cardinality and below.
     ///
-    /// If no entity tags are set for the entity itself, the querier will check if there is an alias for the entity, and
-    /// return the tags for the aliased entity if they exist.
+    /// This means that tags from the requested cardinality, and all lower precedence cardinality levels, will be
+    /// visited. The cardinality levels, in order of precedence (lowest to highest), are:
     ///
-    /// If no tags can be found for the entity (or aliased entity), or at the given cardinality, `None` is returned.
-    pub fn get_entity_tags(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
-        match self.entity_tags.get_entity_tags(entity_id, cardinality) {
-            Some(tags) => Some(tags),
-            None => {
-                // If we don't have tags for the entity, check if we have an alias for it, and then query the aliased entity.
-                if let Some(alias) = self.aliases.pin().get(entity_id) {
-                    self.get_entity_tags(alias, cardinality)
-                } else {
-                    None
+    /// - low cardinality
+    /// - orchestrator cardinality
+    /// - high cardinality
+    ///
+    /// When an entity is aliased, the tags for the aliased entity will be visited instead of any tags for the entity itself.
+    ///
+    /// Returns `false` if the entity does not exist at all (no alias, no tags), `true` otherwise.
+    pub fn visit_entity_tags(
+        &self, entity_id: &EntityId, cardinality: OriginTagCardinality, tag_visitor: &mut dyn TagVisitor,
+    ) -> bool {
+        const CARDINALITY_LEVELS: [OriginTagCardinality; 3] = [
+            OriginTagCardinality::Low,
+            OriginTagCardinality::Orchestrator,
+            OriginTagCardinality::High,
+        ];
+
+        let mut entity_exists = false;
+
+        // If an entity is aliased, use that entity's tags instead of the entity's tags.
+        let aliases = self.aliases.pin();
+        let entity_id = match aliases.get(entity_id) {
+            Some(alias) => {
+                // If an alias exists, then the original entity also "exists".
+                entity_exists = true;
+                trace!(?alias, ?entity_id, "Entity is aliased.");
+
+                alias
+            }
+            None => entity_id,
+        };
+
+        for current_cardinality in CARDINALITY_LEVELS.iter() {
+            if let Some(tags) = self.entity_tags.get_entity_tags(entity_id, *current_cardinality) {
+                trace!(
+                    tags_len = tags.len(),
+                    ?entity_id,
+                    cardinality = current_cardinality.as_str(),
+                    "Visiting tags for entity."
+                );
+                entity_exists = true;
+
+                for tag in &tags {
+                    tag_visitor.visit_tag(tag);
                 }
             }
+
+            // If we've reached the target cardinality, stop visiting tags.
+            if *current_cardinality == cardinality {
+                break;
+            }
         }
+
+        entity_exists
     }
 
-    /// Gets the tags for an entity at the given cardinality.
+    /// Gets the exact tags for an entity at the specific cardinality.
     ///
-    /// Unlike `get_entity_tags`, this method does not check for an alias for the entity. It will only return tags set
-    /// for the entity itself.
+    /// Unlike `visit_entity_tags`, this method does not visit tags at lower cardinalities, and it does not visit tags
+    /// for an aliased entity.
     ///
     /// If no tags can be found for the entity, or at the given cardinality, `None` is returned.
-    pub fn get_unaliased_entity_tags(
+    pub fn get_exact_entity_tags(
         &self, entity_id: &EntityId, cardinality: OriginTagCardinality,
     ) -> Option<SharedTagSet> {
         self.entity_tags.get_entity_tags(entity_id, cardinality)
@@ -259,7 +299,8 @@ impl TagStoreQuerier {
 mod tests {
     use std::num::NonZeroUsize;
 
-    use saluki_context::tags::TagSet;
+    use saluki_context::tags::{Tag, TagSet};
+    use stringtheory::MetaString;
 
     use super::*;
     use crate::workload::helpers::OneOrMany;
@@ -267,56 +308,72 @@ mod tests {
     const DEFAULT_ENTITY_LIMIT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(10) };
 
     macro_rules! low_cardinality {
-		($entity_id:expr, tags => [$($key:literal => $value:literal),+]) => {{
-			tag_values!($entity_id, OriginTagCardinality::Low, tags => [$($key => $value,)+])
-		}};
-	}
+        ($entity_id:expr, tags => [$($key:literal => $value:literal),+]) => {{
+            tag_values!($entity_id, OriginTagCardinality::Low, tags => [$($key => $value,)+])
+        }};
+    }
 
     macro_rules! orch_cardinality {
-		($entity_id:expr, tags => [$($key:literal => $value:literal),+]) => {{
-			tag_values!($entity_id, OriginTagCardinality::Orchestrator, tags => [$($key => $value,)+])
-		}};
-	}
+        ($entity_id:expr, tags => [$($key:literal => $value:literal),+]) => {{
+            tag_values!($entity_id, OriginTagCardinality::Orchestrator, tags => [$($key => $value,)+])
+        }};
+    }
 
     macro_rules! high_cardinality {
-		($entity_id:expr, tags => [$($key:literal => $value:literal),+]) => {{
-			tag_values!($entity_id, OriginTagCardinality::High, tags => [$($key => $value,)+])
-		}};
-	}
+        ($entity_id:expr, tags => [$($key:literal => $value:literal),+]) => {{
+            tag_values!($entity_id, OriginTagCardinality::High, tags => [$($key => $value,)+])
+        }};
+    }
 
     macro_rules! tag_values {
-		($entity_id:expr, $cardinality:expr, tags => [$($key:literal => $value:literal),+ $(,)?]) => {{
-			let mut expected_tags = TagSet::default();
+        ($entity_id:expr, $cardinality:expr, tags => [$($key:literal => $value:literal),+ $(,)?]) => {{
+            let mut expected_tags = TagSet::default();
             let mut tags_to_set = TagSet::default();
 
-			$(
-				let tag = format!("{}:{}", $key, $value);
-				expected_tags.insert_tag(tag.clone());
+            $(
+                let tag = format!("{}:{}", $key, $value);
+                expected_tags.insert_tag(tag.clone());
                 tags_to_set.insert_tag(tag);
-			)+
+            )+
 
             let operations = vec![
                 MetadataOperation {
-					entity_id: $entity_id.clone(),
-					actions: OneOrMany::One(MetadataAction::SetTags {
-						cardinality: $cardinality,
-						tags: tags_to_set,
-					}),
-				}
+                    entity_id: $entity_id.clone(),
+                    actions: OneOrMany::One(MetadataAction::SetTags {
+                        cardinality: $cardinality,
+                        tags: tags_to_set,
+                    }),
+                }
             ];
 
-			(expected_tags, operations)
-		}};
-	}
+            (expected_tags, operations)
+        }};
+    }
+
+    fn visit_tags(querier: &TagStoreQuerier, entity_id: &EntityId, cardinality: OriginTagCardinality) -> TagSet {
+        let mut tags = TagSet::default();
+        querier.visit_entity_tags(entity_id, cardinality, &mut |tag: &Tag| {
+            tags.insert_tag(tag.clone());
+        });
+        tags
+    }
+
+    fn sorted_ts(tags: TagSet) -> Vec<MetaString> {
+        let mut tags = tags.into_iter().map(|t| t.into_inner()).collect::<Vec<_>>();
+        tags.sort();
+        tags
+    }
 
     #[test]
-    fn basic_entity() {
-        let entity_id = EntityId::Container("container-id".into());
-        let (low_expected_tags, low_operations) = low_cardinality!(&entity_id, tags => ["service" => "foo"]);
+    fn basic() {
+        let entity_id_one = EntityId::Container("container-id-one".into());
+        let entity_id_two = EntityId::Container("container-id-two".into());
+        let entity_id_three = EntityId::Container("container-id-three".into());
+        let (low_expected_tags, low_operations) = low_cardinality!(&entity_id_one, tags => ["service" => "foo"]);
         let (orch_expected_tags, orch_operations) =
-            orch_cardinality!(&entity_id, tags => ["kube_cluster_name" => "saluki"]);
+            orch_cardinality!(&entity_id_two, tags => ["kube_cluster_name" => "saluki"]);
         let (high_expected_tags, high_operations) =
-            high_cardinality!(&entity_id, tags => ["kube_pod_name" => "foo-8xl-ah2z7"]);
+            high_cardinality!(&entity_id_three, tags => ["kube_pod_name" => "foo-8xl-ah2z7"]);
 
         let mut store = TagStore::with_entity_limit(DEFAULT_ENTITY_LIMIT);
         for operation in low_operations.into_iter().chain(orch_operations).chain(high_operations) {
@@ -325,16 +382,37 @@ mod tests {
 
         let querier = store.querier();
 
-        let low_actual_tags = querier.get_entity_tags(&entity_id, OriginTagCardinality::Low).unwrap();
+        let low_actual_tags = visit_tags(&querier, &entity_id_one, OriginTagCardinality::Low);
         assert_eq!(low_actual_tags, low_expected_tags);
 
-        let orch_actual_tags = querier
-            .get_entity_tags(&entity_id, OriginTagCardinality::Orchestrator)
-            .unwrap();
+        let orch_actual_tags = visit_tags(&querier, &entity_id_two, OriginTagCardinality::Orchestrator);
         assert_eq!(orch_actual_tags, orch_expected_tags);
 
-        let high_actual_tags = querier.get_entity_tags(&entity_id, OriginTagCardinality::High).unwrap();
+        let high_actual_tags = visit_tags(&querier, &entity_id_three, OriginTagCardinality::High);
         assert_eq!(high_actual_tags, high_expected_tags);
+    }
+
+    #[test]
+    fn delete_entity() {
+        let entity_id = EntityId::Container("container-id".into());
+        let (expected_tags, operations) = low_cardinality!(&entity_id, tags => ["service" => "foo"]);
+
+        let mut store = TagStore::with_entity_limit(DEFAULT_ENTITY_LIMIT);
+        for operation in operations {
+            store.process_operation(operation);
+        }
+
+        let querier = store.querier();
+
+        // We should have tags for the entity.
+        let actual_tags = visit_tags(&querier, &entity_id, OriginTagCardinality::Low);
+        assert_eq!(sorted_ts(actual_tags), sorted_ts(expected_tags));
+
+        // Now delete the entity and check that we no longer have tags for it.
+        store.process_operation(MetadataOperation::delete(entity_id.clone()));
+
+        let actual_tags = visit_tags(&querier, &entity_id, OriginTagCardinality::Low);
+        assert!(actual_tags.is_empty());
     }
 
     #[test]
@@ -357,42 +435,76 @@ mod tests {
         for operation in container1_operations {
             store.process_operation(operation);
         }
-        for operation in container2_operations {
+        for operation in container2_operations.clone() {
             store.process_operation(operation);
         }
 
         // At this point, we should have tags for the pod, and container #1, but not container #2.
         let querier = store.querier();
 
-        assert!(querier
-            .get_entity_tags(&pod_entity_id, OriginTagCardinality::Low)
-            .is_some());
-        assert!(querier
-            .get_entity_tags(&container1_entity_id, OriginTagCardinality::Low)
-            .is_some());
-        assert!(querier
-            .get_entity_tags(&container2_entity_id, OriginTagCardinality::Low)
-            .is_none());
+        let pod_entity_tags = visit_tags(&querier, &pod_entity_id, OriginTagCardinality::Low);
+        let container1_entity_tags = visit_tags(&querier, &container1_entity_id, OriginTagCardinality::Low);
+        let container2_entity_tags = visit_tags(&querier, &container2_entity_id, OriginTagCardinality::Low);
+
+        assert!(!pod_entity_tags.is_empty());
+        assert!(!container1_entity_tags.is_empty());
+        assert!(container2_entity_tags.is_empty());
 
         // If we delete container #1, and then process the container #2 operations again, we should then have tags for
         // container #2 but not container #1.
         store.process_operation(MetadataOperation::delete(container1_entity_id.clone()));
 
-        let (_, container2_operations) = low_cardinality!(&container2_entity_id, tags => ["service" => "foo"]);
         for operation in container2_operations {
             store.process_operation(operation);
         }
 
+        let pod_entity_tags = visit_tags(&querier, &pod_entity_id, OriginTagCardinality::Low);
+        let container1_entity_tags = visit_tags(&querier, &container1_entity_id, OriginTagCardinality::Low);
+        let container2_entity_tags = visit_tags(&querier, &container2_entity_id, OriginTagCardinality::Low);
+
+        assert!(!pod_entity_tags.is_empty());
+        assert!(container1_entity_tags.is_empty());
+        assert!(!container2_entity_tags.is_empty());
+    }
+
+    #[test]
+    fn hierarchical_cardinality() {
+        // We want to ensure that when querying for tags at a specific cardinality, we get the tags for the lower-level
+        // cardinalities.
+        //
+        // Specifically, this means the querying for "low" cardinality tags only ever returns "low" cardinality tags,
+        // querying for "orchestrator" cardinality tags returns both "low" and "orchestrator" cardinality tags, and
+        // querying for "high" cardinality tags returns all three cardinalities.
+        let entity_id = EntityId::Container("container-id".into());
+        let (low_only_expected_tags, low_operations) = low_cardinality!(&entity_id, tags => ["service" => "foo"]);
+        let (orch_only_expected_tags, orch_operations) =
+            orch_cardinality!(&entity_id, tags => ["kube_cluster_name" => "saluki"]);
+        let (high_only_expected_tags, high_operations) =
+            high_cardinality!(&entity_id, tags => ["container_name" => "foo-8xl-ah2z7"]);
+
+        let mut store = TagStore::with_entity_limit(DEFAULT_ENTITY_LIMIT);
+        for operation in low_operations.into_iter().chain(orch_operations).chain(high_operations) {
+            store.process_operation(operation);
+        }
+
+        let low_expected_tags = low_only_expected_tags.clone();
+
+        let mut orch_expected_tags = orch_only_expected_tags.clone();
+        orch_expected_tags.extend(low_only_expected_tags.clone());
+
+        let mut high_expected_tags = high_only_expected_tags.clone();
+        high_expected_tags.extend(orch_only_expected_tags.clone());
+        high_expected_tags.extend(low_only_expected_tags.clone());
+
         let querier = store.querier();
 
-        assert!(querier
-            .get_entity_tags(&pod_entity_id, OriginTagCardinality::Low)
-            .is_some());
-        assert!(querier
-            .get_entity_tags(&container1_entity_id, OriginTagCardinality::Low)
-            .is_none());
-        assert!(querier
-            .get_entity_tags(&container2_entity_id, OriginTagCardinality::Low)
-            .is_some());
+        let low_actual_tags = visit_tags(&querier, &entity_id, OriginTagCardinality::Low);
+        assert_eq!(sorted_ts(low_actual_tags), sorted_ts(low_expected_tags));
+
+        let orch_actual_tags = visit_tags(&querier, &entity_id, OriginTagCardinality::Orchestrator);
+        assert_eq!(sorted_ts(orch_actual_tags), sorted_ts(orch_expected_tags));
+
+        let high_actual_tags = visit_tags(&querier, &entity_id, OriginTagCardinality::High);
+        assert_eq!(sorted_ts(high_actual_tags), sorted_ts(high_expected_tags));
     }
 }
