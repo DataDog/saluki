@@ -776,6 +776,17 @@ where
                 forwarder.push(Event::Metric(new_metric)).await?;
             }
 
+            if hist_config.copy_to_distribution() {
+                let new_context = context.with_name(format!(
+                    "{}{}",
+                    hist_config.copy_to_distribution_prefix(),
+                    context.name()
+                ));
+
+                let new_metric = Metric::from_parts(new_context, values, metadata.clone());
+                forwarder.push(Event::Metric(new_metric)).await?;
+            }
+
             Ok(())
         }
 
@@ -1208,14 +1219,18 @@ mod tests {
     #[tokio::test]
     async fn histogram_statistics() {
         // We're testing that we properly emit individual metrics (min, max, sum, etc) for a histogram.
-        let hist_config = HistogramConfiguration::from_statistics(&[
-            HistogramStatistic::Count,
-            HistogramStatistic::Sum,
-            HistogramStatistic::Percentile {
-                q: 0.5,
-                suffix: "p50".into(),
-            },
-        ]);
+        let hist_config = HistogramConfiguration::from_statistics(
+            &[
+                HistogramStatistic::Count,
+                HistogramStatistic::Sum,
+                HistogramStatistic::Percentile {
+                    q: 0.5,
+                    suffix: "p50".into(),
+                },
+            ],
+            false,
+            "".into(),
+        );
         let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, hist_config, Telemetry::noop());
 
         // Create one multi-value histogram and insert it.
@@ -1262,6 +1277,44 @@ mod tests {
         assert_eq!(flushed_metrics.len(), 1);
 
         assert_flushed_distribution_metric!(&input_metric, &flushed_metrics[0], [bucket_ts(1) => &values[..]]);
+    }
+
+    #[tokio::test]
+    async fn histogram_copy_to_distribution() {
+        let hist_config = HistogramConfiguration::from_statistics(
+            &[
+                HistogramStatistic::Count,
+                HistogramStatistic::Sum,
+                HistogramStatistic::Percentile {
+                    q: 0.5,
+                    suffix: "p50".into(),
+                },
+            ],
+            true,
+            "dist_prefix.".into(),
+        );
+        let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, hist_config, Telemetry::noop());
+
+        // Create one multi-value histogram and insert it.
+        let input_metric = Metric::histogram("metric1", [1.0, 2.0, 3.0, 4.0, 5.0]);
+        assert!(state.insert(insert_ts(1), input_metric.clone()));
+
+        // Flush the aggregation state, and observe that we've emitted all of the configured distribution statistics in
+        // the form of three metrics: count, sum, and p50 as well as the additional metric from copying the histogram.
+        let flushed_metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
+        assert_eq!(flushed_metrics.len(), 4);
+
+        // Create versions of the metric for each of the statistics we're expecting to emit. The values themselves don't
+        // matter here, but we do need a `Metric` for it to compare the context to.
+        let count_metric = Metric::rate("metric1.count", 0.0, Duration::from_secs(BUCKET_WIDTH_SECS));
+        let sum_metric = Metric::gauge("metric1.sum", 0.0);
+        let p50_metric = Metric::gauge("metric1.p50", 0.0);
+
+        // We use a less strict error ratio (how much the expected vs actual) for the percentile check, as we generally
+        // expect the value to be somewhat off the exact value due to the lossy nature of `DDSketch`.
+        assert_flushed_scalar_metric!(count_metric, &flushed_metrics[1], [bucket_ts(1) => 5.0]);
+        assert_flushed_scalar_metric!(p50_metric, &flushed_metrics[2], [bucket_ts(1) => 3.0], error_ratio => 0.0025);
+        assert_flushed_scalar_metric!(sum_metric, &flushed_metrics[3], [bucket_ts(1) => 15.0]);
     }
 
     #[tokio::test]

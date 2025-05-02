@@ -89,6 +89,12 @@ struct RawHistogramConfiguration {
     /// percentile of 0.95 would be represented as `95percentile`, while a percentile of 0.05 would be represented as
     /// `5percentile`.
     histogram_percentiles: Vec<String>,
+
+    /// Whether to copy the histogram to the distribution metric.
+    histogram_copy_to_distribution: bool,
+
+    /// Prefix to append to the distribution metric name.
+    histogram_copy_to_distribution_prefix: String,
 }
 
 impl Default for RawHistogramConfiguration {
@@ -96,6 +102,8 @@ impl Default for RawHistogramConfiguration {
         Self {
             histogram_aggregates: vec!["max".into(), "median".into(), "avg".into(), "count".into()],
             histogram_percentiles: vec!["0.95".into()],
+            histogram_copy_to_distribution: false,
+            histogram_copy_to_distribution_prefix: "".into(),
         }
     }
 }
@@ -104,19 +112,35 @@ impl Default for RawHistogramConfiguration {
 #[serde(try_from = "RawHistogramConfiguration")]
 pub struct HistogramConfiguration {
     statistics: Vec<HistogramStatistic>,
+    copy_to_distribution: bool,
+    copy_to_distribution_prefix: String,
 }
 
 impl HistogramConfiguration {
     #[cfg(test)]
-    pub fn from_statistics(statistics: &[HistogramStatistic]) -> Self {
+    pub fn from_statistics(
+        statistics: &[HistogramStatistic], copy_to_distribution: bool, copy_to_distribution_prefix: String,
+    ) -> Self {
         Self {
             statistics: statistics.to_vec(),
+            copy_to_distribution,
+            copy_to_distribution_prefix,
         }
     }
 
     /// Returns the configured aggregate statistics to calculate.
     pub fn statistics(&self) -> &[HistogramStatistic] {
         &self.statistics
+    }
+
+    /// Returns `true` if the histogram should be copied to the distribution metric.
+    pub fn copy_to_distribution(&self) -> bool {
+        self.copy_to_distribution
+    }
+
+    /// Returns the prefix to append to the distribution metric name.
+    pub fn copy_to_distribution_prefix(&self) -> &str {
+        &self.copy_to_distribution_prefix
     }
 }
 
@@ -133,6 +157,8 @@ impl Default for HistogramConfiguration {
                     suffix: "95percentile".into(),
                 },
             ],
+            copy_to_distribution: false,
+            copy_to_distribution_prefix: "".into(),
         }
     }
 }
@@ -172,6 +198,10 @@ impl TryFrom<RawHistogramConfiguration> for HistogramConfiguration {
             statistics.push(HistogramStatistic::Percentile { q: quantile, suffix });
         }
 
-        Ok(Self { statistics })
+        Ok(Self {
+            statistics,
+            copy_to_distribution: raw.histogram_copy_to_distribution,
+            copy_to_distribution_prefix: raw.histogram_copy_to_distribution_prefix,
+        })
     }
 }
