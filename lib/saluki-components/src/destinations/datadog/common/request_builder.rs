@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::io;
 
 use http::{uri::PathAndQuery, HeaderValue, Method, Request, Uri};
@@ -12,7 +10,7 @@ use snafu::{ResultExt, Snafu};
 use tokio::io::AsyncWriteExt as _;
 use tracing::{debug, error, trace};
 
-pub(super) const SCRATCH_BUF_CAPACITY: usize = 8192;
+const SCRATCH_BUF_CAPACITY: usize = 8192;
 
 /// Encodes input events for a specific intake endpoint.
 pub trait EndpointEncoder: std::fmt::Debug {
