@@ -84,7 +84,7 @@ impl EndpointEncoder for MetricsEndpointEncoder {
 
     fn is_valid_input(&self, input: &Self::Input) -> bool {
         let input_endpoint = MetricsEndpoint::from_metric(input);
-        input_endpoint != self.endpoint
+        input_endpoint == self.endpoint
     }
 
     fn encode(&self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
@@ -322,9 +322,12 @@ fn origin_metadata_to_proto_metadata(product: u32, subproduct: u32, product_deta
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use saluki_event::metric::Metric;
 
-    use super::encode_sketch_metric;
+    use super::{encode_sketch_metric, MetricsEndpoint, MetricsEndpointEncoder};
+    use crate::destinations::datadog::common::request_builder::EndpointEncoder as _;
 
     #[test]
     fn histogram_vs_sketch_identical_payload() {
@@ -341,5 +344,34 @@ mod tests {
         let distribution_payload = encode_sketch_metric(&distribution);
 
         assert_eq!(histogram_payload, distribution_payload);
+    }
+
+    #[test]
+    fn input_valid() {
+        // Our encoder should always consider series metrics valid when set to the series endpoint, and similarly for
+        // sketch metrics when set to the sketches endpoint.
+        let counter = Metric::counter("counter", 1.0);
+        let rate = Metric::rate("rate", 1.0, Duration::from_secs(1));
+        let gauge = Metric::gauge("gauge", 1.0);
+        let set = Metric::set("set", "foo");
+        let histogram = Metric::histogram("histogram", [1.0, 2.0, 3.0]);
+        let distribution = Metric::distribution("distribution", [1.0, 2.0, 3.0]);
+
+        let series_endpoint = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Series);
+        let sketches_endpoint = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Sketches);
+
+        assert!(series_endpoint.is_valid_input(&counter));
+        assert!(series_endpoint.is_valid_input(&rate));
+        assert!(series_endpoint.is_valid_input(&gauge));
+        assert!(series_endpoint.is_valid_input(&set));
+        assert!(!series_endpoint.is_valid_input(&histogram));
+        assert!(!series_endpoint.is_valid_input(&distribution));
+
+        assert!(!sketches_endpoint.is_valid_input(&counter));
+        assert!(!sketches_endpoint.is_valid_input(&rate));
+        assert!(!sketches_endpoint.is_valid_input(&gauge));
+        assert!(!sketches_endpoint.is_valid_input(&set));
+        assert!(sketches_endpoint.is_valid_input(&histogram));
+        assert!(sketches_endpoint.is_valid_input(&distribution));
     }
 }
