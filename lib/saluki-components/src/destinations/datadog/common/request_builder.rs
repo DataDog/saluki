@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::io;
 
 use http::{uri::PathAndQuery, HeaderValue, Method, Request, Uri};
