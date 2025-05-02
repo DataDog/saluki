@@ -135,8 +135,8 @@ impl<W: AsyncWrite> Compressor<W> {
         }
     }
 
-    /// Returns the appropriate HTTP header value for the compression scheme.
-    pub fn header_value(&self) -> HeaderValue {
+    /// Returns the content encoding for this compressor.
+    pub fn content_encoding(&self) -> HeaderValue {
         match self {
             Self::Zlib(_) => CONTENT_ENCODING_DEFLATE.clone(),
             Self::Zstd(_) => CONTENT_ENCODING_ZSTD.clone(),
