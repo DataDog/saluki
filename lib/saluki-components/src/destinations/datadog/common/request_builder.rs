@@ -15,9 +15,9 @@ use tracing::{debug, error, trace};
 pub(super) const SCRATCH_BUF_CAPACITY: usize = 8192;
 
 /// Encodes input events for a specific intake endpoint.
-pub trait EndpointEncoder {
+pub trait EndpointEncoder: std::fmt::Debug {
     /// The type of input events that this encoder can handle.
-    type Input;
+    type Input: std::fmt::Debug;
 
     /// The error type returned during encoding.
     type EncodeError: std::error::Error + 'static;
@@ -31,12 +31,21 @@ pub trait EndpointEncoder {
     /// Returns the maximum size of the uncompressed payload in bytes.
     fn uncompressed_size_limit(&self) -> usize;
 
+    /// Returns `true` if the given input is valid for this encoder.
+    ///
+    /// This method has a default implementation that always returns `true`, but can be overridden by specific encoders
+    /// to perform additional validation.
+    fn is_valid_input(&self, _input: &Self::Input) -> bool {
+        // By default, we assume all inputs are valid.
+        true
+    }
+
     /// Encodes the given input and writes it to the given buffer.
     ///
     /// # Errors
     ///
-    /// If the input is invalid, or cannot otherwise be encoded for some reason, an error will be returned.
-    fn encode(&self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), RequestBuilderError<Self::EncodeError>>;
+    /// If the input cannot otherwise be encoded for any reason, an error will be returned.
+    fn encode(&self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError>;
 
     /// Returns the URI of the endpoint that this encoder is associated with.
     fn endpoint_uri(&self) -> Uri;
@@ -55,12 +64,12 @@ pub trait EndpointEncoder {
 #[snafu(context(suffix(false)))]
 pub enum RequestBuilderError<E>
 where
-    E: std::error::Error + 'static,
+    E: EndpointEncoder,
 {
-    #[snafu(display("got invalid input '{}' for endpoint {:?}", input_type, endpoint))]
-    InvalidInput { input_type: &'static str, endpoint: Uri },
+    #[snafu(display("input was invalid for request builder: {:?}'", input))]
+    InvalidInput { input: E::Input },
     #[snafu(display("failed to encode/write payload: {}", source))]
-    FailedToEncode { source: E },
+    FailedToEncode { source: E::EncodeError },
     #[snafu(display(
         "request payload was too large after compressing ({} > {})",
         compressed_size_bytes,
@@ -78,7 +87,7 @@ where
 
 impl<E> RequestBuilderError<E>
 where
-    E: std::error::Error + 'static,
+    E: EndpointEncoder,
 {
     /// Returns `true` if the error is recoverable, allowing the request builder to continue to be used.
     pub fn is_recoverable(&self) -> bool {
@@ -96,10 +105,10 @@ where
 }
 
 /// Generic builder for creating HTTP requests with payloads consisting of encoded and compressed input events.
-pub struct RequestBuilder<O, E>
+pub struct RequestBuilder<E, O>
 where
-    O: ObjectPool<Item = BytesBuffer> + 'static,
     E: EndpointEncoder,
+    O: ObjectPool<Item = BytesBuffer> + 'static,
 {
     encoder: E,
     endpoint_uri: Uri,
@@ -115,17 +124,17 @@ where
     encoded_inputs: Vec<E::Input>,
 }
 
-impl<O, E> RequestBuilder<O, E>
+impl<E, O> RequestBuilder<E, O>
 where
-    O: ObjectPool<Item = BytesBuffer> + 'static,
     E: EndpointEncoder,
+    O: ObjectPool<Item = BytesBuffer> + 'static,
 {
     /// Creates a new `RequestBuilder` with the given buffer pool, encoder, and compression scheme.
     ///
     /// The buffer pool will be drawn upon for holding the compressed payload, which will be compressed using the given
     /// compression scheme. The encoder will be used to encode input events as well as help construct the resulting HTTP
     /// requests.
-    pub async fn new(buffer_pool: O, encoder: E, compression_scheme: CompressionScheme) -> Self {
+    pub async fn new(encoder: E, buffer_pool: O, compression_scheme: CompressionScheme) -> Self {
         let endpoint_uri = encoder.endpoint_uri();
         let compressed_len_limit = encoder.compressed_size_limit();
         let uncompressed_len_limit = encoder.uncompressed_size_limit();
@@ -178,7 +187,12 @@ where
     ///
     /// If the given input is not valid for the configured encoder, or if there is an error during compression of the
     /// encoded input, an error will be returned.
-    pub async fn encode(&mut self, input: E::Input) -> Result<Option<E::Input>, RequestBuilderError<E::EncodeError>> {
+    pub async fn encode(&mut self, input: E::Input) -> Result<Option<E::Input>, RequestBuilderError<E>> {
+        // Check if the input is valid for this encoder.
+        if !self.encoder.is_valid_input(&input) {
+            return Err(RequestBuilderError::InvalidInput { input });
+        }
+
         // Make sure we haven't hit the maximum number of inputs per payload.
         if self.encoded_inputs.len() >= self.max_inputs_per_payload {
             return Ok(Some(input));
@@ -189,7 +203,9 @@ where
         // If not, we return the original input, signaling to the caller that they need to flush the current request
         // payload before encoding additional inputs.
         self.scratch_buf.clear();
-        self.encoder.encode(&input, &mut self.scratch_buf)?;
+        self.encoder
+            .encode(&input, &mut self.scratch_buf)
+            .context(FailedToEncode)?;
 
         // If the input can't fit into the current request payload based on the uncompressed size limit, or isn't likely
         // to fit into the current request payload based on the estimated compressed size limit, then return it to the
@@ -240,9 +256,7 @@ where
     /// # Errors
     ///
     /// If an error occurs while finalizing the compressor or creating the request, an error will be returned.
-    pub async fn flush(
-        &mut self,
-    ) -> Vec<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E::EncodeError>>> {
+    pub async fn flush(&mut self) -> Vec<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         if self.uncompressed_len == 0 {
             return vec![];
         }
@@ -316,7 +330,7 @@ where
 
     async fn split_request(
         &mut self,
-    ) -> Vec<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E::EncodeError>>> {
+    ) -> Vec<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         // Nothing to do if we have no encoded inputs.
         let mut requests = Vec::new();
         if self.encoded_inputs.is_empty() {
@@ -363,7 +377,7 @@ where
 
     async fn try_split_request(
         &mut self, inputs: &[E::Input],
-    ) -> Option<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E::EncodeError>>> {
+    ) -> Option<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         let mut uncompressed_len = 0;
         let mut compressor = create_compressor(&self.buffer_pool, self.compression_scheme).await;
 
@@ -373,7 +387,11 @@ where
             // We skip any of the typical payload size checks here, because we already know we at least fit these
             // inputs into the previous attempted payload, so there's no reason to redo all of that here.
             self.scratch_buf.clear();
-            if let Err(e) = self.encoder.encode(input, &mut self.scratch_buf) {
+            if let Err(e) = self
+                .encoder
+                .encode(input, &mut self.scratch_buf)
+                .context(FailedToEncode)
+            {
                 return Some(Err(e));
             }
 
@@ -412,7 +430,7 @@ where
 
     async fn finalize(
         &self, mut compressor: Compressor<ChunkedBytesBuffer<O>>,
-    ) -> Result<FrozenChunkedBytesBuffer, RequestBuilderError<E::EncodeError>> {
+    ) -> Result<FrozenChunkedBytesBuffer, RequestBuilderError<E>> {
         compressor.shutdown().await.context(Io)?;
         let buffer = compressor.into_inner().freeze();
         let compressed_len = buffer.len();
@@ -428,7 +446,7 @@ where
 
     fn create_request(
         &self, buffer: FrozenChunkedBytesBuffer,
-    ) -> Result<Request<FrozenChunkedBytesBuffer>, RequestBuilderError<E::EncodeError>> {
+    ) -> Result<Request<FrozenChunkedBytesBuffer>, RequestBuilderError<E>> {
         Request::builder()
             .method(self.encoder.endpoint_method())
             // We specifically use `self.endpoint_uri` here instead of `self.encoder.endpoint_uri()` because the
@@ -462,12 +480,13 @@ mod tests {
         compression::CompressionScheme,
     };
 
-    use super::{EndpointEncoder, RequestBuilder, RequestBuilderError};
+    use super::{EndpointEncoder, RequestBuilder};
 
     fn create_request_builder_buffer_pool() -> FixedSizeObjectPool<BytesBuffer> {
         FixedSizeObjectPool::with_builder("test_pool", 8, || FixedSizeVec::with_capacity(64))
     }
 
+    #[derive(Debug)]
     struct TestEncoder {
         compressed_size_limit: usize,
         uncompressed_size_limit: usize,
@@ -500,7 +519,7 @@ mod tests {
             self.uncompressed_size_limit
         }
 
-        fn encode(&self, input: &String, buffer: &mut Vec<u8>) -> Result<(), RequestBuilderError<Self::EncodeError>> {
+        fn encode(&self, input: &String, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
             // We just write the input string to the buffer as-is.
             buffer.extend_from_slice(input.as_bytes());
             Ok(())
@@ -531,7 +550,7 @@ mod tests {
         // four inputs before trying to flush.
         let buffer_pool = create_request_builder_buffer_pool();
         let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit");
-        let mut request_builder = RequestBuilder::new(buffer_pool, encoder, CompressionScheme::zstd_default()).await;
+        let mut request_builder = RequestBuilder::new(encoder, buffer_pool, CompressionScheme::zstd_default()).await;
 
         // Encode the inputs, which should all fit into the request payload.
         let inputs = vec![input1, input2, input3, input4];
@@ -567,7 +586,7 @@ mod tests {
         // We should be able to encode three inputs without issue.
         let buffer_pool = create_request_builder_buffer_pool();
         let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit");
-        let mut request_builder = RequestBuilder::new(buffer_pool, encoder, CompressionScheme::zstd_default()).await;
+        let mut request_builder = RequestBuilder::new(encoder, buffer_pool, CompressionScheme::zstd_default()).await;
 
         assert_eq!(None, request_builder.encode(input1.clone()).await.unwrap());
         assert_eq!(None, request_builder.encode(input2.clone()).await.unwrap());
@@ -578,7 +597,7 @@ mod tests {
         // We should only be able to encode two of the inputs before we're signaled to flush.
         let buffer_pool = create_request_builder_buffer_pool();
         let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit");
-        let mut request_builder = RequestBuilder::new(buffer_pool, encoder, CompressionScheme::zstd_default()).await;
+        let mut request_builder = RequestBuilder::new(encoder, buffer_pool, CompressionScheme::zstd_default()).await;
         request_builder.with_max_inputs_per_payload(2);
 
         assert_eq!(None, request_builder.encode(input1).await.unwrap());
@@ -595,7 +614,7 @@ mod tests {
         // Create a request builder with a specific endpoint URI.
         let buffer_pool = create_request_builder_buffer_pool();
         let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit");
-        let mut request_builder = RequestBuilder::new(buffer_pool, encoder, CompressionScheme::zstd_default()).await;
+        let mut request_builder = RequestBuilder::new(encoder, buffer_pool, CompressionScheme::zstd_default()).await;
 
         // Override the endpoint URI.
         request_builder.with_endpoint_uri_override("/override");

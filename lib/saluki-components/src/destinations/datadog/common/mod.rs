@@ -3,7 +3,7 @@ pub mod endpoints;
 pub mod io;
 pub mod middleware;
 mod proxy;
-mod request_builder;
+pub mod request_builder;
 mod retry;
 pub mod telemetry;
 pub mod transaction;
