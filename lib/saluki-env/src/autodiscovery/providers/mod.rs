@@ -7,7 +7,7 @@ mod boxed;
 pub use self::boxed::BoxedAutodiscoveryProvider;
 
 mod local;
-pub use self::local::LocalAutoDiscoveryProvider;
+pub use self::local::LocalAutodiscoveryProvider;
 
 mod remote_agent;
-pub use self::remote_agent::RemoteAgentAutoDiscoveryProvider;
+pub use self::remote_agent::RemoteAgentAutodiscoveryProvider;

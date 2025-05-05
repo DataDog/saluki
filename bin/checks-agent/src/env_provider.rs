@@ -1,7 +1,7 @@
 use memory_accounting::ComponentRegistry;
 use saluki_config::GenericConfiguration;
 use saluki_env::autodiscovery::providers::{
-    BoxedAutodiscoveryProvider, LocalAutoDiscoveryProvider, RemoteAgentAutoDiscoveryProvider,
+    BoxedAutodiscoveryProvider, LocalAutodiscoveryProvider, RemoteAgentAutodiscoveryProvider,
 };
 use saluki_env::helpers::remote_agent::RemoteAgentClient;
 use saluki_env::host::providers::{BoxedHostProvider, FixedHostProvider, RemoteAgentHostProvider};
@@ -54,10 +54,10 @@ impl ChecksAgentEnvProvider {
 
         let autodiscovery_provider = if in_standalone_mode {
             debug!("Using local autodiscovery provider due to standalone mode.");
-            BoxedAutodiscoveryProvider::from_provider(LocalAutoDiscoveryProvider::new(vec!["dist"]))
+            BoxedAutodiscoveryProvider::from_provider(LocalAutodiscoveryProvider::new(vec!["dist"]))
         } else {
             let client = RemoteAgentClient::from_configuration(config).await?;
-            BoxedAutodiscoveryProvider::from_provider(RemoteAgentAutoDiscoveryProvider::new(client))
+            BoxedAutodiscoveryProvider::from_provider(RemoteAgentAutodiscoveryProvider::new(client))
         };
 
         Ok(Self {

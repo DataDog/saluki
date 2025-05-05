@@ -17,14 +17,14 @@ use crate::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider, Config};
 const BG_MONITOR_INTERVAL: u64 = 30;
 
 /// A local auto-discovery provider that uses the file system.
-pub struct LocalAutoDiscoveryProvider {
+pub struct LocalAutodiscoveryProvider {
     search_paths: Vec<PathBuf>,
     sender: Sender<AutodiscoveryEvent>,
     listener_init: OnceCell<()>,
 }
 
-impl LocalAutoDiscoveryProvider {
-    /// Creates a new `LocalAutoDiscoveryProvider` that will monitor the specified paths.
+impl LocalAutodiscoveryProvider {
+    /// Creates a new `LocalAutodiscoveryProvider` that will monitor the specified paths.
     pub fn new<P: AsRef<Path>>(paths: Vec<P>) -> Self {
         let search_paths: Vec<PathBuf> = paths
             .iter()
@@ -213,7 +213,7 @@ fn emit_event(sender: &Sender<AutodiscoveryEvent>, event: AutodiscoveryEvent) {
 }
 
 #[async_trait]
-impl AutodiscoveryProvider for LocalAutoDiscoveryProvider {
+impl AutodiscoveryProvider for LocalAutodiscoveryProvider {
     async fn subscribe(&self) -> Receiver<AutodiscoveryEvent> {
         self.listener_init
             .get_or_init(|| async {

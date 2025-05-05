@@ -10,14 +10,14 @@ use crate::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider};
 use crate::helpers::remote_agent::RemoteAgentClient;
 
 /// An autodiscovery provider that uses the Datadog Agent's internal gRPC API to receive autodiscovery updates.
-pub struct RemoteAgentAutoDiscoveryProvider {
+pub struct RemoteAgentAutodiscoveryProvider {
     client: RemoteAgentClient,
     sender: Sender<AutodiscoveryEvent>,
     listener_init: OnceCell<()>,
 }
 
-impl RemoteAgentAutoDiscoveryProvider {
-    /// Creates a new `RemoteAgentAutoDiscoveryProvider` that uses the remote client to receive autodiscovery updates.
+impl RemoteAgentAutodiscoveryProvider {
+    /// Creates a new `RemoteAgentAutodiscoveryProvider` that uses the remote client to receive autodiscovery updates.
     pub fn new(client: RemoteAgentClient) -> Self {
         let (sender, _) = broadcast::channel::<AutodiscoveryEvent>(super::AD_STREAM_CAPACITY);
 
@@ -69,7 +69,7 @@ impl RemoteAgentAutoDiscoveryProvider {
 }
 
 #[async_trait]
-impl AutodiscoveryProvider for RemoteAgentAutoDiscoveryProvider {
+impl AutodiscoveryProvider for RemoteAgentAutodiscoveryProvider {
     async fn subscribe(&self) -> Receiver<AutodiscoveryEvent> {
         self.listener_init
             .get_or_init(|| async {
