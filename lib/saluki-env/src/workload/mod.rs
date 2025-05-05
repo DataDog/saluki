@@ -8,7 +8,7 @@
 
 use saluki_context::{
     origin::{OriginKey, OriginTagCardinality, RawOrigin},
-    tags::SharedTagSet,
+    tags::TagVisitor,
 };
 
 mod aggregator;
@@ -33,13 +33,18 @@ mod stores;
 
 /// Provides information about workloads running on the process host.
 pub trait WorkloadProvider {
-    /// Gets the tags for an entity.
+    /// Visits the tags for an entity.
     ///
     /// Entities are workload resources running on the process host, such as containers or pods. The cardinality of the
     /// tags to get can be controlled via `cardinality`.
     ///
-    /// If no tags can be found for the entity, or at the given cardinality, `None` is returned.
-    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet>;
+    /// All tags found for the entity at the given cardinality will be passed to the `tag_visitor` in an unspecified
+    /// order. Tags may or may not be duplicated, so it is the caller's responsibility to handle duplicates.
+    ///
+    /// Returns `false` if the entity does not exist at all, `true` otherwise.
+    fn visit_tags_for_entity(
+        &self, entity_id: &EntityId, cardinality: OriginTagCardinality, tag_visitor: &mut dyn TagVisitor,
+    ) -> bool;
 
     /// Resolves an origin, mapping it to a unique, opaque key.
     ///
@@ -56,10 +61,12 @@ impl<T> WorkloadProvider for Option<T>
 where
     T: WorkloadProvider,
 {
-    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
+    fn visit_tags_for_entity(
+        &self, entity_id: &EntityId, cardinality: OriginTagCardinality, tag_visitor: &mut dyn TagVisitor,
+    ) -> bool {
         match self.as_ref() {
-            Some(provider) => provider.get_tags_for_entity(entity_id, cardinality),
-            None => None,
+            Some(provider) => provider.visit_tags_for_entity(entity_id, cardinality, tag_visitor),
+            None => false,
         }
     }
 

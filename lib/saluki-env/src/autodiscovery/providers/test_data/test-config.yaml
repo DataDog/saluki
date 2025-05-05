@@ -1,0 +1,13 @@
+## This file is used for testing the parse_config_file function
+## Simple test configuration
+
+init_config:
+  service: test-service
+
+instances:
+  - name: instance1
+    min_collection_interval: 10
+    url: http://example.com
+    tags:
+      - test:true
+      - env:test

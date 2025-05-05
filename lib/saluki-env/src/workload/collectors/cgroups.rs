@@ -123,7 +123,7 @@ fn traverse_cgroups(
         let entity_id = EntityId::ContainerInode(child_cgroup.inode());
         let ancestor_entity_id = EntityId::Container(child_cgroup.into_container_id());
 
-        let operation = MetadataOperation::link_ancestor(entity_id, ancestor_entity_id);
+        let operation = MetadataOperation::add_alias(entity_id, ancestor_entity_id);
         operations.push(operation);
     }
 

@@ -1,0 +1,10 @@
+## This file is used for testing the scan_and_emit_events function
+
+init_config:
+
+instances:
+  - server: localhost
+    port: 8080
+    tags:
+      - test:true
+      - env:test
