@@ -40,6 +40,8 @@ impl RemoteAgentAutodiscoveryProvider {
             loop {
                 let mut autodiscovery_stream = client.get_autodiscovery_stream();
 
+                debug!("Polling autodiscovery event stream.");
+
                 while let Some(result) = autodiscovery_stream.next().await {
                     match result {
                         Ok(response) => {
