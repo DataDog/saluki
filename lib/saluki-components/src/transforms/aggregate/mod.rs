@@ -754,25 +754,27 @@ where
             // Convert histogram to distribution
             if hist_config.copy_to_distribution() {
                 for (timestamp, histogram) in points.clone() {
-                    let ts = timestamp.unwrap().get();
-                    let mut ddsketch = DDSketch::default();
-                    for sample in histogram.samples() {
-                        ddsketch.insert_n(sample.value.into_inner(), sample.weight as u32);
+                    if timestamp.is_some() {
+                        let ts = timestamp.unwrap().get();
+                        let mut ddsketch = DDSketch::default();
+                        for sample in histogram.samples() {
+                            ddsketch.insert_n(sample.value.into_inner(), sample.weight as u32);
+                        }
+                        let sketch_points = SketchPoints::from((ts, ddsketch));
+                        let distribution_values = MetricValues::distribution(sketch_points);
+                        let adjusted_values = counter_values_to_rate(distribution_values, bucket_width);
+                        let metric_context = if !hist_config.copy_to_distribution_prefix().is_empty() {
+                            context.with_name(format!(
+                                "{}{}",
+                                hist_config.copy_to_distribution_prefix(),
+                                context.name()
+                            ))
+                        } else {
+                            context.clone()
+                        };
+                        let new_metric = Metric::from_parts(metric_context, adjusted_values, metadata.clone());
+                        forwarder.push(Event::Metric(new_metric)).await?;
                     }
-                    let sketch_points = SketchPoints::from((ts, ddsketch));
-                    let distribution_values = MetricValues::distribution(sketch_points);
-                    let adjusted_values = counter_values_to_rate(distribution_values, bucket_width);
-                    let metric_context = if !hist_config.copy_to_distribution_prefix().is_empty() {
-                        context.with_name(format!(
-                            "{}{}",
-                            hist_config.copy_to_distribution_prefix(),
-                            context.name()
-                        ))
-                    } else {
-                        context.clone()
-                    };
-                    let new_metric = Metric::from_parts(metric_context, adjusted_values, metadata.clone());
-                    forwarder.push(Event::Metric(new_metric)).await?;
                 }
             }
             // We collect our histogram points in their "summary" view, which sorts the underlying samples allowing
