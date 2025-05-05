@@ -192,10 +192,7 @@ impl FromIterator<(Option<NonZeroU64>, DDSketch)> for SketchPoints {
     fn from_iter<T: IntoIterator<Item = (Option<NonZeroU64>, DDSketch)>>(iter: T) -> Self {
         let mut sketch_points = SketchPoints(TimestampedValues::default());
         for (ts, sketch) in iter {
-            sketch_points
-                .0
-                .values
-                .push(TimestampedValue::from((ts.unwrap().get(), sketch)));
+            sketch_points.0.values.push(TimestampedValue::from((ts, sketch)));
         }
         sketch_points
     }

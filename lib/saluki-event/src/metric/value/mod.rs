@@ -49,6 +49,12 @@ impl From<(Option<NonZeroU64>, f64)> for TimestampedValue<OrderedFloat<f64>> {
     }
 }
 
+impl<T> From<(Option<NonZeroU64>, T)> for TimestampedValue<T> {
+    fn from((timestamp, value): (Option<NonZeroU64>, T)) -> Self {
+        Self { timestamp, value }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TimestampedValues<T, const N: usize> {
     values: SmallVec<[TimestampedValue<T>; N]>,
