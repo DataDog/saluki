@@ -78,8 +78,8 @@ impl LocalAutoDiscoveryProvider {
 
 #[derive(Debug, Deserialize)]
 struct CheckConfig {
-    init_config: serde_yaml::Mapping,
-    instances: Vec<serde_yaml::Mapping>,
+    init_config: HashMap<String, serde_yaml::Value>,
+    instances: Vec<HashMap<String, serde_yaml::Value>>,
 }
 
 /// Parse a YAML file into a Config object
@@ -93,12 +93,10 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
         }
     };
 
+    let canonicalized_path = fs::canonicalize(&path).await?;
+
     // Build config ID from the file path
-    let config_id = path
-        .canonicalize()?
-        .to_string_lossy()
-        .to_string()
-        .replace(['/', '\\'], "_");
+    let config_id = canonicalized_path.to_string_lossy().replace(['/', '\\'], "_");
 
     let instances: Vec<HashMap<MetaString, serde_yaml::Value>> = check_config
         .instances
@@ -106,8 +104,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
         .map(|instance| {
             let mut result = HashMap::new();
             for (key, value) in instance {
-                let key_str = key.as_str().unwrap_or("unknown").to_string();
-                result.insert(MetaString::from(key_str), value);
+                result.insert(key.into(), value);
             }
             result
         })
@@ -116,8 +113,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
     let init_config = {
         let mut result = HashMap::new();
         for (key, value) in check_config.init_config {
-            let key_str = key.as_str().unwrap_or("unknown").to_string();
-            result.insert(MetaString::from(key_str), value);
+            result.insert(key.into(), value);
         }
         result
     };
