@@ -2,9 +2,11 @@ use std::{
     io,
     marker::PhantomData,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use chrono::{DateTime, NaiveDateTime, Utc};
+use fs4::{available_space, total_space};
 use rand::Rng;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::{de::DeserializeOwned, Serialize};
@@ -43,11 +45,53 @@ impl PersistedEntry {
     }
 }
 
+pub trait DiskUsageRetriever {
+    fn total_space(&self) -> Result<u64, GenericError>;
+    fn available_space(&self) -> Result<u64, GenericError>;
+}
+
+pub struct DiskUsageRetrieverImpl {
+    root_path: PathBuf,
+}
+
+impl DiskUsageRetrieverImpl {
+    pub fn new(root_path: PathBuf) -> Self {
+        Self { root_path }
+    }
+}
+
+impl DiskUsageRetriever for DiskUsageRetrieverImpl {
+    fn total_space(&self) -> Result<u64, GenericError> {
+        total_space(&self.root_path)
+            .with_error_context(|| format!("Failed to get total space for '{}'.", self.root_path.display()))
+    }
+
+    fn available_space(&self) -> Result<u64, GenericError> {
+        available_space(&self.root_path)
+            .with_error_context(|| format!("Failed to get available space for '{}'.", self.root_path.display()))
+    }
+}
+
+#[derive(Clone)]
+pub struct DiskUsageRetrieverWrapper {
+    inner: Arc<dyn DiskUsageRetriever + Send + Sync>,
+}
+
+impl DiskUsageRetrieverWrapper {
+    pub fn new(disk_usage_retriever: Arc<dyn DiskUsageRetriever + Send + Sync>) -> Self {
+        Self {
+            inner: disk_usage_retriever,
+        }
+    }
+}
+
 pub struct PersistedQueue<T> {
     root_path: PathBuf,
     entries: Vec<PersistedEntry>,
     total_on_disk_bytes: u64,
     max_on_disk_bytes: u64,
+    storage_max_disk_ratio: f64,
+    disk_usage_retriever: DiskUsageRetrieverWrapper,
     _entry: PhantomData<T>,
 }
 
@@ -64,19 +108,25 @@ where
     ///
     /// If there is an error creating the root directory, or scanning it for existing entries, or deleting entries to
     /// shrink the directory to fit the given maximum size, an error is returned.
-    pub async fn from_root_path(root_path: PathBuf, max_on_disk_bytes: u64) -> Result<Self, GenericError> {
+    pub async fn from_root_path(
+        root_path: PathBuf, max_on_disk_bytes: u64, storage_max_disk_ratio: f64,
+        disk_usage_retriever: DiskUsageRetrieverWrapper,
+    ) -> Result<Self, GenericError> {
         // Make sure the directory exists first.
         create_directory_recursive(root_path.clone())
             .await
             .with_error_context(|| format!("Failed to create retry directory '{}'.", root_path.display()))?;
 
         let mut persisted_requests = Self {
-            root_path,
+            root_path: root_path.clone(),
             entries: Vec::new(),
             total_on_disk_bytes: 0,
             max_on_disk_bytes,
+            storage_max_disk_ratio,
+            disk_usage_retriever,
             _entry: PhantomData,
         };
+
         persisted_requests.refresh_entry_state().await?;
 
         Ok(persisted_requests)
@@ -209,7 +259,16 @@ where
     async fn remove_until_available_space(&mut self, required_bytes: u64) -> Result<PushResult, GenericError> {
         let mut push_result = PushResult::default();
 
-        while !self.entries.is_empty() && self.total_on_disk_bytes + required_bytes > self.max_on_disk_bytes {
+        let disk_usage_retriever = self.disk_usage_retriever.clone();
+        let storage_max_disk_ratio = self.storage_max_disk_ratio;
+        let max_on_disk_bytes = self.max_on_disk_bytes;
+
+        let limit = tokio::task::spawn_blocking(move || {
+            on_disk_bytes_limit(disk_usage_retriever, storage_max_disk_ratio, max_on_disk_bytes)
+        })
+        .await??;
+
+        while !self.entries.is_empty() && self.total_on_disk_bytes + required_bytes > limit {
             let entry = self.entries.remove(0);
 
             // Deserialize the entry, which gives us back the original event and removes the file from disk.
@@ -235,6 +294,23 @@ where
 
         Ok(push_result)
     }
+}
+
+/// Determines the total number of bytes that can be written to disk without causing the underlying volume to end up
+/// with more than `storage_max_disk_ratio` in terms of used space. The minimum of `max_on_disk_bytes` and the result
+/// of this calculation is returned.
+///
+/// # Errors
+///
+/// If there is an error while retrieving the total or available space of the underlying volume, an error is returned.
+fn on_disk_bytes_limit(
+    disk_usage_retriever: DiskUsageRetrieverWrapper, storage_max_disk_ratio: f64, max_on_disk_bytes: u64,
+) -> Result<u64, GenericError> {
+    let total_space = disk_usage_retriever.inner.total_space()? as f64;
+    let available_space = disk_usage_retriever.inner.available_space()? as f64;
+    let disk_reserved = total_space * (1.0 - storage_max_disk_ratio);
+    let available_disk_usage = (available_space - disk_reserved).ceil() as u64;
+    Ok(max_on_disk_bytes.min(available_disk_usage))
 }
 
 async fn try_deserialize_entry<T: DeserializeOwned>(entry: &PersistedEntry) -> Result<Option<T>, GenericError> {
@@ -357,6 +433,17 @@ mod tests {
         }
     }
 
+    struct MockDiskUsageRetriever {}
+
+    impl DiskUsageRetriever for MockDiskUsageRetriever {
+        fn total_space(&self) -> Result<u64, GenericError> {
+            Ok(100)
+        }
+        fn available_space(&self) -> Result<u64, GenericError> {
+            Ok(100)
+        }
+    }
+
     async fn files_in_dir(path: &Path) -> usize {
         let mut file_count = 0;
         let mut dir_reader = tokio::fs::read_dir(path).await.unwrap();
@@ -376,9 +463,14 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
         let root_path = temp_dir.path().to_path_buf();
 
-        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(root_path.clone(), 1024)
-            .await
-            .expect("should not fail to create persisted queue");
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(
+            root_path.clone(),
+            1024,
+            0.8,
+            DiskUsageRetrieverWrapper::new(Arc::new(DiskUsageRetrieverImpl::new(root_path.clone()))),
+        )
+        .await
+        .expect("should not fail to create persisted queue");
 
         // Ensure the directory is empty.
         assert_eq!(0, files_in_dir(&root_path).await);
@@ -410,9 +502,14 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
         let root_path = temp_dir.path().to_path_buf();
 
-        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(root_path.clone(), 1)
-            .await
-            .expect("should not fail to create persisted queue");
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(
+            root_path.clone(),
+            1,
+            0.8,
+            DiskUsageRetrieverWrapper::new(Arc::new(DiskUsageRetrieverImpl::new(root_path.clone()))),
+        )
+        .await
+        .expect("should not fail to create persisted queue");
 
         // Ensure the directory is empty.
         assert_eq!(0, files_in_dir(&root_path).await);
@@ -435,9 +532,14 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
         let root_path = temp_dir.path().to_path_buf();
 
-        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(root_path.clone(), 32)
-            .await
-            .expect("should not fail to create persisted queue");
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(
+            root_path.clone(),
+            32,
+            0.8,
+            DiskUsageRetrieverWrapper::new(Arc::new(DiskUsageRetrieverImpl::new(root_path.clone()))),
+        )
+        .await
+        .expect("should not fail to create persisted queue");
 
         // Ensure the directory is empty.
         assert_eq!(0, files_in_dir(&root_path).await);
@@ -449,6 +551,59 @@ mod tests {
         assert_eq!(0, push_result.events_dropped);
 
         // Push a second data entry, which should cause the first entry to be removed.
+        let push_result = persisted_queue
+            .push(data2.clone())
+            .await
+            .expect("should not fail to push data");
+        assert_eq!(1, files_in_dir(&root_path).await);
+        assert_eq!(1, push_result.items_dropped);
+        assert_eq!(1, push_result.events_dropped);
+
+        // Now pop the data back out and ensure it matches the second item we pushed -- indicating the first item was
+        // removed -- and that we've consumed it, leaving no files on disk.
+        let actual = persisted_queue
+            .pop()
+            .await
+            .expect("should not fail to pop data")
+            .expect("should not be empty");
+        assert_eq!(data2, actual);
+        assert_eq!(0, files_in_dir(&root_path).await);
+    }
+
+    #[tokio::test]
+    async fn storage_ratio_exceeded() {
+        let data1 = FakeData::random();
+        let data2 = FakeData::random();
+
+        // Create our temporary directory and point our persisted queue at it.
+        //
+        // Our queue is sized such that two entries can be persisted at a time.
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
+
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(
+            root_path.clone(),
+            80,
+            0.35,
+            DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {})),
+        )
+        .await
+        .expect("should not fail to create persisted queue");
+
+        // Ensure the directory is empty.
+        assert_eq!(0, files_in_dir(&root_path).await);
+
+        // The `storage_max_disk_ratio` is 0.35, and our `MockDiskUsageRetriever` returns 100 for both `total_space` and
+        // `available_space`, so `on_disk_bytes_limit()` returns min(80, 35) = 35.
+        //
+        // First entry: total_on_disk_bytes(0) + required_bytes(30) < on_disk_bytes_limit(35)
+        let push_result = persisted_queue.push(data1).await.expect("should not fail to push data");
+
+        assert_eq!(1, files_in_dir(&root_path).await);
+        assert_eq!(0, push_result.items_dropped);
+        assert_eq!(0, push_result.events_dropped);
+
+        // Second entry: total_on_disk_bytes(30) + required_bytes(30) > on_disk_bytes_limit(35) so the first entry is dropped.
         let push_result = persisted_queue
             .push(data2.clone())
             .await

@@ -130,6 +130,21 @@ pub struct EndpointConfiguration {
 }
 
 impl EndpointConfiguration {
+    /// Returns the site to send metrics to.
+    pub fn site(&self) -> &str {
+        &self.site
+    }
+
+    /// Returns the full URL base to send metrics to, if set.
+    pub fn dd_url(&self) -> Option<&str> {
+        self.dd_url.as_deref()
+    }
+
+    /// Sets the full URL base to send metrics to.
+    pub fn set_dd_url(&mut self, url: String) {
+        self.dd_url = Some(url);
+    }
+
     /// Builds the resolved endpoints from the endpoint configuration.
     ///
     /// This will generate a `ResolvedEndpoint` for each unique endpoint/API key pair, which includes the "primary"

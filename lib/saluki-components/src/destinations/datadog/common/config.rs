@@ -87,6 +87,11 @@ impl ForwarderConfiguration {
         &self.endpoint
     }
 
+    /// Returns a mutable reference to the endpoint configuration.
+    pub fn endpoint_mut(&mut self) -> &mut EndpointConfiguration {
+        &mut self.endpoint
+    }
+
     /// Returns a reference to the retry configuration.
     pub fn retry(&self) -> &RetryConfiguration {
         &self.retry

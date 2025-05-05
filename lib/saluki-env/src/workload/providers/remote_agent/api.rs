@@ -14,12 +14,20 @@ use serde::Serialize;
 use crate::workload::{entity::HighestPrecedenceEntityIdRef, stores::TagStoreQuerier, EntityId};
 
 #[derive(Serialize)]
+struct EntityTags {
+    low_cardinality: SharedTagSet,
+    orchestrator_cardinality: SharedTagSet,
+    high_cardinality: SharedTagSet,
+}
+
+#[derive(Serialize)]
 struct EntityInformation<'a> {
     entity_id: &'a EntityId,
-    ancestors: Vec<&'a EntityId>,
-    low_cardinality_tags: SharedTagSet,
-    orchestrator_cardinality_tags: SharedTagSet,
-    high_cardinality_tags: SharedTagSet,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    alias: Option<&'a EntityId>,
+
+    tags: EntityTags,
 }
 
 /// State used for the Remote Agent workload API handler.
@@ -31,7 +39,7 @@ pub struct RemoteAgentWorkloadState {
 impl RemoteAgentWorkloadState {
     fn get_tags_dump_response(&self) -> String {
         let mut active_entities = FastHashSet::default();
-        let mut entity_mappings = FastHashMap::default();
+        let mut entity_aliases = FastHashMap::default();
         let mut entity_info_map = FastHashMap::default();
         let empty_tagset = TagSet::default().into_shared();
 
@@ -41,44 +49,34 @@ impl RemoteAgentWorkloadState {
             active_entities.insert(entity_id.clone());
         });
 
-        self.tag_querier.visit_entity_mappings(|entity_id, parent_id| {
+        self.tag_querier.visit_entity_aliases(|entity_id, target_entity_id| {
             active_entities.insert(entity_id.clone());
-            entity_mappings.insert(entity_id.clone(), parent_id.clone());
+            entity_aliases.insert(entity_id.clone(), target_entity_id.clone());
         });
 
-        // For each entity, build its ancestry chain and collect all of the relevant tags.
+        // For each entity, build its information.
         for entity_id in active_entities.iter() {
-            let mut ancestors = Vec::new();
-
-            let mut current_entity = entity_id;
-            while let Some(parent) = entity_mappings.get(current_entity) {
-                ancestors.insert(0, parent);
-                current_entity = parent;
-            }
-
+            let alias = entity_aliases.get(entity_id);
             let low_cardinality_tags = self
                 .tag_querier
-                .get_entity_tags(entity_id, OriginTagCardinality::Low)
+                .get_exact_entity_tags(entity_id, OriginTagCardinality::Low)
                 .unwrap_or_else(|| empty_tagset.clone());
             let orchestrator_cardinality_tags = self
                 .tag_querier
-                .get_entity_tags(entity_id, OriginTagCardinality::Orchestrator)
+                .get_exact_entity_tags(entity_id, OriginTagCardinality::Orchestrator)
                 .unwrap_or_else(|| empty_tagset.clone());
             let high_cardinality_tags = self
                 .tag_querier
-                .get_entity_tags(entity_id, OriginTagCardinality::High)
+                .get_exact_entity_tags(entity_id, OriginTagCardinality::High)
                 .unwrap_or_else(|| empty_tagset.clone());
 
-            entity_info_map.insert(
-                entity_id,
-                EntityInformation {
-                    entity_id,
-                    ancestors,
-                    low_cardinality_tags,
-                    orchestrator_cardinality_tags,
-                    high_cardinality_tags,
-                },
-            );
+            let tags = EntityTags {
+                low_cardinality: low_cardinality_tags,
+                orchestrator_cardinality: orchestrator_cardinality_tags,
+                high_cardinality: high_cardinality_tags,
+            };
+
+            entity_info_map.insert(entity_id, EntityInformation { entity_id, alias, tags });
         }
 
         // Collapse the entity information map into sorted vector of entity information, which is sorted in precedence

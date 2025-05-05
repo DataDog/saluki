@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, error::Error as _, sync::Arc, time::Duration};
+use std::{collections::VecDeque, error::Error as _, path::PathBuf, sync::Arc, time::Duration};
 
 use futures::FutureExt as _;
 use http::{Request, Uri};
@@ -14,7 +14,7 @@ use saluki_io::{
         client::http::HttpClient,
         util::{
             middleware::{RetryCircuitBreakerError, RetryCircuitBreakerLayer},
-            retry::{PushResult, RetryQueue, Retryable},
+            retry::{DiskUsageRetrieverImpl, PushResult, RetryQueue, Retryable},
         },
     },
 };
@@ -254,7 +254,25 @@ async fn run_endpoint_io_loop<S, B>(
         ))
         .service(service.map_err(|e| e.into()));
 
-    let retry_queue = RetryQueue::new(endpoint_url.clone(), config.retry().queue_max_size_bytes());
+    let mut retry_queue = RetryQueue::new(endpoint_url.clone(), config.retry().queue_max_size_bytes());
+
+    // If the storage size is set, enable disk persistence for the retry queue.
+    if config.retry().storage_max_size_bytes() > 0 {
+        retry_queue = retry_queue
+            .with_disk_persistence(
+                PathBuf::from(config.retry().storage_path()),
+                config.retry().storage_max_size_bytes(),
+                config.retry().storage_max_disk_ratio(),
+                Arc::new(DiskUsageRetrieverImpl::new(PathBuf::from(
+                    config.retry().storage_path(),
+                ))),
+            )
+            .await
+            .unwrap_or_else(|e| {
+                error!(endpoint_url, error = %e, "Failed to initialize disk persistence for retry queue. Transactions will not be persisted.");
+                RetryQueue::new(endpoint_url.clone(), config.retry().queue_max_size_bytes())
+            });
+    }
     let mut pending_txns = PendingTransactions::new(config.endpoint_buffer_size(), retry_queue, txnq_telemetry);
 
     let mut in_flight = JoinSet::new();

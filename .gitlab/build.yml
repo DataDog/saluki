@@ -202,3 +202,25 @@ upload-adp-release-symbols-fips:
     - build-adp-image-release-fips
   variables:
     IMAGE_TAG: ${ADP_RELEASE_IMAGE_TAG_FIPS}
+
+display-image-tags:
+  extends: [.build-common-variables]
+  stage: build
+  needs:
+    - build-adp-image
+    - build-adp-image-fips
+    - build-converged-adp-image
+    - build-converged-adp-image-fips
+    - publish-internal-adp-image
+  script:
+    - |-
+      cat <<EOF
+      # Image Tags
+
+      ## Barebones (ADP only, not suitable for deployments)
+      Release (w/ debuginfo, non-FIPS): ${ADP_DEBUG_IMAGE_TAG}
+      Release (w/ debuginfo, FIPS):     ${ADP_DEBUG_IMAGE_TAG_FIPS}
+
+      ## Internal (ADP only, baked with necessary tools for internal deployments)
+      Release (w/ debuginfo, non-FIPS): ${IMAGE_REGISTRY}/agent-data-plane:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
+      EOF

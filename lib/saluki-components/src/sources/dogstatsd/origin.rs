@@ -113,17 +113,13 @@ impl DogStatsDOriginTagResolver {
             // If we discovered an entity ID via origin detection, and no client-provided entity ID was provided (or it was,
             // but entity ID precedence is disabled), then try to get tags for the detected entity ID.
             if let Some(origin_pid) = maybe_origin_pid {
-                if maybe_entity_id.is_none() || !self.config.entity_id_precedence {
-                    match self.workload_provider.get_tags_for_entity(origin_pid, tag_cardinality) {
-                        Some(tags) => {
-                            trace!(entity_id = ?origin_pid, tags_len = tags.len(), "Found tags for entity.");
-
-                            for tag in &tags {
-                                visitor.visit_tag(tag);
-                            }
-                        }
-                        None => trace!(entity_id = ?origin_pid, "No tags found for entity."),
-                    }
+                let should_query = maybe_entity_id.is_none() || !self.config.entity_id_precedence;
+                if should_query
+                    && !self
+                        .workload_provider
+                        .visit_tags_for_entity(origin_pid, tag_cardinality, visitor)
+                {
+                    trace!(entity_id = ?origin_pid, cardinality = tag_cardinality.as_str(), "No tags found for entity.");
                 }
             }
 
@@ -131,15 +127,15 @@ impl DogStatsDOriginTagResolver {
             // client-provided entity ID takes precedence over the container ID.
             let maybe_client_entity_id = maybe_entity_id.or(maybe_container_id);
             if let Some(entity_id) = maybe_client_entity_id {
-                match self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
-                    Some(tags) => {
-                        trace!(?entity_id, tags_len = tags.len(), "Found tags for entity.");
-
-                        for tag in &tags {
-                            visitor.visit_tag(tag);
-                        }
-                    }
-                    None => trace!(?entity_id, "No tags found for entity."),
+                if !self
+                    .workload_provider
+                    .visit_tags_for_entity(entity_id, tag_cardinality, visitor)
+                {
+                    trace!(
+                        ?entity_id,
+                        cardinality = tag_cardinality.as_str(),
+                        "No tags found for entity."
+                    );
                 }
             }
         } else {
@@ -151,6 +147,14 @@ impl DogStatsDOriginTagResolver {
             // Try all possible detected entity IDs, enriching in the following order of precedence: origin PID,
             // local container ID, client-provided entity ID, External Data-based pod ID, and External Data-based
             // container ID.
+            //
+            // TODO: We should be able to skip querying for the entity tags of a process ID entity if, and only if, we
+            // have either a container ID provided by the client directly, or a container ID provided through External
+            // Data.
+            //
+            // Since we know that process IDs only get mapped to container IDs and never have tags of their own, there's
+            // no reason to go through querying for the tags of the process ID entity when we would have theoretically
+            // already visited those tags through a container ID entity.
             let maybe_external_data_pod_uid = origin.resolved_external_data().map(|red| red.pod_entity_id());
             let maybe_external_data_container_id = origin.resolved_external_data().map(|red| red.container_entity_id());
             let maybe_entity_ids = &[
@@ -161,15 +165,15 @@ impl DogStatsDOriginTagResolver {
                 maybe_external_data_container_id,
             ];
             for entity_id in maybe_entity_ids.iter().flatten() {
-                match self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
-                    Some(tags) => {
-                        trace!(?entity_id, tags_len = tags.len(), "Found tags for entity.");
-
-                        for tag in &tags {
-                            visitor.visit_tag(tag);
-                        }
-                    }
-                    None => trace!(?entity_id, "No tags found for entity."),
+                if !self
+                    .workload_provider
+                    .visit_tags_for_entity(entity_id, tag_cardinality, visitor)
+                {
+                    trace!(
+                        ?entity_id,
+                        cardinality = tag_cardinality.as_str(),
+                        "No tags found for entity."
+                    );
                 }
             }
         }
