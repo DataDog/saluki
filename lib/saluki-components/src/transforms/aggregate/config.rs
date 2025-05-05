@@ -90,10 +90,18 @@ struct RawHistogramConfiguration {
     /// `5percentile`.
     histogram_percentiles: Vec<String>,
 
-    /// Whether to copy the histogram to the distribution metric.
+    /// Whether to copy histograms to distributions.
+    ///
+    /// Emits a copy of each histogram as a distribution, potentially with
+    /// a prefixed version of the histogram's name, based on the value of
+    /// `copy_histogram_to_distribution_prefix`.
+    ///
+    /// Defaults to `false`.
     histogram_copy_to_distribution: bool,
 
     /// Prefix to append to the name of distributions copied from histograms.
+    ///
+    /// Defaults to an empty string (no prefixing).
     histogram_copy_to_distribution_prefix: String,
 }
 
