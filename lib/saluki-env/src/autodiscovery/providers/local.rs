@@ -165,14 +165,14 @@ async fn scan_and_emit_events(
                                 debug!("New configuration found: {}", config_id);
 
                                 let event = AutodiscoveryEvent::Schedule { config };
-                                emit_event(sender, event);
+                                let _ = sender.send(event);
                                 known_configs.insert(config_id.clone());
                             } else {
                                 // Config ID exists, but the content might have changed
                                 debug!("Configuration updated: {}", config_id);
 
                                 let event = AutodiscoveryEvent::Schedule { config };
-                                emit_event(sender, event);
+                                let _ = sender.send(event);
                             }
                         }
                         Err(e) => {
@@ -197,19 +197,10 @@ async fn scan_and_emit_events(
 
         // Create an unschedule Config event
         let event = AutodiscoveryEvent::Unscheduled { config_id };
-        emit_event(sender, event);
+        let _ = sender.send(event);
     }
 
     Ok(())
-}
-
-fn emit_event(sender: &Sender<AutodiscoveryEvent>, event: AutodiscoveryEvent) {
-    match sender.send(event) {
-        Ok(_) => (),
-        Err(e) => {
-            warn!("Failed to send autodiscovery event: {}", e);
-        }
-    }
 }
 
 #[async_trait]
