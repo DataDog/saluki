@@ -93,7 +93,7 @@ struct RawHistogramConfiguration {
     /// Whether to copy the histogram to the distribution metric.
     histogram_copy_to_distribution: bool,
 
-    /// Prefix to append to the distribution metric name.
+    /// Prefix to append to the name of distributions copied from histograms.
     histogram_copy_to_distribution_prefix: String,
 }
 
@@ -133,12 +133,12 @@ impl HistogramConfiguration {
         &self.statistics
     }
 
-    /// Returns `true` if the histogram should be copied to the distribution metric.
+    /// Returns `true` if histograms should be copied to distributions.
     pub fn copy_to_distribution(&self) -> bool {
         self.copy_to_distribution
     }
 
-    /// Returns the prefix to append to the distribution metric name.
+    /// Returns the prefix to append to the distributions copied from histograms.
     pub fn copy_to_distribution_prefix(&self) -> &str {
         &self.copy_to_distribution_prefix
     }

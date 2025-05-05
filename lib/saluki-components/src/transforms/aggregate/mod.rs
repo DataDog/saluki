@@ -4,6 +4,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use ddsketch_agent::DDSketch;
 use hashbrown::{hash_map::Entry, HashMap};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::task::spawn_traced_named;
@@ -750,6 +751,30 @@ where
         // If we're dealing with a histogram, we calculate a configured set of aggregates/percentiles from it, and emit
         // them as individual metrics.
         MetricValues::Histogram(ref mut points) => {
+            // Convert histogram to distribution
+            if hist_config.copy_to_distribution() {
+                for (timestamp, histogram) in points.clone() {
+                    let ts = timestamp.unwrap().get();
+                    let mut ddsketch = DDSketch::default();
+                    for sample in histogram.samples() {
+                        ddsketch.insert_n(sample.value.into_inner(), sample.weight as u32);
+                    }
+                    let sketch_points = SketchPoints::from((ts, ddsketch));
+                    let distribution_values = MetricValues::distribution(sketch_points);
+                    let adjusted_values = counter_values_to_rate(distribution_values, bucket_width);
+                    let metric_context = if !hist_config.copy_to_distribution_prefix().is_empty() {
+                        context.with_name(format!(
+                            "{}{}",
+                            hist_config.copy_to_distribution_prefix(),
+                            context.name()
+                        ))
+                    } else {
+                        context.clone()
+                    };
+                    let new_metric = Metric::from_parts(metric_context, adjusted_values, metadata.clone());
+                    forwarder.push(Event::Metric(new_metric)).await?;
+                }
+            }
             // We collect our histogram points in their "summary" view, which sorts the underlying samples allowing
             // proper quantile queries to be answered, hence our "sorted" points. We do it this way because rather than
             // sort every time we insert, or cloning the points, we only sort when a summary view is constructed, which
@@ -773,17 +798,6 @@ where
 
                 let new_context = context.with_name(format!("{}.{}", context.name(), statistic.suffix()));
                 let new_metric = Metric::from_parts(new_context, new_values, metadata.clone());
-                forwarder.push(Event::Metric(new_metric)).await?;
-            }
-
-            if hist_config.copy_to_distribution() {
-                let new_context = context.with_name(format!(
-                    "{}{}",
-                    hist_config.copy_to_distribution_prefix(),
-                    context.name()
-                ));
-
-                let new_metric = Metric::from_parts(new_context, values, metadata.clone());
                 forwarder.push(Event::Metric(new_metric)).await?;
             }
 
@@ -1310,6 +1324,9 @@ mod tests {
         let sum_metric = Metric::gauge("metric1.sum", 0.0);
         let p50_metric = Metric::gauge("metric1.p50", 0.0);
 
+        let values = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let expected_distribution = Metric::distribution("dist_prefix.metric1", &values[..]);
+        assert_flushed_distribution_metric!(expected_distribution, &flushed_metrics[0], [bucket_ts(1) => &values[..]]);
         // We use a less strict error ratio (how much the expected vs actual) for the percentile check, as we generally
         // expect the value to be somewhat off the exact value due to the lossy nature of `DDSketch`.
         assert_flushed_scalar_metric!(count_metric, &flushed_metrics[1], [bucket_ts(1) => 5.0]);
