@@ -8,6 +8,7 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
+pub mod autodiscovery;
 pub mod features;
 pub mod helpers;
 pub mod host;
@@ -16,6 +17,7 @@ pub mod workload;
 
 use std::sync::Arc;
 
+pub use self::autodiscovery::AutodiscoveryProvider;
 pub use self::host::HostProvider;
 pub use self::workload::WorkloadProvider;
 
