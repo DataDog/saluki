@@ -1310,8 +1310,8 @@ mod tests {
         );
         let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, hist_config, Telemetry::noop());
 
-        let values = [1.0, 2.0, 3.0, 4.0, 5.0];
         // Create one multi-value histogram and insert it.
+        let values = [1.0, 2.0, 3.0, 4.0, 5.0];
         let input_metric = Metric::histogram("metric1", values);
         assert!(state.insert(insert_ts(1), input_metric.clone()));
 
@@ -1325,11 +1325,11 @@ mod tests {
         let count_metric = Metric::rate("metric1.count", 0.0, Duration::from_secs(BUCKET_WIDTH_SECS));
         let sum_metric = Metric::gauge("metric1.sum", 0.0);
         let p50_metric = Metric::gauge("metric1.p50", 0.0);
-
         let expected_distribution = Metric::distribution("dist_prefix.metric1", &values[..]);
-        assert_flushed_distribution_metric!(expected_distribution, &flushed_metrics[0], [bucket_ts(1) => &values[..]]);
+
         // We use a less strict error ratio (how much the expected vs actual) for the percentile check, as we generally
         // expect the value to be somewhat off the exact value due to the lossy nature of `DDSketch`.
+        assert_flushed_distribution_metric!(expected_distribution, &flushed_metrics[0], [bucket_ts(1) => &values[..]]);
         assert_flushed_scalar_metric!(count_metric, &flushed_metrics[1], [bucket_ts(1) => 5.0]);
         assert_flushed_scalar_metric!(p50_metric, &flushed_metrics[2], [bucket_ts(1) => 3.0], error_ratio => 0.0025);
         assert_flushed_scalar_metric!(sum_metric, &flushed_metrics[3], [bucket_ts(1) => 15.0]);
