@@ -165,12 +165,12 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
 
         let series_encoder = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Series);
         let mut series_request_builder =
-            RequestBuilder::new(series_encoder, rb_buffer_pool.clone(), compression_scheme).await;
+            RequestBuilder::new(series_encoder, rb_buffer_pool.clone(), compression_scheme).await?;
         series_request_builder.with_max_inputs_per_payload(self.max_metrics_per_payload);
 
         let sketches_encoder = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Sketches);
         let mut sketches_request_builder =
-            RequestBuilder::new(sketches_encoder, rb_buffer_pool.clone(), compression_scheme).await;
+            RequestBuilder::new(sketches_encoder, rb_buffer_pool.clone(), compression_scheme).await?;
         sketches_request_builder.with_max_inputs_per_payload(self.max_metrics_per_payload);
 
         if let Some(override_path) = self.endpoint_path_override {
