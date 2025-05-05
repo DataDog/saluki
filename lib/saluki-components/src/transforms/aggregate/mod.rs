@@ -4,6 +4,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use ddsketch_agent::DDSketch;
 use hashbrown::{hash_map::Entry, HashMap};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::task::spawn_traced_named;
@@ -750,6 +751,31 @@ where
         // If we're dealing with a histogram, we calculate a configured set of aggregates/percentiles from it, and emit
         // them as individual metrics.
         MetricValues::Histogram(ref mut points) => {
+            // Convert histogram to distribution
+            if hist_config.copy_to_distribution() {
+                let sketch_points = points
+                    .into_iter()
+                    .map(|(ts, hist)| {
+                        let mut sketch = DDSketch::default();
+                        for sample in hist.samples() {
+                            sketch.insert_n(sample.value.into_inner(), sample.weight as u32);
+                        }
+                        (ts, sketch)
+                    })
+                    .collect::<SketchPoints>();
+                let distribution_values = MetricValues::distribution(sketch_points);
+                let metric_context = if !hist_config.copy_to_distribution_prefix().is_empty() {
+                    context.with_name(format!(
+                        "{}{}",
+                        hist_config.copy_to_distribution_prefix(),
+                        context.name()
+                    ))
+                } else {
+                    context.clone()
+                };
+                let new_metric = Metric::from_parts(metric_context, distribution_values, metadata.clone());
+                forwarder.push(Event::Metric(new_metric)).await?;
+            }
             // We collect our histogram points in their "summary" view, which sorts the underlying samples allowing
             // proper quantile queries to be answered, hence our "sorted" points. We do it this way because rather than
             // sort every time we insert, or cloning the points, we only sort when a summary view is constructed, which
@@ -1208,14 +1234,18 @@ mod tests {
     #[tokio::test]
     async fn histogram_statistics() {
         // We're testing that we properly emit individual metrics (min, max, sum, etc) for a histogram.
-        let hist_config = HistogramConfiguration::from_statistics(&[
-            HistogramStatistic::Count,
-            HistogramStatistic::Sum,
-            HistogramStatistic::Percentile {
-                q: 0.5,
-                suffix: "p50".into(),
-            },
-        ]);
+        let hist_config = HistogramConfiguration::from_statistics(
+            &[
+                HistogramStatistic::Count,
+                HistogramStatistic::Sum,
+                HistogramStatistic::Percentile {
+                    q: 0.5,
+                    suffix: "p50".into(),
+                },
+            ],
+            false,
+            "".into(),
+        );
         let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, hist_config, Telemetry::noop());
 
         // Create one multi-value histogram and insert it.
@@ -1262,6 +1292,47 @@ mod tests {
         assert_eq!(flushed_metrics.len(), 1);
 
         assert_flushed_distribution_metric!(&input_metric, &flushed_metrics[0], [bucket_ts(1) => &values[..]]);
+    }
+
+    #[tokio::test]
+    async fn histogram_copy_to_distribution() {
+        let hist_config = HistogramConfiguration::from_statistics(
+            &[
+                HistogramStatistic::Count,
+                HistogramStatistic::Sum,
+                HistogramStatistic::Percentile {
+                    q: 0.5,
+                    suffix: "p50".into(),
+                },
+            ],
+            true,
+            "dist_prefix.".into(),
+        );
+        let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, hist_config, Telemetry::noop());
+
+        // Create one multi-value histogram and insert it.
+        let values = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let input_metric = Metric::histogram("metric1", values);
+        assert!(state.insert(insert_ts(1), input_metric.clone()));
+
+        // Flush the aggregation state, and observe that we've emitted all of the configured distribution statistics in
+        // the form of three metrics: count, sum, and p50 as well as the additional metric from copying the histogram.
+        let flushed_metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
+        assert_eq!(flushed_metrics.len(), 4);
+
+        // Create versions of the metric for each of the statistics we're expecting to emit. The values themselves don't
+        // matter here, but we do need a `Metric` for it to compare the context to.
+        let count_metric = Metric::rate("metric1.count", 0.0, Duration::from_secs(BUCKET_WIDTH_SECS));
+        let sum_metric = Metric::gauge("metric1.sum", 0.0);
+        let p50_metric = Metric::gauge("metric1.p50", 0.0);
+        let expected_distribution = Metric::distribution("dist_prefix.metric1", &values[..]);
+
+        // We use a less strict error ratio (how much the expected vs actual) for the percentile check, as we generally
+        // expect the value to be somewhat off the exact value due to the lossy nature of `DDSketch`.
+        assert_flushed_distribution_metric!(expected_distribution, &flushed_metrics[0], [bucket_ts(1) => &values[..]]);
+        assert_flushed_scalar_metric!(count_metric, &flushed_metrics[1], [bucket_ts(1) => 5.0]);
+        assert_flushed_scalar_metric!(p50_metric, &flushed_metrics[2], [bucket_ts(1) => 3.0], error_ratio => 0.0025);
+        assert_flushed_scalar_metric!(sum_metric, &flushed_metrics[3], [bucket_ts(1) => 15.0]);
     }
 
     #[tokio::test]
