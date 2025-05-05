@@ -1311,8 +1311,9 @@ mod tests {
         );
         let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, hist_config, Telemetry::noop());
 
+        let values = [1.0, 2.0, 3.0, 4.0, 5.0];
         // Create one multi-value histogram and insert it.
-        let input_metric = Metric::histogram("metric1", [1.0, 2.0, 3.0, 4.0, 5.0]);
+        let input_metric = Metric::histogram("metric1", values);
         assert!(state.insert(insert_ts(1), input_metric.clone()));
 
         // Flush the aggregation state, and observe that we've emitted all of the configured distribution statistics in
@@ -1326,7 +1327,6 @@ mod tests {
         let sum_metric = Metric::gauge("metric1.sum", 0.0);
         let p50_metric = Metric::gauge("metric1.p50", 0.0);
 
-        let values = [1.0, 2.0, 3.0, 4.0, 5.0];
         let expected_distribution = Metric::distribution("dist_prefix.metric1", &values[..]);
         assert_flushed_distribution_metric!(expected_distribution, &flushed_metrics[0], [bucket_ts(1) => &values[..]]);
         // We use a less strict error ratio (how much the expected vs actual) for the percentile check, as we generally
