@@ -150,6 +150,7 @@ where
     compressor: Compressor<ChunkedBytesBuffer<O>>,
     compression_estimator: CompressionEstimator,
     uncompressed_len: usize,
+    uncompressed_len_prefix_suffix: usize,
     compressed_len_limit: usize,
     uncompressed_len_limit: usize,
     max_inputs_per_payload: usize,
@@ -178,7 +179,8 @@ where
         // able to at least fit that.
         let prefix_len = encoder.get_payload_prefix().map_or(0, |p| p.len());
         let suffix_len = encoder.get_payload_suffix().map_or(0, |s| s.len());
-        if uncompressed_len_limit < (prefix_len + suffix_len) + 1 {
+        let uncompressed_len_prefix_suffix = prefix_len + suffix_len;
+        if uncompressed_len_limit < uncompressed_len_prefix_suffix + 1 {
             return Err(RequestBuilderError::UncompressedSizeLimitTooLow {
                 uncompressed_size_limit: uncompressed_len_limit,
                 prefix_len,
@@ -197,6 +199,7 @@ where
             compressor,
             compression_estimator: CompressionEstimator::default(),
             uncompressed_len: 0,
+            uncompressed_len_prefix_suffix,
             compressed_len_limit,
             uncompressed_len_limit,
             max_inputs_per_payload: usize::MAX,
@@ -230,26 +233,47 @@ where
         &self.encoder
     }
 
+    fn uncompressed_len(&self) -> usize {
+        // We specifically track the payload prefix/suffix length separately from the uncompressed length, so that we
+        // can account for it when encoding: we wouldn't have written the suffix yet, but we must account for the suffix
+        // to know if the finalized payload will have an uncompressed size that exceeds the limit or not.
+        self.uncompressed_len + self.uncompressed_len_prefix_suffix
+    }
+
     async fn prepare_for_write(&mut self) -> Result<(), io::Error> {
         // If we haven't written any inputs yet, and we have a payload prefix, we need to write that.
-        if self.encoded_inputs.is_empty() {
+        if self.uncompressed_len == 0 {
             if let Some(prefix) = self.encoder.get_payload_prefix() {
-                self.write_to_compressor(prefix).await?;
+                self.scratch_buf.clear();
+                self.scratch_buf.extend_from_slice(prefix);
+
+                // Don't update `self.uncompressed_len` since we account for the payload prefix/suffix length through `self.uncompressed_len_prefix_suffix`.
+                self.flush_scratch_buffer(false).await?;
             }
         } else {
             // Similarly, if we've already written inputs, and we have an input separator, we need to write that.
             if let Some(separator) = self.encoder.get_input_separator() {
-                self.write_to_compressor(separator).await?;
+                self.scratch_buf.clear();
+                self.scratch_buf.extend_from_slice(separator);
+                self.flush_scratch_buffer(true).await?;
             }
         }
 
         Ok(())
     }
 
-    async fn write_to_compressor(&mut self, buf: &[u8]) -> Result<(), io::Error> {
+    /// Flushes the scratch buffer to the compressor.
+    ///
+    /// If `update_compressed_len` is `true`, the uncompressed length will be updated to reflect the size of the data
+    /// written.
+    async fn flush_scratch_buffer(&mut self, update_uncompressed_len: bool) -> Result<(), io::Error> {
+        let buf = self.scratch_buf.as_slice();
         self.compressor.write_all(buf).await?;
         self.compression_estimator.track_write(&self.compressor, buf.len());
-        self.uncompressed_len += buf.len();
+
+        if update_uncompressed_len {
+            self.uncompressed_len += buf.len();
+        }
 
         Ok(())
     }
@@ -274,6 +298,29 @@ where
             return Ok(Some(input));
         }
 
+        // Try encoding the input.
+        //
+        // If the input can't fit into the current request payload based on the uncompressed size limit, or isn't likely
+        // to fit, `false` is returned, which signals us to give the input back to the caller so they can flush the
+        // current payload and then try again.
+        //
+        // Otherwise, we wrote the encoded input successfully so we'll hold on to that input for now in case we need to
+        // split the payload later.
+        if self.encode_inner(&input).await? {
+            self.encoded_inputs.push(input);
+            Ok(None)
+        } else {
+            Ok(Some(input))
+        }
+    }
+
+    /// Internal implementation of `encode`.
+    ///
+    /// This method excludes any specific edge case/error handling (such as if the input is valid, or asserting we
+    /// haven't hit input limits), and avoids any of the logic that supports request splitting. It is written this way
+    /// so that it can be used in the request splitting logic itself without any thorny recursion issues.
+    async fn encode_inner(&mut self, input: &E::Input) -> Result<bool, RequestBuilderError<E>> {
+        // Write any configured prefix/input separator, if necessary.
         self.prepare_for_write().await.context(Io)?;
 
         // Encode the input and then see if it will fit into the current request payload.
@@ -281,48 +328,47 @@ where
         // If not, we return the original input, signaling to the caller that they need to flush the current request
         // payload before encoding additional inputs.
         self.scratch_buf.clear();
-
         self.encoder
-            .encode(&input, &mut self.scratch_buf)
+            .encode(input, &mut self.scratch_buf)
             .context(FailedToEncode)?;
 
         // If the input can't fit into the current request payload based on the uncompressed size limit, or isn't likely
         // to fit into the current request payload based on the estimated compressed size limit, then return it to the
         // caller: this indicates that a flush must happen before trying to encode the same input again.
-        let encoded = self.scratch_buf.as_slice();
-        let new_uncompressed_len = self.uncompressed_len + encoded.len();
-        if new_uncompressed_len > self.uncompressed_len_limit
-            || self
-                .compression_estimator
-                .would_write_exceed_threshold(encoded.len(), self.compressed_len_limit)
-        {
+        //
+        // We specifically include the prefix/suffix length separately, as this lets us account for them before having
+        // actually written the suffix, such that our calculation of the uncompressed length of the finalized payload is
+        // accurate.
+        let encoded_len = self.scratch_buf.len();
+        let would_exceed_uncompressed_limit = self.uncompressed_len() + encoded_len > self.uncompressed_len_limit;
+        let likely_exceeds_compressed_limit = self
+            .compression_estimator
+            .would_write_exceed_threshold(encoded_len, self.compressed_len_limit);
+        if would_exceed_uncompressed_limit || likely_exceeds_compressed_limit {
             trace!(
                 encoder = E::encoder_name(),
                 endpoint = ?self.endpoint_uri,
-                encoded_len = encoded.len(),
-                uncompressed_len = self.uncompressed_len,
+                encoded_len,
+                uncompressed_len = self.uncompressed_len(),
                 estimated_compressed_len = self.compression_estimator.estimated_len(),
                 "Input would exceed endpoint size limits."
             );
-            return Ok(Some(input));
+            return Ok(false);
         }
 
         // Write the scratch buffer to the compressor.
-        self.compressor.write_all(encoded).await.context(Io)?;
-        self.compression_estimator.track_write(&self.compressor, encoded.len());
-        self.uncompressed_len += encoded.len();
-        self.encoded_inputs.push(input);
+        self.flush_scratch_buffer(true).await.context(Io)?;
 
         trace!(
             encoder = E::encoder_name(),
             endpoint = ?self.endpoint_uri,
-            encoded_len = encoded.len(),
-            uncompressed_len = self.uncompressed_len,
+            encoded_len,
+            uncompressed_len = self.uncompressed_len(),
             estimated_compressed_len = self.compression_estimator.estimated_len(),
             "Wrote encoded input to compressor."
         );
 
-        Ok(None)
+        Ok(true)
     }
 
     /// Flushes the current request payload.
@@ -340,53 +386,14 @@ where
             return vec![];
         }
 
-        // Finalize the payload by writing the payload suffix, if one is configured.
-        if let Some(suffix) = self.encoder.get_payload_suffix() {
-            if let Err(e) = self.write_to_compressor(suffix).await.context(Io) {
-                return vec![Err(e)];
-            }
-        }
+        // Flush the compressor and get the compressed payload, and the uncompressed length of the payload.
+        let (uncompressed_len, compressed_buf) = match self.flush_inner().await {
+            Ok((uncompressed_len, buffer)) => (uncompressed_len, buffer),
+            Err(e) => return vec![Err(e)],
+        };
 
-        // Clear our internal state and finalize the compressor. We do it in this order so that if finalization fails,
-        // somehow, the request builder is in a default state and encoding can be attempted again.
-        let uncompressed_len = self.uncompressed_len;
-        self.uncompressed_len = 0;
-
-        self.compression_estimator.reset();
-
-        let new_compressor = create_compressor(&self.buffer_pool, self.compression_scheme).await;
-        let mut compressor = std::mem::replace(&mut self.compressor, new_compressor);
-        if let Err(e) = compressor.flush().await.context(Io) {
-            let inputs_dropped = self.clear_encoded_inputs();
-
-            // TODO: Propagate the number of inputs dropped in the returned error itself rather than logging here.
-            error!(
-                encoder = E::encoder_name(),
-                endpoint = ?self.endpoint_uri,
-                inputs_dropped,
-                "Failed to finalize compressor while building request. Inputs have been dropped."
-            );
-
-            return vec![Err(e)];
-        }
-
-        if let Err(e) = compressor.shutdown().await.context(Io) {
-            let inputs_dropped = self.clear_encoded_inputs();
-
-            // TODO: Propagate the number of inputs dropped in the returned error itself rather than logging here.
-            error!(
-                encoder = E::encoder_name(),
-                endpoint = ?self.endpoint_uri,
-                inputs_dropped,
-                "Failed to finalize compressor while building request. Inputs have been dropped."
-            );
-
-            return vec![Err(e)];
-        }
-
-        let buffer = compressor.into_inner().freeze();
-
-        let compressed_len = buffer.len();
+        // Make sure we haven't exceeded our compressed size limit, otherwise we'll need to split the request.
+        let compressed_len = compressed_buf.len();
         let compressed_limit = self.compressed_len_limit;
         if compressed_len > compressed_limit {
             // Single input is unable to be split.
@@ -405,7 +412,60 @@ where
         let inputs_written = self.clear_encoded_inputs();
         debug!(encoder = E::encoder_name(), endpoint = ?self.endpoint_uri, uncompressed_len, compressed_len, inputs_written, "Flushing request.");
 
-        vec![self.create_request(buffer).map(|req| (inputs_written, req))]
+        vec![self.create_request(compressed_buf).map(|req| (inputs_written, req))]
+    }
+
+    /// Internal implementation of `flush`.
+    ///
+    /// This method excludes any specific edge case/error handling (such as checking if the (un)compressed size limits
+    /// are exceeded), and does not handle request splitting, as it is meant to be used in the request splitting logic
+    /// itself.
+    async fn flush_inner(&mut self) -> Result<(usize, FrozenChunkedBytesBuffer), RequestBuilderError<E>> {
+        // If we have a payload suffix configured, write it now.
+        if let Some(suffix) = self.encoder.get_payload_suffix() {
+            self.scratch_buf.clear();
+            self.scratch_buf.extend_from_slice(suffix);
+            self.flush_scratch_buffer(false).await.context(Io)?;
+        }
+
+        // Clear our internal state and finalize the compressor. We do it in this order so that if finalization fails,
+        // somehow, the request builder is in a default state and encoding can be attempted again.
+        let uncompressed_len = self.uncompressed_len();
+        self.uncompressed_len = 0;
+
+        self.compression_estimator.reset();
+
+        let new_compressor = create_compressor(&self.buffer_pool, self.compression_scheme).await;
+        let mut compressor = std::mem::replace(&mut self.compressor, new_compressor);
+        if let Err(e) = compressor.flush().await.context(Io) {
+            let inputs_dropped = self.clear_encoded_inputs();
+
+            // TODO: Propagate the number of inputs dropped in the returned error itself rather than logging here.
+            error!(
+                encoder = E::encoder_name(),
+                endpoint = ?self.endpoint_uri,
+                inputs_dropped,
+                "Failed to finalize compressor while building request. Inputs have been dropped."
+            );
+
+            return Err(e);
+        }
+
+        if let Err(e) = compressor.shutdown().await.context(Io) {
+            let inputs_dropped = self.clear_encoded_inputs();
+
+            // TODO: Propagate the number of inputs dropped in the returned error itself rather than logging here.
+            error!(
+                encoder = E::encoder_name(),
+                endpoint = ?self.endpoint_uri,
+                inputs_dropped,
+                "Failed to finalize compressor while building request. Inputs have been dropped."
+            );
+
+            return Err(e);
+        }
+
+        Ok((uncompressed_len, compressor.into_inner().freeze()))
     }
 
     fn clear_encoded_inputs(&mut self) -> usize {
@@ -441,11 +501,6 @@ where
         let first_half_encoded_inputs = &encoded_inputs[0..encoded_inputs_pivot];
         let second_half_encoded_inputs = &encoded_inputs[encoded_inputs_pivot..];
 
-        // TODO: We're duplicating functionality here between `encode`/`flush`, but this makes it a lot easier to skip
-        // over the normal behavior that would do all the storing of encoded inputs, trying to split the payload, etc,
-        // since we want to avoid that and avoid any recursion in general.
-        //
-        // We should consider if there's a better way to split out some of this into common methods or something.
         if let Some(request) = self.try_split_request(first_half_encoded_inputs).await {
             requests.push(request);
         }
@@ -464,29 +519,28 @@ where
     async fn try_split_request(
         &mut self, inputs: &[E::Input],
     ) -> Option<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
-        let mut uncompressed_len = 0;
-        let mut compressor = create_compressor(&self.buffer_pool, self.compression_scheme).await;
-
         for input in inputs {
             // Encode each input and write it to our compressor.
             //
             // We skip any of the typical payload size checks here, because we already know we at least fit these
             // inputs into the previous attempted payload, so there's no reason to redo all of that here.
-            self.scratch_buf.clear();
-            if let Err(e) = self
-                .encoder
-                .encode(input, &mut self.scratch_buf)
-                .context(FailedToEncode)
-            {
-                return Some(Err(e));
+            match self.encode_inner(input).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    // If we can't encode the input, we need to stop here and return the input to the caller.
+                    return None;
+                }
+                Err(e) => {
+                    // If we get an error, we need to stop here and return the error to the caller.
+                    return Some(Err(e));
+                }
             }
-
-            if let Err(e) = compressor.write_all(&self.scratch_buf[..]).await.context(Io) {
-                return Some(Err(e));
-            }
-
-            uncompressed_len += self.scratch_buf.len();
         }
+
+        let (uncompressed_len, compressed_buf) = match self.flush_inner().await {
+            Ok((uncompressed_len, buffer)) => (uncompressed_len, buffer),
+            Err(e) => return Some(Err(e)),
+        };
 
         // Make sure we haven't exceeded our uncompressed size limit.
         //
@@ -507,27 +561,20 @@ where
             return None;
         }
 
-        Some(
-            self.finalize(compressor)
-                .await
-                .and_then(|buffer| self.create_request(buffer).map(|request| (inputs.len(), request))),
-        )
-    }
-
-    async fn finalize(
-        &self, mut compressor: Compressor<ChunkedBytesBuffer<O>>,
-    ) -> Result<FrozenChunkedBytesBuffer, RequestBuilderError<E>> {
-        compressor.shutdown().await.context(Io)?;
-        let buffer = compressor.into_inner().freeze();
-        let compressed_len = buffer.len();
+        // Finally, make sure we haven't exceeded our compressed size limit.
+        let compressed_len = compressed_buf.len();
         let compressed_limit = self.compressed_len_limit;
         if compressed_len > compressed_limit {
-            return Err(RequestBuilderError::PayloadTooLarge {
+            return Some(Err(RequestBuilderError::PayloadTooLarge {
                 compressed_size_bytes: compressed_len,
                 compressed_limit_bytes: compressed_limit,
-            });
+            }));
         }
-        Ok(buffer)
+
+        Some(
+            self.create_request(compressed_buf)
+                .map(|request| (inputs.len(), request)),
+        )
     }
 
     fn create_request(
@@ -597,50 +644,59 @@ mod tests {
         create_request_builder(encoder, CompressionScheme::zstd_default()).await
     }
 
-    async fn flush_and_validate_request(
+    async fn flush_and_validate_requests(
         mut request_builder: RequestBuilder<TestEncoder, FixedSizeObjectPool<BytesBuffer>>,
-        expected_request_body: Vec<u8>,
+        expected_request_bodies: Vec<String>,
     ) {
-        let mut requests = request_builder.flush().await;
+        let requests = request_builder.flush().await;
+        assert_eq!(
+            requests.len(),
+            expected_request_bodies.len(),
+            "got {} requests after flush, but expected {}",
+            requests.len(),
+            expected_request_bodies.len()
+        );
 
-        assert_eq!(requests.len(), 1);
-        match requests.pop() {
-            Some(Ok((_, request))) => {
-                // We want to make sure the request uses the intended URI and HTTP method, and that it has the expected Content-Type.
-                let expected_uri = request_builder.encoder().endpoint_uri();
-                let actual_uri = request.uri();
-                assert_eq!(
-                    &expected_uri, actual_uri,
-                    "flushed request had unexpected URI: expected {}, got {}",
-                    expected_uri, actual_uri
-                );
+        for (request, expected_request_body) in requests.into_iter().zip(expected_request_bodies) {
+            let (request, expected_request_body) = match request {
+                Ok((_, request)) => (request, expected_request_body),
+                Err(e) => panic!("failed to create request: {}", e),
+            };
 
-                let expected_method = request_builder.encoder().endpoint_method();
-                let actual_method = request.method();
-                assert_eq!(
-                    expected_method, *actual_method,
-                    "flushed request had unexpected method: expected {}, got {}",
-                    expected_method, actual_method
-                );
+            // We want to make sure the request uses the intended URI and HTTP method, and that it has the expected Content-Type.
+            let expected_uri = request_builder.encoder().endpoint_uri();
+            let actual_uri = request.uri();
+            assert_eq!(
+                &expected_uri, actual_uri,
+                "flushed request had unexpected URI: expected {}, got {}",
+                expected_uri, actual_uri
+            );
 
-                let expected_content_type = request_builder.encoder().content_type();
-                let actual_content_type = request.headers().get(http::header::CONTENT_TYPE).unwrap();
-                assert_eq!(
-                    expected_content_type, *actual_content_type,
-                    "flushed request had unexpected Content-Type: expected {:?}, got {:?}",
-                    expected_content_type, actual_content_type
-                );
+            let expected_method = request_builder.encoder().endpoint_method();
+            let actual_method = request.method();
+            assert_eq!(
+                expected_method, *actual_method,
+                "flushed request had unexpected method: expected {}, got {}",
+                expected_method, actual_method
+            );
 
-                // Now collect the request body and make sure it matches.
-                let actual_request_body = request.into_body().collect().await.unwrap().to_bytes();
-                assert_eq!(
-                    expected_request_body, actual_request_body,
-                    "flushed request body did not match expected body: expected {:?}, got {:?}",
-                    expected_request_body, actual_request_body
-                );
-            }
-            Some(Err(e)) => panic!("failed to create request: {}", e),
-            None => panic!("no requests were created"),
+            let expected_content_type = request_builder.encoder().content_type();
+            let actual_content_type = request.headers().get(http::header::CONTENT_TYPE).unwrap();
+            assert_eq!(
+                expected_content_type, *actual_content_type,
+                "flushed request had unexpected Content-Type: expected {:?}, got {:?}",
+                expected_content_type, actual_content_type
+            );
+
+            // Now collect the request body and make sure it matches.
+            let actual_request_body = request.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(
+                expected_request_body.as_bytes(),
+                actual_request_body,
+                "flushed request body did not match expected body: expected {:?}, got {:?}",
+                expected_request_body,
+                actual_request_body
+            );
         }
     }
 
@@ -722,27 +778,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn basic() {
-        // Create a basic request with no (un)compressed size limits, and no prefix/suffix.
+    async fn basic_not_delimited() {
+        // Create a basic request builder with no (un)compressed size limits, and no prefix/suffix.
         let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit");
         let mut request_builder = create_no_compression_request_builder(encoder.clone()).await;
 
         // Without any prefix/suffix, and no compression, the request body should simply be concatenation of the inputs.
         let inputs = vec!["hello, world!".to_string(), "foo".to_string(), "bar".to_string()];
-        let expected_body = inputs.iter().flat_map(|s| s.as_bytes()).copied().collect::<Vec<u8>>();
+        let expected_body = inputs.join("");
 
         // Encode the inputs, flush the request(s), and validate them.
         for input in inputs {
             request_builder.encode(input).await.unwrap();
         }
 
-        flush_and_validate_request(request_builder, expected_body).await;
+        flush_and_validate_requests(request_builder, vec![expected_body]).await;
     }
 
     #[tokio::test]
-    async fn with_prefix_and_suffix_single() {
-        // Create a basic request with no (un)compressed size limits. Our encoder will write a prefix and suffix that
-        // simulates writing a JSON payload, where the body is a JSON array with individual inputs as array items.
+    async fn basic_delimited_single() {
+        // Create a basic request builder with no (un)compressed size limits. Our encoder will write a prefix and suffix
+        // that simulates writing a JSON payload, where the body is a JSON array with individual inputs as array items.
         let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit").with_delimiters(b"[", b"]", b",");
         let mut request_builder = create_no_compression_request_builder(encoder.clone()).await;
 
@@ -756,13 +812,13 @@ mod tests {
             request_builder.encode(input).await.unwrap();
         }
 
-        flush_and_validate_request(request_builder, expected_body.into_bytes()).await;
+        flush_and_validate_requests(request_builder, vec![expected_body]).await;
     }
 
     #[tokio::test]
-    async fn with_prefix_and_suffix_multiple() {
-        // Create a basic request with no (un)compressed size limits. Our encoder will write a prefix and suffix that
-        // simulates writing a JSON payload, where the body is a JSON array with individual inputs as array items.
+    async fn basic_delimited_multiple() {
+        // Create a basic request builder with no (un)compressed size limits. Our encoder will write a prefix and suffix
+        // that simulates writing a JSON payload, where the body is a JSON array with individual inputs as array items.
         let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit").with_delimiters(b"[", b"]", b",");
         let mut request_builder = create_no_compression_request_builder(encoder.clone()).await;
 
@@ -780,41 +836,73 @@ mod tests {
             request_builder.encode(input).await.unwrap();
         }
 
-        flush_and_validate_request(request_builder, expected_body.into_bytes()).await;
+        flush_and_validate_requests(request_builder, vec![expected_body]).await;
     }
 
     #[tokio::test]
-    async fn split_oversized_request() {
-        // Generate some inputs that will exceed the compressed size limit.
-        let input1 = "mary had a little lamb and its fleece was white as snow".to_string();
-        let input2 = "and everywhere that mary went the lamb was sure to go".to_string();
-        let input3 = "it followed her to school one day which was against the rule".to_string();
-        let input4 = "it made the children laugh and play to see a lamb at school".to_string();
+    async fn split_oversized_request_not_delimited() {
+        // Generate some inputs that will exceed the compressed size limit when combined.
+        let inputs = vec![
+            "mary had a little lamb and its fleece was white as snow".to_string(),
+            "and everywhere that mary went the lamb was sure to go".to_string(),
+            "it followed her to school one day which was against the rule".to_string(),
+            "it made the children laugh and play to see a lamb at school".to_string(),
+        ];
 
-        // Create a regular ol' request builder with unlimited (un)compressed size limits, to ensure we can write all
-        // four inputs before trying to flush.
+        // Create a basic request builder with no (un)compressed size limits, and no prefix/suffix.
         let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit");
-        let mut request_builder = create_zstd_compression_request_builder(encoder).await;
+        let mut request_builder = create_no_compression_request_builder(encoder).await;
 
         // Encode the inputs, which should all fit into the request payload.
-        let inputs = vec![input1, input2, input3, input4];
-        for input in inputs {
-            match request_builder.encode(input).await {
-                Ok(None) => {}
-                Ok(Some(_)) => panic!("initial encode should never fail to fit encoded input payload"),
-                Err(e) => panic!("initial encode should never fail: {}", e),
-            }
+        for input in &inputs {
+            request_builder.encode(input.clone()).await.unwrap();
         }
 
         // Now we attempt to flush, but first, we'll adjust our limits to force the builder to split the request,
         // specifically the compressed size limit.
         //
-        // We've chosen 96 because it's just under where the compressor should land when compressing all four inputs.
-        // This value may need to change in the future if we change to a different compression algorithm.
-        request_builder.set_custom_len_limits(usize::MAX, 96);
+        // All we care about is triggering the logic, so just set the compressed size limit to the sum of all inputs,
+        // minus one, to ensure it's smaller than the actual compressed size.
+        request_builder.set_custom_len_limits(usize::MAX, inputs.iter().map(|s| s.len()).sum::<usize>() - 1);
 
-        let requests = request_builder.flush().await;
-        assert_eq!(requests.len(), 2);
+        let expected_request_bodies = vec![
+            format!("{}{}", inputs[0], inputs[1]),
+            format!("{}{}", inputs[2], inputs[3]),
+        ];
+        flush_and_validate_requests(request_builder, expected_request_bodies).await;
+    }
+
+    #[tokio::test]
+    async fn split_oversized_request_delimited() {
+        // Generate some inputs that will exceed the compressed size limit when combined.
+        let inputs = vec![
+            "mary had a little lamb and its fleece was white as snow".to_string(),
+            "and everywhere that mary went the lamb was sure to go".to_string(),
+            "it followed her to school one day which was against the rule".to_string(),
+            "it made the children laugh and play to see a lamb at school".to_string(),
+        ];
+
+        // Create a basic request builder with no (un)compressed size limits, and no prefix/suffix.
+        let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit").with_delimiters(b"[", b"]", b",");
+        let mut request_builder = create_no_compression_request_builder(encoder).await;
+
+        // Encode the inputs, which should all fit into the request payload.
+        for input in &inputs {
+            request_builder.encode(input.clone()).await.unwrap();
+        }
+
+        // Now we attempt to flush, but first, we'll adjust our limits to force the builder to split the request,
+        // specifically the compressed size limit.
+        //
+        // All we care about is triggering the logic, so just set the compressed size limit to the sum of all inputs,
+        // which is shorter than what it will generate when including the prefix, suffix, and input separators.
+        request_builder.set_custom_len_limits(usize::MAX, inputs.iter().map(|s| s.len()).sum());
+
+        let expected_request_bodies = vec![
+            format!("[{},{}]", inputs[0], inputs[1]),
+            format!("[{},{}]", inputs[2], inputs[3]),
+        ];
+        flush_and_validate_requests(request_builder, expected_request_bodies).await;
     }
 
     #[tokio::test]
