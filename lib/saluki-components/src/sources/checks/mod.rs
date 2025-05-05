@@ -1,7 +1,7 @@
 /// Checks source.
 ///
 /// Listen to Autodiscovery events, schedule checks and emit results.
-use std::{sync::Arc, sync::LazyLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -55,13 +55,7 @@ impl SourceBuilder for ChecksConfiguration {
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: LazyLock<Vec<OutputDefinition>> = LazyLock::new(|| {
-            vec![
-                OutputDefinition::named_output("metrics", DataType::Metric),
-                OutputDefinition::named_output("events", DataType::EventD),
-                OutputDefinition::named_output("service_checks", DataType::ServiceCheck),
-            ]
-        });
+        static OUTPUTS: [OutputDefinition; 1] = [OutputDefinition::default_output(DataType::Metric)];
 
         &OUTPUTS
     }

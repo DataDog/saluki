@@ -145,19 +145,18 @@ async fn run(started: Instant) -> Result<(), Box<dyn std::error::Error>> {
 async fn create_topology(
     configuration: &GenericConfiguration, env_provider: &ChecksAgentEnvProvider, component_registry: &ComponentRegistry,
 ) -> Result<TopologyBlueprint, GenericError> {
-    // Create a simplified topology with minimal components for now
-    let topology_registry = component_registry.get_or_create("topology");
-    let mut blueprint = TopologyBlueprint::new("primary", &topology_registry);
-
     // Create a ChecksConfiguration source
-    let source_config = ChecksConfiguration::from_configuration(configuration)
+    let checks_config = ChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure checks source.")?
         .with_autodiscovery_provider(env_provider.autodiscovery_provider.clone());
     // Add a destination component to receive data from the source
     let blackhole_config = BlackholeConfiguration;
 
+    // Create a simplified topology with minimal components for now
+    let mut blueprint = TopologyBlueprint::new("primary", component_registry);
+
     blueprint
-        .add_source("checks_in", source_config)?
+        .add_source("checks_in", checks_config)?
         .add_destination("metrics_out", blackhole_config)?
         .connect_component("metrics_out", ["checks_in"])?;
 
