@@ -120,19 +120,19 @@ impl From<ProtoConfig> for Config {
             })
             .collect();
 
-        let init_config = bytes_to_hasmap(proto.init_config).unwrap_or_default();
+        let init_config = bytes_to_hashmap(proto.init_config).unwrap_or_default();
         let instances = proto
             .instances
             .into_iter()
-            .map(|instance| bytes_to_hasmap(instance).unwrap_or_default())
+            .map(|instance| bytes_to_hashmap(instance).unwrap_or_default())
             .collect();
 
         Self {
             name: proto.name.into(),
             init_config,
             instances,
-            metric_config: bytes_to_hasmap(proto.metric_config).unwrap_or_default(),
-            logs_config: bytes_to_hasmap(proto.logs_config).unwrap_or_default(),
+            metric_config: bytes_to_hashmap(proto.metric_config).unwrap_or_default(),
+            logs_config: bytes_to_hashmap(proto.logs_config).unwrap_or_default(),
             ad_identifiers: proto.ad_identifiers.into_iter().map(MetaString::from).collect(),
             advanced_ad_identifiers,
             provider: proto.provider.into(),
@@ -148,7 +148,7 @@ impl From<ProtoConfig> for Config {
     }
 }
 
-fn bytes_to_hasmap(bytes: Vec<u8>) -> Result<HashMap<MetaString, serde_yaml::Value>, GenericError> {
+fn bytes_to_hashmap(bytes: Vec<u8>) -> Result<HashMap<MetaString, serde_yaml::Value>, GenericError> {
     let parse_bytes = String::from_utf8(bytes)?;
 
     let map: HashMap<String, serde_yaml::Value> = serde_yaml::from_str(&parse_bytes)?;
