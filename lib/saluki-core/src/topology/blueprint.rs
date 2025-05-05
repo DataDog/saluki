@@ -143,7 +143,7 @@ impl TopologyBlueprint {
         let component_id = self
             .graph
             .add_source(component_id, &builder)
-            .error_context("Failed to build/validate topology graph.")?;
+            .error_context("Failed to add_source to topology graph.")?;
 
         let mut source_registry = self
             .component_registry
@@ -172,7 +172,7 @@ impl TopologyBlueprint {
         let component_id = self
             .graph
             .add_transform(component_id, &builder)
-            .error_context("Failed to build/validate topology graph.")?;
+            .error_context("Failed to add_transform to topology graph.")?;
 
         self.update_bounds_for_interconnect();
 
@@ -203,7 +203,7 @@ impl TopologyBlueprint {
         let component_id = self
             .graph
             .add_destination(component_id, &builder)
-            .error_context("Failed to build/validate topology graph.")?;
+            .error_context("Failed to add_destination to topology graph.")?;
 
         self.update_bounds_for_interconnect();
 
@@ -238,7 +238,7 @@ impl TopologyBlueprint {
         for source_output_component_id in source_output_component_ids.into_iter() {
             self.graph
                 .add_edge(source_output_component_id, destination_component_id.as_ref())
-                .error_context("Failed to build/validate topology graph.")?;
+                .error_context("Failed to connect_component to topology graph.")?;
         }
 
         Ok(self)
@@ -250,9 +250,7 @@ impl TopologyBlueprint {
     ///
     /// If any of the components could not be built, an error is returned.
     pub async fn build(mut self) -> Result<BuiltTopology, GenericError> {
-        self.graph
-            .validate()
-            .error_context("Failed to build/validate topology graph.")?;
+        self.graph.validate().error_context("Failed to build topology graph.")?;
 
         let mut sources = HashMap::new();
         for (id, builder) in self.sources {
