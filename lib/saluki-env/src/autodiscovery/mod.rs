@@ -2,8 +2,6 @@
 //!
 //! This module provides the `Autodiscovery` trait, which deals with providing information about autodiscovery.
 
-pub mod providers;
-
 use std::collections::HashMap;
 
 use async_trait::async_trait;
@@ -11,6 +9,8 @@ use datadog_protos::agent::{Config as ProtoConfig, ConfigEventType};
 use saluki_error::GenericError;
 use stringtheory::MetaString;
 use tokio::sync::broadcast::Receiver;
+
+pub mod providers;
 
 /// Configuration event type
 #[derive(Debug, Clone, PartialEq, Eq)]
