@@ -244,7 +244,8 @@ run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 run-checks-agent-standalone: build-checks-agent
 run-checks-agent-standalone: ## Runs Checks Agent locally in standalone mode (debug)
 	@echo "[*] Running Checks Agent..."
-	@DD_ADP_STANDALONE_MODE=true \
+	@DD_ADP_STANDALONE_MODE=false \
+	DD_AUTH_TOKEN_FILE_PATH=../datadog-agent/bin/agent/dist/auth_token \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=check-agent-standalone \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/debug/checks-agent

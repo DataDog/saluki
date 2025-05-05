@@ -4,7 +4,7 @@ use memory_accounting::ComponentRegistry;
 use saluki_app::{api::APIBuilder, metrics::emit_startup_metrics, prelude::*};
 use saluki_components::{
     destinations::{BlackholeConfiguration, PrometheusConfiguration},
-    sources::{HeartbeatConfiguration, InternalMetricsConfiguration},
+    sources::{ChecksConfiguration, InternalMetricsConfiguration},
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::topology::TopologyBlueprint;
@@ -143,15 +143,16 @@ async fn run(started: Instant) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn create_topology(
-    configuration: &GenericConfiguration, _env_provider: &ChecksAgentEnvProvider,
-    component_registry: &ComponentRegistry,
+    configuration: &GenericConfiguration, env_provider: &ChecksAgentEnvProvider, component_registry: &ComponentRegistry,
 ) -> Result<TopologyBlueprint, GenericError> {
     // Create a simplified topology with minimal components for now
     let topology_registry = component_registry.get_or_create("topology");
     let mut blueprint = TopologyBlueprint::new("primary", &topology_registry);
 
-    // Create a HeartbeatConfiguration source with heartbeat enabled to keep the topology running
-    let source_config = HeartbeatConfiguration::default();
+    // Create a ChecksConfiguration source
+    let source_config = ChecksConfiguration::from_configuration(configuration)
+        .error_context("Failed to configure checks source.")?
+        .with_autodiscovery_provider(env_provider.autodiscovery_provider.clone());
     // Add a destination component to receive data from the source
     let blackhole_config = BlackholeConfiguration;
 
