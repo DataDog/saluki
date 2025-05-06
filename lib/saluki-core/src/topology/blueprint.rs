@@ -311,6 +311,9 @@ impl TopologyBlueprint {
         Ok(BuiltTopology::from_parts(
             self.name,
             self.graph,
+            self.event_buffer_pool_buffer_size,
+            self.event_buffer_pool_size_min,
+            self.event_buffer_pool_size_max,
             sources,
             transforms,
             destinations,
