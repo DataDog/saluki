@@ -7,9 +7,10 @@ use http_body_util::BodyExt as _;
 use hyper::{body::Incoming, Response};
 use saluki_common::task::spawn_traced_named;
 use saluki_config::RefreshableConfiguration;
+use saluki_core::pooling::ElasticObjectPool;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::{
-    buf::ReadIoBuffer,
+    buf::{BytesBuffer, FixedSizeVec, ReadIoBuffer},
     net::{
         client::http::HttpClient,
         util::{
@@ -35,6 +36,8 @@ use super::{
     telemetry::{ComponentTelemetry, TransactionQueueTelemetry},
     transaction::{Metadata, Transaction, TransactionBody},
 };
+
+const RB_BUFFER_POOL_BUF_SIZE: usize = 32 * 1024; // 32 KB
 
 /// A handle to the transaction forwarder.
 pub struct Handle<B>
@@ -543,4 +546,85 @@ impl<T: Retryable> PendingTransactions<T> {
 
         Ok(push_result)
     }
+}
+
+/// Returns the minimum and maximum size of the request builder buffer pool for the given forwarder configuration and
+/// maximum request size.
+///
+/// Buffer pool sizing can have an impact on performance/correctness, as we must ensure that enough buffers are
+/// available to build requests when the forwarder is under backpressure/retrying. This function consolidates that logic
+/// in a single path.
+///
+/// `max_request_size` must specify the largest possible request body size that can be built by the destination using
+/// the resulting buffer pool.
+pub const fn get_buffer_pool_min_max_size(config: &ForwarderConfiguration, max_request_size: usize) -> (usize, usize) {
+    // Just enough to build a single instance of the largest possible request.
+    let max_request_size = max_request_size.next_multiple_of(RB_BUFFER_POOL_BUF_SIZE);
+    let minimum_size = max_request_size / RB_BUFFER_POOL_BUF_SIZE;
+
+    // At the top end, we may create up to `forwarder_high_prio_buffer_size` requests in memory, each of which may be up
+    // to `max_request_size` in size. We also need to account for the retry queue's maximum size, which is already
+    // defined in bytes for us.
+    let high_prio_pending_requests_size_bytes = config.endpoint_buffer_size() * max_request_size;
+    let retry_queue_max_size_bytes = config.retry().queue_max_size_bytes() as usize;
+    let retry_queue_max_size_bytes_rounded = retry_queue_max_size_bytes.next_multiple_of(RB_BUFFER_POOL_BUF_SIZE);
+    let maximum_size = minimum_size
+        + ((high_prio_pending_requests_size_bytes + retry_queue_max_size_bytes_rounded) / RB_BUFFER_POOL_BUF_SIZE);
+
+    (minimum_size, maximum_size)
+}
+
+/// Returns the minimum and maximum size of the request builder buffer pool for the given forwarder configuration and
+/// maximum request size, in bytes.
+///
+/// See [`get_buffer_pool_min_max_size`] for more details.
+pub const fn get_buffer_pool_min_max_size_bytes(
+    config: &ForwarderConfiguration, max_request_size: usize,
+) -> (usize, usize) {
+    let (minimum_size, maximum_size) = get_buffer_pool_min_max_size(config, max_request_size);
+    (
+        minimum_size * RB_BUFFER_POOL_BUF_SIZE,
+        maximum_size * RB_BUFFER_POOL_BUF_SIZE,
+    )
+}
+
+/// Creates a new request builder buffer pool for the given forwarder configuration and maximum request size.
+///
+/// See [`get_buffer_pool_min_max_size`] for more details on how the buffer pool is sized.
+pub async fn create_request_builder_buffer_pool(
+    destination_type: &'static str, config: &ForwarderConfiguration, max_request_size: usize,
+) -> ElasticObjectPool<BytesBuffer> {
+    // Create the underlying buffer pool for the individual chunks.
+    //
+    // We size this buffer pool in the following way:
+    //
+    // - regardless of the size, we split it up into many smaller chunks which can be allocated incrementally by the
+    //   request builders as needed
+    // - the minimum pool size is such that we can handle encoding the biggest possible request (3.2MB) in one go
+    //   without needing another buffer to be allocated, so that when we're building big requests, we hopefully don't
+    //   need to allocate on demand
+    // - the maximum pool size is an additional increase over the minimum size based on the allowable in-memory size of
+    //   the retry queue: if we're enqueuing requests in-memory due to retry backoff, we want to allow the request
+    //   builders to keep building new requests without being blocked by the buffer pool, such that there's enough
+    //   capacity to build requests until the retry queue starts throwing away the oldest ones to make room
+    //
+    // Our chunk size is 32KB: no strong reason for this, just a decent balance between being big enough to allow
+    // compressor output blocks to fit entirely but small enough to not be too wasteful.
+
+    let (minimum_size, maximum_size) = get_buffer_pool_min_max_size(config, max_request_size);
+    let (pool, shrinker) = ElasticObjectPool::with_builder(
+        format!("dd_{}_request_buffer", destination_type),
+        minimum_size,
+        maximum_size,
+        || FixedSizeVec::with_capacity(RB_BUFFER_POOL_BUF_SIZE),
+    );
+
+    spawn_traced_named(format!("dd-{}-buffer-pool-shrinker", destination_type), shrinker);
+
+    debug!(
+        destination_type,
+        minimum_size, maximum_size, "Created request builder buffer pool."
+    );
+
+    pool
 }

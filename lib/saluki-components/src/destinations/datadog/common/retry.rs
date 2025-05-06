@@ -126,12 +126,12 @@ pub struct RetryConfiguration {
 
 impl RetryConfiguration {
     /// Returns the maximum size of the retry queue in bytes.
-    pub fn queue_max_size_bytes(&self) -> u64 {
+    pub const fn queue_max_size_bytes(&self) -> u64 {
         self.retry_queue_max_size_bytes
     }
 
     /// Returns the maximum size of the retry queue on disk, in bytes.
-    pub fn storage_max_size_bytes(&self) -> u64 {
+    pub const fn storage_max_size_bytes(&self) -> u64 {
         self.storage_max_size_bytes
     }
 
@@ -141,7 +141,7 @@ impl RetryConfiguration {
     }
 
     /// Returns the maximum disk usage ratio for storing transactions on disk.
-    pub fn storage_max_disk_ratio(&self) -> f64 {
+    pub const fn storage_max_disk_ratio(&self) -> f64 {
         self.storage_max_disk_ratio
     }
 

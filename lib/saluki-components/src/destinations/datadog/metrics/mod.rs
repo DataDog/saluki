@@ -199,7 +199,7 @@ impl MemoryBounds for DatadogMetricsConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         // The request builder buffer pool is shared between both the series and the sketches request builder, so we
         // only count it once.
-        let (pool_size_min_bytes, _) = get_buffer_pool_minimum_maximum_size_bytes(&self.forwarder_config);
+        let (pool_size_min_bytes, _) = get_buffer_pool_min_max_size_bytes(&self.forwarder_config);
 
         builder
             .minimum()
@@ -467,7 +467,7 @@ const fn get_maximum_compressed_payload_size() -> usize {
     max_request_size.next_multiple_of(RB_BUFFER_POOL_BUF_SIZE)
 }
 
-fn get_buffer_pool_minimum_maximum_size(config: &ForwarderConfiguration) -> (usize, usize) {
+fn get_buffer_pool_min_max_size(config: &ForwarderConfiguration) -> (usize, usize) {
     // Just enough to build a single instance of the largest possible request.
     let max_request_size = get_maximum_compressed_payload_size();
     let minimum_size = max_request_size / RB_BUFFER_POOL_BUF_SIZE;
@@ -484,8 +484,8 @@ fn get_buffer_pool_minimum_maximum_size(config: &ForwarderConfiguration) -> (usi
     (minimum_size, maximum_size)
 }
 
-fn get_buffer_pool_minimum_maximum_size_bytes(config: &ForwarderConfiguration) -> (usize, usize) {
-    let (minimum_size, maximum_size) = get_buffer_pool_minimum_maximum_size(config);
+fn get_buffer_pool_min_max_size_bytes(config: &ForwarderConfiguration) -> (usize, usize) {
+    let (minimum_size, maximum_size) = get_buffer_pool_min_max_size(config);
     (
         minimum_size * RB_BUFFER_POOL_BUF_SIZE,
         maximum_size * RB_BUFFER_POOL_BUF_SIZE,
@@ -510,7 +510,7 @@ async fn create_request_builder_buffer_pool(config: &ForwarderConfiguration) -> 
     // Our chunk size is 32KB: no strong reason for this, just a decent balance between being big enough to allow
     // compressor output blocks to fit entirely but small enough to not be too wasteful.
 
-    let (minimum_size, maximum_size) = get_buffer_pool_minimum_maximum_size(config);
+    let (minimum_size, maximum_size) = get_buffer_pool_min_max_size(config);
     let (pool, shrinker) =
         ElasticObjectPool::with_builder("dd_metrics_request_buffer", minimum_size, maximum_size, || {
             FixedSizeVec::with_capacity(RB_BUFFER_POOL_BUF_SIZE)
