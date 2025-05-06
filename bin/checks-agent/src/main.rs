@@ -24,7 +24,7 @@ use self::env_provider::ChecksAgentEnvProvider;
 
 const PRIMARY_UNPRIVILEGED_API_PORT: u16 = 5105;
 // SAFETY: These are obviously all non-zero.
-const CHECKS_AGENT_EVENT_BUFFER_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(300) };
+const CHECKS_AGENT_EVENT_BUFFER_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(100) };
 const CHECKS_AGENT_EVENT_BUFFER_POOL_SIZE_MIN: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(1) };
 const CHECKS_AGENT_EVENT_BUFFER_POOL_SIZE_MAX: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(4) };
 
