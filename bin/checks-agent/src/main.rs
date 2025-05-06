@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
 use memory_accounting::ComponentRegistry;
@@ -22,6 +23,10 @@ use tracing::{error, info};
 use self::env_provider::ChecksAgentEnvProvider;
 
 const PRIMARY_UNPRIVILEGED_API_PORT: u16 = 5105;
+// SAFETY: These are obviously all non-zero.
+const CHECKS_AGENT_EVENT_BUFFER_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(300) };
+const CHECKS_AGENT_EVENT_BUFFER_POOL_SIZE_MIN: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(1) };
+const CHECKS_AGENT_EVENT_BUFFER_POOL_SIZE_MAX: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(4) };
 
 #[cfg(target_os = "linux")]
 #[global_allocator]
@@ -146,16 +151,21 @@ async fn create_topology(
     configuration: &GenericConfiguration, _env_provider: &ChecksAgentEnvProvider,
     component_registry: &ComponentRegistry,
 ) -> Result<TopologyBlueprint, GenericError> {
-    // Create a simplified topology with minimal components for now
-    let topology_registry = component_registry.get_or_create("topology");
-    let mut blueprint = TopologyBlueprint::new("primary", &topology_registry);
-
     // Create a HeartbeatConfiguration source with heartbeat enabled to keep the topology running
     let source_config = HeartbeatConfiguration::default();
     // Add a destination component to receive data from the source
     let blackhole_config = BlackholeConfiguration;
 
+    // Create a simplified topology with minimal components for now
+    let topology_registry = component_registry.get_or_create("topology");
+    let mut blueprint = TopologyBlueprint::new("primary", &topology_registry);
+
     blueprint
+        .with_global_event_buffer_pool_size(
+            CHECKS_AGENT_EVENT_BUFFER_SIZE,
+            CHECKS_AGENT_EVENT_BUFFER_POOL_SIZE_MIN,
+            CHECKS_AGENT_EVENT_BUFFER_POOL_SIZE_MAX,
+        )
         .add_source("checks_in", source_config)?
         .add_destination("metrics_out", blackhole_config)?
         .connect_component("metrics_out", ["checks_in"])?;
