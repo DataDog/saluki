@@ -49,6 +49,7 @@ pub struct BuiltTopology {
 }
 
 impl BuiltTopology {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(
         name: String, graph: Graph, event_buffer_pool_buffer_size: usize, event_buffer_pool_size_min: usize,
         event_buffer_pool_size_max: usize,
