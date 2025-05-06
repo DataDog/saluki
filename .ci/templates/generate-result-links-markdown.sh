@@ -32,6 +32,16 @@ get_adp_smp_dashboard_url() {
     echo "https://app.datadoghq.com/dashboard/4br-nxz-khi?fromUser=true&tpl_var_dsd-run-id%5B0%5D=${dsd_run_id}&tpl_var_experiment%5B0%5D=${experiment}&tpl_var_adp-run-id%5B0%5D=${adp_run_id}&view=spans&from_ts=${start_time}000&to_ts=${end_time}000&live=false"
 }
 
+get_checks_smp_dashboard_url() {
+    local checks_run_id=$1
+    local checks_go_run_id=$2
+    local start_time=$3
+    local end_time=$4
+    local experiment=$5
+
+    echo "https://app.datadoghq.com/dashboard/mdp-8ua-qj3?fromUser=true&tpl_var_check-agent-rust-run-id%5B0%5D=${checks_run_id}&tpl_var_experiment%5B0%5D=${experiment}&tpl_var_checks-agent-go-run-id%5B0%5D=${checks_go_run_id}&view=spans&from_ts=${start_time}000&to_ts=${end_time}000&live=false"
+}
+
 # Make sure all required files are present.
 #
 # These are generate by the individual benchmark jobs and should be pulled in by the job that runs this script, and all
@@ -127,6 +137,6 @@ echo "| experiment | link(s) |"
 echo "|------------|---------|"
 
 checks_continuous_profiler_url=$(get_continuous_profiler_url "$checks_run_id" "$common_checks_start_time" "$common_checks_end_time" "quality_gates_idle_rss")
-checks_smp_dashboard_url=$(get_adp_smp_dashboard_url "$checks_run_id" "$checks_go_run_id" "$common_checks_start_time" "$common_checks_end_time" "quality_gates_idle_rss")
+checks_smp_dashboard_url=$(get_checks_smp_dashboard_url "$checks_run_id" "$checks_go_run_id" "$common_checks_start_time" "$common_checks_end_time" "quality_gates_idle_rss")
 
 echo "| quality_gates_idle_rss | \\[[Profiling]($checks_continuous_profiler_url)\\] \\[[SMP Dashboard]($checks_smp_dashboard_url)\\] |"
