@@ -1,6 +1,10 @@
 use std::time::Duration;
 
+use saluki_common::task::spawn_traced_named;
+use saluki_core::pooling::ElasticObjectPool;
+use saluki_io::buf::{BytesBuffer, FixedSizeVec};
 use serde::Deserialize;
+use tracing::debug;
 
 use super::{endpoints::EndpointConfiguration, proxy::ProxyConfiguration, retry::RetryConfiguration};
 

@@ -208,13 +208,13 @@ where
     }
 
     /// Overrides the endpoint URI for the request builder.
-    pub fn with_endpoint_uri_override(&mut self, endpoint_uri: &'static str) -> &mut Self {
+    pub fn set_endpoint_uri_override(&mut self, endpoint_uri: &'static str) -> &mut Self {
         self.endpoint_uri = PathAndQuery::from_static(endpoint_uri).into();
         self
     }
 
     /// Sets the maximum number of inputs that can be encoded in a single payload.
-    pub fn with_max_inputs_per_payload(&mut self, max_inputs_per_payload: usize) -> &mut Self {
+    pub fn with_max_inputs_per_payload(mut self, max_inputs_per_payload: usize) -> Self {
         self.max_inputs_per_payload = max_inputs_per_payload;
         self
     }
@@ -926,8 +926,9 @@ mod tests {
         // Now create a request builder with unlimited (un)compressed size limits, but a limit of 2 inputs per payload.
         //
         // We should only be able to encode two of the inputs before we're signaled to flush.
-        let mut request_builder = create_no_compression_request_builder(encoder).await;
-        request_builder.with_max_inputs_per_payload(2);
+        let mut request_builder = create_no_compression_request_builder(encoder)
+            .await
+            .with_max_inputs_per_payload(2);
 
         assert_eq!(None, request_builder.encode(input1).await.unwrap());
         assert_eq!(None, request_builder.encode(input2).await.unwrap());
@@ -945,7 +946,7 @@ mod tests {
         let mut request_builder = create_no_compression_request_builder(encoder.clone()).await;
 
         // Override the endpoint URI.
-        request_builder.with_endpoint_uri_override("/override");
+        request_builder.set_endpoint_uri_override("/override");
 
         // Encode a single input and then flush the builder, ensuring the request has the overridden endpoint URI.
         request_builder.encode("input".to_string()).await.unwrap();
