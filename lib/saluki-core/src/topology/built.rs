@@ -39,6 +39,9 @@ use crate::{
 pub struct BuiltTopology {
     name: String,
     graph: Graph,
+    event_buffer_pool_buffer_size: usize,
+    event_buffer_pool_size_min: usize,
+    event_buffer_pool_size_max: usize,
     sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
     transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
     destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
@@ -47,7 +50,8 @@ pub struct BuiltTopology {
 
 impl BuiltTopology {
     pub(crate) fn from_parts(
-        name: String, graph: Graph,
+        name: String, graph: Graph, event_buffer_pool_buffer_size: usize, event_buffer_pool_size_min: usize,
+        event_buffer_pool_size_max: usize,
         sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
         transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
         destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
@@ -56,6 +60,9 @@ impl BuiltTopology {
         Self {
             name,
             graph,
+            event_buffer_pool_buffer_size,
+            event_buffer_pool_size_min,
+            event_buffer_pool_size_max,
             sources,
             transforms,
             destinations,
@@ -139,9 +146,12 @@ impl BuiltTopology {
         let mut component_task_map = HashMap::new();
 
         // Build our interconnects, which we'll grab from piecemeal as we spawn our components.
-        let (event_buffer_pool, shrinker) = ElasticObjectPool::with_builder("global_event_buffers", 32, 512, || {
-            FixedSizeEventBufferInner::with_capacity(1024)
-        });
+        let (event_buffer_pool, shrinker) = ElasticObjectPool::with_builder(
+            "global_event_buffers",
+            self.event_buffer_pool_size_min,
+            self.event_buffer_pool_size_max,
+            move || FixedSizeEventBufferInner::with_capacity(self.event_buffer_pool_buffer_size),
+        );
         spawn_traced_named("global-event-buffer-pool-shrinker", shrinker);
 
         let (mut forwarders, mut event_streams) = self.create_component_interconnects(event_buffer_pool.clone());
