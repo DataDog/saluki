@@ -39,7 +39,7 @@ get_checks_smp_dashboard_url() {
     local end_time=$4
     local experiment=$5
 
-    echo "https://app.datadoghq.com/dashboard/mdp-8ua-qj3?fromUser=true&tpl_var_check-agent-rust-run-id%5B0%5D=${checks_run_id}&tpl_var_experiment%5B0%5D=${experiment}&tpl_var_checks-agent-go-run-id%5B0%5D=${checks_go_run_id}&view=spans&from_ts=${start_time}&to_ts=${end_time}&live=true"
+    echo "https://app.datadoghq.com/dashboard/mdp-8ua-qj3?fromUser=true&tpl_var_check-agent-rust-run-id%5B0%5D=${checks_run_id}&tpl_var_experiment%5B0%5D=${experiment}&tpl_var_checks-agent-go-run-id%5B0%5D=${checks_go_run_id}&view=spans&from_ts=${start_time}000&to_ts=${end_time}000&live=true"
 }
 
 # Make sure all required files are present.
