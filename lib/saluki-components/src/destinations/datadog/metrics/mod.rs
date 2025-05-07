@@ -3,7 +3,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use http::Uri;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
-use saluki_common::task::{spawn_traced_named, HandleExt as _};
+use saluki_common::task::HandleExt as _;
 use saluki_config::{GenericConfiguration, RefreshableConfiguration};
 use saluki_core::{
     components::{destinations::*, ComponentContext},
@@ -14,7 +14,7 @@ use saluki_core::{
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_event::{metric::Metric, DataType};
 use saluki_io::{
-    buf::{BytesBuffer, FixedSizeVec, FrozenChunkedBytesBuffer},
+    buf::{BytesBuffer, FrozenChunkedBytesBuffer},
     compression::CompressionScheme,
 };
 use saluki_metrics::MetricsBuilder;
@@ -25,7 +25,7 @@ use tracing::{debug, error};
 
 use super::common::{
     config::ForwarderConfiguration,
-    io::{Handle, TransactionForwarder},
+    io::{create_request_builder_buffer_pool, get_buffer_pool_min_max_size_bytes, Handle, TransactionForwarder},
     request_builder::RequestBuilder,
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
@@ -161,7 +161,12 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
 
         // Create our request builders.
-        let rb_buffer_pool = create_request_builder_buffer_pool(&self.forwarder_config).await;
+        let rb_buffer_pool = create_request_builder_buffer_pool(
+            "metrics",
+            &self.forwarder_config,
+            get_maximum_compressed_payload_size(),
+        )
+        .await;
 
         let series_encoder = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Series);
         let mut series_request_builder =
@@ -199,7 +204,8 @@ impl MemoryBounds for DatadogMetricsConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         // The request builder buffer pool is shared between both the series and the sketches request builder, so we
         // only count it once.
-        let (pool_size_min_bytes, _) = get_buffer_pool_min_max_size_bytes(&self.forwarder_config);
+        let (pool_size_min_bytes, _) =
+            get_buffer_pool_min_max_size_bytes(&self.forwarder_config, get_maximum_compressed_payload_size());
 
         builder
             .minimum()
@@ -465,60 +471,4 @@ const fn get_maximum_compressed_payload_size() -> usize {
         sketches_max_size
     };
     max_request_size.next_multiple_of(RB_BUFFER_POOL_BUF_SIZE)
-}
-
-fn get_buffer_pool_min_max_size(config: &ForwarderConfiguration) -> (usize, usize) {
-    // Just enough to build a single instance of the largest possible request.
-    let max_request_size = get_maximum_compressed_payload_size();
-    let minimum_size = max_request_size / RB_BUFFER_POOL_BUF_SIZE;
-
-    // At the top end, we may create up to `forwarder_high_prio_buffer_size` requests in memory, each of which may be up
-    // to `max_request_size` in size. We also need to account for the retry queue's maximum size, which is already
-    // defined in bytes for us.
-    let high_prio_pending_requests_size_bytes = config.endpoint_buffer_size() * max_request_size;
-    let retry_queue_max_size_bytes = config.retry().queue_max_size_bytes() as usize;
-    let retry_queue_max_size_bytes_rounded = retry_queue_max_size_bytes.next_multiple_of(RB_BUFFER_POOL_BUF_SIZE);
-    let maximum_size = minimum_size
-        + ((high_prio_pending_requests_size_bytes + retry_queue_max_size_bytes_rounded) / RB_BUFFER_POOL_BUF_SIZE);
-
-    (minimum_size, maximum_size)
-}
-
-fn get_buffer_pool_min_max_size_bytes(config: &ForwarderConfiguration) -> (usize, usize) {
-    let (minimum_size, maximum_size) = get_buffer_pool_min_max_size(config);
-    (
-        minimum_size * RB_BUFFER_POOL_BUF_SIZE,
-        maximum_size * RB_BUFFER_POOL_BUF_SIZE,
-    )
-}
-
-async fn create_request_builder_buffer_pool(config: &ForwarderConfiguration) -> ElasticObjectPool<BytesBuffer> {
-    // Create the underlying buffer pool for the individual chunks.
-    //
-    // We size this buffer pool in the following way:
-    //
-    // - regardless of the size, we split it up into many smaller chunks which can be allocated incrementally by the
-    //   request builders as needed
-    // - the minimum pool size is such that we can handle encoding the biggest possible request (3.2MB) in one go
-    //   without needing another buffer to be allocated, so that when we're building big requests, we hopefully don't
-    //   need to allocate on demand
-    // - the maximum pool size is an additional increase over the minimum size based on the allowable in-memory size of
-    //   the retry queue: if we're enqueuing requests in-memory due to retry backoff, we want to allow the request
-    //   builders to keep building new requests without being blocked by the buffer pool, such that there's enough
-    //   capacity to build requests until the retry queue starts throwing away the oldest ones to make room
-    //
-    // Our chunk size is 32KB: no strong reason for this, just a decent balance between being big enough to allow
-    // compressor output blocks to fit entirely but small enough to not be too wasteful.
-
-    let (minimum_size, maximum_size) = get_buffer_pool_min_max_size(config);
-    let (pool, shrinker) =
-        ElasticObjectPool::with_builder("dd_metrics_request_buffer", minimum_size, maximum_size, || {
-            FixedSizeVec::with_capacity(RB_BUFFER_POOL_BUF_SIZE)
-        });
-
-    spawn_traced_named("dd-metrics-buffer-pool-shrinker", shrinker);
-
-    debug!(minimum_size, maximum_size, "Created request builder buffer pool.");
-
-    pool
 }
