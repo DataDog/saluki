@@ -3164,6 +3164,7 @@ dependencies = [
  "saluki-env",
  "saluki-error",
  "saluki-event",
+ "saluki-health",
  "saluki-io",
  "saluki-metadata",
  "saluki-metrics",

@@ -17,6 +17,7 @@ use saluki_core::{
 use saluki_env::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider, Config};
 use saluki_error::{generic_error, GenericError};
 use saluki_event::DataType;
+use saluki_health::Health;
 use serde::Deserialize;
 use tokio::select;
 use tokio::sync::broadcast::Receiver;
@@ -100,17 +101,19 @@ impl CheckRunner for NoOpCheckRunner {
 
 struct ChecksDispatcher {
     shutdown_handle: DynamicShutdownHandle,
+    health: Health,
     event_rx: Receiver<AutodiscoveryEvent>,
     runners: Vec<Arc<dyn CheckRunner + Send + Sync>>,
 }
 
 impl ChecksDispatcher {
     pub fn new(
-        shutdown_handle: DynamicShutdownHandle, event_rx: Receiver<AutodiscoveryEvent>,
+        shutdown_handle: DynamicShutdownHandle, health: Health, event_rx: Receiver<AutodiscoveryEvent>,
         runners: Vec<Arc<dyn CheckRunner + Send + Sync>>,
     ) -> Self {
         Self {
             shutdown_handle,
+            health,
             event_rx,
             runners,
         }
@@ -125,8 +128,10 @@ impl ChecksDispatcher {
                     debug!("Received shutdown signal.");
                     break
                 },
-                event = self.event_rx.recv() => {
-                    match event {
+
+                _ = self.health.live() => continue,
+
+                event = self.event_rx.recv() => match event {
                         Ok(event) => {
                             match event {
                                 AutodiscoveryEvent::Schedule { config } => {
@@ -149,7 +154,6 @@ impl ChecksDispatcher {
                         Err(e) => {
                             error!("Error receiving event: {:?}", e);
                         }
-                    }
                 }
             }
         }
@@ -168,12 +172,20 @@ impl Source for ChecksSource {
 
         let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
-        let _check_dispatcher_health = context.health_registry().register_component("check_dispatcher");
+        let check_dispatcher_health = context
+            .health_registry()
+            .register_component("check_dispatcher")
+            .expect("Failed to register check dispatcher health");
         let event_rx = self.autodiscovery.subscribe().await;
 
         let runners: Vec<Arc<dyn CheckRunner + Send + Sync>> = vec![Arc::new(NoOpCheckRunner)];
 
-        let dispatcher = ChecksDispatcher::new(listener_shutdown_coordinator.register(), event_rx, runners);
+        let dispatcher = ChecksDispatcher::new(
+            listener_shutdown_coordinator.register(),
+            check_dispatcher_health,
+            event_rx,
+            runners,
+        );
 
         spawn_traced_named("checks-dispatcher", async move {
             dispatcher.run().await;
