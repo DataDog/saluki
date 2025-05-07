@@ -1,7 +1,9 @@
+#![allow(dead_code)]
+
 use std::time::Duration;
 
 use async_trait::async_trait;
-use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
+use http::{HeaderValue, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::task::HandleExt as _;
 use saluki_config::{GenericConfiguration, RefreshableConfiguration};
@@ -26,14 +28,18 @@ use tracing::{debug, error};
 use super::common::{
     config::ForwarderConfiguration,
     io::{create_request_builder_buffer_pool, get_buffer_pool_min_max_size_bytes, Handle, TransactionForwarder},
-    request_builder::{EndpointEncoder, RequestBuilder},
+    request_builder::RequestBuilder,
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
 };
 
-const BATCH_EVENTS_V1_API_PATH: &str = "/api/v1/batch_events";
+mod request_builder;
+use self::request_builder::EventsEndpointEncoder;
+
+const EVENTS_BATCH_V1_API_PATH: &str = "/api/v1/events_batch";
 const COMPRESSED_SIZE_LIMIT: usize = 3_200_000; // 3 MB
 const UNCOMPRESSED_SIZE_LIMIT: usize = 62_914_560; // 60 MB
+
 const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
 const MAX_EVENTS_PER_PAYLOAD: usize = 100;
 
@@ -124,7 +130,8 @@ impl DestinationBuilder for DatadogEventsConfiguration {
             telemetry.clone(),
             metrics_builder,
         )?;
-        let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
+        //let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
+        let compression_scheme = CompressionScheme::noop();
 
         // Create our request builder.
         let rb_buffer_pool =
@@ -365,43 +372,7 @@ async fn run_request_builder(
 
 fn get_events_endpoint_name(uri: &Uri) -> Option<MetaString> {
     match uri.path() {
-        BATCH_EVENTS_V1_API_PATH => Some(MetaString::from_static("batch_events_v1")),
+        EVENTS_BATCH_V1_API_PATH => Some(MetaString::from_static("events_batch_v1")),
         _ => None,
-    }
-}
-
-#[derive(Debug)]
-struct EventsEndpointEncoder;
-
-impl EndpointEncoder for EventsEndpointEncoder {
-    type Input = EventD;
-    type EncodeError = serde_json::Error;
-
-    fn encoder_name() -> &'static str {
-        "eventd"
-    }
-
-    fn compressed_size_limit(&self) -> usize {
-        COMPRESSED_SIZE_LIMIT
-    }
-
-    fn uncompressed_size_limit(&self) -> usize {
-        UNCOMPRESSED_SIZE_LIMIT
-    }
-
-    fn encode(&self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
-        serde_json::to_writer(buffer, input)
-    }
-
-    fn endpoint_uri(&self) -> Uri {
-        PathAndQuery::from_static(BATCH_EVENTS_V1_API_PATH).into()
-    }
-
-    fn endpoint_method(&self) -> Method {
-        Method::POST
-    }
-
-    fn content_type(&self) -> HeaderValue {
-        CONTENT_TYPE_JSON.clone()
     }
 }

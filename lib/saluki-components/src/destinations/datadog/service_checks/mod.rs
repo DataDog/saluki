@@ -393,6 +393,18 @@ impl EndpointEncoder for ServiceChecksEndpointEncoder {
         serde_json::to_writer(buffer, input)
     }
 
+    fn get_payload_prefix(&self) -> Option<&'static [u8]> {
+        Some(b"[")
+    }
+
+    fn get_payload_suffix(&self) -> Option<&'static [u8]> {
+        Some(b"]")
+    }
+
+    fn get_input_separator(&self) -> Option<&'static [u8]> {
+        Some(b",")
+    }
+
     fn endpoint_uri(&self) -> Uri {
         PathAndQuery::from_static(CHECK_RUN_V1_API_PATH).into()
     }
