@@ -5,18 +5,22 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{sources::*, ComponentContext},
-    topology::{shutdown::DynamicShutdownCoordinator, OutputDefinition},
+    topology::{
+        shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
+        OutputDefinition,
+    },
 };
-use saluki_env::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider};
+use saluki_env::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider, Config};
 use saluki_error::{generic_error, GenericError};
 use saluki_event::DataType;
 use serde::Deserialize;
 use tokio::select;
 use tokio::sync::broadcast::Receiver;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 /// Configuration for the checks source.
 #[derive(Deserialize)]
@@ -46,10 +50,9 @@ impl ChecksConfiguration {
 impl SourceBuilder for ChecksConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
         match &self.autodiscovery_provider {
-            Some(autodiscovery) => {
-                let event_rx = autodiscovery.subscribe().await;
-                Ok(Box::new(ChecksSource { event_rx }))
-            }
+            Some(autodiscovery) => Ok(Box::new(ChecksSource {
+                autodiscovery: Arc::clone(autodiscovery),
+            })),
             None => Err(generic_error!("No autodiscovery provider configured.")),
         }
     }
@@ -68,7 +71,93 @@ impl MemoryBounds for ChecksConfiguration {
 }
 
 struct ChecksSource {
+    autodiscovery: Arc<dyn AutodiscoveryProvider + Send + Sync>,
+}
+
+trait CheckRunner {
+    fn can_run_check(&self, check_request: &Config) -> bool;
+    fn run_check(&self, check_request: &Config) -> Result<(), GenericError>;
+    fn stop_check(&self, check_name: &String);
+}
+
+/// A no-op implementation of CheckRunner that logs but doesn't execute checks
+struct NoOpCheckRunner;
+
+impl CheckRunner for NoOpCheckRunner {
+    fn can_run_check(&self, _check_request: &Config) -> bool {
+        true
+    }
+
+    fn run_check(&self, check_request: &Config) -> Result<(), GenericError> {
+        info!("NoOpCheckRunner: Would run check {:?}", check_request.name);
+        Ok(())
+    }
+
+    fn stop_check(&self, check_name: &String) {
+        info!("NoOpCheckRunner: Would stop check {}", check_name);
+    }
+}
+
+struct ChecksDispatcher {
+    shutdown_handle: DynamicShutdownHandle,
     event_rx: Receiver<AutodiscoveryEvent>,
+    runners: Vec<Arc<dyn CheckRunner + Send + Sync>>,
+}
+
+impl ChecksDispatcher {
+    pub fn new(
+        shutdown_handle: DynamicShutdownHandle, event_rx: Receiver<AutodiscoveryEvent>,
+        runners: Vec<Arc<dyn CheckRunner + Send + Sync>>,
+    ) -> Self {
+        Self {
+            shutdown_handle,
+            event_rx,
+            runners,
+        }
+    }
+
+    pub async fn run(mut self) {
+        let check_dispatcher_shutdown_coordinator = DynamicShutdownCoordinator::default();
+
+        loop {
+            select! {
+                _ = &mut self.shutdown_handle => {
+                    debug!("Received shutdown signal.");
+                    break
+                },
+                event = self.event_rx.recv() => {
+                    match event {
+                        Ok(event) => {
+                            match event {
+                                AutodiscoveryEvent::Schedule { config } => {
+                                    for runner in self.runners.iter_mut() {
+                                        if runner.can_run_check(&config) {
+                                            if let Err(e) = runner.run_check(&config) {
+                                                error!("Error running check: {:?}", e);
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                }
+                                AutodiscoveryEvent::Unscheduled { config_id } => {
+                                    for runner in self.runners.iter_mut() {
+                                        runner.stop_check(&config_id);
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("Error receiving event: {:?}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        check_dispatcher_shutdown_coordinator.shutdown().await;
+
+        info!("Checks dispatcher stopped.");
+    }
 }
 
 #[async_trait]
@@ -77,23 +166,17 @@ impl Source for ChecksSource {
         let mut global_shutdown = context.take_shutdown_handle();
         let mut health = context.take_health_handle();
 
-        let listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
+        let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
-        let mut event_rx = self.event_rx;
+        let _check_dispatcher_health = context.health_registry().register_component("check_dispatcher");
+        let event_rx = self.autodiscovery.subscribe().await;
 
-        tokio::spawn(async move {
-            loop {
-                while let Ok(event) = event_rx.recv().await {
-                    match event {
-                        AutodiscoveryEvent::Schedule { config } => {
-                            info!("Received schedule check config: {:?}", config);
-                        }
-                        AutodiscoveryEvent::Unscheduled { config_id } => {
-                            info!("Received unscheduled check config: {:?}", config_id);
-                        }
-                    }
-                }
-            }
+        let runners: Vec<Arc<dyn CheckRunner + Send + Sync>> = vec![Arc::new(NoOpCheckRunner)];
+
+        let dispatcher = ChecksDispatcher::new(listener_shutdown_coordinator.register(), event_rx, runners);
+
+        spawn_traced_named("checks-dispatcher", async move {
+            dispatcher.run().await;
         });
 
         health.mark_ready();
