@@ -36,7 +36,7 @@ pub struct RestartStrategy {
 
 impl RestartStrategy {
     /// Creates a new `RestartStrategy` with the given mode, intensity, and period.
-    pub fn new(mode: RestartMode, intensity: usize, period: Duration) -> Self {
+    pub const fn new(mode: RestartMode, intensity: usize, period: Duration) -> Self {
         Self {
             mode,
             intensity,
