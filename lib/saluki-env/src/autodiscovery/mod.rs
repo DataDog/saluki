@@ -101,7 +101,7 @@ pub struct Config {
 
 impl Config {
     /// Get the ID for an instance
-    pub fn id(&self, instance: HashMap<MetaString, serde_yaml::Value>) -> String {
+    pub fn id(&self, instance: &HashMap<MetaString, serde_yaml::Value>) -> String {
         let digest = self.digest();
 
         let mut h2 = FnvHasher::default();
@@ -214,7 +214,7 @@ fn map_to_bytes(map: &HashMap<MetaString, serde_yaml::Value>) -> Result<Vec<u8>,
     Ok(s.into_bytes())
 }
 
-fn get_name_for_instance(instance: HashMap<MetaString, serde_yaml::Value>) -> String {
+fn get_name_for_instance(instance: &HashMap<MetaString, serde_yaml::Value>) -> String {
     if let Some(name) = instance.get("name") {
         if let Some(value) = name.as_str() {
             return value.to_string();
@@ -314,8 +314,8 @@ mod tests {
 
         let config = Config::from(proto_config);
 
-        let id1 = config.id(config.instances[0].clone());
-        let id2 = config.id(config.instances[1].clone());
+        let id1 = config.id(&config.instances[0]);
+        let id2 = config.id(&config.instances[1]);
 
         assert_ne!(id1, id2);
 

@@ -1,7 +1,9 @@
 /// Checks source.
 ///
 /// Listen to Autodiscovery events, schedule checks and emit results.
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -76,46 +78,48 @@ struct ChecksSource {
 }
 
 trait CheckRunner {
-    fn can_run_check(&self, check_request: &Config) -> bool;
-    fn run_check(&self, check_request: &Config) -> Result<(), GenericError>;
-    fn stop_check(&self, check_name: &String);
+    fn can_run_check(&mut self, check_request: &Config) -> bool;
+    fn run_check(&mut self, check_request: &Config) -> Result<(), GenericError>;
+    fn stop_check(&mut self, check_name: &String);
 }
 
 /// A no-op implementation of CheckRunner that logs but doesn't execute checks
 struct NoOpCheckRunner;
 
 impl CheckRunner for NoOpCheckRunner {
-    fn can_run_check(&self, _check_request: &Config) -> bool {
+    fn can_run_check(&mut self, _check_request: &Config) -> bool {
         true
     }
 
-    fn run_check(&self, check_request: &Config) -> Result<(), GenericError> {
+    fn run_check(&mut self, check_request: &Config) -> Result<(), GenericError> {
         info!("NoOpCheckRunner: Would run check {:?}", check_request.name);
         Ok(())
     }
 
-    fn stop_check(&self, check_name: &String) {
+    fn stop_check(&mut self, check_name: &String) {
         info!("NoOpCheckRunner: Would stop check {}", check_name);
     }
 }
 
-struct ChecksDispatcher {
+struct ChecksCollector {
     shutdown_handle: DynamicShutdownHandle,
     health: Health,
     event_rx: Receiver<AutodiscoveryEvent>,
-    runners: Vec<Arc<dyn CheckRunner + Send + Sync>>,
+    runners: Vec<Arc<Mutex<dyn CheckRunner + Send + Sync>>>,
+    checks: HashMap<String, Config>,
 }
 
-impl ChecksDispatcher {
+impl ChecksCollector {
     pub fn new(
         shutdown_handle: DynamicShutdownHandle, health: Health, event_rx: Receiver<AutodiscoveryEvent>,
-        runners: Vec<Arc<dyn CheckRunner + Send + Sync>>,
+        runners: Vec<Arc<Mutex<dyn CheckRunner + Send + Sync>>>,
     ) -> Self {
         Self {
             shutdown_handle,
             health,
             event_rx,
             runners,
+            checks: HashMap::new(),
         }
     }
 
@@ -135,17 +139,29 @@ impl ChecksDispatcher {
                         Ok(event) => {
                             match event {
                                 AutodiscoveryEvent::Schedule { config } => {
-                                    for runner in self.runners.iter_mut() {
-                                        if runner.can_run_check(&config) {
-                                            if let Err(e) = runner.run_check(&config) {
-                                                error!("Error running check: {:?}", e);
-                                            }
+                                    for instance in &config.instances {
+                                        let check_id = config.id(instance);
+                                        if self.checks.contains_key(&check_id) && self.checks[&check_id] == config {
                                             continue;
+                                        }
+
+                                        self.checks.insert(check_id, config.clone());
+
+
+                                        for runner in self.runners.iter_mut() {
+                                            let mut runner = runner.lock().unwrap();
+                                            if runner.can_run_check(&config) {
+                                                if let Err(e) = runner.run_check(&config) {
+                                                    error!("Error running check: {:?}", e);
+                                                }
+                                                continue;
+                                            }
                                         }
                                     }
                                 }
                                 AutodiscoveryEvent::Unscheduled { config_id } => {
                                     for runner in self.runners.iter_mut() {
+                                        let mut runner = runner.lock().unwrap();
                                         runner.stop_check(&config_id);
                                     }
                                 }
@@ -172,23 +188,23 @@ impl Source for ChecksSource {
 
         let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
-        let check_dispatcher_health = context
+        let check_collector_health = context
             .health_registry()
-            .register_component("check_dispatcher")
-            .expect("Failed to register check dispatcher health");
+            .register_component("checks_collectorr")
+            .expect("Failed to register checks collector health");
         let event_rx = self.autodiscovery.subscribe().await;
 
-        let runners: Vec<Arc<dyn CheckRunner + Send + Sync>> = vec![Arc::new(NoOpCheckRunner)];
+        let runners: Vec<Arc<Mutex<dyn CheckRunner + Send + Sync>>> = vec![Arc::new(Mutex::new(NoOpCheckRunner))];
 
-        let dispatcher = ChecksDispatcher::new(
+        let collector = ChecksCollector::new(
             listener_shutdown_coordinator.register(),
-            check_dispatcher_health,
+            check_collector_health,
             event_rx,
             runners,
         );
 
-        spawn_traced_named("checks-dispatcher", async move {
-            dispatcher.run().await;
+        spawn_traced_named("checks-collector", async move {
+            collector.run().await;
         });
 
         health.mark_ready();
