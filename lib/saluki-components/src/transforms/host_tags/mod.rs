@@ -111,7 +111,10 @@ impl HostTagsEnrichment {
         let resolver = self.context_resolver.as_mut().unwrap();
         let host_tags = self.host_tags.as_ref().unwrap();
 
-        let tags = metric.context().tags().into_iter()
+        let tags = metric
+            .context()
+            .tags()
+            .into_iter()
             .map(|t| t.as_str())
             .chain(host_tags.iter().map(|t| t.as_str()));
 
