@@ -1,9 +1,8 @@
 /// Checks source.
 ///
 /// Listen to Autodiscovery events, schedule checks and emit results.
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -77,27 +76,21 @@ struct ChecksSource {
     autodiscovery: Arc<dyn AutodiscoveryProvider + Send + Sync>,
 }
 
-trait CheckRunner {
-    fn can_run_check(&mut self, check_request: &Config) -> bool;
-    fn run_check(&mut self, check_request: &Config) -> Result<(), GenericError>;
-    fn stop_check(&mut self, check_name: &String);
+trait Check {
+    fn run(&self) -> Result<(), GenericError>;
+    fn stop(&self);
 }
 
-/// A no-op implementation of CheckRunner that logs but doesn't execute checks
-struct NoOpCheckRunner;
+trait CheckBuilder {
+    fn build_check(&self, check_request: &Config) -> Option<Arc<dyn Check + Send + Sync>>;
+}
 
-impl CheckRunner for NoOpCheckRunner {
-    fn can_run_check(&mut self, _check_request: &Config) -> bool {
-        true
-    }
+/// A no-op implementation of CheckBuilder
+struct NoOpCheckBuilder;
 
-    fn run_check(&mut self, check_request: &Config) -> Result<(), GenericError> {
-        info!("NoOpCheckRunner: Would run check {:?}", check_request.name);
-        Ok(())
-    }
-
-    fn stop_check(&mut self, check_name: &String) {
-        info!("NoOpCheckRunner: Would stop check {}", check_name);
+impl CheckBuilder for NoOpCheckBuilder {
+    fn build_check(&self, _check_request: &Config) -> Option<Arc<dyn Check + Send + Sync>> {
+        None
     }
 }
 
@@ -105,21 +98,21 @@ struct ChecksCollector {
     shutdown_handle: DynamicShutdownHandle,
     health: Health,
     event_rx: Receiver<AutodiscoveryEvent>,
-    runners: Vec<Arc<Mutex<dyn CheckRunner + Send + Sync>>>,
-    checks: HashMap<String, Config>,
+    check_builder: Vec<Arc<dyn CheckBuilder + Send + Sync>>,
+    checks: HashSet<String>,
 }
 
 impl ChecksCollector {
     pub fn new(
         shutdown_handle: DynamicShutdownHandle, health: Health, event_rx: Receiver<AutodiscoveryEvent>,
-        runners: Vec<Arc<Mutex<dyn CheckRunner + Send + Sync>>>,
+        check_builder: Vec<Arc<dyn CheckBuilder + Send + Sync>>,
     ) -> Self {
         Self {
             shutdown_handle,
             health,
             event_rx,
-            runners,
-            checks: HashMap::new(),
+            check_builder,
+            checks: HashSet::new(),
         }
     }
 
@@ -139,31 +132,31 @@ impl ChecksCollector {
                         Ok(event) => {
                             match event {
                                 AutodiscoveryEvent::Schedule { config } => {
+                                    let digest = &config.digest();
+
+                                    let mut checks: Vec<Arc<dyn Check + Send + Sync>> = vec![];
                                     for instance in &config.instances {
-                                        let check_id = config.id(instance);
-                                        if self.checks.contains_key(&check_id) && self.checks[&check_id] == config {
+                                        let check_id = config.id(digest, instance);
+                                        if self.checks.contains(&check_id) {
                                             continue;
                                         }
 
-                                        self.checks.insert(check_id, config.clone());
-
-
-                                        for runner in self.runners.iter_mut() {
-                                            let mut runner = runner.lock().unwrap();
-                                            if runner.can_run_check(&config) {
-                                                if let Err(e) = runner.run_check(&config) {
-                                                    error!("Error running check: {:?}", e);
-                                                }
+                                        for builder in self.check_builder.iter_mut() {
+                                            if let Some(check) = builder.build_check(&config) {
+                                                checks.push(check);
+                                                self.checks.insert(check_id.clone());
                                                 continue;
                                             }
                                         }
                                     }
-                                }
-                                AutodiscoveryEvent::Unscheduled { config_id } => {
-                                    for runner in self.runners.iter_mut() {
-                                        let mut runner = runner.lock().unwrap();
-                                        runner.stop_check(&config_id);
+
+                                    for check in checks {
+                                        // TODO: Implement the scheduler
+                                        let _ = check.run();
                                     }
+                                }
+                                AutodiscoveryEvent::Unscheduled { .. } => {
+                                    // TODO: Implement
                                 }
                             }
                         }
@@ -194,13 +187,13 @@ impl Source for ChecksSource {
             .expect("Failed to register checks collector health");
         let event_rx = self.autodiscovery.subscribe().await;
 
-        let runners: Vec<Arc<Mutex<dyn CheckRunner + Send + Sync>>> = vec![Arc::new(Mutex::new(NoOpCheckRunner))];
+        let check_builder: Vec<Arc<dyn CheckBuilder + Send + Sync>> = vec![Arc::new(NoOpCheckBuilder)];
 
         let collector = ChecksCollector::new(
             listener_shutdown_coordinator.register(),
             check_collector_health,
             event_rx,
-            runners,
+            check_builder,
         );
 
         spawn_traced_named("checks-collector", async move {
