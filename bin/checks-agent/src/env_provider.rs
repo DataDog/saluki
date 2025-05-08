@@ -25,7 +25,7 @@ use tracing::{debug, warn};
 #[allow(dead_code)]
 pub struct ChecksAgentEnvProvider {
     host_provider: BoxedHostProvider,
-    autodiscovery_provider: BoxedAutodiscoveryProvider,
+    pub autodiscovery_provider: BoxedAutodiscoveryProvider,
 }
 
 impl ChecksAgentEnvProvider {
@@ -54,7 +54,11 @@ impl ChecksAgentEnvProvider {
 
         let autodiscovery_provider = if in_standalone_mode {
             debug!("Using local autodiscovery provider due to standalone mode.");
-            BoxedAutodiscoveryProvider::from_provider(LocalAutodiscoveryProvider::new(vec!["dist"]))
+            let mut config_dir = config.get_typed_or_default::<String>("checks_config_dir");
+            if config_dir.is_empty() {
+                config_dir = "./dist/conf.d".to_string();
+            }
+            BoxedAutodiscoveryProvider::from_provider(LocalAutodiscoveryProvider::new(vec![config_dir]))
         } else {
             let client = RemoteAgentClient::from_configuration(config).await?;
             BoxedAutodiscoveryProvider::from_provider(RemoteAgentAutodiscoveryProvider::new(client))

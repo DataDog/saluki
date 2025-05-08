@@ -18,6 +18,7 @@ target:
 
     # Runs ADP in standalone mode, which decouples ADP from any dependency on the Datadog Agent.
     DD_ADP_STANDALONE_MODE: "true"
+    DD_CHECKS_CONFIG_DIR: "./conf.d"
 
     # Enable internal telemetry endpoint.
     DD_TELEMETRY_ENABLED: "true"
