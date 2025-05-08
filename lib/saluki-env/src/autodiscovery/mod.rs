@@ -3,12 +3,15 @@
 //! This module provides the `Autodiscovery` trait, which deals with providing information about autodiscovery.
 
 use std::collections::HashMap;
+use std::hash::Hasher;
 
 use async_trait::async_trait;
 use datadog_protos::agent::{Config as ProtoConfig, ConfigEventType};
+use fnv::FnvHasher;
 use saluki_error::GenericError;
 use stringtheory::MetaString;
 use tokio::sync::broadcast::Receiver;
+use twox_hash::XxHash64;
 
 pub mod providers;
 
@@ -96,6 +99,50 @@ pub struct Config {
     pub logs_excluded: bool,
 }
 
+impl Config {
+    /// Get the ID for an instance
+    pub fn id(&self, instance: HashMap<MetaString, serde_yaml::Value>) -> String {
+        let digest = self.digest();
+
+        let mut h2 = FnvHasher::default();
+        h2.write_u64(digest);
+        h2.write(&map_to_bytes(&instance).unwrap());
+        h2.write(&map_to_bytes(&self.init_config).unwrap());
+
+        let name = get_name_for_instance(instance);
+        let hash2 = h2.finish();
+
+        if !name.is_empty() {
+            format!("{}:{}:{:X}", self.name, name, hash2)
+        } else {
+            format!("{}:{:X}", self.name, hash2)
+        }
+    }
+
+    fn digest(&self) -> u64 {
+        let mut h = XxHash64::with_seed(0);
+
+        h.write(self.name.as_bytes());
+        for i in &self.instances {
+            h.write(&map_to_bytes(i).unwrap());
+        }
+        h.write(&map_to_bytes(&self.init_config).unwrap());
+        for i in &self.ad_identifiers {
+            h.write(i.as_bytes());
+        }
+        h.write(self.node_name.as_bytes());
+        h.write(&map_to_bytes(&self.logs_config).unwrap());
+        h.write(self.service_id.as_bytes());
+        h.write(if self.ignore_autodiscovery_tags {
+            b"true"
+        } else {
+            b"false"
+        });
+
+        h.finish()
+    }
+}
+
 impl From<ProtoConfig> for Config {
     fn from(proto: ProtoConfig) -> Self {
         // Convert advanced AD identifiers from proto
@@ -162,6 +209,25 @@ fn bytes_to_hashmap(bytes: Vec<u8>) -> Result<HashMap<MetaString, serde_yaml::Va
     Ok(result)
 }
 
+fn map_to_bytes(map: &HashMap<MetaString, serde_yaml::Value>) -> Result<Vec<u8>, serde_yaml::Error> {
+    let s = serde_yaml::to_string(map)?;
+    Ok(s.into_bytes())
+}
+
+fn get_name_for_instance(instance: HashMap<MetaString, serde_yaml::Value>) -> String {
+    if let Some(name) = instance.get("name") {
+        if let Some(value) = name.as_str() {
+            return value.to_string();
+        }
+    }
+    if let Some(namespace) = instance.get("namespace") {
+        if let Some(value) = namespace.as_str() {
+            return value.to_string();
+        }
+    }
+    "".to_string()
+}
+
 impl From<ProtoConfig> for AutodiscoveryEvent {
     fn from(proto: ProtoConfig) -> AutodiscoveryEvent {
         let event_type = EventType::from(proto.event_type);
@@ -222,6 +288,39 @@ mod tests {
         // Unknown values should default to Schedule
         assert_eq!(EventType::from(2), EventType::Schedule);
         assert_eq!(EventType::from(-1), EventType::Schedule);
+    }
+
+    #[test]
+    fn test_config_id() {
+        let proto_config = ProtoConfig {
+            name: "test-check".to_string(),
+            event_type: ConfigEventType::Schedule as i32,
+            init_config: b"key: value".to_vec(),
+            instances: vec![b"name: test".to_vec(), b"another_key: another_value".to_vec()],
+            provider: "test-provider".to_string(),
+            ad_identifiers: vec!["id1".to_string(), "id2".to_string()],
+            cluster_check: true,
+            metric_config: b"metric_key: metric_value".to_vec(),
+            logs_config: b"log_key: log_value".to_vec(),
+            advanced_ad_identifiers: vec![],
+            service_id: "service-id".to_string(),
+            tagger_entity: "tagger-entity".to_string(),
+            node_name: "node-name".to_string(),
+            source: "source".to_string(),
+            ignore_autodiscovery_tags: false,
+            metrics_excluded: false,
+            logs_excluded: false,
+        };
+
+        let config = Config::from(proto_config);
+
+        let id1 = config.id(config.instances[0].clone());
+        let id2 = config.id(config.instances[1].clone());
+
+        assert_ne!(id1, id2);
+
+        assert_eq!(id1, "test-check:test:369F074E36651C8");
+        assert_eq!(id2, "test-check:8C83712B7A572843");
     }
 
     #[test]

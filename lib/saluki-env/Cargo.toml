@@ -41,6 +41,8 @@ tokio-rustls = { workspace = true }
 tonic = { workspace = true, features = ["transport"] }
 tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true }
+fnv = { workspace = true }
+twox-hash = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
