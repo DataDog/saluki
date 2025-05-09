@@ -284,8 +284,8 @@ mod tests {
 
     use bytesize::ByteSize;
     use saluki_context::Context;
+    use saluki_core::data_model::event::metric::Metric;
     use saluki_error::GenericError;
-    use saluki_event::metric::Metric;
     use serde_json::{json, Value};
 
     use super::{MapperProfileConfigs, MetricMapper};
