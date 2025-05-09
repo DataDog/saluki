@@ -98,7 +98,7 @@ pub fn hash_single_fast<H: std::hash::Hash>(value: H) -> u64 {
 
 /// Hashes a single value using the "stable" hash implementation, and returns the 64-bit hash value.
 ///
-/// Utilizes the "stable" hash implementation provided by [`StableHasher`]. See [`get_fast_hasher`] for more details on
+/// Utilizes the "stable" hash implementation provided by [`StableHasher`].
 #[inline]
 pub fn hash_single_stable<H: std::hash::Hash>(value: H) -> u64 {
     let mut hasher = StableHasher::default();
