@@ -181,6 +181,7 @@ fs4 = { version = "0.13.1", default-features = false }
 [profile.release]
 lto = "thin"
 codegen-units = 4
+opt-level = "s"
 debug = true
 
 [profile.optimized-release]
