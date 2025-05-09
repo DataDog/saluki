@@ -177,6 +177,7 @@ axum-extra = { version = "0.9", default-features = false }
 papaya = { version = "0.2", default-features = false }
 tempfile = { version = "3", default-features = false }
 fs4 = { version = "0.13.1", default-features = false }
+sha3 = { version = "0.10", default-features = false }
 
 [profile.release]
 lto = "thin"
