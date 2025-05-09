@@ -5,7 +5,7 @@ use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::task::HandleExt as _;
 use saluki_config::{GenericConfiguration, RefreshableConfiguration};
-use saluki_core::data_model::event::{service_check::ServiceCheck, DataType};
+use saluki_core::data_model::event::{service_check::ServiceCheck, EventType};
 use saluki_core::{
     components::{destinations::*, ComponentContext},
     observability::ComponentMetricsExt as _,
@@ -110,8 +110,8 @@ impl DatadogServiceChecksConfiguration {
 
 #[async_trait]
 impl DestinationBuilder for DatadogServiceChecksConfiguration {
-    fn input_data_type(&self) -> DataType {
-        DataType::ServiceCheck
+    fn input_event_type(&self) -> EventType {
+        EventType::ServiceCheck
     }
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {

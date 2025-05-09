@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, fmt};
 
 use crate::{
-    data_model::event::{DataType, Event},
+    data_model::event::{Event, EventType},
     pooling::{helpers::pooled_newtype, Clearable, ObjectPool},
 };
 
@@ -11,7 +11,7 @@ struct FixedSizeVecDeque<T>(VecDeque<T>);
 /// A fixed-size event buffer.
 pub struct FixedSizeEventBufferInner {
     events: FixedSizeVecDeque<Event>,
-    seen_data_types: DataType,
+    seen_event_types: EventType,
 }
 
 impl FixedSizeEventBufferInner {
@@ -19,7 +19,7 @@ impl FixedSizeEventBufferInner {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             events: FixedSizeVecDeque(VecDeque::with_capacity(capacity)),
-            seen_data_types: DataType::none(),
+            seen_event_types: EventType::none(),
         }
     }
 }
@@ -27,7 +27,7 @@ impl FixedSizeEventBufferInner {
 impl Clearable for FixedSizeEventBufferInner {
     fn clear(&mut self) {
         self.events.0.clear();
-        self.seen_data_types = DataType::none();
+        self.seen_event_types = EventType::none();
     }
 }
 
@@ -64,9 +64,9 @@ impl FixedSizeEventBuffer {
         self.len() == self.capacity()
     }
 
-    /// Returns `true` if this event buffer contains one or more events of the given data type.
-    pub fn has_data_type(&self, data_type: DataType) -> bool {
-        self.data().seen_data_types.contains(data_type)
+    /// Returns `true` if this event buffer contains one or more events of the given event type.
+    pub fn has_event_type(&self, event_type: EventType) -> bool {
+        self.data().seen_event_types.contains(event_type)
     }
 
     /// Attempts to append an event to the back of the event buffer.
@@ -77,7 +77,7 @@ impl FixedSizeEventBuffer {
             return Some(event);
         }
 
-        self.data_mut().seen_data_types |= event.data_type();
+        self.data_mut().seen_event_types |= event.event_type();
         self.data_mut().events.0.push_back(event);
         None
     }
@@ -92,13 +92,13 @@ impl FixedSizeEventBuffer {
 
         let mut indices_to_remove = Vec::new();
         let mut removed_events = VecDeque::new();
-        let mut seen_data_types = DataType::none();
+        let mut seen_event_types = EventType::none();
 
         for (pos, event) in events.iter_mut().enumerate() {
             if predicate(event) {
                 indices_to_remove.push(pos);
             } else {
-                seen_data_types |= event.data_type();
+                seen_event_types |= event.event_type();
             }
         }
 
@@ -109,8 +109,8 @@ impl FixedSizeEventBuffer {
             }
         }
 
-        // Update the seen data types to reflect what's left over.
-        data.seen_data_types = seen_data_types;
+        // Update the seen event types to reflect what's left over.
+        data.seen_event_types = seen_event_types;
 
         removed_events.into_iter()
     }
@@ -122,7 +122,7 @@ impl FixedSizeEventBuffer {
     {
         let data = self.data_mut();
         let events = &mut data.events.0;
-        let mut seen_data_types = DataType::none();
+        let mut seen_event_types = EventType::none();
 
         let mut i = 0;
         let mut end = events.len();
@@ -131,13 +131,13 @@ impl FixedSizeEventBuffer {
                 events.swap_remove_back(i);
                 end -= 1;
             } else {
-                seen_data_types |= events[i].data_type();
+                seen_event_types |= events[i].event_type();
                 i += 1;
             }
         }
 
-        // Update the seen data types to reflect what's left over.
-        data.seen_data_types = seen_data_types;
+        // Update the seen event types to reflect what's left over.
+        data.seen_event_types = seen_event_types;
     }
 }
 
@@ -257,7 +257,7 @@ mod tests {
             eventd::EventD,
             metric::Metric,
             service_check::{CheckStatus, ServiceCheck},
-            DataType, Event,
+            Event, EventType,
         },
         pooling::Clearable as _,
     };
@@ -277,42 +277,42 @@ mod tests {
         // Create an empty event buffer and assert that it's empty and has no seen data types:
         let mut buffer = FixedSizeEventBuffer::for_test(10);
         assert!(buffer.is_empty());
-        assert!(!buffer.has_data_type(DataType::Metric));
-        assert!(!buffer.has_data_type(DataType::EventD));
-        assert!(!buffer.has_data_type(DataType::ServiceCheck));
+        assert!(!buffer.has_event_type(EventType::Metric));
+        assert!(!buffer.has_event_type(EventType::EventD));
+        assert!(!buffer.has_event_type(EventType::ServiceCheck));
 
         // Now write a metric, and make sure that's reflected:
         assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 42.0))).is_none());
         assert!(!buffer.is_empty());
-        assert!(buffer.has_data_type(DataType::Metric));
-        assert!(!buffer.has_data_type(DataType::EventD));
-        assert!(!buffer.has_data_type(DataType::ServiceCheck));
+        assert!(buffer.has_event_type(EventType::Metric));
+        assert!(!buffer.has_event_type(EventType::EventD));
+        assert!(!buffer.has_event_type(EventType::ServiceCheck));
 
         // Finally, clear the inner data -- this simulates what happens when an object is returned to the pool -- and
         // assert that the buffer is once again empty and has no seen data types:
         buffer.data_mut().clear();
         assert!(buffer.is_empty());
-        assert!(!buffer.has_data_type(DataType::Metric));
-        assert!(!buffer.has_data_type(DataType::EventD));
-        assert!(!buffer.has_data_type(DataType::ServiceCheck));
+        assert!(!buffer.has_event_type(EventType::Metric));
+        assert!(!buffer.has_event_type(EventType::EventD));
+        assert!(!buffer.has_event_type(EventType::ServiceCheck));
     }
 
     #[test]
-    fn has_data_type() {
+    fn has_event_type() {
         let mut buffer = FixedSizeEventBuffer::for_test(10);
-        assert!(!buffer.has_data_type(DataType::Metric));
-        assert!(!buffer.has_data_type(DataType::EventD));
-        assert!(!buffer.has_data_type(DataType::ServiceCheck));
+        assert!(!buffer.has_event_type(EventType::Metric));
+        assert!(!buffer.has_event_type(EventType::EventD));
+        assert!(!buffer.has_event_type(EventType::ServiceCheck));
 
         assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 42.0))).is_none());
-        assert!(buffer.has_data_type(DataType::Metric));
-        assert!(!buffer.has_data_type(DataType::EventD));
-        assert!(!buffer.has_data_type(DataType::ServiceCheck));
+        assert!(buffer.has_event_type(EventType::Metric));
+        assert!(!buffer.has_event_type(EventType::EventD));
+        assert!(!buffer.has_event_type(EventType::ServiceCheck));
 
         assert!(buffer.try_push(Event::EventD(EventD::new("title", "text"))).is_none());
-        assert!(buffer.has_data_type(DataType::Metric));
-        assert!(buffer.has_data_type(DataType::EventD));
-        assert!(!buffer.has_data_type(DataType::ServiceCheck));
+        assert!(buffer.has_event_type(EventType::Metric));
+        assert!(buffer.has_event_type(EventType::EventD));
+        assert!(!buffer.has_event_type(EventType::ServiceCheck));
     }
 
     #[test]
@@ -331,30 +331,30 @@ mod tests {
             .is_none());
 
         assert_eq!(buffer.len(), 7);
-        assert!(buffer.has_data_type(DataType::Metric));
-        assert!(buffer.has_data_type(DataType::EventD));
-        assert!(buffer.has_data_type(DataType::ServiceCheck));
+        assert!(buffer.has_event_type(EventType::Metric));
+        assert!(buffer.has_event_type(EventType::EventD));
+        assert!(buffer.has_event_type(EventType::ServiceCheck));
 
         let eventd_event_buffer: VecDeque<Event> = buffer.extract(Event::is_eventd).collect();
         assert_eq!(buffer.len(), 4);
         assert_eq!(eventd_event_buffer.len(), 3);
-        assert!(buffer.has_data_type(DataType::Metric));
-        assert!(!buffer.has_data_type(DataType::EventD));
-        assert!(buffer.has_data_type(DataType::ServiceCheck));
+        assert!(buffer.has_event_type(EventType::Metric));
+        assert!(!buffer.has_event_type(EventType::EventD));
+        assert!(buffer.has_event_type(EventType::ServiceCheck));
 
         let service_checks_event_buffer: VecDeque<Event> = buffer.extract(Event::is_service_check).collect();
         assert_eq!(buffer.len(), 2);
         assert_eq!(service_checks_event_buffer.len(), 2);
-        assert!(buffer.has_data_type(DataType::Metric));
-        assert!(!buffer.has_data_type(DataType::EventD));
-        assert!(!buffer.has_data_type(DataType::ServiceCheck));
+        assert!(buffer.has_event_type(EventType::Metric));
+        assert!(!buffer.has_event_type(EventType::EventD));
+        assert!(!buffer.has_event_type(EventType::ServiceCheck));
 
         let new_buffer: VecDeque<Event> = buffer.extract(Event::is_metric).collect();
         assert_eq!(buffer.len(), 0);
         assert_eq!(new_buffer.len(), 2);
-        assert!(!buffer.has_data_type(DataType::Metric));
-        assert!(!buffer.has_data_type(DataType::EventD));
-        assert!(!buffer.has_data_type(DataType::ServiceCheck));
+        assert!(!buffer.has_event_type(EventType::Metric));
+        assert!(!buffer.has_event_type(EventType::EventD));
+        assert!(!buffer.has_event_type(EventType::ServiceCheck));
     }
 
     #[test]
@@ -372,16 +372,16 @@ mod tests {
         assert!(buffer.try_push(event3.clone()).is_none());
         assert!(buffer.try_push(event4.clone()).is_none());
         assert_eq!(buffer.len(), 4);
-        assert!(buffer.has_data_type(DataType::Metric));
-        assert!(buffer.has_data_type(DataType::EventD));
-        assert!(buffer.has_data_type(DataType::ServiceCheck));
+        assert!(buffer.has_event_type(EventType::Metric));
+        assert!(buffer.has_event_type(EventType::EventD));
+        assert!(buffer.has_event_type(EventType::ServiceCheck));
 
         // Remove events that are EventD.
         buffer.remove_if(|event| event.is_eventd());
         assert_eq!(buffer.len(), 2);
-        assert!(buffer.has_data_type(DataType::Metric));
-        assert!(!buffer.has_data_type(DataType::EventD));
-        assert!(buffer.has_data_type(DataType::ServiceCheck));
+        assert!(buffer.has_event_type(EventType::Metric));
+        assert!(!buffer.has_event_type(EventType::EventD));
+        assert!(buffer.has_event_type(EventType::ServiceCheck));
 
         // Make sure we have the expected events left.
         let mut remaining_events = buffer.into_iter().collect::<Vec<_>>();
