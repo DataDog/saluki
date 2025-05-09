@@ -4,7 +4,7 @@ use serde::{Serialize, Serializer};
 use stringtheory::MetaString;
 
 /// Service status.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CheckStatus {
     /// The service is operating normally.
     Ok,
@@ -23,7 +23,7 @@ pub enum CheckStatus {
 ///
 /// Service checks represent the status of a service at a particular point in time. Checks are simplistic, with a basic
 /// message, status enum (OK vs warning vs critical, etc), timestamp, and tags.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ServiceCheck {
     #[serde(rename = "check")]
     name: MetaString,
