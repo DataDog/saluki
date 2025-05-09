@@ -10,7 +10,7 @@ use crate::{
         transforms::{Transform, TransformBuilder, TransformContext},
         ComponentContext,
     },
-    data_model::event::DataType,
+    data_model::event::EventType,
 };
 
 struct TestSource;
@@ -27,9 +27,9 @@ pub struct TestSourceBuilder {
 }
 
 impl TestSourceBuilder {
-    pub fn default_output(data_ty: DataType) -> Self {
+    pub fn default_output(event_ty: EventType) -> Self {
         Self {
-            outputs: vec![OutputDefinition::default_output(data_ty)],
+            outputs: vec![OutputDefinition::default_output(event_ty)],
         }
     }
 }
@@ -59,27 +59,27 @@ impl Transform for TestTransform {
 }
 
 pub struct TestTransformBuilder {
-    input_data_ty: DataType,
+    input_event_ty: EventType,
     outputs: Vec<OutputDefinition>,
 }
 
 impl TestTransformBuilder {
-    pub fn default_output(input_data_ty: DataType, output_data_ty: DataType) -> Self {
+    pub fn default_output(input_event_ty: EventType, output_event_ty: EventType) -> Self {
         Self {
-            input_data_ty,
-            outputs: vec![OutputDefinition::default_output(output_data_ty)],
+            input_event_ty,
+            outputs: vec![OutputDefinition::default_output(output_event_ty)],
         }
     }
 
     pub fn multiple_outputs<'a>(
-        input_data_ty: DataType, outputs: impl Iterator<Item = &'a (Option<&'a str>, DataType)>,
+        input_event_ty: EventType, outputs: impl Iterator<Item = &'a (Option<&'a str>, EventType)>,
     ) -> Self {
         Self {
-            input_data_ty,
+            input_event_ty,
             outputs: outputs
-                .map(|(name, data_ty)| match name {
-                    Some(name) => OutputDefinition::named_output(name.to_string(), *data_ty),
-                    None => OutputDefinition::default_output(*data_ty),
+                .map(|(name, event_ty)| match name {
+                    Some(name) => OutputDefinition::named_output(name.to_string(), *event_ty),
+                    None => OutputDefinition::default_output(*event_ty),
                 })
                 .collect(),
         }
@@ -88,8 +88,8 @@ impl TestTransformBuilder {
 
 #[async_trait]
 impl TransformBuilder for TestTransformBuilder {
-    fn input_data_type(&self) -> DataType {
-        self.input_data_ty
+    fn input_event_type(&self) -> EventType {
+        self.input_event_ty
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
@@ -115,19 +115,19 @@ impl Destination for TestDestination {
 }
 
 pub struct TestDestinationBuilder {
-    input_data_ty: DataType,
+    input_event_ty: EventType,
 }
 
 impl TestDestinationBuilder {
-    pub fn with_input_type(input_data_ty: DataType) -> Self {
-        Self { input_data_ty }
+    pub fn with_input_type(input_event_ty: EventType) -> Self {
+        Self { input_event_ty }
     }
 }
 
 #[async_trait]
 impl DestinationBuilder for TestDestinationBuilder {
-    fn input_data_type(&self) -> DataType {
-        self.input_data_ty
+    fn input_event_type(&self) -> EventType {
+        self.input_event_ty
     }
 
     async fn build(&self, _: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {

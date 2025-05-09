@@ -263,7 +263,7 @@ fn spawn_source(
 ) -> AbortHandle {
     let component_span = error_span!(
         "component",
-        "type" = context.component_context().component_type(),
+        "type" = context.component_context().component_type().as_str(),
         id = %context.component_context().component_id(),
     );
 
@@ -282,7 +282,7 @@ fn spawn_transform(
 ) -> AbortHandle {
     let component_span = error_span!(
         "component",
-        "type" = context.component_context().component_type(),
+        "type" = context.component_context().component_type().as_str(),
         id = %context.component_context().component_id(),
     );
 
@@ -301,7 +301,7 @@ fn spawn_destination(
 ) -> AbortHandle {
     let component_span = error_span!(
         "component",
-        "type" = context.component_context().component_type(),
+        "type" = context.component_context().component_type().as_str(),
         id = %context.component_context().component_id(),
     );
 

@@ -20,6 +20,6 @@ impl ComponentMetricsExt for MetricsBuilder {
     fn from_component_context(context: ComponentContext) -> Self {
         MetricsBuilder::default()
             .add_default_tag(("component_id", context.component_id().to_string()))
-            .add_default_tag(("component_type", context.component_type()))
+            .add_default_tag(("component_type", context.component_type().as_str()))
     }
 }

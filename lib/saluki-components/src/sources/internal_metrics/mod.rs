@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::StreamExt as _;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::data_model::event::DataType;
+use saluki_core::data_model::event::EventType;
 use saluki_core::{
     components::{sources::*, ComponentContext},
     observability::metrics::MetricsStream,
@@ -25,7 +25,7 @@ impl SourceBuilder for InternalMetricsConfiguration {
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(DataType::Metric)];
+        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(EventType::Metric)];
 
         OUTPUTS
     }
