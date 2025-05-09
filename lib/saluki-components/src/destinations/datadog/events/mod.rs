@@ -1,18 +1,20 @@
+#![allow(dead_code)]
+
 use std::time::Duration;
 
 use async_trait::async_trait;
-use http::Uri;
+use http::{HeaderValue, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::task::HandleExt as _;
 use saluki_config::{GenericConfiguration, RefreshableConfiguration};
 use saluki_core::{
     components::{destinations::*, ComponentContext},
     observability::ComponentMetricsExt as _,
-    pooling::{ElasticObjectPool, ObjectPool},
+    pooling::ElasticObjectPool,
     topology::interconnect::FixedSizeEventBuffer,
 };
 use saluki_error::{ErrorContext as _, GenericError};
-use saluki_event::{metric::Metric, DataType};
+use saluki_event::{eventd::EventD, DataType};
 use saluki_io::{
     buf::{BytesBuffer, FrozenChunkedBytesBuffer},
     compression::CompressionScheme,
@@ -32,14 +34,16 @@ use super::common::{
 };
 
 mod request_builder;
-use self::request_builder::{MetricsEndpoint, MetricsEndpointEncoder};
+use self::request_builder::EventsEndpointEncoder;
 
-const RB_BUFFER_POOL_BUF_SIZE: usize = 32_768;
+const EVENTS_BATCH_V1_API_PATH: &str = "/api/v1/events_batch";
+const COMPRESSED_SIZE_LIMIT: usize = 3_200_000; // 3 MB
+const UNCOMPRESSED_SIZE_LIMIT: usize = 62_914_560; // 60 MB
+
 const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
+const MAX_EVENTS_PER_PAYLOAD: usize = 100;
 
-const fn default_max_metrics_per_payload() -> usize {
-    10_000
-}
+static CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/json");
 
 const fn default_flush_timeout_secs() -> u64 {
     2
@@ -53,19 +57,11 @@ const fn default_zstd_compressor_level() -> i32 {
     3
 }
 
-/// Datadog Metrics destination.
+/// Datadog Events destination.
 ///
-/// Forwards metrics to the Datadog platform. It can handle both series and sketch metrics, and only utilizes the latest
-/// API endpoints for both, which both use Protocol Buffers-encoded payloads.
-///
-/// ## Missing
-///
-/// - ability to configure either the basic site _or_ a specific endpoint (requires a full URI at the moment, even if
-///   it's just something like `https`)
-/// - retries, timeouts, rate limiting (no Tower middleware stack yet)
-#[derive(Clone, Deserialize)]
-#[allow(dead_code)]
-pub struct DatadogMetricsConfiguration {
+/// Forwards events to the Datadog platform.
+#[derive(Deserialize)]
+pub struct DatadogEventsConfiguration {
     /// Forwarder configuration settings.
     ///
     /// See [`ForwarderConfiguration`] for more information about the available settings.
@@ -75,24 +71,13 @@ pub struct DatadogMetricsConfiguration {
     #[serde(skip)]
     config_refresher: Option<RefreshableConfiguration>,
 
-    /// Maximum number of input metrics to encode into a single request payload.
-    ///
-    /// This applies both to the series and sketches endpoints.
-    ///
-    /// Defaults to 10,000.
-    #[serde(
-        rename = "serializer_max_metrics_per_payload",
-        default = "default_max_metrics_per_payload"
-    )]
-    max_metrics_per_payload: usize,
-
     /// Flush timeout for pending requests, in seconds.
     ///
-    /// When the destination has written metrics to the in-flight request payload, but it has not yet reached the
-    /// payload size limits that would force the payload to be flushed, the destination will wait for a period of time
-    /// before flushing the in-flight request payload. This allows for the possibility of other events to be processed
-    /// and written into the request payload, thereby maximizing the payload size and reducing the number of requests
-    /// generated and sent overall.
+    /// When the destination has written events/service checks to the in-flight request payload, but it has not yet
+    /// reached the payload size limits that would force the payload to be flushed, the destination will wait for a
+    /// period of time before flushing the in-flight request payload. This allows for the possibility of other events to
+    /// be processed and written into the request payload, thereby maximizing the payload size and reducing the number
+    /// of requests generated and sent overall.
     ///
     /// Defaults to 2 seconds.
     #[serde(default = "default_flush_timeout_secs")]
@@ -115,14 +100,10 @@ pub struct DatadogMetricsConfiguration {
         default = "default_zstd_compressor_level"
     )]
     zstd_compressor_level: i32,
-
-    /// Endpoint path override for all metric types.
-    #[serde(default)]
-    endpoint_path_override: Option<&'static str>,
 }
 
-impl DatadogMetricsConfiguration {
-    /// Creates a new `DatadogMetricsConfiguration` from the given configuration.
+impl DatadogEventsConfiguration {
+    /// Creates a new `DatadogEventsConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
     }
@@ -131,21 +112,12 @@ impl DatadogMetricsConfiguration {
     pub fn add_refreshable_configuration(&mut self, refresher: RefreshableConfiguration) {
         self.config_refresher = Some(refresher);
     }
-
-    /// Configure the destination for metric preaggregation.
-    pub fn configure_for_preaggregation(&mut self) {
-        self.forwarder_config
-            .endpoint_mut()
-            .set_dd_url("https://api.datad0g.com".to_string());
-        self.forwarder_config.endpoint.additional_endpoints = Default::default();
-        self.endpoint_path_override = Some("/api/intake/pipelines/ddseries");
-    }
 }
 
 #[async_trait]
-impl DestinationBuilder for DatadogMetricsConfiguration {
+impl DestinationBuilder for DatadogEventsConfiguration {
     fn input_data_type(&self) -> DataType {
-        DataType::Metric
+        DataType::EventD
     }
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
@@ -154,34 +126,20 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         let forwarder = TransactionForwarder::from_config(
             self.forwarder_config.clone(),
             self.config_refresher.clone(),
-            get_metrics_endpoint_name,
+            get_events_endpoint_name,
             telemetry.clone(),
             metrics_builder,
         )?;
-        let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
+        //let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
+        let compression_scheme = CompressionScheme::noop();
 
-        // Create our request builders.
-        let rb_buffer_pool = create_request_builder_buffer_pool(
-            "metrics",
-            &self.forwarder_config,
-            get_maximum_compressed_payload_size(),
-        )
-        .await;
+        // Create our request builder.
+        let rb_buffer_pool =
+            create_request_builder_buffer_pool("events", &self.forwarder_config, COMPRESSED_SIZE_LIMIT).await;
 
-        let series_encoder = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Series);
-        let mut series_request_builder =
-            RequestBuilder::new(series_encoder, rb_buffer_pool.clone(), compression_scheme).await?;
-        series_request_builder.with_max_inputs_per_payload(self.max_metrics_per_payload);
-
-        let sketches_encoder = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Sketches);
-        let mut sketches_request_builder =
-            RequestBuilder::new(sketches_encoder, rb_buffer_pool.clone(), compression_scheme).await?;
-        sketches_request_builder.with_max_inputs_per_payload(self.max_metrics_per_payload);
-
-        if let Some(override_path) = self.endpoint_path_override {
-            series_request_builder.with_endpoint_uri_override(override_path);
-            sketches_request_builder.with_endpoint_uri_override(override_path);
-        }
+        let mut request_builder =
+            RequestBuilder::new(EventsEndpointEncoder, rb_buffer_pool, compression_scheme).await?;
+        request_builder.with_max_inputs_per_payload(MAX_EVENTS_PER_PAYLOAD);
 
         let flush_timeout = match self.flush_timeout_secs {
             // We always give ourselves a minimum flush timeout of 10ms to allow for some very minimal amount of
@@ -190,9 +148,8 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
             secs => Duration::from_secs(secs),
         };
 
-        Ok(Box::new(DatadogMetrics {
-            series_request_builder,
-            sketches_request_builder,
+        Ok(Box::new(DatadogEvents {
+            request_builder,
             forwarder,
             telemetry,
             flush_timeout,
@@ -200,16 +157,14 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
     }
 }
 
-impl MemoryBounds for DatadogMetricsConfiguration {
+impl MemoryBounds for DatadogEventsConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        // The request builder buffer pool is shared between both the series and the sketches request builder, so we
-        // only count it once.
         let (pool_size_min_bytes, _) =
-            get_buffer_pool_min_max_size_bytes(&self.forwarder_config, get_maximum_compressed_payload_size());
+            get_buffer_pool_min_max_size_bytes(&self.forwarder_config, COMPRESSED_SIZE_LIMIT);
 
         builder
             .minimum()
-            .with_single_value::<DatadogMetrics<ElasticObjectPool<BytesBuffer>>>("component struct")
+            .with_single_value::<DatadogEvents>("component struct")
             .with_fixed_amount("buffer pool", pool_size_min_bytes)
             .with_array::<Transaction<FrozenChunkedBytesBuffer>>("requests channel", 32);
 
@@ -229,36 +184,27 @@ impl MemoryBounds for DatadogMetricsConfiguration {
                         "forwarder_high_prio_buffer_size",
                         self.forwarder_config.endpoint_buffer_size(),
                     ),
-                    UsageExpr::constant("maximum compressed payload size", get_maximum_compressed_payload_size()),
+                    UsageExpr::constant("maximum compressed payload size", COMPRESSED_SIZE_LIMIT),
                 ),
             ))
-            // Capture the size of the "split re-encode" buffers in the request builders, which is where we keep owned
-            // versions of metrics that we encode in case we need to actually re-encode them during a split operation.
-            .with_array::<Metric>("series metrics split re-encode buffer", self.max_metrics_per_payload)
-            .with_array::<Metric>("sketch metrics split re-encode buffer", self.max_metrics_per_payload);
+            // Capture the size of the "split re-encode" buffer in the request builder, which is where we keep owned
+            // versions of events that we encode in case we need to actually re-encode them during a split operation.
+            .with_array::<EventD>("events split re-encode buffer", MAX_EVENTS_PER_PAYLOAD);
     }
 }
 
-pub struct DatadogMetrics<O>
-where
-    O: ObjectPool<Item = BytesBuffer> + 'static,
-{
-    series_request_builder: RequestBuilder<MetricsEndpointEncoder, O>,
-    sketches_request_builder: RequestBuilder<MetricsEndpointEncoder, O>,
+pub struct DatadogEvents {
+    request_builder: RequestBuilder<EventsEndpointEncoder, ElasticObjectPool<BytesBuffer>>,
     forwarder: TransactionForwarder<FrozenChunkedBytesBuffer>,
     telemetry: ComponentTelemetry,
     flush_timeout: Duration,
 }
 
 #[async_trait]
-impl<O> Destination for DatadogMetrics<O>
-where
-    O: ObjectPool<Item = BytesBuffer> + 'static,
-{
+impl Destination for DatadogEvents {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
         let Self {
-            series_request_builder,
-            sketches_request_builder,
+            request_builder,
             forwarder,
             telemetry,
             flush_timeout,
@@ -272,8 +218,7 @@ where
         // Spawn our request builder task.
         let (builder_tx, builder_rx) = mpsc::channel(8);
         let request_builder_handle = context.global_thread_pool().spawn_traced(run_request_builder(
-            series_request_builder,
-            sketches_request_builder,
+            request_builder,
             telemetry,
             builder_rx,
             forwarder_handle,
@@ -281,7 +226,7 @@ where
         ));
 
         health.mark_ready();
-        debug!("Datadog Metrics destination started.");
+        debug!("Datadog Events destination started.");
 
         loop {
             select! {
@@ -306,21 +251,17 @@ where
             Err(e) => error!(error = %e, "Request builder task panicked."),
         }
 
-        debug!("Datadog Metrics destination stopped.");
+        debug!("Datadog Events destination stopped.");
 
         Ok(())
     }
 }
 
-async fn run_request_builder<O>(
-    mut series_request_builder: RequestBuilder<MetricsEndpointEncoder, O>,
-    mut sketches_request_builder: RequestBuilder<MetricsEndpointEncoder, O>, telemetry: ComponentTelemetry,
-    mut request_builder_rx: mpsc::Receiver<FixedSizeEventBuffer>, forwarder_handle: Handle<FrozenChunkedBytesBuffer>,
-    flush_timeout: Duration,
-) -> Result<(), GenericError>
-where
-    O: ObjectPool<Item = BytesBuffer> + 'static,
-{
+async fn run_request_builder(
+    mut request_builder: RequestBuilder<EventsEndpointEncoder, ElasticObjectPool<BytesBuffer>>,
+    telemetry: ComponentTelemetry, mut request_builder_rx: mpsc::Receiver<FixedSizeEventBuffer>,
+    forwarder_handle: Handle<FrozenChunkedBytesBuffer>, flush_timeout: Duration,
+) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
     tokio::pin!(pending_flush_timeout);
@@ -329,24 +270,19 @@ where
         select! {
             Some(event_buffer) = request_builder_rx.recv() => {
                 for event in event_buffer {
-                    let metric = match event.try_into_metric() {
-                        Some(metric) => metric,
+                    let eventd = match event.try_into_eventd() {
+                        Some(eventd) => eventd,
                         None => continue,
                     };
 
-                    let request_builder = match MetricsEndpoint::from_metric(&metric) {
-                        MetricsEndpoint::Series => &mut series_request_builder,
-                        MetricsEndpoint::Sketches => &mut sketches_request_builder,
-                    };
-
-                    // Encode the metric. If we get it back, that means the current request is full, and we need to
-                    // flush it before we can try to encode the metric again... so we'll hold on to it in that case
+                    // Encode the event. If we get it back, that means the current request is full, and we need to
+                    // flush it before we can try to encode the event again... so we'll hold on to it in that case
                     // before flushing and trying to encode it again.
-                    let metric_to_retry = match request_builder.encode(metric).await {
+                    let eventd_to_retry = match request_builder.encode(eventd).await {
                         Ok(None) => continue,
-                        Ok(Some(metric)) => metric,
+                        Ok(Some(eventd)) => eventd,
                         Err(e) => {
-                            error!(error = %e, "Failed to encode metric.");
+                            error!(error = %e, "Failed to encode event.");
                             telemetry.events_dropped_encoder().increment(1);
                             continue;
                         }
@@ -365,9 +301,9 @@ where
                                 forwarder_handle.send_transaction(transaction).await?
                             },
 
-                            // TODO: Increment a counter here that metrics were dropped due to a flush failure.
+                            // TODO: Increment a counter here that events were dropped due to a flush failure.
                             Err(e) => if e.is_recoverable() {
-                                // If the error is recoverable, we'll hold on to the metric to retry it later.
+                                // If the error is recoverable, we'll hold on to the event to retry it later.
                                 continue;
                             } else {
                                 return Err(GenericError::from(e).context("Failed to flush request."));
@@ -375,11 +311,11 @@ where
                         }
                     }
 
-                    // Now try to encode the metric again. If it fails again, we'll just log it because it shouldn't
+                    // Now try to encode the event again. If it fails again, we'll just log it because it shouldn't
                     // be possible to fail at this point, otherwise we would have already caught that the first
                     // time.
-                    if let Err(e) = request_builder.encode(metric_to_retry).await {
-                        error!(error = %e, "Failed to encode metric.");
+                    if let Err(e) = request_builder.encode(eventd_to_retry).await {
+                        error!(error = %e, "Failed to encode event.");
                         telemetry.events_dropped_encoder().increment(1);
                     }
                 }
@@ -399,8 +335,8 @@ where
 
                 // Once we've encoded and written all metrics, we flush the request builders to generate a request with
                 // anything left over. Again, we'll enqueue those requests to be sent immediately.
-                let maybe_series_requests = series_request_builder.flush().await;
-                for maybe_request in maybe_series_requests {
+                let maybe_requests = request_builder.flush().await;
+                for maybe_request in maybe_requests {
                     match maybe_request {
                         Ok((events, request)) => {
                             debug!("Flushed request from series request builder. Sending to I/O task...");
@@ -408,28 +344,9 @@ where
                             forwarder_handle.send_transaction(transaction).await?
                         },
 
-                        // TODO: Increment a counter here that metrics were dropped due to a flush failure.
+                        // TODO: Increment a counter here that events were dropped due to a flush failure.
                         Err(e) => if e.is_recoverable() {
-                            // If the error is recoverable, we'll hold on to the metric to retry it later.
-                            continue;
-                        } else {
-                            return Err(GenericError::from(e).context("Failed to flush request."));
-                        }
-                    }
-                }
-
-                let maybe_sketches_requests = sketches_request_builder.flush().await;
-                for maybe_request in maybe_sketches_requests {
-                    match maybe_request {
-                        Ok((events, request)) => {
-                            debug!("Flushed request from sketches request builder. Sending to I/O task...");
-                            let transaction = Transaction::from_original(Metadata::from_event_count(events), request);
-                            forwarder_handle.send_transaction(transaction).await?
-                        },
-
-                        // TODO: Increment a counter here that metrics were dropped due to a flush failure.
-                        Err(e) => if e.is_recoverable() {
-                            // If the error is recoverable, we'll hold on to the metric to retry it later.
+                            // If the error is recoverable, we'll hold on to the event to retry it later.
                             continue;
                         } else {
                             return Err(GenericError::from(e).context("Failed to flush request."));
@@ -453,22 +370,9 @@ where
     Ok(())
 }
 
-fn get_metrics_endpoint_name(uri: &Uri) -> Option<MetaString> {
+fn get_events_endpoint_name(uri: &Uri) -> Option<MetaString> {
     match uri.path() {
-        "/api/v2/series" => Some(MetaString::from_static("series_v2")),
-        "/api/beta/sketches" => Some(MetaString::from_static("sketches_v2")),
+        EVENTS_BATCH_V1_API_PATH => Some(MetaString::from_static("events_batch_v1")),
         _ => None,
     }
-}
-
-const fn get_maximum_compressed_payload_size() -> usize {
-    let series_max_size = MetricsEndpoint::Series.compressed_size_limit();
-    let sketches_max_size = MetricsEndpoint::Sketches.compressed_size_limit();
-
-    let max_request_size = if series_max_size > sketches_max_size {
-        series_max_size
-    } else {
-        sketches_max_size
-    };
-    max_request_size.next_multiple_of(RB_BUFFER_POOL_BUF_SIZE)
 }
