@@ -501,7 +501,7 @@ impl Metrics {
 }
 
 fn build_metrics(listen_addr: &ListenAddress, context: ComponentContext) -> Metrics {
-    let builder = MetricsBuilder::from_component_context(context);
+    let builder = MetricsBuilder::from_component_context(&context);
 
     let listener_type = match listen_addr {
         ListenAddress::Tcp(_) => unreachable!("TCP is not supported for DogStatsD"),

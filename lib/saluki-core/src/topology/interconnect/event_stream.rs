@@ -29,7 +29,7 @@ pub struct EventStream {
 impl EventStream {
     /// Create a new `EventStream` for the given component context and inner receiver.
     pub fn new(context: ComponentContext, inner: mpsc::Receiver<FixedSizeEventBuffer>) -> Self {
-        let metrics_builder = MetricsBuilder::from_component_context(context);
+        let metrics_builder = MetricsBuilder::from_component_context(&context);
 
         Self {
             inner,
