@@ -421,7 +421,7 @@ where
             .method(Method::POST)
             .uri(self.endpoint_uri.clone())
             .header(http::header::CONTENT_TYPE, CONTENT_TYPE_PROTOBUF.clone())
-            .header(http::header::CONTENT_ENCODING, self.compressor.header_value())
+            .header(http::header::CONTENT_ENCODING, self.compressor.content_encoding())
             .body(buffer)
             .context(Http)
     }
