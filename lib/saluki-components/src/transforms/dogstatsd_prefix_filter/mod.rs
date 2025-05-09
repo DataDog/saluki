@@ -3,6 +3,7 @@ use std::ops::Deref;
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
+use saluki_core::data_model::event::{metric::Metric, DataType, Event};
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
@@ -11,7 +12,6 @@ use saluki_core::{
     topology::OutputDefinition,
 };
 use saluki_error::GenericError;
-use saluki_event::{metric::Metric, DataType};
 use serde::Deserialize;
 use stringtheory::MetaString;
 use tokio::select;
@@ -227,7 +227,7 @@ impl Transform for DogstatsDPrefixFilter {
                         for event in events {
                             if let Some(metric) = event.try_into_metric() {
                                 if let Some(new_metric) = self.enrich_metric(metric) {
-                                    if let Err(e) = buffered_forwarder.push(saluki_event::Event::Metric(new_metric)).await {
+                                    if let Err(e) = buffered_forwarder.push(Event::Metric(new_metric)).await {
                                         error!(error = %e, "Failed to forward event.");
                                     }
                                 }

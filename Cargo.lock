@@ -40,7 +40,6 @@ dependencies = [
  "saluki-core",
  "saluki-env",
  "saluki-error",
- "saluki-event",
  "saluki-health",
  "saluki-io",
  "saluki-metadata",
@@ -3143,7 +3142,6 @@ dependencies = [
  "saluki-core",
  "saluki-env",
  "saluki-error",
- "saluki-event",
  "saluki-health",
  "saluki-io",
  "saluki-metadata",
@@ -3203,23 +3201,28 @@ name = "saluki-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bitmask-enum",
+ "ddsketch-agent",
  "futures",
  "indexmap 2.9.0",
  "memory-accounting",
  "metrics",
  "metrics-util",
+ "ordered-float 5.0.0",
  "paste",
  "pin-project",
+ "proptest",
  "saluki-common",
  "saluki-context",
  "saluki-error",
- "saluki-event",
  "saluki-health",
  "saluki-metrics",
+ "serde",
  "similar-asserts",
  "slab",
  "smallvec",
  "snafu",
+ "stringtheory",
  "tokio",
  "tokio-test",
  "tokio-util",
@@ -3280,20 +3283,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "saluki-event"
-version = "0.1.0"
-dependencies = [
- "bitmask-enum",
- "ddsketch-agent",
- "ordered-float 5.0.0",
- "proptest",
- "saluki-context",
- "serde",
- "smallvec",
- "stringtheory",
-]
-
-[[package]]
 name = "saluki-health"
 version = "0.1.0"
 dependencies = [
@@ -3340,7 +3329,6 @@ dependencies = [
  "saluki-context",
  "saluki-core",
  "saluki-error",
- "saluki-event",
  "saluki-metrics",
  "saluki-tls",
  "serde",

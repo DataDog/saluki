@@ -519,8 +519,7 @@ fn merge_sketch(dest: &mut DDSketch, src: &mut DDSketch) {
 mod tests {
     use std::time::Duration;
 
-    use super::{HistogramPoints, MetricValues, SetPoints, SketchPoints};
-    use crate::metric::ScalarPoints;
+    use super::{HistogramPoints, MetricValues, ScalarPoints, SetPoints, SketchPoints};
 
     #[test]
     fn merge_counters() {

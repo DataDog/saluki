@@ -1,8 +1,9 @@
 use std::{collections::VecDeque, fmt};
 
-use saluki_event::{DataType, Event};
-
-use crate::pooling::{helpers::pooled_newtype, Clearable, ObjectPool};
+use crate::{
+    data_model::event::{DataType, Event},
+    pooling::{helpers::pooled_newtype, Clearable, ObjectPool},
+};
 
 /// A double-ended queue implemented with a ring buffer that has a fixed capacity at creation.
 struct FixedSizeVecDeque<T>(VecDeque<T>);
@@ -250,15 +251,16 @@ where
 mod tests {
     use std::collections::VecDeque;
 
-    use saluki_event::{
-        eventd::EventD,
-        metric::Metric,
-        service_check::{CheckStatus, ServiceCheck},
-        DataType, Event,
-    };
-
     use super::FixedSizeEventBuffer;
-    use crate::pooling::Clearable as _;
+    use crate::{
+        data_model::event::{
+            eventd::EventD,
+            metric::Metric,
+            service_check::{CheckStatus, ServiceCheck},
+            DataType, Event,
+        },
+        pooling::Clearable as _,
+    };
 
     #[test]
     fn capacity() {

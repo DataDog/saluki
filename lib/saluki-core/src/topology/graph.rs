@@ -1,11 +1,13 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use indexmap::IndexSet;
-use saluki_event::DataType;
 use snafu::Snafu;
 
 use super::{ComponentId, ComponentOutputId, OutputDefinition, OutputName, TypedComponentOutputId};
-use crate::components::{destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder};
+use crate::{
+    components::{destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder},
+    data_model::event::DataType,
+};
 
 #[derive(Debug, Snafu, Eq, PartialEq)]
 #[snafu(context(suffix(false)))]

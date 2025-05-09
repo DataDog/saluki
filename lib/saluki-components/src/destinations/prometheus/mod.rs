@@ -14,11 +14,11 @@ use saluki_common::collections::FastIndexMap;
 use saluki_config::GenericConfiguration;
 use saluki_context::{tags::Tagged as _, Context};
 use saluki_core::components::{destinations::*, ComponentContext};
-use saluki_error::GenericError;
-use saluki_event::{
+use saluki_core::data_model::event::{
     metric::{Histogram, Metric, MetricValues},
     DataType,
 };
+use saluki_error::GenericError;
 use saluki_io::net::{
     listener::ConnectionOrientedListener,
     server::http::{ErrorHandle, HttpServer, ShutdownHandle},
