@@ -5,7 +5,7 @@ use http::Uri;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::task::HandleExt as _;
 use saluki_config::{GenericConfiguration, RefreshableConfiguration};
-use saluki_core::data_model::event::{metric::Metric, DataType};
+use saluki_core::data_model::event::{metric::Metric, EventType};
 use saluki_core::{
     components::{destinations::*, ComponentContext},
     observability::ComponentMetricsExt as _,
@@ -144,8 +144,8 @@ impl DatadogMetricsConfiguration {
 
 #[async_trait]
 impl DestinationBuilder for DatadogMetricsConfiguration {
-    fn input_data_type(&self) -> DataType {
-        DataType::Metric
+    fn input_event_type(&self) -> EventType {
+        EventType::Metric
     }
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {

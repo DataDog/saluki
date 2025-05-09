@@ -1,4 +1,4 @@
-//! A telemetry event.
+//! Telemetry events.
 
 use std::fmt;
 
@@ -13,13 +13,13 @@ use self::eventd::EventD;
 pub mod service_check;
 use self::service_check::ServiceCheck;
 
-/// Telemetry data type.
+/// Telemetry event type.
 ///
-/// This type is a bitmask, which means different data types can be combined together. This makes `DataType` mainly
-/// useful for defining the type of telemetry data that a component emits, or can handles.
+/// This type is a bitmask, which means different event types can be combined together. This makes `EventType` mainly
+/// useful for defining the type of telemetry events that a component emits, or can handle.
 #[bitmask(u8)]
 #[bitmask_config(vec_debug)]
-pub enum DataType {
+pub enum EventType {
     /// Metrics.
     Metric,
 
@@ -30,13 +30,13 @@ pub enum DataType {
     ServiceCheck,
 }
 
-impl Default for DataType {
+impl Default for EventType {
     fn default() -> Self {
         Self::none()
     }
 }
 
-impl fmt::Display for DataType {
+impl fmt::Display for EventType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut types = Vec::new();
 
@@ -70,12 +70,12 @@ pub enum Event {
 }
 
 impl Event {
-    /// Gets the data type of this event.
-    pub fn data_type(&self) -> DataType {
+    /// Gets the type of this event.
+    pub fn event_type(&self) -> EventType {
         match self {
-            Event::Metric(_) => DataType::Metric,
-            Event::EventD(_) => DataType::EventD,
-            Event::ServiceCheck(_) => DataType::ServiceCheck,
+            Event::Metric(_) => EventType::Metric,
+            Event::EventD(_) => EventType::EventD,
+            Event::ServiceCheck(_) => EventType::ServiceCheck,
         }
     }
 

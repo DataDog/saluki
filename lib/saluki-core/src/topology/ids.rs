@@ -1,7 +1,7 @@
 use core::fmt;
 use std::{borrow::Cow, ops::Deref};
 
-use crate::data_model::event::DataType;
+use crate::data_model::event::EventType;
 
 const INVALID_COMPONENT_ID: &str =
     "component IDs may only contain alphanumeric characters (a-z, A-Z, or 0-9), underscores, and hyphens";
@@ -170,26 +170,26 @@ impl fmt::Display for OutputName {
 #[derive(Clone, Debug)]
 pub struct OutputDefinition {
     name: OutputName,
-    data_ty: DataType,
+    event_ty: EventType,
 }
 
 impl OutputDefinition {
     /// Creates a default output with the given data type.
-    pub const fn default_output(data_ty: DataType) -> Self {
+    pub const fn default_output(event_ty: EventType) -> Self {
         Self {
             name: OutputName::Default,
-            data_ty,
+            event_ty,
         }
     }
 
     /// Creates a named output with the given name and data type.
-    pub fn named_output<S>(name: S, data_ty: DataType) -> Self
+    pub fn named_output<S>(name: S, event_ty: EventType) -> Self
     where
         S: Into<Cow<'static, str>>,
     {
         Self {
             name: OutputName::Given(name.into()),
-            data_ty,
+            event_ty,
         }
     }
 
@@ -203,9 +203,9 @@ impl OutputDefinition {
         }
     }
 
-    /// Returns the data type.
-    pub fn data_ty(&self) -> DataType {
-        self.data_ty
+    /// Returns the event type.
+    pub fn event_ty(&self) -> EventType {
+        self.event_ty
     }
 }
 
@@ -213,12 +213,12 @@ impl OutputDefinition {
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TypedComponentOutputId {
     component_output: ComponentOutputId,
-    output_ty: DataType,
+    output_ty: EventType,
 }
 
 impl TypedComponentOutputId {
     /// Creates a new `TypedComponentOutputId` from the given component output ID and output data type.
-    pub fn new(component_output: ComponentOutputId, output_ty: DataType) -> Self {
+    pub fn new(component_output: ComponentOutputId, output_ty: EventType) -> Self {
         Self {
             component_output,
             output_ty,
@@ -231,7 +231,7 @@ impl TypedComponentOutputId {
     }
 
     /// Returns the output data type.
-    pub fn output_ty(&self) -> DataType {
+    pub fn output_ty(&self) -> EventType {
         self.output_ty
     }
 }

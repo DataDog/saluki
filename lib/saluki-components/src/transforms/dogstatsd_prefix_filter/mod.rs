@@ -3,7 +3,7 @@ use std::ops::Deref;
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
-use saluki_core::data_model::event::{metric::Metric, DataType, Event};
+use saluki_core::data_model::event::{metric::Metric, Event, EventType};
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
@@ -75,12 +75,12 @@ impl DogstatsDPrefixFilterConfiguration {
 
 #[async_trait]
 impl TransformBuilder for DogstatsDPrefixFilterConfiguration {
-    fn input_data_type(&self) -> DataType {
-        DataType::Metric
+    fn input_event_type(&self) -> EventType {
+        EventType::Metric
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(DataType::Metric)];
+        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(EventType::Metric)];
         OUTPUTS
     }
 
