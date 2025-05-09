@@ -31,7 +31,6 @@ saluki-common = { workspace = true }
 saluki-context = { workspace = true }
 saluki-core = { workspace = true }
 saluki-error = { workspace = true }
-saluki-event = { workspace = true }
 saluki-metrics = { workspace = true }
 saluki-tls = { workspace = true }
 serde = { workspace = true }

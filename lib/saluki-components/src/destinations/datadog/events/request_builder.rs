@@ -1,7 +1,7 @@
 use datadog_protos::events as proto;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use protobuf::{rt::WireType, Chars, CodedOutputStream};
-use saluki_event::eventd::EventD;
+use saluki_core::data_model::event::eventd::EventD;
 
 use super::{COMPRESSED_SIZE_LIMIT, EVENTS_BATCH_V1_API_PATH, UNCOMPRESSED_SIZE_LIMIT};
 use crate::destinations::datadog::common::request_builder::EndpointEncoder;

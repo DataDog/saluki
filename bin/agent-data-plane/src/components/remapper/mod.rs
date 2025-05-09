@@ -4,12 +4,12 @@ use async_trait::async_trait;
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
+use saluki_core::data_model::event::{metric::*, DataType, Event};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     topology::OutputDefinition,
 };
 use saluki_error::{generic_error, GenericError};
-use saluki_event::{metric::*, DataType, Event};
 use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, error};

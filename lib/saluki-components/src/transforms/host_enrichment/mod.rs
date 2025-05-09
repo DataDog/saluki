@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_core::data_model::event::metric::Metric;
 use saluki_core::{components::transforms::*, topology::interconnect::FixedSizeEventBuffer};
 use saluki_env::{EnvironmentProvider, HostProvider};
 use saluki_error::GenericError;
-use saluki_event::metric::Metric;
 
 /// Host Enrichment synchronous transform.
 ///

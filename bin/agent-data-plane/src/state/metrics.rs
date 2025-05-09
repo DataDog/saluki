@@ -4,11 +4,11 @@ use std::sync::Arc;
 use futures::stream::StreamExt as _;
 use papaya::HashMap;
 use saluki_context::Context;
+use saluki_core::data_model::event::{metric::MetricValues, Event};
 use saluki_core::{
     observability::metrics::MetricsStream,
     state::reflector::{Processor, Reflector},
 };
-use saluki_event::{metric::MetricValues, Event};
 use tokio::sync::OnceCell;
 
 /// Aggregated metric value.
@@ -255,7 +255,7 @@ pub async fn get_shared_metrics_state() -> Reflector<AggregatedMetricsProcessor>
 
 #[cfg(test)]
 mod tests {
-    use saluki_event::metric::Metric;
+    use saluki_core::data_model::event::metric::Metric;
 
     use super::*;
 
