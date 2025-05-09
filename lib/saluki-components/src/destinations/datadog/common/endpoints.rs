@@ -238,6 +238,11 @@ impl ResolvedEndpoint {
         }
         self.api_key.as_str()
     }
+
+    /// Returns the API key associated with the endpoint without refreshing it.
+    pub fn cached_api_key(&self) -> &str {
+        self.api_key.as_str()
+    }
 }
 
 fn parse_and_normalize_endpoint(raw_endpoint: &str) -> Result<Url, EndpointError> {

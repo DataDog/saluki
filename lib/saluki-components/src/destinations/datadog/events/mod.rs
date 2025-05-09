@@ -121,9 +121,10 @@ impl DestinationBuilder for DatadogEventsConfiguration {
     }
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
-        let metrics_builder = MetricsBuilder::from_component_context(context);
+        let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let forwarder = TransactionForwarder::from_config(
+            context,
             self.forwarder_config.clone(),
             self.config_refresher.clone(),
             get_events_endpoint_name,
