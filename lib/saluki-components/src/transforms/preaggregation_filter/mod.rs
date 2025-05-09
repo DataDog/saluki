@@ -29,14 +29,8 @@ pub struct PreaggregationFilter {}
 
 impl SynchronousTransform for PreaggregationFilter {
     fn transform_buffer(&mut self, event_buffer: &mut FixedSizeEventBuffer) {
-        // Extract and discard sketch metrics
-        let _ = event_buffer.extract(|event| {
-            if let Some(metric) = event.try_as_metric() {
-                metric.values().is_sketch()
-            } else {
-                false
-            }
-        });
+        // Discard any sketch metrics.
+        event_buffer.remove_if(|event| event.try_as_metric().is_some_and(|metric| metric.values().is_sketch()));
     }
 }
 
