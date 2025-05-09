@@ -134,7 +134,7 @@ impl ComponentContext {
 
     /// Creates a new `ComponentContext` for a renderer component with the given identifier.
     #[cfg(test)]
-    pub fn test_rendered<S: AsRef<str>>(component_id: S) -> Self {
+    pub fn test_renderer<S: AsRef<str>>(component_id: S) -> Self {
         Self {
             component_id: ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
             component_type: ComponentType::Renderer,
