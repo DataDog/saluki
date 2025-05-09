@@ -26,12 +26,13 @@ use tracing::{debug, error};
 use super::common::{
     config::ForwarderConfiguration,
     io::{Handle, TransactionForwarder},
+    request_builder::RequestBuilder,
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
 };
 
 mod request_builder;
-use self::request_builder::{MetricsEndpoint, RequestBuilder};
+use self::request_builder::{MetricsEndpoint, MetricsEndpointEncoder};
 
 const RB_BUFFER_POOL_BUF_SIZE: usize = 32_768;
 const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
@@ -161,24 +162,20 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
 
         // Create our request builders.
         let rb_buffer_pool = create_request_builder_buffer_pool(&self.forwarder_config).await;
-        let mut series_request_builder = RequestBuilder::new(
-            MetricsEndpoint::Series,
-            rb_buffer_pool.clone(),
-            self.max_metrics_per_payload,
-            compression_scheme,
-        )
-        .await?;
-        let mut sketches_request_builder = RequestBuilder::new(
-            MetricsEndpoint::Sketches,
-            rb_buffer_pool,
-            self.max_metrics_per_payload,
-            compression_scheme,
-        )
-        .await?;
+
+        let series_encoder = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Series);
+        let mut series_request_builder =
+            RequestBuilder::new(series_encoder, rb_buffer_pool.clone(), compression_scheme).await;
+        series_request_builder.with_max_inputs_per_payload(self.max_metrics_per_payload);
+
+        let sketches_encoder = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Sketches);
+        let mut sketches_request_builder =
+            RequestBuilder::new(sketches_encoder, rb_buffer_pool.clone(), compression_scheme).await;
+        sketches_request_builder.with_max_inputs_per_payload(self.max_metrics_per_payload);
 
         if let Some(override_path) = self.endpoint_path_override {
-            series_request_builder.set_endpoint_uri(override_path);
-            sketches_request_builder.set_endpoint_uri(override_path);
+            series_request_builder.with_endpoint_uri_override(override_path);
+            sketches_request_builder.with_endpoint_uri_override(override_path);
         }
 
         let flush_timeout = match self.flush_timeout_secs {
@@ -240,14 +237,13 @@ pub struct DatadogMetrics<O>
 where
     O: ObjectPool<Item = BytesBuffer> + 'static,
 {
-    series_request_builder: RequestBuilder<O>,
-    sketches_request_builder: RequestBuilder<O>,
+    series_request_builder: RequestBuilder<MetricsEndpointEncoder, O>,
+    sketches_request_builder: RequestBuilder<MetricsEndpointEncoder, O>,
     forwarder: TransactionForwarder<FrozenChunkedBytesBuffer>,
     telemetry: ComponentTelemetry,
     flush_timeout: Duration,
 }
 
-#[allow(unused)]
 #[async_trait]
 impl<O> Destination for DatadogMetrics<O>
 where
@@ -255,8 +251,8 @@ where
 {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
         let Self {
-            mut series_request_builder,
-            mut sketches_request_builder,
+            series_request_builder,
+            sketches_request_builder,
             forwarder,
             telemetry,
             flush_timeout,
@@ -311,9 +307,10 @@ where
 }
 
 async fn run_request_builder<O>(
-    mut series_request_builder: RequestBuilder<O>, mut sketches_request_builder: RequestBuilder<O>,
-    telemetry: ComponentTelemetry, mut request_builder_rx: mpsc::Receiver<FixedSizeEventBuffer>,
-    forwarder_handle: Handle<FrozenChunkedBytesBuffer>, flush_timeout: Duration,
+    mut series_request_builder: RequestBuilder<MetricsEndpointEncoder, O>,
+    mut sketches_request_builder: RequestBuilder<MetricsEndpointEncoder, O>, telemetry: ComponentTelemetry,
+    mut request_builder_rx: mpsc::Receiver<FixedSizeEventBuffer>, forwarder_handle: Handle<FrozenChunkedBytesBuffer>,
+    flush_timeout: Duration,
 ) -> Result<(), GenericError>
 where
     O: ObjectPool<Item = BytesBuffer> + 'static,
