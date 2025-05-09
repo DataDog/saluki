@@ -5,6 +5,7 @@ use http::Uri;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::task::HandleExt as _;
 use saluki_config::{GenericConfiguration, RefreshableConfiguration};
+use saluki_core::data_model::event::{metric::Metric, DataType};
 use saluki_core::{
     components::{destinations::*, ComponentContext},
     observability::ComponentMetricsExt as _,
@@ -12,7 +13,6 @@ use saluki_core::{
     topology::interconnect::FixedSizeEventBuffer,
 };
 use saluki_error::{ErrorContext as _, GenericError};
-use saluki_event::{metric::Metric, DataType};
 use saluki_io::{
     buf::{BytesBuffer, FrozenChunkedBytesBuffer},
     compression::CompressionScheme,

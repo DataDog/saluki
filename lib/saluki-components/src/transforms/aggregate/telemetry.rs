@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use metrics::{Counter, Gauge, Histogram};
 use saluki_context::Context;
-use saluki_event::metric::MetricValues;
+use saluki_core::data_model::event::metric::MetricValues;
 use saluki_metrics::MetricsBuilder;
 
 #[derive(Clone)]

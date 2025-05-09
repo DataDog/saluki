@@ -1,4 +1,4 @@
-use saluki_event::metric::HistogramSummary;
+use saluki_core::data_model::event::metric::HistogramSummary;
 use serde::Deserialize;
 use stringtheory::MetaString;
 

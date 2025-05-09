@@ -8,10 +8,10 @@ use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{ContextResolver, ContextResolverBuilder};
+use saluki_core::data_model::event::metric::Metric;
 use saluki_core::{components::transforms::*, topology::interconnect::FixedSizeEventBuffer};
 use saluki_env::helpers::remote_agent::RemoteAgentClient;
 use saluki_error::{generic_error, GenericError};
-use saluki_event::metric::Metric;
 
 /// Host Tags synchronous transform.
 ///
@@ -147,7 +147,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use saluki_context::{Context, ContextResolverBuilder};
-    use saluki_event::metric::Metric;
+    use saluki_core::data_model::event::metric::Metric;
 
     use super::*;
 

@@ -8,6 +8,8 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use metrics::{Counter, Gauge, Histogram};
 use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
+use saluki_core::data_model::event::metric::{MetricMetadata, MetricOrigin};
+use saluki_core::data_model::event::{metric::Metric, DataType, Event};
 use saluki_core::{
     components::{sources::*, ComponentContext},
     observability::ComponentMetricsExt as _,
@@ -20,8 +22,6 @@ use saluki_core::{
 };
 use saluki_env::WorkloadProvider;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_event::metric::{MetricMetadata, MetricOrigin};
-use saluki_event::{metric::Metric, DataType, Event};
 use saluki_io::{
     buf::{BytesBuffer, FixedSizeVec},
     deser::{
