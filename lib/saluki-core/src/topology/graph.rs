@@ -6,7 +6,7 @@ use snafu::Snafu;
 use super::{ComponentId, ComponentOutputId, OutputDefinition, OutputName, TypedComponentOutputId};
 use crate::{
     components::{destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder},
-    data_model::event::DataType,
+    data_model::event::EventType,
 };
 
 #[derive(Debug, Snafu, Eq, PartialEq)]
@@ -34,11 +34,11 @@ pub enum GraphError {
         to_component_id,
         to_ty
     ))]
-    DataTypeMismatch {
+    EventTypeMismatch {
         from_component_output_id: ComponentOutputId,
-        from_ty: DataType,
+        from_ty: EventType,
         to_component_id: ComponentId,
-        to_ty: DataType,
+        to_ty: EventType,
     },
     #[snafu(display("cycle detected: {:?}", path))]
     Cycle { path: Vec<ComponentId> },
@@ -52,11 +52,11 @@ pub enum Node {
         outputs: Vec<TypedComponentOutputId>,
     },
     Transform {
-        input_ty: DataType,
+        input_ty: EventType,
         outputs: Vec<TypedComponentOutputId>,
     },
     Destination {
-        input_ty: DataType,
+        input_ty: EventType,
     },
 }
 
@@ -103,7 +103,7 @@ impl Graph {
         self.nodes.insert(
             component_id.clone(),
             Node::Transform {
-                input_ty: builder.input_data_type(),
+                input_ty: builder.input_event_type(),
                 outputs,
             },
         );
@@ -125,7 +125,7 @@ impl Graph {
         self.nodes.insert(
             component_id.clone(),
             Node::Destination {
-                input_ty: builder.input_data_type(),
+                input_ty: builder.input_event_type(),
             },
         );
 
@@ -172,7 +172,7 @@ impl Graph {
         Ok(())
     }
 
-    fn get_input_type(&self, id: &ComponentId) -> DataType {
+    fn get_input_type(&self, id: &ComponentId) -> EventType {
         match self.nodes[id] {
             Node::Source { .. } => panic!("no inputs on sources"),
             Node::Transform { input_ty, .. } => input_ty,
@@ -180,7 +180,7 @@ impl Graph {
         }
     }
 
-    fn get_output_type(&self, id: &ComponentOutputId) -> DataType {
+    fn get_output_type(&self, id: &ComponentOutputId) -> EventType {
         match &self.nodes[&id.component_id()] {
             Node::Source { outputs } => outputs
                 .iter()
@@ -197,21 +197,21 @@ impl Graph {
     }
 
     pub fn validate(&self) -> Result<(), GraphError> {
-        self.check_data_types()?;
+        self.check_event_types()?;
         self.check_for_cycles()?;
         self.check_for_disconnected()?;
 
         Ok(())
     }
 
-    fn check_data_types(&self) -> Result<(), GraphError> {
+    fn check_event_types(&self) -> Result<(), GraphError> {
         // Check that all connected edges have compatible data types.
         for edge in &self.edges {
             let from_ty = self.get_output_type(&edge.from);
             let to_ty = self.get_input_type(&edge.to);
 
             if !from_ty.intersects(to_ty) {
-                return Err(GraphError::DataTypeMismatch {
+                return Err(GraphError::EventTypeMismatch {
                     from_component_output_id: edge.from.clone(),
                     from_ty,
                     to_component_id: edge.to.clone(),
@@ -329,7 +329,7 @@ fn construct_typed_output_ids(
     for output in outputs {
         let output_id = ComponentOutputId::from_definition(component_id.clone(), output)
             .map_err(|(input, reason)| GraphError::InvalidComponentOutputId { input, reason })?;
-        typed_output_ids.push(TypedComponentOutputId::new(output_id, output.data_ty()));
+        typed_output_ids.push(TypedComponentOutputId::new(output_id, output.event_ty()));
     }
 
     Ok(typed_output_ids)
@@ -343,35 +343,35 @@ mod test {
     use crate::topology::test_util::{TestDestinationBuilder, TestSourceBuilder, TestTransformBuilder};
 
     impl Graph {
-        pub fn with_source_fallible(&mut self, id: &str, output_data_ty: DataType) -> Result<&mut Self, GraphError> {
-            let builder = TestSourceBuilder::default_output(output_data_ty);
+        pub fn with_source_fallible(&mut self, id: &str, output_event_ty: EventType) -> Result<&mut Self, GraphError> {
+            let builder = TestSourceBuilder::default_output(output_event_ty);
             let _ = self.add_source(id, &builder)?;
             Ok(self)
         }
 
-        pub fn with_source(&mut self, id: &str, output_data_ty: DataType) -> &mut Self {
-            self.with_source_fallible(id, output_data_ty)
+        pub fn with_source(&mut self, id: &str, output_event_ty: EventType) -> &mut Self {
+            self.with_source_fallible(id, output_event_ty)
                 .expect("should not fail to add source")
         }
 
         pub fn with_transform_fallible(
-            &mut self, id: &str, input_data_ty: DataType, output_data_ty: DataType,
+            &mut self, id: &str, input_event_ty: EventType, output_event_ty: EventType,
         ) -> Result<&mut Self, GraphError> {
-            let builder = TestTransformBuilder::default_output(input_data_ty, output_data_ty);
+            let builder = TestTransformBuilder::default_output(input_event_ty, output_event_ty);
             let _ = self.add_transform(id, &builder)?;
             Ok(self)
         }
 
-        pub fn with_transform(&mut self, id: &str, input_data_ty: DataType, output_data_ty: DataType) -> &mut Self {
-            self.with_transform_fallible(id, input_data_ty, output_data_ty)
+        pub fn with_transform(&mut self, id: &str, input_event_ty: EventType, output_event_ty: EventType) -> &mut Self {
+            self.with_transform_fallible(id, input_event_ty, output_event_ty)
                 .expect("should not fail to add transform")
         }
 
         pub fn with_transform_multiple_outputs<'a>(
-            &mut self, id: &str, input_data_ty: DataType,
-            outputs: impl IntoIterator<Item = &'a (Option<&'a str>, DataType)>,
+            &mut self, id: &str, input_event_ty: EventType,
+            outputs: impl IntoIterator<Item = &'a (Option<&'a str>, EventType)>,
         ) -> &mut Self {
-            let builder = TestTransformBuilder::multiple_outputs(input_data_ty, outputs.into_iter());
+            let builder = TestTransformBuilder::multiple_outputs(input_event_ty, outputs.into_iter());
             let _ = self
                 .add_transform(id, &builder)
                 .expect("should not fail to add transform");
@@ -379,15 +379,15 @@ mod test {
         }
 
         pub fn with_destination_fallible(
-            &mut self, id: &str, input_data_ty: DataType,
+            &mut self, id: &str, input_event_ty: EventType,
         ) -> Result<&mut Self, GraphError> {
-            let builder = TestDestinationBuilder::with_input_type(input_data_ty);
+            let builder = TestDestinationBuilder::with_input_type(input_event_ty);
             let _ = self.add_destination(id, &builder)?;
             Ok(self)
         }
 
-        pub fn with_destination(&mut self, id: &str, input_data_ty: DataType) -> &mut Self {
-            self.with_destination_fallible(id, input_data_ty)
+        pub fn with_destination(&mut self, id: &str, input_event_ty: EventType) -> &mut Self {
+            self.with_destination_fallible(id, input_event_ty)
                 .expect("should not fail to add destination")
         }
 
@@ -430,8 +430,8 @@ mod test {
     fn invalid_input_id() {
         let mut graph = Graph::default();
         let result = graph
-            .with_source("in_eventd", DataType::EventD)
-            .with_destination("out_eventd", DataType::EventD)
+            .with_source("in_eventd", EventType::EventD)
+            .with_destination("out_eventd", EventType::EventD)
             .with_edge_fallible("in log", "out_eventd")
             .map(|_| ()); // ditch mutable self ref to allow for equality check
 
@@ -443,8 +443,8 @@ mod test {
     fn nonexistent_input_id() {
         let mut graph = Graph::default();
         let result = graph
-            .with_source("in_eventd", DataType::EventD)
-            .with_destination("out_eventd", DataType::EventD)
+            .with_source("in_eventd", EventType::EventD)
+            .with_destination("out_eventd", EventType::EventD)
             .with_edge_fallible("in_loog", "out_eventd")
             .map(|_| ()); // ditch mutable self ref to allow for equality check
 
@@ -452,8 +452,8 @@ mod test {
 
         let mut graph = Graph::default();
         let result = graph
-            .with_source("in_all_but_logs", DataType::all_bits())
-            .with_destination("out_eventd", DataType::EventD)
+            .with_source("in_all_but_logs", EventType::all_bits())
+            .with_destination("out_eventd", EventType::EventD)
             .with_edge_fallible("in_all_but_logs.logs", "out_eventd")
             .map(|_| ()); // ditch mutable self ref to allow for equality check
 
@@ -464,30 +464,30 @@ mod test {
     fn multiple_outputs() {
         let mut graph = Graph::default();
         graph
-            .with_source("in_eventd", DataType::EventD)
+            .with_source("in_eventd", EventType::EventD)
             .with_transform_multiple_outputs(
                 "eventd_to_eventd",
-                DataType::EventD,
-                &[(None, DataType::EventD), (Some("errors"), DataType::EventD)],
+                EventType::EventD,
+                &[(None, EventType::EventD), (Some("errors"), EventType::EventD)],
             )
-            .with_destination("out_eventd", DataType::EventD)
-            .with_destination("out_errored_eventd", DataType::EventD)
+            .with_destination("out_eventd", EventType::EventD)
+            .with_destination("out_errored_eventd", EventType::EventD)
             .with_edge("in_eventd", "eventd_to_eventd")
             .with_edge("eventd_to_eventd", "out_eventd")
             .with_edge("eventd_to_eventd.errors", "out_errored_eventd");
 
-        assert_eq!(Ok(()), graph.check_data_types());
+        assert_eq!(Ok(()), graph.check_event_types());
     }
 
     #[test]
     fn detect_cycles() {
         let mut graph = Graph::default();
         graph
-            .with_source("in", DataType::EventD)
-            .with_transform("one", DataType::EventD, DataType::EventD)
-            .with_transform("two", DataType::EventD, DataType::EventD)
-            .with_transform("three", DataType::EventD, DataType::EventD)
-            .with_destination("out", DataType::EventD)
+            .with_source("in", EventType::EventD)
+            .with_transform("one", EventType::EventD, EventType::EventD)
+            .with_transform("two", EventType::EventD, EventType::EventD)
+            .with_transform("three", EventType::EventD, EventType::EventD)
+            .with_destination("out", EventType::EventD)
             .with_multi_edge(&["in", "three"], "one")
             .with_edge("one", "two")
             .with_edge("two", "three")
@@ -502,11 +502,11 @@ mod test {
 
         let mut graph = Graph::default();
         graph
-            .with_source("in", DataType::EventD)
-            .with_transform("one", DataType::EventD, DataType::EventD)
-            .with_transform("two", DataType::EventD, DataType::EventD)
-            .with_transform("three", DataType::EventD, DataType::EventD)
-            .with_destination("out", DataType::EventD)
+            .with_source("in", EventType::EventD)
+            .with_transform("one", EventType::EventD, EventType::EventD)
+            .with_transform("two", EventType::EventD, EventType::EventD)
+            .with_transform("three", EventType::EventD, EventType::EventD)
+            .with_destination("out", EventType::EventD)
             .with_multi_edge(&["in", "three"], "one")
             .with_edge("one", "two")
             .with_edge("two", "three")
@@ -524,10 +524,10 @@ mod test {
     fn disconnected_components() {
         let mut graph = Graph::default();
         graph
-            .with_source("in", DataType::EventD)
-            .with_transform("one", DataType::EventD, DataType::EventD)
-            .with_transform("two", DataType::EventD, DataType::EventD)
-            .with_destination("out", DataType::EventD)
+            .with_source("in", EventType::EventD)
+            .with_transform("one", EventType::EventD, EventType::EventD)
+            .with_transform("two", EventType::EventD, EventType::EventD)
+            .with_destination("out", EventType::EventD)
             .with_edge("in", "out");
 
         assert_eq!(
@@ -542,11 +542,11 @@ mod test {
     fn diamond_edge_formation() {
         let mut graph = Graph::default();
         graph
-            .with_source("in", DataType::EventD)
-            .with_transform("one", DataType::EventD, DataType::EventD)
-            .with_transform("two", DataType::EventD, DataType::EventD)
-            .with_transform("three", DataType::EventD, DataType::EventD)
-            .with_destination("out", DataType::EventD)
+            .with_source("in", EventType::EventD)
+            .with_transform("one", EventType::EventD, EventType::EventD)
+            .with_transform("two", EventType::EventD, EventType::EventD)
+            .with_transform("three", EventType::EventD, EventType::EventD)
+            .with_destination("out", EventType::EventD)
             .with_edge("in", "one")
             .with_edge("in", "two")
             .with_multi_edge(&["one", "two"], "three")
@@ -559,18 +559,18 @@ mod test {
     fn datatype_disjoint_sets() {
         let mut graph = Graph::default();
         graph
-            .with_source("in", DataType::EventD)
-            .with_destination("out", DataType::Metric)
+            .with_source("in", EventType::EventD)
+            .with_destination("out", EventType::Metric)
             .with_edge("in", "out");
 
         assert_eq!(
-            Err(GraphError::DataTypeMismatch {
+            Err(GraphError::EventTypeMismatch {
                 from_component_output_id: try_into_component_output_id("in").unwrap(),
-                from_ty: DataType::EventD,
+                from_ty: EventType::EventD,
                 to_component_id: try_into_component_id("out").unwrap(),
-                to_ty: DataType::Metric,
+                to_ty: EventType::Metric,
             }),
-            graph.check_data_types()
+            graph.check_event_types()
         );
     }
 
@@ -578,44 +578,44 @@ mod test {
     fn datatype_subset_into_superset() {
         let mut graph = Graph::default();
         graph
-            .with_source("in_eventd", DataType::EventD)
-            .with_source("in_metric", DataType::Metric)
-            .with_destination("out", DataType::all_bits())
+            .with_source("in_eventd", EventType::EventD)
+            .with_source("in_metric", EventType::Metric)
+            .with_destination("out", EventType::all_bits())
             .with_multi_edge(&["in_eventd", "in_metric"], "out");
 
-        assert_eq!(Ok(()), graph.check_data_types());
+        assert_eq!(Ok(()), graph.check_event_types());
     }
 
     #[test]
     fn datatype_superset_into_subset() {
         let mut graph = Graph::default();
         graph
-            .with_source("in", DataType::all_bits())
-            .with_transform("eventd_to_any", DataType::EventD, DataType::all_bits())
-            .with_transform("any_to_eventd", DataType::all_bits(), DataType::EventD)
-            .with_destination("out_eventd", DataType::EventD)
-            .with_destination("out_metric", DataType::Metric)
+            .with_source("in", EventType::all_bits())
+            .with_transform("eventd_to_any", EventType::EventD, EventType::all_bits())
+            .with_transform("any_to_eventd", EventType::all_bits(), EventType::EventD)
+            .with_destination("out_eventd", EventType::EventD)
+            .with_destination("out_metric", EventType::Metric)
             .with_edge("in", "eventd_to_any")
             .with_edge("in", "any_to_eventd")
             .with_multi_edge(&["in", "eventd_to_any", "any_to_eventd"], "out_eventd")
             .with_multi_edge(&["in", "eventd_to_any"], "out_metric");
 
-        assert_eq!(Ok(()), graph.check_data_types());
+        assert_eq!(Ok(()), graph.check_event_types());
     }
 
     #[test]
     fn allows_both_directions_for_metrics() {
         let mut graph = Graph::default();
         graph
-            .with_source("in_eventd", DataType::EventD)
-            .with_source("in_metric", DataType::Metric)
-            .with_transform("eventd_to_eventd", DataType::EventD, DataType::EventD)
-            .with_transform("metric_to_metric", DataType::Metric, DataType::Metric)
-            .with_transform("any_to_any", DataType::all_bits(), DataType::all_bits())
-            .with_transform("any_to_eventd", DataType::all_bits(), DataType::EventD)
-            .with_transform("any_to_metric", DataType::all_bits(), DataType::Metric)
-            .with_destination("out_eventd", DataType::EventD)
-            .with_destination("out_metric", DataType::Metric)
+            .with_source("in_eventd", EventType::EventD)
+            .with_source("in_metric", EventType::Metric)
+            .with_transform("eventd_to_eventd", EventType::EventD, EventType::EventD)
+            .with_transform("metric_to_metric", EventType::Metric, EventType::Metric)
+            .with_transform("any_to_any", EventType::all_bits(), EventType::all_bits())
+            .with_transform("any_to_eventd", EventType::all_bits(), EventType::EventD)
+            .with_transform("any_to_metric", EventType::all_bits(), EventType::Metric)
+            .with_destination("out_eventd", EventType::EventD)
+            .with_destination("out_metric", EventType::Metric)
             .with_edge("in_eventd", "eventd_to_eventd")
             .with_edge("in_metric", "metric_to_metric")
             .with_multi_edge(&["eventd_to_eventd", "metric_to_metric"], "any_to_any")
@@ -624,6 +624,6 @@ mod test {
             .with_edge("any_to_eventd", "out_eventd")
             .with_edge("any_to_metric", "out_metric");
 
-        assert_eq!(Ok(()), graph.check_data_types());
+        assert_eq!(Ok(()), graph.check_event_types());
     }
 }

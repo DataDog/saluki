@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, fmt};
 
 use crate::{
-    data_model::event::{DataType, Event},
+    data_model::event::{Event, EventType},
     pooling::{helpers::pooled_newtype, Clearable, ObjectPool},
 };
 
@@ -11,7 +11,7 @@ struct FixedSizeVecDeque<T>(VecDeque<T>);
 /// A fixed-size event buffer.
 pub struct FixedSizeEventBufferInner {
     events: FixedSizeVecDeque<Event>,
-    seen_data_types: DataType,
+    seen_event_types: EventType,
 }
 
 impl FixedSizeEventBufferInner {
@@ -19,7 +19,7 @@ impl FixedSizeEventBufferInner {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             events: FixedSizeVecDeque(VecDeque::with_capacity(capacity)),
-            seen_data_types: DataType::none(),
+            seen_event_types: EventType::none(),
         }
     }
 }
@@ -27,7 +27,7 @@ impl FixedSizeEventBufferInner {
 impl Clearable for FixedSizeEventBufferInner {
     fn clear(&mut self) {
         self.events.0.clear();
-        self.seen_data_types = DataType::none();
+        self.seen_event_types = EventType::none();
     }
 }
 
@@ -65,8 +65,8 @@ impl FixedSizeEventBuffer {
     }
 
     /// Returns `true` if this event buffer contains one or more events of the given data type.
-    pub fn has_data_type(&self, data_type: DataType) -> bool {
-        self.data().seen_data_types.contains(data_type)
+    pub fn has_data_type(&self, data_type: EventType) -> bool {
+        self.data().seen_event_types.contains(data_type)
     }
 
     /// Attempts to append an event to the back of the event buffer.
@@ -77,7 +77,7 @@ impl FixedSizeEventBuffer {
             return Some(event);
         }
 
-        self.data_mut().seen_data_types |= event.data_type();
+        self.data_mut().seen_event_types |= event.event_type();
         self.data_mut().events.0.push_back(event);
         None
     }
@@ -225,7 +225,7 @@ mod tests {
             eventd::EventD,
             metric::Metric,
             service_check::{CheckStatus, ServiceCheck},
-            DataType, Event,
+            Event, EventType,
         },
         pooling::{helpers::get_pooled_object_via_builder, Clearable as _},
     };
@@ -247,43 +247,43 @@ mod tests {
         let mut buffer =
             get_pooled_object_via_builder::<_, FixedSizeEventBuffer>(|| FixedSizeEventBufferInner::with_capacity(10));
         assert!(buffer.is_empty());
-        assert!(!buffer.has_data_type(DataType::Metric));
-        assert!(!buffer.has_data_type(DataType::EventD));
-        assert!(!buffer.has_data_type(DataType::ServiceCheck));
+        assert!(!buffer.has_data_type(EventType::Metric));
+        assert!(!buffer.has_data_type(EventType::EventD));
+        assert!(!buffer.has_data_type(EventType::ServiceCheck));
 
         // Now write a metric, and make sure that's reflected:
         assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 42.0))).is_none());
         assert!(!buffer.is_empty());
-        assert!(buffer.has_data_type(DataType::Metric));
-        assert!(!buffer.has_data_type(DataType::EventD));
-        assert!(!buffer.has_data_type(DataType::ServiceCheck));
+        assert!(buffer.has_data_type(EventType::Metric));
+        assert!(!buffer.has_data_type(EventType::EventD));
+        assert!(!buffer.has_data_type(EventType::ServiceCheck));
 
         // Finally, clear the inner data -- this simulates what happens when an object is returned to the pool -- and
         // assert that the buffer is once again empty and has no seen data types:
         buffer.data_mut().clear();
         assert!(buffer.is_empty());
-        assert!(!buffer.has_data_type(DataType::Metric));
-        assert!(!buffer.has_data_type(DataType::EventD));
-        assert!(!buffer.has_data_type(DataType::ServiceCheck));
+        assert!(!buffer.has_data_type(EventType::Metric));
+        assert!(!buffer.has_data_type(EventType::EventD));
+        assert!(!buffer.has_data_type(EventType::ServiceCheck));
     }
 
     #[test]
     fn has_data_type() {
         let mut buffer =
             get_pooled_object_via_builder::<_, FixedSizeEventBuffer>(|| FixedSizeEventBufferInner::with_capacity(10));
-        assert!(!buffer.has_data_type(DataType::Metric));
-        assert!(!buffer.has_data_type(DataType::EventD));
-        assert!(!buffer.has_data_type(DataType::ServiceCheck));
+        assert!(!buffer.has_data_type(EventType::Metric));
+        assert!(!buffer.has_data_type(EventType::EventD));
+        assert!(!buffer.has_data_type(EventType::ServiceCheck));
 
         assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 42.0))).is_none());
-        assert!(buffer.has_data_type(DataType::Metric));
-        assert!(!buffer.has_data_type(DataType::EventD));
-        assert!(!buffer.has_data_type(DataType::ServiceCheck));
+        assert!(buffer.has_data_type(EventType::Metric));
+        assert!(!buffer.has_data_type(EventType::EventD));
+        assert!(!buffer.has_data_type(EventType::ServiceCheck));
 
         assert!(buffer.try_push(Event::EventD(EventD::new("title", "text"))).is_none());
-        assert!(buffer.has_data_type(DataType::Metric));
-        assert!(buffer.has_data_type(DataType::EventD));
-        assert!(!buffer.has_data_type(DataType::ServiceCheck));
+        assert!(buffer.has_data_type(EventType::Metric));
+        assert!(buffer.has_data_type(EventType::EventD));
+        assert!(!buffer.has_data_type(EventType::ServiceCheck));
     }
 
     #[test]

@@ -16,7 +16,7 @@ use saluki_context::{tags::Tagged as _, Context};
 use saluki_core::components::{destinations::*, ComponentContext};
 use saluki_core::data_model::event::{
     metric::{Histogram, Metric, MetricValues},
-    DataType,
+    EventType,
 };
 use saluki_error::GenericError;
 use saluki_io::net::{
@@ -84,8 +84,8 @@ impl PrometheusConfiguration {
 
 #[async_trait]
 impl DestinationBuilder for PrometheusConfiguration {
-    fn input_data_type(&self) -> DataType {
-        DataType::Metric
+    fn input_event_type(&self) -> EventType {
+        EventType::Metric
     }
 
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
