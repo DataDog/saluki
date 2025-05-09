@@ -110,6 +110,15 @@ impl ComponentContext {
         }
     }
 
+    /// Creates a new `ComponentContext` for a forwarder component with the given identifier.
+    #[cfg(test)]
+    pub fn test_forwarder<S: AsRef<str>>(component_id: S) -> Self {
+        Self {
+            component_id: ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
+            component_type: ComponentType::Forwarder,
+        }
+    }
+
     /// Returns the component identifier.
     pub fn component_id(&self) -> &ComponentId {
         &self.component_id
