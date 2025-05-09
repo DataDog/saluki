@@ -631,12 +631,9 @@ impl AggregationState {
         true
     }
 
-    async fn flush<O>(
-        &mut self, current_time: u64, flush_open_buckets: bool, forwarder: &mut BufferedForwarder<'_, O>,
-    ) -> Result<(), GenericError>
-    where
-        O: ObjectPool<Item = FixedSizeEventBuffer>,
-    {
+    async fn flush(
+        &mut self, current_time: u64, flush_open_buckets: bool, forwarder: &mut BufferedForwarder<'_>,
+    ) -> Result<(), GenericError> {
         self.contexts_remove_buf.clear();
 
         let bucket_width_secs = self.bucket_width_secs;
@@ -738,13 +735,10 @@ impl AggregationState {
     }
 }
 
-async fn transform_and_push_metric<O>(
+async fn transform_and_push_metric(
     context: Context, mut values: MetricValues, metadata: MetricMetadata, bucket_width_secs: u64,
-    hist_config: &HistogramConfiguration, forwarder: &mut BufferedForwarder<'_, O>,
-) -> Result<(), GenericError>
-where
-    O: ObjectPool<Item = FixedSizeEventBuffer>,
-{
+    hist_config: &HistogramConfiguration, forwarder: &mut BufferedForwarder<'_>,
+) -> Result<(), GenericError> {
     let bucket_width = Duration::from_secs(bucket_width_secs);
 
     match values {
