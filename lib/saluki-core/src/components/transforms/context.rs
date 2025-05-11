@@ -5,13 +5,13 @@ use tokio::runtime::Handle;
 use crate::{
     components::ComponentContext,
     pooling::ElasticObjectPool,
-    topology::interconnect::{EventStream, FixedSizeEventBuffer, Forwarder},
+    topology::interconnect::{Dispatcher, EventStream, FixedSizeEventBuffer},
 };
 
 /// Transform context.
 pub struct TransformContext {
     component_context: ComponentContext,
-    forwarder: Forwarder,
+    dispatcher: Dispatcher,
     event_stream: EventStream,
     event_buffer_pool: ElasticObjectPool<FixedSizeEventBuffer>,
     memory_limiter: MemoryLimiter,
@@ -25,14 +25,14 @@ impl TransformContext {
     /// Creates a new `TransformContext`.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        component_context: ComponentContext, forwarder: Forwarder, event_stream: EventStream,
+        component_context: ComponentContext, dispatcher: Dispatcher, event_stream: EventStream,
         event_buffer_pool: ElasticObjectPool<FixedSizeEventBuffer>, memory_limiter: MemoryLimiter,
         component_registry: ComponentRegistry, health_handle: Health, health_registry: HealthRegistry,
         thread_pool: Handle,
     ) -> Self {
         Self {
             component_context,
-            forwarder,
+            dispatcher,
             event_stream,
             event_buffer_pool,
             memory_limiter,
@@ -57,9 +57,9 @@ impl TransformContext {
         self.component_context.clone()
     }
 
-    /// Gets a reference to the forwarder.
-    pub fn forwarder(&self) -> &Forwarder {
-        &self.forwarder
+    /// Gets a reference to the dispatcher.
+    pub fn dispatcher(&self) -> &Dispatcher {
+        &self.dispatcher
     }
 
     /// Gets a mutable reference to the event stream.

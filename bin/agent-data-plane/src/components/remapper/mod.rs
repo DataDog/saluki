@@ -110,21 +110,21 @@ impl Transform for AgentTelemetryRemapper {
                 _ = health.live() => continue,
                 maybe_events = context.event_stream().next() => match maybe_events {
                     Some(events) => {
-                        let mut buffered_forwarder = context.forwarder().buffered().expect("default output must always exist");
+                        let mut buffered_dispatcher = context.dispatcher().buffered().expect("default output must always exist");
                         for event in &events {
                             if let Some(new_event) = event.try_as_metric().and_then(|metric| self.try_remap_metric(metric).map(Event::Metric)) {
-                                if let Err(e) = buffered_forwarder.push(new_event).await {
-                                    error!(error = %e, "Failed to forward event.");
+                                if let Err(e) = buffered_dispatcher.push(new_event).await {
+                                    error!(error = %e, "Failed to dispatch event.");
                                 }
                             }
                         }
 
-                        if let Err(e) = buffered_forwarder.flush().await {
-                            error!(error = %e, "Failed to forward events.");
+                        if let Err(e) = buffered_dispatcher.flush().await {
+                            error!(error = %e, "Failed to dispatch events.");
                         }
 
-                        if let Err(e) = context.forwarder().forward_buffer(events).await {
-                            error!(error = %e, "Failed to forward events.");
+                        if let Err(e) = context.dispatcher().dispatch_buffer(events).await {
+                            error!(error = %e, "Failed to dispatch events.");
                         }
                     },
                     None => break,

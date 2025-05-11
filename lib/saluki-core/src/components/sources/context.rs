@@ -8,14 +8,14 @@ use crate::{
     components::ComponentContext,
     pooling::ElasticObjectPool,
     topology::{
-        interconnect::{FixedSizeEventBuffer, Forwarder},
+        interconnect::{Dispatcher, FixedSizeEventBuffer},
         shutdown::ComponentShutdownHandle,
     },
 };
 
 struct SourceContextInner {
     component_context: ComponentContext,
-    forwarder: Forwarder,
+    dispatcher: Dispatcher,
     event_buffer_pool: ElasticObjectPool<FixedSizeEventBuffer>,
     memory_limiter: MemoryLimiter,
     health_registry: HealthRegistry,
@@ -34,7 +34,7 @@ impl SourceContext {
     /// Creates a new `SourceContext`.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        component_context: ComponentContext, shutdown_handle: ComponentShutdownHandle, forwarder: Forwarder,
+        component_context: ComponentContext, shutdown_handle: ComponentShutdownHandle, dispatcher: Dispatcher,
         event_buffer_pool: ElasticObjectPool<FixedSizeEventBuffer>, memory_limiter: MemoryLimiter,
         component_registry: ComponentRegistry, health_handle: Health, health_registry: HealthRegistry,
         thread_pool: Handle,
@@ -44,7 +44,7 @@ impl SourceContext {
             health_handle: Some(health_handle),
             inner: Arc::new(SourceContextInner {
                 component_context,
-                forwarder,
+                dispatcher,
                 event_buffer_pool,
                 memory_limiter,
                 health_registry,
@@ -77,9 +77,9 @@ impl SourceContext {
         self.inner.component_context.clone()
     }
 
-    /// Gets a reference to the forwarder.
-    pub fn forwarder(&self) -> &Forwarder {
-        &self.inner.forwarder
+    /// Gets a reference to the dispatcher.
+    pub fn dispatcher(&self) -> &Dispatcher {
+        &self.inner.dispatcher
     }
 
     /// Gets a reference to the event buffer pool.
