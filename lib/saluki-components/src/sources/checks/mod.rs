@@ -12,7 +12,7 @@ use saluki_core::{
     components::{sources::*, ComponentContext},
     topology::{shutdown::DynamicShutdownCoordinator, OutputDefinition},
 };
-use saluki_env::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider, Config};
+use saluki_env::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider};
 use saluki_error::{generic_error, GenericError};
 use saluki_event::DataType;
 use serde::Deserialize;
@@ -24,6 +24,9 @@ use self::scheduler::Scheduler;
 
 mod check;
 use self::check::Check;
+
+mod builder;
+use self::builder::{CheckBuilder, NoopCheckBuilder};
 
 const fn default_check_runners() -> usize {
     4
@@ -89,19 +92,6 @@ struct ChecksSource {
     check_runners: usize,
 }
 
-trait CheckBuilder {
-    fn build_check(&self, check_id: &str, check_request: &Config) -> Option<Arc<dyn Check + Send + Sync>>;
-}
-
-/// A no-op implementation of CheckBuilder
-struct NoOpCheckBuilder;
-
-impl CheckBuilder for NoOpCheckBuilder {
-    fn build_check(&self, _check_id: &str, _check_request: &Config) -> Option<Arc<dyn Check + Send + Sync>> {
-        None
-    }
-}
-
 #[async_trait]
 impl Source for ChecksSource {
     async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
@@ -116,7 +106,7 @@ impl Source for ChecksSource {
             .expect("Failed to register checks collector health");
         let mut event_rx = self.autodiscovery.subscribe().await;
 
-        let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> = vec![Arc::new(NoOpCheckBuilder)];
+        let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> = vec![Arc::new(NoopCheckBuilder)];
         let mut shutdown_handle = listener_shutdown_coordinator.register();
         let mut check_ids = HashSet::new();
         let scheduler = Scheduler::new(self.check_runners);
