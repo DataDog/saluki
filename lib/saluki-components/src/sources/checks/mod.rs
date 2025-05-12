@@ -10,18 +10,13 @@ use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{sources::*, ComponentContext},
-    topology::{
-        shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
-        OutputDefinition,
-    },
+    topology::{shutdown::DynamicShutdownCoordinator, OutputDefinition},
 };
 use saluki_env::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider, Config};
 use saluki_error::{generic_error, GenericError};
 use saluki_event::DataType;
-use saluki_health::Health;
 use serde::Deserialize;
 use tokio::select;
-use tokio::sync::broadcast::Receiver;
 use tracing::{debug, error, info, warn};
 
 mod scheduler;
@@ -107,97 +102,6 @@ impl CheckBuilder for NoOpCheckBuilder {
     }
 }
 
-struct ChecksCollector {
-    shutdown_handle: DynamicShutdownHandle,
-    health: Health,
-    event_rx: Receiver<AutodiscoveryEvent>,
-    check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>>,
-    checks: HashSet<String>,
-    scheduler: Scheduler,
-}
-
-impl ChecksCollector {
-    pub fn new(
-        shutdown_handle: DynamicShutdownHandle, health: Health, event_rx: Receiver<AutodiscoveryEvent>,
-        check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>>, check_runners: usize,
-    ) -> Self {
-        Self {
-            shutdown_handle,
-            health,
-            event_rx,
-            check_builders,
-            checks: HashSet::new(),
-            scheduler: Scheduler::new(check_runners),
-        }
-    }
-
-    pub async fn run(mut self) {
-        let check_dispatcher_shutdown_coordinator = DynamicShutdownCoordinator::default();
-
-        loop {
-            select! {
-                _ = &mut self.shutdown_handle => {
-                    debug!("Received shutdown signal.");
-                    self.scheduler.shutdown().await;
-                    break
-                },
-
-                _ = self.health.live() => continue,
-
-                event = self.event_rx.recv() => match event {
-                        Ok(event) => {
-                            match event {
-                                AutodiscoveryEvent::Schedule { config } => {
-                                    let digest = config.digest();
-
-                                    let mut checks: Vec<Arc<dyn Check + Send + Sync>> = vec![];
-                                    for instance in &config.instances {
-                                        let check_id = config.id(&digest, instance);
-                                        if self.checks.contains(&check_id) {
-                                            continue;
-                                        }
-
-                                        for builder in self.check_builders.iter_mut() {
-                                            if let Some(check) = builder.build_check(&check_id, &config) {
-                                                checks.push(check);
-                                                self.checks.insert(check_id.clone());
-                                                break;
-                                            }
-                                        }
-                                    }
-
-                                    for check in checks {
-                                        self.scheduler.schedule(check);
-                                    }
-                                }
-                                AutodiscoveryEvent::Unscheduled { config } => {
-                                    let digest = config.digest();
-
-                                    for instance in &config.instances {
-                                        let check_id = config.id(&digest, instance);
-                                        if !self.checks.contains(&check_id) {
-                                            warn!("Unscheduling check {} not found, skipping.", check_id);
-                                            continue;
-                                        }
-
-                                        self.scheduler.unschedule(&check_id);
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            error!("Error receiving event: {:?}", e);
-                        }
-                }
-            }
-        }
-
-        check_dispatcher_shutdown_coordinator.shutdown().await;
-
-        info!("Checks dispatcher stopped.");
-    }
-}
-
 #[async_trait]
 impl Source for ChecksSource {
     async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
@@ -206,24 +110,81 @@ impl Source for ChecksSource {
 
         let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
-        let check_collector_health = context
+        let mut check_collector_health = context
             .health_registry()
             .register_component("checks_collector")
             .expect("Failed to register checks collector health");
-        let event_rx = self.autodiscovery.subscribe().await;
+        let mut event_rx = self.autodiscovery.subscribe().await;
 
-        let check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> = vec![Arc::new(NoOpCheckBuilder)];
-
-        let collector = ChecksCollector::new(
-            listener_shutdown_coordinator.register(),
-            check_collector_health,
-            event_rx,
-            check_builders,
-            self.check_runners,
-        );
+        let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> = vec![Arc::new(NoOpCheckBuilder)];
+        let mut shutdown_handle = listener_shutdown_coordinator.register();
+        let mut check_ids = HashSet::new();
+        let scheduler = Scheduler::new(self.check_runners);
 
         spawn_traced_named("checks-collector", async move {
-            collector.run().await;
+            let check_dispatcher_shutdown_coordinator = DynamicShutdownCoordinator::default();
+
+            loop {
+                select! {
+                    _ = &mut shutdown_handle => {
+                        debug!("Received shutdown signal.");
+                        scheduler.shutdown().await;
+                        break
+                    },
+
+                    _ = check_collector_health.live() => continue,
+
+                    event = event_rx.recv() => match event {
+                            Ok(event) => {
+                                match event {
+                                    AutodiscoveryEvent::Schedule { config } => {
+                                        let digest = config.digest();
+
+                                        let mut runnable_checks: Vec<Arc<dyn Check + Send + Sync>> = vec![];
+                                        for instance in &config.instances {
+                                            let check_id = config.id(&digest, instance);
+                                            if check_ids.contains(&check_id) {
+                                                continue;
+                                            }
+
+                                            for builder in check_builders.iter_mut() {
+                                                if let Some(check) = builder.build_check(&check_id, &config) {
+                                                    runnable_checks.push(check);
+                                                    check_ids.insert(check_id.clone());
+                                                    break;
+                                                }
+                                            }
+                                        }
+
+                                        for check in runnable_checks {
+                                            scheduler.schedule(check);
+                                        }
+                                    }
+                                    AutodiscoveryEvent::Unscheduled { config } => {
+                                        let digest = config.digest();
+
+                                        for instance in &config.instances {
+                                            let check_id = config.id(&digest, instance);
+                                            if !check_ids.contains(&check_id) {
+                                                warn!("Unscheduling check {} not found, skipping.", check_id);
+                                                continue;
+                                            }
+
+                                            scheduler.unschedule(&check_id);
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("Error receiving event: {:?}", e);
+                            }
+                    }
+                }
+            }
+
+            check_dispatcher_shutdown_coordinator.shutdown().await;
+
+            info!("Checks dispatcher stopped.");
         });
 
         health.mark_ready();
