@@ -161,7 +161,7 @@ impl ChecksCollector {
                                             if let Some(check) = builder.build_check(&check_id, &config) {
                                                 checks.push(check);
                                                 self.checks.insert(check_id.clone());
-                                                continue;
+                                                break;
                                             }
                                         }
                                     }
