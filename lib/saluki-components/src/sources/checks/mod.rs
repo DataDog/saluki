@@ -148,11 +148,11 @@ impl ChecksCollector {
                         Ok(event) => {
                             match event {
                                 AutodiscoveryEvent::Schedule { config } => {
-                                    let digest = &config.digest();
+                                    let digest = config.digest();
 
                                     let mut checks: Vec<Arc<dyn Check + Send + Sync>> = vec![];
                                     for instance in &config.instances {
-                                        let check_id = config.id(digest, instance);
+                                        let check_id = config.id(&digest, instance);
                                         if self.checks.contains(&check_id) {
                                             continue;
                                         }
@@ -171,10 +171,10 @@ impl ChecksCollector {
                                     }
                                 }
                                 AutodiscoveryEvent::Unscheduled { config } => {
-                                    let digest = &config.digest();
+                                    let digest = config.digest();
 
                                     for instance in &config.instances {
-                                        let check_id = config.id(digest, instance);
+                                        let check_id = config.id(&digest, instance);
                                         if !self.checks.contains(&check_id) {
                                             warn!("Unscheduling check {} not found, skipping.", check_id);
                                             continue;
