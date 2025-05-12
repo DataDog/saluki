@@ -54,11 +54,13 @@ impl ChecksAgentEnvProvider {
 
         let autodiscovery_provider = if in_standalone_mode {
             debug!("Using local autodiscovery provider due to standalone mode.");
-            let mut config_dir = config.get_typed_or_default::<String>("checks_config_dir");
-            if config_dir.is_empty() {
-                config_dir = "/etc/datadog-agent/conf.d".to_string();
-            }
-            BoxedAutodiscoveryProvider::from_provider(LocalAutodiscoveryProvider::new(vec![config_dir]))
+            let config_dir = config.get_typed_or_default::<String>("checks_config_dir");
+            let paths = if config_dir.is_empty() {
+                vec!["/etc/datadog-agent/conf.d"]
+            } else {
+                config_dir.split(",").collect::<Vec<&str>>()
+            };
+            BoxedAutodiscoveryProvider::from_provider(LocalAutodiscoveryProvider::new(paths))
         } else {
             let client = RemoteAgentClient::from_configuration(config).await?;
             BoxedAutodiscoveryProvider::from_provider(RemoteAgentAutodiscoveryProvider::new(client))
