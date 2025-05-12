@@ -164,7 +164,6 @@ impl TestRendererBuilder {
     }
 }
 
-#[async_trait]
 impl RendererBuilder for TestRendererBuilder {
     fn input_event_type(&self) -> EventType {
         self.input_event_ty
@@ -174,7 +173,7 @@ impl RendererBuilder for TestRendererBuilder {
         self.output_payload_ty
     }
 
-    async fn build(&self, _: ComponentContext) -> Result<Box<dyn Renderer + Send>, GenericError> {
+    fn build(&self, _: ComponentContext) -> Result<Box<dyn Renderer + Send>, GenericError> {
         Ok(Box::new(TestRenderer))
     }
 }
