@@ -56,7 +56,7 @@ impl ChecksAgentEnvProvider {
             debug!("Using local autodiscovery provider due to standalone mode.");
             let mut config_dir = config.get_typed_or_default::<String>("checks_config_dir");
             if config_dir.is_empty() {
-                config_dir = "./dist/conf.d".to_string();
+                config_dir = "/etc/datadog-agent/conf.d".to_string();
             }
             BoxedAutodiscoveryProvider::from_provider(LocalAutodiscoveryProvider::new(vec![config_dir]))
         } else {
