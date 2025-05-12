@@ -231,12 +231,12 @@ impl From<ProtoConfig> for AutodiscoveryEvent {
     fn from(proto: ProtoConfig) -> AutodiscoveryEvent {
         let event_type = EventType::from(proto.event_type);
 
+        let config = Config::from(proto);
+
         if event_type == EventType::Schedule {
-            AutodiscoveryEvent::Schedule {
-                config: Config::from(proto),
-            }
+            AutodiscoveryEvent::Schedule { config }
         } else {
-            AutodiscoveryEvent::Unscheduled { config_id: proto.name }
+            AutodiscoveryEvent::Unscheduled { config }
         }
     }
 }
@@ -252,8 +252,8 @@ pub enum AutodiscoveryEvent {
     },
     /// Unschedule a configuration
     Unscheduled {
-        /// Configuration ID
-        config_id: String,
+        /// Configuration
+        config: Config,
     },
 }
 
@@ -313,8 +313,10 @@ mod tests {
 
         let config = Config::from(proto_config);
 
-        let id1 = config.id(&config.instances[0]);
-        let id2 = config.id(&config.instances[1]);
+        let digest = config.digest();
+
+        let id1 = config.id(&digest, &config.instances[0]);
+        let id2 = config.id(&digest, &config.instances[1]);
 
         assert_ne!(id1, id2);
 
@@ -439,7 +441,9 @@ mod tests {
         let event = AutodiscoveryEvent::from(proto_config);
 
         match event {
-            AutodiscoveryEvent::Unscheduled { config_id: _config_id } => {}
+            AutodiscoveryEvent::Unscheduled { config } => {
+                assert_eq!(config.name, "test-config");
+            }
             _ => panic!("Expected an Unscheduled event"),
         }
     }

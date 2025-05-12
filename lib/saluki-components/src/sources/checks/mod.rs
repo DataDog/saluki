@@ -22,7 +22,7 @@ use saluki_health::Health;
 use serde::Deserialize;
 use tokio::select;
 use tokio::sync::broadcast::Receiver;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 mod scheduler;
 use self::scheduler::Scheduler;
@@ -169,8 +169,18 @@ impl ChecksCollector {
                                         self.scheduler.schedule(check);
                                     }
                                 }
-                                AutodiscoveryEvent::Unscheduled { .. } => {
-                                    // TODO: Implement
+                                AutodiscoveryEvent::Unscheduled { config } => {
+                                    let digest = &config.digest();
+
+                                    for instance in &config.instances {
+                                        let check_id = config.id(digest, instance);
+                                        if !self.checks.contains(&check_id) {
+                                            warn!("Unscheduling check {} not found, skipping.", check_id);
+                                            continue;
+                                        }
+
+                                        self.scheduler.unschedule(&check_id);
+                                    }
                                 }
                             }
                         }

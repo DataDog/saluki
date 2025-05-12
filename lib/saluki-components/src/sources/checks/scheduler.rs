@@ -89,39 +89,41 @@ impl Scheduler {
     }
 
     /// Unschedule a check
-    pub fn unschedule(&self, check: Arc<dyn Check + Send + Sync>) {
-        let check_id = check.id();
-        let interval_secs = check.interval().as_secs();
+    pub fn unschedule(&self, check_id: &str) {
+        let mut interval_secs = None;
 
-        // Remove from interval bucket and check if bucket is now empty
-        let bucket_empty = {
-            let mut buckets = self.interval_buckets.write().unwrap();
-            if let Some(bucket) = buckets.get_mut(&interval_secs) {
-                bucket.remove(&check_id);
-
-                // Check if bucket is now empty
-                let is_empty = bucket.is_empty();
-
-                // Remove empty buckets
-                if is_empty {
-                    buckets.remove(&interval_secs);
-                }
-
-                is_empty
-            } else {
-                false
-            }
-        };
-
-        // If bucket is now empty, stop the ticker for that interval
-        if bucket_empty {
-            self.stop_interval_ticker(interval_secs);
-        }
-
-        // Remove from registry
         {
             let mut checks = self.checks.write().unwrap();
-            checks.remove(&check_id);
+            if let Some(check) = checks.remove(check_id) {
+                interval_secs = Some(check.interval().as_secs());
+            }
+        }
+
+        if let Some(interval_secs) = interval_secs {
+            // Remove from interval bucket and check if bucket is now empty
+            let bucket_empty = {
+                let mut buckets = self.interval_buckets.write().unwrap();
+                if let Some(bucket) = buckets.get_mut(&interval_secs) {
+                    bucket.remove(check_id);
+
+                    // Check if bucket is now empty
+                    let is_empty = bucket.is_empty();
+
+                    // Remove empty buckets
+                    if is_empty {
+                        buckets.remove(&interval_secs);
+                    }
+
+                    is_empty
+                } else {
+                    false
+                }
+            };
+
+            // If bucket is now empty, stop the ticker for that interval
+            if bucket_empty {
+                self.stop_interval_ticker(interval_secs);
+            }
         }
 
         debug!("Unscheduled check '{}'", check_id);
@@ -406,8 +408,8 @@ mod tests {
             "Check 1 should run more frequently than check 2"
         );
 
-        scheduler.unschedule(check1.clone() as Arc<dyn Check + Send + Sync>);
-        scheduler.unschedule(check2.clone() as Arc<dyn Check + Send + Sync>);
+        scheduler.unschedule(&check1.id());
+        scheduler.unschedule(&check2.id());
         scheduler.shutdown().await;
     }
 
@@ -424,7 +426,7 @@ mod tests {
             assert!(checks.contains_key("test-check"), "Check should be in the registry");
         }
 
-        scheduler.unschedule(Arc::clone(&check));
+        scheduler.unschedule(&check.id());
 
         {
             let checks = scheduler.checks.read().unwrap();
@@ -456,7 +458,7 @@ mod tests {
             "Failing check should still be executed"
         );
 
-        scheduler.unschedule(Arc::clone(&failing_check_trait));
+        scheduler.unschedule(&failing_check.id());
         scheduler.shutdown().await;
     }
 
@@ -465,11 +467,11 @@ mod tests {
         let scheduler = Scheduler::new(2);
 
         let checks = (0..5)
-            .map(|i| Arc::new(create_check(&format!("same-interval-{}", i), 1)))
+            .map(|i| Arc::new(MockCheck::new(&format!("same-interval-{}", i), 1)))
             .collect::<Vec<_>>();
 
         for check in &checks {
-            scheduler.schedule(Arc::clone(check));
+            scheduler.schedule(Arc::clone(check) as Arc<dyn Check + Send + Sync>);
         }
 
         time::sleep(Duration::from_secs(2)).await;
@@ -487,7 +489,7 @@ mod tests {
         }
 
         for check in &checks {
-            scheduler.unschedule(Arc::clone(check));
+            scheduler.unschedule(&check.id());
         }
 
         time::sleep(Duration::from_millis(100)).await;

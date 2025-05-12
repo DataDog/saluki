@@ -63,12 +63,12 @@ impl LocalAutodiscoveryProvider {
 
         tokio::spawn(async move {
             let mut known_configs = HashSet::new();
-
+            let mut configs = HashMap::new();
             loop {
                 interval.tick().await;
 
                 // Scan for configurations and emit events for changes
-                if let Err(e) = scan_and_emit_events(&search_paths, &mut known_configs, &sender).await {
+                if let Err(e) = scan_and_emit_events(&search_paths, &mut known_configs, &sender, &mut configs).await {
                     warn!("Error scanning for configurations: {}", e);
                 }
             }
@@ -144,6 +144,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
 /// Scan and emit events based on configuration files in the directory
 async fn scan_and_emit_events(
     paths: &[PathBuf], known_configs: &mut HashSet<String>, sender: &Sender<AutodiscoveryEvent>,
+    configs: &mut HashMap<String, Config>,
 ) -> Result<(), GenericError> {
     let mut found_configs = HashSet::new();
 
@@ -159,6 +160,8 @@ async fn scan_and_emit_events(
                     match parse_config_file(&path).await {
                         Ok((config_id, config)) => {
                             found_configs.insert(config_id.clone());
+
+                            configs.entry(config_id.clone()).or_insert(config.clone());
 
                             // Check if this is a new or updated configuration
                             if !known_configs.contains(&config_id) {
@@ -195,8 +198,10 @@ async fn scan_and_emit_events(
         debug!("Configuration removed: {}", config_id);
         known_configs.remove(&config_id);
 
+        let config = configs.remove(&config_id).unwrap();
+
         // Create an unschedule Config event
-        let event = AutodiscoveryEvent::Unscheduled { config_id };
+        let event = AutodiscoveryEvent::Unscheduled { config };
         let _ = sender.send(event);
     }
 
@@ -268,9 +273,10 @@ mod tests {
         let _test_file = copy_test_file("config1.yaml", dir.path()).await;
 
         let mut known_configs = HashSet::new();
+        let mut configs = HashMap::new();
         let (sender, mut receiver) = broadcast::channel::<AutodiscoveryEvent>(10);
 
-        scan_and_emit_events(&[dir.path().to_path_buf()], &mut known_configs, &sender)
+        scan_and_emit_events(&[dir.path().to_path_buf()], &mut known_configs, &sender, &mut configs)
             .await
             .unwrap();
 
@@ -302,17 +308,39 @@ mod tests {
 
         let mut known_configs = HashSet::new();
         known_configs.insert("removed-config".to_string());
+        let mut configs = HashMap::new();
+        configs.insert(
+            "removed-config".to_string(),
+            Config {
+                name: MetaString::from("removed-config"),
+                init_config: HashMap::new(),
+                instances: Vec::new(),
+                metric_config: HashMap::new(),
+                logs_config: HashMap::new(),
+                ad_identifiers: Vec::new(),
+                advanced_ad_identifiers: Vec::new(),
+                provider: MetaString::empty(),
+                service_id: MetaString::empty(),
+                tagger_entity: MetaString::empty(),
+                cluster_check: false,
+                node_name: MetaString::empty(),
+                source: MetaString::from_static("local"),
+                ignore_autodiscovery_tags: false,
+                metrics_excluded: false,
+                logs_excluded: false,
+            },
+        );
 
         let (sender, mut receiver) = broadcast::channel::<AutodiscoveryEvent>(10);
 
-        scan_and_emit_events(&[dir.path().to_path_buf()], &mut known_configs, &sender)
+        scan_and_emit_events(&[dir.path().to_path_buf()], &mut known_configs, &sender, &mut configs)
             .await
             .unwrap();
 
         assert_eq!(known_configs.len(), 0);
 
         let event = receiver.try_recv().unwrap();
-        assert!(matches!(event, AutodiscoveryEvent::Unscheduled { config_id } if config_id == "removed-config"));
+        assert!(matches!(event, AutodiscoveryEvent::Unscheduled { config } if config.name == "removed-config"));
 
         assert!(receiver.try_recv().is_err());
     }
