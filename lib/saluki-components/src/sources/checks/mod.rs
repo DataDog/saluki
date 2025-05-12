@@ -24,9 +24,25 @@ use tokio::select;
 use tokio::sync::broadcast::Receiver;
 use tracing::{debug, error, info};
 
+mod scheduler;
+use self::scheduler::Scheduler;
+
+mod check;
+use self::check::Check;
+
+const fn default_check_runners() -> usize {
+    4
+}
+
 /// Configuration for the checks source.
 #[derive(Deserialize)]
 pub struct ChecksConfiguration {
+    /// The number of check runners to use.
+    ///
+    /// Defaults to 4.
+    #[serde(default = "default_check_runners")]
+    check_runners: usize,
+
     /// Autodiscovery provider to use.
     #[serde(skip)]
     autodiscovery_provider: Option<Arc<dyn AutodiscoveryProvider + Send + Sync>>,
@@ -54,6 +70,7 @@ impl SourceBuilder for ChecksConfiguration {
         match &self.autodiscovery_provider {
             Some(autodiscovery) => Ok(Box::new(ChecksSource {
                 autodiscovery: Arc::clone(autodiscovery),
+                check_runners: self.check_runners,
             })),
             None => Err(generic_error!("No autodiscovery provider configured.")),
         }
@@ -74,22 +91,18 @@ impl MemoryBounds for ChecksConfiguration {
 
 struct ChecksSource {
     autodiscovery: Arc<dyn AutodiscoveryProvider + Send + Sync>,
-}
-
-trait Check {
-    fn run(&self) -> Result<(), GenericError>;
-    fn stop(&self);
+    check_runners: usize,
 }
 
 trait CheckBuilder {
-    fn build_check(&self, check_request: &Config) -> Option<Arc<dyn Check + Send + Sync>>;
+    fn build_check(&self, check_id: &str, check_request: &Config) -> Option<Arc<dyn Check + Send + Sync>>;
 }
 
 /// A no-op implementation of CheckBuilder
 struct NoOpCheckBuilder;
 
 impl CheckBuilder for NoOpCheckBuilder {
-    fn build_check(&self, _check_request: &Config) -> Option<Arc<dyn Check + Send + Sync>> {
+    fn build_check(&self, _check_id: &str, _check_request: &Config) -> Option<Arc<dyn Check + Send + Sync>> {
         None
     }
 }
@@ -100,12 +113,13 @@ struct ChecksCollector {
     event_rx: Receiver<AutodiscoveryEvent>,
     check_builder: Vec<Arc<dyn CheckBuilder + Send + Sync>>,
     checks: HashSet<String>,
+    scheduler: Scheduler,
 }
 
 impl ChecksCollector {
     pub fn new(
         shutdown_handle: DynamicShutdownHandle, health: Health, event_rx: Receiver<AutodiscoveryEvent>,
-        check_builder: Vec<Arc<dyn CheckBuilder + Send + Sync>>,
+        check_builder: Vec<Arc<dyn CheckBuilder + Send + Sync>>, check_runners: usize,
     ) -> Self {
         Self {
             shutdown_handle,
@@ -113,6 +127,7 @@ impl ChecksCollector {
             event_rx,
             check_builder,
             checks: HashSet::new(),
+            scheduler: Scheduler::new(check_runners),
         }
     }
 
@@ -142,7 +157,7 @@ impl ChecksCollector {
                                         }
 
                                         for builder in self.check_builder.iter_mut() {
-                                            if let Some(check) = builder.build_check(&config) {
+                                            if let Some(check) = builder.build_check(&check_id, &config) {
                                                 checks.push(check);
                                                 self.checks.insert(check_id.clone());
                                                 continue;
@@ -151,8 +166,7 @@ impl ChecksCollector {
                                     }
 
                                     for check in checks {
-                                        // TODO: Implement the scheduler
-                                        let _ = check.run();
+                                        self.scheduler.schedule(check);
                                     }
                                 }
                                 AutodiscoveryEvent::Unscheduled { .. } => {
@@ -194,6 +208,7 @@ impl Source for ChecksSource {
             check_collector_health,
             event_rx,
             check_builder,
+            self.check_runners,
         );
 
         spawn_traced_named("checks-collector", async move {
