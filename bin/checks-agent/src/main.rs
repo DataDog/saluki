@@ -148,7 +148,7 @@ async fn create_topology(
     // Create a ChecksConfiguration source
     let checks_config = ChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure checks source.")?
-        .with_autodiscovery_provider(env_provider.autodiscovery_provider.clone());
+        .with_autodiscovery_provider(env_provider.autodiscovery_provider().clone());
     // Add a destination component to receive data from the source
     let blackhole_config = BlackholeConfiguration;
 

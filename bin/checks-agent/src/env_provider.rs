@@ -25,7 +25,7 @@ use tracing::{debug, warn};
 #[allow(dead_code)]
 pub struct ChecksAgentEnvProvider {
     host_provider: BoxedHostProvider,
-    pub autodiscovery_provider: BoxedAutodiscoveryProvider,
+    autodiscovery_provider: BoxedAutodiscoveryProvider,
 }
 
 impl ChecksAgentEnvProvider {
@@ -68,5 +68,9 @@ impl ChecksAgentEnvProvider {
             host_provider,
             autodiscovery_provider,
         })
+    }
+
+    pub fn autodiscovery_provider(&self) -> &BoxedAutodiscoveryProvider {
+        &self.autodiscovery_provider
     }
 }
