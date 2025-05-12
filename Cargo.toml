@@ -177,8 +177,8 @@ axum-extra = { version = "0.9", default-features = false }
 papaya = { version = "0.2", default-features = false }
 tempfile = { version = "3", default-features = false }
 fs4 = { version = "0.13.1", default-features = false }
-fnv = { version = "1.0.7", default-features = false }
-twox-hash = { version = "1.6.1", default-features = false }
+fnv = { version = "1", default-features = false }
+twox-hash = { version = "2", features = ["xxhash64"] }
 
 [profile.release]
 lto = "thin"
