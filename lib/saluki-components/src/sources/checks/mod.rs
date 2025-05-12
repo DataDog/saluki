@@ -111,7 +111,7 @@ struct ChecksCollector {
     shutdown_handle: DynamicShutdownHandle,
     health: Health,
     event_rx: Receiver<AutodiscoveryEvent>,
-    check_builder: Vec<Arc<dyn CheckBuilder + Send + Sync>>,
+    check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>>,
     checks: HashSet<String>,
     scheduler: Scheduler,
 }
@@ -119,13 +119,13 @@ struct ChecksCollector {
 impl ChecksCollector {
     pub fn new(
         shutdown_handle: DynamicShutdownHandle, health: Health, event_rx: Receiver<AutodiscoveryEvent>,
-        check_builder: Vec<Arc<dyn CheckBuilder + Send + Sync>>, check_runners: usize,
+        check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>>, check_runners: usize,
     ) -> Self {
         Self {
             shutdown_handle,
             health,
             event_rx,
-            check_builder,
+            check_builders,
             checks: HashSet::new(),
             scheduler: Scheduler::new(check_runners),
         }
@@ -138,6 +138,7 @@ impl ChecksCollector {
             select! {
                 _ = &mut self.shutdown_handle => {
                     debug!("Received shutdown signal.");
+                    self.scheduler.shutdown().await;
                     break
                 },
 
@@ -156,7 +157,7 @@ impl ChecksCollector {
                                             continue;
                                         }
 
-                                        for builder in self.check_builder.iter_mut() {
+                                        for builder in self.check_builders.iter_mut() {
                                             if let Some(check) = builder.build_check(&check_id, &config) {
                                                 checks.push(check);
                                                 self.checks.insert(check_id.clone());
@@ -211,13 +212,13 @@ impl Source for ChecksSource {
             .expect("Failed to register checks collector health");
         let event_rx = self.autodiscovery.subscribe().await;
 
-        let check_builder: Vec<Arc<dyn CheckBuilder + Send + Sync>> = vec![Arc::new(NoOpCheckBuilder)];
+        let check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> = vec![Arc::new(NoOpCheckBuilder)];
 
         let collector = ChecksCollector::new(
             listener_shutdown_coordinator.register(),
             check_collector_health,
             event_rx,
-            check_builder,
+            check_builders,
             self.check_runners,
         );
 

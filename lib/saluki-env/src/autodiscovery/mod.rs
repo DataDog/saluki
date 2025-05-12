@@ -104,7 +104,7 @@ impl Config {
     pub fn id(&self, digest: &u64, instance: &HashMap<MetaString, serde_yaml::Value>) -> String {
         let mut h2 = FnvHasher::default();
         h2.write_u64(*digest);
-        h2.write(&map_to_bytes(&instance).unwrap());
+        h2.write(&map_to_bytes(instance).unwrap());
         h2.write(&map_to_bytes(&self.init_config).unwrap());
 
         let name = get_name_for_instance(instance);

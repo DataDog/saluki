@@ -18,20 +18,12 @@ enum WorkerMessage {
 /// A scheduler that manages the execution of checks.
 /// It maintains a dynamic pool of workers and organizes checks by their intervals.
 pub struct Scheduler {
-    // Configuration
     check_runners: usize,
-
-    // Worker management - we use a channel per worker approach
     worker_channels: Arc<Mutex<Vec<mpsc::Sender<WorkerMessage>>>>,
     worker_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
-
-    // Check tracking
-    // Outer HashMap: interval in seconds -> Set of checks with that interval
     interval_buckets: Arc<RwLock<HashMap<u64, HashSet<String>>>>,
-    // Map of check ID to the actual check implementation
     checks: Arc<RwLock<HashMap<String, Arc<dyn Check + Send + Sync>>>>,
-    // Tracks the ticker tasks for each interval
-    interval_tickers: Arc<Mutex<HashMap<u64, JoinHandle<()>>>>,
+    interval_handles: Arc<Mutex<HashMap<u64, JoinHandle<()>>>>,
 }
 
 impl Scheduler {
@@ -41,46 +33,41 @@ impl Scheduler {
         let interval_buckets: Arc<RwLock<HashMap<u64, HashSet<String>>>> = Arc::new(RwLock::new(HashMap::new()));
         let checks: Arc<RwLock<HashMap<String, Arc<dyn Check + Send + Sync + 'static>>>> =
             Arc::new(RwLock::new(HashMap::new()));
-        let interval_tickers: Arc<Mutex<HashMap<u64, JoinHandle<()>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let interval_handles: Arc<Mutex<HashMap<u64, JoinHandle<()>>>> = Arc::new(Mutex::new(HashMap::new()));
 
-        // Create the scheduler
         let scheduler = Self {
             check_runners,
             worker_channels,
             worker_handles,
             interval_buckets,
             checks,
-            interval_tickers,
+            interval_handles,
         };
 
-        // Initialize with initial workers
         scheduler.adjust_worker_count(scheduler.check_runners);
 
         scheduler
     }
 
-    /// Schedule a check to be run at its specified interval
+    /// Schedule a check
     pub fn schedule(&self, check: Arc<dyn Check + Send + Sync>) {
         let check_id = check.id();
         let interval_secs = check.interval().as_secs();
 
-        // Add to our check registry
         {
             let mut checks = self.checks.write().unwrap();
             checks.insert(check_id.to_string(), Arc::clone(&check));
         }
 
-        // Add to appropriate interval bucket
         let is_new_interval = {
             let mut buckets = self.interval_buckets.write().unwrap();
-            let bucket = buckets.entry(interval_secs).or_insert_with(HashSet::new);
+            let bucket = buckets.entry(interval_secs).or_default();
 
             let is_new = bucket.is_empty();
             bucket.insert(check_id.to_string());
             is_new
         };
 
-        // If this is a new interval, start a dedicated ticker for it
         if is_new_interval {
             self.start_interval_ticker(interval_secs);
         }
@@ -100,16 +87,13 @@ impl Scheduler {
         }
 
         if let Some(interval_secs) = interval_secs {
-            // Remove from interval bucket and check if bucket is now empty
             let bucket_empty = {
                 let mut buckets = self.interval_buckets.write().unwrap();
                 if let Some(bucket) = buckets.get_mut(&interval_secs) {
                     bucket.remove(check_id);
 
-                    // Check if bucket is now empty
                     let is_empty = bucket.is_empty();
 
-                    // Remove empty buckets
                     if is_empty {
                         buckets.remove(&interval_secs);
                     }
@@ -120,7 +104,6 @@ impl Scheduler {
                 }
             };
 
-            // If bucket is now empty, stop the ticker for that interval
             if bucket_empty {
                 self.stop_interval_ticker(interval_secs);
             }
@@ -135,7 +118,7 @@ impl Scheduler {
 
         // Stop all interval tickers
         let ticker_handles = {
-            let mut tickers = self.interval_tickers.lock().unwrap();
+            let mut tickers = self.interval_handles.lock().unwrap();
             std::mem::take(&mut *tickers)
         };
 
@@ -198,7 +181,6 @@ impl Scheduler {
                     }
                 };
 
-                // Get handles to all worker channels
                 let channels = {
                     let channels_guard = worker_channels.lock().unwrap();
                     if channels_guard.is_empty() {
@@ -230,8 +212,7 @@ impl Scheduler {
             }
         });
 
-        // Store the ticker handle
-        let mut tickers = self.interval_tickers.lock().unwrap();
+        let mut tickers = self.interval_handles.lock().unwrap();
         tickers.insert(interval_secs, handle);
 
         debug!("Started ticker for interval {}s", interval_secs);
@@ -239,7 +220,7 @@ impl Scheduler {
 
     /// Stop the ticker for a specific interval
     fn stop_interval_ticker(&self, interval_secs: u64) {
-        let mut tickers = self.interval_tickers.lock().unwrap();
+        let mut tickers = self.interval_handles.lock().unwrap();
         if let Some(handle) = tickers.remove(&interval_secs) {
             handle.abort();
             debug!("Stopped ticker for interval {}s", interval_secs);
@@ -254,7 +235,6 @@ impl Scheduler {
         };
 
         if desired_count > current_count {
-            // Add more workers
             for _ in 0..(desired_count - current_count) {
                 self.add_worker();
             }
@@ -264,16 +244,13 @@ impl Scheduler {
 
     /// Add a new worker
     fn add_worker(&self) {
-        // Create a dedicated channel for this worker
         let (sender, mut receiver) = mpsc::channel::<WorkerMessage>(100);
 
-        // Store the sender in our list of worker channels
         {
             let mut channels = self.worker_channels.lock().unwrap();
             channels.push(sender);
         }
 
-        // Spawn the worker task
         let handle = tokio::spawn(async move {
             while let Some(msg) = receiver.recv().await {
                 match msg {
@@ -295,7 +272,6 @@ impl Scheduler {
             debug!("Worker shutting down");
         });
 
-        // Store the worker handle
         let mut handles = self.worker_handles.lock().unwrap();
         handles.push(handle);
     }
@@ -408,8 +384,8 @@ mod tests {
             "Check 1 should run more frequently than check 2"
         );
 
-        scheduler.unschedule(&check1.id());
-        scheduler.unschedule(&check2.id());
+        scheduler.unschedule(check1.id());
+        scheduler.unschedule(check2.id());
         scheduler.shutdown().await;
     }
 
@@ -426,7 +402,7 @@ mod tests {
             assert!(checks.contains_key("test-check"), "Check should be in the registry");
         }
 
-        scheduler.unschedule(&check.id());
+        scheduler.unschedule(check.id());
 
         {
             let checks = scheduler.checks.read().unwrap();
@@ -458,7 +434,7 @@ mod tests {
             "Failing check should still be executed"
         );
 
-        scheduler.unschedule(&failing_check.id());
+        scheduler.unschedule(failing_check.id());
         scheduler.shutdown().await;
     }
 
@@ -489,7 +465,7 @@ mod tests {
         }
 
         for check in &checks {
-            scheduler.unschedule(&check.id());
+            scheduler.unschedule(check.id());
         }
 
         time::sleep(Duration::from_millis(100)).await;
@@ -523,7 +499,7 @@ mod tests {
             let channels = scheduler.worker_channels.lock().unwrap();
             assert_eq!(channels.len(), 0, "No worker channels should remain after shutdown");
 
-            let tickers = scheduler.interval_tickers.lock().unwrap();
+            let tickers = scheduler.interval_handles.lock().unwrap();
             assert_eq!(tickers.len(), 0, "No interval tickers should remain after shutdown");
         }
     }
