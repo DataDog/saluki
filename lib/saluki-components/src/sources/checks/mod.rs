@@ -208,7 +208,7 @@ impl Source for ChecksSource {
 
         let check_collector_health = context
             .health_registry()
-            .register_component("checks_collectorr")
+            .register_component("checks_collector")
             .expect("Failed to register checks collector health");
         let event_rx = self.autodiscovery.subscribe().await;
 
