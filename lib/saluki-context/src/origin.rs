@@ -130,6 +130,11 @@ impl<'a> RawOrigin<'a> {
             && self.external_data.is_none()
     }
 
+    /// Unsets the process ID of the sender.
+    pub fn clear_process_id(&mut self) {
+        self.process_id = None;
+    }
+
     /// Sets the process ID of the sender.
     ///
     /// Must be a non-zero value. If the value is zero, it is silently ignored.
