@@ -106,9 +106,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
             for (key, value) in instance {
                 result.insert(key.into(), value);
             }
-            Instance {
-                data: Data { value: result },
-            }
+            Instance { value: result }
         })
         .collect();
 
@@ -266,7 +264,7 @@ mod tests {
         assert!(id.contains("saluki-env_src_autodiscovery_providers_test_data_test-config.yaml"));
         assert_eq!(config.name, "test-config.yaml");
         assert_eq!(
-            config.init_config.get("service"),
+            config.init_config.value.get("service"),
             Some(&serde_yaml::Value::String("test-service".to_string()))
         );
         assert_eq!(config.source, "local");
@@ -294,15 +292,15 @@ mod tests {
             assert_eq!(config.name, "config1.yaml");
             assert_eq!(config.instances.len(), 1);
             assert_eq!(
-                config.instances[0].data.get("server"),
+                config.instances[0].value.get("server"),
                 Some(&serde_yaml::Value::String("localhost".to_string()))
             );
             assert_eq!(
-                config.instances[0].data.get("port"),
+                config.instances[0].value.get("port"),
                 Some(&serde_yaml::Value::Number(8080.into()))
             );
             assert_eq!(
-                config.instances[0].data.get("tags"),
+                config.instances[0].value.get("tags"),
                 Some(&serde_yaml::Value::Sequence(vec![
                     serde_yaml::Value::String("test:true".to_string()),
                     serde_yaml::Value::String("env:test".to_string())

@@ -62,42 +62,52 @@ pub struct AdvancedADIdentifier {
     pub kube_endpoints: Option<KubeNamespacedName>,
 }
 
+trait RawData {
+    fn get_value(&self) -> &HashMap<MetaString, serde_yaml::Value>;
+
+    fn get(&self, key: &str) -> Option<&serde_yaml::Value> {
+        self.get_value().get(key)
+    }
+
+    fn to_bytes(&self) -> Result<Vec<u8>, GenericError> {
+        let mut buffer = Vec::new();
+        serde_yaml::to_writer(&mut buffer, &self.get_value())?;
+        Ok(buffer)
+    }
+}
+
 /// Generic map of key-value pairs
 #[derive(Debug, Default, Clone)]
 pub struct Data {
     value: HashMap<MetaString, serde_yaml::Value>,
 }
 
-impl Data {
-    fn to_bytes(&self) -> Result<Vec<u8>, GenericError> {
-        let mut buffer = Vec::new();
-        serde_yaml::to_writer(&mut buffer, &self.value)?;
-        Ok(buffer)
-    }
-
-    fn get(&self, key: &str) -> Option<&serde_yaml::Value> {
-        self.value.get(key)
+impl RawData for Data {
+    fn get_value(&self) -> &HashMap<MetaString, serde_yaml::Value> {
+        &self.value
     }
 }
 
 /// Configuration for a check instance
 #[derive(Debug, Default, Clone)]
 pub struct Instance {
-    data: Data,
+    value: HashMap<MetaString, serde_yaml::Value>,
+}
+
+impl RawData for Instance {
+    fn get_value(&self) -> &HashMap<MetaString, serde_yaml::Value> {
+        &self.value
+    }
 }
 
 impl Instance {
-    fn to_bytes(&self) -> Result<Vec<u8>, GenericError> {
-        self.data.to_bytes()
-    }
-
     fn name(&self) -> String {
-        if let Some(name) = self.data.get("name") {
+        if let Some(name) = self.get("name") {
             if let Some(value) = name.as_str() {
                 return value.to_string();
             }
         }
-        if let Some(namespace) = self.data.get("namespace") {
+        if let Some(namespace) = self.get("namespace") {
             if let Some(value) = namespace.as_str() {
                 return value.to_string();
             }
@@ -253,9 +263,17 @@ fn bytes_to_data(bytes: Vec<u8>) -> Result<Data, GenericError> {
 }
 
 fn bytes_to_instance(bytes: Vec<u8>) -> Result<Instance, GenericError> {
-    let data = bytes_to_data(bytes)?;
+    let parse_bytes = String::from_utf8(bytes)?;
 
-    Ok(Instance { data })
+    let map: HashMap<String, serde_yaml::Value> = serde_yaml::from_str(&parse_bytes)?;
+
+    let mut result = HashMap::<MetaString, serde_yaml::Value>::new();
+
+    for (key, value) in map {
+        result.insert(key.into(), value);
+    }
+
+    Ok(Instance { value: result })
 }
 
 impl From<ProtoConfig> for AutodiscoveryEvent {
@@ -415,11 +433,11 @@ mod tests {
         );
         assert_eq!(config.instances.len(), 2);
         assert_eq!(
-            config.instances[0].data.get("instance_key"),
+            config.instances[0].get("instance_key"),
             Some(&serde_yaml::Value::String("instance_value".to_string()))
         );
         assert_eq!(
-            config.instances[1].data.get("another_key"),
+            config.instances[1].get("another_key"),
             Some(&serde_yaml::Value::String("another_value".to_string()))
         );
         assert_eq!(
