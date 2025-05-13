@@ -12,7 +12,7 @@ use tokio::sync::OnceCell;
 use tokio::time::{interval, Duration};
 use tracing::{debug, info, warn};
 
-use crate::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider, Config};
+use crate::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider, Config, Data, Instance};
 
 const BG_MONITOR_INTERVAL: u64 = 30;
 
@@ -98,7 +98,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
     // Build config ID from the file path
     let config_id = canonicalized_path.to_string_lossy().replace(['/', '\\'], "_");
 
-    let instances: Vec<HashMap<MetaString, serde_yaml::Value>> = check_config
+    let instances: Vec<Instance> = check_config
         .instances
         .into_iter()
         .map(|instance| {
@@ -106,7 +106,9 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
             for (key, value) in instance {
                 result.insert(key.into(), value);
             }
-            result
+            Instance {
+                data: Data { value: result },
+            }
         })
         .collect();
 
@@ -115,7 +117,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
         for (key, value) in check_config.init_config {
             result.insert(key.into(), value);
         }
-        result
+        Data { value: result }
     };
 
     // Create a Config
@@ -123,8 +125,8 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
         name: MetaString::from(path.file_name().unwrap().to_string_lossy().to_string()),
         init_config,
         instances,
-        metric_config: HashMap::new(),
-        logs_config: HashMap::new(),
+        metric_config: Data::default(),
+        logs_config: Data::default(),
         ad_identifiers: Vec::new(),
         provider: MetaString::empty(),
         service_id: MetaString::empty(),
@@ -263,7 +265,10 @@ mod tests {
 
         assert!(id.contains("saluki-env_src_autodiscovery_providers_test_data_test-config.yaml"));
         assert_eq!(config.name, "test-config.yaml");
-        assert_eq!(config.init_config["service"], "test-service");
+        assert_eq!(
+            config.init_config.get("service"),
+            Some(&serde_yaml::Value::String("test-service".to_string()))
+        );
         assert_eq!(config.source, "local");
     }
 
@@ -288,15 +293,20 @@ mod tests {
         if let AutodiscoveryEvent::Schedule { config } = event {
             assert_eq!(config.name, "config1.yaml");
             assert_eq!(config.instances.len(), 1);
-            assert_eq!(config.instances[0].len(), 3);
-            assert_eq!(config.instances[0]["server"], "localhost");
-            assert_eq!(config.instances[0]["port"], serde_yaml::Value::Number(8080.into()));
             assert_eq!(
-                config.instances[0]["tags"],
-                serde_yaml::Value::Sequence(vec![
+                config.instances[0].data.get("server"),
+                Some(&serde_yaml::Value::String("localhost".to_string()))
+            );
+            assert_eq!(
+                config.instances[0].data.get("port"),
+                Some(&serde_yaml::Value::Number(8080.into()))
+            );
+            assert_eq!(
+                config.instances[0].data.get("tags"),
+                Some(&serde_yaml::Value::Sequence(vec![
                     serde_yaml::Value::String("test:true".to_string()),
                     serde_yaml::Value::String("env:test".to_string())
-                ])
+                ]))
             );
         }
         assert!(receiver.try_recv().is_err());
@@ -313,10 +323,10 @@ mod tests {
             "removed-config".to_string(),
             Config {
                 name: MetaString::from("removed-config"),
-                init_config: HashMap::new(),
+                init_config: Data::default(),
                 instances: Vec::new(),
-                metric_config: HashMap::new(),
-                logs_config: HashMap::new(),
+                metric_config: Data::default(),
+                logs_config: Data::default(),
                 ad_identifiers: Vec::new(),
                 advanced_ad_identifiers: Vec::new(),
                 provider: MetaString::empty(),

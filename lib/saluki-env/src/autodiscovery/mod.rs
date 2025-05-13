@@ -62,19 +62,80 @@ pub struct AdvancedADIdentifier {
     pub kube_endpoints: Option<KubeNamespacedName>,
 }
 
-/// Configuration data
+/// Generic map of key-value pairs
+#[derive(Debug, Default, Clone)]
+pub struct Data {
+    value: HashMap<MetaString, serde_yaml::Value>,
+}
+
+impl Data {
+    fn to_bytes(&self) -> Result<Vec<u8>, GenericError> {
+        let mut buffer = Vec::new();
+        serde_yaml::to_writer(&mut buffer, &self.value)?;
+        Ok(buffer)
+    }
+
+    fn get(&self, key: &str) -> Option<&serde_yaml::Value> {
+        self.value.get(key)
+    }
+}
+
+/// Configuration for a check instance
+#[derive(Debug, Default, Clone)]
+pub struct Instance {
+    data: Data,
+}
+
+impl Instance {
+    fn to_bytes(&self) -> Result<Vec<u8>, GenericError> {
+        self.data.to_bytes()
+    }
+
+    fn name(&self) -> String {
+        if let Some(name) = self.data.get("name") {
+            if let Some(value) = name.as_str() {
+                return value.to_string();
+            }
+        }
+        if let Some(namespace) = self.data.get("namespace") {
+            if let Some(value) = namespace.as_str() {
+                return value.to_string();
+            }
+        }
+        "".to_string()
+    }
+
+    /// Get the ID for an instance
+    pub fn id(&self, name: &str, digest: u64, init_config: &Data) -> String {
+        let mut h2 = FnvHasher::default();
+        h2.write_u64(digest);
+        h2.write(&self.to_bytes().unwrap_or_default());
+        h2.write(&init_config.to_bytes().unwrap_or_default());
+
+        let instance_name = self.name();
+        let hash2 = h2.finish();
+
+        if !instance_name.is_empty() {
+            format!("{}:{}:{:X}", name, instance_name, hash2)
+        } else {
+            format!("{}:{:X}", name, hash2)
+        }
+    }
+}
+
+/// Configuration for a check
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Configuration name/identifier
     pub name: MetaString,
     /// Raw configuration data
-    pub init_config: HashMap<MetaString, serde_yaml::Value>,
+    pub init_config: Data,
     /// Instance configurations
-    pub instances: Vec<HashMap<MetaString, serde_yaml::Value>>,
+    pub instances: Vec<Instance>,
     /// Metric configuration
-    pub metric_config: HashMap<MetaString, serde_yaml::Value>,
+    pub metric_config: Data,
     /// Logs configuration
-    pub logs_config: HashMap<MetaString, serde_yaml::Value>,
+    pub logs_config: Data,
     /// Auto-discovery identifiers
     pub ad_identifiers: Vec<MetaString>,
     /// Advanced auto-discovery identifiers
@@ -100,37 +161,20 @@ pub struct Config {
 }
 
 impl Config {
-    /// Get the ID for an instance
-    pub fn id(&self, digest: &u64, instance: &HashMap<MetaString, serde_yaml::Value>) -> String {
-        let mut h2 = FnvHasher::default();
-        h2.write_u64(*digest);
-        h2.write(&map_to_bytes(instance).unwrap());
-        h2.write(&map_to_bytes(&self.init_config).unwrap());
-
-        let name = get_name_for_instance(instance);
-        let hash2 = h2.finish();
-
-        if !name.is_empty() {
-            format!("{}:{}:{:X}", self.name, name, hash2)
-        } else {
-            format!("{}:{:X}", self.name, hash2)
-        }
-    }
-
     /// Get the digest for the config
     pub fn digest(&self) -> u64 {
         let mut h = XxHash64::with_seed(0);
 
         h.write(self.name.as_bytes());
         for i in &self.instances {
-            h.write(&map_to_bytes(i).unwrap());
+            h.write(&i.to_bytes().unwrap_or_default());
         }
-        h.write(&map_to_bytes(&self.init_config).unwrap());
+        h.write(&self.init_config.to_bytes().unwrap_or_default());
         for i in &self.ad_identifiers {
             h.write(i.as_bytes());
         }
         h.write(self.node_name.as_bytes());
-        h.write(&map_to_bytes(&self.logs_config).unwrap());
+        h.write(&self.logs_config.to_bytes().unwrap_or_default());
         h.write(self.service_id.as_bytes());
         h.write(if self.ignore_autodiscovery_tags {
             b"true"
@@ -166,19 +210,19 @@ impl From<ProtoConfig> for Config {
             })
             .collect();
 
-        let init_config = bytes_to_hashmap(proto.init_config).unwrap_or_default();
+        let init_config = bytes_to_data(proto.init_config).unwrap_or_default();
         let instances = proto
             .instances
             .into_iter()
-            .map(|instance| bytes_to_hashmap(instance).unwrap_or_default())
+            .map(|instance| bytes_to_instance(instance).unwrap_or_default())
             .collect();
 
         Self {
             name: proto.name.into(),
             init_config,
             instances,
-            metric_config: bytes_to_hashmap(proto.metric_config).unwrap_or_default(),
-            logs_config: bytes_to_hashmap(proto.logs_config).unwrap_or_default(),
+            metric_config: bytes_to_data(proto.metric_config).unwrap_or_default(),
+            logs_config: bytes_to_data(proto.logs_config).unwrap_or_default(),
             ad_identifiers: proto.ad_identifiers.into_iter().map(MetaString::from).collect(),
             advanced_ad_identifiers,
             provider: proto.provider.into(),
@@ -194,7 +238,7 @@ impl From<ProtoConfig> for Config {
     }
 }
 
-fn bytes_to_hashmap(bytes: Vec<u8>) -> Result<HashMap<MetaString, serde_yaml::Value>, GenericError> {
+fn bytes_to_data(bytes: Vec<u8>) -> Result<Data, GenericError> {
     let parse_bytes = String::from_utf8(bytes)?;
 
     let map: HashMap<String, serde_yaml::Value> = serde_yaml::from_str(&parse_bytes)?;
@@ -205,26 +249,13 @@ fn bytes_to_hashmap(bytes: Vec<u8>) -> Result<HashMap<MetaString, serde_yaml::Va
         result.insert(key.into(), value);
     }
 
-    Ok(result)
+    Ok(Data { value: result })
 }
 
-fn map_to_bytes(map: &HashMap<MetaString, serde_yaml::Value>) -> Result<Vec<u8>, serde_yaml::Error> {
-    let s = serde_yaml::to_string(map)?;
-    Ok(s.into_bytes())
-}
+fn bytes_to_instance(bytes: Vec<u8>) -> Result<Instance, GenericError> {
+    let data = bytes_to_data(bytes)?;
 
-fn get_name_for_instance(instance: &HashMap<MetaString, serde_yaml::Value>) -> String {
-    if let Some(name) = instance.get("name") {
-        if let Some(value) = name.as_str() {
-            return value.to_string();
-        }
-    }
-    if let Some(namespace) = instance.get("namespace") {
-        if let Some(value) = namespace.as_str() {
-            return value.to_string();
-        }
-    }
-    "".to_string()
+    Ok(Instance { data })
 }
 
 impl From<ProtoConfig> for AutodiscoveryEvent {
@@ -315,8 +346,8 @@ mod tests {
 
         let digest = config.digest();
 
-        let id1 = config.id(&digest, &config.instances[0]);
-        let id2 = config.id(&digest, &config.instances[1]);
+        let id1 = &config.instances[0].id(&config.name, digest, &config.init_config);
+        let id2 = &config.instances[1].id(&config.name, digest, &config.init_config);
 
         assert_ne!(id1, id2);
 
@@ -378,12 +409,27 @@ mod tests {
         assert!(!config.ignore_autodiscovery_tags);
         assert!(!config.metrics_excluded);
         assert!(!config.logs_excluded);
-        assert_eq!(config.init_config["key"], "value");
+        assert_eq!(
+            config.init_config.get("key"),
+            Some(&serde_yaml::Value::String("value".to_string()))
+        );
         assert_eq!(config.instances.len(), 2);
-        assert_eq!(config.instances[0]["instance_key"], "instance_value");
-        assert_eq!(config.instances[1]["another_key"], "another_value");
-        assert_eq!(config.metric_config["metric_key"], "metric_value");
-        assert_eq!(config.logs_config["log_key"], "log_value");
+        assert_eq!(
+            config.instances[0].data.get("instance_key"),
+            Some(&serde_yaml::Value::String("instance_value".to_string()))
+        );
+        assert_eq!(
+            config.instances[1].data.get("another_key"),
+            Some(&serde_yaml::Value::String("another_value".to_string()))
+        );
+        assert_eq!(
+            config.metric_config.get("metric_key"),
+            Some(&serde_yaml::Value::String("metric_value".to_string()))
+        );
+        assert_eq!(
+            config.logs_config.get("log_key"),
+            Some(&serde_yaml::Value::String("log_value".to_string()))
+        );
 
         assert_eq!(config.advanced_ad_identifiers.len(), 1);
         let adv_id = &config.advanced_ad_identifiers[0];

@@ -132,7 +132,7 @@ impl Source for ChecksSource {
 
                                         let mut runnable_checks: Vec<Arc<dyn Check + Send + Sync>> = vec![];
                                         for instance in &config.instances {
-                                            let check_id = config.id(&digest, instance);
+                                            let check_id = instance.id(&config.name, digest, &config.init_config);
                                             if check_ids.contains(&check_id) {
                                                 continue;
                                             }
@@ -153,8 +153,8 @@ impl Source for ChecksSource {
                                     AutodiscoveryEvent::Unscheduled { config } => {
                                         let digest = config.digest();
 
-                                        for instance in &config.instances {
-                                            let check_id = config.id(&digest, instance);
+                                        for instance in config.instances {
+                                            let check_id = instance.id(&config.name, digest, &config.init_config);
                                             if !check_ids.contains(&check_id) {
                                                 warn!("Unscheduling check {} not found, skipping.", check_id);
                                                 continue;
