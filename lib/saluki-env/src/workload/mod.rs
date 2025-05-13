@@ -21,7 +21,6 @@ mod helpers;
 mod metadata;
 pub use self::metadata::{MetadataAction, MetadataOperation};
 
-#[cfg(target_os = "linux")]
 mod on_demand_pid;
 
 pub mod origin;
