@@ -6,11 +6,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{sources::*, ComponentContext},
-    topology::{shutdown::DynamicShutdownCoordinator, OutputDefinition},
+    topology::OutputDefinition,
 };
 use saluki_env::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider};
 use saluki_error::{generic_error, GenericError};
@@ -95,108 +94,75 @@ struct ChecksSource {
 #[async_trait]
 impl Source for ChecksSource {
     async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
-        let mut global_shutdown = context.take_shutdown_handle();
+        let mut global_shutdown: saluki_core::topology::shutdown::ComponentShutdownHandle =
+            context.take_shutdown_handle();
         let mut health = context.take_health_handle();
+        health.mark_ready();
 
-        let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
+        info!("Checks source started.");
 
-        let mut check_collector_health = context
-            .health_registry()
-            .register_component("checks_collector")
-            .expect("Failed to register checks collector health");
         let mut event_rx = self.autodiscovery.subscribe().await;
-
         let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> = vec![Arc::new(NoopCheckBuilder)];
-        let mut shutdown_handle = listener_shutdown_coordinator.register();
         let mut check_ids = HashSet::new();
         let scheduler = Scheduler::new(self.check_runners);
 
-        spawn_traced_named("checks-collector", async move {
-            let check_dispatcher_shutdown_coordinator = DynamicShutdownCoordinator::default();
-
-            loop {
-                select! {
-                    _ = &mut shutdown_handle => {
-                        debug!("Received shutdown signal.");
-                        scheduler.shutdown().await;
-                        break
-                    },
-
-                    _ = check_collector_health.live() => continue,
-
-                    event = event_rx.recv() => match event {
-                            Ok(event) => {
-                                match event {
-                                    AutodiscoveryEvent::Schedule { config } => {
-                                        let digest = config.digest();
-
-                                        let mut runnable_checks: Vec<Arc<dyn Check + Send + Sync>> = vec![];
-                                        for instance in &config.instances {
-                                            let check_id = instance.id(&config.name, digest, &config.init_config);
-                                            if check_ids.contains(&check_id) {
-                                                continue;
-                                            }
-
-                                            for builder in check_builders.iter_mut() {
-                                                if let Some(check) = builder.build_check(&check_id, &config) {
-                                                    runnable_checks.push(check);
-                                                    check_ids.insert(check_id.clone());
-                                                    break;
-                                                }
-                                            }
-                                        }
-
-                                        for check in runnable_checks {
-                                            scheduler.schedule(check);
-                                        }
-                                    }
-                                    AutodiscoveryEvent::Unscheduled { config } => {
-                                        let digest = config.digest();
-
-                                        for instance in config.instances {
-                                            let check_id = instance.id(&config.name, digest, &config.init_config);
-                                            if !check_ids.contains(&check_id) {
-                                                warn!("Unscheduling check {} not found, skipping.", check_id);
-                                                continue;
-                                            }
-
-                                            scheduler.unschedule(&check_id);
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!("Error receiving event: {:?}", e);
-                            }
-                    }
-                }
-            }
-
-            check_dispatcher_shutdown_coordinator.shutdown().await;
-
-            info!("Checks dispatcher stopped.");
-        });
-
-        health.mark_ready();
-        info!("Checks source started.");
-
-        // Wait for the global shutdown signal, then notify listeners to shutdown.
-        //
-        // We also handle liveness here, which doesn't really matter for _this_ task, since the real work is happening
-        // in the listeners, but we need to satisfy the health checker.
         loop {
             select! {
                 _ = &mut global_shutdown => {
                     debug!("Received shutdown signal.");
+                    scheduler.shutdown().await;
                     break
                 },
+
                 _ = health.live() => continue,
+
+                event = event_rx.recv() => match event {
+                        Ok(event) => {
+                            match event {
+                                AutodiscoveryEvent::Schedule { config } => {
+                                    let digest = config.digest();
+
+                                    let mut runnable_checks: Vec<Arc<dyn Check + Send + Sync>> = vec![];
+                                    for instance in &config.instances {
+                                        let check_id = instance.id(&config.name, digest, &config.init_config);
+                                        if check_ids.contains(&check_id) {
+                                            continue;
+                                        }
+
+                                        for builder in check_builders.iter_mut() {
+                                            if let Some(check) = builder.build_check(&check_id, &config) {
+                                                runnable_checks.push(check);
+                                                check_ids.insert(check_id.clone());
+                                                break;
+                                            }
+                                        }
+                                    }
+
+                                    for check in runnable_checks {
+                                        scheduler.schedule(check);
+                                    }
+                                }
+                                AutodiscoveryEvent::Unscheduled { config } => {
+                                    let digest = config.digest();
+
+                                    for instance in config.instances {
+                                        let check_id = instance.id(&config.name, digest, &config.init_config);
+                                        if !check_ids.contains(&check_id) {
+                                            warn!("Unscheduling check {} not found, skipping.", check_id);
+                                            continue;
+                                        }
+
+                                        scheduler.unschedule(&check_id);
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("Error receiving event: {:?}", e);
+                        }
+                }
             }
         }
-
-        info!("Stopping Checks source...");
-
-        listener_shutdown_coordinator.shutdown().await;
 
         info!("Checks source stopped.");
 
