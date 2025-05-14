@@ -124,7 +124,7 @@ ndarray-stats = { version = "0.6", default-features = false }
 noisy_float = { version = "0.2", default-features = false }
 libc = { version = "0.2.169", default-features = false }
 socket2 = { version = "0.5.7", default-features = false }
-containerd-client = { version = "0.6.0", default-features = false }
+containerd-client = { version = "0.8", default-features = false }
 tonic-build = { version = "0.12", default-features = false }
 tonic = { version = "0.12", default-features = false }
 arc-swap = { version = "1.7.1", default-features = false }
@@ -143,7 +143,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 bytesize = { version = "2", default-features = false, features = ["serde"] }
 criterion = { version = "0.5", features = ["html_reports"] }
 dhat = { version = "0.3", default-features = false }
-average = { version = "0.15.1", default-features = false }
+average = { version = "0.16", default-features = false }
 loom = { version = "0.7", default-features = false }
 trybuild = { version = "1", default-features = false }
 tokio-test = { version = "0.4.4", default-features = false }
@@ -179,6 +179,7 @@ tempfile = { version = "3", default-features = false }
 fs4 = { version = "0.13.1", default-features = false }
 fnv = { version = "1", default-features = false }
 twox-hash = { version = "2", features = ["xxhash64"] }
+sha3 = { version = "0.10", default-features = false }
 
 [profile.release]
 lto = "thin"

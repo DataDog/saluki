@@ -1,14 +1,12 @@
-#![allow(dead_code)]
-
-mod persisted;
 use std::{collections::VecDeque, path::PathBuf, sync::Arc};
 
-pub use persisted::{DiskUsageRetriever, DiskUsageRetrieverImpl, DiskUsageRetrieverWrapper};
 use saluki_error::{generic_error, GenericError};
 use serde::{de::DeserializeOwned, Serialize};
 use tracing::debug;
 
-use self::persisted::PersistedQueue;
+mod persisted;
+pub use self::persisted::DiskUsageRetrieverImpl;
+use self::persisted::{DiskUsageRetriever, DiskUsageRetrieverWrapper, PersistedQueue};
 
 /// A container that holds events.
 ///

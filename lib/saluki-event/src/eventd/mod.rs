@@ -35,13 +35,7 @@ pub enum AlertType {
 
 impl fmt::Display for AlertType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            AlertType::Info => "info",
-            AlertType::Error => "error",
-            AlertType::Warning => "warning",
-            AlertType::Success => "success",
-        };
-        write!(f, "{}", s)
+        f.write_str(self.as_str())
     }
 }
 
@@ -67,7 +61,8 @@ impl AlertType {
         }
     }
 
-    fn as_str(self) -> &'static str {
+    /// Returns the string representation of the alert type.
+    pub const fn as_str(self) -> &'static str {
         match self {
             AlertType::Info => "info",
             AlertType::Error => "error",
@@ -89,11 +84,7 @@ pub enum Priority {
 
 impl fmt::Display for Priority {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            Priority::Normal => "normal",
-            Priority::Low => "low",
-        };
-        write!(f, "{}", s)
+        f.write_str(self.as_str())
     }
 }
 
@@ -117,7 +108,8 @@ impl Priority {
         }
     }
 
-    fn as_str(self) -> &'static str {
+    /// Returns the string representation of the priority.
+    pub const fn as_str(self) -> &'static str {
         match self {
             Priority::Normal => "normal",
             Priority::Low => "low",
@@ -126,7 +118,7 @@ impl Priority {
 }
 
 /// EventD is an object that can be posted to the DataDog event stream.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct EventD {
     title: MetaString,
     text: MetaString,

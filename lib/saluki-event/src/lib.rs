@@ -59,7 +59,7 @@ impl fmt::Display for DataType {
 }
 
 /// A telemetry event.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     /// A metric.
     Metric(Metric),
