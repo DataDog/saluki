@@ -91,45 +91,20 @@ impl RawData for Data {
 /// Configuration for a check instance
 #[derive(Debug, Default, Clone)]
 pub struct Instance {
+    id: String,
     value: HashMap<MetaString, serde_yaml::Value>,
+}
+
+impl Instance {
+    /// Get the instance ID
+    pub fn id(&self) -> &String {
+        &self.id
+    }
 }
 
 impl RawData for Instance {
     fn get_value(&self) -> &HashMap<MetaString, serde_yaml::Value> {
         &self.value
-    }
-}
-
-impl Instance {
-    fn name(&self) -> String {
-        if let Some(name) = self.get("name") {
-            if let Some(value) = name.as_str() {
-                return value.to_string();
-            }
-        }
-        if let Some(namespace) = self.get("namespace") {
-            if let Some(value) = namespace.as_str() {
-                return value.to_string();
-            }
-        }
-        "".to_string()
-    }
-
-    /// Get the ID for an instance
-    pub fn id(&self, name: &str, digest: u64, init_config: &Data) -> String {
-        let mut h2 = FnvHasher::default();
-        h2.write_u64(digest);
-        h2.write(&self.to_bytes().unwrap_or_default());
-        h2.write(&init_config.to_bytes().unwrap_or_default());
-
-        let instance_name = self.name();
-        let hash2 = h2.finish();
-
-        if !instance_name.is_empty() {
-            format!("{}:{}:{:X}", name, instance_name, hash2)
-        } else {
-            format!("{}:{:X}", name, hash2)
-        }
     }
 }
 
@@ -141,7 +116,7 @@ pub struct Config {
     /// Raw configuration data
     pub init_config: Data,
     /// Instance configurations
-    pub instances: Vec<Instance>,
+    pub instances: Vec<Data>,
     /// Metric configuration
     pub metric_config: Data,
     /// Logs configuration
@@ -168,6 +143,19 @@ pub struct Config {
     pub metrics_excluded: bool,
     /// Whether logs are excluded
     pub logs_excluded: bool,
+}
+
+/// Check configuration
+#[derive(Debug, Clone)]
+pub struct CheckConfig {
+    /// Check name
+    pub name: MetaString,
+    /// Init configuration data
+    pub init_config: Data,
+    /// Instance configurations
+    pub instances: Vec<Instance>,
+    /// Source of the configuration
+    pub source: MetaString,
 }
 
 impl Config {
@@ -224,7 +212,7 @@ impl From<ProtoConfig> for Config {
         let instances = proto
             .instances
             .into_iter()
-            .map(|instance| bytes_to_instance(instance).unwrap_or_default())
+            .map(|instance| bytes_to_data(instance).unwrap_or_default())
             .collect();
 
         Self {
@@ -262,18 +250,54 @@ fn bytes_to_data(bytes: Vec<u8>) -> Result<Data, GenericError> {
     Ok(Data { value: result })
 }
 
-fn bytes_to_instance(bytes: Vec<u8>) -> Result<Instance, GenericError> {
-    let parse_bytes = String::from_utf8(bytes)?;
+fn instance_id(name: &str, instance: &Data, digest: u64, init_config: &Data) -> String {
+    let mut h2 = FnvHasher::default();
+    h2.write_u64(digest);
+    h2.write(&instance.to_bytes().unwrap_or_default());
+    h2.write(&init_config.to_bytes().unwrap_or_default());
 
-    let map: HashMap<String, serde_yaml::Value> = serde_yaml::from_str(&parse_bytes)?;
+    let instance_name = instance_name(instance);
+    let hash2 = h2.finish();
 
-    let mut result = HashMap::<MetaString, serde_yaml::Value>::new();
-
-    for (key, value) in map {
-        result.insert(key.into(), value);
+    if !instance_name.is_empty() {
+        format!("{}:{}:{:X}", name, instance_name, hash2)
+    } else {
+        format!("{}:{:X}", name, hash2)
     }
+}
 
-    Ok(Instance { value: result })
+fn instance_name(instance: &Data) -> String {
+    if let Some(name) = instance.get("name") {
+        if let Some(value) = name.as_str() {
+            return value.to_string();
+        }
+    }
+    if let Some(namespace) = instance.get("namespace") {
+        if let Some(value) = namespace.as_str() {
+            return value.to_string();
+        }
+    }
+    "".to_string()
+}
+
+impl From<Config> for CheckConfig {
+    fn from(config: Config) -> Self {
+        let digest = config.digest();
+
+        CheckConfig {
+            name: config.name.clone(),
+            init_config: config.init_config.clone(),
+            instances: config
+                .instances
+                .into_iter()
+                .map(|instance_data| Instance {
+                    id: instance_id(&config.name, &instance_data, digest, &config.init_config),
+                    value: instance_data.value,
+                })
+                .collect(),
+            source: config.source,
+        }
+    }
 }
 
 impl From<ProtoConfig> for AutodiscoveryEvent {
@@ -281,6 +305,16 @@ impl From<ProtoConfig> for AutodiscoveryEvent {
         let event_type = EventType::from(proto.event_type);
 
         let config = Config::from(proto);
+
+        if config.instances.len() > 0 && !config.cluster_check {
+            let check_config = CheckConfig::from(config);
+
+            if event_type == EventType::Schedule {
+                return AutodiscoveryEvent::CheckSchedule { config: check_config };
+            } else {
+                return AutodiscoveryEvent::CheckUnscheduled { config: check_config };
+            }
+        }
 
         if event_type == EventType::Schedule {
             AutodiscoveryEvent::Schedule { config }
@@ -294,12 +328,22 @@ impl From<ProtoConfig> for AutodiscoveryEvent {
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum AutodiscoveryEvent {
-    /// Schedule a configuration
+    /// Schedule a check configuration
+    CheckSchedule {
+        /// Configuration
+        config: CheckConfig,
+    },
+    /// Unschedule a check configuration
+    CheckUnscheduled {
+        /// Configuration
+        config: CheckConfig,
+    },
+    /// Schedule a generic configuration
     Schedule {
         /// Configuration
         config: Config,
     },
-    /// Unschedule a configuration
+    /// Unscheduled a generic configuration
     Unscheduled {
         /// Configuration
         config: Config,
@@ -339,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn test_config_id() {
+    fn test_check_config_instance_id() {
         let proto_config = ProtoConfig {
             name: "test-check".to_string(),
             event_type: ConfigEventType::Schedule as i32,
@@ -347,7 +391,7 @@ mod tests {
             instances: vec![b"name: test".to_vec(), b"another_key: another_value".to_vec()],
             provider: "test-provider".to_string(),
             ad_identifiers: vec!["id1".to_string(), "id2".to_string()],
-            cluster_check: true,
+            cluster_check: false,
             metric_config: b"metric_key: metric_value".to_vec(),
             logs_config: b"log_key: log_value".to_vec(),
             advanced_ad_identifiers: vec![],
@@ -362,10 +406,10 @@ mod tests {
 
         let config = Config::from(proto_config);
 
-        let digest = config.digest();
+        let check_config = CheckConfig::from(config);
 
-        let id1 = &config.instances[0].id(&config.name, digest, &config.init_config);
-        let id2 = &config.instances[1].id(&config.name, digest, &config.init_config);
+        let id1 = &check_config.instances[0].id;
+        let id2 = &check_config.instances[1].id;
 
         assert_ne!(id1, id2);
 
@@ -465,7 +509,7 @@ mod tests {
             name: "test-config".to_string(),
             event_type: ConfigEventType::Schedule as i32,
             init_config: b"init-data".to_vec(),
-            instances: vec![b"instance1".to_vec(), b"instance2".to_vec()],
+            instances: vec![],
             provider: "test-provider".to_string(),
             ad_identifiers: vec!["id1".to_string(), "id2".to_string()],
             cluster_check: true,
@@ -502,13 +546,33 @@ mod tests {
 
         proto_config.event_type = ConfigEventType::Unschedule as i32;
 
-        let event = AutodiscoveryEvent::from(proto_config);
+        let event = AutodiscoveryEvent::from(proto_config.clone());
 
         match event {
             AutodiscoveryEvent::Unscheduled { config } => {
                 assert_eq!(config.name, "test-config");
             }
             _ => panic!("Expected an Unscheduled event"),
+        }
+
+        proto_config.instances = vec![b"instance1".to_vec(), b"instance2".to_vec()];
+        proto_config.cluster_check = false;
+        proto_config.event_type = ConfigEventType::Schedule as i32;
+
+        let event = AutodiscoveryEvent::from(proto_config.clone());
+
+        match event {
+            AutodiscoveryEvent::CheckSchedule { config: _config } => {}
+            _ => panic!("Expected an CheckSchedule event"),
+        }
+
+        proto_config.event_type = ConfigEventType::Unschedule as i32;
+
+        let event = AutodiscoveryEvent::from(proto_config);
+
+        match event {
+            AutodiscoveryEvent::CheckUnscheduled { config: _config } => {}
+            _ => panic!("Expected an CheckUnscheduled event"),
         }
     }
 }

@@ -12,7 +12,7 @@ use tokio::sync::OnceCell;
 use tokio::time::{interval, Duration};
 use tracing::{debug, info, warn};
 
-use crate::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider, Config, Data, Instance};
+use crate::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider, CheckConfig, Config, Data};
 
 const BG_MONITOR_INTERVAL: u64 = 30;
 
@@ -77,16 +77,16 @@ impl LocalAutodiscoveryProvider {
 }
 
 #[derive(Debug, Deserialize)]
-struct CheckConfig {
+struct LocalCheckConfig {
     init_config: HashMap<String, serde_yaml::Value>,
     instances: Vec<HashMap<String, serde_yaml::Value>>,
 }
 
 /// Parse a YAML file into a Config object
-async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericError> {
+async fn parse_config_file(path: &PathBuf) -> Result<(String, CheckConfig), GenericError> {
     let content = fs::read_to_string(path).await?;
 
-    let check_config: CheckConfig = match serde_yaml::from_str(&content) {
+    let check_config: LocalCheckConfig = match serde_yaml::from_str(&content) {
         Ok(read) => read,
         Err(e) => {
             return Err(GenericError::from(e).context("Failed to decode yaml as check configuration."));
@@ -98,7 +98,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
     // Build config ID from the file path
     let config_id = canonicalized_path.to_string_lossy().replace(['/', '\\'], "_");
 
-    let instances: Vec<Instance> = check_config
+    let instances: Vec<Data> = check_config
         .instances
         .into_iter()
         .map(|instance| {
@@ -106,7 +106,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
             for (key, value) in instance {
                 result.insert(key.into(), value);
             }
-            Instance { value: result }
+            Data { value: result }
         })
         .collect();
 
@@ -138,13 +138,15 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, Config), GenericEr
         advanced_ad_identifiers: Vec::new(),
     };
 
-    Ok((config_id, config))
+    let check_config = CheckConfig::from(config);
+
+    Ok((config_id, check_config))
 }
 
 /// Scan and emit events based on configuration files in the directory
 async fn scan_and_emit_events(
     paths: &[PathBuf], known_configs: &mut HashSet<String>, sender: &Sender<AutodiscoveryEvent>,
-    configs: &mut HashMap<String, Config>,
+    configs: &mut HashMap<String, CheckConfig>,
 ) -> Result<(), GenericError> {
     let mut found_configs = HashSet::new();
 
@@ -167,14 +169,14 @@ async fn scan_and_emit_events(
                             if !known_configs.contains(&config_id) {
                                 debug!("New configuration found: {}", config_id);
 
-                                let event = AutodiscoveryEvent::Schedule { config };
+                                let event = AutodiscoveryEvent::CheckSchedule { config };
                                 let _ = sender.send(event);
                                 known_configs.insert(config_id.clone());
                             } else {
                                 // Config ID exists, but the content might have changed
                                 debug!("Configuration updated: {}", config_id);
 
-                                let event = AutodiscoveryEvent::Schedule { config };
+                                let event = AutodiscoveryEvent::CheckSchedule { config };
                                 let _ = sender.send(event);
                             }
                         }
@@ -201,7 +203,7 @@ async fn scan_and_emit_events(
         let config = configs.remove(&config_id).unwrap();
 
         // Create an unschedule Config event
-        let event = AutodiscoveryEvent::Unscheduled { config };
+        let event = AutodiscoveryEvent::CheckUnscheduled { config };
         let _ = sender.send(event);
     }
 
@@ -286,7 +288,7 @@ mod tests {
         assert_eq!(known_configs.len(), 1);
 
         let event = receiver.try_recv().unwrap();
-        assert!(matches!(event, AutodiscoveryEvent::Schedule { .. }));
+        assert!(matches!(event, AutodiscoveryEvent::CheckSchedule { .. }));
 
         if let AutodiscoveryEvent::Schedule { config } = event {
             assert_eq!(config.name, "config1.yaml");
@@ -319,23 +321,11 @@ mod tests {
         let mut configs = HashMap::new();
         configs.insert(
             "removed-config".to_string(),
-            Config {
+            CheckConfig {
                 name: MetaString::from("removed-config"),
                 init_config: Data::default(),
                 instances: Vec::new(),
-                metric_config: Data::default(),
-                logs_config: Data::default(),
-                ad_identifiers: Vec::new(),
-                advanced_ad_identifiers: Vec::new(),
-                provider: MetaString::empty(),
-                service_id: MetaString::empty(),
-                tagger_entity: MetaString::empty(),
-                cluster_check: false,
-                node_name: MetaString::empty(),
                 source: MetaString::from_static("local"),
-                ignore_autodiscovery_tags: false,
-                metrics_excluded: false,
-                logs_excluded: false,
             },
         );
 
@@ -348,7 +338,7 @@ mod tests {
         assert_eq!(known_configs.len(), 0);
 
         let event = receiver.try_recv().unwrap();
-        assert!(matches!(event, AutodiscoveryEvent::Unscheduled { config } if config.name == "removed-config"));
+        assert!(matches!(event, AutodiscoveryEvent::CheckUnscheduled { config } if config.name == "removed-config"));
 
         assert!(receiver.try_recv().is_err());
     }

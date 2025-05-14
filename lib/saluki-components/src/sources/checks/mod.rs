@@ -119,13 +119,11 @@ impl Source for ChecksSource {
                 event = event_rx.recv() => match event {
                         Ok(event) => {
                             match event {
-                                AutodiscoveryEvent::Schedule { config } => {
-                                    let digest = config.digest();
-
+                                AutodiscoveryEvent::CheckSchedule { config } => {
                                     let mut runnable_checks: Vec<Arc<dyn Check + Send + Sync>> = vec![];
                                     for instance in &config.instances {
-                                        let check_id = instance.id(&config.name, digest, &config.init_config);
-                                        if check_ids.contains(&check_id) {
+                                        let check_id = instance.id();
+                                        if check_ids.contains(check_id) {
                                             continue;
                                         }
 
@@ -142,12 +140,10 @@ impl Source for ChecksSource {
                                         scheduler.schedule(check);
                                     }
                                 }
-                                AutodiscoveryEvent::Unscheduled { config } => {
-                                    let digest = config.digest();
-
-                                    for instance in config.instances {
-                                        let check_id = instance.id(&config.name, digest, &config.init_config);
-                                        if !check_ids.contains(&check_id) {
+                                AutodiscoveryEvent::CheckUnscheduled { config } => {
+                                    for instance in &config.instances {
+                                        let check_id = instance.id();
+                                        if !check_ids.contains(check_id) {
                                             warn!("Unscheduling check {} not found, skipping.", check_id);
                                             continue;
                                         }
@@ -155,6 +151,8 @@ impl Source for ChecksSource {
                                         scheduler.unschedule(&check_id);
                                     }
                                 }
+                                // We only care about CheckSchedule and CheckUnscheduled events
+                                _ => {}
                             }
                         }
                         Err(e) => {
