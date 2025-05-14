@@ -128,7 +128,7 @@ impl Source for ChecksSource {
                                         }
 
                                         for builder in check_builders.iter_mut() {
-                                            if let Some(check) = builder.build_check(&check_id, &config) {
+                                            if let Some(check) = builder.build_check(check_id, &config) {
                                                 runnable_checks.push(check);
                                                 check_ids.insert(check_id.clone());
                                                 break;
@@ -148,7 +148,7 @@ impl Source for ChecksSource {
                                             continue;
                                         }
 
-                                        scheduler.unschedule(&check_id);
+                                        scheduler.unschedule(check_id);
                                     }
                                 }
                                 // We only care about CheckSchedule and CheckUnscheduled events

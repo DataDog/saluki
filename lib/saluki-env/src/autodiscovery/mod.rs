@@ -62,13 +62,17 @@ pub struct AdvancedADIdentifier {
     pub kube_endpoints: Option<KubeNamespacedName>,
 }
 
+/// Raw data trait for configuration data
 trait RawData {
+    /// Get the value of the data
     fn get_value(&self) -> &HashMap<MetaString, serde_yaml::Value>;
 
+    /// Get a value from the data
     fn get(&self, key: &str) -> Option<&serde_yaml::Value> {
         self.get_value().get(key)
     }
 
+    /// Convert the data to bytes
     fn to_bytes(&self) -> Result<Vec<u8>, GenericError> {
         let mut buffer = Vec::new();
         serde_yaml::to_writer(&mut buffer, &self.get_value())?;
@@ -91,7 +95,9 @@ impl RawData for Data {
 /// Configuration for a check instance
 #[derive(Debug, Default, Clone)]
 pub struct Instance {
+    /// Instance ID
     id: String,
+    /// Instance value
     value: HashMap<MetaString, serde_yaml::Value>,
 }
 
@@ -306,7 +312,7 @@ impl From<ProtoConfig> for AutodiscoveryEvent {
 
         let config = Config::from(proto);
 
-        if config.instances.len() > 0 && !config.cluster_check {
+        if !config.instances.is_empty() && !config.cluster_check {
             let check_config = CheckConfig::from(config);
 
             if event_type == EventType::Schedule {
