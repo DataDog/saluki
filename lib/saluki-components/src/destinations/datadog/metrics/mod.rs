@@ -180,7 +180,6 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
 
         if let Some(override_path) = self.endpoint_path_override {
             series_request_builder.with_endpoint_uri_override(override_path);
-            sketches_request_builder.with_endpoint_uri_override(override_path);
         }
 
         let flush_timeout = match self.flush_timeout_secs {
@@ -457,6 +456,7 @@ fn get_metrics_endpoint_name(uri: &Uri) -> Option<MetaString> {
     match uri.path() {
         "/api/v2/series" => Some(MetaString::from_static("series_v2")),
         "/api/beta/sketches" => Some(MetaString::from_static("sketches_v2")),
+        "/api/intake/pipelines/ddseries" => Some(MetaString::from_static("preaggregation")),
         _ => None,
     }
 }
