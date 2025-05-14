@@ -5,6 +5,7 @@ use saluki_common::collections::FastConcurrentHashMap;
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use stringtheory::interning::GenericMapInterner;
+#[cfg(target_os = "linux")]
 use tracing::{debug, trace};
 
 #[cfg(target_os = "linux")]
