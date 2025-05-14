@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+#[cfg(target_os = "linux")]
 use saluki_common::collections::FastConcurrentHashMap;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, GenericError};
@@ -22,7 +23,7 @@ enum Inner {
 }
 
 impl Inner {
-    fn resolve(&self, process_id: u32) -> Option<EntityId> {
+    fn resolve(&self, _process_id: u32) -> Option<EntityId> {
         match self {
             Inner::Noop => None,
 
@@ -38,29 +39,29 @@ impl Inner {
                 //
                 // This is simply a stopgap to make sure this functionality, overall, works for the purposes of origin
                 // detection.
-                if let Some(container_id) = pid_mappings_cache.pin().get(&process_id).cloned() {
+                if let Some(container_id) = pid_mappings_cache.pin().get(&_process_id).cloned() {
                     trace!(
                         "Resolved PID {} to container ID {} from cache.",
-                        process_id,
+                        _process_id,
                         container_id
                     );
                     return Some(container_id);
                 }
 
                 // If we don't have a mapping, query the host OS for it.
-                match cgroups_reader.get_cgroup_by_pid(process_id) {
+                match cgroups_reader.get_cgroup_by_pid(_process_id) {
                     Some(cgroup) => {
                         let container_eid = EntityId::Container(cgroup.into_container_id());
 
-                        debug!("Resolved PID {} to container ID {}.", process_id, container_eid);
+                        debug!("Resolved PID {} to container ID {}.", _process_id, container_eid);
 
-                        pid_mappings_cache.pin().insert(process_id, container_eid.clone());
+                        pid_mappings_cache.pin().insert(_process_id, container_eid.clone());
                         Some(container_eid)
                     }
                     None => {
                         debug!(
                             "Failed to resolve container ID for PID {}. Process ID may not be part of a container.",
-                            process_id
+                            _process_id
                         );
                         None
                     }
