@@ -35,6 +35,7 @@ saluki-core = { workspace = true }
 saluki-env = { workspace = true }
 saluki-error = { workspace = true }
 saluki-event = { workspace = true }
+saluki-health = { workspace = true }
 saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }
 saluki-metrics = { workspace = true }
@@ -45,7 +46,15 @@ serde_yaml = { workspace = true }
 smallvec = { workspace = true }
 snafu = { workspace = true }
 stringtheory = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
+tokio = { workspace = true, features = [
+  "io-util",
+  "macros",
+  "net",
+  "rt",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+] }
 tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tracing = { workspace = true }
 url = { workspace = true }

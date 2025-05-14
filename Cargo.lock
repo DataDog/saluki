@@ -3154,6 +3154,7 @@ dependencies = [
  "saluki-env",
  "saluki-error",
  "saluki-event",
+ "saluki-health",
  "saluki-io",
  "saluki-metadata",
  "saluki-metrics",
@@ -3247,6 +3248,7 @@ dependencies = [
  "bitmask-enum",
  "containerd-client",
  "datadog-protos",
+ "fnv",
  "futures",
  "http-serde-ext",
  "hyper-rustls",
@@ -3277,6 +3279,7 @@ dependencies = [
  "tonic",
  "tower 0.5.2",
  "tracing",
+ "twox-hash",
 ]
 
 [[package]]
@@ -4332,6 +4335,15 @@ dependencies = [
  "target-triple",
  "termcolor",
  "toml",
+]
+
+[[package]]
+name = "twox-hash"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7b17f197b3050ba473acf9181f7b1d3b66d1cf7356c6cc57886662276e65908"
+dependencies = [
+ "rand",
 ]
 
 [[package]]
