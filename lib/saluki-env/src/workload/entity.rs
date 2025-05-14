@@ -92,6 +92,16 @@ impl EntityId {
         Some(Self::PodUid(pod_uid.into()))
     }
 
+    /// Returns the inner container ID value, if this entity ID is a `Container`.
+    ///
+    /// Otherwise, `None` is returned and the original entity ID is consumed.
+    pub fn try_into_container(self) -> Option<MetaString> {
+        match self {
+            Self::Container(container_id) => Some(container_id),
+            _ => None,
+        }
+    }
+
     fn precedence_value(&self) -> usize {
         match self {
             Self::Global => 0,
