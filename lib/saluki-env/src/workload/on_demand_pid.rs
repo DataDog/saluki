@@ -3,7 +3,7 @@ use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use saluki_common::collections::FastConcurrentHashMap;
 use saluki_config::GenericConfiguration;
-use saluki_error::{generic_error, GenericError};
+use saluki_error::GenericError;
 use stringtheory::interning::GenericMapInterner;
 use tracing::{debug, trace};
 
@@ -23,50 +23,15 @@ enum Inner {
 }
 
 impl Inner {
-    fn resolve(&self, _process_id: u32) -> Option<EntityId> {
+    fn resolve(&self, process_id: u32) -> Option<EntityId> {
         match self {
-            Inner::Noop => None,
+            Inner::Noop => resolve_noop_pid(process_id),
 
             #[cfg(target_os = "linux")]
             Inner::Linux {
                 pid_mappings_cache,
                 cgroups_reader,
-            } => {
-                // First, check our PID mapping cache.
-                //
-                // TODO: This should be an actual cache, with expiration, because PIDs will eventually get recycled so we
-                // shouldn't keep results forever, but perhaps most important: this is a slow memory leak generator otherwise.
-                //
-                // This is simply a stopgap to make sure this functionality, overall, works for the purposes of origin
-                // detection.
-                if let Some(container_id) = pid_mappings_cache.pin().get(&_process_id).cloned() {
-                    trace!(
-                        "Resolved PID {} to container ID {} from cache.",
-                        _process_id,
-                        container_id
-                    );
-                    return Some(container_id);
-                }
-
-                // If we don't have a mapping, query the host OS for it.
-                match cgroups_reader.get_cgroup_by_pid(_process_id) {
-                    Some(cgroup) => {
-                        let container_eid = EntityId::Container(cgroup.into_container_id());
-
-                        debug!("Resolved PID {} to container ID {}.", _process_id, container_eid);
-
-                        pid_mappings_cache.pin().insert(_process_id, container_eid.clone());
-                        Some(container_eid)
-                    }
-                    None => {
-                        debug!(
-                            "Failed to resolve container ID for PID {}. Process ID may not be part of a container.",
-                            _process_id
-                        );
-                        None
-                    }
-                }
-            }
+            } => resolve_linux_pid(process_id, pid_mappings_cache, cgroups_reader),
         }
     }
 }
@@ -111,7 +76,7 @@ impl OnDemandPIDResolver {
         let cgroups_reader = match CgroupsReader::try_from_config(&cgroups_config, interner)? {
             Some(reader) => reader,
             None => {
-                return Err(generic_error!("Failed to detect any cgroups v1/v2 hierarchy. "));
+                return Err(GenericError::msg("Failed to detect any cgroups v1/v2 hierarchy."));
             }
         };
 
@@ -128,5 +93,50 @@ impl OnDemandPIDResolver {
     /// If the process ID is not part of a container, or cannot be found, `None` is returned.
     pub fn resolve(&self, process_id: u32) -> Option<EntityId> {
         self.inner.resolve(process_id)
+    }
+}
+
+fn resolve_noop_pid(_process_id: u32) -> Option<EntityId> {
+    // No-op resolver, always returns None.
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_linux_pid(
+    process_id: u32, pid_mappings_cache: &FastConcurrentHashMap<u32, EntityId>, cgroups_reader: &CgroupsReader,
+) -> Option<EntityId> {
+    // First, check our PID mapping cache.
+    //
+    // TODO: This should be an actual cache, with expiration, because PIDs will eventually get recycled so we
+    // shouldn't keep results forever, but perhaps most important: this is a slow memory leak generator otherwise.
+    //
+    // This is simply a stopgap to make sure this functionality, overall, works for the purposes of origin
+    // detection.
+    if let Some(container_id) = pid_mappings_cache.pin().get(&process_id).cloned() {
+        trace!(
+            "Resolved PID {} to container ID {} from cache.",
+            process_id,
+            container_id
+        );
+        return Some(container_id);
+    }
+
+    // If we don't have a mapping, query the host OS for it.
+    match cgroups_reader.get_cgroup_by_pid(process_id) {
+        Some(cgroup) => {
+            let container_eid = EntityId::Container(cgroup.into_container_id());
+
+            debug!("Resolved PID {} to container ID {}.", process_id, container_eid);
+
+            pid_mappings_cache.pin().insert(process_id, container_eid.clone());
+            Some(container_eid)
+        }
+        None => {
+            debug!(
+                "Failed to resolve container ID for PID {}. Process ID may not be part of a container.",
+                process_id
+            );
+            None
+        }
     }
 }
