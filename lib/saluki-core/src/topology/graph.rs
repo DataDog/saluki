@@ -68,10 +68,9 @@ pub enum DataType {
 
 impl DataType {
     /// Returns `true` if `self` is the same integral data type as `other`, and `other` has at least one overlapping
-    /// type with `self`.
+    /// subtype with `self`.
     ///
-    /// This means that event and payload types are disjoint, and that the intersection of two event types is the
-    /// bitwise AND of the two event types, and must be non-zero.
+    /// This means that event and payload types are always disjoint.
     fn intersects(&self, other: DataType) -> bool {
         match (self, other) {
             (DataType::Event(a), DataType::Event(b)) => !a.is_none() && !b.is_none() && a.intersects(b),
@@ -120,7 +119,8 @@ struct Edge {
 /// A directed graph of components.
 ///
 /// `Graph` holds both the nodes (components) that represent the topology, as well as the edges (connections) between
-/// them. It ensures that components are minimally valid, and that they are connected in a valid way.
+/// them. It ensures that the resulting graph is minimally valid: valid component IDs, valid component connections, and
+/// so on.
 #[derive(Debug, Default)]
 pub struct Graph {
     nodes: HashMap<ComponentId, Node>,
@@ -275,7 +275,7 @@ impl Graph {
         // Find the node that the "from" side of the edge is connected to.
         match self.nodes.get(&component_output_id.component_id()) {
             Some(node) => match node {
-                // Sources and transforms supported named outputs, so we have to dig into their outputs to make sure the
+                // Sources and transforms support named outputs, so we have to dig into their outputs to make sure the
                 // given output ID exists.
                 Node::Source { outputs } | Node::Transform { outputs, .. } => {
                     if !outputs
@@ -291,7 +291,7 @@ impl Graph {
                         return Err(GraphError::NonexistentComponentOutputId { component_output_id });
                     }
                 }
-                // Destinations and forwarders are terminal nodes, so they can't have edges going out of them.
+                // Destinations and forwarders are terminal nodes, so they can't have outbound edges.
                 Node::Destination { .. } | Node::Forwarder { .. } => {
                     return Err(GraphError::NonexistentComponentOutputId { component_output_id })
                 }
@@ -352,10 +352,9 @@ impl Graph {
     /// as a "metric" event, or a "raw" payload. When two components are connected by an edge, they must both have the
     /// same data type, and have an overlap in data subtypes.
     ///
-    /// For example, sources, transforms, and destinations all
-    /// deal exclusively with events, which means that to be connected, they must simply have an overlap in the event
-    /// subtypes they support, such as a downstream component at least supporting metric events if the upstream only
-    /// emits metrics.
+    /// For example, sources, transforms, and destinations all deal exclusively with events, which means that to be
+    /// connected, they must simply have an overlap in the event subtypes they support, such as a downstream component
+    /// at least supporting metric events if the upstream only emits metrics.
     ///
     /// Additionally, there are renderer and forwarder components, which deal with events and payloads, respectively.
     /// Forwarders can only accept payloads, so they cannot be connected directly to "event" components like sources or
