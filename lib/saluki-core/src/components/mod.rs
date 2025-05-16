@@ -5,8 +5,8 @@ use std::fmt;
 use crate::topology::ComponentId;
 
 pub mod destinations;
+pub mod encoders;
 pub mod forwarders;
-pub mod renderers;
 pub mod sources;
 pub mod transforms;
 
@@ -25,8 +25,8 @@ pub enum ComponentType {
     /// Forwarder.
     Forwarder,
 
-    /// Renderer.
-    Renderer,
+    /// Encoder.
+    Encoder,
 }
 
 impl ComponentType {
@@ -37,7 +37,7 @@ impl ComponentType {
             Self::Transform => "transform",
             Self::Destination => "destination",
             Self::Forwarder => "forwarder",
-            Self::Renderer => "renderer",
+            Self::Encoder => "encoder",
         }
     }
 }
@@ -45,7 +45,7 @@ impl ComponentType {
 /// A component context.
 ///
 /// Component contexts uniquely identify a component within a topology by coupling the component identifier (name) and
-/// component type (source, transform, destination, forwarder, or renderer).
+/// component type (source, transform, destination, forwarder, or encoder).
 ///
 /// Practically speaking, all components are required to have a unique identifier. However, identifiers may be opaque
 /// enough that without knowing the _type_ of component, the identifier doesn't provide enough information.
@@ -88,11 +88,11 @@ impl ComponentContext {
         }
     }
 
-    /// Creates a new `ComponentContext` for a renderer component with the given identifier.
-    pub fn renderer(component_id: ComponentId) -> Self {
+    /// Creates a new `ComponentContext` for a encoder component with the given identifier.
+    pub fn encoder(component_id: ComponentId) -> Self {
         Self {
             component_id,
-            component_type: ComponentType::Renderer,
+            component_type: ComponentType::Encoder,
         }
     }
 
@@ -132,12 +132,12 @@ impl ComponentContext {
         }
     }
 
-    /// Creates a new `ComponentContext` for a renderer component with the given identifier.
+    /// Creates a new `ComponentContext` for a encoder component with the given identifier.
     #[cfg(test)]
-    pub fn test_renderer<S: AsRef<str>>(component_id: S) -> Self {
+    pub fn test_encoder<S: AsRef<str>>(component_id: S) -> Self {
         Self {
             component_id: ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
-            component_type: ComponentType::Renderer,
+            component_type: ComponentType::Encoder,
         }
     }
 
