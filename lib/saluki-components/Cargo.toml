@@ -58,6 +58,7 @@ tokio = { workspace = true, features = [
 tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tracing = { workspace = true }
 url = { workspace = true }
+pyo3 = { workspace = true }
 
 [dev-dependencies]
 saluki-metrics = { workspace = true, features = ["test"] }

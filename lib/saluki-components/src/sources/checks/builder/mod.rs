@@ -2,7 +2,8 @@ use std::sync::Arc;
 mod noop;
 mod python;
 use async_trait::async_trait;
-use saluki_env::autodiscovery::CheckConfig;
+use saluki_env::autodiscovery::{Data, Instance};
+use stringtheory::MetaString;
 
 pub use self::noop::NoopCheckBuilder;
 pub use self::python::PythonCheckBuilder;
@@ -19,5 +20,7 @@ use crate::sources::checks::check::Check;
 #[async_trait]
 pub trait CheckBuilder {
     /// Build a check
-    async fn build_check(&self, check_id: &str, check_request: &CheckConfig) -> Option<Arc<dyn Check + Send + Sync>>;
+    async fn build_check(
+        &self, name: &str, instance: &Instance, init_config: &Data, source: &MetaString,
+    ) -> Option<Arc<dyn Check + Send + Sync>>;
 }

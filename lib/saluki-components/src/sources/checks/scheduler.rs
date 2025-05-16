@@ -72,7 +72,7 @@ impl Scheduler {
             self.start_interval_ticker(interval_secs);
         }
 
-        debug!("Scheduled check '{}' with interval {}s", check_id, interval_secs);
+        info!("Scheduled check '{}' with interval {}s", check_id, interval_secs);
     }
 
     /// Unschedule a check
@@ -162,7 +162,6 @@ impl Scheduler {
         // Create and spawn the ticker task
         let handle = tokio::spawn(async move {
             let mut ticker = time::interval(interval_duration);
-            ticker.tick().await; // Skip the first immediate tick
 
             loop {
                 // Wait for the next interval tick
@@ -256,7 +255,7 @@ impl Scheduler {
                 match msg {
                     WorkerMessage::RunCheck(check) => {
                         let check_id = check.id();
-                        debug!("Running check '{}'", check_id);
+                        info!("Running check '{}'", check_id);
 
                         match check.run() {
                             Ok(()) => debug!("Check '{}' completed successfully", check_id),
@@ -328,8 +327,8 @@ mod tests {
             }
         }
 
-        fn interval(&self) -> Duration {
-            self.interval
+        fn interval(&self) -> &Duration {
+            &self.interval
         }
 
         fn id(&self) -> &str {

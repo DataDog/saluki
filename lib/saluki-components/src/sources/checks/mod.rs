@@ -8,11 +8,11 @@ use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_core::{
-    components::{sources::*, ComponentContext},
+    components::{ComponentContext, sources::*},
     topology::OutputDefinition,
 };
 use saluki_env::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider};
-use saluki_error::{generic_error, GenericError};
+use saluki_error::{GenericError, generic_error};
 use saluki_event::DataType;
 use serde::Deserialize;
 use tokio::select;
@@ -129,7 +129,7 @@ impl Source for ChecksSource {
                                         }
 
                                         for builder in check_builders.iter_mut() {
-                                            if let Some(check) = builder.build_check(check_id, &config).await {
+                                            if let Some(check) = builder.build_check(&config.name, instance, &config.init_config, &config.source).await {
                                                 runnable_checks.push(check);
                                                 check_ids.insert(check_id.clone());
                                                 break;

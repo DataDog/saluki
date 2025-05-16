@@ -120,7 +120,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, CheckConfig), Gene
 
     // Create a Config
     let config = Config {
-        name: MetaString::from(path.file_name().unwrap().to_string_lossy().to_string()),
+        name: MetaString::from(path.file_stem().unwrap().to_string_lossy().to_string()),
         init_config,
         instances,
         metric_config: Data::default(),
@@ -163,21 +163,23 @@ async fn scan_and_emit_events(
                         Ok((config_id, config)) => {
                             found_configs.insert(config_id.clone());
 
-                            configs.entry(config_id.clone()).or_insert(config.clone());
-
                             // Check if this is a new or updated configuration
                             if !known_configs.contains(&config_id) {
                                 debug!("New configuration found: {}", config_id);
 
-                                let event = AutodiscoveryEvent::CheckSchedule { config };
+                                let event = AutodiscoveryEvent::CheckSchedule { config: config.clone() };
                                 let _ = sender.send(event);
                                 known_configs.insert(config_id.clone());
+                                configs.insert(config_id.clone(), config);
                             } else {
                                 // Config ID exists, but the content might have changed
-                                debug!("Configuration updated: {}", config_id);
-
-                                let event = AutodiscoveryEvent::CheckSchedule { config };
-                                let _ = sender.send(event);
+                                let existing_config = configs.get(&config_id).unwrap();
+                                if *existing_config != config {
+                                    configs.insert(config_id.clone(), config.clone());
+                                    debug!("Configuration updated: {}", config_id);
+                                    let event = AutodiscoveryEvent::CheckSchedule { config };
+                                    let _ = sender.send(event);
+                                }
                             }
                         }
                         Err(e) => {
@@ -264,7 +266,7 @@ mod tests {
         let (id, config) = parse_config_file(&test_file).await.unwrap();
 
         assert!(id.contains("saluki-env_src_autodiscovery_providers_test_data_test-config.yaml"));
-        assert_eq!(config.name, "test-config.yaml");
+        assert_eq!(config.name, "test-config");
         assert_eq!(
             config.init_config.value.get("service"),
             Some(&serde_yaml::Value::String("test-service".to_string()))
