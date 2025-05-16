@@ -81,6 +81,11 @@ impl ComponentOutputId {
             OutputName::Default
         }
     }
+
+    /// Returns `true` if this is a default output.
+    pub fn is_default(&self) -> bool {
+        self.0.split_once('.').is_none()
+    }
 }
 
 impl TryFrom<&str> for ComponentOutputId {
@@ -109,7 +114,7 @@ const fn validate_component_id(id: &str, as_output_id: bool) -> bool {
         return false;
     }
 
-    // Keep track of whether or not we've seen a period yet. If we have, we track it's index, which serves two purposes:
+    // Keep track of whether or not we've seen a period yet. If we have, we track its index, which serves two purposes:
     // figure out if we see _another_ period (can only have one), and ensure that either side of the string (when split
     // by the separator) isn't empty.
     let mut idx = 0;
@@ -233,5 +238,53 @@ impl TypedComponentOutputId {
     /// Returns the output data type.
     pub fn output_ty(&self) -> EventType {
         self.output_ty
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn component_id() {
+        let id = ComponentId::try_from("component").unwrap();
+        assert_eq!(id, ComponentId::try_from("component").unwrap());
+        assert_eq!(&*id, "component");
+
+        let id = ComponentId::try_from("component_1").unwrap();
+        assert_eq!(id, ComponentId::try_from("component_1").unwrap());
+        assert_eq!(&*id, "component_1");
+    }
+
+    #[test]
+    fn component_id_invalid() {
+        assert!(ComponentId::try_from("").is_err());
+        assert!(ComponentId::try_from("non_alphanumeric_$#!").is_err());
+        assert!(ComponentId::try_from("cant_have_periods_for_non_component_output_id.foo").is_err());
+    }
+
+    #[test]
+    fn component_output_id_default() {
+        let id = ComponentOutputId::try_from("component").unwrap();
+        assert_eq!(id.component_id(), ComponentId::try_from("component").unwrap());
+        assert_eq!(id.output(), OutputName::Default);
+        assert!(id.is_default());
+    }
+
+    #[test]
+    fn component_output_id_named() {
+        let id = ComponentOutputId::try_from("component.metrics").unwrap();
+        assert_eq!(id.component_id(), ComponentId::try_from("component").unwrap());
+        assert_eq!(id.output(), OutputName::Given("metrics".into()));
+        assert!(!id.is_default());
+    }
+
+    #[test]
+    fn component_output_id_invalid() {
+        assert!(ComponentOutputId::try_from("").is_err());
+        assert!(ComponentOutputId::try_from("non_alphanumeric_$#!").is_err());
+        assert!(ComponentOutputId::try_from("too.many.periods").is_err());
+        assert!(ComponentOutputId::try_from(".one_side_of_named_output_is_empty").is_err());
+        assert!(ComponentOutputId::try_from("one_side_of_named_output_is_empty.").is_err());
     }
 }

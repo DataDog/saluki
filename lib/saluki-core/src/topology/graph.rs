@@ -1,14 +1,22 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+#![allow(dead_code)]
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    fmt,
+};
 
 use indexmap::IndexSet;
 use snafu::Snafu;
 
 use super::{ComponentId, ComponentOutputId, OutputDefinition, OutputName, TypedComponentOutputId};
 use crate::{
-    components::{destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder},
-    data_model::event::EventType,
+    components::{
+        destinations::DestinationBuilder, encoders::EncoderBuilder, forwarders::ForwarderBuilder,
+        sources::SourceBuilder, transforms::TransformBuilder,
+    },
+    data_model::{event::EventType, payload::PayloadType},
 };
 
+/// Error type for graph operations.
 #[derive(Debug, Snafu, Eq, PartialEq)]
 #[snafu(context(suffix(false)))]
 pub enum GraphError {
@@ -34,11 +42,11 @@ pub enum GraphError {
         to_component_id,
         to_ty
     ))]
-    EventTypeMismatch {
+    DataTypeMismatch {
         from_component_output_id: ComponentOutputId,
-        from_ty: EventType,
+        from_ty: DataType,
         to_component_id: ComponentId,
-        to_ty: EventType,
+        to_ty: DataType,
     },
     #[snafu(display("cycle detected: {:?}", path))]
     Cycle { path: Vec<ComponentId> },
@@ -46,8 +54,43 @@ pub enum GraphError {
     DisconnectedComponents { component_ids: Vec<ComponentId> },
 }
 
+/// Component data type.
+///
+/// This is used to determine the type of data that a component can produce and/or consume.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DataType {
+    /// Events.
+    Event(EventType),
+
+    /// Payloads.
+    Payload(PayloadType),
+}
+
+impl DataType {
+    /// Returns `true` if `self` is the same integral data type as `other`, and `other` has at least one overlapping
+    /// subtype with `self`.
+    ///
+    /// This means that event and payload types are always disjoint.
+    fn intersects(&self, other: DataType) -> bool {
+        match (self, other) {
+            (DataType::Event(a), DataType::Event(b)) => !a.is_none() && !b.is_none() && a.intersects(b),
+            (DataType::Payload(a), DataType::Payload(b)) => !a.is_none() && !b.is_none() && a.intersects(b),
+            _ => false,
+        }
+    }
+}
+
+impl fmt::Display for DataType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DataType::Event(ty) => write!(f, "event({})", ty),
+            DataType::Payload(ty) => write!(f, "payload({})", ty),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
-pub enum Node {
+enum Node {
     Source {
         outputs: Vec<TypedComponentOutputId>,
     },
@@ -58,6 +101,13 @@ pub enum Node {
     Destination {
         input_ty: EventType,
     },
+    Encoder {
+        input_ty: EventType,
+        output_ty: PayloadType,
+    },
+    Forwarder {
+        input_ty: PayloadType,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +116,11 @@ struct Edge {
     to: ComponentId,
 }
 
+/// A directed graph of components.
+///
+/// `Graph` holds both the nodes (components) that represent the topology, as well as the edges (connections) between
+/// them. It ensures that the resulting graph is minimally valid: valid component IDs, valid component connections, and
+/// so on.
 #[derive(Debug, Default)]
 pub struct Graph {
     nodes: HashMap<ComponentId, Node>,
@@ -73,6 +128,12 @@ pub struct Graph {
 }
 
 impl Graph {
+    /// Adds a source node to the graph.
+    ///
+    /// # Errors
+    ///
+    /// If the component ID already exists in the graph, or if the component ID is invalid, or if any of the component
+    /// output IDs are invalid, an error is returned.
     pub fn add_source<I>(&mut self, component_id: I, builder: &dyn SourceBuilder) -> Result<ComponentId, GraphError>
     where
         I: AsRef<str>,
@@ -88,6 +149,12 @@ impl Graph {
         Ok(component_id)
     }
 
+    /// Adds a transform node to the graph.
+    ///
+    /// # Errors
+    ///
+    /// If the component ID already exists in the graph, or if the component ID is invalid, or if any of the component
+    /// output IDs are invalid, an error is returned.
     pub fn add_transform<I>(
         &mut self, component_id: I, builder: &dyn TransformBuilder,
     ) -> Result<ComponentId, GraphError>
@@ -111,6 +178,11 @@ impl Graph {
         Ok(component_id)
     }
 
+    /// Adds a destination node to the graph.
+    ///
+    /// # Errors
+    ///
+    /// If the component ID already exists in the graph, or if the component ID is invalid, an error is returned.
     pub fn add_destination<I>(
         &mut self, component_id: I, builder: &dyn DestinationBuilder,
     ) -> Result<ComponentId, GraphError>
@@ -132,6 +204,62 @@ impl Graph {
         Ok(component_id)
     }
 
+    /// Adds a encoder node to the graph.
+    ///
+    /// # Errors
+    ///
+    /// If the component ID already exists in the graph, or if the component ID is invalid, an error is returned.
+    pub fn add_encoder<I>(&mut self, component_id: I, builder: &dyn EncoderBuilder) -> Result<ComponentId, GraphError>
+    where
+        I: AsRef<str>,
+    {
+        let component_id = try_into_component_id(component_id)?;
+        if self.nodes.contains_key(&component_id) {
+            return Err(GraphError::DuplicateComponentId { component_id });
+        }
+
+        self.nodes.insert(
+            component_id.clone(),
+            Node::Encoder {
+                input_ty: builder.input_event_type(),
+                output_ty: builder.output_payload_type(),
+            },
+        );
+
+        Ok(component_id)
+    }
+
+    /// Adds a forwarder node to the graph.
+    ///
+    /// # Errors
+    ///
+    /// If the component ID already exists in the graph, or if the component ID is invalid, an error is returned.
+    pub fn add_forwarder<I>(
+        &mut self, component_id: I, builder: &dyn ForwarderBuilder,
+    ) -> Result<ComponentId, GraphError>
+    where
+        I: AsRef<str>,
+    {
+        let component_id = try_into_component_id(component_id)?;
+        if self.nodes.contains_key(&component_id) {
+            return Err(GraphError::DuplicateComponentId { component_id });
+        }
+
+        self.nodes.insert(
+            component_id.clone(),
+            Node::Forwarder {
+                input_ty: builder.input_payload_type(),
+            },
+        );
+
+        Ok(component_id)
+    }
+
+    /// Adds an edge to the graph.
+    ///
+    /// # Errors
+    ///
+    /// If either the `from` or `to` component IDs do not exist in the graph, or are invalid, an error is returned.
     pub fn add_edge<F, T>(&mut self, from: F, to: T) -> Result<(), GraphError>
     where
         F: AsRef<str>,
@@ -144,8 +272,11 @@ impl Graph {
             return Err(GraphError::NonexistentComponentId { component_id });
         }
 
+        // Find the node that the "from" side of the edge is connected to.
         match self.nodes.get(&component_output_id.component_id()) {
             Some(node) => match node {
+                // Sources and transforms support named outputs, so we have to dig into their outputs to make sure the
+                // given output ID exists.
                 Node::Source { outputs } | Node::Transform { outputs, .. } => {
                     if !outputs
                         .iter()
@@ -154,7 +285,14 @@ impl Graph {
                         return Err(GraphError::NonexistentComponentOutputId { component_output_id });
                     }
                 }
-                Node::Destination { .. } => {
+                // Encoders only have default outputs, so make sure the "from" side is referencing a default output.
+                Node::Encoder { .. } => {
+                    if !component_output_id.is_default() {
+                        return Err(GraphError::NonexistentComponentOutputId { component_output_id });
+                    }
+                }
+                // Destinations and forwarders are terminal nodes, so they can't have outbound edges.
+                Node::Destination { .. } | Node::Forwarder { .. } => {
                     return Err(GraphError::NonexistentComponentOutputId { component_output_id })
                 }
             },
@@ -172,30 +310,62 @@ impl Graph {
         Ok(())
     }
 
-    fn get_input_type(&self, id: &ComponentId) -> EventType {
+    fn get_input_type(&self, id: &ComponentId) -> DataType {
         match self.nodes[id] {
             Node::Source { .. } => panic!("no inputs on sources"),
-            Node::Transform { input_ty, .. } => input_ty,
-            Node::Destination { input_ty } => input_ty,
+            Node::Transform { input_ty, .. } => DataType::Event(input_ty),
+            Node::Destination { input_ty } => DataType::Event(input_ty),
+            Node::Encoder { input_ty, .. } => DataType::Event(input_ty),
+            Node::Forwarder { input_ty } => DataType::Payload(input_ty),
         }
     }
 
-    fn get_output_type(&self, id: &ComponentOutputId) -> EventType {
+    fn get_output_type(&self, id: &ComponentOutputId) -> DataType {
         match &self.nodes[&id.component_id()] {
-            Node::Source { outputs } => outputs
+            Node::Source { outputs } | Node::Transform { outputs, .. } => outputs
                 .iter()
                 .find(|output| output.component_output().output() == id.output())
-                .map(|output| output.output_ty())
+                .map(|output| DataType::Event(output.output_ty()))
                 .expect("output didn't exist"),
-            Node::Transform { outputs, .. } => outputs
-                .iter()
-                .find(|output| output.component_output().output() == id.output())
-                .map(|output| output.output_ty())
-                .expect("output didn't exist"),
-            Node::Destination { .. } => panic!("no outputs on sinks"),
+            Node::Encoder { output_ty, .. } => {
+                if id.is_default() {
+                    DataType::Payload(*output_ty)
+                } else {
+                    panic!("encoder should only have default output")
+                }
+            }
+            Node::Destination { .. } | Node::Forwarder { .. } => panic!("no outputs on destinations/forwarders"),
         }
     }
 
+    /// Validates the graph.
+    ///
+    /// Several invariants are checked:
+    ///
+    /// - All edges must have compatible data types.
+    /// - No cycles are allowed in the graph.
+    /// - All components must be connected to at least one other component.
+    ///
+    /// ## Data types
+    ///
+    /// Components can have two possible data types: events and payloads. Each of these has a number of subtypes, such
+    /// as a "metric" event, or a "raw" payload. When two components are connected by an edge, they must both have the
+    /// same data type, and have an overlap in data subtypes.
+    ///
+    /// For example, sources, transforms, and destinations all deal exclusively with events, which means that to be
+    /// connected, they must simply have an overlap in the event subtypes they support, such as a downstream component
+    /// at least supporting metric events if the upstream only emits metrics.
+    ///
+    /// Additionally, there are encoder and forwarder components, which deal with events and payloads, respectively.
+    /// Forwarders can only accept payloads, so they cannot be connected directly to "event" components like sources or
+    /// transforms, but they can be connected to encoders. Encoders can accept events and emit payloads, so they can
+    /// be connected to sources and transforms as a downstream component (same "event" data type) but cannot be
+    /// connected to another encoder (different data types). Like "event" components, encoders and forwarders must
+    /// have an overlap in "payload" subtypes to be connected.
+    ///
+    /// # Errors
+    ///
+    /// If any of the invariants are violated, an error is returned.
     pub fn validate(&self) -> Result<(), GraphError> {
         self.check_event_types()?;
         self.check_for_cycles()?;
@@ -211,7 +381,7 @@ impl Graph {
             let to_ty = self.get_input_type(&edge.to);
 
             if !from_ty.intersects(to_ty) {
-                return Err(GraphError::EventTypeMismatch {
+                return Err(GraphError::DataTypeMismatch {
                     from_component_output_id: edge.from.clone(),
                     from_ty,
                     to_component_id: edge.to.clone(),
@@ -289,6 +459,7 @@ impl Graph {
         }
     }
 
+    /// Returns a mapping of component IDs to their outputs and the component IDs that are connected to them.
     pub fn get_outbound_directed_edges(&self) -> HashMap<ComponentId, HashMap<OutputName, Vec<ComponentId>>> {
         let mut mappings: HashMap<ComponentId, HashMap<OutputName, Vec<ComponentId>>> = HashMap::new();
 
@@ -340,7 +511,9 @@ mod test {
     use similar_asserts::assert_eq;
 
     use super::*;
-    use crate::topology::test_util::{TestDestinationBuilder, TestSourceBuilder, TestTransformBuilder};
+    use crate::topology::test_util::{
+        TestDestinationBuilder, TestEncoderBuilder, TestForwarderBuilder, TestSourceBuilder, TestTransformBuilder,
+    };
 
     impl Graph {
         pub fn with_source_fallible(&mut self, id: &str, output_event_ty: EventType) -> Result<&mut Self, GraphError> {
@@ -349,6 +522,7 @@ mod test {
             Ok(self)
         }
 
+        #[track_caller]
         pub fn with_source(&mut self, id: &str, output_event_ty: EventType) -> &mut Self {
             self.with_source_fallible(id, output_event_ty)
                 .expect("should not fail to add source")
@@ -362,11 +536,13 @@ mod test {
             Ok(self)
         }
 
+        #[track_caller]
         pub fn with_transform(&mut self, id: &str, input_event_ty: EventType, output_event_ty: EventType) -> &mut Self {
             self.with_transform_fallible(id, input_event_ty, output_event_ty)
                 .expect("should not fail to add transform")
         }
 
+        #[track_caller]
         pub fn with_transform_multiple_outputs<'a>(
             &mut self, id: &str, input_event_ty: EventType,
             outputs: impl IntoIterator<Item = &'a (Option<&'a str>, EventType)>,
@@ -386,9 +562,40 @@ mod test {
             Ok(self)
         }
 
+        #[track_caller]
         pub fn with_destination(&mut self, id: &str, input_event_ty: EventType) -> &mut Self {
             self.with_destination_fallible(id, input_event_ty)
                 .expect("should not fail to add destination")
+        }
+
+        pub fn with_encoder_fallible(
+            &mut self, id: &str, input_event_ty: EventType, output_payload_ty: PayloadType,
+        ) -> Result<&mut Self, GraphError> {
+            let builder = TestEncoderBuilder::with_input_and_output_type(input_event_ty, output_payload_ty);
+            let _ = self.add_encoder(id, &builder)?;
+            Ok(self)
+        }
+
+        #[track_caller]
+        pub fn with_encoder(
+            &mut self, id: &str, input_event_ty: EventType, output_payload_ty: PayloadType,
+        ) -> &mut Self {
+            self.with_encoder_fallible(id, input_event_ty, output_payload_ty)
+                .expect("should not fail to add encoder")
+        }
+
+        pub fn with_forwarder_fallible(
+            &mut self, id: &str, input_payload_ty: PayloadType,
+        ) -> Result<&mut Self, GraphError> {
+            let builder = TestForwarderBuilder::with_input_type(input_payload_ty);
+            let _ = self.add_forwarder(id, &builder)?;
+            Ok(self)
+        }
+
+        #[track_caller]
+        pub fn with_forwarder(&mut self, id: &str, input_payload_ty: PayloadType) -> &mut Self {
+            self.with_forwarder_fallible(id, input_payload_ty)
+                .expect("should not fail to add forwarder")
         }
 
         pub fn with_edge_fallible(&mut self, from: &str, to: &str) -> Result<&mut Self, GraphError> {
@@ -396,11 +603,13 @@ mod test {
             Ok(self)
         }
 
+        #[track_caller]
         pub fn with_edge(&mut self, from: &str, to: &str) -> &mut Self {
             self.with_edge_fallible(from, to)
                 .expect("should not fail to add graph edge")
         }
 
+        #[track_caller]
         pub fn with_multi_edge(&mut self, froms: &[&str], to: &str) -> &mut Self {
             for from in froms {
                 self.add_edge(*from, to).expect("should not fail to add graph edge");
@@ -476,7 +685,7 @@ mod test {
             .with_edge("eventd_to_eventd", "out_eventd")
             .with_edge("eventd_to_eventd.errors", "out_errored_eventd");
 
-        assert_eq!(Ok(()), graph.check_event_types());
+        assert_eq!(Ok(()), graph.validate());
     }
 
     #[test]
@@ -497,7 +706,7 @@ mod test {
             Err(GraphError::Cycle {
                 path: into_component_ids(&["three", "one", "two", "three"]),
             }),
-            graph.check_for_cycles()
+            graph.validate()
         );
 
         let mut graph = Graph::default();
@@ -516,7 +725,7 @@ mod test {
             Err(GraphError::Cycle {
                 path: into_component_ids(&["two", "three", "one", "two"]),
             }),
-            graph.check_for_cycles()
+            graph.validate()
         );
     }
 
@@ -534,7 +743,7 @@ mod test {
             Err(GraphError::DisconnectedComponents {
                 component_ids: into_component_ids(&["one", "two"]),
             }),
-            graph.check_for_disconnected()
+            graph.validate()
         );
     }
 
@@ -552,11 +761,30 @@ mod test {
             .with_multi_edge(&["one", "two"], "three")
             .with_edge("three", "out");
 
-        graph.check_for_cycles().unwrap();
+        assert_eq!(Ok(()), graph.validate());
     }
 
     #[test]
-    fn datatype_disjoint_sets() {
+    fn datatype_disjoint_types() {
+        let mut graph = Graph::default();
+        graph
+            .with_source("in", EventType::Metric)
+            .with_forwarder("out", PayloadType::Raw)
+            .with_edge("in", "out");
+
+        assert_eq!(
+            Err(GraphError::DataTypeMismatch {
+                from_component_output_id: try_into_component_output_id("in").unwrap(),
+                from_ty: DataType::Event(EventType::Metric),
+                to_component_id: try_into_component_id("out").unwrap(),
+                to_ty: DataType::Payload(PayloadType::Raw),
+            }),
+            graph.validate()
+        );
+    }
+
+    #[test]
+    fn datatype_disjoint_sets_event() {
         let mut graph = Graph::default();
         graph
             .with_source("in", EventType::EventD)
@@ -564,13 +792,34 @@ mod test {
             .with_edge("in", "out");
 
         assert_eq!(
-            Err(GraphError::EventTypeMismatch {
+            Err(GraphError::DataTypeMismatch {
                 from_component_output_id: try_into_component_output_id("in").unwrap(),
-                from_ty: EventType::EventD,
+                from_ty: DataType::Event(EventType::EventD),
                 to_component_id: try_into_component_id("out").unwrap(),
-                to_ty: EventType::Metric,
+                to_ty: DataType::Event(EventType::Metric),
             }),
-            graph.check_event_types()
+            graph.validate()
+        );
+    }
+
+    #[test]
+    fn datatype_disjoint_sets_payload() {
+        let mut graph = Graph::default();
+        graph
+            .with_source("in", EventType::EventD)
+            .with_encoder("eventd_to_payload", EventType::EventD, PayloadType::Raw)
+            .with_forwarder("out", PayloadType::Http)
+            .with_edge("in", "eventd_to_payload")
+            .with_edge("eventd_to_payload", "out");
+
+        assert_eq!(
+            Err(GraphError::DataTypeMismatch {
+                from_component_output_id: try_into_component_output_id("eventd_to_payload").unwrap(),
+                from_ty: DataType::Payload(PayloadType::Raw),
+                to_component_id: try_into_component_id("out").unwrap(),
+                to_ty: DataType::Payload(PayloadType::Http),
+            }),
+            graph.validate()
         );
     }
 
@@ -583,7 +832,7 @@ mod test {
             .with_destination("out", EventType::all_bits())
             .with_multi_edge(&["in_eventd", "in_metric"], "out");
 
-        assert_eq!(Ok(()), graph.check_event_types());
+        assert_eq!(Ok(()), graph.validate());
     }
 
     #[test]
@@ -600,7 +849,7 @@ mod test {
             .with_multi_edge(&["in", "eventd_to_any", "any_to_eventd"], "out_eventd")
             .with_multi_edge(&["in", "eventd_to_any"], "out_metric");
 
-        assert_eq!(Ok(()), graph.check_event_types());
+        assert_eq!(Ok(()), graph.validate());
     }
 
     #[test]
@@ -624,6 +873,60 @@ mod test {
             .with_edge("any_to_eventd", "out_eventd")
             .with_edge("any_to_metric", "out_metric");
 
-        assert_eq!(Ok(()), graph.check_event_types());
+        assert_eq!(Ok(()), graph.validate());
+    }
+
+    #[test]
+    fn basic_source_destination() {
+        let mut graph = Graph::default();
+        graph
+            .with_source("in_eventd", EventType::EventD)
+            .with_destination("out_eventd", EventType::EventD)
+            .with_edge("in_eventd", "out_eventd");
+
+        assert_eq!(Ok(()), graph.validate());
+    }
+
+    #[test]
+    fn basic_source_transform_destination() {
+        let mut graph = Graph::default();
+        graph
+            .with_source("in_eventd", EventType::EventD)
+            .with_transform("eventd_to_eventd", EventType::EventD, EventType::EventD)
+            .with_destination("out_eventd", EventType::EventD)
+            .with_edge("in_eventd", "eventd_to_eventd")
+            .with_edge("eventd_to_eventd", "out_eventd");
+
+        assert_eq!(Ok(()), graph.validate());
+    }
+
+    #[test]
+    fn basic_source_encoder_forwarder() {
+        let mut graph = Graph::default();
+        graph
+            .with_source("in_eventd", EventType::EventD)
+            .with_encoder("eventd_to_payload", EventType::EventD, PayloadType::Http)
+            .with_forwarder("out_http", PayloadType::Http)
+            .with_edge("in_eventd", "eventd_to_payload")
+            .with_edge("eventd_to_payload", "out_http");
+
+        assert_eq!(Ok(()), graph.validate());
+    }
+
+    #[test]
+    fn basic_source_fanout_destination_encoder_forwarder() {
+        let mut graph = Graph::default();
+        graph
+            .with_source("in_eventd", EventType::EventD)
+            .with_transform("eventd_to_eventd", EventType::EventD, EventType::EventD)
+            .with_destination("out_eventd", EventType::EventD)
+            .with_encoder("eventd_to_http_payload", EventType::EventD, PayloadType::Http)
+            .with_forwarder("out_http", PayloadType::Http)
+            .with_edge("in_eventd", "eventd_to_eventd")
+            .with_edge("eventd_to_eventd", "out_eventd")
+            .with_edge("eventd_to_eventd", "eventd_to_http_payload")
+            .with_edge("eventd_to_http_payload", "out_http");
+
+        assert_eq!(Ok(()), graph.validate());
     }
 }

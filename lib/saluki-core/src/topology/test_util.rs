@@ -5,12 +5,14 @@ use saluki_error::GenericError;
 use super::OutputDefinition;
 use crate::{
     components::{
-        destinations::{Destination, DestinationBuilder, DestinationContext},
-        sources::{Source, SourceBuilder, SourceContext},
-        transforms::{Transform, TransformBuilder, TransformContext},
+        destinations::*,
+        encoders::*,
+        forwarders::{Forwarder, ForwarderBuilder, ForwarderContext},
+        sources::*,
+        transforms::*,
         ComponentContext,
     },
-    data_model::event::EventType,
+    data_model::{event::EventType, payload::PayloadType},
 };
 
 struct TestSource;
@@ -136,5 +138,80 @@ impl DestinationBuilder for TestDestinationBuilder {
 }
 
 impl MemoryBounds for TestDestinationBuilder {
+    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+}
+
+struct TestEncoder;
+
+#[async_trait]
+impl Encoder for TestEncoder {
+    async fn run(self: Box<Self>, _context: EncoderContext) -> Result<(), GenericError> {
+        Ok(())
+    }
+}
+
+pub struct TestEncoderBuilder {
+    input_event_ty: EventType,
+    output_payload_ty: PayloadType,
+}
+
+impl TestEncoderBuilder {
+    pub fn with_input_and_output_type(input_event_ty: EventType, output_payload_ty: PayloadType) -> Self {
+        Self {
+            input_event_ty,
+            output_payload_ty,
+        }
+    }
+}
+
+impl EncoderBuilder for TestEncoderBuilder {
+    fn input_event_type(&self) -> EventType {
+        self.input_event_ty
+    }
+
+    fn output_payload_type(&self) -> PayloadType {
+        self.output_payload_ty
+    }
+
+    fn build(&self, _: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
+        Ok(Box::new(TestEncoder))
+    }
+}
+
+impl MemoryBounds for TestEncoderBuilder {
+    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+}
+
+struct TestForwarder;
+
+#[async_trait]
+impl Forwarder for TestForwarder {
+    async fn run(self: Box<Self>, _context: ForwarderContext) -> Result<(), GenericError> {
+        Ok(())
+    }
+}
+
+pub struct TestForwarderBuilder {
+    input_payload_ty: PayloadType,
+}
+
+impl TestForwarderBuilder {
+    pub fn with_input_type(input_payload_ty: PayloadType) -> Self {
+        Self { input_payload_ty }
+    }
+}
+
+#[async_trait]
+impl ForwarderBuilder for TestForwarderBuilder {
+    fn input_payload_type(&self) -> PayloadType {
+        self.input_payload_ty
+    }
+
+    async fn build(&self, _: ComponentContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
+        Ok(Box::new(TestForwarder))
+    }
+}
+
+impl MemoryBounds for TestForwarderBuilder {
     fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
 }
