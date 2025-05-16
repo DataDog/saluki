@@ -10,7 +10,7 @@ use snafu::Snafu;
 use super::{ComponentId, ComponentOutputId, OutputDefinition, OutputName, TypedComponentOutputId};
 use crate::{
     components::{
-        destinations::DestinationBuilder, forwarders::ForwarderBuilder, renderers::RendererBuilder,
+        destinations::DestinationBuilder, encoders::EncoderBuilder, forwarders::ForwarderBuilder,
         sources::SourceBuilder, transforms::TransformBuilder,
     },
     data_model::{event::EventType, payload::PayloadType},
@@ -101,7 +101,7 @@ enum Node {
     Destination {
         input_ty: EventType,
     },
-    Renderer {
+    Encoder {
         input_ty: EventType,
         output_ty: PayloadType,
     },
@@ -204,12 +204,12 @@ impl Graph {
         Ok(component_id)
     }
 
-    /// Adds a renderer node to the graph.
+    /// Adds a encoder node to the graph.
     ///
     /// # Errors
     ///
     /// If the component ID already exists in the graph, or if the component ID is invalid, an error is returned.
-    pub fn add_renderer<I>(&mut self, component_id: I, builder: &dyn RendererBuilder) -> Result<ComponentId, GraphError>
+    pub fn add_encoder<I>(&mut self, component_id: I, builder: &dyn EncoderBuilder) -> Result<ComponentId, GraphError>
     where
         I: AsRef<str>,
     {
@@ -220,7 +220,7 @@ impl Graph {
 
         self.nodes.insert(
             component_id.clone(),
-            Node::Renderer {
+            Node::Encoder {
                 input_ty: builder.input_event_type(),
                 output_ty: builder.output_payload_type(),
             },
@@ -285,8 +285,8 @@ impl Graph {
                         return Err(GraphError::NonexistentComponentOutputId { component_output_id });
                     }
                 }
-                // Renderers only have default outputs, so make sure the "from" side is referencing a default output.
-                Node::Renderer { .. } => {
+                // Encoders only have default outputs, so make sure the "from" side is referencing a default output.
+                Node::Encoder { .. } => {
                     if !component_output_id.is_default() {
                         return Err(GraphError::NonexistentComponentOutputId { component_output_id });
                     }
@@ -315,7 +315,7 @@ impl Graph {
             Node::Source { .. } => panic!("no inputs on sources"),
             Node::Transform { input_ty, .. } => DataType::Event(input_ty),
             Node::Destination { input_ty } => DataType::Event(input_ty),
-            Node::Renderer { input_ty, .. } => DataType::Event(input_ty),
+            Node::Encoder { input_ty, .. } => DataType::Event(input_ty),
             Node::Forwarder { input_ty } => DataType::Payload(input_ty),
         }
     }
@@ -327,11 +327,11 @@ impl Graph {
                 .find(|output| output.component_output().output() == id.output())
                 .map(|output| DataType::Event(output.output_ty()))
                 .expect("output didn't exist"),
-            Node::Renderer { output_ty, .. } => {
+            Node::Encoder { output_ty, .. } => {
                 if id.is_default() {
                     DataType::Payload(*output_ty)
                 } else {
-                    panic!("renderer should only have default output")
+                    panic!("encoder should only have default output")
                 }
             }
             Node::Destination { .. } | Node::Forwarder { .. } => panic!("no outputs on destinations/forwarders"),
@@ -356,11 +356,11 @@ impl Graph {
     /// connected, they must simply have an overlap in the event subtypes they support, such as a downstream component
     /// at least supporting metric events if the upstream only emits metrics.
     ///
-    /// Additionally, there are renderer and forwarder components, which deal with events and payloads, respectively.
+    /// Additionally, there are encoder and forwarder components, which deal with events and payloads, respectively.
     /// Forwarders can only accept payloads, so they cannot be connected directly to "event" components like sources or
-    /// transforms, but they can be connected to renderers. Renderers can accept events and emit payloads, so they can
+    /// transforms, but they can be connected to encoders. Encoders can accept events and emit payloads, so they can
     /// be connected to sources and transforms as a downstream component (same "event" data type) but cannot be
-    /// connected to another renderer (different data types). Like "event" components, renderers and forwarders must
+    /// connected to another encoder (different data types). Like "event" components, encoders and forwarders must
     /// have an overlap in "payload" subtypes to be connected.
     ///
     /// # Errors
@@ -512,7 +512,7 @@ mod test {
 
     use super::*;
     use crate::topology::test_util::{
-        TestDestinationBuilder, TestForwarderBuilder, TestRendererBuilder, TestSourceBuilder, TestTransformBuilder,
+        TestDestinationBuilder, TestEncoderBuilder, TestForwarderBuilder, TestSourceBuilder, TestTransformBuilder,
     };
 
     impl Graph {
@@ -568,20 +568,20 @@ mod test {
                 .expect("should not fail to add destination")
         }
 
-        pub fn with_renderer_fallible(
+        pub fn with_encoder_fallible(
             &mut self, id: &str, input_event_ty: EventType, output_payload_ty: PayloadType,
         ) -> Result<&mut Self, GraphError> {
-            let builder = TestRendererBuilder::with_input_and_output_type(input_event_ty, output_payload_ty);
-            let _ = self.add_renderer(id, &builder)?;
+            let builder = TestEncoderBuilder::with_input_and_output_type(input_event_ty, output_payload_ty);
+            let _ = self.add_encoder(id, &builder)?;
             Ok(self)
         }
 
         #[track_caller]
-        pub fn with_renderer(
+        pub fn with_encoder(
             &mut self, id: &str, input_event_ty: EventType, output_payload_ty: PayloadType,
         ) -> &mut Self {
-            self.with_renderer_fallible(id, input_event_ty, output_payload_ty)
-                .expect("should not fail to add renderer")
+            self.with_encoder_fallible(id, input_event_ty, output_payload_ty)
+                .expect("should not fail to add encoder")
         }
 
         pub fn with_forwarder_fallible(
@@ -807,7 +807,7 @@ mod test {
         let mut graph = Graph::default();
         graph
             .with_source("in", EventType::EventD)
-            .with_renderer("eventd_to_payload", EventType::EventD, PayloadType::Raw)
+            .with_encoder("eventd_to_payload", EventType::EventD, PayloadType::Raw)
             .with_forwarder("out", PayloadType::Http)
             .with_edge("in", "eventd_to_payload")
             .with_edge("eventd_to_payload", "out");
@@ -901,11 +901,11 @@ mod test {
     }
 
     #[test]
-    fn basic_source_renderer_forwarder() {
+    fn basic_source_encoder_forwarder() {
         let mut graph = Graph::default();
         graph
             .with_source("in_eventd", EventType::EventD)
-            .with_renderer("eventd_to_payload", EventType::EventD, PayloadType::Http)
+            .with_encoder("eventd_to_payload", EventType::EventD, PayloadType::Http)
             .with_forwarder("out_http", PayloadType::Http)
             .with_edge("in_eventd", "eventd_to_payload")
             .with_edge("eventd_to_payload", "out_http");
@@ -914,13 +914,13 @@ mod test {
     }
 
     #[test]
-    fn basic_source_fanout_destination_renderer_forwarder() {
+    fn basic_source_fanout_destination_encoder_forwarder() {
         let mut graph = Graph::default();
         graph
             .with_source("in_eventd", EventType::EventD)
             .with_transform("eventd_to_eventd", EventType::EventD, EventType::EventD)
             .with_destination("out_eventd", EventType::EventD)
-            .with_renderer("eventd_to_http_payload", EventType::EventD, PayloadType::Http)
+            .with_encoder("eventd_to_http_payload", EventType::EventD, PayloadType::Http)
             .with_forwarder("out_http", PayloadType::Http)
             .with_edge("in_eventd", "eventd_to_eventd")
             .with_edge("eventd_to_eventd", "out_eventd")

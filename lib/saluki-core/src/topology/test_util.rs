@@ -6,8 +6,8 @@ use super::OutputDefinition;
 use crate::{
     components::{
         destinations::*,
+        encoders::*,
         forwarders::{Forwarder, ForwarderBuilder, ForwarderContext},
-        renderers::*,
         sources::*,
         transforms::*,
         ComponentContext,
@@ -141,21 +141,21 @@ impl MemoryBounds for TestDestinationBuilder {
     fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
 }
 
-struct TestRenderer;
+struct TestEncoder;
 
 #[async_trait]
-impl Renderer for TestRenderer {
-    async fn run(self: Box<Self>, _context: RendererContext) -> Result<(), GenericError> {
+impl Encoder for TestEncoder {
+    async fn run(self: Box<Self>, _context: EncoderContext) -> Result<(), GenericError> {
         Ok(())
     }
 }
 
-pub struct TestRendererBuilder {
+pub struct TestEncoderBuilder {
     input_event_ty: EventType,
     output_payload_ty: PayloadType,
 }
 
-impl TestRendererBuilder {
+impl TestEncoderBuilder {
     pub fn with_input_and_output_type(input_event_ty: EventType, output_payload_ty: PayloadType) -> Self {
         Self {
             input_event_ty,
@@ -164,7 +164,7 @@ impl TestRendererBuilder {
     }
 }
 
-impl RendererBuilder for TestRendererBuilder {
+impl EncoderBuilder for TestEncoderBuilder {
     fn input_event_type(&self) -> EventType {
         self.input_event_ty
     }
@@ -173,12 +173,12 @@ impl RendererBuilder for TestRendererBuilder {
         self.output_payload_ty
     }
 
-    fn build(&self, _: ComponentContext) -> Result<Box<dyn Renderer + Send>, GenericError> {
-        Ok(Box::new(TestRenderer))
+    fn build(&self, _: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
+        Ok(Box::new(TestEncoder))
     }
 }
 
-impl MemoryBounds for TestRendererBuilder {
+impl MemoryBounds for TestEncoderBuilder {
     fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
 }
 
