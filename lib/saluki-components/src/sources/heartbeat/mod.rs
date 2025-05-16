@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_context::Context;
 use saluki_core::components::{sources::*, ComponentContext};
-use saluki_core::data_model::event::{metric::Metric, DataType, Event};
+use saluki_core::data_model::event::{metric::Metric, Event, EventType};
 use saluki_core::topology::OutputDefinition;
 use saluki_error::GenericError;
 use tokio::{select, time::interval};
@@ -79,7 +79,7 @@ impl SourceBuilder for HeartbeatConfiguration {
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: [OutputDefinition; 1] = [OutputDefinition::default_output(DataType::Metric)];
+        static OUTPUTS: [OutputDefinition; 1] = [OutputDefinition::default_output(EventType::Metric)];
 
         &OUTPUTS
     }

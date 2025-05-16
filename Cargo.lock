@@ -3215,6 +3215,7 @@ dependencies = [
  "bitmask-enum",
  "ddsketch-agent",
  "futures",
+ "http",
  "indexmap 2.9.0",
  "memory-accounting",
  "metrics",

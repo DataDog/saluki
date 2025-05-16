@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::strings::lower_alphanumeric;
-use saluki_core::data_model::event::DataType;
+use saluki_core::data_model::event::EventType;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     topology::OutputDefinition,
@@ -65,12 +65,12 @@ impl TransformBuilder for ChainedConfiguration {
         Ok(Box::new(Chained { subtransforms }))
     }
 
-    fn input_data_type(&self) -> DataType {
-        DataType::all_bits()
+    fn input_event_type(&self) -> EventType {
+        EventType::all_bits()
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(DataType::all_bits())];
+        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(EventType::all_bits())];
 
         OUTPUTS
     }
