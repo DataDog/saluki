@@ -8,11 +8,11 @@ use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_core::{
-    components::{ComponentContext, sources::*},
+    components::{sources::*, ComponentContext},
     topology::OutputDefinition,
 };
 use saluki_env::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider};
-use saluki_error::{GenericError, generic_error};
+use saluki_error::{generic_error, GenericError};
 use saluki_event::DataType;
 use serde::Deserialize;
 use tokio::select;
