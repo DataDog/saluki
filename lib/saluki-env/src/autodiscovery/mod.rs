@@ -63,7 +63,7 @@ pub struct AdvancedADIdentifier {
 }
 
 /// Raw data trait for configuration data
-trait RawData {
+pub trait RawData {
     /// Get the value of the data
     fn get_value(&self) -> &HashMap<MetaString, serde_yaml::Value>;
 
@@ -81,7 +81,7 @@ trait RawData {
 }
 
 /// Generic map of key-value pairs
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Data {
     value: HashMap<MetaString, serde_yaml::Value>,
 }
@@ -93,7 +93,7 @@ impl RawData for Data {
 }
 
 /// Configuration for a check instance
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Instance {
     /// Instance ID
     id: String,
@@ -152,7 +152,7 @@ pub struct Config {
 }
 
 /// Check configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckConfig {
     /// Check name
     pub name: MetaString,

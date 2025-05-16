@@ -180,6 +180,7 @@ fs4 = { version = "0.13.1", default-features = false }
 fnv = { version = "1", default-features = false }
 twox-hash = { version = "2", features = ["xxhash64"] }
 sha3 = { version = "0.10", default-features = false }
+pyo3 = { version = "0.25" }
 
 [profile.release]
 lto = "thin"
