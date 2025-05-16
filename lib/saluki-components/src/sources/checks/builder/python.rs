@@ -87,9 +87,9 @@ impl PythonCheckBuilder {
                             let dist_path = project_root.join("dist");
                             let checks_d_path = dist_path.join("checks.d");
 
-                            p.insert(0, &dist_path).unwrap(); // path.GetDistPath()
-                            p.insert(0, &checks_d_path).unwrap(); // custom checks in checks.d subdir
-                            p.insert(0, Path::new("/etc/datadog-agent/checks.d/")).unwrap(); // custom checks in checks.d subdir
+                            p.insert(0, &dist_path.to_string_lossy().as_ref()).unwrap(); // path.GetDistPath()
+                            p.insert(0, &checks_d_path.to_string_lossy().as_ref()).unwrap(); // custom checks in checks.d subdir
+                            p.insert(0, "/etc/datadog-agent/checks.d/").unwrap(); // custom checks in checks.d subdir
 
                             info!("Python sys.path is: {:?}", p);
                         }
