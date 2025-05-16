@@ -34,7 +34,7 @@ impl ForwarderMetrics {
     where
         N: Into<SharedString>,
     {
-        let metrics_builder = MetricsBuilder::from_component_context(context).add_default_tag(("output", output_name));
+        let metrics_builder = MetricsBuilder::from_component_context(&context).add_default_tag(("output", output_name));
 
         Self {
             events_sent: metrics_builder.register_debug_counter("component_events_sent_total"),
