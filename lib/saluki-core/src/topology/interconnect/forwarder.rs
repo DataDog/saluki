@@ -16,6 +16,8 @@ use crate::{
     topology::OutputName,
 };
 
+type ForwarderBufferPool = ElasticObjectPool<FixedSizeEventBuffer>;
+
 struct ForwarderMetrics {
     events_sent: Counter,
     forwarding_latency: Histogram,
@@ -43,21 +45,18 @@ impl ForwarderMetrics {
     }
 }
 
-struct BufferedSender<'a, O>
-where
-    O: ObjectPool<Item = FixedSizeEventBuffer>,
-{
+struct BufferedSender<'a> {
     buffer: Option<FixedSizeEventBuffer>,
-    buffer_pool: &'a O,
+    buffer_pool: &'a ForwarderBufferPool,
     metrics: &'a ForwarderMetrics,
     sender: &'a mpsc::Sender<FixedSizeEventBuffer>,
 }
 
-impl<'a, O> BufferedSender<'a, O>
-where
-    O: ObjectPool<Item = FixedSizeEventBuffer>,
-{
-    fn new(buffer_pool: &'a O, metrics: &'a ForwarderMetrics, sender: &'a mpsc::Sender<FixedSizeEventBuffer>) -> Self {
+impl<'a> BufferedSender<'a> {
+    fn new(
+        buffer_pool: &'a ForwarderBufferPool, metrics: &'a ForwarderMetrics,
+        sender: &'a mpsc::Sender<FixedSizeEventBuffer>,
+    ) -> Self {
         Self {
             buffer: None,
             buffer_pool,
@@ -124,12 +123,9 @@ where
     }
 }
 
-enum SenderBackend<'a, O>
-where
-    O: ObjectPool<Item = FixedSizeEventBuffer>,
-{
-    Single(BufferedSender<'a, O>),
-    Multiple(SmallVec<[BufferedSender<'a, O>; 4]>),
+enum SenderBackend<'a> {
+    Single(BufferedSender<'a>),
+    Multiple(SmallVec<[BufferedSender<'a>; 4]>),
 }
 
 /// A buffered forwarder.
@@ -138,21 +134,16 @@ where
 /// one-by-one into batches, which are then forwarded to the configured output as needed. This allows callers to focus
 /// on the logic around what events to send, without needing to worry about the details of event buffer sizing or
 /// flushing.
-pub struct BufferedForwarder<'a, O>
-where
-    O: ObjectPool<Item = FixedSizeEventBuffer>,
-{
+pub struct BufferedForwarder<'a> {
     metrics: &'a ForwarderMetrics,
     flushed_len: usize,
-    backend: SenderBackend<'a, O>,
+    backend: SenderBackend<'a>,
 }
 
-impl<'a, O> BufferedForwarder<'a, O>
-where
-    O: ObjectPool<Item = FixedSizeEventBuffer>,
-{
+impl<'a> BufferedForwarder<'a> {
     fn new(
-        buffer_pool: &'a O, metrics: &'a ForwarderMetrics, senders: &'a [mpsc::Sender<FixedSizeEventBuffer>],
+        buffer_pool: &'a ForwarderBufferPool, metrics: &'a ForwarderMetrics,
+        senders: &'a [mpsc::Sender<FixedSizeEventBuffer>],
     ) -> Self {
         let backend = if senders.len() == 1 {
             SenderBackend::Single(BufferedSender::new(buffer_pool, metrics, &senders[0]))
@@ -250,7 +241,7 @@ where
 /// events as well as the forwarding latency.
 pub struct Forwarder {
     context: ComponentContext,
-    event_buffer_pool: ElasticObjectPool<FixedSizeEventBuffer>,
+    event_buffer_pool: ForwarderBufferPool,
     default: Option<(ForwarderMetrics, Vec<mpsc::Sender<FixedSizeEventBuffer>>)>,
     targets: FastHashMap<String, (ForwarderMetrics, Vec<mpsc::Sender<FixedSizeEventBuffer>>)>,
 }
@@ -295,7 +286,7 @@ impl Forwarder {
     /// # Errors
     ///
     /// If the default output has not been configured, an error will be returned.
-    pub fn buffered(&self) -> Result<BufferedForwarder<'_, ElasticObjectPool<FixedSizeEventBuffer>>, GenericError> {
+    pub fn buffered(&self) -> Result<BufferedForwarder<'_>, GenericError> {
         let (metrics, senders) = self
             .default
             .as_ref()
@@ -312,9 +303,7 @@ impl Forwarder {
     /// # Errors
     ///
     /// If the given named output has not been configured, an error will be returned.
-    pub fn buffered_named<N>(
-        &self, output_name: N,
-    ) -> Result<BufferedForwarder<'_, ElasticObjectPool<FixedSizeEventBuffer>>, GenericError>
+    pub fn buffered_named<N>(&self, output_name: N) -> Result<BufferedForwarder<'_>, GenericError>
     where
         N: AsRef<str>,
     {
@@ -472,9 +461,7 @@ mod tests {
         topology::interconnect::FixedSizeEventBufferInner,
     };
 
-    fn create_forwarder(
-        event_buffers: usize, buffer_size: usize,
-    ) -> (Forwarder, ElasticObjectPool<FixedSizeEventBuffer>) {
+    fn create_forwarder(event_buffers: usize, buffer_size: usize) -> (Forwarder, ForwarderBufferPool) {
         let component_context = ComponentContext::test_source("forwarder_test");
         let (event_buffer_pool, _) = ElasticObjectPool::with_builder("test", 1, event_buffers, move || {
             FixedSizeEventBufferInner::with_capacity(buffer_size)
