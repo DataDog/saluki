@@ -4,8 +4,8 @@ use tokio::runtime::Handle;
 
 use crate::{components::ComponentContext, topology::interconnect::EventStream};
 
-/// Renderer context.
-pub struct RendererContext {
+/// Encoder context.
+pub struct EncoderContext {
     component_context: ComponentContext,
     events: EventStream,
     memory_limiter: MemoryLimiter,
@@ -15,8 +15,8 @@ pub struct RendererContext {
     thread_pool: Handle,
 }
 
-impl RendererContext {
-    /// Creates a new `RendererContext`.
+impl EncoderContext {
+    /// Creates a new `EncoderContext`.
     pub fn new(
         component_context: ComponentContext, events: EventStream, memory_limiter: MemoryLimiter,
         component_registry: ComponentRegistry, health_handle: Health, health_registry: HealthRegistry,
@@ -33,7 +33,7 @@ impl RendererContext {
         }
     }
 
-    /// Consumes the health handle of this renderer context.
+    /// Consumes the health handle of this encoder context.
     ///
     /// # Panics
     ///
