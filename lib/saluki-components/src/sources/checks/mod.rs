@@ -9,11 +9,11 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{sources::*, ComponentContext},
+    data_model::event::DataType,
     topology::OutputDefinition,
 };
 use saluki_env::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider};
 use saluki_error::{generic_error, GenericError};
-use saluki_event::DataType;
 use serde::Deserialize;
 use tokio::select;
 use tracing::{debug, error, info, warn};

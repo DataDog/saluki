@@ -3,8 +3,7 @@ use std::{fmt, num::NonZeroU64};
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 
-use super::{TimestampedValue, TimestampedValues};
-use crate::metric::SampleRate;
+use super::{SampleRate, TimestampedValue, TimestampedValues};
 
 /// A weighted sample.
 ///

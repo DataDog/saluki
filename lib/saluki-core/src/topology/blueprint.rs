@@ -2,7 +2,6 @@ use std::{collections::HashMap, num::NonZeroUsize};
 
 use memory_accounting::{allocator::Track as _, ComponentRegistry};
 use saluki_error::{ErrorContext as _, GenericError};
-use saluki_event::Event;
 use snafu::Snafu;
 
 use super::{
@@ -11,8 +10,11 @@ use super::{
     interconnect::{FixedSizeEventBuffer, FixedSizeEventBufferInner},
     ComponentId, RegisteredComponent,
 };
-use crate::components::{
-    destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder, ComponentContext,
+use crate::{
+    components::{
+        destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder, ComponentContext,
+    },
+    data_model::event::Event,
 };
 
 // SAFETY: These are obviously all non-zero.
