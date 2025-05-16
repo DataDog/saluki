@@ -779,7 +779,7 @@ async fn drive_stream(
                                     Ok(Some(event)) => {
                                         if let Some((event, event_buffer)) = event_buffer_manager.try_push(event).await {
                                             debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
-                                            forward_events(event_buffer, &source_context, &listen_addr).await;
+                                            dispatch_events(event_buffer, &source_context, &listen_addr).await;
 
                                             // Try to push the event again now that we have a new event buffer.
                                             if event_buffer_manager.try_push(event).await.is_some() {
@@ -839,14 +839,14 @@ async fn drive_stream(
 
             _ = buffer_flush.tick() => {
                 if let Some(event_buffer) = event_buffer_manager.consume() {
-                    forward_events(event_buffer, &source_context, &listen_addr).await;
+                    dispatch_events(event_buffer, &source_context, &listen_addr).await;
                 }
             },
         }
     }
 
     if let Some(event_buffer) = event_buffer_manager.consume() {
-        forward_events(event_buffer, &source_context, &listen_addr).await;
+        dispatch_events(event_buffer, &source_context, &listen_addr).await;
     }
 
     metrics.connections_active().decrement(1);
@@ -962,47 +962,51 @@ fn handle_metric_packet(
     }
 }
 
-async fn forward_events(
+async fn dispatch_events(
     mut event_buffer: FixedSizeEventBuffer, source_context: &SourceContext, listen_addr: &ListenAddress,
 ) {
     debug!(%listen_addr, events_len = event_buffer.len(), "Forwarding events.");
 
-    // TODO: This is maybe a little dicey because if we fail to forward the events, we may not have iterated over all of
+    // TODO: This is maybe a little dicey because if we fail to dispatch the events, we may not have iterated over all of
     // them, so there might still be eventd events when get to the service checks point, and eventd events and/or service
     // check events when we get to the metrics point, and so on.
     //
     // There's probably something to be said for erroring out fully if this happens, since we should only fail to
-    // forward if the downstream component fails entirely... and unless we have a way to restart the component, then
-    // we're going to continue to fail to forward any more events until the process is restarted anyways.
+    // dispatch if the downstream component fails entirely... and unless we have a way to restart the component, then
+    // we're going to continue to fail to dispatch any more events until the process is restarted anyways.
 
-    // Forward any eventd events, if present.
+    // Dispatch any eventd events, if present.
     if event_buffer.has_event_type(EventType::EventD) {
         let eventd_events = event_buffer.extract(Event::is_eventd);
-        if let Err(e) = source_context.forwarder().forward_named("events", eventd_events).await {
-            error!(%listen_addr, error = %e, "Failed to forward eventd events.");
+        if let Err(e) = source_context
+            .dispatcher()
+            .dispatch_named("events", eventd_events)
+            .await
+        {
+            error!(%listen_addr, error = %e, "Failed to dispatch eventd events.");
         }
     }
 
-    // Forward any service check events, if present.
+    // Dispatch any service check events, if present.
     if event_buffer.has_event_type(EventType::ServiceCheck) {
         let service_check_events = event_buffer.extract(Event::is_service_check);
         if let Err(e) = source_context
-            .forwarder()
-            .forward_named("service_checks", service_check_events)
+            .dispatcher()
+            .dispatch_named("service_checks", service_check_events)
             .await
         {
-            error!(%listen_addr, error = %e, "Failed to forward service check events.");
+            error!(%listen_addr, error = %e, "Failed to dispatch service check events.");
         }
     }
 
-    // Finally, if there are events left, they'll be metrics, so forward them.
+    // Finally, if there are events left, they'll be metrics, so dispatch them.
     if !event_buffer.is_empty() {
         if let Err(e) = source_context
-            .forwarder()
-            .forward_buffer_named("metrics", event_buffer)
+            .dispatcher()
+            .dispatch_buffer_named("metrics", event_buffer)
             .await
         {
-            error!(%listen_addr, error = %e, "Failed to forward metric events.");
+            error!(%listen_addr, error = %e, "Failed to dispatch metric events.");
         }
     }
 }

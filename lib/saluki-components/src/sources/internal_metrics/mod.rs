@@ -65,8 +65,8 @@ impl Source for InternalMetrics {
                         debug!(metrics_len = metrics.len(), "Received internal metrics.");
 
                         let events = Arc::unwrap_or_clone(metrics);
-                        if let Err(e) = context.forwarder().forward(events).await {
-                            error!(error = %e, "Failed to forward events.");
+                        if let Err(e) = context.dispatcher().dispatch(events).await {
+                            error!(error = %e, "Failed to dispatch events.");
                         }
                     },
                     None => {
