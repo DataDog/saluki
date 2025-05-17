@@ -93,7 +93,7 @@ build-adp-image-release-fips:
 #
 # These takes them from the sort of temporary holding ground of `registry.ddbuild.io/saluki/agent-data-plane`, adds the
 # necessary pieces, and then publishes them to `registry.ddbuild.io/agent-data-plane` as a first-class citizen.
-publish-internal-adp-image:
+publish-adp-image-internal:
   stage: build
   extends: [.build-common-variables]
   needs:
@@ -112,7 +112,7 @@ publish-internal-adp-image:
     RELEASE_STAGING: "true"
     RELEASE_PROD: "true"
 
-publish-internal-adp-image-fips:
+publish-adp-image-internal-fips:
   stage: build
   extends: [.build-common-variables]
   needs:
