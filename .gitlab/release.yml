@@ -1,45 +1,64 @@
 .setup-release-env:
-  extends: .build-common-variables
+  extends: [.build-common-variables, .build-release-variables]
   variables:
-    SOURCE_ADP_RELEASE_IMAGE: "${ADP_RELEASE_IMAGE_TAG}"
-    AGENT_ADP_IMAGE_BASE: "${SALUKI_IMAGE_REPO_BASE}/releases/agent"
-    AGENT_ADP_IMAGE_TAG: "${BASE_DD_AGENT_VERSION}-v${CI_COMMIT_TAG}-adp-beta"
-    AGENT_ADP_IMAGE: "${AGENT_ADP_IMAGE_BASE}:${AGENT_ADP_IMAGE_TAG}"
-    TARGET_AGENT_ADP_RELEASE_IMAGE: "agent:${AGENT_ADP_IMAGE_TAG}"
+    # Source images for Datadog Agent and ADP.
+    #
+    # Source images are always full paths because we need to know precisely where to pull the images from.
+    SOURCE_ADP_IMAGE: "${ADP_RELEASE_IMAGE}"
+    SOURCE_ADP_IMAGE_FIPS: "${ADP_RELEASE_IMAGE_FIPS}"
+    SOURCE_DD_AGENT_IMAGE: "${PUBLIC_DD_AGENT_IMAGE}"
+    SOURCE_DD_AGENT_IMAGE_JMX: "${PUBLIC_DD_AGENT_IMAGE}-jmx"
+    SOURCE_DD_AGENT_IMAGE_FIPS: "${PUBLIC_DD_AGENT_IMAGE}-fips"
+    SOURCE_DD_AGENT_IMAGE_FIPS_JMX: "${PUBLIC_DD_AGENT_IMAGE}-fips-jmx"
 
-build-bundled-agent-adp-image-linux:
+    # Intermediate publish location: we publish our built images here to have somewhere to reference when invoking the
+    # downstream jobs that actually do the public image publishing.
+    INTERMEDIATE_IMAGE_REPO: "${SALUKI_IMAGE_REPO_BASE}/releases"
+
+    # Target images for bundled Datadog Agent and standalone ADP.
+    #
+    # Should end as something like `agent-data-plane:0.1.9-beta`, `agent-data-plane:0.1.9-beta-fips`,
+    # `agent:7.65.2-v0.1.9-adp-beta`, `agent:7.65.2-v0.1.9-adp-beta-fips`, and so on.
+    #
+    # Target images are simply the image name and tag as the publishing jobs push to multiple repositories, so it only
+    # needs to know the basics.
+    TARGET_ADP_RELEASE_IMAGE: "agent-data-plane:${ADP_IMAGE_VERSION}-beta"
+    TARGET_ADP_RELEASE_IMAGE_FIPS: "${TARGET_ADP_RELEASE_IMAGE}-fips"
+    TARGET_AGENT_ADP_RELEASE_VERSION: "${PUBLIC_DD_AGENT_VERSION}-v${ADP_IMAGE_VERSION}-adp-beta"
+    TARGET_AGENT_ADP_RELEASE_IMAGE: "agent:${BASE_TARGET_AGENT_ADP_RELEASE_VERSION}"
+    TARGET_AGENT_ADP_RELEASE_VERSION_JMX: "${TARGET_AGENT_ADP_RELEASE_VERSION}-jmx"
+    TARGET_AGENT_ADP_RELEASE_IMAGE_JMX: "${TARGET_AGENT_ADP_RELEASE_IMAGE}-jmx"
+    TARGET_AGENT_ADP_RELEASE_VERSION_FIPS: "${TARGET_AGENT_ADP_RELEASE_VERSION}-fips"
+    TARGET_AGENT_ADP_RELEASE_IMAGE_FIPS: "${TARGET_AGENT_ADP_RELEASE_IMAGE}-fips"
+    TARGET_AGENT_ADP_RELEASE_VERSION_FIPS_JMX: "${TARGET_AGENT_ADP_RELEASE_VERSION}-fips-jmx"
+    TARGET_AGENT_ADP_RELEASE_IMAGE_FIPS_JMX: "${TARGET_AGENT_ADP_RELEASE_IMAGE}-fips-jmx"
+
+.build-bundled-adp-definition:
   stage: release
   image: ${DOCKER_BUILD_IMAGE}
   rules:
     - if: !reference [.on_official_release, rules, if]
   extends: .setup-release-env
-  needs:
-    - build-adp-image-release
-  parallel:
-    matrix:
-      - JMX:
-        - ""
-        - "-jmx"
   script:
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.datadog-agent
-      --build-arg "DD_AGENT_IMAGE=${PUBLIC_DD_AGENT_IMAGE}${JMX}"
-      --build-arg "ADP_IMAGE=${SOURCE_ADP_RELEASE_IMAGE}"
-      --tag ${AGENT_ADP_IMAGE}${JMX}
+      --build-arg "DD_AGENT_IMAGE=${DD_AGENT_IMAGE}"
+      --build-arg "ADP_IMAGE=${ADP_IMAGE}"
+      --tag ${IMAGE_TAG}
       --label "org.opencontainers.image.authors=Datadog <package@datadoghq.com>"
-      --label "org.opencontainers.image.base.name=${PUBLIC_DD_AGENT_IMAGE}${JMX}"
+      --label "org.opencontainers.image.base.name=${DD_AGENT_IMAGE}"
       --label "org.opencontainers.image.created=${CI_PIPELINE_CREATED_AT}"
       --label "org.opencontainers.image.ref.name=${PUBLIC_DD_AGENT_IMAGE_BASE}"
       --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}"
       --label "org.opencontainers.image.source=https://github.com/DataDog/saluki"
       --label "org.opencontainers.image.title=Datadog Agent (with ADP)"
       --label "org.opencontainers.image.vendor=Datadog, Inc."
-      --label "org.opencontainers.image.version=${CI_COMMIT_TAG}"
+      --label "org.opencontainers.image.version=${IMAGE_VERSION}"
       --push
       .
 
-publish-bundled-agent-adp-image-linux:
+.publish-image-linux-definition:
   stage: release
   rules:
     - if: !reference [.on_official_release, rules, if]
@@ -53,44 +72,104 @@ publish-bundled-agent-adp-image-linux:
     - check-deny
     - check-licenses
     - run-ground-truth
-    - job: build-bundled-agent-adp-image-linux
-      parallel:
-        matrix:
-          - JMX: [""]
   trigger:
     project: DataDog/public-images
     branch: main
     strategy: depend
   variables:
     IMG_REGISTRIES: public
-    IMG_SOURCES: ${AGENT_ADP_IMAGE}
-    IMG_DESTINATIONS: ${TARGET_AGENT_ADP_RELEASE_IMAGE}
+    IMG_SOURCES: ${SOURCE_IMAGE}
+    IMG_DESTINATIONS: ${TARGET_IMAGE}
     IMG_SIGNING: "false"
 
-publish-bundled-agent-adp-image-linux-jmx:
-  stage: release
-  rules:
-    - if: !reference [.on_official_release, rules, if]
-      when: manual
-  extends: .setup-release-env
+# Build our "bundled" Agent images: an official Datadog Agent base image with Agent Data Plane added on top.
+#
+# We handle all combinations of the major variants: JMX and FIPS.
+build-bundled-agent-image-linux:
+  extends: .build-bundled-adp-definition
   needs:
-    - unit-tests-linux-amd64
-    - unit-tests-miri-linux-amd64
-    - unit-tests-linux-arm64
-    - unit-tests-miri-linux-arm64
-    - check-deny
-    - check-licenses
-    - run-ground-truth
-    - job: build-bundled-agent-adp-image-linux
-      parallel:
-        matrix:
-          - JMX: ["-jmx"]
-  trigger:
-    project: DataDog/public-images
-    branch: main
-    strategy: depend
+    - build-adp-image-release
   variables:
-    IMG_REGISTRIES: public
-    IMG_SOURCES: ${AGENT_ADP_IMAGE}-jmx
-    IMG_DESTINATIONS: ${TARGET_AGENT_ADP_RELEASE_IMAGE}-jmx
-    IMG_SIGNING: "false"
+    DD_AGENT_IMAGE: "${SOURCE_DD_AGENT_IMAGE}"
+    ADP_IMAGE: "${SOURCE_ADP_IMAGE}"
+    IMAGE_TAG: "${INTERMEDIATE_IMAGE_REPO}/${TARGET_AGENT_ADP_RELEASE_IMAGE}"
+    IMAGE_VERSION: "${TARGET_AGENT_ADP_RELEASE_VERSION}"
+
+build-bundled-agent-image-linux-jmx:
+  extends: .build-bundled-adp-definition
+  needs:
+    - build-adp-image-release
+  variables:
+    DD_AGENT_IMAGE: "${SOURCE_DD_AGENT_IMAGE_JMX}"
+    ADP_IMAGE: "${SOURCE_ADP_IMAGE}"
+    IMAGE_TAG: "${INTERMEDIATE_IMAGE_REPO}/${TARGET_AGENT_ADP_RELEASE_IMAGE_JMX}"
+    IMAGE_VERSION: "${TARGET_AGENT_ADP_RELEASE_VERSION_JMX}"
+
+build-bundled-agent-image-linux-fips:
+  extends: .build-bundled-adp-definition
+  needs:
+    - build-adp-image-release-fips
+  variables:
+    DD_AGENT_IMAGE: "${SOURCE_DD_AGENT_IMAGE_FIPS}"
+    ADP_IMAGE: "${SOURCE_ADP_IMAGE_FIPS}"
+    IMAGE_TAG: "${INTERMEDIATE_IMAGE_REPO}/${TARGET_AGENT_ADP_RELEASE_IMAGE_FIPS}"
+    IMAGE_VERSION: "${TARGET_AGENT_ADP_RELEASE_VERSION_FIPS}"
+
+build-bundled-agent-image-linux-fips-jmx:
+  extends: .build-bundled-adp-definition
+  needs:
+    - build-adp-image-release-fips
+  variables:
+    DD_AGENT_IMAGE: "${SOURCE_DD_AGENT_IMAGE_FIPS_JMX}}"
+    ADP_IMAGE: "${SOURCE_ADP_IMAGE_FIPS}"
+    IMAGE_TAG: "${INTERMEDIATE_IMAGE_REPO}/${TARGET_AGENT_ADP_RELEASE_IMAGE_FIPS_JMX}}"
+    IMAGE_VERSION: "${TARGET_AGENT_ADP_RELEASE_VERSION_FIPS_JMX}}"
+
+# Publish our bundled Agent images _and_ the standalone ADP images,
+publish-bundled-agent-image-linux:
+  extends: .publish-image-linux-definition
+  needs:
+    - build-bundled-agent-image-linux
+  variables:
+    SOURCE_IMAGE: ${INTERMEDIATE_IMAGE_REPO}/${TARGET_AGENT_ADP_RELEASE_IMAGE}
+    TARGET_IMAGE: ${TARGET_AGENT_ADP_RELEASE_IMAGE}
+
+publish-bundled-agent-image-linux-jmx:
+  extends: .publish-image-linux-definition
+  needs:
+    - build-bundled-agent-image-linux-jmx
+  variables:
+    SOURCE_IMAGE: ${INTERMEDIATE_IMAGE_REPO}/${TARGET_AGENT_ADP_RELEASE_IMAGE_JMX}
+    TARGET_IMAGE: ${TARGET_AGENT_ADP_RELEASE_IMAGE_JMX}
+
+publish-bundled-agent-image-linux-fips:
+  extends: .publish-image-linux-definition
+  needs:
+    - build-bundled-agent-image-linux-fips
+  variables:
+    SOURCE_IMAGE: ${INTERMEDIATE_IMAGE_REPO}/${TARGET_AGENT_ADP_RELEASE_IMAGE_FIPS}
+    TARGET_IMAGE: ${TARGET_AGENT_ADP_RELEASE_IMAGE_FIPS}
+
+publish-bundled-agent-image-linux-fips-jmx:
+  extends: .publish-image-linux-definition
+  needs:
+    - build-bundled-agent-image-linux-fips-jmx
+  variables:
+    SOURCE_IMAGE: ${INTERMEDIATE_IMAGE_REPO}/${TARGET_AGENT_ADP_RELEASE_IMAGE_FIPS_JMX}
+    TARGET_IMAGE: ${TARGET_AGENT_ADP_RELEASE_IMAGE_FIPS_JMX}
+
+publish-standalone-adp-image-linux:
+  extends: .publish-image-linux-definition
+  needs:
+    - build-adp-image-release
+  variables:
+    SOURCE_IMAGE: ${SOURCE_ADP_RELEASE_IMAGE}
+    TARGET_IMAGE: ${TARGET_ADP_RELEASE_IMAGE}
+
+publish-standalone-adp-image-linux:
+  extends: .publish-image-linux-definition
+  needs:
+    - build-adp-image-release-fips
+  variables:
+    SOURCE_IMAGE: ${SOURCE_ADP_RELEASE_IMAGE_FIPS}
+    TARGET_IMAGE: ${TARGET_ADP_RELEASE_IMAGE_FIPS}
