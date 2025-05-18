@@ -184,6 +184,7 @@ sha3 = { version = "0.10", default-features = false }
 [profile.release]
 lto = "thin"
 codegen-units = 4
+opt-level = "s"
 debug = true
 
 [profile.optimized-release]
