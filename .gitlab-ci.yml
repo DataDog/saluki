@@ -57,10 +57,10 @@ default:
     # Both internal and release builds are built with release optimizations _and_ include debug symbols, but "internal"
     # images are marked in a way that they always consider themselves "development" builds in terms of versioning
     # information, etc.
-    ADP_INTERNAL_IMAGE: "${ADP_IMAGE_REPO_NAME}:${ADP_INTERNAL_IMAGE_TAG}"
-    ADP_INTERNAL_IMAGE_FIPS: "${ADP_IMAGE_REPO_NAME}:${ADP_INTERNAL_IMAGE_TAG_FIPS}"
-    ADP_RELEASE_IMAGE: "${ADP_IMAGE_REPO_NAME}:${ADP_RELEASE_IMAGE_TAG}"
-    ADP_RELEASE_IMAGE_FIPS: "${ADP_IMAGE_REPO_NAME}:${ADP_RELEASE_IMAGE_TAG_FIPS}"
+    ADP_INTERNAL_IMAGE: "${ADP_IMAGE_BASE}:${ADP_INTERNAL_IMAGE_TAG}"
+    ADP_INTERNAL_IMAGE_FIPS: "${ADP_IMAGE_BASE}:${ADP_INTERNAL_IMAGE_TAG_FIPS}"
+    ADP_RELEASE_IMAGE: "${ADP_IMAGE_BASE}:${ADP_RELEASE_IMAGE_TAG}"
+    ADP_RELEASE_IMAGE_FIPS: "${ADP_IMAGE_BASE}:${ADP_RELEASE_IMAGE_TAG_FIPS}"
 
     ADP_INTERNAL_IMAGE_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
     ADP_INTERNAL_IMAGE_TAG_FIPS: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-fips"
