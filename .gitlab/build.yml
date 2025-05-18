@@ -44,7 +44,7 @@
       --push
       .
     - if [ "${SHOULD_SIGN_IMAGE}" == "true" ]; then
-        ddsign sign ${IMAGE_TAG} --docker-metadata-file /tmp/build.metadata
+        ddsign sign ${IMAGE_TAG} --docker-metadata-file /tmp/build.metadata;
       fi
 
 calculate-build-metadata:
