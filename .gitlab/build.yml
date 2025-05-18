@@ -20,7 +20,7 @@
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
       --metadata-file /tmp/build.metadata
-      --tag ${ADP_IMAGE_REPO_NAME}:${IMAGE_TAG}
+      --tag ${IMAGE_TAG}
       --build-arg BUILD_IMAGE=${ADP_BUILD_IMAGE}
       --build-arg APP_IMAGE=${ADP_APP_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
