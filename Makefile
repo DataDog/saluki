@@ -27,6 +27,7 @@ ifeq ($(CONTAINER_TOOL),auto)
 		override CONTAINER_TOOL = unknown
 	endif
 endif
+
 # Basic settings for base build images. These are varied between local development and CI.
 export RUST_VERSION ?= $(shell grep channel rust-toolchain.toml | cut -d '"' -f 2)
 export ADP_BUILD_IMAGE ?= rust:$(RUST_VERSION)-bookworm
@@ -543,6 +544,21 @@ emit-build-metadata: ## Emits build metadata shell variables suitable for use du
 	@echo "APP_GIT_HASH=${APP_GIT_HASH}"
 	@echo "APP_VERSION=${APP_VERSION}"
 	@echo "APP_BUILD_TIME=${APP_BUILD_TIME}"
+
+##@ Docs
+
+.PHONY: check-js-build-tools
+check-js-build-tools:
+ifeq ($(shell command -v bun >/dev/null || echo not-found), not-found)
+	$(error "Please install Bun: https://bun.sh/docs/installation")
+endif
+
+.PHONY: run-docs
+run-docs: check-js-build-tools
+run-docs: ## Runs a local development server for documentation
+	@echo "[*] Running local development server for documentation..."
+	@bun install
+	@bun run docs:dev
 
 ##@ Utility
 
