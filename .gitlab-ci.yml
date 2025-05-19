@@ -2,12 +2,12 @@ include:
   - .gitlab/*.yml
 
 stages:
-  - internal
   - test
   - build
   - correctness
   - benchmark
   - release
+  - internal
 
 variables:
   # High-level repository paths we build off of, and dedicated images needed for various jobs.
