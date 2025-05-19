@@ -2,10 +2,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+use rand::Rng;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::sources::checks::Check;
 
@@ -53,6 +54,22 @@ impl Scheduler {
     pub fn schedule(&self, check: Arc<dyn Check + Send + Sync>) {
         let check_id = check.id();
         let interval_secs = check.interval().as_secs();
+
+        if interval_secs == 0 {
+            // Check with no interval are push to a random worker immediately
+            let channels_guard = self.worker_channels.lock().unwrap();
+            if channels_guard.is_empty() {
+                warn!("Failed to schedule one-time check '{}': No workers available", check_id);
+                return;
+            }
+
+            let channel_idx = rand::thread_rng().gen_range(0..channels_guard.len());
+            if let Err(e) = channels_guard[channel_idx].try_send(WorkerMessage::RunCheck(Arc::clone(&check))) {
+                error!("Failed to enqueue a one-time check '{}': {}", check_id, e);
+            }
+            info!("Scheduled one-time check '{}' to worker {}", check_id, channel_idx);
+            return;
+        }
 
         {
             let mut checks = self.checks.write().unwrap();
@@ -237,6 +254,7 @@ impl Scheduler {
             for _ in 0..(desired_count - current_count) {
                 self.add_worker();
             }
+
             info!("Increased worker count to {}", desired_count);
         }
     }
@@ -385,6 +403,29 @@ mod tests {
 
         scheduler.unschedule(check1.id());
         scheduler.unschedule(check2.id());
+        scheduler.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_executes_one_time_check() {
+        let scheduler = Scheduler::new(2);
+
+        let check1 = Arc::new(MockCheck::new("one_time_check", 0));
+
+        scheduler.schedule(check1.clone() as Arc<dyn Check + Send + Sync>);
+
+        {
+            let buckets = scheduler.interval_buckets.read().unwrap();
+            assert!(
+                buckets.len() == 0,
+                "No interval buckets should exist for one-time checks"
+            );
+        }
+
+        time::sleep(Duration::from_secs(1)).await;
+
+        assert!(check1.get_run_count() == 1, "One time check should have run once");
+
         scheduler.shutdown().await;
     }
 

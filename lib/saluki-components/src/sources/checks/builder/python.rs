@@ -214,6 +214,16 @@ impl PythonCheckBuilder {
                 }
             }
 
+            let min_interval = if let Some(value) = instance.get("min_collection_interval") {
+                if let Some(value) = value.as_u64() {
+                    value
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+
             let kwargs = PyDict::new(py);
             let parsed_config =
                 map_to_pydict(init_config.get_value(), &py).expect("Could not convert init_config to pydict");
@@ -242,8 +252,7 @@ impl PythonCheckBuilder {
             let check = Arc::new(PythonCheck {
                 check_class: check_value.clone().unbind(),
                 version,
-                // TODO: extract interval from instance configuration
-                interval: Duration::from_secs(5),
+                interval: Duration::from_secs(min_interval),
                 instance: check_instance.clone().unbind(),
                 source: source.to_string(),
                 id: instance.id().clone(),

@@ -3225,6 +3225,7 @@ dependencies = [
  "pin-project",
  "protobuf",
  "pyo3",
+ "rand",
  "regex",
  "saluki-common",
  "saluki-config",
