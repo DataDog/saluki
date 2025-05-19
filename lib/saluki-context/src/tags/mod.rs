@@ -98,6 +98,11 @@ impl Tag {
         BorrowedTag::from(self.0.deref())
     }
 
+    /// Returns a reference to the inner `MetaString`.
+    pub(crate) fn get_ref(&self) -> &MetaString {
+        &self.0
+    }
+
     /// Consumes the tag and returns the inner `MetaString`.
     pub fn into_inner(self) -> MetaString {
         self.0

@@ -13,7 +13,7 @@ use crate::{
     expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle},
     hash::{hash_context_with_seen, ContextKey},
     origin::{OriginKey, OriginTags, OriginTagsResolver, RawOrigin},
-    tags::TagSet,
+    tags::{Tag, TagSet},
 };
 
 const DEFAULT_CONTEXT_RESOLVER_CACHED_CONTEXTS_LIMIT: usize = 500_000;
@@ -393,7 +393,7 @@ impl ContextResolver {
     fn create_context_key<I, T>(&mut self, name: &str, tags: I, maybe_origin_key: Option<OriginKey>) -> ContextKey
     where
         I: IntoIterator<Item = T>,
-        T: AsRef<str>,
+        T: ContextTag,
     {
         hash_context_with_seen(name, tags, maybe_origin_key, &mut self.hash_seen_buffer)
     }
@@ -401,14 +401,17 @@ impl ContextResolver {
     fn create_context<I, T>(&self, key: ContextKey, name: &str, tags: I, origin_tags: OriginTags) -> Option<Context>
     where
         I: IntoIterator<Item = T>,
-        T: AsRef<str>,
+        T: ContextTag,
     {
         // Intern the name and tags of the context.
         let context_name = self.intern(name)?;
 
         let mut context_tags = TagSet::default();
         for tag in tags {
-            let tag = self.intern(tag.as_ref())?;
+            let tag = match tag.try_cheap_clone() {
+                Some(tag) => tag,
+                None => self.intern(tag.as_str())?,
+            };
             context_tags.insert_tag(tag);
         }
 
@@ -435,7 +438,7 @@ impl ContextResolver {
     pub fn resolve<I, T>(&mut self, name: &str, tags: I, maybe_origin: Option<RawOrigin<'_>>) -> Option<Context>
     where
         I: IntoIterator<Item = T> + Clone,
-        T: AsRef<str>,
+        T: ContextTag,
     {
         // Try and resolve our origin tags from the provided origin information, if any.
         let origin_tags = self.resolve_origin_tags(maybe_origin);
@@ -464,7 +467,7 @@ impl ContextResolver {
     pub fn resolve_with_origin_tags<I, T>(&mut self, name: &str, tags: I, origin_tags: OriginTags) -> Option<Context>
     where
         I: IntoIterator<Item = T> + Clone,
-        T: AsRef<str>,
+        T: ContextTag,
     {
         self.resolve_inner(name, tags, origin_tags)
     }
@@ -472,7 +475,7 @@ impl ContextResolver {
     fn resolve_inner<I, T>(&mut self, name: &str, tags: I, origin_tags: OriginTags) -> Option<Context>
     where
         I: IntoIterator<Item = T> + Clone,
-        T: AsRef<str>,
+        T: ContextTag,
     {
         let context_key = self.create_context_key(name, tags.clone(), origin_tags.key());
 
@@ -561,6 +564,81 @@ async fn drive_telemetry(context_cache: Arc<ContextCache>, interner: GenericMapI
         telemetry.interner_len_bytes().set(interner.len_bytes() as f64);
 
         telemetry.cached_contexts().set(context_cache.len() as f64);
+    }
+}
+
+mod private {
+    pub trait Sealed {}
+
+    impl Sealed for &str {}
+    impl Sealed for String {}
+    impl Sealed for stringtheory::MetaString {}
+    impl Sealed for crate::tags::Tag {}
+    impl<T> Sealed for &T where T: Sealed {}
+}
+
+/// A context tag.
+pub trait ContextTag: private::Sealed {
+    /// Returns a string representation of the tag.
+    fn as_str(&self) -> &str;
+
+    /// Tries to cheaply clone the tag and return it as a [`MetaString`].
+    ///
+    /// If the tag cannot be cheaply cloned, `None` is returned. This indicates that the tag must be stored some other
+    /// way -- interning, heap allocation, etc -- and that the caller must handle that case themselves.
+    fn try_cheap_clone(&self) -> Option<MetaString>;
+}
+
+impl ContextTag for &str {
+    fn as_str(&self) -> &str {
+        self
+    }
+
+    fn try_cheap_clone(&self) -> Option<MetaString> {
+        MetaString::try_inline(self)
+    }
+}
+
+impl ContextTag for String {
+    fn as_str(&self) -> &str {
+        self
+    }
+
+    fn try_cheap_clone(&self) -> Option<MetaString> {
+        MetaString::try_inline(self)
+    }
+}
+
+impl ContextTag for MetaString {
+    fn as_str(&self) -> &str {
+        self
+    }
+
+    fn try_cheap_clone(&self) -> Option<MetaString> {
+        self.is_cheaply_cloneable().then(|| self.clone())
+    }
+}
+
+impl ContextTag for Tag {
+    fn as_str(&self) -> &str {
+        Tag::as_str(self)
+    }
+
+    fn try_cheap_clone(&self) -> Option<MetaString> {
+        self.get_ref().is_cheaply_cloneable().then(|| self.get_ref().clone())
+    }
+}
+
+impl<T> ContextTag for &T
+where
+    T: ContextTag,
+{
+    fn as_str(&self) -> &str {
+        ContextTag::as_str(*self)
+    }
+
+    fn try_cheap_clone(&self) -> Option<MetaString> {
+        ContextTag::try_cheap_clone(*self)
     }
 }
 

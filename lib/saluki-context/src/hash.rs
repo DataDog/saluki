@@ -5,7 +5,7 @@ use saluki_common::{
     hash::{get_fast_hasher, hash_single_fast},
 };
 
-use crate::origin::OriginKey;
+use crate::{origin::OriginKey, resolver::ContextTag};
 
 /// Hashes a `Resolvable`.
 ///
@@ -22,7 +22,7 @@ use crate::origin::OriginKey;
 pub fn hash_context<I, T>(name: &str, tags: I, origin_key: Option<OriginKey>) -> ContextKey
 where
     I: IntoIterator<Item = T>,
-    T: AsRef<str>,
+    T: ContextTag,
 {
     let mut seen = PrehashedHashSet::default();
     hash_context_with_seen(name, tags, origin_key, &mut seen)
@@ -44,7 +44,7 @@ pub(super) fn hash_context_with_seen<I, T>(
 ) -> ContextKey
 where
     I: IntoIterator<Item = T>,
-    T: AsRef<str>,
+    T: ContextTag,
 {
     seen.clear();
 
@@ -57,7 +57,7 @@ where
     let mut combined_tags_hash = 0;
 
     for tag in tags {
-        let tag_hash = hash_single_fast(tag.as_ref());
+        let tag_hash = hash_single_fast(tag.as_str());
 
         // If we've already seen this tag before, skip combining it again.
         if !seen.insert(tag_hash) {
