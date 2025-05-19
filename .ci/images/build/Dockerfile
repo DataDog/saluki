@@ -1,3 +1,8 @@
+ARG DD_AGENT_VERSION=latest-jmx
+ARG DD_AGENT_IMAGE=datadog/agent:${DD_AGENT_VERSION}
+
+FROM ${DD_AGENT_IMAGE} AS agent
+
 FROM registry.ddbuild.io/images/mirror/ubuntu:14.04
 
 ARG RUST_VERSION=1.85.0
@@ -38,6 +43,12 @@ RUN rustup toolchain add nightly && \
 # Pre-install the relevant Cargo tools we use in the build process.
 COPY ./Makefile /
 RUN make cargo-preinstall
+
+# Import python bits from Agent image.
+# Do last in the pipeline to avoid polluting the builds of above protobuf/go etc from using these libs
+COPY --from=agent /opt/datadog-agent/embedded/ /opt/datadog-agent/embedded/
+ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
+ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
     
 COPY .ci/images/build/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
