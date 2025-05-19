@@ -3,7 +3,6 @@ use std::time::Instant;
 use metrics::{Counter, Histogram, SharedString};
 use saluki_common::collections::FastHashMap;
 use saluki_error::{generic_error, GenericError};
-use saluki_event::Event;
 use saluki_metrics::MetricsBuilder;
 use smallvec::SmallVec;
 use tokio::sync::mpsc;
@@ -11,6 +10,7 @@ use tokio::sync::mpsc;
 use super::FixedSizeEventBuffer;
 use crate::{
     components::ComponentContext,
+    data_model::event::Event,
     observability::ComponentMetricsExt as _,
     pooling::{ElasticObjectPool, ObjectPool},
     topology::OutputName,
@@ -464,11 +464,13 @@ impl Forwarder {
 mod tests {
     // TODO: Tests asserting we emit metrics, and the right metrics.
 
-    use saluki_event::{metric::Metric, Event};
     use tokio_test::{task::spawn as test_spawn, *};
 
     use super::*;
-    use crate::topology::interconnect::FixedSizeEventBufferInner;
+    use crate::{
+        data_model::event::{metric::Metric, Event},
+        topology::interconnect::FixedSizeEventBufferInner,
+    };
 
     fn create_forwarder(
         event_buffers: usize, buffer_size: usize,

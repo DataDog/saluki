@@ -1,4 +1,4 @@
-use saluki_event::{eventd::EventD, service_check::ServiceCheck};
+use saluki_core::data_model::event::{eventd::EventD, service_check::ServiceCheck};
 use saluki_io::deser::codec::dogstatsd::MetricPacket;
 
 /// Filters payloads based on whether or not they are enabled.
@@ -68,7 +68,7 @@ impl EnablePayloadsFilter {
 #[cfg(test)]
 mod tests {
     use saluki_context::tags::RawTags;
-    use saluki_event::{
+    use saluki_core::data_model::event::{
         metric::MetricValues::{self, Counter, Distribution},
         service_check::CheckStatus,
     };

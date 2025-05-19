@@ -1,12 +1,12 @@
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::strings::lower_alphanumeric;
+use saluki_core::data_model::event::DataType;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     topology::OutputDefinition,
 };
 use saluki_error::GenericError;
-use saluki_event::DataType;
 use tokio::select;
 use tracing::{debug, error};
 

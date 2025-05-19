@@ -3,13 +3,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::StreamExt as _;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_core::data_model::event::DataType;
 use saluki_core::{
     components::{sources::*, ComponentContext},
     observability::metrics::MetricsStream,
     topology::OutputDefinition,
 };
 use saluki_error::GenericError;
-use saluki_event::DataType;
 use tokio::select;
 use tracing::{debug, error};
 

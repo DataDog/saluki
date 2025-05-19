@@ -5,7 +5,7 @@ use ddsketch_agent::DDSketch;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use protobuf::{rt::WireType, CodedOutputStream};
 use saluki_context::tags::Tagged as _;
-use saluki_event::metric::*;
+use saluki_core::data_model::event::metric::*;
 
 use crate::destinations::datadog::common::request_builder::EndpointEncoder;
 
@@ -324,7 +324,7 @@ fn origin_metadata_to_proto_metadata(product: u32, subproduct: u32, product_deta
 mod tests {
     use std::time::Duration;
 
-    use saluki_event::metric::Metric;
+    use saluki_core::data_model::event::metric::Metric;
 
     use super::{encode_sketch_metric, MetricsEndpoint, MetricsEndpointEncoder};
     use crate::destinations::datadog::common::request_builder::EndpointEncoder as _;

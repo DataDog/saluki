@@ -1,6 +1,4 @@
-//! Core event type for Saluki.
-#![deny(warnings)]
-#![deny(missing_docs)]
+//! A telemetry event.
 
 use std::fmt;
 
@@ -160,11 +158,11 @@ mod tests {
         println!("  Context: {} bytes", std::mem::size_of::<saluki_context::Context>());
         println!(
             "  MetricValues: {} bytes",
-            std::mem::size_of::<crate::metric::MetricValues>()
+            std::mem::size_of::<super::metric::MetricValues>()
         );
         println!(
             "  MetricMetadata: {} bytes",
-            std::mem::size_of::<crate::metric::MetricMetadata>()
+            std::mem::size_of::<super::metric::MetricMetadata>()
         );
         println!("EventD: {} bytes", std::mem::size_of::<EventD>());
         println!("ServiceCheck: {} bytes", std::mem::size_of::<ServiceCheck>());

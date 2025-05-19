@@ -20,7 +20,6 @@ members = [
   "lib/saluki-core",
   "lib/saluki-env",
   "lib/saluki-error",
-  "lib/saluki-event",
   "lib/saluki-health",
   "lib/saluki-io",
   "lib/saluki-metadata",
@@ -49,7 +48,6 @@ saluki-context = { path = "lib/saluki-context" }
 saluki-core = { path = "lib/saluki-core" }
 saluki-env = { path = "lib/saluki-env" }
 saluki-error = { path = "lib/saluki-error" }
-saluki-event = { path = "lib/saluki-event" }
 saluki-health = { path = "lib/saluki-health" }
 saluki-io = { path = "lib/saluki-io" }
 saluki-metadata = { path = "lib/saluki-metadata" }
@@ -148,7 +146,7 @@ loom = { version = "0.7", default-features = false }
 trybuild = { version = "1", default-features = false }
 tokio-test = { version = "0.4.4", default-features = false }
 simdutf8 = { version = "0.1.5", default-features = false }
-smallvec = { version = "1.13", default-features = false }
+smallvec = { version = "1.13", default-features = false, features = ["const_generics", "drain_filter", "union"] }
 windows-sys = { version = "0.59", default-features = false }
 rustls-native-certs = { version = "0.8", default-features = false }
 hashbrown = { version = "0.15", default-features = false }

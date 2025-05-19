@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::components::{destinations::*, ComponentContext};
+use saluki_core::data_model::event::DataType;
 use saluki_error::GenericError;
-use saluki_event::DataType;
 use tokio::select;
 use tracing::{debug, info};
 

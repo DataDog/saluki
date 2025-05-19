@@ -16,10 +16,11 @@ use saluki_context::{
     tags::{Tag, TagSet},
     Context, ContextResolver, ContextResolverBuilder,
 };
-use saluki_event::{metric::*, Event};
 use tokio::sync::broadcast::{self, error::RecvError, Receiver};
 use tokio_util::sync::ReusableBoxFuture;
 use tracing::debug;
+
+use crate::data_model::event::{metric::*, Event};
 
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 const INTERNAL_METRICS_INTERNER_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(8192) };

@@ -10,6 +10,7 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
 use saluki_context::Context;
+use saluki_core::data_model::event::{metric::*, DataType, Event};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     observability::ComponentMetricsExt as _,
@@ -21,7 +22,6 @@ use saluki_core::{
 };
 use saluki_env::time::get_unix_timestamp;
 use saluki_error::GenericError;
-use saluki_event::{metric::*, DataType, Event};
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use smallvec::SmallVec;

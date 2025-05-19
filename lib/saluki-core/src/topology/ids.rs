@@ -1,7 +1,7 @@
 use core::fmt;
 use std::{borrow::Cow, ops::Deref};
 
-use saluki_event::DataType;
+use crate::data_model::event::DataType;
 
 const INVALID_COMPONENT_ID: &str =
     "component IDs may only contain alphanumeric characters (a-z, A-Z, or 0-9), underscores, and hyphens";

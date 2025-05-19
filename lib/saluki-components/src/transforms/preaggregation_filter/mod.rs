@@ -37,7 +37,7 @@ impl SynchronousTransform for PreaggregationFilter {
 #[cfg(test)]
 mod tests {
     use saluki_context::Context;
-    use saluki_event::{metric::Metric, Event};
+    use saluki_core::data_model::event::{metric::Metric, Event};
 
     use super::*;
 
