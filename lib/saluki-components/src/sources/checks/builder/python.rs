@@ -17,9 +17,7 @@ use tracing::{debug, error, info, warn};
 use crate::sources::checks::builder::CheckBuilder;
 use crate::sources::checks::check::Check;
 
-#[allow(dead_code)]
 struct PythonCheck {
-    check_class: PyObject,
     version: String,
     interval: Duration,
     instance: PyObject,
@@ -35,13 +33,21 @@ impl Check for PythonCheck {
             Err(e) => Err(generic_error!(e)),
         }
     }
-    /// Get the interval of the check
+
     fn interval(&self) -> &Duration {
         &self.interval
     }
-    /// Get the id of the check
+
+    fn version(&self) -> &str {
+        &self.version
+    }
+
     fn id(&self) -> &str {
         &self.id
+    }
+
+    fn source(&self) -> &str {
+        &self.source
     }
 }
 
@@ -246,7 +252,6 @@ impl PythonCheckBuilder {
                 .expect("Could not set check_id");
 
             let check = Arc::new(PythonCheck {
-                check_class: check_value.clone().unbind(),
                 version,
                 interval: Duration::from_secs(min_interval),
                 instance: check_instance.clone().unbind(),

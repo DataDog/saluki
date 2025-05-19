@@ -352,6 +352,14 @@ mod tests {
         fn id(&self) -> &str {
             &self.id
         }
+
+        fn version(&self) -> &str {
+            "1.0"
+        }
+
+        fn source(&self) -> &str {
+            "mock"
+        }
     }
 
     fn create_check(id: &str, interval_secs: u64) -> Arc<dyn Check + Send + Sync> {
