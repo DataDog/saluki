@@ -23,12 +23,12 @@ pub enum ProcessResult {
 
 /// A encoder.
 ///
-/// Encoders are the bridge between forwarders and the rest of the topology. They are responsible for rendering
+/// Encoders are the bridge between forwarders and the rest of the topology. They are responsible for encoding
 /// telemetry events into output payloads that can then be forwarded. Most encoders are specific to a particular system
 /// and not simply equivalent to a certain encoding or serialization format: while two encoders may both produce JSON,
 /// they may produce different JSON formats such that one format only works for product A and the other only works for
 /// product B. In essence, the process of taking telemetry events and sending them to product A ends up becoming the sum
-/// of a specific rendered and forwarder combination.
+/// of a specific encoder and forwarder combination.
 ///
 /// Examples of typical encoders include Datadog Metrics, Events, and Service Checks.
 #[async_trait]
