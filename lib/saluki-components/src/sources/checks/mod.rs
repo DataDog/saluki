@@ -9,7 +9,7 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{sources::*, ComponentContext},
-    data_model::event::DataType,
+    data_model::event::EventType,
     topology::OutputDefinition,
 };
 use saluki_env::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider};
@@ -74,7 +74,7 @@ impl SourceBuilder for ChecksConfiguration {
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: [OutputDefinition; 1] = [OutputDefinition::default_output(DataType::Metric)];
+        static OUTPUTS: [OutputDefinition; 1] = [OutputDefinition::default_output(EventType::Metric)];
 
         &OUTPUTS
     }

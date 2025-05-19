@@ -3,7 +3,7 @@ use memory_accounting::MemoryBounds;
 use saluki_error::GenericError;
 
 use super::{SynchronousTransform, Transform};
-use crate::{components::ComponentContext, data_model::event::DataType, topology::OutputDefinition};
+use crate::{components::ComponentContext, data_model::event::EventType, topology::OutputDefinition};
 
 /// A transform builder.
 ///
@@ -12,8 +12,8 @@ use crate::{components::ComponentContext, data_model::event::DataType, topology:
 /// transform.
 #[async_trait]
 pub trait TransformBuilder: MemoryBounds {
-    /// Data type allowed as input events to this transform.
-    fn input_data_type(&self) -> DataType;
+    /// Event type allowed as input events to this transform.
+    fn input_event_type(&self) -> EventType;
 
     /// Event outputs exposed by this transform.
     fn outputs(&self) -> &[OutputDefinition];

@@ -10,6 +10,7 @@ async-trait = { workspace = true }
 bitmask-enum = { workspace = true }
 ddsketch-agent = { workspace = true }
 futures = { workspace = true }
+http = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
 memory-accounting = { workspace = true }
 metrics = { workspace = true }

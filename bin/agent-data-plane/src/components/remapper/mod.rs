@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
-use saluki_core::data_model::event::{metric::*, DataType, Event};
+use saluki_core::data_model::event::{metric::*, Event, EventType};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     topology::OutputDefinition,
@@ -39,12 +39,12 @@ impl AgentTelemetryRemapperConfiguration {
 
 #[async_trait]
 impl TransformBuilder for AgentTelemetryRemapperConfiguration {
-    fn input_data_type(&self) -> DataType {
-        DataType::Metric
+    fn input_event_type(&self) -> EventType {
+        EventType::Metric
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(DataType::Metric)];
+        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(EventType::Metric)];
         OUTPUTS
     }
 

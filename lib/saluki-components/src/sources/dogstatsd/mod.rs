@@ -9,7 +9,7 @@ use metrics::{Counter, Gauge, Histogram};
 use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
 use saluki_core::data_model::event::metric::{MetricMetadata, MetricOrigin};
-use saluki_core::data_model::event::{metric::Metric, DataType, Event};
+use saluki_core::data_model::event::{metric::Metric, Event, EventType};
 use saluki_core::{
     components::{sources::*, ComponentContext},
     observability::ComponentMetricsExt as _,
@@ -371,9 +371,9 @@ impl SourceBuilder for DogStatsDConfiguration {
     fn outputs(&self) -> &[OutputDefinition] {
         static OUTPUTS: LazyLock<Vec<OutputDefinition>> = LazyLock::new(|| {
             vec![
-                OutputDefinition::named_output("metrics", DataType::Metric),
-                OutputDefinition::named_output("events", DataType::EventD),
-                OutputDefinition::named_output("service_checks", DataType::ServiceCheck),
+                OutputDefinition::named_output("metrics", EventType::Metric),
+                OutputDefinition::named_output("events", EventType::EventD),
+                OutputDefinition::named_output("service_checks", EventType::ServiceCheck),
             ]
         });
 
@@ -976,7 +976,7 @@ async fn forward_events(
     // we're going to continue to fail to forward any more events until the process is restarted anyways.
 
     // Forward any eventd events, if present.
-    if event_buffer.has_data_type(DataType::EventD) {
+    if event_buffer.has_event_type(EventType::EventD) {
         let eventd_events = event_buffer.extract(Event::is_eventd);
         if let Err(e) = source_context.forwarder().forward_named("events", eventd_events).await {
             error!(%listen_addr, error = %e, "Failed to forward eventd events.");
@@ -984,7 +984,7 @@ async fn forward_events(
     }
 
     // Forward any service check events, if present.
-    if event_buffer.has_data_type(DataType::ServiceCheck) {
+    if event_buffer.has_event_type(EventType::ServiceCheck) {
         let service_check_events = event_buffer.extract(Event::is_service_check);
         if let Err(e) = source_context
             .forwarder()
