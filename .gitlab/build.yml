@@ -93,6 +93,10 @@ build-adp-image-release-fips:
 #
 # These takes them from the sort of temporary holding ground of `registry.ddbuild.io/saluki/agent-data-plane`, adds the
 # necessary pieces, and then publishes them to `registry.ddbuild.io/agent-data-plane` as a first-class citizen.
+#
+# We specifically duplicate our `ADP_INTERNAL_IMAGE_TAG` (and FIPS-specific variant) tag and construct the same value
+# manually because otherwise, the variable is evaluated in the downstream job, leading to the wrong values being
+# substituted.
 publish-adp-image-internal:
   stage: build
   extends: [.build-common-variables]
@@ -106,9 +110,9 @@ publish-adp-image-internal:
     IMAGE_NAME: agent-data-plane
     IMAGE_VERSION: tmpl-v1
     TMPL_SRC_REPO: ${ADP_IMAGE_REPO_NAME}
-    TMPL_SRC_IMAGE: ${ADP_INTERNAL_IMAGE_TAG}
-    RELEASE_TAG: "${ADP_INTERNAL_IMAGE_TAG}"
-    BUILD_TAG: "${ADP_INTERNAL_IMAGE_TAG}-build"
+    TMPL_SRC_IMAGE: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
+    RELEASE_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
+    BUILD_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-build"
     RELEASE_STAGING: "true"
     RELEASE_PROD: "true"
 
@@ -125,9 +129,9 @@ publish-adp-image-internal-fips:
     IMAGE_NAME: agent-data-plane
     IMAGE_VERSION: tmpl-v1
     TMPL_SRC_REPO: ${ADP_IMAGE_REPO_NAME}
-    TMPL_SRC_IMAGE: ${ADP_INTERNAL_IMAGE_TAG_FIPS}
-    RELEASE_TAG: "${ADP_INTERNAL_IMAGE_TAG_FIPS}"
-    BUILD_TAG: "${ADP_INTERNAL_IMAGE_TAG_FIPS}-build"
+    TMPL_SRC_IMAGE: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-fips"
+    RELEASE_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-fips"
+    BUILD_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-fips-build"
     RELEASE_STAGING: "true"
     RELEASE_PROD: "true"
 
