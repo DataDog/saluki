@@ -227,29 +227,20 @@ impl PythonCheckBuilder {
             };
 
             let kwargs = PyDict::new(py);
-            let parsed_config =
-                map_to_pydict(init_config.get_value(), &py).expect("Could not convert init_config to pydict");
+            let parsed_config = map_to_pydict(init_config.get_value(), &py)?;
 
             let parse_instance =
                 map_to_pydict(instance.get_value(), &py).expect("Could not convert instance to pydict");
 
-            let py_vec = PyTuple::new(py, vec![parse_instance]).expect("Could not create tuple.");
+            let py_vec = PyTuple::new(py, vec![parse_instance])?;
 
-            kwargs.set_item("name", name).expect("Could not set name");
-            kwargs
-                .set_item("init_config", parsed_config)
-                .expect("could not set init_config");
-            kwargs
-                .set_item("instances", py_vec)
-                .expect("could not set instance list");
+            kwargs.set_item("name", name)?;
+            kwargs.set_item("init_config", parsed_config)?;
+            kwargs.set_item("instances", py_vec)?;
 
-            let check_instance = check_value
-                .call((), Some(&kwargs))
-                .expect("Could not create check instance");
+            let check_instance = check_value.call((), Some(&kwargs))?;
 
-            check_instance
-                .setattr("check_id", instance.id())
-                .expect("Could not set check_id");
+            check_instance.setattr("check_id", instance.id())?;
 
             let check = Arc::new(PythonCheck {
                 version,
