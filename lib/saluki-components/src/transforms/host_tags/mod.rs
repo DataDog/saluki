@@ -7,7 +7,10 @@ use async_trait::async_trait;
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
-use saluki_context::{ContextResolver, ContextResolverBuilder};
+use saluki_context::{
+    tags::{Tag, TagSet},
+    ContextResolver, ContextResolverBuilder,
+};
 use saluki_core::data_model::event::metric::Metric;
 use saluki_core::{components::transforms::*, topology::interconnect::FixedSizeEventBuffer};
 use saluki_env::helpers::remote_agent::RemoteAgentClient;
@@ -55,10 +58,11 @@ impl HostTagsConfiguration {
 #[async_trait]
 impl SynchronousTransformBuilder for HostTagsConfiguration {
     async fn build(&self) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
-        // Request the host tags from the Datadog Agent only once.
+        // Make an initial request of the  host tags from the Datadog Agent.
+        //
+        // We only pay attention to the "system" tags, as the "google_cloud_platform" tags are not relevant here.
         let host_tags_reply = self.client.get_host_tags().await?.into_inner();
-        // `HostTagReply` consists of `system` and `google_cloud_platform` tags but only `system` tags are attached.
-        let host_tags = host_tags_reply.system.to_owned();
+        let host_tags = host_tags_reply.system.into_iter().map(Tag::from).collect::<TagSet>();
 
         let context_string_interner_size =
             NonZeroUsize::new(self.host_tags_context_string_interner_bytes.as_u64() as usize)
@@ -99,7 +103,7 @@ pub struct HostTagsEnrichment {
     start: Instant,
     context_resolver: Option<ContextResolver>,
     expected_tags_duration: Duration,
-    host_tags: Option<Vec<String>>,
+    host_tags: Option<TagSet>,
     ignore_duration: bool,
 }
 
@@ -111,12 +115,7 @@ impl HostTagsEnrichment {
         let resolver = self.context_resolver.as_mut().unwrap();
         let host_tags = self.host_tags.as_ref().unwrap();
 
-        let tags = metric
-            .context()
-            .tags()
-            .into_iter()
-            .map(|t| t.as_str())
-            .chain(host_tags.iter().map(|t| t.as_str()));
+        let tags = metric.context().tags().into_iter().chain(host_tags);
 
         if let Some(context) =
             resolver.resolve_with_origin_tags(metric.context().name(), tags, metric.context().origin_tags().clone())
@@ -154,7 +153,7 @@ mod tests {
     #[tokio::test]
     async fn basic() {
         let context_resolver = ContextResolverBuilder::for_tests().build();
-        let host_tags = vec!["hosttag1".to_string(), "hosttag2".to_string()];
+        let host_tags = TagSet::from_iter(vec![Tag::from("hosttag1"), Tag::from("hosttag2")]);
         let mut host_tags_enrichment = HostTagsEnrichment {
             start: Instant::now(),
             context_resolver: Some(context_resolver),

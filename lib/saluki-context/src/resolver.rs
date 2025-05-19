@@ -871,4 +871,43 @@ mod tests {
         assert_eq!(context1, context2);
         assert!(!context1.ptr_eq(&context2));
     }
+
+    #[test]
+    fn cheaply_cloneable_tags() {
+        const BIG_TAG_ONE: &str = "long-tag-that-cannot-be-inlined-just-to-be-doubly-sure-on-top-of-being-static";
+        const BIG_TAG_TWO: &str = "another-long-boye-that-we-are-also-sure-wont-be-inlined-and-we-stand-on-that";
+
+        // Create a context resolver with a proper string interner configured:
+        let mut resolver = ContextResolverBuilder::for_tests()
+            .with_interner_capacity_bytes(NonZeroUsize::new(1024).expect("not zero"))
+            .build();
+
+        // Create our context with cheaply cloneable tags, aka static strings:
+        let name = "long-metric-name-that-shouldnt-be-inlined-and-should-end-up-interned";
+        let tags = [
+            MetaString::from_static(BIG_TAG_ONE),
+            MetaString::from_static(BIG_TAG_TWO),
+        ];
+        assert!(tags[0].is_cheaply_cloneable());
+        assert!(tags[1].is_cheaply_cloneable());
+
+        // Make sure the interner is empty before we resolve the context, and then only contains a single entry
+        // afterwards, which will be the metric name itself since we don't yet optimize metric names in the same way:
+        assert_eq!(resolver.interner.len(), 0);
+        assert_eq!(resolver.interner.len_bytes(), 0);
+
+        let context = resolver
+            .resolve(name, &tags[..], None)
+            .expect("should not fail to resolve");
+        assert_eq!(resolver.interner.len(), 1);
+        assert!(resolver.interner.len_bytes() > 0);
+
+        // And just a sanity check that we have the expected name and tags in the context:
+        assert_eq!(context.name(), name);
+
+        let context_tags = context.tags();
+        assert_eq!(context_tags.len(), 2);
+        assert!(context_tags.has_tag(&tags[0]));
+        assert!(context_tags.has_tag(&tags[1]));
+    }
 }
