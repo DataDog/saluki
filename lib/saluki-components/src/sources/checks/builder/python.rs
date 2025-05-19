@@ -93,9 +93,9 @@ impl PythonCheckBuilder {
                             let dist_path = project_root.join("dist");
                             let checks_d_path = dist_path.join("checks.d");
 
-                            p.insert(0, dist_path.to_string_lossy().as_ref()).unwrap(); // path.GetDistPath()
-                            p.insert(0, checks_d_path.to_string_lossy().as_ref()).unwrap(); // custom checks in checks.d subdir
-                            p.insert(0, "/etc/datadog-agent/checks.d/").unwrap(); // custom checks in checks.d subdir
+                            p.insert(0, dist_path.to_string_lossy().as_ref()).unwrap(); // common modules are shipped in the dist path directly or under the "checks/" sub-dir
+                            p.insert(0, checks_d_path.to_string_lossy().as_ref()).unwrap(); // integrations-core legacy checks
+                            p.insert(0, "/etc/datadog-agent/checks.d/").unwrap(); // Agent checks folder
 
                             info!("Python sys.path is: {:?}", p);
                         }
