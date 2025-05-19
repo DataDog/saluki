@@ -5,7 +5,7 @@ use saluki_error::GenericError;
 
 mod builder;
 pub use self::builder::EncoderBuilder;
-use crate::{data_model::event::Event, topology::interconnect::BufferedForwarder};
+use crate::{data_model::event::Event, topology::interconnect::BufferedDispatcher};
 
 mod context;
 pub use self::context::EncoderContext;
@@ -73,5 +73,5 @@ pub trait IncrementalEncoder {
     /// # Errors
     ///
     /// If the encoder cannot flush the payloads, an error is returned.
-    async fn flush(&mut self, forwarder: BufferedForwarder<'_>) -> Result<(), GenericError>;
+    async fn flush(&mut self, forwarder: BufferedDispatcher<'_>) -> Result<(), GenericError>;
 }

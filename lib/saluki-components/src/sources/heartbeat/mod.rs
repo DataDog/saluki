@@ -52,12 +52,12 @@ impl Source for Heartbeat {
                     // Create a simple heartbeat metric
                     let metric_context = Context::from_static_name("heartbeat");
                     let metric = Metric::gauge(metric_context, 1.0);
-                    let mut buffered_forwarder = context.forwarder().buffered().expect("default output must always exist");
+                    let mut buffered_dispatcher = context.dispatcher().buffered().expect("default output must always exist");
 
-                    if let Err(e) = buffered_forwarder.push(Event::Metric(metric)).await {
-                        error!(error = %e, "Failed to forward event.");
-                    } else if let Err(e) = buffered_forwarder.flush().await {
-                        error!(error = %e, "Failed to forward events.");
+                    if let Err(e) = buffered_dispatcher.push(Event::Metric(metric)).await {
+                        error!(error = %e, "Failed to dispatch event.");
+                    } else if let Err(e) = buffered_dispatcher.flush().await {
+                        error!(error = %e, "Failed to dispatch events.");
                     } else {
                         debug!("Emitted heartbeat metric.");
                     }
