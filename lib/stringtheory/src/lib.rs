@@ -209,7 +209,7 @@ impl DiscriminantUnion {
         // - Static strings and interned strings only occupy the first two fields, which means their capacity should not
         //   be used.
         //
-        // As such, we encode the five possible string types as follows:
+        // As such, we encode the possible string types as follows:
         //
         // - when all fields are zero, we have an empty string
         // - when the last byte does have the top-bit set, we have an owned string
@@ -294,7 +294,7 @@ impl DiscriminantUnion {
 
 /// The core data structure for holding all different string variants.
 ///
-/// This union has five data fields -- one for each possible string variant -- and a discriminant field, used to
+/// This union has six data fields -- one for each possible string variant -- and a discriminant field, used to
 /// determine which string variant is actually present. The discriminant field interrogates the bits in each machine
 /// word field (all variants are three machine words) to determine which bit patterns are valid or not for a given
 /// variant, allowing the string variant to be authoritatively determined.
