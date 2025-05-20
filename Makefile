@@ -31,9 +31,9 @@ endif
 # Basic settings for base build images. These are varied between local development and CI.
 export RUST_VERSION ?= $(shell grep channel rust-toolchain.toml | cut -d '"' -f 2)
 export ADP_BUILD_IMAGE ?= rust:$(RUST_VERSION)-bookworm
-export ADP_APP_IMAGE ?= ubuntu:22.04
+export ADP_APP_IMAGE ?= ubuntu:24.04
 export GO_BUILD_IMAGE ?= golang:1.23-bullseye
-export GO_APP_IMAGE ?= ubuntu:22.04
+export GO_APP_IMAGE ?= ubuntu:24.04
 export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
 export GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
 
