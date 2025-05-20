@@ -127,7 +127,7 @@ impl CheckBuilder for PythonCheckBuilder {
         let agent_check_class = env
             .agent_check_class
             .as_ref()
-            .expect("agent check class should have value");
+            .expect("agent check class should have value.");
         let mut load_errors = vec![];
         for import_path in [name.to_string(), format!("datadog_checks.{}", name)].iter() {
             match self.register_check_from_imports(agent_check_class, name, import_path, instance, init_config, source)
@@ -138,7 +138,7 @@ impl CheckBuilder for PythonCheckBuilder {
                 }
             }
         }
-        error!("Could not load check {} errors: {:?}", name, load_errors);
+        error!(check_name = name, "Could not load check: {:?}", load_errors);
         None
     }
 }
@@ -172,13 +172,13 @@ impl PythonCheckBuilder {
                 })
                 .collect::<Vec<_>>();
             if checks.is_empty() {
-                return Err(generic_error!("No checks class found in source"));
+                return Err(generic_error!("No checks class found in source."));
             }
             if checks.len() >= 2 {
-                return Err(generic_error!("Multiple checks classes found in source"));
+                return Err(generic_error!("Multiple checks classes found in source."));
             }
-            let (check_key, check_value) = &checks[0];
-            debug!("Found base class {check_key} for check {import_path} {check_value:?}");
+            let (_check_key, check_value) = &checks[0];
+            debug!(path = import_path, "Found base class for check.");
             let mut version = "unversioned".to_string();
             if let Ok(check_version) = check_value.getattr("__version__") {
                 if let Ok(v) = check_version.extract::<String>() {
@@ -195,8 +195,7 @@ impl PythonCheckBuilder {
             let kwargs = PyDict::new(py);
             let parsed_config = map_to_pydict(init_config.get_value(), &py)?;
 
-            let parse_instance =
-                map_to_pydict(instance.get_value(), &py).expect("Could not convert instance to pydict");
+            let parse_instance = map_to_pydict(instance.get_value(), &py)?;
 
             let py_vec = PyTuple::new(py, vec![parse_instance])?;
 

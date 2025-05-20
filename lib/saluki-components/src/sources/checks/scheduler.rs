@@ -59,7 +59,7 @@ impl Scheduler {
             // Check with no interval are push to a random worker immediately
             let channels_guard = self.worker_channels.lock().unwrap();
             if channels_guard.is_empty() {
-                warn!(check_id, "Failed to schedule one-time check: No workers available");
+                warn!(check_id, "Failed to schedule one-time check: No workers available.");
                 return;
             }
 
@@ -129,12 +129,12 @@ impl Scheduler {
             }
         }
 
-        debug!(check_id, "Unscheduled check");
+        debug!(check_id, "Unscheduled check.");
     }
 
     /// Shutdown the scheduler and all its workers
     pub async fn shutdown(&self) {
-        info!("Shutting down check scheduler");
+        info!("Shutting down check scheduler.");
 
         // Stop all interval tickers
         let ticker_handles = {
@@ -144,7 +144,7 @@ impl Scheduler {
 
         for (interval, handle) in ticker_handles {
             handle.abort();
-            debug!(interval, "Stopped ticker for interval");
+            debug!(check_interval_secs = interval, "Stopped ticker.");
         }
 
         let (channels, handles) = {
@@ -165,11 +165,11 @@ impl Scheduler {
         // Wait for all workers to finish
         for handle in handles {
             if let Err(e) = handle.await {
-                error!("Error when shutting down worker: {}", e);
+                error!(error = %e, "Error when shutting down worker.");
             }
         }
 
-        info!("Check scheduler shutdown complete");
+        info!("Check scheduler shutdown complete.");
     }
 
     /// Start a dedicated ticker for a specific interval
@@ -194,7 +194,10 @@ impl Scheduler {
                         Some(bucket) => bucket.iter().cloned().collect::<Vec<_>>(),
                         None => {
                             // This bucket no longer exists, exit the ticker
-                            debug!("Interval {}s no longer has any checks, stopping ticker", interval_secs);
+                            debug!(
+                                check_interval_secs = interval_secs,
+                                "Interval no longer has any checks, stopping ticker."
+                            );
                             break;
                         }
                     }
@@ -225,7 +228,7 @@ impl Scheduler {
 
                     // Send to worker
                     if let Err(e) = channel.try_send(WorkerMessage::RunCheck(check)) {
-                        error!("Failed to queue check '{}': {}", check_id, e);
+                        error!(error = %e, check_id, "Failed to queue check.");
                     }
                 }
             }
@@ -234,7 +237,7 @@ impl Scheduler {
         let mut tickers = self.interval_handles.lock().unwrap();
         tickers.insert(interval_secs, handle);
 
-        debug!("Started ticker for interval {}s", interval_secs);
+        debug!(check_interval_secs = interval_secs, "Started ticker.");
     }
 
     /// Stop the ticker for a specific interval
@@ -242,7 +245,7 @@ impl Scheduler {
         let mut tickers = self.interval_handles.lock().unwrap();
         if let Some(handle) = tickers.remove(&interval_secs) {
             handle.abort();
-            debug!("Stopped ticker for interval {}s", interval_secs);
+            debug!(check_interval_secs = interval_secs, "Stopped ticker.");
         }
     }
 
@@ -279,17 +282,17 @@ impl Scheduler {
                         info!(check_id, "Running check");
 
                         match check.run() {
-                            Ok(()) => debug!(check_id, "Check completed successfully"),
-                            Err(e) => error!(check_id, "Check failed: {}", e),
+                            Ok(()) => debug!(check_id, "Check completed successfully."),
+                            Err(e) => error!(error = %e, check_id, "Check failed."),
                         }
                     }
                     WorkerMessage::Shutdown => {
-                        debug!("Worker received shutdown signal");
+                        debug!("Worker received shutdown signal.");
                         break;
                     }
                 }
             }
-            debug!("Worker shutting down");
+            debug!("Worker shutting down.");
         });
 
         let mut handles = self.worker_handles.lock().unwrap();
@@ -342,7 +345,7 @@ mod tests {
             *count += 1;
 
             if self.should_fail {
-                Err(generic_error!("Mock check failure"))
+                Err(generic_error!("Mock check failure."))
             } else {
                 Ok(())
             }
