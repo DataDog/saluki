@@ -70,7 +70,7 @@ impl SynchronousTransformBuilder for HostTagsConfiguration {
 
         let context_string_interner_size =
             NonZeroUsize::new(self.host_tags_context_string_interner_bytes.as_u64() as usize)
-                .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))
+                .ok_or_else(|| generic_error!("host_tags_context_string_interner_bytes must be greater than 0"))
                 .unwrap();
         let context_resolver = ContextResolverBuilder::from_name("host_tags")
             .expect("resolver name is not empty")
