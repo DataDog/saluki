@@ -61,7 +61,7 @@ in a nutshell:
     * bug fixes are indicated by incrementing the patch version
 
 Additionally, for the container images we build, there is an additional component in the image tag that specifies the
-version of the Datadog Agent that the image is based on. The Datadog Agent version is controlled in `.gitlab-ci.yml`, via the `BASE_DD_AGENT_VERSION`
+version of the Datadog Agent that the image is based on. The Datadog Agent version is controlled in `.gitlab-ci.yml`, via the `PUBLIC_DD_AGENT_VERSION`
 variable. We pull the Datadog Agent image from a public container image registry (Google Container Registry) and layer
 on the ADP binary, and supporting files, which results in our final "bundled" ADP container image.
 
