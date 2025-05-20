@@ -10,7 +10,7 @@ use pyo3::types::{PyDict, PyList, PyNone, PyTuple, PyType};
 use pyo3::PyObject;
 use pyo3::{prelude::*, IntoPyObjectExt};
 use saluki_env::autodiscovery::{Data, Instance, RawData};
-use saluki_error::{generic_error, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stringtheory::MetaString;
 use tracing::{debug, error, info, warn};
 
@@ -51,71 +51,37 @@ impl Check for PythonCheck {
     }
 }
 
-static PYTHON_CHECK_BUILDER: OnceLock<PythonEnvBuilder> = OnceLock::new();
+static PYTHON_ENV_BUILDER: OnceLock<PythonEnvBuilder> = OnceLock::new();
 
 struct PythonEnvBuilder {
-    valid: bool,
     agent_check_class: Option<PyObject>,
 }
-
 impl PythonEnvBuilder {
-    pub fn get_instance() -> &'static PythonEnvBuilder {
-        PYTHON_CHECK_BUILDER.get_or_init(PythonEnvBuilder::initialize)
+    fn get_instance() -> &'static PythonEnvBuilder {
+        PYTHON_ENV_BUILDER.get_or_init(PythonEnvBuilder::initialize)
     }
-
+    fn initialized(&self) -> bool {
+        self.agent_check_class.is_some()
+    }
     fn initialize() -> Self {
         pyo3::prepare_freethreaded_python();
         let result = Python::with_gil(|py| -> Result<PyObject, GenericError> {
-            if let Ok(sys) = py.import("sys") {
-                if let Ok(path_attr) = sys.getattr("path") {
-                    match path_attr.downcast::<PyList>() {
-                        Ok(p) => {
-                            // Get the project root to use as a base for relative paths
-                            let project_root = match std::env::current_exe() {
-                                Ok(path) => {
-                                    // Get the project root directory (two levels up from executable)
-                                    let mut project_root = path.clone();
-                                    // Go up from executable to debug dir
-                                    if let Some(parent) = project_root.parent() {
-                                        project_root = parent.to_path_buf();
-                                        // Go up from debug dir to target dir
-                                        if let Some(parent) = project_root.parent() {
-                                            project_root = parent.to_path_buf();
-                                            // Go up from target dir to project root
-                                            if let Some(parent) = project_root.parent() {
-                                                project_root = parent.to_path_buf();
-                                            }
-                                        }
-                                    }
-                                    project_root
-                                }
-                                Err(e) => {
-                                    error!("Failed to get current executable path: {}", e);
-                                    Path::new(".").to_path_buf()
-                                }
-                            };
-
-                            // Add paths relative to executable location
-                            let dist_path = project_root.join("dist");
-                            let checks_d_path = dist_path.join("checks.d");
-
-                            p.insert(0, dist_path.to_string_lossy().as_ref()).unwrap(); // common modules are shipped in the dist path directly or under the "checks/" sub-dir
-                            p.insert(0, checks_d_path.to_string_lossy().as_ref()).unwrap(); // integrations-core legacy checks
-                            p.insert(0, "/etc/datadog-agent/checks.d/").unwrap(); // Agent checks folder
-
-                            info!("Python sys.path is: {:?}", p);
-                        }
-                        Err(e) => {
-                            return Err(generic_error!("Could not get sys.path {:?}", e));
-                        }
-                    };
-                }
-            } else {
-                return Err(generic_error!("Could not import sys module"));
-            }
-
-            // Validate that python env is correctly configured
-            let modd = match py.import("datadog_checks.checks") {
+            let sys_path_attr = py
+                .import("sys")
+                .error_context("Could not import sys module.")
+                .and_then(|sys| sys.getattr("path").error_context("Could not get 'sys.path' attribute."))?;
+            let sys_path = sys_path_attr
+                .downcast::<PyList>()
+                .map_err(|_| GenericError::msg("Could not downcast 'sys.path' to list."))?;
+            // Add additional paths to sys.path to support loading checks.
+            let dist_path = Path::new("./dist");
+            let checks_d_path = dist_path.join("checks.d");
+            sys_path.insert(0, dist_path.to_string_lossy().as_ref()).unwrap(); // common modules are shipped in the dist path directly or under the "checks/" sub-dir
+            sys_path.insert(0, checks_d_path.to_string_lossy().as_ref()).unwrap(); // integrations-core legacy checks
+            sys_path.insert(0, "/etc/datadog-agent/checks.d/").unwrap(); // Agent checks folder
+            debug!("Updated Python system path (sys.path) to {:?}.", sys_path);
+            // Import the Datadog Checks module, ensuring it loads correctly, and grab a reference to the base AgentCheck class.
+            let dd_checks_module = match py.import("datadog_checks.checks") {
                 Ok(m) => m,
                 Err(e) => {
                     if let Some(traceback) = e.traceback(py) {
@@ -124,29 +90,21 @@ impl PythonEnvBuilder {
                     return Err(generic_error!("Could not import datadog_checks module {:?}", e));
                 }
             };
-            match modd.getattr("AgentCheck") {
-                Ok(c) => {
-                    info!("All pre-requisites for running python checks.");
-                    Ok(c.unbind())
-                }
-                Err(e) => {
-                    if let Some(traceback) = e.traceback(py) {
-                        error!("Traceback: {}", traceback.format().expect("Could format traceback"));
-                    }
-                    Err(generic_error!("Could not get AgentCheck class {:?}", e))
+            dd_checks_module
+                .getattr("AgentCheck")
+                .map(|c| c.unbind())
+                .error_context("Could not get AgentCheck class from datadog_checks module.")
+        });
+        match result {
+            Ok(agent_check_class) => {
+                info!("Python runtime loaded successfully and initialized for checks.");
+                Self {
+                    agent_check_class: Some(agent_check_class),
                 }
             }
-        });
-
-        match result {
-            Ok(agent_check_class) => Self {
-                valid: true,
-                agent_check_class: Some(agent_check_class),
-            },
             Err(e) => {
-                warn!("Could not load Python runtime. Cannot build Python check. {:?}", e);
+                warn!(error = %e, "Failed to load/initialize Python runtime for checks. Python checks will be unavailable.");
                 Self {
-                    valid: false,
                     agent_check_class: None,
                 }
             }
@@ -161,13 +119,15 @@ impl CheckBuilder for PythonCheckBuilder {
         &self, name: &str, instance: &Instance, init_config: &Data, source: &MetaString,
     ) -> Option<Arc<dyn Check + Send + Sync>> {
         let env = PythonEnvBuilder::get_instance();
-        if !env.valid {
-            None
-        } else {
+        if env.initialized() {
+            let agent_check_class = env
+                .agent_check_class
+                .as_ref()
+                .expect("agent check class should have value");
             let mut load_errors = vec![];
             for import_path in [name.to_string(), format!("datadog_checks.{}", name)].iter() {
                 match self.register_check_from_imports(
-                    env.agent_check_class.as_ref().expect("agent check class"),
+                    agent_check_class,
                     name,
                     import_path,
                     instance,
@@ -181,6 +141,8 @@ impl CheckBuilder for PythonCheckBuilder {
                 }
             }
             error!("Could not load check {} errors: {:?}", name, load_errors);
+            None
+        } else {
             None
         }
     }
