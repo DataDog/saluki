@@ -9,7 +9,10 @@
 // We only support 64-bit little-endian platforms anyways, so there's no risk of our enum variants having their values truncated.
 #![allow(clippy::enum_clike_unportable_variant)]
 
-use std::{borrow::Borrow, fmt, hash, mem::ManuallyDrop, ops::Deref, slice::from_raw_parts, str::from_utf8_unchecked};
+use std::{
+    borrow::Borrow, fmt, hash, mem::ManuallyDrop, ops::Deref, ptr::NonNull, slice::from_raw_parts,
+    str::from_utf8_unchecked, sync::Arc,
+};
 
 pub mod interning;
 use serde::Serialize;
@@ -24,6 +27,7 @@ const INLINED_STR_MAX_LEN_U8: u8 = INLINED_STR_MAX_LEN as u8;
 
 const UNION_TYPE_TAG_VALUE_STATIC: u8 = get_offset_tag_value(0);
 const UNION_TYPE_TAG_VALUE_INTERNED: u8 = get_offset_tag_value(1);
+const UNION_TYPE_TAG_VALUE_SHARED: u8 = get_offset_tag_value(2);
 
 const fn get_offset_tag_value(tag: u8) -> u8 {
     const UNION_TYPE_TAG_VALUE_BASE: u8 = INLINED_STR_MAX_LEN as u8 + 1;
@@ -71,6 +75,7 @@ enum Zero {
 enum Tag {
     Static = get_scaled_union_tag(UNION_TYPE_TAG_VALUE_STATIC),
     Interned = get_scaled_union_tag(UNION_TYPE_TAG_VALUE_INTERNED),
+    Shared = get_scaled_union_tag(UNION_TYPE_TAG_VALUE_SHARED),
 }
 
 #[repr(C)]
@@ -139,6 +144,20 @@ struct InternedUnion {
 }
 
 #[repr(C)]
+struct SharedUnion {
+    ptr: NonNull<str>, // Fields one and two
+    _cap: Tag,         // Field three.
+}
+
+impl SharedUnion {
+    #[inline]
+    const fn as_str(&self) -> &str {
+        // SAFETY: The pointee is still live by virtue of being held in an `Arc`.
+        unsafe { self.ptr.as_ref() }
+    }
+}
+
+#[repr(C)]
 #[derive(Clone, Copy)]
 struct InlinedUnion {
     // Data is arranged as 23 bytes for string data, and the remaining 1 byte for the string length.
@@ -170,6 +189,7 @@ enum UnionType {
     Static,
     Interned,
     Inlined,
+    Shared,
 }
 
 impl DiscriminantUnion {
@@ -189,12 +209,12 @@ impl DiscriminantUnion {
         // - Static strings and interned strings only occupy the first two fields, which means their capacity should not
         //   be used.
         //
-        // As such, we encode the five possible string types as follows:
+        // As such, we encode the possible string types as follows:
         //
         // - when all fields are zero, we have an empty string
         // - when the last byte does have the top-bit set, we have an owned string
-        // - when the last byte does _not_ have the top-bit set, and the value is less than 23, we have an inlined
-        //   string
+        // - when the last byte does _not_ have the top-bit set, and the value is less than or equal to 23, we have an
+        //   inlined string
         // - when the last byte does _not_ have the top-bit set, and the value is greater than 23, we interpret the
         //   specific value of the last byte as a discriminant for the remaining string types (static, interned, etc)
         //
@@ -257,12 +277,13 @@ impl DiscriminantUnion {
             // Empty string. Easy.
             0 => UnionType::Empty,
 
-            // Anything between 1 and INLINED_STR_MAX_LEN (23) is an inlined string.
+            // Anything between 1 and INLINED_STR_MAX_LEN (23, inclusive) is an inlined string.
             1..=INLINED_STR_MAX_LEN_U8 => UnionType::Inlined,
 
             // These are fixed values between 24 and 128, so we just match them directly.
             UNION_TYPE_TAG_VALUE_STATIC => UnionType::Static,
             UNION_TYPE_TAG_VALUE_INTERNED => UnionType::Interned,
+            UNION_TYPE_TAG_VALUE_SHARED => UnionType::Shared,
 
             // If we haven't matched any specific type tag value, then this is something else that we don't handle or
             // know about... which we handle as just acting like we're an empty string for simplicity.
@@ -273,7 +294,7 @@ impl DiscriminantUnion {
 
 /// The core data structure for holding all different string variants.
 ///
-/// This union has five data fields -- one for each possible string variant -- and a discriminant field, used to
+/// This union has six data fields -- one for each possible string variant -- and a discriminant field, used to
 /// determine which string variant is actually present. The discriminant field interrogates the bits in each machine
 /// word field (all variants are three machine words) to determine which bit patterns are valid or not for a given
 /// variant, allowing the string variant to be authoritatively determined.
@@ -283,7 +304,7 @@ impl DiscriminantUnion {
 /// This code depends on a number of invariants in order to work correctly:
 ///
 /// 1. Only used on 64-bit little-endian platforms. (checked at compile-time via _INVARIANTS_CHECK)
-/// 2. The data pointers for `String` and `&'static str` cannot  ever be null when the strings are non-empty.
+/// 2. The data pointers for `String` and `&'static str` cannot ever be null when the strings are non-empty.
 /// 3. Allocations can never be larger than `isize::MAX` (see [here][rust_isize_alloc_limit]), meaning that any
 ///    length/capacity field for a string cannot ever be larger than `isize::MAX`, implying the 64th bit (top-most bit)
 ///    for length/capacity should always be 0.
@@ -296,6 +317,7 @@ union Inner {
     owned: OwnedUnion,
     static_: StaticUnion,
     interned: ManuallyDrop<InternedUnion>,
+    shared: ManuallyDrop<SharedUnion>,
     inlined: InlinedUnion,
     discriminant: DiscriminantUnion,
 }
@@ -356,6 +378,19 @@ impl Inner {
         }
     }
 
+    fn shared(value: Arc<str>) -> Self {
+        match value.len() {
+            0 => Self::empty(),
+            _len => Self {
+                shared: ManuallyDrop::new(SharedUnion {
+                    // SAFETY: We know `ptr` is non-null because `Arc::into_raw` is called on a valid `Arc<str>`.
+                    ptr: unsafe { NonNull::new_unchecked(Arc::into_raw(value).cast_mut()) },
+                    _cap: Tag::Shared,
+                }),
+            },
+        }
+    }
+
     fn try_inlined(value: &str) -> Option<Self> {
         match value.len() {
             0 => Some(Self::empty()),
@@ -396,6 +431,10 @@ impl Inner {
                 let interned = unsafe { &self.interned };
                 &interned.state
             }
+            UnionType::Shared => {
+                let shared = unsafe { &self.shared };
+                shared.as_str()
+            }
             UnionType::Inlined => {
                 let inlined = unsafe { &self.inlined };
                 inlined.as_str()
@@ -427,6 +466,10 @@ impl Inner {
             UnionType::Interned => {
                 let interned = unsafe { &self.interned };
                 (*interned.state).to_owned()
+            }
+            UnionType::Shared => {
+                let shared = unsafe { &self.shared };
+                shared.as_str().to_owned()
             }
             UnionType::Inlined => {
                 let inlined = unsafe { self.inlined };
@@ -461,6 +504,18 @@ impl Drop for Inner {
                 let data = unsafe { ManuallyDrop::take(interned) };
                 drop(data);
             }
+            UnionType::Shared => {
+                let shared = unsafe { &mut self.shared };
+
+                // Decrement the strong count before we drop, ensuring the `Arc` has a chance to clean itself up if this
+                // is the less strong reference.
+                //
+                // SAFETY: We know `shared.ptr` was obtained from `Arc::into_raw`, so it's valid to decrement on. We
+                // also know the backing storage is still live because it has to be by virtue of us being here.
+                unsafe {
+                    Arc::decrement_strong_count(shared.ptr.as_ptr().cast_const());
+                }
+            }
             _ => {}
         }
     }
@@ -488,6 +543,24 @@ impl Clone for Inner {
             UnionType::Interned => {
                 let interned = unsafe { &self.interned };
                 Self::interned(interned.state.clone())
+            }
+            UnionType::Shared => {
+                let shared = unsafe { &self.shared };
+
+                // We have to increment the strong count before cloning.
+                //
+                // SAFETY: We know `shared.ptr` was obtained from `Arc::into_raw`. We also know that if we're cloning
+                // this value, that the underlying `Arc` must still be live, since we're holding a reference to it.
+                unsafe {
+                    Arc::increment_strong_count(shared.ptr.as_ptr().cast_const());
+                }
+
+                Self {
+                    shared: ManuallyDrop::new(SharedUnion {
+                        ptr: shared.ptr,
+                        _cap: Tag::Shared,
+                    }),
+                }
             }
             UnionType::Inlined => Self {
                 inlined: unsafe { self.inlined },
@@ -521,6 +594,7 @@ unsafe impl Sync for Inner {}
 /// - owned (`String` and non-inlineable `&str`)
 /// - static (`&'static str`)
 /// - interned (`InternedString`)
+/// - shared (`Arc<str>`)
 /// - inlined (up to 23 bytes)
 ///
 /// ### Owned and borrowed strings
@@ -542,6 +616,11 @@ unsafe impl Sync for Inner {}
 /// properties of `Arc<T>` -- owned wrappers around an atomically reference counted piece of data -- and a fixed-size
 /// buffer, where we allocate one large buffer, and write many small strings into it, and provide references to those
 /// strings through `InternedString`.
+///
+/// ### Shared strings
+///
+/// `MetaString` can be created from `Arc<str>`, which is a string slice that can be atomically shared between threads.
+/// This is a simpler version of interned strings where strict memory control and re-use is not required.
 ///
 /// ### Inlined strings
 ///
@@ -680,6 +759,14 @@ impl From<InternedString> for MetaString {
     }
 }
 
+impl From<Arc<str>> for MetaString {
+    fn from(s: Arc<str>) -> Self {
+        Self {
+            inner: Inner::shared(s),
+        }
+    }
+}
+
 impl From<MetaString> for protobuf::Chars {
     fn from(value: MetaString) -> Self {
         value.into_owned().into()
@@ -725,7 +812,7 @@ impl fmt::Display for MetaString {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroUsize;
+    use std::{num::NonZeroUsize, sync::Arc};
 
     use proptest::{prelude::*, proptest};
 
@@ -748,7 +835,6 @@ mod tests {
         let s = "hello";
         let meta = MetaString::from_static(s);
 
-        //assert_eq!(s, &*meta);
         assert_eq!(meta.inner.get_union_type(), UnionType::Static);
         assert_eq!(s, &*meta);
         assert_eq!(s, meta.into_owned());
@@ -797,6 +883,48 @@ mod tests {
         assert_eq!(intern_str, &*meta);
         assert_eq!(meta.inner.get_union_type(), UnionType::Interned);
         assert_eq!(intern_str, meta.into_owned());
+    }
+
+    #[test]
+    fn shared_string() {
+        let shared_str = "hello shared str!";
+
+        let s = Arc::<str>::from(shared_str);
+        assert_eq!(shared_str, &*s);
+
+        let meta = MetaString::from(s);
+        assert_eq!(shared_str, &*meta);
+        assert_eq!(meta.inner.get_union_type(), UnionType::Shared);
+        assert_eq!(shared_str, meta.into_owned());
+    }
+
+    #[test]
+    fn shared_string_clone() {
+        let shared_str = "hello shared str!";
+        let s = Arc::<str>::from(shared_str);
+        let meta = MetaString::from(s);
+
+        // Clone the `MetaString` to make sure we can still access the original string.
+        let meta2 = meta.clone();
+        assert_eq!(shared_str, &*meta2);
+
+        // Drop the original `MetaString` to ensure we can still access the string from our clone after going through
+        // the drop logic for the shared variant.
+        drop(meta);
+        assert_eq!(shared_str, &*meta2);
+    }
+
+    #[test]
+    fn empty_string_shared() {
+        let shared_str = "";
+
+        let s = Arc::<str>::from(shared_str);
+        assert_eq!(shared_str, &*s);
+
+        let meta = MetaString::from(s);
+        assert_eq!(shared_str, &*meta);
+        assert_eq!(meta.inner.get_union_type(), UnionType::Empty);
+        assert_eq!(shared_str, meta.into_owned());
     }
 
     #[test]
