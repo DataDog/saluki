@@ -138,7 +138,7 @@ echo "| experiment | link(s) |"
 echo "|------------|---------|"
 
 for experiment in $checks_agent_experiments; do
-    checks_continuous_profiler_url=$(get_continuous_profiler_url "$checks_run_id" "$common_checks_start_time" "$common_checks_end_time" "$experiment")
+    checks_continuous_profiler_url=$(get_continuous_profiler_url "$checks_run_id" "$checks_start_time" "$checks_end_time" "$experiment")
     checks_smp_dashboard_url=$(get_checks_smp_dashboard_url "$checks_run_id" "$checks_go_run_id" "$common_checks_start_time" "$common_checks_end_time" "$experiment")
 
     echo "| $experiment | \\[[Profiling]($checks_continuous_profiler_url)\\] \\[[SMP Dashboard]($checks_smp_dashboard_url)\\] |"
