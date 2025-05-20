@@ -4,7 +4,7 @@ use quick_cache::{sync::Cache, UnitWeighter};
 use saluki_common::{collections::PrehashedHashSet, hash::NoopU64BuildHasher};
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::static_metrics;
-use stringtheory::{interning::GenericMapInterner, MetaString};
+use stringtheory::{interning::GenericMapInterner, CheapMetaString, MetaString};
 use tokio::time::sleep;
 use tracing::debug;
 
@@ -13,7 +13,7 @@ use crate::{
     expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle},
     hash::{hash_context_with_seen, ContextKey},
     origin::{OriginKey, OriginTags, OriginTagsResolver, RawOrigin},
-    tags::{Tag, TagSet},
+    tags::TagSet,
 };
 
 const DEFAULT_CONTEXT_RESOLVER_CACHED_CONTEXTS_LIMIT: usize = 500_000;
@@ -366,15 +366,18 @@ pub struct ContextResolver {
 }
 
 impl ContextResolver {
-    fn intern(&self, s: &str) -> Option<MetaString> {
-        // First we'll see if we can inline the string, and if we can't, then we try to actually intern it. If interning
-        // fails, then we just fall back to allocating a new `MetaString` instance.
-        MetaString::try_inline(s)
-            .or_else(|| self.interner.try_intern(s).map(MetaString::from))
+    fn intern<S>(&self, s: S) -> Option<MetaString>
+    where
+        S: AsRef<str> + CheapMetaString,
+    {
+        // Try to cheaply clone the string, and if that fails, try to intern it. If that fails, then we fall back to
+        // allocating it on the heap if we allow it.
+        s.try_cheap_clone()
+            .or_else(|| self.interner.try_intern(s.as_ref()).map(MetaString::from))
             .or_else(|| {
                 self.allow_heap_allocations.then(|| {
                     self.telemetry.intern_fallback_total().increment(1);
-                    MetaString::from(s)
+                    MetaString::from(s.as_ref())
                 })
             })
     }
@@ -390,29 +393,28 @@ impl ContextResolver {
             .unwrap_or_else(OriginTags::empty)
     }
 
-    fn create_context_key<I, T>(&mut self, name: &str, tags: I, maybe_origin_key: Option<OriginKey>) -> ContextKey
+    fn create_context_key<N, I, T>(&mut self, name: N, tags: I, maybe_origin_key: Option<OriginKey>) -> ContextKey
     where
+        N: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T>,
-        T: ContextTag,
+        T: AsRef<str> + CheapMetaString,
     {
-        hash_context_with_seen(name, tags, maybe_origin_key, &mut self.hash_seen_buffer)
+        hash_context_with_seen(name.as_ref(), tags, maybe_origin_key, &mut self.hash_seen_buffer)
     }
 
-    fn create_context<I, T>(&self, key: ContextKey, name: &str, tags: I, origin_tags: OriginTags) -> Option<Context>
+    fn create_context<N, I, T>(&self, key: ContextKey, name: N, tags: I, origin_tags: OriginTags) -> Option<Context>
     where
+        N: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T>,
-        T: ContextTag,
+        T: AsRef<str> + CheapMetaString,
     {
         // Intern the name and tags of the context.
         let context_name = self.intern(name)?;
 
         let mut context_tags = TagSet::default();
         for tag in tags {
-            let tag = match tag.try_cheap_clone() {
-                Some(tag) => tag,
-                None => self.intern(tag.as_str())?,
-            };
-            context_tags.insert_tag(tag);
+            let context_tag = self.intern(tag)?;
+            context_tags.insert_tag(context_tag);
         }
 
         self.telemetry.resolved_new_context_total().increment(1);
@@ -435,10 +437,11 @@ impl ContextResolver {
     ///
     /// `None` may be returned if the interner is full and outside allocations are disallowed. See
     /// `allow_heap_allocations` for more information.
-    pub fn resolve<I, T>(&mut self, name: &str, tags: I, maybe_origin: Option<RawOrigin<'_>>) -> Option<Context>
+    pub fn resolve<N, I, T>(&mut self, name: N, tags: I, maybe_origin: Option<RawOrigin<'_>>) -> Option<Context>
     where
+        N: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T> + Clone,
-        T: ContextTag,
+        T: AsRef<str> + CheapMetaString,
     {
         // Try and resolve our origin tags from the provided origin information, if any.
         let origin_tags = self.resolve_origin_tags(maybe_origin);
@@ -464,20 +467,22 @@ impl ContextResolver {
     /// This method is intended primarily to allow for resolving contexts in a consistent way while _reusing_ the origin
     /// tags from another context, such as when remapping the name and/or instrumented tags of a given metric, while
     /// maintaining its origin association.
-    pub fn resolve_with_origin_tags<I, T>(&mut self, name: &str, tags: I, origin_tags: OriginTags) -> Option<Context>
+    pub fn resolve_with_origin_tags<N, I, T>(&mut self, name: N, tags: I, origin_tags: OriginTags) -> Option<Context>
     where
+        N: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T> + Clone,
-        T: ContextTag,
+        T: AsRef<str> + CheapMetaString,
     {
         self.resolve_inner(name, tags, origin_tags)
     }
 
-    fn resolve_inner<I, T>(&mut self, name: &str, tags: I, origin_tags: OriginTags) -> Option<Context>
+    fn resolve_inner<N, I, T>(&mut self, name: N, tags: I, origin_tags: OriginTags) -> Option<Context>
     where
+        N: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T> + Clone,
-        T: ContextTag,
+        T: AsRef<str> + CheapMetaString,
     {
-        let context_key = self.create_context_key(name, tags.clone(), origin_tags.key());
+        let context_key = self.create_context_key(&name, tags.clone(), origin_tags.key());
 
         // Fast path to avoid looking up the context in the cache if caching is disabled.
         if !self.caching_enabled {
@@ -564,81 +569,6 @@ async fn drive_telemetry(context_cache: Arc<ContextCache>, interner: GenericMapI
         telemetry.interner_len_bytes().set(interner.len_bytes() as f64);
 
         telemetry.cached_contexts().set(context_cache.len() as f64);
-    }
-}
-
-mod private {
-    pub trait Sealed {}
-
-    impl Sealed for &str {}
-    impl Sealed for String {}
-    impl Sealed for stringtheory::MetaString {}
-    impl Sealed for crate::tags::Tag {}
-    impl<T> Sealed for &T where T: Sealed {}
-}
-
-/// A context tag.
-pub trait ContextTag: private::Sealed {
-    /// Returns a string representation of the tag.
-    fn as_str(&self) -> &str;
-
-    /// Tries to cheaply clone the tag and return it as a [`MetaString`].
-    ///
-    /// If the tag cannot be cheaply cloned, `None` is returned. This indicates that the tag must be stored some other
-    /// way -- interning, heap allocation, etc -- and that the caller must handle that case themselves.
-    fn try_cheap_clone(&self) -> Option<MetaString>;
-}
-
-impl ContextTag for &str {
-    fn as_str(&self) -> &str {
-        self
-    }
-
-    fn try_cheap_clone(&self) -> Option<MetaString> {
-        MetaString::try_inline(self)
-    }
-}
-
-impl ContextTag for String {
-    fn as_str(&self) -> &str {
-        self
-    }
-
-    fn try_cheap_clone(&self) -> Option<MetaString> {
-        MetaString::try_inline(self)
-    }
-}
-
-impl ContextTag for MetaString {
-    fn as_str(&self) -> &str {
-        self
-    }
-
-    fn try_cheap_clone(&self) -> Option<MetaString> {
-        self.is_cheaply_cloneable().then(|| self.clone())
-    }
-}
-
-impl ContextTag for Tag {
-    fn as_str(&self) -> &str {
-        Tag::as_str(self)
-    }
-
-    fn try_cheap_clone(&self) -> Option<MetaString> {
-        self.get_ref().is_cheaply_cloneable().then(|| self.get_ref().clone())
-    }
-}
-
-impl<T> ContextTag for &T
-where
-    T: ContextTag,
-{
-    fn as_str(&self) -> &str {
-        ContextTag::as_str(*self)
-    }
-
-    fn try_cheap_clone(&self) -> Option<MetaString> {
-        ContextTag::try_cheap_clone(*self)
     }
 }
 
@@ -873,7 +803,7 @@ mod tests {
     }
 
     #[test]
-    fn cheaply_cloneable_tags() {
+    fn cheaply_cloneable_name_and_tags() {
         const BIG_TAG_ONE: &str = "long-tag-that-cannot-be-inlined-just-to-be-doubly-sure-on-top-of-being-static";
         const BIG_TAG_TWO: &str = "another-long-boye-that-we-are-also-sure-wont-be-inlined-and-we-stand-on-that";
 
@@ -883,7 +813,7 @@ mod tests {
             .build();
 
         // Create our context with cheaply cloneable tags, aka static strings:
-        let name = "long-metric-name-that-shouldnt-be-inlined-and-should-end-up-interned";
+        let name = MetaString::from_static("long-metric-name-that-shouldnt-be-inlined-and-should-end-up-interned");
         let tags = [
             MetaString::from_static(BIG_TAG_ONE),
             MetaString::from_static(BIG_TAG_TWO),
@@ -891,19 +821,19 @@ mod tests {
         assert!(tags[0].is_cheaply_cloneable());
         assert!(tags[1].is_cheaply_cloneable());
 
-        // Make sure the interner is empty before we resolve the context, and then only contains a single entry
-        // afterwards, which will be the metric name itself since we don't yet optimize metric names in the same way:
+        // Make sure the interner is empty before we resolve the context, and that it's empty afterwards, since we
+        // should be able to cheaply clone both the metric name and both tags:
         assert_eq!(resolver.interner.len(), 0);
         assert_eq!(resolver.interner.len_bytes(), 0);
 
         let context = resolver
-            .resolve(name, &tags[..], None)
+            .resolve(&name, &tags[..], None)
             .expect("should not fail to resolve");
-        assert_eq!(resolver.interner.len(), 1);
-        assert!(resolver.interner.len_bytes() > 0);
+        assert_eq!(resolver.interner.len(), 0);
+        assert_eq!(resolver.interner.len_bytes(), 0);
 
         // And just a sanity check that we have the expected name and tags in the context:
-        assert_eq!(context.name(), name);
+        assert_eq!(context.name(), &name);
 
         let context_tags = context.tags();
         assert_eq!(context_tags.len(), 2);

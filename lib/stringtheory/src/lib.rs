@@ -14,6 +14,9 @@ use std::{
     str::from_utf8_unchecked, sync::Arc,
 };
 
+mod clone;
+pub use self::clone::CheapMetaString;
+
 pub mod interning;
 use serde::Serialize;
 

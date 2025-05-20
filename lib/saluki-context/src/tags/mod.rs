@@ -4,7 +4,7 @@ use std::{fmt, hash, ops::Deref as _, sync::Arc};
 
 use saluki_common::collections::FastHashSet;
 use serde::Serialize;
-use stringtheory::MetaString;
+use stringtheory::{CheapMetaString, MetaString};
 
 mod raw;
 pub use self::raw::RawTags;
@@ -98,11 +98,6 @@ impl Tag {
         BorrowedTag::from(self.0.deref())
     }
 
-    /// Returns a reference to the inner `MetaString`.
-    pub(crate) fn get_ref(&self) -> &MetaString {
-        &self.0
-    }
-
     /// Consumes the tag and returns the inner `MetaString`.
     pub fn into_inner(self) -> MetaString {
         self.0
@@ -148,6 +143,16 @@ where
 impl AsRef<str> for Tag {
     fn as_ref(&self) -> &str {
         &self.0
+    }
+}
+
+impl CheapMetaString for Tag {
+    fn try_cheap_clone(&self) -> Option<MetaString> {
+        if self.0.is_cheaply_cloneable() {
+            Some(self.0.clone())
+        } else {
+            None
+        }
     }
 }
 

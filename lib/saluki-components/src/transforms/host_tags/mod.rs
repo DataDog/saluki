@@ -1,5 +1,6 @@
 use std::{
     num::NonZeroUsize,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -15,6 +16,7 @@ use saluki_core::data_model::event::metric::Metric;
 use saluki_core::{components::transforms::*, topology::interconnect::FixedSizeEventBuffer};
 use saluki_env::helpers::remote_agent::RemoteAgentClient;
 use saluki_error::{generic_error, GenericError};
+use stringtheory::MetaString;
 
 /// Host Tags synchronous transform.
 ///
@@ -62,7 +64,9 @@ impl SynchronousTransformBuilder for HostTagsConfiguration {
         //
         // We only pay attention to the "system" tags, as the "google_cloud_platform" tags are not relevant here.
         let host_tags_reply = self.client.get_host_tags().await?.into_inner();
-        let host_tags = host_tags_reply.system.into_iter()
+        let host_tags = host_tags_reply
+            .system
+            .into_iter()
             .map(|s| Arc::from(s.as_str()))
             .map(MetaString::from)
             .map(Tag::from)
