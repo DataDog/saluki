@@ -59,15 +59,15 @@ impl Scheduler {
             // Check with no interval are push to a random worker immediately
             let channels_guard = self.worker_channels.lock().unwrap();
             if channels_guard.is_empty() {
-                warn!("Failed to schedule one-time check '{}': No workers available", check_id);
+                warn!(check_id, "Failed to schedule one-time check: No workers available");
                 return;
             }
 
             let channel_idx = rand::thread_rng().gen_range(0..channels_guard.len());
             if let Err(e) = channels_guard[channel_idx].try_send(WorkerMessage::RunCheck(Arc::clone(&check))) {
-                error!("Failed to enqueue a one-time check '{}': {}", check_id, e);
+                error!(check_id, "Failed to enqueue a one-time check: {}", e);
             }
-            info!("Scheduled one-time check '{}' to worker {}", check_id, channel_idx);
+            info!(check_id, "Scheduled one-time check.");
             return;
         }
 
@@ -88,8 +88,11 @@ impl Scheduler {
         if is_new_interval {
             self.start_interval_ticker(interval_secs);
         }
-
-        info!("Scheduled check '{}' with interval {}s", check_id, interval_secs);
+        info!(
+            check_id,
+            check_interval_secs = interval_secs,
+            "Scheduled periodic check."
+        );
     }
 
     /// Unschedule a check
@@ -126,7 +129,7 @@ impl Scheduler {
             }
         }
 
-        debug!("Unscheduled check '{}'", check_id);
+        debug!(check_id, "Unscheduled check");
     }
 
     /// Shutdown the scheduler and all its workers
@@ -141,7 +144,7 @@ impl Scheduler {
 
         for (interval, handle) in ticker_handles {
             handle.abort();
-            debug!("Stopped ticker for interval {}s", interval);
+            debug!(interval, "Stopped ticker for interval");
         }
 
         let (channels, handles) = {
@@ -255,7 +258,7 @@ impl Scheduler {
                 self.add_worker();
             }
 
-            info!("Increased worker count to {}", desired_count);
+            info!(worker_count = desired_count, "Check worker count updated to.");
         }
     }
 
@@ -273,11 +276,11 @@ impl Scheduler {
                 match msg {
                     WorkerMessage::RunCheck(check) => {
                         let check_id = check.id();
-                        info!("Running check '{}'", check_id);
+                        info!(check_id, "Running check");
 
                         match check.run() {
-                            Ok(()) => debug!("Check '{}' completed successfully", check_id),
-                            Err(e) => error!("Check '{}' failed: {}", check_id, e),
+                            Ok(()) => debug!(check_id, "Check completed successfully"),
+                            Err(e) => error!(check_id, "Check failed: {}", e),
                         }
                     }
                     WorkerMessage::Shutdown => {
