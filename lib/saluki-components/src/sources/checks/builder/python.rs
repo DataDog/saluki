@@ -60,9 +60,11 @@ impl PythonEnvBuilder {
     fn get_instance() -> &'static PythonEnvBuilder {
         PYTHON_ENV_BUILDER.get_or_init(PythonEnvBuilder::initialize)
     }
+
     fn initialized(&self) -> bool {
         self.agent_check_class.is_some()
     }
+
     fn initialize() -> Self {
         pyo3::prepare_freethreaded_python();
         let result = Python::with_gil(|py| -> Result<PyObject, GenericError> {
