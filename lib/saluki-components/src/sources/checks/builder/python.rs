@@ -121,32 +121,25 @@ impl CheckBuilder for PythonCheckBuilder {
         &self, name: &str, instance: &Instance, init_config: &Data, source: &MetaString,
     ) -> Option<Arc<dyn Check + Send + Sync>> {
         let env = PythonEnvBuilder::get_instance();
-        if env.initialized() {
-            let agent_check_class = env
-                .agent_check_class
-                .as_ref()
-                .expect("agent check class should have value");
-            let mut load_errors = vec![];
-            for import_path in [name.to_string(), format!("datadog_checks.{}", name)].iter() {
-                match self.register_check_from_imports(
-                    agent_check_class,
-                    name,
-                    import_path,
-                    instance,
-                    init_config,
-                    source,
-                ) {
-                    Ok(handle) => return Some(handle),
-                    Err(e) => {
-                        load_errors.push(e.root_cause().to_string());
-                    }
+        if !env.initialized() {
+            return None;
+        }
+        let agent_check_class = env
+            .agent_check_class
+            .as_ref()
+            .expect("agent check class should have value");
+        let mut load_errors = vec![];
+        for import_path in [name.to_string(), format!("datadog_checks.{}", name)].iter() {
+            match self.register_check_from_imports(agent_check_class, name, import_path, instance, init_config, source)
+            {
+                Ok(handle) => return Some(handle),
+                Err(e) => {
+                    load_errors.push(e.root_cause().to_string());
                 }
             }
-            error!("Could not load check {} errors: {:?}", name, load_errors);
-            None
-        } else {
-            None
         }
+        error!("Could not load check {} errors: {:?}", name, load_errors);
+        None
     }
 }
 

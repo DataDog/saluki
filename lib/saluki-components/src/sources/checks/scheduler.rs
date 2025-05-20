@@ -258,7 +258,7 @@ impl Scheduler {
                 self.add_worker();
             }
 
-            info!(worker_count = desired_count, "Check worker count updated to.");
+            info!(worker_count = desired_count, "Check worker count updated.");
         }
     }
 
