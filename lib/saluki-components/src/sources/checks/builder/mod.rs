@@ -1,10 +1,8 @@
 use std::sync::Arc;
-mod noop;
 mod python;
 use saluki_env::autodiscovery::{Data, Instance};
 use stringtheory::MetaString;
 
-pub use self::noop::NoopCheckBuilder;
 pub use self::python::PythonCheckBuilder;
 use crate::sources::checks::check::Check;
 /// Check builder trait

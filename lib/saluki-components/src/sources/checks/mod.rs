@@ -25,7 +25,7 @@ mod check;
 use self::check::Check;
 
 mod builder;
-use self::builder::{CheckBuilder, NoopCheckBuilder, PythonCheckBuilder};
+use self::builder::{CheckBuilder, PythonCheckBuilder};
 
 const fn default_check_runners() -> usize {
     4
@@ -102,8 +102,7 @@ impl Source for ChecksSource {
         info!("Checks source started.");
 
         let mut event_rx = self.autodiscovery.subscribe().await;
-        let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> =
-            vec![Arc::new(PythonCheckBuilder), Arc::new(NoopCheckBuilder)];
+        let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> = vec![Arc::new(PythonCheckBuilder)];
         let mut check_ids = HashSet::new();
         let scheduler = Scheduler::new(self.check_runners);
 
