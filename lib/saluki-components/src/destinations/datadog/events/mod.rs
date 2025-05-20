@@ -217,13 +217,11 @@ impl Destination for DatadogEvents {
 
         // Spawn our request builder task.
         let (builder_tx, builder_rx) = mpsc::channel(8);
-        let request_builder_handle = context.global_thread_pool().spawn_traced(run_request_builder(
-            request_builder,
-            telemetry,
-            builder_rx,
-            forwarder_handle,
-            flush_timeout,
-        ));
+        let request_builder_fut =
+            run_request_builder(request_builder, telemetry, builder_rx, forwarder_handle, flush_timeout);
+        let request_builder_handle = context
+            .global_thread_pool()
+            .spawn_traced_named("dd-events-request-builder", request_builder_fut);
 
         health.mark_ready();
         debug!("Datadog Events destination started.");

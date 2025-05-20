@@ -31,7 +31,7 @@ use tracing::debug;
 
 const CONTEXT_LIMIT: usize = 1000;
 const PAYLOAD_SIZE_LIMIT_BYTES: usize = 512 * 1024;
-const PAYLOAD_BUFFER_SIZE_LIMIT_BYTES: usize = 16384;
+const PAYLOAD_BUFFER_SIZE_LIMIT_BYTES: usize = 128 * 1024;
 const TAGS_BUFFER_SIZE_LIMIT_BYTES: usize = 1024;
 const NAME_NORMALIZATION_BUFFER_SIZE: usize = 512;
 
