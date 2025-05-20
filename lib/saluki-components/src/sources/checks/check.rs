@@ -14,7 +14,7 @@ pub trait Check {
     /// If a problem occurs while running the check, an error is returned.
     fn run(&self) -> Result<(), GenericError>;
     /// Get the interval of the check.
-    fn interval(&self) -> &Duration;
+    fn interval(&self) -> Duration;
     /// Gets the identifier of the check.
     ///
     /// This is used to uniquely identify check instances.

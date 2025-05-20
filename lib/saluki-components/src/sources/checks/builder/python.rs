@@ -34,8 +34,8 @@ impl Check for PythonCheck {
         }
     }
 
-    fn interval(&self) -> &Duration {
-        &self.interval
+    fn interval(&self) -> Duration {
+        self.interval
     }
 
     fn version(&self) -> &str {

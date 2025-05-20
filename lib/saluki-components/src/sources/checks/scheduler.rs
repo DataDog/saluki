@@ -348,8 +348,8 @@ mod tests {
             }
         }
 
-        fn interval(&self) -> &Duration {
-            &self.interval
+        fn interval(&self) -> Duration {
+            self.interval
         }
 
         fn id(&self) -> &str {
