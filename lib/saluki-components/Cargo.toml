@@ -27,6 +27,8 @@ memory-accounting = { workspace = true }
 metrics = { workspace = true }
 pin-project = { workspace = true }
 protobuf = { workspace = true }
+pyo3 = { workspace = true }
+rand = { workspace = true, features = ["std", "std_rng"] }
 regex = { workspace = true }
 saluki-common = { workspace = true }
 saluki-config = { workspace = true }

@@ -2,10 +2,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+use rand::Rng;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::sources::checks::Check;
 
@@ -54,6 +55,22 @@ impl Scheduler {
         let check_id = check.id();
         let interval_secs = check.interval().as_secs();
 
+        if interval_secs == 0 {
+            // Check with no interval are push to a random worker immediately
+            let channels_guard = self.worker_channels.lock().unwrap();
+            if channels_guard.is_empty() {
+                warn!(check_id, "Failed to schedule one-time check: No workers available.");
+                return;
+            }
+
+            let channel_idx = rand::thread_rng().gen_range(0..channels_guard.len());
+            if let Err(e) = channels_guard[channel_idx].try_send(WorkerMessage::RunCheck(Arc::clone(&check))) {
+                error!(check_id, "Failed to enqueue a one-time check: {}", e);
+            }
+            info!(check_id, "Scheduled one-time check.");
+            return;
+        }
+
         {
             let mut checks = self.checks.write().unwrap();
             checks.insert(check_id.to_string(), Arc::clone(&check));
@@ -71,8 +88,11 @@ impl Scheduler {
         if is_new_interval {
             self.start_interval_ticker(interval_secs);
         }
-
-        debug!("Scheduled check '{}' with interval {}s", check_id, interval_secs);
+        info!(
+            check_id,
+            check_interval_secs = interval_secs,
+            "Scheduled periodic check."
+        );
     }
 
     /// Unschedule a check
@@ -109,12 +129,12 @@ impl Scheduler {
             }
         }
 
-        debug!("Unscheduled check '{}'", check_id);
+        debug!(check_id, "Unscheduled check.");
     }
 
     /// Shutdown the scheduler and all its workers
     pub async fn shutdown(&self) {
-        info!("Shutting down check scheduler");
+        info!("Shutting down check scheduler.");
 
         // Stop all interval tickers
         let ticker_handles = {
@@ -124,7 +144,7 @@ impl Scheduler {
 
         for (interval, handle) in ticker_handles {
             handle.abort();
-            debug!("Stopped ticker for interval {}s", interval);
+            debug!(check_interval_secs = interval, "Stopped ticker.");
         }
 
         let (channels, handles) = {
@@ -145,11 +165,11 @@ impl Scheduler {
         // Wait for all workers to finish
         for handle in handles {
             if let Err(e) = handle.await {
-                error!("Error when shutting down worker: {}", e);
+                error!(error = %e, "Error when shutting down worker.");
             }
         }
 
-        info!("Check scheduler shutdown complete");
+        info!("Check scheduler shutdown complete.");
     }
 
     /// Start a dedicated ticker for a specific interval
@@ -162,7 +182,6 @@ impl Scheduler {
         // Create and spawn the ticker task
         let handle = tokio::spawn(async move {
             let mut ticker = time::interval(interval_duration);
-            ticker.tick().await; // Skip the first immediate tick
 
             loop {
                 // Wait for the next interval tick
@@ -175,7 +194,10 @@ impl Scheduler {
                         Some(bucket) => bucket.iter().cloned().collect::<Vec<_>>(),
                         None => {
                             // This bucket no longer exists, exit the ticker
-                            debug!("Interval {}s no longer has any checks, stopping ticker", interval_secs);
+                            debug!(
+                                check_interval_secs = interval_secs,
+                                "Interval no longer has any checks, stopping ticker."
+                            );
                             break;
                         }
                     }
@@ -206,7 +228,7 @@ impl Scheduler {
 
                     // Send to worker
                     if let Err(e) = channel.try_send(WorkerMessage::RunCheck(check)) {
-                        error!("Failed to queue check '{}': {}", check_id, e);
+                        error!(error = %e, check_id, "Failed to queue check.");
                     }
                 }
             }
@@ -215,7 +237,7 @@ impl Scheduler {
         let mut tickers = self.interval_handles.lock().unwrap();
         tickers.insert(interval_secs, handle);
 
-        debug!("Started ticker for interval {}s", interval_secs);
+        debug!(check_interval_secs = interval_secs, "Started ticker.");
     }
 
     /// Stop the ticker for a specific interval
@@ -223,7 +245,7 @@ impl Scheduler {
         let mut tickers = self.interval_handles.lock().unwrap();
         if let Some(handle) = tickers.remove(&interval_secs) {
             handle.abort();
-            debug!("Stopped ticker for interval {}s", interval_secs);
+            debug!(check_interval_secs = interval_secs, "Stopped ticker.");
         }
     }
 
@@ -238,7 +260,8 @@ impl Scheduler {
             for _ in 0..(desired_count - current_count) {
                 self.add_worker();
             }
-            info!("Increased worker count to {}", desired_count);
+
+            info!(worker_count = desired_count, "Check worker count updated.");
         }
     }
 
@@ -256,20 +279,20 @@ impl Scheduler {
                 match msg {
                     WorkerMessage::RunCheck(check) => {
                         let check_id = check.id();
-                        debug!("Running check '{}'", check_id);
+                        info!(check_id, "Running check");
 
                         match check.run() {
-                            Ok(()) => debug!("Check '{}' completed successfully", check_id),
-                            Err(e) => error!("Check '{}' failed: {}", check_id, e),
+                            Ok(()) => debug!(check_id, "Check completed successfully."),
+                            Err(e) => error!(error = %e, check_id, "Check failed."),
                         }
                     }
                     WorkerMessage::Shutdown => {
-                        debug!("Worker received shutdown signal");
+                        debug!("Worker received shutdown signal.");
                         break;
                     }
                 }
             }
-            debug!("Worker shutting down");
+            debug!("Worker shutting down.");
         });
 
         let mut handles = self.worker_handles.lock().unwrap();
@@ -322,7 +345,7 @@ mod tests {
             *count += 1;
 
             if self.should_fail {
-                Err(generic_error!("Mock check failure"))
+                Err(generic_error!("Mock check failure."))
             } else {
                 Ok(())
             }
@@ -334,6 +357,14 @@ mod tests {
 
         fn id(&self) -> &str {
             &self.id
+        }
+
+        fn version(&self) -> &str {
+            "1.0"
+        }
+
+        fn source(&self) -> &str {
+            "mock"
         }
     }
 
@@ -386,6 +417,29 @@ mod tests {
 
         scheduler.unschedule(check1.id());
         scheduler.unschedule(check2.id());
+        scheduler.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_executes_one_time_check() {
+        let scheduler = Scheduler::new(2);
+
+        let check1 = Arc::new(MockCheck::new("one_time_check", 0));
+
+        scheduler.schedule(check1.clone() as Arc<dyn Check + Send + Sync>);
+
+        {
+            let buckets = scheduler.interval_buckets.read().unwrap();
+            assert!(
+                buckets.len() == 0,
+                "No interval buckets should exist for one-time checks"
+            );
+        }
+
+        time::sleep(Duration::from_secs(1)).await;
+
+        assert!(check1.get_run_count() == 1, "One time check should have run once");
+
         scheduler.shutdown().await;
     }
 
