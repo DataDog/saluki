@@ -1,7 +1,6 @@
 use std::sync::Arc;
 mod noop;
 mod python;
-use async_trait::async_trait;
 use saluki_env::autodiscovery::{Data, Instance};
 use stringtheory::MetaString;
 
@@ -16,11 +15,9 @@ use crate::sources::checks::check::Check;
 ///
 /// This trait allow us to have a unified way to build checks, and have different implementations
 /// for different runtimes.
-
-#[async_trait]
 pub trait CheckBuilder {
     /// Build a check
-    async fn build_check(
+    fn build_check(
         &self, name: &str, instance: &Instance, init_config: &Data, source: &MetaString,
     ) -> Option<Arc<dyn Check + Send + Sync>>;
 }

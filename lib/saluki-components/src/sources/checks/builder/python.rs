@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use pyo3::types::{PyDict, PyList, PyNone, PyTuple, PyType};
 use pyo3::PyObject;
 use pyo3::{prelude::*, IntoPyObjectExt};
@@ -51,15 +51,21 @@ impl Check for PythonCheck {
     }
 }
 
-pub struct PythonCheckBuilder {
+static PYTHON_CHECK_BUILDER: OnceLock<PythonEnvBuilder> = OnceLock::new();
+
+struct PythonEnvBuilder {
     valid: bool,
     agent_check_class: Option<PyObject>,
 }
 
-impl PythonCheckBuilder {
-    pub fn new() -> Self {
+impl PythonEnvBuilder {
+    pub fn get_instance() -> &'static PythonEnvBuilder {
+        PYTHON_CHECK_BUILDER.get_or_init(PythonEnvBuilder::initialize)
+    }
+
+    fn initialize() -> Self {
         pyo3::prepare_freethreaded_python();
-        let result = Python::with_gil(|py| -> Option<PyObject> {
+        let result = Python::with_gil(|py| -> Result<PyObject, GenericError> {
             if let Ok(sys) = py.import("sys") {
                 if let Ok(path_attr) = sys.getattr("path") {
                     match path_attr.downcast::<PyList>() {
@@ -100,14 +106,12 @@ impl PythonCheckBuilder {
                             info!("Python sys.path is: {:?}", p);
                         }
                         Err(e) => {
-                            error!(%e, "Could not get sys.path");
-                            return None;
+                            return Err(generic_error!("Could not get sys.path {:?}", e));
                         }
                     };
                 }
             } else {
-                error!("Could not import sys module");
-                return None;
+                return Err(generic_error!("Could not import sys module"));
             }
 
             // Validate that python env is correctly configured
@@ -117,50 +121,59 @@ impl PythonCheckBuilder {
                     if let Some(traceback) = e.traceback(py) {
                         error!("Traceback: {}", traceback.format().expect("Could format traceback"));
                     }
-                    error!(%e, "Could not import datadog_checks module");
-                    return None;
+                    return Err(generic_error!("Could not import datadog_checks module {:?}", e));
                 }
             };
             match modd.getattr("AgentCheck") {
                 Ok(c) => {
                     info!("All pre-requisites for running python checks.");
-                    Some(c.unbind())
+                    Ok(c.unbind())
                 }
                 Err(e) => {
                     if let Some(traceback) = e.traceback(py) {
                         error!("Traceback: {}", traceback.format().expect("Could format traceback"));
                     }
-                    error!(%e, "Could not get AgentCheck class.");
-                    None
+                    Err(generic_error!("Could not get AgentCheck class {:?}", e))
                 }
             }
         });
 
         match result {
-            Some(agent_check_class) => Self {
+            Ok(agent_check_class) => Self {
                 valid: true,
                 agent_check_class: Some(agent_check_class),
             },
-            None => Self {
-                valid: false,
-                agent_check_class: None,
-            },
+            Err(e) => {
+                warn!("Could not load Python runtime. Cannot build Python check. {:?}", e);
+                Self {
+                    valid: false,
+                    agent_check_class: None,
+                }
+            }
         }
     }
 }
 
-#[async_trait]
+pub struct PythonCheckBuilder;
+
 impl CheckBuilder for PythonCheckBuilder {
-    async fn build_check(
+    fn build_check(
         &self, name: &str, instance: &Instance, init_config: &Data, source: &MetaString,
     ) -> Option<Arc<dyn Check + Send + Sync>> {
-        if !self.valid {
-            warn!("Python check builder is not configured. Cannot build check.");
-            return None;
+        let env = PythonEnvBuilder::get_instance();
+        if !env.valid {
+            None
         } else {
             let mut load_errors = vec![];
-            for import_str in [name.to_string(), format!("datadog_checks.{}", name)].iter() {
-                match self.register_check_from_imports(name, import_str, instance, init_config, source) {
+            for import_path in [name.to_string(), format!("datadog_checks.{}", name)].iter() {
+                match self.register_check_from_imports(
+                    env.agent_check_class.as_ref().expect("agent check class"),
+                    name,
+                    import_path,
+                    instance,
+                    init_config,
+                    source,
+                ) {
                     Ok(handle) => return Some(handle),
                     Err(e) => {
                         load_errors.push(e.root_cause().to_string());
@@ -168,24 +181,20 @@ impl CheckBuilder for PythonCheckBuilder {
                 }
             }
             error!("Could not load check {} errors: {:?}", name, load_errors);
-            return None;
+            None
         }
     }
 }
 
 impl PythonCheckBuilder {
     fn register_check_from_imports(
-        &self, name: &str, import_path: &str, instance: &Instance, init_config: &Data, source: &MetaString,
+        &self, agent_check_class: &PyObject, name: &str, import_path: &str, instance: &Instance, init_config: &Data,
+        source: &MetaString,
     ) -> Result<Arc<dyn Check + Send + Sync>, GenericError> {
         pyo3::Python::with_gil(|py| {
             let module = py.import(import_path)?;
 
-            let base_class = self
-                .agent_check_class
-                .as_ref()
-                .ok_or_else(|| generic_error!("PythonCheckBuilder is not configured. Cannot build check."))?;
-
-            let check_class = base_class.bind(py);
+            let check_class = agent_check_class.bind(py);
 
             let checks = module
                 .dict()

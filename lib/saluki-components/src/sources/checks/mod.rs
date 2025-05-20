@@ -103,7 +103,7 @@ impl Source for ChecksSource {
 
         let mut event_rx = self.autodiscovery.subscribe().await;
         let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> =
-            vec![Arc::new(PythonCheckBuilder::new()), Arc::new(NoopCheckBuilder)];
+            vec![Arc::new(PythonCheckBuilder), Arc::new(NoopCheckBuilder)];
         let mut check_ids = HashSet::new();
         let scheduler = Scheduler::new(self.check_runners);
 
@@ -129,7 +129,7 @@ impl Source for ChecksSource {
                                         }
 
                                         for builder in check_builders.iter_mut() {
-                                            if let Some(check) = builder.build_check(&config.name, instance, &config.init_config, &config.source).await {
+                                            if let Some(check) = builder.build_check(&config.name, instance, &config.init_config, &config.source) {
                                                 runnable_checks.push(check);
                                                 check_ids.insert(check_id.clone());
                                                 break;
