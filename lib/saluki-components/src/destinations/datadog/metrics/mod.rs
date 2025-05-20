@@ -169,17 +169,15 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         .await;
 
         let series_encoder = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Series);
-        let mut series_request_builder =
-            RequestBuilder::new(series_encoder, rb_buffer_pool.clone(), compression_scheme).await?;
-        series_request_builder.with_max_inputs_per_payload(self.max_metrics_per_payload);
+        let mut series_rb = RequestBuilder::new(series_encoder, rb_buffer_pool.clone(), compression_scheme).await?;
+        series_rb.with_max_inputs_per_payload(self.max_metrics_per_payload);
 
         let sketches_encoder = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Sketches);
-        let mut sketches_request_builder =
-            RequestBuilder::new(sketches_encoder, rb_buffer_pool.clone(), compression_scheme).await?;
-        sketches_request_builder.with_max_inputs_per_payload(self.max_metrics_per_payload);
+        let mut sketches_rb = RequestBuilder::new(sketches_encoder, rb_buffer_pool.clone(), compression_scheme).await?;
+        sketches_rb.with_max_inputs_per_payload(self.max_metrics_per_payload);
 
         if let Some(override_path) = self.endpoint_path_override {
-            series_request_builder.with_endpoint_uri_override(override_path);
+            series_rb.with_endpoint_uri_override(override_path);
         }
 
         let flush_timeout = match self.flush_timeout_secs {
@@ -190,8 +188,8 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         };
 
         Ok(Box::new(DatadogMetrics {
-            series_request_builder,
-            sketches_request_builder,
+            series_rb,
+            sketches_rb,
             forwarder,
             telemetry,
             flush_timeout,
@@ -242,8 +240,8 @@ pub struct DatadogMetrics<O>
 where
     O: ObjectPool<Item = BytesBuffer> + 'static,
 {
-    series_request_builder: RequestBuilder<MetricsEndpointEncoder, O>,
-    sketches_request_builder: RequestBuilder<MetricsEndpointEncoder, O>,
+    series_rb: RequestBuilder<MetricsEndpointEncoder, O>,
+    sketches_rb: RequestBuilder<MetricsEndpointEncoder, O>,
     forwarder: TransactionForwarder<FrozenChunkedBytesBuffer>,
     telemetry: ComponentTelemetry,
     flush_timeout: Duration,
@@ -256,8 +254,8 @@ where
 {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
         let Self {
-            series_request_builder,
-            sketches_request_builder,
+            series_rb,
+            sketches_rb,
             forwarder,
             telemetry,
             flush_timeout,
@@ -270,14 +268,18 @@ where
 
         // Spawn our request builder task.
         let (builder_tx, builder_rx) = mpsc::channel(8);
-        let request_builder_handle = context.global_thread_pool().spawn_traced(run_request_builder(
-            series_request_builder,
-            sketches_request_builder,
+
+        let request_builder_fut = run_request_builder(
+            series_rb,
+            sketches_rb,
             telemetry,
             builder_rx,
             forwarder_handle,
             flush_timeout,
-        ));
+        );
+        let request_builder_handle = context
+            .global_thread_pool()
+            .spawn_traced_named("dd-metrics-request-builder", request_builder_fut);
 
         health.mark_ready();
         debug!("Datadog Metrics destination started.");
