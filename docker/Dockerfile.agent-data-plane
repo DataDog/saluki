@@ -44,8 +44,7 @@ RUN chmod +x /install-protoc.sh && /install-protoc.sh
 # Build ADP.
 WORKDIR /adp
 COPY . /adp
-RUN mkdir -p /adp/target/bin && cargo build --profile ${BUILD_PROFILE} --bin agent-data-plane --features ${BUILD_FEATURES} --target-dir /adp/target && \
-cp /adp/target/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/
+RUN cargo build --profile ${BUILD_PROFILE} --bin agent-data-plane --features ${BUILD_FEATURES}
 
 # Calculate the necessary licenses that we need to include in the final image.
 FROM ${BUILD_IMAGE} AS license-builder
@@ -65,10 +64,7 @@ RUN tail -n +2 /tmp/LICENSE-3rdparty.csv | awk -F ',' '{print $3}' | awk -F' ' '
 # Now stick our resulting binary and licenses in a clean image.
 FROM ${APP_IMAGE}
 
-# Docs here https://pyo3.rs/v0.14.5/building_and_distribution#configuring-the-python-version
-# If needed, ENV PYO3_PYTHON="/opt/datadog-agent/embedded/bin/python3.12" could be used, but auto-detection works in our case
-ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
-ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
+ARG BUILD_PROFILE=release
 
 # Only install ca-certificates if the directory doesn't exist.
 #
@@ -82,7 +78,7 @@ USER root
 RUN test -d /usr/share/ca-certificates || (apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates=20240203~22.04.1 && \
     apt-get clean && rm -rf /var/lib/apt/lists)
-COPY --from=builder /adp/target/bin/agent-data-plane /usr/local/bin/agent-data-plane
+COPY --from=builder /adp/target/${BUILD_PROFILE}/agent-data-plane /usr/local/bin/agent-data-plane
 COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
 COPY --from=license-builder /licenses /opt/datadog/agent-data-plane/LICENSES
 
