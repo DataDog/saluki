@@ -120,10 +120,10 @@ build-bundled-agent-image-linux-fips-jmx:
   needs:
     - build-adp-image-release-fips
   variables:
-    DD_AGENT_IMAGE: "${SOURCE_DD_AGENT_IMAGE_FIPS_JMX}}"
+    DD_AGENT_IMAGE: "${SOURCE_DD_AGENT_IMAGE_FIPS_JMX}"
     ADP_IMAGE: "${SOURCE_ADP_RELEASE_IMAGE_FIPS}"
-    IMAGE_TAG: "${INTERMEDIATE_IMAGE_REPO}/${TARGET_AGENT_ADP_RELEASE_IMAGE_FIPS_JMX}}"
-    IMAGE_VERSION: "${TARGET_AGENT_ADP_RELEASE_VERSION_FIPS_JMX}}"
+    IMAGE_TAG: "${INTERMEDIATE_IMAGE_REPO}/${TARGET_AGENT_ADP_RELEASE_IMAGE_FIPS_JMX}"
+    IMAGE_VERSION: "${TARGET_AGENT_ADP_RELEASE_VERSION_FIPS_JMX}"
 
 # Publish our bundled Agent images _and_ the standalone ADP images,
 publish-bundled-agent-image-linux:
