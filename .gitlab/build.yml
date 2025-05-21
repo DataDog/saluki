@@ -1,4 +1,5 @@
 .build-adp-definition:
+  stage: build
   image: ${DOCKER_BUILD_IMAGE}
   needs:
     - calculate-build-metadata
@@ -55,7 +56,6 @@ calculate-build-metadata:
 # images, as there are additional modifications required for those use cases. We use these images as the base for those
 # depending on how this pipeline is invoked.
 build-adp-image-internal:
-  stage: build
   extends: [.build-common-variables, .build-adp-definition]
   variables:
     BUILD_IMAGE: ${BASE_BUILD_IMAGE_INTERNAL}
@@ -64,7 +64,6 @@ build-adp-image-internal:
     IMAGE_VERSION: ${ADP_IMAGE_VERSION}
 
 build-adp-image-internal-fips:
-  stage: build
   extends: [.build-common-variables, .build-adp-definition]
   variables:
     BUILD_FEATURES: "fips"
@@ -83,7 +82,6 @@ build-adp-image-internal-fips:
 # We use a different base "app" image as our internal base image isn't certified for public consumption, and instead we
 # use something closer to a plain Ubuntu image.
 build-adp-image-release:
-  stage: build
   extends: [.build-common-variables, .build-adp-definition]
   rules:
     - if: !reference [.on_official_release, rules, if]
@@ -94,7 +92,6 @@ build-adp-image-release:
     IMAGE_VERSION: ${ADP_IMAGE_VERSION}
 
 build-adp-image-release-fips:
-  stage: build
   extends: [.build-common-variables, .build-adp-definition]
   rules:
     - if: !reference [.on_official_release, rules, if]
