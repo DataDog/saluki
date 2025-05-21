@@ -48,12 +48,14 @@
       --label "org.opencontainers.image.authors=Datadog <package@datadoghq.com>"
       --label "org.opencontainers.image.base.name=${DD_AGENT_IMAGE}"
       --label "org.opencontainers.image.created=${CI_PIPELINE_CREATED_AT}"
-      --label "org.opencontainers.image.ref.name=${PUBLIC_DD_AGENT_IMAGE_BASE}"
+      --label "org.opencontainers.image.ref.name=ubuntu"
       --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}"
-      --label "org.opencontainers.image.source=https://github.com/DataDog/saluki"
+      --label "org.opencontainers.image.source=https://github.com/DataDog/datadog-agent"
       --label "org.opencontainers.image.title=Datadog Agent (with ADP)"
       --label "org.opencontainers.image.vendor=Datadog, Inc."
       --label "org.opencontainers.image.version=${IMAGE_VERSION}"
+      --label "baseimage.name=ubuntu:24.04"
+      --label "baseimage.os=ubuntu noble"
       --push
       .
 
