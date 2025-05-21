@@ -1031,6 +1031,11 @@ mod tests {
         let s = interner.try_intern("hello interned str!").unwrap();
         let ms = MetaString::from(s);
         assert!(ms.is_cheaply_cloneable());
+
+        // Shared strings are always cheap to clone.
+        let s = Arc::from("hello shared str!");
+        let ms = MetaString::from(s);
+        assert!(ms.is_cheaply_cloneable());
     }
 
     fn arb_unicode_str_max_len(max_len: usize) -> impl Strategy<Value = String> {
