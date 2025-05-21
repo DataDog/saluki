@@ -1,6 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
 
 use rand::Rng;
 use tokio::sync::mpsc;
@@ -20,29 +19,25 @@ enum WorkerMessage {
 /// It maintains a dynamic pool of workers and organizes checks by their intervals.
 pub struct Scheduler {
     check_runners: usize,
-    worker_channels: Arc<Mutex<Vec<mpsc::Sender<WorkerMessage>>>>,
+    channels: Arc<Mutex<HashMap<u64, mpsc::Sender<WorkerMessage>>>>,
+    channels_load: Arc<Mutex<HashMap<u64, usize>>>,
     worker_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
-    interval_buckets: Arc<RwLock<HashMap<u64, HashSet<String>>>>,
-    checks: Arc<RwLock<HashMap<String, Arc<dyn Check + Send + Sync>>>>,
-    interval_handles: Arc<Mutex<HashMap<u64, JoinHandle<()>>>>,
+    checks: Arc<RwLock<HashMap<String, JoinHandle<()>>>>,
 }
 
 impl Scheduler {
     pub fn new(check_runners: usize) -> Self {
-        let worker_channels: Arc<Mutex<Vec<mpsc::Sender<WorkerMessage>>>> = Arc::new(Mutex::new(Vec::new()));
+        let channels: Arc<Mutex<HashMap<u64, mpsc::Sender<WorkerMessage>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let channels_load: Arc<Mutex<HashMap<u64, usize>>> = Arc::new(Mutex::new(HashMap::new()));
         let worker_handles: Arc<Mutex<Vec<JoinHandle<()>>>> = Arc::new(Mutex::new(Vec::new()));
-        let interval_buckets: Arc<RwLock<HashMap<u64, HashSet<String>>>> = Arc::new(RwLock::new(HashMap::new()));
-        let checks: Arc<RwLock<HashMap<String, Arc<dyn Check + Send + Sync + 'static>>>> =
-            Arc::new(RwLock::new(HashMap::new()));
-        let interval_handles: Arc<Mutex<HashMap<u64, JoinHandle<()>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let checks: Arc<RwLock<HashMap<String, JoinHandle<()>>>> = Arc::new(RwLock::new(HashMap::new()));
 
         let scheduler = Self {
             check_runners,
-            worker_channels,
+            channels,
+            channels_load,
             worker_handles,
-            interval_buckets,
             checks,
-            interval_handles,
         };
 
         scheduler.adjust_worker_count(scheduler.check_runners);
@@ -52,49 +47,92 @@ impl Scheduler {
 
     /// Schedule a check
     pub fn schedule(&self, check: Arc<dyn Check + Send + Sync>) {
-        let check_id = check.id();
         let interval_secs = check.interval().as_secs();
 
         if interval_secs == 0 {
+            let check_id = check.id().to_string();
             // Check with no interval are push to a random worker immediately
-            let channels_guard = self.worker_channels.lock().unwrap();
+            let channels_guard = self.channels.lock().unwrap();
             if channels_guard.is_empty() {
                 warn!(check_id, "Failed to schedule one-time check: No workers available.");
                 return;
             }
 
-            let channel_idx = rand::thread_rng().gen_range(0..channels_guard.len());
-            let channel = channels_guard[channel_idx].clone();
+            let channel = {
+                let mut loads = self.channels_load.lock().unwrap();
+                // Find channel with minimum load
+                let min_idx = loads
+                    .iter()
+                    .min_by_key(|(_, load)| **load)
+                    .map(|(idx, _)| *idx)
+                    .unwrap_or(rand::thread_rng().gen_range(0..channels_guard.len() as u64));
+
+                // Increment the load counter
+                let new_load = loads[&min_idx] + 1;
+                loads.insert(min_idx, new_load);
+                channels_guard[&min_idx].clone()
+            };
             let check = Arc::clone(&check);
-            let check_id_owned = check_id.to_string();
 
             tokio::spawn(async move {
                 if let Err(e) = channel.send(WorkerMessage::RunCheck(check)).await {
-                    error!(error = %e, check_id = %check_id_owned, "Failed to enqueue a one-time check because channel is closed.");
+                    error!(error = %e, check_id = %check_id.clone(), "Failed to enqueue a one-time check because channel is closed.");
                     return;
                 }
-                info!(check_id = %check_id_owned, "Scheduled one-time check.");
+                info!(check_id = %check_id.clone(), "Scheduled one-time check.");
             });
             return;
         };
-
+        {
+            let check_id = check.id();
+            let checks = self.checks.read().unwrap();
+            if checks.contains_key(check_id) {
+                warn!(check_id, "Check already scheduled, skipping.");
+                return;
+            }
+        }
+        let check_id = check.id().to_string();
         {
             let mut checks = self.checks.write().unwrap();
-            checks.insert(check_id.to_string(), Arc::clone(&check));
+            let mut ticker = time::interval(check.interval());
+            let channels_load = Arc::clone(&self.channels_load);
+            let channels = Arc::clone(&self.channels);
+            let check_id = check.id().to_string();
+            checks.insert(
+                check_id.clone(),
+                tokio::spawn(async move {
+                    loop {
+                        // Wait for the next interval tick
+                        ticker.tick().await;
+
+                        let channel = {
+                            let channels_guard = channels.lock().unwrap();
+                            if channels_guard.is_empty() {
+                                warn!(check_id, "Failed to schedule one-time check: No workers available.");
+                                return;
+                            }
+                            let mut loads = channels_load.lock().unwrap();
+                            // Find channel with minimum load
+                            let min_idx = loads
+                                .iter()
+                                .min_by_key(|(_, load)| **load)
+                                .map(|(idx, _)| *idx)
+                                .unwrap_or(rand::thread_rng().gen_range(0..channels_guard.len() as u64));
+                            // Increment the load counter
+                            let new_load = loads[&min_idx] + 1;
+                            loads.insert(min_idx, new_load);
+                            channels_guard[&min_idx].clone()
+                        };
+                        let check = Arc::clone(&check);
+                        if let Err(e) = channel.send(WorkerMessage::RunCheck(check)).await {
+                            error!(error = %e, check_id = %check_id, "Failed to enqueue a periodic check because channel is closed.");
+                            break;
+                        }
+                    }
+                }),
+            );
         }
 
-        let is_new_interval = {
-            let mut buckets = self.interval_buckets.write().unwrap();
-            let bucket = buckets.entry(interval_secs).or_default();
-
-            let is_new = bucket.is_empty();
-            bucket.insert(check_id.to_string());
-            is_new
-        };
-
-        if is_new_interval {
-            self.start_interval_ticker(interval_secs);
-        }
         info!(
             check_id,
             check_interval_secs = interval_secs,
@@ -104,38 +142,12 @@ impl Scheduler {
 
     /// Unschedule a check
     pub fn unschedule(&self, check_id: &str) {
-        let mut interval_secs = None;
-
         {
             let mut checks = self.checks.write().unwrap();
             if let Some(check) = checks.remove(check_id) {
-                interval_secs = Some(check.interval().as_secs());
+                std::mem::drop(check)
             }
         }
-
-        if let Some(interval_secs) = interval_secs {
-            let bucket_empty = {
-                let mut buckets = self.interval_buckets.write().unwrap();
-                if let Some(bucket) = buckets.get_mut(&interval_secs) {
-                    bucket.remove(check_id);
-
-                    let is_empty = bucket.is_empty();
-
-                    if is_empty {
-                        buckets.remove(&interval_secs);
-                    }
-
-                    is_empty
-                } else {
-                    false
-                }
-            };
-
-            if bucket_empty {
-                self.stop_interval_ticker(interval_secs);
-            }
-        }
-
         debug!(check_id, "Unscheduled check.");
     }
 
@@ -143,19 +155,8 @@ impl Scheduler {
     pub async fn shutdown(&self) {
         info!("Shutting down check scheduler.");
 
-        // Stop all interval tickers
-        let ticker_handles = {
-            let mut tickers = self.interval_handles.lock().unwrap();
-            std::mem::take(&mut *tickers)
-        };
-
-        for (interval, handle) in ticker_handles {
-            handle.abort();
-            debug!(check_interval_secs = interval, "Stopped ticker.");
-        }
-
         let (channels, handles) = {
-            let mut channels_guard = self.worker_channels.lock().unwrap();
+            let mut channels_guard = self.channels.lock().unwrap();
             let mut handles_guard = self.worker_handles.lock().unwrap();
 
             (
@@ -165,7 +166,7 @@ impl Scheduler {
         };
 
         // Send shutdown signal to all workers
-        for channel in channels {
+        for (_chanel_id, channel) in channels {
             let _ = channel.send(WorkerMessage::Shutdown).await;
         }
 
@@ -179,84 +180,6 @@ impl Scheduler {
         info!("Check scheduler shutdown complete.");
     }
 
-    /// Start a dedicated ticker for a specific interval
-    fn start_interval_ticker(&self, interval_secs: u64) {
-        let interval_duration = Duration::from_secs(interval_secs);
-        let checks = Arc::clone(&self.checks);
-        let interval_buckets = Arc::clone(&self.interval_buckets);
-        let worker_channels = Arc::clone(&self.worker_channels);
-
-        // Create and spawn the ticker task
-        let handle = tokio::spawn(async move {
-            let mut ticker = time::interval(interval_duration);
-
-            loop {
-                // Wait for the next interval tick
-                ticker.tick().await;
-
-                // Get all checks in this interval
-                let check_ids = {
-                    let buckets = interval_buckets.read().unwrap();
-                    match buckets.get(&interval_secs) {
-                        Some(bucket) => bucket.iter().cloned().collect::<Vec<_>>(),
-                        None => {
-                            // This bucket no longer exists, exit the ticker
-                            debug!(
-                                check_interval_secs = interval_secs,
-                                "Interval no longer has any checks, stopping ticker."
-                            );
-                            break;
-                        }
-                    }
-                };
-
-                let channels = {
-                    let channels_guard = worker_channels.lock().unwrap();
-                    if channels_guard.is_empty() {
-                        continue; // No workers available
-                    }
-                    channels_guard.clone()
-                };
-
-                // Queue each check for execution using round-robin distribution
-                let channel_count = channels.len();
-                for (i, check_id) in check_ids.into_iter().enumerate() {
-                    let check = {
-                        let checks_map = checks.read().unwrap();
-                        match checks_map.get(&check_id) {
-                            Some(check) => Arc::clone(check),
-                            None => continue,
-                        }
-                    };
-
-                    // Simple round-robin: select channel based on check index
-                    let channel_idx = i % channel_count;
-                    let channel = &channels[channel_idx];
-
-                    // Send to worker
-                    if let Err(e) = channel.send(WorkerMessage::RunCheck(check)).await {
-                        error!(check_id, error = %e, "Failed to send check to worker because channel is closed. Stopping ticker.");
-                        break;
-                    }
-                }
-            }
-        });
-
-        let mut tickers = self.interval_handles.lock().unwrap();
-        tickers.insert(interval_secs, handle);
-
-        debug!(check_interval_secs = interval_secs, "Started ticker.");
-    }
-
-    /// Stop the ticker for a specific interval
-    fn stop_interval_ticker(&self, interval_secs: u64) {
-        let mut tickers = self.interval_handles.lock().unwrap();
-        if let Some(handle) = tickers.remove(&interval_secs) {
-            handle.abort();
-            debug!(check_interval_secs = interval_secs, "Stopped ticker.");
-        }
-    }
-
     /// Adjust the number of workers
     fn adjust_worker_count(&self, desired_count: usize) {
         let current_count = {
@@ -265,31 +188,33 @@ impl Scheduler {
         };
 
         if desired_count > current_count {
-            let mut handles = vec![];
             for _ in 0..(desired_count - current_count) {
-                let handle = self.add_worker();
-                handles.push(handle);
-            }
-
-            {
-                let mut handles_guard = self.worker_handles.lock().unwrap();
-                handles_guard.extend(handles);
+                self.add_worker(self.next_worker_id());
             }
 
             info!(worker_count = desired_count, "Check worker count updated.");
         }
     }
 
+    /// Get the next worker ID
+    fn next_worker_id(&self) -> u64 {
+        let mut rng = rand::thread_rng();
+        rng.gen_range(1..=u64::MAX)
+    }
+
     /// Add a new worker
-    fn add_worker(&self) -> JoinHandle<()> {
+    fn add_worker(&self, worker_id: u64) {
         let (sender, mut receiver) = mpsc::channel::<WorkerMessage>(100);
 
         {
-            let mut channels = self.worker_channels.lock().unwrap();
-            channels.push(sender);
+            let mut channels = self.channels.lock().unwrap();
+            channels.insert(worker_id, sender);
+            let mut loads = self.channels_load.lock().unwrap();
+            loads.insert(worker_id, 0);
         }
 
-        tokio::spawn(async move {
+        let channels_load = Arc::clone(&self.channels_load);
+        let handle = tokio::spawn(async move {
             while let Some(msg) = receiver.recv().await {
                 match msg {
                     WorkerMessage::RunCheck(check) => {
@@ -300,6 +225,13 @@ impl Scheduler {
                             Ok(()) => debug!(check_id, "Check completed successfully."),
                             Err(e) => error!(error = %e, check_id, "Check failed."),
                         }
+
+                        // Decrement load counter
+                        let mut loads = channels_load.lock().unwrap();
+                        let load = loads.get_mut(&worker_id);
+                        if let Some(load) = load {
+                            *load -= 1;
+                        }
                     }
                     WorkerMessage::Shutdown => {
                         debug!("Worker received shutdown signal.");
@@ -308,7 +240,12 @@ impl Scheduler {
                 }
             }
             debug!("Worker shutting down.");
-        })
+        });
+
+        {
+            let mut handles_guard = self.worker_handles.lock().unwrap();
+            handles_guard.push(handle);
+        }
     }
 }
 
@@ -407,14 +344,8 @@ mod tests {
         scheduler.schedule(check2.clone() as Arc<dyn Check + Send + Sync>);
 
         {
-            let buckets = scheduler.interval_buckets.read().unwrap();
-            assert!(buckets.contains_key(&1), "Interval bucket should exist");
-            let bucket = buckets.get(&1).unwrap();
-            assert!(bucket.contains("check-1s"), "Check should be in the interval bucket");
-            assert!(
-                !bucket.contains("check-2s"),
-                "Check should not be in the interval bucket"
-            );
+            let checks = scheduler.checks.read().unwrap();
+            assert_eq!(checks.len(), 2, "Two checks should be scheduled");
         }
 
         time::sleep(Duration::from_secs(3)).await;
@@ -441,11 +372,8 @@ mod tests {
         scheduler.schedule(check1.clone() as Arc<dyn Check + Send + Sync>);
 
         {
-            let buckets = scheduler.interval_buckets.read().unwrap();
-            assert!(
-                buckets.len() == 0,
-                "No interval buckets should exist for one-time checks"
-            );
+            let checks = scheduler.checks.read().unwrap();
+            assert!(checks.len() == 0, "No checks handle should exist for one-time checks");
         }
 
         time::sleep(Duration::from_secs(1)).await;
@@ -465,7 +393,7 @@ mod tests {
 
         {
             let checks = scheduler.checks.read().unwrap();
-            assert!(checks.contains_key("test-check"), "Check should be in the registry");
+            assert!(checks.contains_key(check.id()), "Check should be in the registry");
         }
 
         scheduler.unschedule(check.id());
@@ -479,8 +407,11 @@ mod tests {
         }
 
         {
-            let buckets = scheduler.interval_buckets.read().unwrap();
-            assert!(!buckets.contains_key(&5), "Interval bucket should be removed");
+            let buckets = scheduler.checks.read().unwrap();
+            assert!(
+                !buckets.contains_key(check.id()),
+                "Checks should be removed from the registry"
+            );
         }
     }
 
@@ -505,46 +436,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_multiple_checks_same_interval() {
-        let scheduler = Scheduler::new(2);
-
-        let checks = (0..5)
-            .map(|i| Arc::new(MockCheck::new(&format!("same-interval-{}", i), 1)))
-            .collect::<Vec<_>>();
-
-        for check in &checks {
-            scheduler.schedule(Arc::clone(check) as Arc<dyn Check + Send + Sync>);
-        }
-
-        time::sleep(Duration::from_secs(2)).await;
-
-        for (i, check) in checks.iter().enumerate() {
-            assert!(check.get_run_count() > 0, "Check {} should have run at least once", i);
-        }
-
-        {
-            let buckets = scheduler.interval_buckets.read().unwrap();
-            assert_eq!(buckets.len(), 1, "Should have only one interval bucket");
-
-            let bucket = buckets.get(&1).unwrap();
-            assert_eq!(bucket.len(), 5, "Bucket should contain all 5 checks");
-        }
-
-        for check in &checks {
-            scheduler.unschedule(check.id());
-        }
-
-        time::sleep(Duration::from_millis(100)).await;
-
-        {
-            let buckets = scheduler.interval_buckets.read().unwrap();
-            assert_eq!(buckets.len(), 0, "All interval buckets should be removed");
-        }
-
-        scheduler.shutdown().await;
-    }
-
-    #[tokio::test]
     async fn test_shutdown() {
         let scheduler = Scheduler::new(3);
 
@@ -562,11 +453,8 @@ mod tests {
             let handles = scheduler.worker_handles.lock().unwrap();
             assert_eq!(handles.len(), 0, "No worker handles should remain after shutdown");
 
-            let channels = scheduler.worker_channels.lock().unwrap();
+            let channels = scheduler.channels.lock().unwrap();
             assert_eq!(channels.len(), 0, "No worker channels should remain after shutdown");
-
-            let tickers = scheduler.interval_handles.lock().unwrap();
-            assert_eq!(tickers.len(), 0, "No interval tickers should remain after shutdown");
         }
     }
 }
