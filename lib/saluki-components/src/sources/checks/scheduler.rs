@@ -265,8 +265,15 @@ impl Scheduler {
         };
 
         if desired_count > current_count {
+            let mut handles = vec![];
             for _ in 0..(desired_count - current_count) {
-                self.add_worker();
+                let handle = self.add_worker();
+                handles.push(handle);
+            }
+
+            {
+                let mut handles_guard = self.worker_handles.lock().unwrap();
+                handles_guard.extend(handles);
             }
 
             info!(worker_count = desired_count, "Check worker count updated.");
@@ -274,7 +281,7 @@ impl Scheduler {
     }
 
     /// Add a new worker
-    fn add_worker(&self) {
+    fn add_worker(&self) -> JoinHandle<()> {
         let (sender, mut receiver) = mpsc::channel::<WorkerMessage>(100);
 
         {
@@ -282,7 +289,7 @@ impl Scheduler {
             channels.push(sender);
         }
 
-        let handle = tokio::spawn(async move {
+        tokio::spawn(async move {
             while let Some(msg) = receiver.recv().await {
                 match msg {
                     WorkerMessage::RunCheck(check) => {
@@ -301,10 +308,7 @@ impl Scheduler {
                 }
             }
             debug!("Worker shutting down.");
-        });
-
-        let mut handles = self.worker_handles.lock().unwrap();
-        handles.push(handle);
+        })
     }
 }
 
