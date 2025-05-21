@@ -63,8 +63,8 @@ impl Scheduler {
                 // Find channel with minimum load
                 let min_idx = loads
                     .iter()
-                    .min_by_key(|(_, load)| **load)
-                    .map(|(idx, _)| *idx)
+                    .min_by_key(|(_, &load)| load)
+                    .map(|(&idx, _)| idx)
                     .unwrap_or(rand::thread_rng().gen_range(0..channels_guard.len() as u64));
 
                 // Increment the load counter
@@ -115,8 +115,8 @@ impl Scheduler {
                             // Find channel with minimum load
                             let min_idx = loads
                                 .iter()
-                                .min_by_key(|(_, load)| **load)
-                                .map(|(idx, _)| *idx)
+                                .min_by_key(|(_, &load)| load)
+                                .map(|(&idx, _)| idx)
                                 .unwrap_or(rand::thread_rng().gen_range(0..channels_guard.len() as u64));
                             // Increment the load counter
                             let new_load = loads[&min_idx] + 1;
