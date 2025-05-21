@@ -64,12 +64,19 @@ impl Scheduler {
             }
 
             let channel_idx = rand::thread_rng().gen_range(0..channels_guard.len());
-            if let Err(e) = channels_guard[channel_idx].try_send(WorkerMessage::RunCheck(Arc::clone(&check))) {
-                error!(check_id, "Failed to enqueue a one-time check: {}", e);
-            }
-            info!(check_id, "Scheduled one-time check.");
+            let channel = channels_guard[channel_idx].clone();
+            let check = Arc::clone(&check);
+            let check_id_owned = check_id.to_string();
+
+            tokio::spawn(async move {
+                if let Err(e) = channel.send(WorkerMessage::RunCheck(check)).await {
+                    error!(error = %e, check_id = %check_id_owned, "Failed to enqueue a one-time check because channel is closed.");
+                    return;
+                }
+                info!(check_id = %check_id_owned, "Scheduled one-time check.");
+            });
             return;
-        }
+        };
 
         {
             let mut checks = self.checks.write().unwrap();
@@ -227,8 +234,9 @@ impl Scheduler {
                     let channel = &channels[channel_idx];
 
                     // Send to worker
-                    if let Err(e) = channel.try_send(WorkerMessage::RunCheck(check)) {
-                        error!(error = %e, check_id, "Failed to queue check.");
+                    if let Err(e) = channel.send(WorkerMessage::RunCheck(check)).await {
+                        error!(check_id, error = %e, "Failed to send check to worker because channel is closed. Stopping ticker.");
+                        break;
                     }
                 }
             }
