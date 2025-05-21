@@ -14,6 +14,9 @@ use std::{
     str::from_utf8_unchecked, sync::Arc,
 };
 
+mod clone;
+pub use self::clone::CheapMetaString;
+
 pub mod interning;
 use serde::Serialize;
 
@@ -190,6 +193,13 @@ enum UnionType {
     Interned,
     Inlined,
     Shared,
+}
+
+impl UnionType {
+    #[inline]
+    const fn is_owned(&self) -> bool {
+        matches!(self, UnionType::Owned)
+    }
 }
 
 impl DiscriminantUnion {
@@ -442,8 +452,8 @@ impl Inner {
         }
     }
 
-    #[cfg(test)]
-    fn get_union_type(&self) -> UnionType {
+    #[inline]
+    const fn get_union_type(&self) -> UnionType {
         unsafe { self.discriminant.get_union_type() }
     }
 
@@ -669,6 +679,12 @@ impl MetaString {
     /// Returns `true` if `self` has a length of zero bytes.
     pub fn is_empty(&self) -> bool {
         self.deref().is_empty()
+    }
+
+    /// Returns `true` if `self` can be cheaply cloned.
+    pub const fn is_cheaply_cloneable(&self) -> bool {
+        // If we're wrapping an owned string, cloning means cloning that allocation. All other types are cheap to clone.
+        !self.inner.get_union_type().is_owned()
     }
 
     /// Consumes `self` and returns an owned `String`.
@@ -986,6 +1002,40 @@ mod tests {
         assert_eq!("", &*meta);
         assert_eq!(meta.inner.get_union_type(), UnionType::Empty);
         assert_eq!("", meta.into_owned());
+    }
+
+    #[test]
+    fn test_is_cheaply_cloneable() {
+        // Owned strings are never cheap to clone.
+        let s =
+            String::from("big ol' stringy string that can't be inlined and lives out its bleak existence in the heap");
+        let ms = MetaString::from(s);
+        assert!(!ms.is_cheaply_cloneable());
+
+        // Empty strings are always cheap to clone.
+        let ms = MetaString::empty();
+        assert!(ms.is_cheaply_cloneable());
+
+        // Inlined strings are always cheap to clone.
+        let s = "hello";
+        let ms = MetaString::try_inline(s).expect("inlined string should fit");
+        assert!(ms.is_cheaply_cloneable());
+
+        // Static strings are always cheap to clone.
+        let s = "hello there, world! it's me, margaret!";
+        let ms = MetaString::from_static(s);
+        assert!(ms.is_cheaply_cloneable());
+
+        // Interned strings are always cheap to clone.
+        let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
+        let s = interner.try_intern("hello interned str!").unwrap();
+        let ms = MetaString::from(s);
+        assert!(ms.is_cheaply_cloneable());
+
+        // Shared strings are always cheap to clone.
+        let s = Arc::from("hello shared str!");
+        let ms = MetaString::from(s);
+        assert!(ms.is_cheaply_cloneable());
     }
 
     fn arb_unicode_str_max_len(max_len: usize) -> impl Strategy<Value = String> {
