@@ -26,8 +26,6 @@ variables:
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image that we
   # publicly publish.
   PUBLIC_DD_AGENT_VERSION: "7.65.2"
-  PUBLIC_DD_AGENT_IMAGE_BASE: "gcr.io/datadoghq/agent"
-  PUBLIC_DD_AGENT_IMAGE: "${PUBLIC_DD_AGENT_IMAGE_BASE}:${PUBLIC_DD_AGENT_VERSION}"
 
 default:
   tags: ["arch:amd64"]
@@ -42,8 +40,6 @@ default:
   variables:
     ADP_IMAGE_REPO_NAME: "${SALUKI_IMAGE_REPO_PREFIX}/agent-data-plane"
     ADP_IMAGE_BASE: "${IMAGE_REGISTRY}/${ADP_IMAGE_REPO_NAME}"
-    CHECKS_AGENT_IMAGE_REPO_NAME: "${SALUKI_IMAGE_REPO_PREFIX}/checks-agent"
-    CHECKS_AGENT_IMAGE_BASE: "${IMAGE_REGISTRY}/${CHECKS_AGENT_IMAGE_REPO_NAME}"
 
     # Base images to copy Agent Data Plane into, depending on whether the image is meant for our internal environment or
     # public registries.
