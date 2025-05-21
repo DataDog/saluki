@@ -10,24 +10,56 @@ stages:
   - internal
 
 variables:
-  # High-level repository paths we build off of, and dedicated images needed for various jobs.
-  IMAGE_REGISTRY: "registry.ddbuild.io"
-  DOCKER_BUILD_IMAGE: "486234852809.dkr.ecr.us-east-1.amazonaws.com/docker:24.0.4-gbi-focal"
-  GBI_BASE_IMAGE: "${IMAGE_REGISTRY}/images/base/gbi-ubuntu_2204:release"
+  BASE_IMAGE_REGISTRY: "registry.ddbuild.io"
 
-  # Base repository paths for where our CI images go, whether they're helper images or actual
-  # output artifacts like ADP itself.
+  # Base repositories for all Saluki-based images.
+  #
+  # In container image parlance, if you have an image with the path `registry.ddbuild.io/saluki/foobar:latest`, then
+  # `registry.ddbuild.io` is the "registry" and `saluki/foobar` is the "repository". In some cases, we need the full
+  # path, and in other cases, we only need the repository... so we've split it into multiple pieces here for easier
+  # re-use within the rest of the pipeline definitions.
   SALUKI_IMAGE_REPO_PREFIX: "saluki"
-  SALUKI_IMAGE_REPO_BASE: "${IMAGE_REGISTRY}/${SALUKI_IMAGE_REPO_PREFIX}"
-  SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:latest"
-  SALUKI_GENERAL_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/general-ci:latest"
-  SALUKI_SMP_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:latest"
+  SALUKI_IMAGE_REPO_BASE_CI: "${SALUKI_IMAGE_REPO_PREFIX}/ci"
+  SALUKI_IMAGE_REPO_BASE_RELEASES: "${SALUKI_IMAGE_REPO_PREFIX}/releases"
+  SALUKI_IMAGE_BASE_CI: "${BASE_IMAGE_REGISTRY}/ci"
+  SALUKI_IMAGE_BASE_RELEASES: "${BASE_IMAGE_REGISTRY}/releases"
 
-  # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image that we
-  # publicly publish.
+  # Common container images used for running various jobs, or as the base for the images we build.
+  #
+  # Some of these are provided for us, some of them we build ourselves.
+  DOCKER_BUILD_IMAGE: "486234852809.dkr.ecr.us-east-1.amazonaws.com/docker:24.0.4-gbi-focal"
+  SALUKI_BUILD_CI_IMAGE_BASE: "${SALUKI_IMAGE_BASE_CI}/build"
+  SALUKI_BUILD_CI_IMAGE: "${SALUKI_BUILD_CI_IMAGE_BASE}:latest"
+  SALUKI_GENERAL_CI_IMAGE_BASE: "${SALUKI_IMAGE_BASE_CI}/general"
+  SALUKI_GENERAL_CI_IMAGE: "${SALUKI_GENERAL_CI_IMAGE_BASE}:latest"
+  SALUKI_SMP_CI_IMAGE_BASE: "${SALUKI_IMAGE_BASE_CI}/smp"
+  SALUKI_SMP_CI_IMAGE: "${SALUKI_SMP_CI_IMAGE_BASE}:latest"
+
+  # Datadog Agent configuration.
+  #
+  # These versions / image paths are used to determine which version of the Datadog Agent (`dogstatsd`, specifically) we
+  # run our benchmarks against, and what version of the Datadog Agent we use as the base for our "bundled" Agent/ADP
+  # images.
+  PUBLIC_DD_REGISTRY: "gcr.io/datadoghq"
   PUBLIC_DD_AGENT_VERSION: "7.65.2"
-  PUBLIC_DD_AGENT_IMAGE_BASE: "gcr.io/datadoghq/agent"
+  PUBLIC_DD_AGENT_IMAGE_BASE: "${PUBLIC_DD_REGISTRY}/agent"
   PUBLIC_DD_AGENT_IMAGE: "${PUBLIC_DD_AGENT_IMAGE_BASE}:${PUBLIC_DD_AGENT_VERSION}"
+  PUBLIC_DOGSTATSD_IMAGE_BASE: "${PUBLIC_DD_REGISTRY}/dogstatsd"
+  PUBLIC_DOGSTATSD_IMAGE: "${PUBLIC_DOGSTATSD_IMAGE_BASE}:${PUBLIC_DD_AGENT_VERSION}"
+
+  # ADP/checks-agent configuration. (base)
+  #
+  # Common settings and variables related to how we build ADP/checks-agent container images, where the images are
+  # published, and so on.
+  BASE_BUILD_IMAGE_INTERNAL: "${SALUKI_BUILD_CI_IMAGE}"
+  BASE_BUILD_IMAGE_RELEASE: "${SALUKI_BUILD_CI_IMAGE}"
+  BASE_APP_IMAGE_INTERNAL: "${BASE_IMAGE_REGISTRY}/images/base/gbi-ubuntu_2404:release"
+  BASE_APP_IMAGE_RELEASE: "ubuntu:24.04"
+
+  ADP_IMAGE_REPO_INTERNAL: "${SALUKI_IMAGE_REPO_PREFIX}/agent-data-plane"
+  ADP_IMAGE_INTERNAL: "${BASE_IMAGE_REGISTRY}/${ADP_IMAGE_REPO_INTERNAL}"
+  ADP_IMAGE_REPO_RELEASE: "${SALUKI_IMAGE_REPO_BASE_RELEASES}/agent-data-plane"
+  ADP_IMAGE_RELEASE: "${BASE_IMAGE_REGISTRY}/${ADP_IMAGE_REPO_RELEASE}"
 
 default:
   tags: ["arch:amd64"]
@@ -35,52 +67,20 @@ default:
 # Run a job on official releases (i.e. tagged).
 .on_official_release:
   rules:
-    if: $CI_COMMIT_TAG
+    if: ${CI_COMMIT_TAG}
 
 # Common build-specific variables that need to be shared across stages.
 .build-common-variables:
+  before_script:
+    # Set the ADP image version to the pipeline ID/commit SHA by default, but if the pipeline is running against a
+    # specific tag, then we use the tag as the version.
+    - 'export ADP_IMAGE_VERSION="v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"'
+    - '[ -z "${CI_COMMIT_TAG}" ] && export ADP_IMAGE_VERSION=${CI_COMMIT_TAG}'
+    - 'echo "ADP image version for this run: ${ADP_IMAGE_VERSION}'
   variables:
-    ADP_IMAGE_REPO_NAME: "${SALUKI_IMAGE_REPO_PREFIX}/agent-data-plane"
-    ADP_IMAGE_BASE: "${IMAGE_REGISTRY}/${ADP_IMAGE_REPO_NAME}"
-    CHECKS_AGENT_IMAGE_REPO_NAME: "${SALUKI_IMAGE_REPO_PREFIX}/checks-agent"
-    CHECKS_AGENT_IMAGE_BASE: "${IMAGE_REGISTRY}/${CHECKS_AGENT_IMAGE_REPO_NAME}"
-
-    # Base images to copy Agent Data Plane into, depending on whether the image is meant for our internal environment or
-    # public registries.
-    ADP_INTERNAL_BASE_IMAGE: "${GBI_BASE_IMAGE}"
-    ADP_PUBLIC_BASE_IMAGE: "ubuntu:24.04"
-
-    # We use our specific build image as it's built to have the right (specifically: old enough) version of glibc, and
-    # other necessary tooling, to build ADP for the target platforms we need it to be able to run on.
-    ADP_BUILD_IMAGE: "${SALUKI_BUILD_CI_IMAGE}"
-
-    # Both internal and release builds are built with release optimizations _and_ include debug symbols, but "internal"
-    # images are marked in a way that they always consider themselves "development" builds in terms of versioning
-    # information, etc.
-    ADP_INTERNAL_IMAGE: "${ADP_IMAGE_BASE}:${ADP_INTERNAL_IMAGE_TAG}"
-    ADP_INTERNAL_IMAGE_FIPS: "${ADP_IMAGE_BASE}:${ADP_INTERNAL_IMAGE_TAG_FIPS}"
-    ADP_RELEASE_IMAGE: "${ADP_IMAGE_BASE}:${ADP_RELEASE_IMAGE_TAG}"
-    ADP_RELEASE_IMAGE_FIPS: "${ADP_IMAGE_BASE}:${ADP_RELEASE_IMAGE_TAG_FIPS}"
-
-    ADP_INTERNAL_IMAGE_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
-    ADP_INTERNAL_IMAGE_TAG_FIPS: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-fips"
-    ADP_RELEASE_IMAGE_TAG: "${CI_COMMIT_TAG}-release"
-    ADP_RELEASE_IMAGE_TAG_FIPS: "${CI_COMMIT_TAG}-fips-release"
     BUILD_PROFILE: "optimized-release"
     BUILD_FEATURES: "default"
     FIPS_ENABLED: "false"
-
-.build-internal-variables:
-  variables:
-    ADP_APP_IMAGE: "${ADP_INTERNAL_BASE_IMAGE}"
-    ADP_IMAGE_VERSION: "${CI_COMMIT_SHA}"
-    APP_DEV_BUILD: "true"
-
-.build-release-variables:
-  variables:
-    ADP_APP_IMAGE: "${ADP_PUBLIC_BASE_IMAGE}"
-    ADP_IMAGE_VERSION: "${CI_COMMIT_TAG}"
-    APP_DEV_BUILD: "false"
 
 .linux-test-job:
   image: "${SALUKI_BUILD_CI_IMAGE}"

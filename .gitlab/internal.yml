@@ -14,8 +14,8 @@ generate-build-ci-image:
   script:
     - docker buildx build
       --platform linux/amd64,linux/arm64
-      --tag ${SALUKI_IMAGE_REPO_BASE}/build-ci:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
-      --tag ${SALUKI_IMAGE_REPO_BASE}/build-ci:latest
+      --tag ${SALUKI_BUILD_CI_IMAGE_BASE}:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
+      --tag ${SALUKI_BUILD_CI_IMAGE_BASE}:latest
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
@@ -40,8 +40,8 @@ generate-general-ci-image:
   script:
     - docker buildx build
       --platform linux/amd64,linux/arm64
-      --tag ${SALUKI_IMAGE_REPO_BASE}/general-ci:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
-      --tag ${SALUKI_IMAGE_REPO_BASE}/general-ci:latest
+      --tag ${SALUKI_GENERAL_CI_IMAGE_BASE}:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
+      --tag ${SALUKI_GENERAL_CI_IMAGE_BASE}:latest
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
@@ -65,8 +65,8 @@ generate-smp-ci-image:
   script:
     - docker buildx build
       --platform linux/amd64,linux/arm64
-      --tag ${SALUKI_IMAGE_REPO_BASE}/smp-ci:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
-      --tag ${SALUKI_IMAGE_REPO_BASE}/smp-ci:latest
+      --tag ${SALUKI_SMP_CI_IMAGE_BASE}:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
+      --tag ${SALUKI_SMP_CI_IMAGE_BASE}:latest
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}

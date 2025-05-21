@@ -1,13 +1,9 @@
 .build-adp-definition:
-  stage: build
   image: ${DOCKER_BUILD_IMAGE}
   needs:
     - calculate-build-metadata
   retry: 2
   timeout: 20m
-  id_tokens:
-    DDSIGN_ID_TOKEN:
-      aud: image-integrity
   variables:
     # Compiling Rust is intensive. ¯\_(ツ)_/¯
     KUBERNETES_CPU_REQUEST: "16"
@@ -19,10 +15,9 @@
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
-      --metadata-file /tmp/build.metadata
-      --tag ${IMAGE_TAG}
-      --build-arg BUILD_IMAGE=${ADP_BUILD_IMAGE}
-      --build-arg APP_IMAGE=${ADP_APP_IMAGE}
+      --tag ${TARGET_IMAGE}
+      --build-arg BUILD_IMAGE=${BUILD_IMAGE}
+      --build-arg APP_IMAGE=${APP_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg BUILD_FEATURES=${BUILD_FEATURES}
       --build-arg APP_FULL_NAME="${APP_FULL_NAME}"
@@ -33,19 +28,16 @@
       --build-arg APP_BUILD_TIME=${APP_BUILD_TIME}
       --build-arg APP_DEV_BUILD=${APP_DEV_BUILD}
       --label "org.opencontainers.image.authors=Datadog <package@datadoghq.com>"
-      --label "org.opencontainers.image.base.name=${ADP_APP_IMAGE}"
+      --label "org.opencontainers.image.base.name=${APP_IMAGE}"
       --label "org.opencontainers.image.created=${CI_PIPELINE_CREATED_AT}"
       --label "org.opencontainers.image.ref.name=agent-data-plane"
       --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}"
       --label "org.opencontainers.image.source=https://github.com/DataDog/saluki"
       --label "org.opencontainers.image.title=Agent Data Plane"
       --label "org.opencontainers.image.vendor=Datadog, Inc."
-      --label "org.opencontainers.image.version=${ADP_IMAGE_VERSION}"
+      --label "org.opencontainers.image.version=${IMAGE_VERSION}"
       --push
       .
-    - if [ "${SHOULD_SIGN_IMAGE}" == "true" ]; then
-        ddsign sign ${IMAGE_TAG} --docker-metadata-file /tmp/build.metadata;
-      fi
 
 calculate-build-metadata:
   stage: build
@@ -57,46 +49,67 @@ calculate-build-metadata:
     reports:
       dotenv: build.env
 
-# Internal images are only ever used/targeted for, well... internal deployments.
+# Build our "internal" ADP images.
+#
+# These images only contain Agent Data Plane, but they're not yet suitable for either internal deployment or public
+# images, as there are additional modifications required for those use cases. We use these images as the base for those
+# depending on how this pipeline is invoked.
 build-adp-image-internal:
-  extends: [.build-common-variables, .build-internal-variables, .build-adp-definition]
+  stage: build
+  extends: [.build-common-variables, .build-adp-definition]
   variables:
-    IMAGE_TAG: ${ADP_INTERNAL_IMAGE}
+    BUILD_IMAGE: ${BASE_BUILD_IMAGE_INTERNAL}
+    APP_IMAGE: ${BASE_APP_IMAGE_INTERNAL}
+    TARGET_IMAGE: "${ADP_IMAGE_INTERNAL}:${ADP_IMAGE_VERSION}"
+    IMAGE_VERSION: ${ADP_IMAGE_VERSION}
 
 build-adp-image-internal-fips:
-  extends: [.build-common-variables, .build-internal-variables, .build-adp-definition]
+  stage: build
+  extends: [.build-common-variables, .build-adp-definition]
   variables:
-    IMAGE_TAG: ${ADP_INTERNAL_IMAGE_FIPS}
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
+    BUILD_IMAGE: ${BASE_BUILD_IMAGE_INTERNAL}
+    APP_IMAGE: ${BASE_APP_IMAGE_INTERNAL}
+    TARGET_IMAGE: "${ADP_IMAGE_INTERNAL}:${ADP_IMAGE_VERSION}-fips"
+    IMAGE_VERSION: "${ADP_IMAGE_VERSION}-fips"
 
-# Release images are only ever used for public images, and are only ever built for versioned releases of ADP. Currently,
-# this means being built when a tag is cut on the Saluki repository.
+# Build our "release" ADP images.
+#
+# These images are basically identical to the "internal" images, but with two main tweaks: we use a different base "app"
+# image, and we tweak an environment variable to ensure that the reported build info from the binary is suitable for a
+# versioned release.
+#
+# We use a different base "app" image as our internal base image isn't certified for public consumption, and instead we
+# use something closer to a plain Ubuntu image.
 build-adp-image-release:
-  extends: [.build-common-variables, .build-release-variables, .build-adp-definition]
+  stage: build
+  extends: [.build-common-variables, .build-adp-definition]
   rules:
     - if: !reference [.on_official_release, rules, if]
   variables:
-    IMAGE_TAG: ${ADP_RELEASE_IMAGE}
+    BUILD_IMAGE: ${BASE_BUILD_IMAGE_RELEASE}
+    APP_IMAGE: ${BASE_APP_IMAGE_RELEASE}
+    TARGET_IMAGE: "${ADP_IMAGE_RELEASE}:${ADP_IMAGE_VERSION}"
+    IMAGE_VERSION: ${ADP_IMAGE_VERSION}
 
 build-adp-image-release-fips:
-  extends: [.build-common-variables, .build-release-variables, .build-adp-definition]
+  stage: build
+  extends: [.build-common-variables, .build-adp-definition]
   rules:
     - if: !reference [.on_official_release, rules, if]
   variables:
-    IMAGE_TAG: ${ADP_RELEASE_IMAGE_FIPS}
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
+    BUILD_IMAGE: ${BASE_BUILD_IMAGE_RELEASE}
+    APP_IMAGE: ${BASE_APP_IMAGE_RELEASE}
+    TARGET_IMAGE: "${ADP_IMAGE_RELEASE}:${ADP_IMAGE_VERSION}-fips"
+    IMAGE_VERSION: "${ADP_IMAGE_VERSION}-fips"
 
-# Finally, we publish our internal images after running through a small build process to add some necessary tooling
-# required for the images to be deployed/used internally.
+# Publish our internal images to be used for internal deployments.
 #
-# These takes them from the sort of temporary holding ground of `registry.ddbuild.io/saluki/agent-data-plane`, adds the
-# necessary pieces, and then publishes them to `registry.ddbuild.io/agent-data-plane` as a first-class citizen.
-#
-# We specifically duplicate our `ADP_INTERNAL_IMAGE_TAG` (and FIPS-specific variant) tag and construct the same value
-# manually because otherwise, the variable is evaluated in the downstream job, leading to the wrong values being
-# substituted.
+# Publishing is a slight misnomer as the step also involves building a new image which is the one that gets pushed...
+# but that image has a number of modifications to make it suitable for internal deployment.
 publish-adp-image-internal:
   stage: build
   extends: [.build-common-variables]
@@ -109,10 +122,10 @@ publish-adp-image-internal:
   variables:
     IMAGE_NAME: agent-data-plane
     IMAGE_VERSION: tmpl-v1
-    TMPL_SRC_REPO: ${ADP_IMAGE_REPO_NAME}
-    TMPL_SRC_IMAGE: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
-    RELEASE_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
-    BUILD_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-build"
+    TMPL_SRC_REPO: ${ADP_IMAGE_REPO_INTERNAL}
+    TMPL_SRC_IMAGE: ${ADP_IMAGE_VERSION}
+    RELEASE_TAG: ${ADP_IMAGE_VERSION}
+    BUILD_TAG: "${ADP_IMAGE_VERSION}-build"
     RELEASE_STAGING: "true"
     RELEASE_PROD: "true"
 
@@ -128,10 +141,10 @@ publish-adp-image-internal-fips:
   variables:
     IMAGE_NAME: agent-data-plane
     IMAGE_VERSION: tmpl-v1
-    TMPL_SRC_REPO: ${ADP_IMAGE_REPO_NAME}
-    TMPL_SRC_IMAGE: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-fips"
-    RELEASE_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-fips"
-    BUILD_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-fips-build"
+    TMPL_SRC_REPO: ${ADP_IMAGE_REPO_INTERNAL}
+    TMPL_SRC_IMAGE: "${ADP_IMAGE_VERSION}-fips"
+    RELEASE_TAG: "${ADP_IMAGE_VERSION}-fips"
+    BUILD_TAG: "${ADP_IMAGE_VERSION}-fips-build"
     RELEASE_STAGING: "true"
     RELEASE_PROD: "true"
 
@@ -149,6 +162,6 @@ display-image-tags:
       # ADP Image Tags
 
       ## Internal (baked with necessary tools for internal deployments)
-      Non-FIPS: ${IMAGE_REGISTRY}/agent-data-plane:${ADP_INTERNAL_IMAGE_TAG}
-      FIPS:     ${IMAGE_REGISTRY}/agent-data-plane:${ADP_INTERNAL_IMAGE_TAG_FIPS}
+      Non-FIPS: ${BASE_IMAGE_REGISTRY}/agent-data-plane:${ADP_IMAGE_VERSION}
+      FIPS:     ${BASE_IMAGE_REGISTRY}/agent-data-plane:${ADP_IMAGE_VERSION}-fips
       EOF

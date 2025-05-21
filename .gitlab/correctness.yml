@@ -1,5 +1,11 @@
+.correctness-common-variable:
+  variables:
+    METRICS_INTAKE_IMAGE: "${SALUKI_IMAGE_BASE_CI}/metrics-intake:${CI_COMMIT_SHA}"
+    MILLSTONE_IMAGE: "${SALUKI_IMAGE_BASE_CI}/millstone:${CI_COMMIT_SHA}"
+
 build-metrics-intake-image:
   stage: correctness
+  extends: [.correctness-common-variable]
   image: ${DOCKER_BUILD_IMAGE}
   needs: []
   retry: 2
@@ -13,9 +19,9 @@ build-metrics-intake-image:
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.metrics-intake
-      --tag ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
-      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
-      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
+      --tag ${METRICS_INTAKE_IMAGE}
+      --build-arg BUILD_IMAGE=${BASE_BUILD_IMAGE_INTERNAL}
+      --build-arg APP_IMAGE=${BASE_APP_IMAGE_INTERNAL}
       --build-arg BUILD_PROFILE=release
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
@@ -27,6 +33,7 @@ build-metrics-intake-image:
 
 build-millstone-image:
   stage: correctness
+  extends: [.correctness-common-variable]
   image: ${DOCKER_BUILD_IMAGE}
   needs: []
   retry: 2
@@ -40,9 +47,9 @@ build-millstone-image:
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.millstone
-      --tag ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
-      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
-      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
+      --tag ${MILLSTONE_IMAGE}
+      --build-arg BUILD_IMAGE=${BASE_BUILD_IMAGE_INTERNAL}
+      --build-arg APP_IMAGE=${BASE_APP_IMAGE_INTERNAL}
       --build-arg BUILD_PROFILE=release
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
@@ -53,8 +60,8 @@ build-millstone-image:
       .
 
 run-ground-truth:
-  extends: [.build-common-variables]
   stage: correctness
+  extends: [.build-common-variables, .correctness-common-variable]
   tags: ["docker-in-docker:amd64"]
   needs:
     - build-adp-image-internal
@@ -74,11 +81,11 @@ run-ground-truth:
   script:
     - make build-ground-truth
     - target/debug/ground-truth
-      --millstone-image ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
+      --millstone-image ${METRICS_INTAKE_IMAGE}
       --millstone-config-path $(pwd)/test/correctness/millstone.yaml
-      --metrics-intake-image ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
+      --metrics-intake-image ${MILLSTONE_IMAGE}
       --metrics-intake-config-path $(pwd)/test/correctness/metrics-intake.yaml
-      --dsd-image gcr.io/datadoghq/dogstatsd:${PUBLIC_DD_AGENT_VERSION}
+      --dsd-image ${PUBLIC_DOGSTATSD_IMAGE}
       --dsd-config-path $(pwd)/test/correctness/datadog.yaml
-      --adp-image ${ADP_INTERNAL_IMAGE}
+      --adp-image ${ADP_IMAGE_INTERNAL}:${ADP_IMAGE_VERSION}
       --adp-config-path $(pwd)/test/correctness/datadog.yaml
