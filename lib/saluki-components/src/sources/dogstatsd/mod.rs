@@ -322,7 +322,7 @@ impl DogStatsDConfiguration {
 
 #[async_trait]
 impl SourceBuilder for DogStatsDConfiguration {
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
         let listeners = self.build_listeners().await?;
         if listeners.is_empty() {
             return Err(Error::NoListenersConfigured.into());
@@ -341,7 +341,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             .workload_provider
             .clone()
             .map(|provider| DogStatsDOriginTagResolver::new(self.origin_enrichment.clone(), provider));
-        let context_resolvers = ContextResolvers::new(self, maybe_origin_tags_resolver)
+        let context_resolvers = ContextResolvers::new(self, &context, maybe_origin_tags_resolver)
             .error_context("Failed to create context resolvers.")?;
 
         let codec_config = DogstatsdCodecConfiguration::default()

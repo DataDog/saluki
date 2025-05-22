@@ -35,8 +35,10 @@ pub trait TransformBuilder: MemoryBounds {
 pub trait SynchronousTransformBuilder: MemoryBounds {
     /// Builds an instance of the synchronous transform.
     ///
+    /// The provided context is relative to the parent component that is building this synchronous transform.
+    ///
     /// ## Errors
     ///
     /// If the synchronous transform cannot be built for any reason, an error is returned.
-    async fn build(&self) -> Result<Box<dyn SynchronousTransform + Send>, GenericError>;
+    async fn build(&self, context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError>;
 }

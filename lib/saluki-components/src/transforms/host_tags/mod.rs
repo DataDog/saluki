@@ -12,8 +12,8 @@ use saluki_context::{
     tags::{Tag, TagSet},
     ContextResolver, ContextResolverBuilder,
 };
-use saluki_core::data_model::event::metric::Metric;
 use saluki_core::{components::transforms::*, topology::interconnect::FixedSizeEventBuffer};
+use saluki_core::{components::ComponentContext, data_model::event::metric::Metric};
 use saluki_env::helpers::remote_agent::RemoteAgentClient;
 use saluki_error::{generic_error, GenericError};
 use stringtheory::MetaString;
@@ -59,7 +59,7 @@ impl HostTagsConfiguration {
 
 #[async_trait]
 impl SynchronousTransformBuilder for HostTagsConfiguration {
-    async fn build(&self) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+    async fn build(&self, context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         // Make an initial request of the host tags from the Datadog Agent.
         //
         // We only pay attention to the "system" tags, as the "google_cloud_platform" tags are not relevant here.
@@ -76,12 +76,13 @@ impl SynchronousTransformBuilder for HostTagsConfiguration {
             NonZeroUsize::new(self.host_tags_context_string_interner_bytes.as_u64() as usize)
                 .ok_or_else(|| generic_error!("host_tags_context_string_interner_bytes must be greater than 0"))
                 .unwrap();
-        let context_resolver = ContextResolverBuilder::from_name("host_tags")
-            .expect("resolver name is not empty")
-            .with_interner_capacity_bytes(context_string_interner_size)
-            .with_idle_context_expiration(Duration::from_secs(30))
-            .with_expiration_interval(Duration::from_secs(1))
-            .build();
+        let context_resolver =
+            ContextResolverBuilder::from_name(format!("{}/host_tags/primary", context.component_id()))
+                .expect("resolver name is not empty")
+                .with_interner_capacity_bytes(context_string_interner_size)
+                .with_idle_context_expiration(Duration::from_secs(30))
+                .with_expiration_interval(Duration::from_secs(1))
+                .build();
         Ok(Box::new(HostTagsEnrichment {
             start: Instant::now(),
             context_resolver: Some(context_resolver),
