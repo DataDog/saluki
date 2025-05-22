@@ -146,7 +146,7 @@ impl Scheduler {
         {
             let mut checks = self.checks.write().unwrap();
             if let Some(check) = checks.remove(check_id) {
-                std::mem::drop(check)
+                check.abort();
             }
         }
         debug!(check_id, "Unscheduled check.");
