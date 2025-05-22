@@ -7,8 +7,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
+use saluki_core::pooling::ObjectPool;
 use saluki_core::{
     components::{sources::*, ComponentContext},
+    data_model::event::Event,
     data_model::event::EventType,
     topology::OutputDefinition,
 };
@@ -16,16 +18,19 @@ use saluki_env::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider};
 use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use tokio::select;
-use tracing::{debug, error, info, warn};
+use tokio::sync::mpsc;
+use tracing::{debug, error, info, trace, warn};
 
 mod scheduler;
 use self::scheduler::Scheduler;
+
+mod check_metric;
 
 mod check;
 use self::check::Check;
 
 mod builder;
-use self::builder::{CheckBuilder, PythonCheckBuilder};
+use self::builder::{python::builder::PythonCheckBuilder, CheckBuilder};
 
 const fn default_check_runners() -> usize {
     4
@@ -101,8 +106,11 @@ impl Source for ChecksSource {
 
         info!("Checks source started.");
 
+        let (check_metrics_tx, mut check_metrics_rx) = mpsc::channel(10_000_000);
+
         let mut event_rx = self.autodiscovery.subscribe().await;
-        let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> = vec![Arc::new(PythonCheckBuilder)];
+        let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> =
+            vec![Arc::new(PythonCheckBuilder::new(check_metrics_tx))];
         let mut check_ids = HashSet::new();
         let scheduler = Scheduler::new(self.check_runners);
 
@@ -158,6 +166,19 @@ impl Source for ChecksSource {
                         Err(e) => {
                             error!("Error receiving event: {:?}", e);
                         }
+                },
+
+                Some(check_metric) = check_metrics_rx.recv() => {
+                    trace!("Received check metric: {:?}", check_metric);
+                    let mut event_buffer = context.event_buffer_pool().acquire().await;
+                    let event: Event = check_metric.try_into().expect("can't convert");
+                    if let Some(_unsent) = event_buffer.try_push(event) {
+                        error!("Event buffer full, dropping event");
+                        continue;
+                    }
+                    if let Err(e) = context.dispatcher().dispatch_buffer(event_buffer).await {
+                        error!(error = %e, "Failed to forward check metrics.");
+                    }
                 }
             }
         }

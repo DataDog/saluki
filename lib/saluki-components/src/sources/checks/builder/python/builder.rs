@@ -12,10 +12,14 @@ use pyo3::{prelude::*, IntoPyObjectExt};
 use saluki_env::autodiscovery::{Data, Instance, RawData};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stringtheory::MetaString;
+use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, warn};
 
+use super::python_modules::aggregator as pyagg;
+use super::python_modules::datadog_agent;
 use crate::sources::checks::builder::CheckBuilder;
 use crate::sources::checks::check::Check;
+use crate::sources::checks::check_metric::CheckMetric;
 
 struct PythonCheck {
     version: String,
@@ -54,18 +58,28 @@ impl Check for PythonCheck {
 static PYTHON_ENV_BUILDER: OnceLock<PythonEnvBuilder> = OnceLock::new();
 
 struct PythonEnvBuilder {
+    check_events_tx: Sender<CheckMetric>,
     agent_check_class: Option<PyObject>,
 }
 impl PythonEnvBuilder {
-    fn get_instance() -> &'static PythonEnvBuilder {
-        PYTHON_ENV_BUILDER.get_or_init(PythonEnvBuilder::initialize)
+    pub fn new(check_events_tx: Sender<CheckMetric>) -> Self {
+        Self {
+            check_events_tx,
+            agent_check_class: None,
+        }
+    }
+
+    fn get_instance(&self) -> &'static PythonEnvBuilder {
+        PYTHON_ENV_BUILDER.get_or_init(|| self.initialize())
     }
 
     fn initialized(&self) -> bool {
         self.agent_check_class.is_some()
     }
 
-    fn initialize() -> Self {
+    fn initialize(&self) -> Self {
+        pyo3::append_to_inittab!(datadog_agent);
+        pyo3::append_to_inittab!(pyagg);
         pyo3::prepare_freethreaded_python();
         let result = Python::with_gil(|py| -> Result<PyObject, GenericError> {
             let sys_path_attr = py
@@ -102,25 +116,36 @@ impl PythonEnvBuilder {
                 info!("Python runtime loaded successfully and initialized for checks.");
                 Self {
                     agent_check_class: Some(agent_check_class),
+                    check_events_tx: self.check_events_tx.clone(),
                 }
             }
             Err(e) => {
                 warn!(error = %e, "Failed to load/initialize Python runtime for checks. Python checks will be unavailable.");
                 Self {
                     agent_check_class: None,
+                    check_events_tx: self.check_events_tx.clone(),
                 }
             }
         }
     }
 }
 
-pub struct PythonCheckBuilder;
+pub struct PythonCheckBuilder {
+    env_builder: PythonEnvBuilder,
+}
+
+impl PythonCheckBuilder {
+    pub fn new(check_events_tx: Sender<CheckMetric>) -> Self {
+        let env_builder = PythonEnvBuilder::new(check_events_tx);
+        Self { env_builder }
+    }
+}
 
 impl CheckBuilder for PythonCheckBuilder {
     fn build_check(
         &self, name: &str, instance: &Instance, init_config: &Data, source: &MetaString,
     ) -> Option<Arc<dyn Check + Send + Sync>> {
-        let env = PythonEnvBuilder::get_instance();
+        let env = self.env_builder.get_instance();
         if !env.initialized() {
             return None;
         }
