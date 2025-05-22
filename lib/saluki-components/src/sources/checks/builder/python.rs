@@ -6,9 +6,11 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use pyo3::types::{PyDict, PyList, PyNone, PyTuple, PyType};
-use pyo3::PyObject;
-use pyo3::{prelude::*, IntoPyObjectExt};
+use pyo3::types::{
+    PyAnyMethods, PyDict, PyDictMethods, PyList, PyListMethods, PyModuleMethods, PyNone, PyTracebackMethods, PyTuple,
+    PyType, PyTypeMethods,
+};
+use pyo3::{Bound, IntoPyObjectExt, PyObject, PyResult, Python};
 use saluki_env::autodiscovery::{Data, Instance, RawData};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stringtheory::MetaString;
