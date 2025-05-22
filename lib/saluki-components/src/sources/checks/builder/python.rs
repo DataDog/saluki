@@ -57,15 +57,15 @@ struct PythonEnvBuilder {
     agent_check_class: Option<PyObject>,
 }
 impl PythonEnvBuilder {
-    fn get_instance() -> &'static PythonEnvBuilder {
-        PYTHON_ENV_BUILDER.get_or_init(PythonEnvBuilder::initialize)
+    fn get_instance(custom_checks_folders: &Option<Vec<String>>) -> &'static PythonEnvBuilder {
+        PYTHON_ENV_BUILDER.get_or_init(|| PythonEnvBuilder::initialize(custom_checks_folders))
     }
 
     fn initialized(&self) -> bool {
         self.agent_check_class.is_some()
     }
 
-    fn initialize() -> Self {
+    fn initialize(custom_checks_folders: &Option<Vec<String>>) -> Self {
         pyo3::prepare_freethreaded_python();
         let result = Python::with_gil(|py| -> Result<PyObject, GenericError> {
             let sys_path_attr = py
@@ -80,7 +80,14 @@ impl PythonEnvBuilder {
             let checks_d_path = dist_path.join("checks.d");
             sys_path.insert(0, dist_path.to_string_lossy().as_ref()).unwrap(); // common modules are shipped in the dist path directly or under the "checks/" sub-dir
             sys_path.insert(0, checks_d_path.to_string_lossy().as_ref()).unwrap(); // integrations-core legacy checks
+            if let Some(custom_checks_folders) = custom_checks_folders {
+                for folder in custom_checks_folders {
+                    let path = Path::new(folder);
+                    sys_path.insert(0, path.to_string_lossy().as_ref()).unwrap();
+                }
+            }
             sys_path.insert(0, "/etc/datadog-agent/checks.d/").unwrap(); // Agent checks folder
+
             debug!("Updated Python system path (sys.path) to {:?}.", sys_path);
             // Import the Datadog Checks module, ensuring it loads correctly, and grab a reference to the base AgentCheck class.
             let dd_checks_module = match py.import("datadog_checks.checks") {
@@ -114,13 +121,21 @@ impl PythonEnvBuilder {
     }
 }
 
-pub struct PythonCheckBuilder;
+pub struct PythonCheckBuilder {
+    custom_checks_folders: Option<Vec<String>>,
+}
+
+impl PythonCheckBuilder {
+    pub fn new(custom_checks_folders: Option<Vec<String>>) -> Self {
+        Self { custom_checks_folders }
+    }
+}
 
 impl CheckBuilder for PythonCheckBuilder {
     fn build_check(
         &self, name: &str, instance: &Instance, init_config: &Data, source: &MetaString,
     ) -> Option<Arc<dyn Check + Send + Sync>> {
-        let env = PythonEnvBuilder::get_instance();
+        let env = PythonEnvBuilder::get_instance(&self.custom_checks_folders);
         if !env.initialized() {
             return None;
         }

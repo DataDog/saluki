@@ -5,9 +5,6 @@
     - calculate-build-metadata
   retry: 2
   timeout: 20m
-  id_tokens:
-    DDSIGN_ID_TOKEN:
-      aud: image-integrity
   variables:
     # Compiling Rust is intensive. ¯\_(ツ)_/¯
     KUBERNETES_CPU_REQUEST: "16"
@@ -43,9 +40,6 @@
       --label "org.opencontainers.image.version=${ADP_IMAGE_VERSION}"
       --push
       .
-    - if [ "${SHOULD_SIGN_IMAGE}" == "true" ]; then
-        ddsign sign ${IMAGE_TAG} --docker-metadata-file /tmp/build.metadata;
-      fi
 
 calculate-build-metadata:
   stage: build

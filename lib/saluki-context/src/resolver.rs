@@ -4,7 +4,7 @@ use quick_cache::{sync::Cache, UnitWeighter};
 use saluki_common::{collections::PrehashedHashSet, hash::NoopU64BuildHasher};
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::static_metrics;
-use stringtheory::{interning::GenericMapInterner, MetaString};
+use stringtheory::{interning::GenericMapInterner, CheapMetaString, MetaString};
 use tokio::time::sleep;
 use tracing::debug;
 
@@ -366,15 +366,18 @@ pub struct ContextResolver {
 }
 
 impl ContextResolver {
-    fn intern(&self, s: &str) -> Option<MetaString> {
-        // First we'll see if we can inline the string, and if we can't, then we try to actually intern it. If interning
-        // fails, then we just fall back to allocating a new `MetaString` instance.
-        MetaString::try_inline(s)
-            .or_else(|| self.interner.try_intern(s).map(MetaString::from))
+    fn intern<S>(&self, s: S) -> Option<MetaString>
+    where
+        S: AsRef<str> + CheapMetaString,
+    {
+        // Try to cheaply clone the string, and if that fails, try to intern it. If that fails, then we fall back to
+        // allocating it on the heap if we allow it.
+        s.try_cheap_clone()
+            .or_else(|| self.interner.try_intern(s.as_ref()).map(MetaString::from))
             .or_else(|| {
                 self.allow_heap_allocations.then(|| {
                     self.telemetry.intern_fallback_total().increment(1);
-                    MetaString::from(s)
+                    MetaString::from(s.as_ref())
                 })
             })
     }
@@ -390,26 +393,28 @@ impl ContextResolver {
             .unwrap_or_else(OriginTags::empty)
     }
 
-    fn create_context_key<I, T>(&mut self, name: &str, tags: I, maybe_origin_key: Option<OriginKey>) -> ContextKey
+    fn create_context_key<N, I, T>(&mut self, name: N, tags: I, maybe_origin_key: Option<OriginKey>) -> ContextKey
     where
+        N: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T>,
-        T: AsRef<str>,
+        T: AsRef<str> + CheapMetaString,
     {
-        hash_context_with_seen(name, tags, maybe_origin_key, &mut self.hash_seen_buffer)
+        hash_context_with_seen(name.as_ref(), tags, maybe_origin_key, &mut self.hash_seen_buffer)
     }
 
-    fn create_context<I, T>(&self, key: ContextKey, name: &str, tags: I, origin_tags: OriginTags) -> Option<Context>
+    fn create_context<N, I, T>(&self, key: ContextKey, name: N, tags: I, origin_tags: OriginTags) -> Option<Context>
     where
+        N: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T>,
-        T: AsRef<str>,
+        T: AsRef<str> + CheapMetaString,
     {
         // Intern the name and tags of the context.
         let context_name = self.intern(name)?;
 
         let mut context_tags = TagSet::default();
         for tag in tags {
-            let tag = self.intern(tag.as_ref())?;
-            context_tags.insert_tag(tag);
+            let context_tag = self.intern(tag)?;
+            context_tags.insert_tag(context_tag);
         }
 
         self.telemetry.resolved_new_context_total().increment(1);
@@ -432,10 +437,11 @@ impl ContextResolver {
     ///
     /// `None` may be returned if the interner is full and outside allocations are disallowed. See
     /// `allow_heap_allocations` for more information.
-    pub fn resolve<I, T>(&mut self, name: &str, tags: I, maybe_origin: Option<RawOrigin<'_>>) -> Option<Context>
+    pub fn resolve<N, I, T>(&mut self, name: N, tags: I, maybe_origin: Option<RawOrigin<'_>>) -> Option<Context>
     where
+        N: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T> + Clone,
-        T: AsRef<str>,
+        T: AsRef<str> + CheapMetaString,
     {
         // Try and resolve our origin tags from the provided origin information, if any.
         let origin_tags = self.resolve_origin_tags(maybe_origin);
@@ -461,20 +467,22 @@ impl ContextResolver {
     /// This method is intended primarily to allow for resolving contexts in a consistent way while _reusing_ the origin
     /// tags from another context, such as when remapping the name and/or instrumented tags of a given metric, while
     /// maintaining its origin association.
-    pub fn resolve_with_origin_tags<I, T>(&mut self, name: &str, tags: I, origin_tags: OriginTags) -> Option<Context>
+    pub fn resolve_with_origin_tags<N, I, T>(&mut self, name: N, tags: I, origin_tags: OriginTags) -> Option<Context>
     where
+        N: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T> + Clone,
-        T: AsRef<str>,
+        T: AsRef<str> + CheapMetaString,
     {
         self.resolve_inner(name, tags, origin_tags)
     }
 
-    fn resolve_inner<I, T>(&mut self, name: &str, tags: I, origin_tags: OriginTags) -> Option<Context>
+    fn resolve_inner<N, I, T>(&mut self, name: N, tags: I, origin_tags: OriginTags) -> Option<Context>
     where
+        N: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T> + Clone,
-        T: AsRef<str>,
+        T: AsRef<str> + CheapMetaString,
     {
-        let context_key = self.create_context_key(name, tags.clone(), origin_tags.key());
+        let context_key = self.create_context_key(&name, tags.clone(), origin_tags.key());
 
         // Fast path to avoid looking up the context in the cache if caching is disabled.
         if !self.caching_enabled {
@@ -792,5 +800,44 @@ mod tests {
         // they're two distinct contexts in terms of not being cached:
         assert_eq!(context1, context2);
         assert!(!context1.ptr_eq(&context2));
+    }
+
+    #[test]
+    fn cheaply_cloneable_name_and_tags() {
+        const BIG_TAG_ONE: &str = "long-tag-that-cannot-be-inlined-just-to-be-doubly-sure-on-top-of-being-static";
+        const BIG_TAG_TWO: &str = "another-long-boye-that-we-are-also-sure-wont-be-inlined-and-we-stand-on-that";
+
+        // Create a context resolver with a proper string interner configured:
+        let mut resolver = ContextResolverBuilder::for_tests()
+            .with_interner_capacity_bytes(NonZeroUsize::new(1024).expect("not zero"))
+            .build();
+
+        // Create our context with cheaply cloneable tags, aka static strings:
+        let name = MetaString::from_static("long-metric-name-that-shouldnt-be-inlined-and-should-end-up-interned");
+        let tags = [
+            MetaString::from_static(BIG_TAG_ONE),
+            MetaString::from_static(BIG_TAG_TWO),
+        ];
+        assert!(tags[0].is_cheaply_cloneable());
+        assert!(tags[1].is_cheaply_cloneable());
+
+        // Make sure the interner is empty before we resolve the context, and that it's empty afterwards, since we
+        // should be able to cheaply clone both the metric name and both tags:
+        assert_eq!(resolver.interner.len(), 0);
+        assert_eq!(resolver.interner.len_bytes(), 0);
+
+        let context = resolver
+            .resolve(&name, &tags[..], None)
+            .expect("should not fail to resolve");
+        assert_eq!(resolver.interner.len(), 0);
+        assert_eq!(resolver.interner.len_bytes(), 0);
+
+        // And just a sanity check that we have the expected name and tags in the context:
+        assert_eq!(context.name(), &name);
+
+        let context_tags = context.tags();
+        assert_eq!(context_tags.len(), 2);
+        assert!(context_tags.has_tag(&tags[0]));
+        assert!(context_tags.has_tag(&tags[1]));
     }
 }

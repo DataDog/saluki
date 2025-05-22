@@ -76,7 +76,7 @@ ARG BUILD_PROFILE=release
 # the `root` user, so we can install them without issue.
 USER root
 RUN test -d /usr/share/ca-certificates || (apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates=20240203~22.04.1 && \
+    apt-get install -y --no-install-recommends ca-certificates=20240203 && \
     apt-get clean && rm -rf /var/lib/apt/lists)
 COPY --from=builder /adp/target/${BUILD_PROFILE}/agent-data-plane /usr/local/bin/agent-data-plane
 COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
