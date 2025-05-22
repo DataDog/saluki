@@ -58,29 +58,7 @@ impl Scheduler {
                 return;
             }
 
-            let channel = {
-                let mut loads = self.channels_load.lock().unwrap();
-                // Find channel with minimum load
-                let min_idx = loads
-                    .iter()
-                    .min_by_key(|(_, &load)| load)
-                    .map(|(&idx, _)| idx)
-                    .unwrap_or(rand::thread_rng().gen_range(0..channels_guard.len() as u64));
-
-                // Increment the load counter
-                let new_load = loads[&min_idx] + 1;
-                loads.insert(min_idx, new_load);
-                channels_guard[&min_idx].clone()
-            };
-            let check = Arc::clone(&check);
-
-            tokio::spawn(async move {
-                if let Err(e) = channel.send(WorkerMessage::RunCheck(check)).await {
-                    error!(error = %e, check_id = %check_id.clone(), "Failed to enqueue a one-time check because channel is closed.");
-                    return;
-                }
-                info!(check_id = %check_id.clone(), "Scheduled one-time check.");
-            });
+            self.new_check_task(check);
             return;
         };
         {
@@ -105,20 +83,19 @@ impl Scheduler {
     }
 
     fn new_check_task(&self, check: Arc<dyn Check + Send + Sync>) -> JoinHandle<()> {
-        let mut ticker = time::interval(check.interval());
+        let one_time_check = check.interval().as_secs() == 0;
+        let check_interval = check.interval();
         let channels_load = Arc::clone(&self.channels_load);
         let channels = Arc::clone(&self.channels);
         let check_id = check.id().to_string();
         tokio::spawn(async move {
-            loop {
-                // Wait for the next interval tick
-                ticker.tick().await;
-
+            let execute_check = || async {
                 let channel = {
                     let channels_guard = channels.lock().unwrap();
                     if channels_guard.is_empty() {
-                        warn!(check_id, "Failed to schedule one-time check: No workers available.");
-                        break;
+                        warn!(check_id, "Failed to schedule check: No workers available.");
+
+                        return false;
                     }
                     let mut loads = channels_load.lock().unwrap();
                     // Find channel with minimum load
@@ -132,10 +109,26 @@ impl Scheduler {
                     loads.insert(min_idx, new_load);
                     channels_guard[&min_idx].clone()
                 };
+
                 let check = Arc::clone(&check);
                 if let Err(e) = channel.send(WorkerMessage::RunCheck(check)).await {
-                    error!(error = %e, check_id = %check_id, "Failed to enqueue a periodic check because channel is closed.");
-                    break;
+                    error!(error = %e, check_id = %check_id,"Failed to enqueue check because channel is closed.");
+                    return false;
+                }
+
+                true
+            };
+
+            if one_time_check {
+                let _ = execute_check().await;
+            } else {
+                let mut ticker = time::interval(check_interval);
+                loop {
+                    ticker.tick().await;
+
+                    if !execute_check().await {
+                        break;
+                    }
                 }
             }
         })
