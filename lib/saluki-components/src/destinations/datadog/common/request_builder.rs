@@ -208,8 +208,8 @@ where
     }
 
     /// Overrides the endpoint URI for the request builder.
-    pub fn with_endpoint_uri_override(&mut self, endpoint_uri: &'static str) -> &mut Self {
-        self.endpoint_uri = PathAndQuery::from_static(endpoint_uri).into();
+    pub fn with_endpoint_uri_override(&mut self, endpoint_uri: PathAndQuery) -> &mut Self {
+        self.endpoint_uri = endpoint_uri.into();
         self
     }
 
@@ -945,7 +945,8 @@ mod tests {
         let mut request_builder = create_no_compression_request_builder(encoder.clone()).await;
 
         // Override the endpoint URI.
-        request_builder.with_endpoint_uri_override("/override");
+        let override_uri = PathAndQuery::from_static("/override");
+        request_builder.with_endpoint_uri_override(override_uri);
 
         // Encode a single input and then flush the builder, ensuring the request has the overridden endpoint URI.
         request_builder.encode("input".to_string()).await.unwrap();
