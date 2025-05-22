@@ -11,7 +11,10 @@ use regex::Regex;
 use saluki_config::GenericConfiguration;
 use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
 use saluki_core::{
-    components::transforms::{SynchronousTransform, SynchronousTransformBuilder},
+    components::{
+        transforms::{SynchronousTransform, SynchronousTransformBuilder},
+        ComponentContext,
+    },
     topology::interconnect::FixedSizeEventBuffer,
 };
 use saluki_error::{generic_error, ErrorContext, GenericError};
@@ -67,7 +70,9 @@ impl FromStr for MapperProfileConfigs {
 }
 
 impl MapperProfileConfigs {
-    fn build(&self, context_string_interner_bytes: ByteSize) -> Result<MetricMapper, GenericError> {
+    fn build(
+        &self, context: ComponentContext, context_string_interner_bytes: ByteSize,
+    ) -> Result<MetricMapper, GenericError> {
         let mut profiles = Vec::with_capacity(self.0.len());
         for (i, config_profile) in self.0.iter().enumerate() {
             if config_profile.name.is_empty() {
@@ -124,12 +129,13 @@ impl MapperProfileConfigs {
         let context_string_interner_size = NonZeroUsize::new(context_string_interner_bytes.as_u64() as usize)
             .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))
             .unwrap();
-        let context_resolver = ContextResolverBuilder::from_name("dogstatsd_mapper")
-            .expect("resolver name is not empty")
-            .with_interner_capacity_bytes(context_string_interner_size)
-            .with_idle_context_expiration(Duration::from_secs(30))
-            .with_expiration_interval(Duration::from_secs(1))
-            .build();
+        let context_resolver =
+            ContextResolverBuilder::from_name(format!("{}/dsd_mapper/primary", context.component_id()))
+                .expect("resolver name is not empty")
+                .with_interner_capacity_bytes(context_string_interner_size)
+                .with_idle_context_expiration(Duration::from_secs(30))
+                .with_expiration_interval(Duration::from_secs(1))
+                .build();
 
         Ok(MetricMapper {
             context_resolver,
@@ -243,10 +249,10 @@ impl DogstatsDMapperConfiguration {
 
 #[async_trait]
 impl SynchronousTransformBuilder for DogstatsDMapperConfiguration {
-    async fn build(&self) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+    async fn build(&self, context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         let metric_mapper = self
             .dogstatsd_mapper_profiles
-            .build(self.context_string_interner_bytes)?;
+            .build(context, self.context_string_interner_bytes)?;
         Ok(Box::new(DogstatsDMapper { metric_mapper }))
     }
 }
@@ -284,7 +290,7 @@ mod tests {
 
     use bytesize::ByteSize;
     use saluki_context::Context;
-    use saluki_core::data_model::event::metric::Metric;
+    use saluki_core::{components::ComponentContext, data_model::event::metric::Metric, topology::ComponentId};
     use saluki_error::GenericError;
     use serde_json::{json, Value};
 
@@ -296,9 +302,10 @@ mod tests {
     }
 
     fn mapper(json_data: Value) -> Result<MetricMapper, GenericError> {
+        let context = ComponentContext::transform(ComponentId::try_from("test_mapper").unwrap());
         let mpc: MapperProfileConfigs = serde_json::from_value(json_data)?;
         let context_string_interner_bytes = ByteSize::kib(64);
-        mpc.build(context_string_interner_bytes)
+        mpc.build(context, context_string_interner_bytes)
     }
 
     fn assert_tags(context: &Context, expected_tags: &[&str]) {

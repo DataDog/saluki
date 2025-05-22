@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::data_model::event::metric::Metric;
 use saluki_core::{components::transforms::*, topology::interconnect::FixedSizeEventBuffer};
+use saluki_core::{components::ComponentContext, data_model::event::metric::Metric};
 use saluki_env::{EnvironmentProvider, HostProvider};
 use saluki_error::GenericError;
 
@@ -29,7 +29,7 @@ where
     E: EnvironmentProvider + Send + Sync + 'static,
     <E::Host as HostProvider>::Error: Into<GenericError>,
 {
-    async fn build(&self) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         Ok(Box::new(
             HostEnrichment::from_environment_provider(&self.env_provider).await?,
         ))

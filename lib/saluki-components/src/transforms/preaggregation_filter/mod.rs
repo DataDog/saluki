@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::{components::transforms::*, topology::interconnect::FixedSizeEventBuffer};
+use saluki_core::{
+    components::{transforms::*, ComponentContext},
+    topology::interconnect::FixedSizeEventBuffer,
+};
 use saluki_error::GenericError;
 
 /// PreaggregationFilter synchronous transform.
@@ -19,7 +22,7 @@ impl MemoryBounds for PreaggregationFilterConfiguration {
 
 #[async_trait]
 impl SynchronousTransformBuilder for PreaggregationFilterConfiguration {
-    async fn build(&self) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         Ok(Box::new(PreaggregationFilter {}))
     }
 }

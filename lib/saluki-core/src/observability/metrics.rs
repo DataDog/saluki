@@ -218,7 +218,7 @@ impl MetricsContextResolver {
     fn new(resolver_interner_size_bytes: NonZeroUsize) -> Self {
         Self {
             // Set up our context resolver without caching, since we will be caching the contexts ourselves.
-            context_resolver: ContextResolverBuilder::from_name("internal_metrics")
+            context_resolver: ContextResolverBuilder::from_name("core/internal_metrics")
                 .expect("resolver name is not empty")
                 .with_interner_capacity_bytes(resolver_interner_size_bytes)
                 .without_caching()
