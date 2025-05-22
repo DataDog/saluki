@@ -1,12 +1,19 @@
 use pyo3::prelude::*;
-use tracing::trace;
+use tokio::sync::mpsc::Sender;
+use tracing::{debug, error, trace};
 
 use crate::sources::checks::check_metric::{CheckMetric, MetricType};
+
+// Thsi custom class is used to hold the sender for the submission queue
+#[pyclass]
+pub struct SubmissionQueue {
+    pub sender: Sender<CheckMetric>,
+}
 
 /// submit_metric is called from the AgentCheck implementation when a check submits a metric.
 /// Python signature:
 ///     aggregator.submit_metric(self, self.check_id, mtype, name, value, tags, hostname, flush_first_value)
-///
+#[allow(clippy::too_many_arguments)]
 #[pyfunction]
 #[pyo3(pass_module)]
 pub(crate) fn submit_metric(
@@ -21,10 +28,10 @@ pub(crate) fn submit_metric(
         hostname
     );
 
-    let check_metric = CheckMetric::new(name.clone(), mtype.into(), value, tags.clone());{
+    let check_metric = CheckMetric::new(name.clone(), mtype.into(), value, tags.clone());
 
-    match module.getattr("SUBMISSION_QUEUE") {
-        Ok(py_item) => match py_item.extract::<Py<python_scheduler::PythonSenderHolder>>() {
+    match module.getattr("_submission_queue") {
+        Ok(py_item) => match py_item.extract::<Py<SubmissionQueue>>() {
             Ok(q) => {
                 let py = py_item.py();
                 let sender = &q.bind_borrowed(py).borrow_mut().sender;
@@ -34,11 +41,11 @@ pub(crate) fn submit_metric(
                     Err(e) => error!("Failed to send metric: {}", e),
                 }
             }
-            Err(e) => unreachable!("Failed to extract SUBMISSION_QUEUE: {}", e),
+            Err(e) => unreachable!("Failed to extract _submission_queue: {}", e),
         },
         Err(e) => {
             // This is a fatal error and should be impossible to hit this
-            unreachable!("SUBMISSION_QUEUE not found: {}", e);
+            unreachable!("_submission_queue not found: {}", e);
         }
     };
 }
@@ -65,10 +72,10 @@ fn reset() {
 
 #[pymodule]
 pub fn aggregator(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction_bound!(submit_metric, m)?)?;
-    m.add_function(wrap_pyfunction_bound!(submit_service_check, m)?)?;
-    m.add_function(wrap_pyfunction_bound!(self::metrics, m)?)?;
-    m.add_function(wrap_pyfunction_bound!(reset, m)?)?;
+    m.add_function(wrap_pyfunction!(submit_metric, m)?)?;
+    m.add_function(wrap_pyfunction!(submit_service_check, m)?)?;
+    m.add_function(wrap_pyfunction!(self::metrics, m)?)?;
+    m.add_function(wrap_pyfunction!(reset, m)?)?;
 
     m.add("GAUGE", MetricType::Gauge as i32)?;
     m.add("RATE", MetricType::Rate as i32)?;

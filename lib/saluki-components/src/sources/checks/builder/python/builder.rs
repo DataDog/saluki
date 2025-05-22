@@ -17,6 +17,7 @@ use tracing::{debug, error, info, warn};
 
 use super::python_modules::aggregator as pyagg;
 use super::python_modules::datadog_agent;
+use super::python_modules::SubmissionQueue;
 use crate::sources::checks::builder::CheckBuilder;
 use crate::sources::checks::check::Check;
 use crate::sources::checks::check_metric::CheckMetric;
@@ -96,6 +97,22 @@ impl PythonEnvBuilder {
             sys_path.insert(0, checks_d_path.to_string_lossy().as_ref()).unwrap(); // integrations-core legacy checks
             sys_path.insert(0, "/etc/datadog-agent/checks.d/").unwrap(); // Agent checks folder
             debug!("Updated Python system path (sys.path) to {:?}.", sys_path);
+            // Initialize the aggregator module with the submission queue
+            py.import("aggregator")
+                .error_context("Could not import 'aggregator' module.")
+                .and_then(|m| {
+                    let sender_holder = Bound::new(
+                        py,
+                        SubmissionQueue {
+                            sender: self.check_events_tx.clone(),
+                        },
+                    )
+                    .error_context("Could not create submission queue.")?;
+
+                    m.setattr("_submission_queue", sender_holder)
+                        .error_context("Could not set submission queue.")
+                })?;
+
             // Import the Datadog Checks module, ensuring it loads correctly, and grab a reference to the base AgentCheck class.
             let dd_checks_module = match py.import("datadog_checks.checks") {
                 Ok(m) => m,
