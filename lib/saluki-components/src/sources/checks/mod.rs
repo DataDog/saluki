@@ -40,9 +40,9 @@ pub struct ChecksConfiguration {
     #[serde(default = "default_check_runners")]
     check_runners: usize,
 
-    /// Custom check folder.
+    /// Additional checks.d folders.
     #[serde(default)]
-    custom_checks_dir: String,
+    additional_checksd: String,
 
     /// Autodiscovery provider to use.
     #[serde(skip)]
@@ -72,8 +72,8 @@ impl SourceBuilder for ChecksConfiguration {
             Some(autodiscovery) => Ok(Box::new(ChecksSource {
                 autodiscovery: Arc::clone(autodiscovery),
                 check_runners: self.check_runners,
-                custom_checks_dir: if !self.custom_checks_dir.is_empty() {
-                    Some(self.custom_checks_dir.split(",").map(|s| s.to_string()).collect())
+                custom_checks_dirs: if !self.additional_checksd.is_empty() {
+                    Some(self.additional_checksd.split(",").map(|s| s.to_string()).collect())
                 } else {
                     None
                 },
@@ -98,7 +98,7 @@ impl MemoryBounds for ChecksConfiguration {
 struct ChecksSource {
     autodiscovery: Arc<dyn AutodiscoveryProvider + Send + Sync>,
     check_runners: usize,
-    custom_checks_dir: Option<Vec<String>>,
+    custom_checks_dirs: Option<Vec<String>>,
 }
 
 #[async_trait]
@@ -113,7 +113,7 @@ impl Source for ChecksSource {
 
         let mut event_rx = self.autodiscovery.subscribe().await;
         let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> =
-            vec![Arc::new(PythonCheckBuilder::new(self.custom_checks_dir))];
+            vec![Arc::new(PythonCheckBuilder::new(self.custom_checks_dirs))];
         let mut check_ids = HashSet::new();
         let scheduler = Scheduler::new(self.check_runners);
 

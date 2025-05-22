@@ -19,7 +19,7 @@ target:
     # Runs ADP in standalone mode, which decouples ADP from any dependency on the Datadog Agent.
     DD_ADP_STANDALONE_MODE: "true"
     DD_CHECKS_CONFIG_DIR: "/etc/checks-agent/conf.d"
-    DD_CUSTOM_CHECKS_DIR: "/etc/checks-agent/checks.d"
+    DD_ADDITIONAL_CHECKSD: "/etc/checks-agent/checks.d"
 
     # Enable internal telemetry endpoint.
     DD_TELEMETRY_ENABLED: "true"
