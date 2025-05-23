@@ -27,6 +27,19 @@ variables:
   # publicly publish.
   PUBLIC_DD_AGENT_VERSION: "7.65.2"
 
+workflow:
+  rules:
+    - if: $CI_COMMIT_TAG
+      variables:
+        ADP_APP_IMAGE: "${ADP_PUBLIC_BASE_IMAGE}"
+        ADP_IMAGE_VERSION: "${CI_COMMIT_TAG}"
+        APP_DEV_BUILD: "false"
+    - if: $CI_COMMIT_TAG == ""
+      variables:
+        ADP_APP_IMAGE: "${ADP_INTERNAL_BASE_IMAGE}"
+        ADP_IMAGE_VERSION: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
+        APP_DEV_BUILD: "true"
+
 default:
   tags: ["arch:amd64"]
 
@@ -53,18 +66,6 @@ default:
     BUILD_PROFILE: "optimized-release"
     BUILD_FEATURES: "default"
     FIPS_ENABLED: "false"
-
-.build-internal-variables:
-  variables:
-    ADP_APP_IMAGE: "${ADP_INTERNAL_BASE_IMAGE}"
-    ADP_IMAGE_VERSION: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
-    APP_DEV_BUILD: "true"
-
-.build-release-variables:
-  variables:
-    ADP_APP_IMAGE: "${ADP_PUBLIC_BASE_IMAGE}"
-    ADP_IMAGE_VERSION: "${CI_COMMIT_TAG}"
-    APP_DEV_BUILD: "false"
 
 .linux-test-job:
   image: "${SALUKI_BUILD_CI_IMAGE}"
