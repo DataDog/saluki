@@ -66,10 +66,10 @@ impl TryInto<Event> for CheckMetric {
 
     fn try_into(self) -> Result<Event, Self::Error> {
         // Convert Vec<String> to Vec<Tag>
-        let tags: Vec<Tag> = self.tags.into_iter().map(Tag::new).collect();
+        let tags: Vec<Tag> = self.tags.into_iter().map(Tag::from).collect();
 
         // Convert Vec<Tag> to TagSet
-        let tagset: TagSet = TagSet::new(tags);
+        let tagset: TagSet = tags.into_iter().collect();
 
         let context = Context::from_parts(self.name, tagset);
         let metadata = MetricMetadata::default();

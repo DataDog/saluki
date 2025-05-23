@@ -53,14 +53,6 @@ where
 pub struct Tag(MetaString);
 
 impl Tag {
-    /// Creates new tag with the given value.
-    pub fn new<S>(s: S) -> Self
-    where
-        S: Into<MetaString>,
-    {
-        Self(s.into())
-    }
-
     /// Creates a new, empty tag.
     pub const fn empty() -> Self {
         Self(MetaString::empty())
@@ -244,11 +236,6 @@ impl hash::Hash for BorrowedTag<'_> {
 pub struct TagSet(Vec<Tag>);
 
 impl TagSet {
-    /// Creates a new tag set from the provided Vec
-    pub fn new(tags: Vec<Tag>) -> Self {
-        Self(tags)
-    }
-
     /// Creates a new, empty tag set with the given capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self(Vec::with_capacity(capacity))
