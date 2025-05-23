@@ -24,6 +24,8 @@ papaya = { workspace = true }
 pin-project-lite = { workspace = true }
 prost = { workspace = true }
 regex = { workspace = true, features = ["std", "perf"] }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true, features = ["std"] }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }
 saluki-config = { workspace = true }

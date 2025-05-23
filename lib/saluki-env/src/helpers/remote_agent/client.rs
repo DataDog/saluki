@@ -25,7 +25,7 @@ use tonic::{
 };
 use tracing::warn;
 
-use crate::helpers::tonic::{build_self_signed_https_connector, BearerAuthInterceptor};
+use crate::helpers::tonic::{build_datadog_agent_ipc_https_connector, BearerAuthInterceptor};
 
 fn default_agent_ipc_endpoint() -> Uri {
     Uri::from_static("https://127.0.0.1:5001")
@@ -33,6 +33,10 @@ fn default_agent_ipc_endpoint() -> Uri {
 
 fn default_agent_auth_token_file_path() -> PathBuf {
     PathBuf::from("/etc/datadog-agent/auth_token")
+}
+
+fn default_agent_ipc_cert_file_path() -> PathBuf {
+    PathBuf::from("/etc/datadog-agent/ipc_cert.pem")
 }
 
 const fn default_connect_retry_attempts() -> usize {
@@ -65,6 +69,16 @@ struct RemoteAgentClientConfiguration {
     /// Defaults to `/etc/datadog-agent/auth_token`.
     #[serde(default = "default_agent_auth_token_file_path")]
     auth_token_file_path: PathBuf,
+
+    /// Path to the Agent IPC TLS certificate file.
+    ///
+    /// The file is expected to be PEM-encoded, containing both a certificate and private key. The certificate will be
+    /// used to verify the TLS server certificate presented by the Agent, and the certificate and private key will be
+    /// used together to provide client authentication _to_ the Agent.
+    ///
+    /// Defaults to `/etc/datadog-agent/ipc_cert.pem`.
+    #[serde(default = "default_agent_ipc_cert_file_path")]
+    ipc_cert_file_path: PathBuf,
 
     /// Number of allowed retry attempts when initially connecting.
     ///
@@ -116,7 +130,7 @@ impl RemoteAgentClient {
         // essentially freewheel, trying to reconnect as quickly as possible, which spams the logs, wastes resources, so
         // on and so forth. We would want to essentially apply a backoff like any other client would for the RPC calls
         // themselves, but use it with the _connector_ instead.
-        //config
+        //
         // We could potentially just use a retry middleware, but Tonic does have its own reconnection logic, so we'd
         // have to test it out to make sure it behaves sensibly.
         let service_builder = || async {
@@ -129,9 +143,11 @@ impl RemoteAgentClient {
                     )
                 })?;
 
+            let https_connector = build_datadog_agent_ipc_https_connector(&config.ipc_cert_file_path).await?;
+
             let channel = Endpoint::from(config.ipc_endpoint.clone())
                 .connect_timeout(Duration::from_secs(2))
-                .connect_with_connector(build_self_signed_https_connector())
+                .connect_with_connector(https_connector)
                 .await
                 .with_error_context(|| {
                     format!("Failed to connect to Datadog Agent API at '{}'.", config.ipc_endpoint)

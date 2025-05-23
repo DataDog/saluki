@@ -3299,6 +3299,8 @@ dependencies = [
  "proptest",
  "prost",
  "regex",
+ "rustls",
+ "rustls-pemfile",
  "saluki-api",
  "saluki-common",
  "saluki-config",
