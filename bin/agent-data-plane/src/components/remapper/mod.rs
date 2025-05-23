@@ -48,13 +48,14 @@ impl TransformBuilder for AgentTelemetryRemapperConfiguration {
         OUTPUTS
     }
 
-    async fn build(&self, _: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let context_string_interner_size = NonZeroUsize::new(self.context_string_interner_bytes.as_u64() as usize)
             .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
-        let context_resolver = ContextResolverBuilder::from_name("agent_telemetry_remapper")
-            .expect("resolver name is not empty")
-            .with_interner_capacity_bytes(context_string_interner_size)
-            .build();
+        let context_resolver =
+            ContextResolverBuilder::from_name(format!("{}/remapper/primary", context.component_id()))
+                .expect("resolver name is not empty")
+                .with_interner_capacity_bytes(context_string_interner_size)
+                .build();
 
         Ok(Box::new(AgentTelemetryRemapper {
             context_resolver,

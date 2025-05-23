@@ -48,6 +48,10 @@ pub struct ChecksConfiguration {
     #[serde(default = "default_check_runners")]
     check_runners: usize,
 
+    /// Additional checks.d folders.
+    #[serde(default)]
+    additional_checksd: String,
+
     /// Autodiscovery provider to use.
     #[serde(skip)]
     autodiscovery_provider: Option<Arc<dyn AutodiscoveryProvider + Send + Sync>>,
@@ -76,6 +80,11 @@ impl SourceBuilder for ChecksConfiguration {
             Some(autodiscovery) => Ok(Box::new(ChecksSource {
                 autodiscovery: Arc::clone(autodiscovery),
                 check_runners: self.check_runners,
+                custom_checks_dirs: if !self.additional_checksd.is_empty() {
+                    Some(self.additional_checksd.split(",").map(|s| s.to_string()).collect())
+                } else {
+                    None
+                },
             })),
             None => Err(generic_error!("No autodiscovery provider configured.")),
         }
@@ -97,6 +106,7 @@ impl MemoryBounds for ChecksConfiguration {
 struct ChecksSource {
     autodiscovery: Arc<dyn AutodiscoveryProvider + Send + Sync>,
     check_runners: usize,
+    custom_checks_dirs: Option<Vec<String>>,
 }
 
 #[async_trait]
@@ -111,8 +121,10 @@ impl Source for ChecksSource {
         let (check_metrics_tx, check_metrics_rx) = mpsc::channel(10_000_000);
 
         let mut event_rx = self.autodiscovery.subscribe().await;
-        let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> =
-            vec![Arc::new(PythonCheckBuilder::new(check_metrics_tx))];
+        let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> = vec![Arc::new(PythonCheckBuilder::new(
+            check_metrics_tx,
+            self.custom_checks_dirs,
+        ))];
         let mut check_ids = HashSet::new();
         let scheduler = Scheduler::new(self.check_runners);
 

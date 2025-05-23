@@ -1,25 +1,3 @@
-.release-common-variables:
-  extends: [.build-common-variables, .build-release-variables]
-  variables:
-    # Source images for ADP.
-    #
-    # Source images are always full paths because we need to know precisely where to pull the images from.
-    SOURCE_ADP_RELEASE_IMAGE: "${ADP_RELEASE_IMAGE}"
-    SOURCE_ADP_RELEASE_IMAGE_FIPS: "${ADP_RELEASE_IMAGE_FIPS}"
-
-    # Intermediate publish location: we publish our built images here to have somewhere to reference when invoking the
-    # downstream jobs that actually do the public image publishing.
-    INTERMEDIATE_IMAGE_REPO: "${SALUKI_IMAGE_REPO_BASE}/releases"
-
-    # Target images for standalone ADP.
-    #
-    # Should end as something like `agent-data-plane:0.1.9` and `agent-data-plane:0.1.9-fips`.
-    #
-    # Target images are simply the image name and tag as the publishing jobs push to multiple repositories, so it only
-    # needs to know the basics.
-    TARGET_ADP_RELEASE_IMAGE: "agent-data-plane:${ADP_IMAGE_VERSION}"
-    TARGET_ADP_RELEASE_IMAGE_FIPS: "${TARGET_ADP_RELEASE_IMAGE}-fips"
-
 .publish-image-linux-definition:
   stage: release
   rules:
@@ -45,17 +23,17 @@
 
 # Publish our standalone ADP images,
 publish-standalone-adp-image-linux:
-  extends: [.release-common-variables, .publish-image-linux-definition]
+  extends: [.build-common-variables, .build-release-variables, .publish-image-linux-definition]
   needs:
     - build-adp-image-release
   variables:
-    SOURCE_IMAGE: ${SOURCE_ADP_RELEASE_IMAGE}
-    TARGET_IMAGE: ${TARGET_ADP_RELEASE_IMAGE}
+    SOURCE_IMAGE: ${ADP_RELEASE_IMAGE}
+    TARGET_IMAGE: "agent-data-plane:${ADP_IMAGE_VERSION}"
 
 publish-standalone-adp-image-linux-fips:
-  extends: [.release-common-variables, .publish-image-linux-definition]
+  extends: [.build-common-variables, .build-release-variables, .publish-image-linux-definition]
   needs:
     - build-adp-image-release-fips
   variables:
-    SOURCE_IMAGE: ${SOURCE_ADP_RELEASE_IMAGE_FIPS}
-    TARGET_IMAGE: ${TARGET_ADP_RELEASE_IMAGE_FIPS}
+    SOURCE_IMAGE: ${ADP_RELEASE_IMAGE_FIPS}
+    TARGET_IMAGE: "agent-data-plane:${ADP_IMAGE_VERSION}-fips"

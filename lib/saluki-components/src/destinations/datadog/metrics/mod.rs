@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use http::Uri;
+use http::{uri::PathAndQuery, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::task::HandleExt as _;
 use saluki_config::{GenericConfiguration, RefreshableConfiguration};
@@ -117,8 +117,8 @@ pub struct DatadogMetricsConfiguration {
     zstd_compressor_level: i32,
 
     /// Endpoint path override for all metric types.
-    #[serde(default)]
-    endpoint_path_override: Option<&'static str>,
+    #[serde(default, skip)]
+    endpoint_path_override: Option<PathAndQuery>,
 }
 
 impl DatadogMetricsConfiguration {
@@ -132,13 +132,34 @@ impl DatadogMetricsConfiguration {
         self.config_refresher = Some(refresher);
     }
 
-    /// Configure the destination for metric preaggregation.
-    pub fn configure_for_preaggregation(&mut self) {
-        self.forwarder_config
-            .endpoint_mut()
-            .set_dd_url("https://api.datad0g.com".to_string());
-        self.forwarder_config.endpoint.additional_endpoints = Default::default();
-        self.endpoint_path_override = Some("/api/intake/pipelines/ddseries");
+    /// Overrides the default endpoint that metrics are sent to.
+    ///
+    /// This overrides any existing endpoint configuration, and manually sets the base endpoint (e.g.,
+    /// `https://api.datad0g.com`) and request path (e.g., `/api/v2/series`) to be used for all metrics payloads.
+    ///
+    /// This can be used to preserve other configuration settings (forwarder settings, retry, etc) while still allowing
+    /// for overriding _where_ metrics are sent to.
+    ///
+    /// # Errors
+    ///
+    /// If the given request path is not valid, an error is returned.
+    pub fn with_endpoint_override(
+        mut self, dd_url: String, api_key: String, request_path: String,
+    ) -> Result<Self, GenericError> {
+        // Clear any existing additional endpoints, and set the new DD URL and API key.
+        //
+        // This ensures that the only endpoint we'll send to is this one.
+        let endpoint = self.forwarder_config.endpoint_mut();
+        endpoint.clear_additional_endpoints();
+        endpoint.set_dd_url(dd_url);
+        endpoint.set_api_key(api_key);
+
+        // Set the endpoint path override to ensure that the request builders use the overridden path.
+        let request_path =
+            PathAndQuery::from_maybe_shared(request_path).error_context("Failed to parse request path.")?;
+        self.endpoint_path_override = Some(request_path);
+
+        Ok(self)
     }
 }
 
@@ -176,8 +197,9 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         let mut sketches_rb = RequestBuilder::new(sketches_encoder, rb_buffer_pool.clone(), compression_scheme).await?;
         sketches_rb.with_max_inputs_per_payload(self.max_metrics_per_payload);
 
-        if let Some(override_path) = self.endpoint_path_override {
-            series_rb.with_endpoint_uri_override(override_path);
+        if let Some(override_path) = self.endpoint_path_override.as_ref() {
+            series_rb.with_endpoint_uri_override(override_path.clone());
+            sketches_rb.with_endpoint_uri_override(override_path.clone());
         }
 
         let flush_timeout = match self.flush_timeout_secs {

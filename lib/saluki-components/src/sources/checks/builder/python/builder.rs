@@ -61,11 +61,13 @@ static PYTHON_ENV_BUILDER: OnceLock<PythonEnvBuilder> = OnceLock::new();
 struct PythonEnvBuilder {
     check_events_tx: Sender<CheckMetric>,
     agent_check_class: Option<PyObject>,
+    custom_checks_folders: Option<Vec<String>>,
 }
 impl PythonEnvBuilder {
-    pub fn new(check_events_tx: Sender<CheckMetric>) -> Self {
+    pub fn new(check_events_tx: Sender<CheckMetric>, custom_checks_folders: Option<Vec<String>>) -> Self {
         Self {
             check_events_tx,
+            custom_checks_folders,
             agent_check_class: None,
         }
     }
@@ -95,7 +97,14 @@ impl PythonEnvBuilder {
             let checks_d_path = dist_path.join("checks.d");
             sys_path.insert(0, dist_path.to_string_lossy().as_ref()).unwrap(); // common modules are shipped in the dist path directly or under the "checks/" sub-dir
             sys_path.insert(0, checks_d_path.to_string_lossy().as_ref()).unwrap(); // integrations-core legacy checks
+            if let Some(custom_checks_folders) = &self.custom_checks_folders {
+                for folder in custom_checks_folders {
+                    let path = Path::new(&folder);
+                    sys_path.insert(0, path.to_string_lossy().as_ref()).unwrap();
+                }
+            }
             sys_path.insert(0, "/etc/datadog-agent/checks.d/").unwrap(); // Agent checks folder
+
             debug!("Updated Python system path (sys.path) to {:?}.", sys_path);
             // Initialize the aggregator module with the submission queue
             py.import("aggregator")
@@ -134,6 +143,7 @@ impl PythonEnvBuilder {
                 Self {
                     agent_check_class: Some(agent_check_class),
                     check_events_tx: self.check_events_tx.clone(),
+                    custom_checks_folders: self.custom_checks_folders.clone(),
                 }
             }
             Err(e) => {
@@ -141,6 +151,7 @@ impl PythonEnvBuilder {
                 Self {
                     agent_check_class: None,
                     check_events_tx: self.check_events_tx.clone(),
+                    custom_checks_folders: self.custom_checks_folders.clone(),
                 }
             }
         }
@@ -152,8 +163,8 @@ pub struct PythonCheckBuilder {
 }
 
 impl PythonCheckBuilder {
-    pub fn new(check_events_tx: Sender<CheckMetric>) -> Self {
-        let env_builder = PythonEnvBuilder::new(check_events_tx);
+    pub fn new(check_events_tx: Sender<CheckMetric>, custom_checks_folders: Option<Vec<String>>) -> Self {
+        let env_builder = PythonEnvBuilder::new(check_events_tx, custom_checks_folders);
         Self { env_builder }
     }
 }

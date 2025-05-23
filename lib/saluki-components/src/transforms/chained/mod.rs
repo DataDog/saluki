@@ -55,10 +55,10 @@ impl MemoryBounds for ChainedConfiguration {
 
 #[async_trait]
 impl TransformBuilder for ChainedConfiguration {
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let mut subtransforms = Vec::new();
         for (subtransform_id, subtransform_builder) in &self.subtransform_builders {
-            let subtransform = subtransform_builder.build().await?;
+            let subtransform = subtransform_builder.build(context.clone()).await?;
             subtransforms.push((subtransform_id.clone(), subtransform));
         }
 
