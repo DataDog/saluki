@@ -52,15 +52,17 @@ calculate-build-metadata:
       dotenv: build.env
 
 # Internal images are only ever used/targeted for, well... internal deployments.
+#
+# This builds an ADP image suitable for internal deployments, and publishes it to `registry.ddbuild.io/saluki/agent-data-plane:v<pipeline ID>-<commit SHA>`.
 build-adp-image-internal:
   extends: [.build-common-variables, .build-internal-variables, .build-adp-definition]
   variables:
-    IMAGE_TAG: ${ADP_INTERNAL_IMAGE}
+    IMAGE_TAG: "${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}"
 
 build-adp-image-internal-fips:
   extends: [.build-common-variables, .build-internal-variables, .build-adp-definition]
   variables:
-    IMAGE_TAG: ${ADP_INTERNAL_IMAGE_FIPS}
+    IMAGE_TAG: "${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}-fips"
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
 
@@ -71,14 +73,14 @@ build-adp-image-release:
   rules:
     - if: !reference [.on_official_release, rules, if]
   variables:
-    IMAGE_TAG: ${ADP_RELEASE_IMAGE}
+    IMAGE_TAG: "${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}"
 
 build-adp-image-release-fips:
   extends: [.build-common-variables, .build-release-variables, .build-adp-definition]
   rules:
     - if: !reference [.on_official_release, rules, if]
   variables:
-    IMAGE_TAG: ${ADP_RELEASE_IMAGE_FIPS}
+    IMAGE_TAG: "${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}-fips"
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
 
@@ -93,7 +95,7 @@ build-adp-image-release-fips:
 # substituted.
 publish-adp-image-internal:
   stage: build
-  extends: [.build-common-variables]
+  extends: [.build-common-variables, .build-internal-variables]
   needs:
     - build-adp-image-internal
   trigger:
@@ -104,15 +106,15 @@ publish-adp-image-internal:
     IMAGE_NAME: agent-data-plane
     IMAGE_VERSION: tmpl-v1
     TMPL_SRC_REPO: ${ADP_IMAGE_REPO_NAME}
-    TMPL_SRC_IMAGE: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
-    RELEASE_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
-    BUILD_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-build"
+    TMPL_SRC_IMAGE: ${ADP_IMAGE_VERSION}
+    RELEASE_TAG: ${ADP_IMAGE_VERSION}
+    BUILD_TAG: "${ADP_IMAGE_VERSION}-build"
     RELEASE_STAGING: "true"
     RELEASE_PROD: "true"
 
 publish-adp-image-internal-fips:
   stage: build
-  extends: [.build-common-variables]
+  extends: [.build-common-variables, .build-internal-variables]
   needs:
     - build-adp-image-internal-fips
   trigger:
@@ -123,9 +125,9 @@ publish-adp-image-internal-fips:
     IMAGE_NAME: agent-data-plane
     IMAGE_VERSION: tmpl-v1
     TMPL_SRC_REPO: ${ADP_IMAGE_REPO_NAME}
-    TMPL_SRC_IMAGE: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-fips"
-    RELEASE_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-fips"
-    BUILD_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-fips-build"
+    TMPL_SRC_IMAGE: "${ADP_IMAGE_VERSION}-fips"
+    RELEASE_TAG: "${ADP_IMAGE_VERSION}-fips"
+    BUILD_TAG: "${ADP_IMAGE_VERSION}-fips-build"
     RELEASE_STAGING: "true"
     RELEASE_PROD: "true"
 
@@ -143,6 +145,6 @@ display-image-tags:
       # ADP Image Tags
 
       ## Internal (baked with necessary tools for internal deployments)
-      Non-FIPS: ${IMAGE_REGISTRY}/agent-data-plane:${ADP_INTERNAL_IMAGE_TAG}
-      FIPS:     ${IMAGE_REGISTRY}/agent-data-plane:${ADP_INTERNAL_IMAGE_TAG_FIPS}
+      Non-FIPS: ${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}
+      FIPS:     ${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}-fips
       EOF

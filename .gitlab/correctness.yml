@@ -53,7 +53,7 @@ build-millstone-image:
       .
 
 run-ground-truth:
-  extends: [.build-common-variables]
+  extends: [.build-common-variables, .build-internal-variables]
   stage: correctness
   tags: ["docker-in-docker:amd64"]
   needs:
@@ -80,5 +80,5 @@ run-ground-truth:
       --metrics-intake-config-path $(pwd)/test/correctness/metrics-intake.yaml
       --dsd-image gcr.io/datadoghq/dogstatsd:${PUBLIC_DD_AGENT_VERSION}
       --dsd-config-path $(pwd)/test/correctness/datadog.yaml
-      --adp-image ${ADP_INTERNAL_IMAGE}
+      --adp-image ${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}
       --adp-config-path $(pwd)/test/correctness/datadog.yaml
