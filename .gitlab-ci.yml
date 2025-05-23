@@ -50,18 +50,6 @@ default:
     # other necessary tooling, to build ADP for the target platforms we need it to be able to run on.
     ADP_BUILD_IMAGE: "${SALUKI_BUILD_CI_IMAGE}"
 
-    # Both internal and release builds are built with release optimizations _and_ include debug symbols, but "internal"
-    # images are marked in a way that they always consider themselves "development" builds in terms of versioning
-    # information, etc.
-    ADP_INTERNAL_IMAGE: "${ADP_IMAGE_BASE}:${ADP_INTERNAL_IMAGE_TAG}"
-    ADP_INTERNAL_IMAGE_FIPS: "${ADP_IMAGE_BASE}:${ADP_INTERNAL_IMAGE_TAG_FIPS}"
-    ADP_RELEASE_IMAGE: "${ADP_IMAGE_BASE}:${ADP_RELEASE_IMAGE_TAG}"
-    ADP_RELEASE_IMAGE_FIPS: "${ADP_IMAGE_BASE}:${ADP_RELEASE_IMAGE_TAG_FIPS}"
-
-    ADP_INTERNAL_IMAGE_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
-    ADP_INTERNAL_IMAGE_TAG_FIPS: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-fips"
-    ADP_RELEASE_IMAGE_TAG: "${CI_COMMIT_TAG}-release"
-    ADP_RELEASE_IMAGE_TAG_FIPS: "${CI_COMMIT_TAG}-fips-release"
     BUILD_PROFILE: "optimized-release"
     BUILD_FEATURES: "default"
     FIPS_ENABLED: "false"
@@ -69,7 +57,7 @@ default:
 .build-internal-variables:
   variables:
     ADP_APP_IMAGE: "${ADP_INTERNAL_BASE_IMAGE}"
-    ADP_IMAGE_VERSION: "${CI_COMMIT_SHA}"
+    ADP_IMAGE_VERSION: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
     APP_DEV_BUILD: "true"
 
 .build-release-variables:
