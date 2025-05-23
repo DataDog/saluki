@@ -53,13 +53,13 @@ service AgentSecure {
 
     // Generates a container ID from Origin Info.
     // can be called through the HTTP gateway, and entity will be returned as JSON:
-    //     $ curl -H "authorization: Bearer $(cat /etc/datadog-agent/auth_token)" \
-    //         -XPOST -k -H "Content-Type: application/json" \
-    //        --data '{"externalData": {"init": false,"containerName": "dd-trace-py","podUID": "c4b45c6a-b296-4bd5-88df-7c2d6bcaabef"}}' \
-    //      https://localhost:5001/v1/grpc/tagger/generate_container_id_from_origin_info
-    //   {
-    //     "containerID":"c9fd60251b5237467462dad48999815eb0025f367c6e1abe91e0bd787d5915fc"
-    //   }
+    //	  $ curl -H "authorization: Bearer $(cat /etc/datadog-agent/auth_token)" \
+    //	     -XPOST -k -H "Content-Type: application/json" \
+    //	     --data '{"externalData": {"init": false,"containerName": "dd-trace-py","podUID": "c4b45c6a-b296-4bd5-88df-7c2d6bcaabef"}}' \
+    //	     https://localhost:5001/v1/grpc/tagger/generate_container_id_from_origin_info
+    //	  {
+    //	    "containerID":"c9fd60251b5237467462dad48999815eb0025f367c6e1abe91e0bd787d5915fc"
+    //	  }
     rpc TaggerGenerateContainerIDFromOriginInfo(datadog.model.v1.GenerateContainerIDFromOriginInfoRequest) returns (datadog.model.v1.GenerateContainerIDFromOriginInfoResponse) {
         option (google.api.http) = {
             post: "/v1/grpc/tagger/generate_container_id_from_origin_info"
@@ -198,4 +198,8 @@ service RemoteAgent {
 
   // Gets the telemetry data of a remote agent.
   rpc GetTelemetry(datadog.remoteagent.GetTelemetryRequest) returns (datadog.remoteagent.GetTelemetryResponse);
+
+
+  // Streams config updates to the remote agent.
+  rpc StreamConfigUpdates(stream datadog.remoteagent.PushedConfig) returns (google.protobuf.Empty);
 }

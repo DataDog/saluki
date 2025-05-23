@@ -5,7 +5,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use datadog_protos::agent::{
     get_telemetry_response::Payload, GetFlareFilesRequest, GetFlareFilesResponse, GetStatusDetailsRequest,
-    GetStatusDetailsResponse, GetTelemetryRequest, GetTelemetryResponse, RemoteAgent, RemoteAgentServer, StatusSection,
+    GetStatusDetailsResponse, GetTelemetryRequest, GetTelemetryResponse, PushedConfig, RemoteAgent, RemoteAgentServer,
+    StatusSection,
 };
 use http::{Request, Uri};
 use http_body_util::BodyExt;
@@ -241,6 +242,27 @@ impl RemoteAgent for RemoteAgentImpl {
             }
             Err(e) => Err(tonic::Status::internal(e.to_string())),
         }
+    }
+
+    #[allow(unused)]
+    async fn stream_config_updates(
+        &self, request: tonic::Request<tonic::Streaming<PushedConfig>>,
+    ) -> Result<tonic::Response<()>, tonic::Status> {
+        let mut stream = request.into_inner();
+
+        loop {
+            match stream.message().await {
+                Ok(Some(config_update)) => {}
+                Ok(None) => {
+                    break;
+                }
+                Err(status) => {
+                    return Err(status);
+                }
+            }
+        }
+
+        Ok(tonic::Response::new(()))
     }
 }
 
