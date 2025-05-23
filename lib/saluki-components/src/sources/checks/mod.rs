@@ -6,13 +6,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
-use saluki_core::pooling::ObjectPool;
 use saluki_core::{
     components::{sources::*, ComponentContext},
-    data_model::event::Event,
     data_model::event::EventType,
-    topology::OutputDefinition,
+    topology::{
+        shutdown::{ComponentShutdownHandle, DynamicShutdownCoordinator, DynamicShutdownHandle},
+        OutputDefinition,
+    },
 };
 use saluki_env::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider};
 use saluki_error::{generic_error, GenericError};
@@ -25,6 +27,7 @@ mod scheduler;
 use self::scheduler::Scheduler;
 
 mod check_metric;
+use self::check_metric::CheckMetric;
 
 mod check;
 use self::check::Check;
@@ -99,14 +102,13 @@ struct ChecksSource {
 #[async_trait]
 impl Source for ChecksSource {
     async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
-        let mut global_shutdown: saluki_core::topology::shutdown::ComponentShutdownHandle =
-            context.take_shutdown_handle();
+        let mut global_shutdown: ComponentShutdownHandle = context.take_shutdown_handle();
         let mut health = context.take_health_handle();
         health.mark_ready();
 
         info!("Checks source started.");
 
-        let (check_metrics_tx, mut check_metrics_rx) = mpsc::channel(10_000_000);
+        let (check_metrics_tx, check_metrics_rx) = mpsc::channel(10_000_000);
 
         let mut event_rx = self.autodiscovery.subscribe().await;
         let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> =
@@ -114,10 +116,17 @@ impl Source for ChecksSource {
         let mut check_ids = HashSet::new();
         let scheduler = Scheduler::new(self.check_runners);
 
+        let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
+
+        spawn_traced_named(
+            "checks-events-listener",
+            drain_and_dispatch_check_metrics(listener_shutdown_coordinator.register(), context, check_metrics_rx),
+        );
+
         loop {
             select! {
                 _ = &mut global_shutdown => {
-                    debug!("Received shutdown signal.");
+                    debug!("Checks source received shutdown signal.");
                     scheduler.shutdown().await;
                     break
                 },
@@ -166,25 +175,65 @@ impl Source for ChecksSource {
                         Err(e) => {
                             error!("Error receiving event: {:?}", e);
                         }
-                },
-
-                Some(check_metric) = check_metrics_rx.recv() => {
-                    trace!("Received check metric: {:?}", check_metric);
-                    let mut event_buffer = context.event_buffer_pool().acquire().await;
-                    let event: Event = check_metric.try_into().expect("can't convert");
-                    if let Some(_unsent) = event_buffer.try_push(event) {
-                        error!("Event buffer full, dropping event");
-                        continue;
-                    }
-                    if let Err(e) = context.dispatcher().dispatch_buffer(event_buffer).await {
-                        error!(error = %e, "Failed to forward check metrics.");
-                    }
                 }
             }
         }
 
+        listener_shutdown_coordinator.shutdown().await;
+
         info!("Checks source stopped.");
 
         Ok(())
+    }
+}
+
+async fn drain_and_dispatch_check_metrics(
+    shutdown_handle: DynamicShutdownHandle, context: SourceContext, mut check_metrics_rx: mpsc::Receiver<CheckMetric>,
+) {
+    tokio::pin!(shutdown_handle);
+
+    loop {
+        select! {
+            _ = &mut shutdown_handle => {
+                debug!("Checks events listerners received shutdown signal.");
+                break;
+            }
+            result = check_metrics_rx.recv() => match result {
+                None => break,
+                Some(check_metric) => {
+                    let mut buffered_dispatcher = context
+                        .dispatcher()
+                        .buffered()
+                        .expect("checks source should always have default output");
+
+                    trace!("Received check metric: {:?}", check_metric);
+                    match check_metric.try_into() {
+                        Ok(event) => {
+                            if let Err(e) = buffered_dispatcher.push(event).await {
+                            error!(error = %e, "Failed to forward check metrics.");
+                        }
+
+                        if let Err(e) = buffered_dispatcher.flush().await {
+                            error!(error = %e, "Failed to flush check metrics.");
+                        }
+                        },
+                        Err(e) => {
+                            error!("Failed to convert check metric to event. {:?}", e);
+                        }
+
+                    }
+                }
+            }
+        }
+    }
+
+    let buffered_dispatcher = context
+        .dispatcher()
+        .buffered()
+        .expect("checks source should always have default output");
+
+    // Final dispatcher flush after all checks have closed.
+    if let Err(e) = buffered_dispatcher.flush().await {
+        error!(error = %e, "Failed to flush check metrics.");
     }
 }
