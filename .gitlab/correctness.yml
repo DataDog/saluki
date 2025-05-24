@@ -53,11 +53,11 @@ build-millstone-image:
       .
 
 run-ground-truth:
-  extends: [.build-common-variables, .build-internal-variables]
+  extends: [.build-common-variables]
   stage: correctness
   tags: ["docker-in-docker:amd64"]
   needs:
-    - build-adp-image-internal
+    - build-adp-image
     - build-metrics-intake-image
     - build-millstone-image
   retry: 2

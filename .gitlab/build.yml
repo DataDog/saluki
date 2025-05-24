@@ -52,34 +52,13 @@ calculate-build-metadata:
     reports:
       dotenv: build.env
 
-# Internal images are only ever used/targeted for, well... internal deployments.
-#
-# This builds an ADP image suitable for internal deployments, and publishes it to `registry.ddbuild.io/saluki/agent-data-plane:v<pipeline ID>-<commit SHA>`.
-build-adp-image-internal:
-  extends: [.build-common-variables, .build-internal-variables, .build-adp-definition]
+build-adp-image:
+  extends: [.build-common-variables, .build-adp-definition]
   variables:
     IMAGE_TAG: "${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}"
 
-build-adp-image-internal-fips:
-  extends: [.build-common-variables, .build-internal-variables, .build-adp-definition]
-  variables:
-    IMAGE_TAG: "${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}-fips"
-    BUILD_FEATURES: "fips"
-    FIPS_ENABLED: "true"
-
-# Release images are only ever used for public images, and are only ever built for versioned releases of ADP. Currently,
-# this means being built when a tag is cut on the Saluki repository.
-build-adp-image-release:
-  extends: [.build-common-variables, .build-release-variables, .build-adp-definition]
-  rules:
-    - if: !reference [.on_official_release, rules, if]
-  variables:
-    IMAGE_TAG: "${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}"
-
-build-adp-image-release-fips:
-  extends: [.build-common-variables, .build-release-variables, .build-adp-definition]
-  rules:
-    - if: !reference [.on_official_release, rules, if]
+build-adp-image-fips:
+  extends: [.build-common-variables, .build-adp-definition]
   variables:
     IMAGE_TAG: "${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}-fips"
     BUILD_FEATURES: "fips"
@@ -96,9 +75,9 @@ build-adp-image-release-fips:
 # substituted.
 publish-adp-image-internal:
   stage: build
-  extends: [.build-common-variables, .build-internal-variables]
+  extends: [.build-common-variables]
   needs:
-    - build-adp-image-internal
+    - build-adp-image
   trigger:
     project: DataDog/images
     branch: master
@@ -115,9 +94,9 @@ publish-adp-image-internal:
 
 publish-adp-image-internal-fips:
   stage: build
-  extends: [.build-common-variables, .build-internal-variables]
+  extends: [.build-common-variables]
   needs:
-    - build-adp-image-internal-fips
+    - build-adp-image-fips
   trigger:
     project: DataDog/images
     branch: master
@@ -136,8 +115,8 @@ display-image-tags:
   extends: [.build-common-variables]
   stage: build
   needs:
-    - build-adp-image-internal
-    - build-adp-image-internal-fips
+    - build-adp-image
+    - build-adp-image-fips
     - publish-adp-image-internal
     - publish-adp-image-internal-fips
   script:

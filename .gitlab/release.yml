@@ -23,17 +23,17 @@
 
 # Publish our standalone ADP images,
 publish-standalone-adp-image-linux:
-  extends: [.build-common-variables, .build-release-variables, .publish-image-linux-definition]
+  extends: [.build-common-variables, .publish-image-linux-definition]
   needs:
-    - build-adp-image-release
+    - build-adp-image
   variables:
     SOURCE_IMAGE: "${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}"
     TARGET_IMAGE: "agent-data-plane:${ADP_IMAGE_VERSION}"
 
 publish-standalone-adp-image-linux-fips:
-  extends: [.build-common-variables, .build-release-variables, .publish-image-linux-definition]
+  extends: [.build-common-variables, .publish-image-linux-definition]
   needs:
-    - build-adp-image-release-fips
+    - build-adp-image-fips
   variables:
     SOURCE_IMAGE: "${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}-fips"
     TARGET_IMAGE: "agent-data-plane:${ADP_IMAGE_VERSION}-fips"
