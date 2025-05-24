@@ -12,10 +12,15 @@ use pyo3::{prelude::*, IntoPyObjectExt};
 use saluki_env::autodiscovery::{Data, Instance, RawData};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stringtheory::MetaString;
+use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, warn};
 
+use super::python_modules::aggregator as pyagg;
+use super::python_modules::datadog_agent;
+use super::python_modules::SubmissionQueue;
 use crate::sources::checks::builder::CheckBuilder;
 use crate::sources::checks::check::Check;
+use crate::sources::checks::check_metric::CheckMetric;
 
 struct PythonCheck {
     version: String,
@@ -54,18 +59,30 @@ impl Check for PythonCheck {
 static PYTHON_ENV_BUILDER: OnceLock<PythonEnvBuilder> = OnceLock::new();
 
 struct PythonEnvBuilder {
+    check_events_tx: Sender<CheckMetric>,
     agent_check_class: Option<PyObject>,
+    custom_checks_folders: Option<Vec<String>>,
 }
 impl PythonEnvBuilder {
-    fn get_instance(custom_checks_folders: &Option<Vec<String>>) -> &'static PythonEnvBuilder {
-        PYTHON_ENV_BUILDER.get_or_init(|| PythonEnvBuilder::initialize(custom_checks_folders))
+    pub fn new(check_events_tx: Sender<CheckMetric>, custom_checks_folders: Option<Vec<String>>) -> Self {
+        Self {
+            check_events_tx,
+            custom_checks_folders,
+            agent_check_class: None,
+        }
+    }
+
+    fn get_instance(&self) -> &'static PythonEnvBuilder {
+        PYTHON_ENV_BUILDER.get_or_init(|| self.initialize())
     }
 
     fn initialized(&self) -> bool {
         self.agent_check_class.is_some()
     }
 
-    fn initialize(custom_checks_folders: &Option<Vec<String>>) -> Self {
+    fn initialize(&self) -> Self {
+        pyo3::append_to_inittab!(datadog_agent);
+        pyo3::append_to_inittab!(pyagg);
         pyo3::prepare_freethreaded_python();
         let result = Python::with_gil(|py| -> Result<PyObject, GenericError> {
             let sys_path_attr = py
@@ -80,15 +97,31 @@ impl PythonEnvBuilder {
             let checks_d_path = dist_path.join("checks.d");
             sys_path.insert(0, dist_path.to_string_lossy().as_ref()).unwrap(); // common modules are shipped in the dist path directly or under the "checks/" sub-dir
             sys_path.insert(0, checks_d_path.to_string_lossy().as_ref()).unwrap(); // integrations-core legacy checks
-            if let Some(custom_checks_folders) = custom_checks_folders {
+            if let Some(custom_checks_folders) = &self.custom_checks_folders {
                 for folder in custom_checks_folders {
-                    let path = Path::new(folder);
+                    let path = Path::new(&folder);
                     sys_path.insert(0, path.to_string_lossy().as_ref()).unwrap();
                 }
             }
             sys_path.insert(0, "/etc/datadog-agent/checks.d/").unwrap(); // Agent checks folder
 
             debug!("Updated Python system path (sys.path) to {:?}.", sys_path);
+            // Initialize the aggregator module with the submission queue
+            py.import("aggregator")
+                .error_context("Could not import 'aggregator' module.")
+                .and_then(|m| {
+                    let sender_holder = Bound::new(
+                        py,
+                        SubmissionQueue {
+                            sender: self.check_events_tx.clone(),
+                        },
+                    )
+                    .error_context("Could not create submission queue.")?;
+
+                    m.setattr("_submission_queue", sender_holder)
+                        .error_context("Could not set submission queue.")
+                })?;
+
             // Import the Datadog Checks module, ensuring it loads correctly, and grab a reference to the base AgentCheck class.
             let dd_checks_module = match py.import("datadog_checks.checks") {
                 Ok(m) => m,
@@ -109,12 +142,16 @@ impl PythonEnvBuilder {
                 info!("Python runtime loaded successfully and initialized for checks.");
                 Self {
                     agent_check_class: Some(agent_check_class),
+                    check_events_tx: self.check_events_tx.clone(),
+                    custom_checks_folders: self.custom_checks_folders.clone(),
                 }
             }
             Err(e) => {
                 warn!(error = %e, "Failed to load/initialize Python runtime for checks. Python checks will be unavailable.");
                 Self {
                     agent_check_class: None,
+                    check_events_tx: self.check_events_tx.clone(),
+                    custom_checks_folders: self.custom_checks_folders.clone(),
                 }
             }
         }
@@ -122,12 +159,13 @@ impl PythonEnvBuilder {
 }
 
 pub struct PythonCheckBuilder {
-    custom_checks_folders: Option<Vec<String>>,
+    env_builder: PythonEnvBuilder,
 }
 
 impl PythonCheckBuilder {
-    pub fn new(custom_checks_folders: Option<Vec<String>>) -> Self {
-        Self { custom_checks_folders }
+    pub fn new(check_events_tx: Sender<CheckMetric>, custom_checks_folders: Option<Vec<String>>) -> Self {
+        let env_builder = PythonEnvBuilder::new(check_events_tx, custom_checks_folders);
+        Self { env_builder }
     }
 }
 
@@ -135,7 +173,7 @@ impl CheckBuilder for PythonCheckBuilder {
     fn build_check(
         &self, name: &str, instance: &Instance, init_config: &Data, source: &MetaString,
     ) -> Option<Arc<dyn Check + Send + Sync>> {
-        let env = PythonEnvBuilder::get_instance(&self.custom_checks_folders);
+        let env = self.env_builder.get_instance();
         if !env.initialized() {
             return None;
         }
