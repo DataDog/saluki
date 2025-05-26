@@ -118,7 +118,7 @@ impl Source for ChecksSource {
 
         info!("Checks source started.");
 
-        let (check_metrics_tx, check_metrics_rx) = mpsc::channel(10_000_000);
+        let (check_metrics_tx, check_metrics_rx) = mpsc::channel(128);
 
         let mut event_rx = self.autodiscovery.subscribe().await;
         let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> = vec![Arc::new(PythonCheckBuilder::new(
