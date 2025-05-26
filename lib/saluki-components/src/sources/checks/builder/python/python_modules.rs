@@ -1,91 +1,102 @@
+use std::sync::{Arc, Mutex, OnceLock};
+
 use pyo3::prelude::*;
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, trace};
 
 use crate::sources::checks::check_metric::{CheckMetric, MetricType};
 
-// Thsi custom class is used to hold the sender for the submission queue
-#[pyclass]
-pub struct SubmissionQueue {
-    pub sender: Sender<CheckMetric>,
+// Global state to store the sender
+static METRIC_SENDER: OnceLock<Arc<Mutex<Option<Sender<CheckMetric>>>>> = OnceLock::new();
+
+/// Sets the metric sender to be used by the aggregator module.
+pub fn set_metric_sender(sender: Sender<CheckMetric>) {
+    let storage = get_or_init_sender_storage();
+    let mut guard = storage.lock().unwrap();
+    *guard = Some(sender);
 }
 
-/// submit_metric is called from the AgentCheck implementation when a check submits a metric.
-/// Python signature:
-///     aggregator.submit_metric(self, self.check_id, mtype, name, value, tags, hostname, flush_first_value)
-#[allow(clippy::too_many_arguments)]
-#[pyfunction]
-#[pyo3(pass_module)]
-pub(crate) fn submit_metric(
-    module: &Bound<PyModule>, _class: PyObject, _check_id: String, mtype: i32, name: String, value: f64,
-    tags: Vec<String>, hostname: String, _flush_first_value: bool,
-) {
-    trace!(
-        "submit_metric called with name: {}, value: {}, tags: {:?}, hostname: {}",
-        name,
-        value,
-        tags,
-        hostname
-    );
+fn get_or_init_sender_storage() -> &'static Arc<Mutex<Option<Sender<CheckMetric>>>> {
+    METRIC_SENDER.get_or_init(|| Arc::new(Mutex::new(None)))
+}
 
-    let check_metric = CheckMetric::new(name.clone(), mtype.into(), value, tags.clone());
+fn get_metric_sender() -> Option<Sender<CheckMetric>> {
+    let storage = get_or_init_sender_storage();
+    storage.lock().ok().and_then(|guard| guard.clone())
+}
 
-    match module.getattr("_submission_queue") {
-        Ok(py_item) => match py_item.extract::<Py<SubmissionQueue>>() {
-            Ok(q) => {
-                let py = py_item.py();
-                let sender = &q.bind_borrowed(py).borrow_mut().sender;
+#[pymodule]
+pub mod aggregator {
+    use super::*;
 
+    #[pymodule_export]
+    const GAUGE: i32 = MetricType::Gauge as i32;
+    #[pymodule_export]
+    const RATE: i32 = MetricType::Rate as i32;
+    #[pymodule_export]
+    const COUNT: i32 = MetricType::Count as i32;
+    #[pymodule_export]
+    const MONOTONIC_COUNT: i32 = MetricType::MonotonicCount as i32;
+    #[pymodule_export]
+    const COUNTER: i32 = MetricType::Counter as i32;
+    #[pymodule_export]
+    const HISTOGRAM: i32 = MetricType::Histogram as i32;
+    #[pymodule_export]
+    const HISTORATE: i32 = MetricType::Historate as i32;
+
+    #[pyclass]
+    pub struct SubmissionQueue {
+        pub sender: Sender<CheckMetric>,
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyfunction]
+    fn submit_metric(
+        _class: PyObject, _check_id: String, mtype: i32, name: String, value: f64, tags: Vec<String>, hostname: String,
+        _flush_first_value: bool,
+    ) {
+        trace!(
+            "submit_metric called with name: {}, value: {}, tags: {:?}, hostname: {}",
+            name,
+            value,
+            tags,
+            hostname
+        );
+
+        let check_metric = CheckMetric::new(name.clone(), mtype.into(), value, tags.clone());
+
+        match get_metric_sender() {
+            Some(sender) => {
                 match sender.try_send(check_metric) {
                     Ok(_) => { /* nothing to do, success! */ }
                     Err(e) => error!("Failed to send metric: {}", e),
                 }
             }
-            Err(e) => unreachable!("Failed to extract _submission_queue: {}", e),
-        },
-        Err(e) => {
-            // This is a fatal error and should be impossible to hit this
-            unreachable!("_submission_queue not found: {}", e);
-        }
-    };
-}
+            None => {
+                error!("Metric sender not initialized");
+            }
+        };
+    }
 
-#[pyfunction]
-#[pyo3(signature = (name, status, tags, hostname, message=None))]
-fn submit_service_check(name: String, status: i32, tags: Vec<String>, hostname: String, message: Option<String>) {
-    println!(
-        "submit_service_check called with name: {}, status: {}, tags: {:?}, hostname: {}, message: {:?}",
-        name, status, tags, hostname, message
-    );
-}
+    #[pyfunction]
+    #[pyo3(signature = (name, status, tags, hostname, message=None))]
+    fn submit_service_check(name: String, status: i32, tags: Vec<String>, hostname: String, message: Option<String>) {
+        println!(
+            "submit_service_check called with name: {}, status: {}, tags: {:?}, hostname: {}, message: {:?}",
+            name, status, tags, hostname, message
+        );
+    }
 
-#[pyfunction]
-fn metrics(name: String) -> Vec<String> {
-    println!("metrics called for: {}", name);
-    vec![] // Dummy return
-}
+    #[pyfunction]
+    fn metrics(name: String) -> Vec<String> {
+        println!("metrics called for: {}", name);
+        vec![] // Dummy return
+    }
 
-#[pyfunction]
-fn reset() {
-    println!("reset called");
-}
-
-#[pymodule]
-pub fn aggregator(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(submit_metric, m)?)?;
-    m.add_function(wrap_pyfunction!(submit_service_check, m)?)?;
-    m.add_function(wrap_pyfunction!(self::metrics, m)?)?;
-    m.add_function(wrap_pyfunction!(reset, m)?)?;
-
-    m.add("GAUGE", MetricType::Gauge as i32)?;
-    m.add("RATE", MetricType::Rate as i32)?;
-    m.add("COUNT", MetricType::Count as i32)?;
-    m.add("MONOTONIC_COUNT", MetricType::MonotonicCount as i32)?;
-    m.add("COUNTER", MetricType::Counter as i32)?;
-    m.add("HISTOGRAM", MetricType::Histogram as i32)?;
-    m.add("HISTORATE", MetricType::Historate as i32)?;
-
-    Ok(())
+    #[pyfunction]
+    fn reset() {
+        println!("reset called");
+    }
 }
 
 #[pyfunction]
