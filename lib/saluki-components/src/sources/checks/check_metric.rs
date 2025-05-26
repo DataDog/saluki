@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use saluki_context::{
     tags::{Tag, TagSet},
     Context,
@@ -87,8 +89,7 @@ impl TryInto<Event> for CheckMetric {
             ))),
             MetricType::Histogram => Ok(Event::Metric(Metric::from_parts(
                 context,
-                // TODO support more metric types
-                MetricValues::gauge(self.value),
+                MetricValues::histogram(self.value),
                 metadata,
             ))),
             MetricType::Historate => Ok(Event::Metric(Metric::from_parts(
@@ -103,10 +104,10 @@ impl TryInto<Event> for CheckMetric {
                 MetricValues::counter(self.value),
                 metadata,
             ))),
+            // TODO: The Agent tracks rate of a metric over 2 successive flushes
             MetricType::Rate => Ok(Event::Metric(Metric::from_parts(
                 context,
-                // TODO incorrect handling of rate
-                MetricValues::counter(self.value),
+                MetricValues::rate(self.value, Duration::from_secs(1)),
                 metadata,
             ))),
             MetricType::Count => Ok(Event::Metric(Metric::from_parts(
