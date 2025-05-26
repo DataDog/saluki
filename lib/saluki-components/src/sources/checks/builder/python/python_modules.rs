@@ -99,77 +99,68 @@ pub mod aggregator {
     }
 }
 
-#[pyfunction]
-fn get_hostname() -> &'static str {
-    trace!("Called get_hostname()");
-    "stubbed.hostname"
-}
-
-#[pyfunction]
-fn set_hostname(hostname: String) {
-    trace!("Called set_hostname({})", hostname);
-    // In a function context without a struct, we cannot actually "set" the hostname persistently.
-}
-
-#[pyfunction]
-fn reset_hostname() {
-    trace!("Called reset_hostname()");
-    // Similar to `set_hostname`, we cannot reset without a persistent structure.
-}
-
-#[pyfunction]
-fn get_config(config_option: String) -> bool {
-    trace!("Called get_config({})", config_option);
-
-    false
-}
-
-#[pyfunction]
-fn get_version() -> &'static str {
-    trace!("Called get_version()");
-    "0.0.0"
-}
-
-#[pyfunction]
-fn log(message: String, level: u32) {
-    match level {
-        // All except trace are from python3 logging levels
-        // https://docs.python.org/3/library/logging.html#levels
-        // Trace is manually specified in datadog_checks_base
-        // https://github.com/DataDog/integrations-core/blob/458274dfd867b40e368c795574b6d97a9b7e471d/datadog_checks_base/datadog_checks/base/log.py#L20-L21
-        // Currently the '_check_id' / 'check_id' field is unset inside python-world
-        // so these logs say "Unknown" instead of the check-name
-        40 => tracing::event!(tracing::Level::ERROR, "Python Log: {}", message),
-        30 => tracing::event!(tracing::Level::WARN, "Python Log: {}", message),
-        20 => tracing::event!(tracing::Level::INFO, "Python Log: {}", message),
-        10 => tracing::event!(tracing::Level::DEBUG, "Python Log: {}", message),
-        7 => tracing::event!(tracing::Level::TRACE, "Python Log: {}", message),
-        _ => tracing::event!(tracing::Level::TRACE, "Python Log: {}", message),
-    };
-}
-
-#[pyfunction]
-fn set_check_metadata(check_id: String, name: String, value: String) {
-    debug!("Called set_check_metadata({}, {}, {})", check_id, name, value);
-    // Again, we can only log this because there's no structure to store it.
-}
-
-#[pyfunction]
-fn tracemalloc_enabled() -> bool {
-    // tracemalloc unsupported for now
-    false
-}
-
 #[pymodule]
-pub fn datadog_agent(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(get_hostname, m)?)?;
-    m.add_function(wrap_pyfunction!(set_hostname, m)?)?;
-    m.add_function(wrap_pyfunction!(reset_hostname, m)?)?;
-    m.add_function(wrap_pyfunction!(get_config, m)?)?;
-    m.add_function(wrap_pyfunction!(get_version, m)?)?;
-    m.add_function(wrap_pyfunction!(log, m)?)?;
-    m.add_function(wrap_pyfunction!(set_check_metadata, m)?)?;
-    m.add_function(wrap_pyfunction!(tracemalloc_enabled, m)?)?;
+pub mod datadog_agent {
+    use super::*;
 
-    Ok(())
+    #[pyfunction]
+    fn get_hostname() -> &'static str {
+        trace!("Called get_hostname()");
+        "stubbed.hostname"
+    }
+
+    #[pyfunction]
+    fn set_hostname(hostname: String) {
+        trace!("Called set_hostname({})", hostname);
+        // In a function context without a struct, we cannot actually "set" the hostname persistently.
+    }
+
+    #[pyfunction]
+    fn reset_hostname() {
+        trace!("Called reset_hostname()");
+        // Similar to `set_hostname`, we cannot reset without a persistent structure.
+    }
+
+    #[pyfunction]
+    fn get_config(config_option: String) -> bool {
+        trace!("Called get_config({})", config_option);
+
+        false
+    }
+
+    #[pyfunction]
+    fn get_version() -> &'static str {
+        trace!("Called get_version()");
+        "0.0.0"
+    }
+
+    #[pyfunction]
+    fn log(message: String, level: u32) {
+        match level {
+            // All except trace are from python3 logging levels
+            // https://docs.python.org/3/library/logging.html#levels
+            // Trace is manually specified in datadog_checks_base
+            // https://github.com/DataDog/integrations-core/blob/458274dfd867b40e368c795574b6d97a9b7e471d/datadog_checks_base/datadog_checks/base/log.py#L20-L21
+            // Currently the '_check_id' / 'check_id' field is unset inside python-world
+            // so these logs say "Unknown" instead of the check-name
+            40 => tracing::event!(tracing::Level::ERROR, "Python Log: {}", message),
+            30 => tracing::event!(tracing::Level::WARN, "Python Log: {}", message),
+            20 => tracing::event!(tracing::Level::INFO, "Python Log: {}", message),
+            10 => tracing::event!(tracing::Level::DEBUG, "Python Log: {}", message),
+            7 => tracing::event!(tracing::Level::TRACE, "Python Log: {}", message),
+            _ => tracing::event!(tracing::Level::TRACE, "Python Log: {}", message),
+        };
+    }
+
+    #[pyfunction]
+    fn set_check_metadata(check_id: String, name: String, value: String) {
+        debug!("Called set_check_metadata({}, {}, {})", check_id, name, value);
+        // Again, we can only log this because there's no structure to store it.
+    }
+
+    #[pyfunction]
+    fn tracemalloc_enabled() -> bool {
+        // tracemalloc unsupported for now
+        false
+    }
 }
