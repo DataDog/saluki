@@ -8,11 +8,6 @@ use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValue
 use saluki_core::data_model::event::Event;
 use tracing::warn;
 
-#[derive(Debug)]
-pub enum AggregatorError {
-    UnsupportedType,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MetricType {
     Gauge = 0,
@@ -63,59 +58,56 @@ impl CheckMetric {
     }
 }
 
-impl TryInto<Event> for CheckMetric {
-    type Error = AggregatorError;
-
-    fn try_into(self) -> Result<Event, Self::Error> {
-        // Convert Vec<String> to Vec<Tag>
-        let tags: Vec<Tag> = self.tags.into_iter().map(Tag::from).collect();
+impl From<CheckMetric> for Event {
+    fn from(check_metric: CheckMetric) -> Self {
+        let tags: Vec<Tag> = check_metric.tags.into_iter().map(Tag::from).collect();
 
         // Convert Vec<Tag> to TagSet
         let tagset: TagSet = tags.into_iter().collect();
 
-        let context = Context::from_parts(self.name, tagset);
+        let context = Context::from_parts(check_metric.name, tagset);
         let metadata = MetricMetadata::default();
 
-        match self.metric_type {
-            MetricType::Gauge => Ok(Event::Metric(Metric::from_parts(
+        match check_metric.metric_type {
+            MetricType::Gauge => Event::Metric(Metric::from_parts(
                 context,
-                MetricValues::gauge(self.value),
+                MetricValues::gauge(check_metric.value),
                 metadata,
-            ))),
-            MetricType::Counter => Ok(Event::Metric(Metric::from_parts(
+            )),
+            MetricType::Counter => Event::Metric(Metric::from_parts(
                 context,
-                MetricValues::counter(self.value),
+                MetricValues::counter(check_metric.value),
                 metadata,
-            ))),
-            MetricType::Histogram => Ok(Event::Metric(Metric::from_parts(
+            )),
+            MetricType::Histogram => Event::Metric(Metric::from_parts(
                 context,
-                MetricValues::histogram(self.value),
+                MetricValues::histogram(check_metric.value),
                 metadata,
-            ))),
-            MetricType::Historate => Ok(Event::Metric(Metric::from_parts(
+            )),
+            MetricType::Historate => Event::Metric(Metric::from_parts(
                 context,
                 // TODO what is historate? what do I do with it?
-                MetricValues::gauge(self.value),
+                MetricValues::gauge(check_metric.value),
                 metadata,
-            ))),
-            MetricType::MonotonicCount => Ok(Event::Metric(Metric::from_parts(
+            )),
+            MetricType::MonotonicCount => Event::Metric(Metric::from_parts(
                 context,
                 // TODO incorrect handling of monotonic count
-                MetricValues::counter(self.value),
+                MetricValues::counter(check_metric.value),
                 metadata,
-            ))),
+            )),
             // TODO: The Agent tracks rate of a metric over 2 successive flushes
-            MetricType::Rate => Ok(Event::Metric(Metric::from_parts(
+            MetricType::Rate => Event::Metric(Metric::from_parts(
                 context,
-                MetricValues::rate(self.value, Duration::from_secs(1)),
+                MetricValues::rate(check_metric.value, Duration::from_secs(1)),
                 metadata,
-            ))),
-            MetricType::Count => Ok(Event::Metric(Metric::from_parts(
+            )),
+            MetricType::Count => Event::Metric(Metric::from_parts(
                 context,
                 // TODO incorrect handling of count
-                MetricValues::counter(self.value),
+                MetricValues::counter(check_metric.value),
                 metadata,
-            ))),
+            )),
         }
     }
 }

@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
+use saluki_core::data_model::event::Event;
 use saluki_core::{
     components::{sources::*, ComponentContext},
     data_model::event::EventType,
@@ -219,20 +220,14 @@ async fn drain_and_dispatch_check_metrics(
                         .expect("checks source should always have default output");
 
                     trace!("Received check metric: {:?}", check_metric);
-                    match check_metric.try_into() {
-                        Ok(event) => {
-                            if let Err(e) = buffered_dispatcher.push(event).await {
-                            error!(error = %e, "Failed to forward check metrics.");
-                        }
+                    let event: Event = check_metric.into();
 
-                        if let Err(e) = buffered_dispatcher.flush().await {
-                            error!(error = %e, "Failed to flush check metrics.");
-                        }
-                        },
-                        Err(e) => {
-                            error!("Failed to convert check metric to event. {:?}", e);
-                        }
+                    if let Err(e) = buffered_dispatcher.push(event).await {
+                        error!(error = %e, "Failed to forward check metrics.");
+                    }
 
+                    if let Err(e) = buffered_dispatcher.flush().await {
+                        error!(error = %e, "Failed to flush check metrics.");
                     }
                 }
             }
