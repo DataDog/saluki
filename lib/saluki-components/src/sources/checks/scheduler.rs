@@ -16,7 +16,11 @@ enum WorkerMessage {
 }
 
 /// A scheduler that manages the execution of checks.
-/// It maintains a dynamic pool of workers and organizes checks by their intervals.
+/// It:
+/// - Schedules checks based on their intervals.
+/// - Supports one-time checks.
+///
+/// Checks are distributed accross multiple workers base on the load of each worker.
 pub struct Scheduler {
     check_runners: usize,
     channels: Arc<Mutex<HashMap<u64, mpsc::Sender<WorkerMessage>>>>,
