@@ -1,6 +1,6 @@
 .build-adp-definition:
   stage: build
-  image: ${DOCKER_BUILD_IMAGE}
+  image: ${SALUKI_BUILD_CI_IMAGE}
   needs: []
   retry: 2
   timeout: 20m
