@@ -14,13 +14,13 @@ workflow:
     - if: $CI_COMMIT_TAG == null
       variables:
         ADP_APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
-        ADP_IMAGE_VERSION: ${ADP_INTERNAL_IMAGE_VERSION}
+        ADP_IMAGE_VERSION: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
         APP_DEV_BUILD: "true"
 
     - if: $CI_COMMIT_TAG
       variables:
         ADP_APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
-        ADP_IMAGE_VERSION: ${ADP_RELEASE_IMAGE_VERSION}
+        ADP_IMAGE_VERSION: ${CI_COMMIT_TAG}
         APP_DEV_BUILD: "false"
 
 variables:
@@ -40,10 +40,6 @@ variables:
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image that we
   # publicly publish.
   PUBLIC_DD_AGENT_VERSION: "7.65.2"
-
-  # Global build variables that need define here to ensure they're available in our jobs as well as child pipelines.
-  ADP_INTERNAL_IMAGE_VERSION: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
-  ADP_RELEASE_IMAGE_VERSION: "${CI_COMMIT_TAG}"
 
 default:
   tags: ["arch:amd64"]
