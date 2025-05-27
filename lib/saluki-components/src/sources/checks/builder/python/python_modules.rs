@@ -44,11 +44,6 @@ pub mod aggregator {
     #[pymodule_export]
     const HISTORATE: i32 = MetricType::Historate as i32;
 
-    #[pyclass]
-    pub struct SubmissionQueue {
-        pub sender: Sender<CheckMetric>,
-    }
-
     #[allow(clippy::too_many_arguments)]
     #[pyfunction]
     fn submit_metric(
