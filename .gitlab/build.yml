@@ -13,7 +13,7 @@
     APP_BUILD_TIME: "${CI_PIPELINE_CREATED_AT}"
     DDCI_CONFIGURE_OTEL_EXPORTER: true
   script:
-    - echo "Building ADP image ${IMAGE_TAG}..."
+    - echo "Building ADP image ${IMAGE_TAG}... (image version: ${ADP_IMAGE_VERSION})..."
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
