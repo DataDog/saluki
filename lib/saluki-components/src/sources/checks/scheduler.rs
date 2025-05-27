@@ -50,17 +50,10 @@ impl Scheduler {
         let interval_secs = check.interval().as_secs();
 
         if interval_secs == 0 {
-            let check_id = check.id().to_string();
-            // Check with no interval are push to a random worker immediately
-            let channels_guard = self.channels.lock().unwrap();
-            if channels_guard.is_empty() {
-                warn!(check_id, "Failed to schedule one-time check: No workers available.");
-                return;
-            }
-
             self.new_check_task(check);
             return;
-        };
+        }
+
         {
             let check_id = check.id();
             let checks = self.checks.read().unwrap();
@@ -69,6 +62,7 @@ impl Scheduler {
                 return;
             }
         }
+
         let check_id = check.id().to_string();
         {
             let mut checks = self.checks.write().unwrap();
@@ -88,6 +82,7 @@ impl Scheduler {
         let channels_load = Arc::clone(&self.channels_load);
         let channels = Arc::clone(&self.channels);
         let check_id = check.id().to_string();
+
         tokio::spawn(async move {
             let execute_check = || async {
                 let channel = {
@@ -120,7 +115,9 @@ impl Scheduler {
             };
 
             if one_time_check {
-                let _ = execute_check().await;
+                if execute_check().await {
+                    info!(check_id, "One-time check enqueued successfully.");
+                }
             } else {
                 let mut ticker = time::interval(check_interval);
                 loop {
