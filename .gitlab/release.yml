@@ -15,6 +15,8 @@
     project: DataDog/public-images
     branch: main
     strategy: depend
+    forward:
+      pipeline_variables: true
   variables:
     IMG_REGISTRIES: public
     IMG_SOURCES: ${SOURCE_IMAGE}
