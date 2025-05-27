@@ -1,7 +1,8 @@
 .build-adp-definition:
   stage: build
-  image: ${SALUKI_BUILD_CI_IMAGE}
-  needs: []
+  image: ${DOCKER_BUILD_IMAGE}
+  needs:
+    - calculate-build-metadata
   retry: 2
   timeout: 20m
   variables:
@@ -12,7 +13,6 @@
     APP_BUILD_TIME: "${CI_PIPELINE_CREATED_AT}"
     DDCI_CONFIGURE_OTEL_EXPORTER: true
   script:
-    - source $(make emit-build-metadata)
     - 'echo "Building ADP image ${IMAGE_TAG}... (image version: ${ADP_IMAGE_VERSION})..."'
     - docker buildx build
       --platform linux/amd64,linux/arm64
@@ -41,6 +41,16 @@
       --label "org.opencontainers.image.version=${ADP_IMAGE_VERSION}"
       --push
       .
+
+calculate-build-metadata:
+  stage: build
+  image: ${SALUKI_BUILD_CI_IMAGE}
+  needs: []
+  script:
+    - make emit-build-metadata >> build.env
+  artifacts:
+    reports:
+      dotenv: build.env
 
 build-adp-image:
   extends: [.build-common-variables, .build-adp-definition]
