@@ -1,28 +1,30 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use pyo3::prelude::*;
+use saluki_error::{generic_error, GenericError};
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, trace};
 
 use crate::sources::checks::check_metric::{CheckMetric, MetricType};
 
 // Global state to store the sender
-static METRIC_SENDER: OnceLock<Arc<Mutex<Option<Sender<CheckMetric>>>>> = OnceLock::new();
+static METRIC_SENDER: OnceLock<Arc<Mutex<Sender<CheckMetric>>>> = OnceLock::new();
 
 /// Sets the metric sender to be used by the aggregator module.
-pub fn set_metric_sender(sender: Sender<CheckMetric>) {
-    let storage = get_or_init_sender_storage();
-    let mut guard = storage.lock().unwrap();
-    *guard = Some(sender);
+pub fn set_metric_sender(sender: Sender<CheckMetric>) -> &'static Arc<Mutex<Sender<CheckMetric>>> {
+    METRIC_SENDER.get_or_init(|| Arc::new(Mutex::new(sender)))
 }
 
-fn get_or_init_sender_storage() -> &'static Arc<Mutex<Option<Sender<CheckMetric>>>> {
-    METRIC_SENDER.get_or_init(|| Arc::new(Mutex::new(None)))
-}
-
-fn get_metric_sender() -> Option<Sender<CheckMetric>> {
-    let storage = get_or_init_sender_storage();
-    storage.lock().ok().and_then(|guard| guard.clone())
+fn try_send_metric(metric: CheckMetric) -> Result<(), GenericError> {
+    match METRIC_SENDER.get() {
+        Some(storage) => {
+            let guard = storage.lock().unwrap();
+            guard
+                .try_send(metric)
+                .map_err(|e| generic_error!("Failed to send metric: {}", e))
+        }
+        None => Err(generic_error!("Metric sender not initialized.")),
+    }
 }
 
 #[pymodule]
@@ -60,15 +62,10 @@ pub mod aggregator {
 
         let check_metric = CheckMetric::new(name.clone(), mtype.into(), value, tags.clone());
 
-        match get_metric_sender() {
-            Some(sender) => {
-                match sender.try_send(check_metric) {
-                    Ok(_) => { /* nothing to do, success! */ }
-                    Err(e) => error!("Failed to send metric: {}", e),
-                }
-            }
-            None => {
-                error!("Metric sender not initialized");
+        match try_send_metric(check_metric) {
+            Ok(()) => {}
+            Err(e) => {
+                error!("Failed to send metric: {}", e);
             }
         };
     }
