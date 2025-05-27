@@ -9,6 +9,20 @@ stages:
   - release
   - internal
 
+workflow:
+  rules:
+    - if: $CI_COMMIT_TAG == null
+      variables:
+        ADP_APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
+        ADP_IMAGE_VERSION: ${ADP_INTERNAL_IMAGE_VERSION}
+        APP_DEV_BUILD: "true"
+
+    - if: $CI_COMMIT_TAG
+      variables:
+        ADP_APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
+        ADP_IMAGE_VERSION: ${ADP_RELEASE_IMAGE_VERSION}
+        APP_DEV_BUILD: "false"
+
 variables:
   # High-level repository paths we build off of, and dedicated images needed for various jobs.
   IMAGE_REGISTRY: "registry.ddbuild.io"
@@ -26,6 +40,10 @@ variables:
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image that we
   # publicly publish.
   PUBLIC_DD_AGENT_VERSION: "7.65.2"
+
+  # Global build variables that need define here to ensure they're available in our jobs as well as child pipelines.
+  ADP_INTERNAL_IMAGE_VERSION: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
+  ADP_RELEASE_IMAGE_VERSION: "${CI_COMMIT_TAG}"
 
 default:
   tags: ["arch:amd64"]
@@ -50,33 +68,13 @@ default:
     # other necessary tooling, to build ADP for the target platforms we need it to be able to run on.
     ADP_BUILD_IMAGE: "${SALUKI_BUILD_CI_IMAGE}"
 
-    # Both internal and release builds are built with release optimizations _and_ include debug symbols, but "internal"
-    # images are marked in a way that they always consider themselves "development" builds in terms of versioning
-    # information, etc.
-    ADP_INTERNAL_IMAGE: "${ADP_IMAGE_BASE}:${ADP_INTERNAL_IMAGE_TAG}"
-    ADP_INTERNAL_IMAGE_FIPS: "${ADP_IMAGE_BASE}:${ADP_INTERNAL_IMAGE_TAG_FIPS}"
-    ADP_RELEASE_IMAGE: "${ADP_IMAGE_BASE}:${ADP_RELEASE_IMAGE_TAG}"
-    ADP_RELEASE_IMAGE_FIPS: "${ADP_IMAGE_BASE}:${ADP_RELEASE_IMAGE_TAG_FIPS}"
-
-    ADP_INTERNAL_IMAGE_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
-    ADP_INTERNAL_IMAGE_TAG_FIPS: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-fips"
-    ADP_RELEASE_IMAGE_TAG: "${CI_COMMIT_TAG}-release"
-    ADP_RELEASE_IMAGE_TAG_FIPS: "${CI_COMMIT_TAG}-fips-release"
     BUILD_PROFILE: "optimized-release"
     BUILD_FEATURES: "default"
     FIPS_ENABLED: "false"
 
-.build-internal-variables:
-  variables:
-    ADP_APP_IMAGE: "${ADP_INTERNAL_BASE_IMAGE}"
-    ADP_IMAGE_VERSION: "${CI_COMMIT_SHA}"
-    APP_DEV_BUILD: "true"
-
-.build-release-variables:
-  variables:
-    ADP_APP_IMAGE: "${ADP_PUBLIC_BASE_IMAGE}"
-    ADP_IMAGE_VERSION: "${CI_COMMIT_TAG}"
-    APP_DEV_BUILD: "false"
+    # Global build variables that need define here to ensure they're available in our jobs as well as child pipelines.
+    ADP_INTERNAL_IMAGE_VERSION: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
+    ADP_RELEASE_IMAGE_VERSION: "${CI_COMMIT_TAG}"
 
 .linux-test-job:
   image: "${SALUKI_BUILD_CI_IMAGE}"

@@ -13,6 +13,7 @@
     APP_BUILD_TIME: "${CI_PIPELINE_CREATED_AT}"
     DDCI_CONFIGURE_OTEL_EXPORTER: true
   script:
+    - 'echo "Building ADP image ${IMAGE_TAG}... (image version: ${ADP_IMAGE_VERSION})..."'
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
@@ -51,34 +52,15 @@ calculate-build-metadata:
     reports:
       dotenv: build.env
 
-# Internal images are only ever used/targeted for, well... internal deployments.
-build-adp-image-internal:
-  extends: [.build-common-variables, .build-internal-variables, .build-adp-definition]
+build-adp-image:
+  extends: [.build-common-variables, .build-adp-definition]
   variables:
-    IMAGE_TAG: ${ADP_INTERNAL_IMAGE}
+    IMAGE_TAG: "${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}"
 
-build-adp-image-internal-fips:
-  extends: [.build-common-variables, .build-internal-variables, .build-adp-definition]
+build-adp-image-fips:
+  extends: [.build-common-variables, .build-adp-definition]
   variables:
-    IMAGE_TAG: ${ADP_INTERNAL_IMAGE_FIPS}
-    BUILD_FEATURES: "fips"
-    FIPS_ENABLED: "true"
-
-# Release images are only ever used for public images, and are only ever built for versioned releases of ADP. Currently,
-# this means being built when a tag is cut on the Saluki repository.
-build-adp-image-release:
-  extends: [.build-common-variables, .build-release-variables, .build-adp-definition]
-  rules:
-    - if: !reference [.on_official_release, rules, if]
-  variables:
-    IMAGE_TAG: ${ADP_RELEASE_IMAGE}
-
-build-adp-image-release-fips:
-  extends: [.build-common-variables, .build-release-variables, .build-adp-definition]
-  rules:
-    - if: !reference [.on_official_release, rules, if]
-  variables:
-    IMAGE_TAG: ${ADP_RELEASE_IMAGE_FIPS}
+    IMAGE_TAG: "${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}-fips"
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
 
@@ -95,7 +77,7 @@ publish-adp-image-internal:
   stage: build
   extends: [.build-common-variables]
   needs:
-    - build-adp-image-internal
+    - build-adp-image
   trigger:
     project: DataDog/images
     branch: master
@@ -104,9 +86,9 @@ publish-adp-image-internal:
     IMAGE_NAME: agent-data-plane
     IMAGE_VERSION: tmpl-v1
     TMPL_SRC_REPO: ${ADP_IMAGE_REPO_NAME}
-    TMPL_SRC_IMAGE: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
-    RELEASE_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
-    BUILD_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-build"
+    TMPL_SRC_IMAGE: ${ADP_IMAGE_VERSION}
+    RELEASE_TAG: ${ADP_IMAGE_VERSION}
+    BUILD_TAG: "${ADP_IMAGE_VERSION}-build"
     RELEASE_STAGING: "true"
     RELEASE_PROD: "true"
 
@@ -114,7 +96,7 @@ publish-adp-image-internal-fips:
   stage: build
   extends: [.build-common-variables]
   needs:
-    - build-adp-image-internal-fips
+    - build-adp-image-fips
   trigger:
     project: DataDog/images
     branch: master
@@ -123,9 +105,9 @@ publish-adp-image-internal-fips:
     IMAGE_NAME: agent-data-plane
     IMAGE_VERSION: tmpl-v1
     TMPL_SRC_REPO: ${ADP_IMAGE_REPO_NAME}
-    TMPL_SRC_IMAGE: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-fips"
-    RELEASE_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-fips"
-    BUILD_TAG: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-fips-build"
+    TMPL_SRC_IMAGE: "${ADP_IMAGE_VERSION}-fips"
+    RELEASE_TAG: "${ADP_IMAGE_VERSION}-fips"
+    BUILD_TAG: "${ADP_IMAGE_VERSION}-fips-build"
     RELEASE_STAGING: "true"
     RELEASE_PROD: "true"
 
@@ -133,8 +115,8 @@ display-image-tags:
   extends: [.build-common-variables]
   stage: build
   needs:
-    - build-adp-image-internal
-    - build-adp-image-internal-fips
+    - build-adp-image
+    - build-adp-image-fips
     - publish-adp-image-internal
     - publish-adp-image-internal-fips
   script:
@@ -143,6 +125,6 @@ display-image-tags:
       # ADP Image Tags
 
       ## Internal (baked with necessary tools for internal deployments)
-      Non-FIPS: ${IMAGE_REGISTRY}/agent-data-plane:${ADP_INTERNAL_IMAGE_TAG}
-      FIPS:     ${IMAGE_REGISTRY}/agent-data-plane:${ADP_INTERNAL_IMAGE_TAG_FIPS}
+      Non-FIPS: ${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}
+      FIPS:     ${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}-fips
       EOF
