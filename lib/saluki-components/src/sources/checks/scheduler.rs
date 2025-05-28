@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 use rand::Rng;
 use tokio::sync::mpsc;
@@ -26,7 +26,7 @@ pub struct Scheduler {
     channels: Arc<Mutex<HashMap<u64, mpsc::Sender<WorkerMessage>>>>,
     channels_load: Arc<Mutex<HashMap<u64, usize>>>,
     worker_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
-    checks: Arc<RwLock<HashMap<String, JoinHandle<()>>>>,
+    checks: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
 }
 
 impl Scheduler {
@@ -34,7 +34,7 @@ impl Scheduler {
         let channels: Arc<Mutex<HashMap<u64, mpsc::Sender<WorkerMessage>>>> = Arc::new(Mutex::new(HashMap::new()));
         let channels_load: Arc<Mutex<HashMap<u64, usize>>> = Arc::new(Mutex::new(HashMap::new()));
         let worker_handles: Arc<Mutex<Vec<JoinHandle<()>>>> = Arc::new(Mutex::new(Vec::new()));
-        let checks: Arc<RwLock<HashMap<String, JoinHandle<()>>>> = Arc::new(RwLock::new(HashMap::new()));
+        let checks: Arc<Mutex<HashMap<String, JoinHandle<()>>>> = Arc::new(Mutex::new(HashMap::new()));
 
         let scheduler = Self {
             check_runners,
@@ -60,7 +60,7 @@ impl Scheduler {
 
         {
             let check_id = check.id();
-            let checks = self.checks.read().unwrap();
+            let checks = self.checks.lock().unwrap();
             if checks.contains_key(check_id) {
                 warn!(check_id, "Check already scheduled, skipping.");
                 return;
@@ -69,7 +69,7 @@ impl Scheduler {
 
         let check_id = check.id().to_string();
         {
-            let mut checks = self.checks.write().unwrap();
+            let mut checks = self.checks.lock().unwrap();
             checks.insert(check_id.clone(), self.spawn_check_task(check));
         }
 
@@ -138,7 +138,7 @@ impl Scheduler {
     /// Unschedule a check
     pub fn unschedule(&self, check_id: &str) {
         {
-            let mut checks = self.checks.write().unwrap();
+            let mut checks = self.checks.lock().unwrap();
             if let Some(check) = checks.remove(check_id) {
                 check.abort();
             }
@@ -339,7 +339,7 @@ mod tests {
         scheduler.schedule(check2.clone() as Arc<dyn Check + Send + Sync>);
 
         {
-            let checks = scheduler.checks.read().unwrap();
+            let checks = scheduler.checks.lock().unwrap();
             assert_eq!(checks.len(), 2, "Two checks should be scheduled");
         }
 
@@ -367,7 +367,7 @@ mod tests {
         scheduler.schedule(check1.clone() as Arc<dyn Check + Send + Sync>);
 
         {
-            let checks = scheduler.checks.read().unwrap();
+            let checks = scheduler.checks.lock().unwrap();
             assert!(checks.len() == 0, "No checks handle should exist for one-time checks");
         }
 
@@ -387,14 +387,14 @@ mod tests {
         scheduler.schedule(Arc::clone(&check));
 
         {
-            let checks = scheduler.checks.read().unwrap();
+            let checks = scheduler.checks.lock().unwrap();
             assert!(checks.contains_key(check.id()), "Check should be in the registry");
         }
 
         scheduler.unschedule(check.id());
 
         {
-            let checks = scheduler.checks.read().unwrap();
+            let checks = scheduler.checks.lock().unwrap();
             assert!(
                 !checks.contains_key("test-check"),
                 "Check should be removed from registry"
@@ -402,7 +402,7 @@ mod tests {
         }
 
         {
-            let buckets = scheduler.checks.read().unwrap();
+            let buckets = scheduler.checks.lock().unwrap();
             assert!(
                 !buckets.contains_key(check.id()),
                 "Checks should be removed from the registry"
