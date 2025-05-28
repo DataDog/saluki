@@ -23,23 +23,20 @@ enum WorkerMessage {
 /// Checks are distributed accross multiple workers base on the load of each worker.
 pub struct Scheduler {
     check_runners: usize,
-    channels: Arc<Mutex<HashMap<u64, mpsc::Sender<WorkerMessage>>>>,
-    channels_load: Arc<Mutex<HashMap<u64, usize>>>,
+    channels: Arc<Mutex<Vec<mpsc::Sender<WorkerMessage>>>>,
     worker_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
     checks: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
 }
 
 impl Scheduler {
     pub fn new(check_runners: usize) -> Self {
-        let channels: Arc<Mutex<HashMap<u64, mpsc::Sender<WorkerMessage>>>> = Arc::new(Mutex::new(HashMap::new()));
-        let channels_load: Arc<Mutex<HashMap<u64, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+        let channels: Arc<Mutex<Vec<mpsc::Sender<WorkerMessage>>>> = Arc::new(Mutex::new(vec![]));
         let worker_handles: Arc<Mutex<Vec<JoinHandle<()>>>> = Arc::new(Mutex::new(Vec::new()));
         let checks: Arc<Mutex<HashMap<String, JoinHandle<()>>>> = Arc::new(Mutex::new(HashMap::new()));
 
         let scheduler = Self {
             check_runners,
             channels,
-            channels_load,
             worker_handles,
             checks,
         };
@@ -83,7 +80,6 @@ impl Scheduler {
     fn spawn_check_task(&self, check: Arc<dyn Check + Send + Sync>) -> JoinHandle<()> {
         let one_time_check = check.interval().as_secs() == 0;
         let check_interval = check.interval();
-        let channels_load = Arc::clone(&self.channels_load);
         let channels = Arc::clone(&self.channels);
         let check_id = check.id().to_string();
 
@@ -96,17 +92,12 @@ impl Scheduler {
 
                         return false;
                     }
-                    let mut loads = channels_load.lock().unwrap();
-                    // Find channel with minimum load
-                    let min_idx = loads
+
+                    channels_guard
                         .iter()
-                        .min_by_key(|(_, &load)| load)
-                        .map(|(&idx, _)| idx)
-                        .unwrap_or(rand::thread_rng().gen_range(0..channels_guard.len() as u64));
-                    // Increment the load counter
-                    let new_load = loads[&min_idx] + 1;
-                    loads.insert(min_idx, new_load);
-                    channels_guard[&min_idx].clone()
+                        .max_by_key(|&channel| channel.capacity())
+                        .unwrap()
+                        .clone()
                 };
 
                 let check = Arc::clone(&check);
@@ -161,7 +152,7 @@ impl Scheduler {
         };
 
         // Send shutdown signal to all workers
-        for (_chanel_id, channel) in channels {
+        for channel in channels {
             let _ = channel.send(WorkerMessage::Shutdown).await;
         }
 
@@ -202,13 +193,10 @@ impl Scheduler {
         let (sender, mut receiver) = mpsc::channel::<WorkerMessage>(100);
 
         {
-            let mut channels = self.channels.lock().unwrap();
-            channels.insert(worker_id, sender);
-            let mut loads = self.channels_load.lock().unwrap();
-            loads.insert(worker_id, 0);
+            let mut channels_guard = self.channels.lock().unwrap();
+            channels_guard.push(sender);
         }
 
-        let channels_load = Arc::clone(&self.channels_load);
         let handle = tokio::spawn(async move {
             while let Some(msg) = receiver.recv().await {
                 match msg {
@@ -217,15 +205,8 @@ impl Scheduler {
                         info!(check_id, "Running check");
 
                         match check.run() {
-                            Ok(()) => debug!(check_id, "Check completed successfully."),
+                            Ok(()) => debug!(worker_id, check_id, "Check completed successfully."),
                             Err(e) => error!(error = %e, check_id, "Check failed."),
-                        }
-
-                        // Decrement load counter
-                        let mut loads = channels_load.lock().unwrap();
-                        let load = loads.get_mut(&worker_id);
-                        if let Some(load) = load {
-                            *load -= 1;
                         }
                     }
                     WorkerMessage::Shutdown => {
