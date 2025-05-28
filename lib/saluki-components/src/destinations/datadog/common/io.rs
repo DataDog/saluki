@@ -401,7 +401,10 @@ fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoin
     // combination.
     let hash = hash_single_stable((context.component_id(), endpoint.endpoint(), endpoint.cached_api_key()));
 
-    let endpoint_host = endpoint.endpoint().host_str().expect("resolved endpoint must have a host");
+    let endpoint_host = endpoint
+        .endpoint()
+        .host_str()
+        .expect("resolved endpoint must have a host");
     format!("{}/{}/{:x}", context.component_id(), endpoint_host, hash)
 }
 
