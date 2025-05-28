@@ -233,14 +233,4 @@ async fn drain_and_dispatch_check_metrics(
             }
         }
     }
-
-    let buffered_dispatcher = context
-        .dispatcher()
-        .buffered()
-        .expect("checks source should always have default output");
-
-    // Final dispatcher flush after all checks have closed.
-    if let Err(e) = buffered_dispatcher.flush().await {
-        error!(error = %e, "Failed to flush check metrics.");
-    }
 }
