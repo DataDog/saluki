@@ -55,12 +55,12 @@ calculate-build-metadata:
 build-adp-image:
   extends: [.build-common-variables, .build-adp-definition]
   variables:
-    IMAGE_TAG: "${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}"
+    IMAGE_TAG: ${ADP_IMAGE_TAG}
 
 build-adp-image-fips:
   extends: [.build-common-variables, .build-adp-definition]
   variables:
-    IMAGE_TAG: "${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}-fips"
+    IMAGE_TAG: ${ADP_IMAGE_TAG_FIPS}
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
 
@@ -105,9 +105,9 @@ publish-adp-image-internal-fips:
     IMAGE_NAME: agent-data-plane
     IMAGE_VERSION: tmpl-v1
     TMPL_SRC_REPO: ${ADP_IMAGE_REPO_NAME}
-    TMPL_SRC_IMAGE: "${ADP_IMAGE_VERSION}-fips"
-    RELEASE_TAG: "${ADP_IMAGE_VERSION}-fips"
-    BUILD_TAG: "${ADP_IMAGE_VERSION}-fips-build"
+    TMPL_SRC_IMAGE: ${ADP_IMAGE_VERSION_FIPS}
+    RELEASE_TAG: ${ADP_IMAGE_VERSION_FIPS}
+    BUILD_TAG: "${ADP_IMAGE_VERSION_FIPS}-build"
     RELEASE_STAGING: "true"
     RELEASE_PROD: "true"
 
@@ -125,6 +125,6 @@ display-image-tags:
       # ADP Image Tags
 
       ## Internal (baked with necessary tools for internal deployments)
-      Non-FIPS: ${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}
-      FIPS:     ${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}-fips
+      Non-FIPS: ${IMAGE_REGISTRY}/${ADP_IMAGE_NAME_TAGGED}
+      FIPS:     ${IMAGE_REGISTRY}/${ADP_IMAGE_NAME_TAGGED_FIPS}
       EOF
