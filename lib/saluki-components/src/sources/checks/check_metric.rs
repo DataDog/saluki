@@ -62,52 +62,24 @@ impl From<CheckMetric> for Event {
     fn from(check_metric: CheckMetric) -> Self {
         let tags: Vec<Tag> = check_metric.tags.into_iter().map(Tag::from).collect();
 
-        // Convert Vec<Tag> to TagSet
         let tagset: TagSet = tags.into_iter().collect();
 
         let context = Context::from_parts(check_metric.name, tagset);
         let metadata = MetricMetadata::default();
 
-        match check_metric.metric_type {
-            MetricType::Gauge => Event::Metric(Metric::from_parts(
-                context,
-                MetricValues::gauge(check_metric.value),
-                metadata,
-            )),
-            MetricType::Counter => Event::Metric(Metric::from_parts(
-                context,
-                MetricValues::counter(check_metric.value),
-                metadata,
-            )),
-            MetricType::Histogram => Event::Metric(Metric::from_parts(
-                context,
-                MetricValues::histogram(check_metric.value),
-                metadata,
-            )),
-            MetricType::Historate => Event::Metric(Metric::from_parts(
-                context,
-                // TODO what is historate? what do I do with it?
-                MetricValues::gauge(check_metric.value),
-                metadata,
-            )),
-            MetricType::MonotonicCount => Event::Metric(Metric::from_parts(
-                context,
-                // TODO incorrect handling of monotonic count
-                MetricValues::counter(check_metric.value),
-                metadata,
-            )),
-            // TODO: The Agent tracks rate of a metric over 2 successive flushes
-            MetricType::Rate => Event::Metric(Metric::from_parts(
-                context,
-                MetricValues::rate(check_metric.value, Duration::from_secs(1)),
-                metadata,
-            )),
-            MetricType::Count => Event::Metric(Metric::from_parts(
-                context,
-                // TODO incorrect handling of count
-                MetricValues::counter(check_metric.value),
-                metadata,
-            )),
-        }
+        let values = match check_metric.metric_type {
+            MetricType::Gauge => MetricValues::gauge(check_metric.value),
+            MetricType::Counter => MetricValues::counter(check_metric.value),
+            MetricType::Histogram => MetricValues::histogram(check_metric.value),
+            // TODO what is historate? what do I do with it?
+            MetricType::Historate => MetricValues::gauge(check_metric.value),
+            // TODO incorrect handling of monotonic count
+            MetricType::MonotonicCount => MetricValues::counter(check_metric.value),
+            MetricType::Rate => MetricValues::rate(check_metric.value, Duration::from_secs(1)),
+            // TODO incorrect handling of count
+            MetricType::Count => MetricValues::counter(check_metric.value),
+        };
+
+        Event::Metric(Metric::from_parts(context, values, metadata))
     }
 }
