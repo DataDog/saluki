@@ -27,7 +27,7 @@ publish-standalone-adp-image-linux:
   needs:
     - build-adp-image
   variables:
-    ADP_IMAGE_VERSION: ${ADP_IMAGE_VERSION}
+    ADP_IMAGE_VERSION: "${ADP_IMAGE_VERSION}"
     SOURCE_IMAGE: "${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}"
     TARGET_IMAGE: "agent-data-plane:${ADP_IMAGE_VERSION}"
 
@@ -36,6 +36,6 @@ publish-standalone-adp-image-linux-fips:
   needs:
     - build-adp-image-fips
   variables:
-    ADP_IMAGE_VERSION: ${ADP_IMAGE_VERSION}
+    ADP_IMAGE_VERSION: "${ADP_IMAGE_VERSION}"
     SOURCE_IMAGE: "${ADP_IMAGE_BASE}:${ADP_IMAGE_VERSION}-fips"
     TARGET_IMAGE: "agent-data-plane:${ADP_IMAGE_VERSION}-fips"
