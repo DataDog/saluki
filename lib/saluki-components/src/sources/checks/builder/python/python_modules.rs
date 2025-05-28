@@ -96,18 +96,6 @@ pub mod datadog_agent {
     }
 
     #[pyfunction]
-    fn set_hostname(hostname: String) {
-        trace!("Called set_hostname({})", hostname);
-        // In a function context without a struct, we cannot actually "set" the hostname persistently.
-    }
-
-    #[pyfunction]
-    fn reset_hostname() {
-        trace!("Called reset_hostname()");
-        // Similar to `set_hostname`, we cannot reset without a persistent structure.
-    }
-
-    #[pyfunction]
     fn get_config(config_option: String) -> bool {
         trace!("Called get_config({})", config_option);
 
@@ -118,24 +106,6 @@ pub mod datadog_agent {
     fn get_version() -> &'static str {
         trace!("Called get_version()");
         "0.0.0"
-    }
-
-    #[pyfunction]
-    fn log(message: String, level: u32) {
-        match level {
-            // All except trace are from python3 logging levels
-            // https://docs.python.org/3/library/logging.html#levels
-            // Trace is manually specified in datadog_checks_base
-            // https://github.com/DataDog/integrations-core/blob/458274dfd867b40e368c795574b6d97a9b7e471d/datadog_checks_base/datadog_checks/base/log.py#L20-L21
-            // Currently the '_check_id' / 'check_id' field is unset inside python-world
-            // so these logs say "Unknown" instead of the check-name
-            40 => tracing::event!(tracing::Level::ERROR, "Python Log: {}", message),
-            30 => tracing::event!(tracing::Level::WARN, "Python Log: {}", message),
-            20 => tracing::event!(tracing::Level::INFO, "Python Log: {}", message),
-            10 => tracing::event!(tracing::Level::DEBUG, "Python Log: {}", message),
-            7 => tracing::event!(tracing::Level::TRACE, "Python Log: {}", message),
-            _ => tracing::event!(tracing::Level::TRACE, "Python Log: {}", message),
-        };
     }
 
     #[pyfunction]
