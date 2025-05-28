@@ -11,9 +11,9 @@ use tracing::debug;
 use crate::{
     context::{Context, ContextInner},
     expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle},
-    hash::{hash_context_with_seen, ContextKey},
+    hash::{hash_context_with_seen, ContextKey, TagSetKey},
     origin::{OriginKey, OriginTags, OriginTagsResolver, RawOrigin},
-    tags::TagSet,
+    tags::{SharedTagSet, TagSet},
 };
 
 const DEFAULT_CONTEXT_RESOLVER_CACHED_CONTEXTS_LIMIT: usize = 500_000;
@@ -24,23 +24,31 @@ const DEFAULT_CONTEXT_RESOLVER_INTERNER_CAPACITY_BYTES: NonZeroUsize =
 
 const SEEN_HASHSET_INITIAL_CAPACITY: usize = 128;
 
-type ContextCache = Cache<ContextKey, Context, UnitWeighter, NoopU64BuildHasher, ExpiryCapableLifecycle>;
+type ContextCache = Cache<ContextKey, Context, UnitWeighter, NoopU64BuildHasher, ExpiryCapableLifecycle<ContextKey>>;
+type TagSetCache = Cache<TagSetKey, SharedTagSet, UnitWeighter, NoopU64BuildHasher, ExpiryCapableLifecycle<TagSetKey>>;
 
 static_metrics! {
     name => Telemetry,
     prefix => context_resolver,
     labels => [resolver_id: String],
     metrics => [
-        counter(resolved_existing_context_total),
-        counter(resolved_new_context_total),
-        gauge(active_contexts),
-        gauge(cached_contexts),
         gauge(interner_capacity_bytes),
         gauge(interner_len_bytes),
         gauge(interner_entries),
         counter(intern_fallback_total),
-        counter(contexts_expired),
+
+        counter(resolved_existing_context_total),
+        counter(resolved_new_context_total),
+        gauge(active_contexts),
+        gauge(cached_contexts),
+        counter(contexts_expired_total),
         histogram(contexts_expired_batch_size),
+
+        counter(resolved_existing_tagset_total),
+        counter(resolved_new_tagset_total),
+        gauge(cached_tagsets),
+        counter(tagsets_expired_total),
+        histogram(tagsets_expired_batch_size),
     ],
 }
 
@@ -269,13 +277,16 @@ impl ContextResolverBuilder {
             .interner_capacity_bytes()
             .set(interner.capacity_bytes() as f64);
 
-        let mut builder = ExpirationBuilder::new();
+        let mut context_expiration_builder = ExpirationBuilder::new();
+        let mut tagset_expiration_builder = ExpirationBuilder::new();
         if let Some(time_to_idle) = self.idle_context_expiration {
             if self.caching_enabled {
-                builder = builder.with_time_to_idle(time_to_idle);
+                context_expiration_builder = context_expiration_builder.with_time_to_idle(time_to_idle);
+                tagset_expiration_builder = tagset_expiration_builder.with_time_to_idle(time_to_idle);
             }
         }
-        let (expiration, lifecycle) = builder.build();
+        let (context_expiration, context_lifecycle) = context_expiration_builder.build();
+        let (tagset_expiration, tagset_lifecycle) = tagset_expiration_builder.build();
 
         // NOTE: We specifically use the cached context limit for both the estimated items capacity _and_ weight
         // capacity, where weight capacity relates to "maximum size in bytes", because we're using the unit weighter,
@@ -290,18 +301,31 @@ impl ContextResolverBuilder {
             cached_context_limit as u64,
             UnitWeighter,
             NoopU64BuildHasher,
-            lifecycle,
+            context_lifecycle,
+        ));
+
+        let tagset_cache = Arc::new(TagSetCache::with(
+            cached_context_limit,
+            cached_context_limit as u64,
+            UnitWeighter,
+            NoopU64BuildHasher,
+            tagset_lifecycle,
         ));
 
         // If an idle context expiration was specified, spawn a background task to actually drive expiration.
         if let Some(expiration_interval) = self.expiration_interval {
             if self.caching_enabled {
                 let context_cache = Arc::clone(&context_cache);
-                let expiration = expiration.clone();
+                let tagset_cache = Arc::clone(&tagset_cache);
+
+                let context_expiration = context_expiration.clone();
+                let tagset_expiration = tagset_expiration.clone();
                 tokio::spawn(drive_expiration(
                     context_cache,
+                    tagset_cache,
                     telemetry.clone(),
-                    expiration,
+                    context_expiration,
+                    tagset_expiration,
                     expiration_interval,
                 ));
             }
@@ -320,7 +344,9 @@ impl ContextResolverBuilder {
             interner,
             caching_enabled: self.caching_enabled,
             context_cache,
-            expiration,
+            context_expiration,
+            tagset_cache,
+            tagset_expiration,
             hash_seen_buffer: PrehashedHashSet::with_capacity_and_hasher(
                 SEEN_HASHSET_INITIAL_CAPACITY,
                 NoopU64BuildHasher,
@@ -359,7 +385,9 @@ pub struct ContextResolver {
     interner: GenericMapInterner,
     caching_enabled: bool,
     context_cache: Arc<ContextCache>,
-    expiration: Expiration,
+    context_expiration: Expiration<ContextKey>,
+    tagset_cache: Arc<TagSetCache>,
+    tagset_expiration: Expiration<TagSetKey>,
     hash_seen_buffer: PrehashedHashSet<u64>,
     origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
     allow_heap_allocations: bool,
@@ -393,7 +421,9 @@ impl ContextResolver {
             .unwrap_or_else(OriginTags::empty)
     }
 
-    fn create_context_key<N, I, T>(&mut self, name: N, tags: I, maybe_origin_key: Option<OriginKey>) -> ContextKey
+    fn create_context_key<N, I, T>(
+        &mut self, name: N, tags: I, maybe_origin_key: Option<OriginKey>,
+    ) -> (ContextKey, TagSetKey)
     where
         N: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T>,
@@ -402,20 +432,28 @@ impl ContextResolver {
         hash_context_with_seen(name.as_ref(), tags, maybe_origin_key, &mut self.hash_seen_buffer)
     }
 
-    fn create_context<N, I, T>(&self, key: ContextKey, name: N, tags: I, origin_tags: OriginTags) -> Option<Context>
+    fn create_tag_set<I, T>(&mut self, tags: I) -> Option<SharedTagSet>
     where
-        N: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T>,
         T: AsRef<str> + CheapMetaString,
     {
-        // Intern the name and tags of the context.
-        let context_name = self.intern(name)?;
-
         let mut context_tags = TagSet::default();
         for tag in tags {
             let context_tag = self.intern(tag)?;
             context_tags.insert_tag(context_tag);
         }
+
+        Some(context_tags.into_shared())
+    }
+
+    fn create_context<N>(
+        &self, key: ContextKey, name: N, context_tags: SharedTagSet, origin_tags: OriginTags,
+    ) -> Option<Context>
+    where
+        N: AsRef<str> + CheapMetaString,
+    {
+        // Intern the name and tags of the context.
+        let context_name = self.intern(name)?;
 
         self.telemetry.resolved_new_context_total().increment(1);
         self.telemetry.active_contexts().increment(1);
@@ -482,11 +520,12 @@ impl ContextResolver {
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str> + CheapMetaString,
     {
-        let context_key = self.create_context_key(&name, tags.clone(), origin_tags.key());
+        let (context_key, tagset_key) = self.create_context_key(&name, tags.clone(), origin_tags.key());
 
         // Fast path to avoid looking up the context in the cache if caching is disabled.
         if !self.caching_enabled {
-            let context = self.create_context(context_key, name, tags, origin_tags)?;
+            let tag_set = self.create_tag_set(tags)?;
+            let context = self.create_context(context_key, name, tag_set, origin_tags)?;
 
             debug!(?context_key, ?context, "Resolved new non-cached context.");
             return Some(context);
@@ -495,15 +534,34 @@ impl ContextResolver {
         match self.context_cache.get(&context_key) {
             Some(context) => {
                 self.telemetry.resolved_existing_context_total().increment(1);
-                self.expiration.mark_entry_accessed(context_key);
+                self.context_expiration.mark_entry_accessed(context_key);
 
                 Some(context)
             }
             None => {
-                let context = self.create_context(context_key, name, tags, origin_tags)?;
+                // Try seeing if we have the tagset cached already, and create it if not.
+                let tag_set = match self.tagset_cache.get(&tagset_key) {
+                    Some(tag_set) => {
+                        self.telemetry.resolved_existing_tagset_total().increment(1);
+                        self.tagset_expiration.mark_entry_accessed(tagset_key);
+                        tag_set
+                    }
+                    None => {
+                        // If the tagset is not cached, we need to create it.
+                        let tag_set = self.create_tag_set(tags)?;
+
+                        self.tagset_cache.insert(tagset_key, tag_set.clone());
+                        self.tagset_expiration.mark_entry_accessed(tagset_key);
+
+                        self.telemetry.resolved_new_tagset_total().increment(1);
+                        tag_set
+                    }
+                };
+
+                let context = self.create_context(context_key, name, tag_set, origin_tags)?;
 
                 self.context_cache.insert(context_key, context.clone());
-                self.expiration.mark_entry_accessed(context_key);
+                self.context_expiration.mark_entry_accessed(context_key);
 
                 debug!(?context_key, ?context, "Resolved new context.");
                 Some(context)
@@ -519,7 +577,9 @@ impl Clone for ContextResolver {
             interner: self.interner.clone(),
             caching_enabled: self.caching_enabled,
             context_cache: Arc::clone(&self.context_cache),
-            expiration: self.expiration.clone(),
+            context_expiration: self.context_expiration.clone(),
+            tagset_cache: Arc::clone(&self.tagset_cache),
+            tagset_expiration: self.tagset_expiration.clone(),
             hash_seen_buffer: PrehashedHashSet::with_capacity_and_hasher(
                 SEEN_HASHSET_INITIAL_CAPACITY,
                 NoopU64BuildHasher,
@@ -531,18 +591,25 @@ impl Clone for ContextResolver {
 }
 
 async fn drive_expiration(
-    context_cache: Arc<ContextCache>, telemetry: Telemetry, expiration: Expiration, expiration_interval: Duration,
+    context_cache: Arc<ContextCache>, tagset_cache: Arc<TagSetCache>, telemetry: Telemetry,
+    context_expiration: Expiration<ContextKey>, tagset_expiration: Expiration<TagSetKey>,
+    expiration_interval: Duration,
 ) {
-    let mut expired_entries = Vec::new();
+    let mut expired_context_entries = Vec::new();
+    let mut expired_tagset_entries = Vec::new();
 
     loop {
         sleep(expiration_interval).await;
 
-        expiration.drain_expired_entries(&mut expired_entries);
+        // Check for expired contexts first, since removing them will then unlock expired tagsets that they were
+        // referencing.
+        context_expiration.drain_expired_entries(&mut expired_context_entries);
 
-        let num_expired_contexts = expired_entries.len();
+        let num_expired_contexts = expired_context_entries.len();
         if num_expired_contexts != 0 {
-            telemetry.contexts_expired().increment(num_expired_contexts as u64);
+            telemetry
+                .contexts_expired_total()
+                .increment(num_expired_contexts as u64);
             telemetry
                 .contexts_expired_batch_size()
                 .record(num_expired_contexts as f64);
@@ -550,11 +617,30 @@ async fn drive_expiration(
 
         debug!(num_expired_contexts, "Found expired contexts.");
 
-        for entry in expired_entries.drain(..) {
+        for entry in expired_context_entries.drain(..) {
             context_cache.remove(&entry);
         }
 
         debug!(num_expired_contexts, "Removed expired contexts.");
+
+        // Now go through and do the same thing for tagsets.
+        tagset_expiration.drain_expired_entries(&mut expired_tagset_entries);
+
+        let num_expired_tagsets = expired_tagset_entries.len();
+        if num_expired_tagsets != 0 {
+            telemetry.tagsets_expired_total().increment(num_expired_tagsets as u64);
+            telemetry
+                .tagsets_expired_batch_size()
+                .record(num_expired_tagsets as f64);
+        }
+
+        debug!(num_expired_tagsets, "Found expired tagsets.");
+
+        for entry in expired_tagset_entries.drain(..) {
+            tagset_cache.remove(&entry);
+        }
+
+        debug!(num_expired_tagsets, "Removed expired tagsets.");
     }
 }
 

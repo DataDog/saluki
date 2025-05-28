@@ -703,7 +703,7 @@ mod tests {
     use nom::IResult;
     use proptest::{collection::vec as arb_vec, prelude::*};
     use saluki_context::{
-        tags::{Tag, TagSet},
+        tags::{SharedTagSet, Tag},
         Context,
     };
     use saluki_core::data_model::event::{
@@ -731,7 +731,7 @@ mod tests {
         let (remaining, packet) = parse_dogstatsd_metric(input, config)?;
         assert!(remaining.is_empty());
 
-        let tags = packet.tags.into_iter().map(Tag::from).collect::<TagSet>();
+        let tags = packet.tags.into_iter().map(Tag::from).collect::<SharedTagSet>();
         let context = Context::from_parts(packet.metric_name, tags);
 
         Ok(Some(Metric::from_parts(
