@@ -59,7 +59,7 @@ where
 /// `B` in a way that ensures we can clone it and serialize it to disk, and then rehydrate it to a compatible body type
 /// after deserialization.
 #[derive(Clone, Deserialize)]
-#[serde(bound = "", from = "String")]
+#[serde(bound = "", from = "Vec<u8>")]
 #[pin_project(project = TransactionBodyProj)]
 pub enum TransactionBody<B> {
     /// Original body.
@@ -155,10 +155,9 @@ where
         }
     }
 }
-
-impl<B> From<String> for TransactionBody<B> {
-    fn from(s: String) -> Self {
-        Self::Rehydrated(Some(Bytes::from(s)))
+impl<B> From<Vec<u8>> for TransactionBody<B> {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self::Rehydrated(Some(Bytes::from(bytes)))
     }
 }
 
