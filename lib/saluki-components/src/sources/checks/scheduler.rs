@@ -54,7 +54,7 @@ impl Scheduler {
         let interval_secs = check.interval().as_secs();
 
         if interval_secs == 0 {
-            self.new_check_task(check);
+            self.spawn_check_task(check);
             return;
         }
 
@@ -70,7 +70,7 @@ impl Scheduler {
         let check_id = check.id().to_string();
         {
             let mut checks = self.checks.write().unwrap();
-            checks.insert(check_id.clone(), self.new_check_task(check));
+            checks.insert(check_id.clone(), self.spawn_check_task(check));
         }
 
         info!(
@@ -80,7 +80,7 @@ impl Scheduler {
         );
     }
 
-    fn new_check_task(&self, check: Arc<dyn Check + Send + Sync>) -> JoinHandle<()> {
+    fn spawn_check_task(&self, check: Arc<dyn Check + Send + Sync>) -> JoinHandle<()> {
         let one_time_check = check.interval().as_secs() == 0;
         let check_interval = check.interval();
         let channels_load = Arc::clone(&self.channels_load);
