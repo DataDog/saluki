@@ -55,12 +55,12 @@ calculate-build-metadata:
 build-adp-image:
   extends: [.build-common-variables, .build-adp-definition]
   variables:
-    IMAGE_TAG: ${ADP_IMAGE_TAG}
+    IMAGE_TAG: ${ADP_FULL_IMAGE_TAG}
 
 build-adp-image-fips:
   extends: [.build-common-variables, .build-adp-definition]
   variables:
-    IMAGE_TAG: ${ADP_IMAGE_TAG_FIPS}
+    IMAGE_TAG: ${ADP_FULL_IMAGE_TAG_FIPS}
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
 
@@ -125,6 +125,6 @@ display-image-tags:
       # ADP Image Tags
 
       ## Internal (baked with necessary tools for internal deployments)
-      Non-FIPS: ${IMAGE_REGISTRY}/${ADP_IMAGE_NAME_TAGGED}
-      FIPS:     ${IMAGE_REGISTRY}/${ADP_IMAGE_NAME_TAGGED_FIPS}
+      Non-FIPS: ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG}
+      FIPS:     ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG_FIPS}
       EOF

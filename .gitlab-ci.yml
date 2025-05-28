@@ -57,14 +57,23 @@ variables:
 
   ADP_IMAGE_REPO_NAME: "${SALUKI_IMAGE_REPO_PREFIX}/agent-data-plane"
 
+  # The image version depending on whether this is an official release or not: v3727183-d55fef5a (not official) va
+  # 0.1.10 (official), etc.
   ADP_IMAGE_VERSION: "${BASE_ADP_IMAGE_VERSION}"
   ADP_IMAGE_VERSION_FIPS: "${BASE_ADP_IMAGE_VERSION}-fips"
 
-  ADP_IMAGE_NAME_TAGGED: "agent-data-plane:${ADP_IMAGE_VERSION}"
-  ADP_IMAGE_NAME_TAGGED_FIPS: "agent-data-plane:${ADP_IMAGE_VERSION_FIPS}"
+  # The tagged image, minus the registry portion.
+  #
+  # Used for specifying the image repository to use when publishing the ADP container images, as the registry will be
+  # varied depending on where it's being pushed.
+  ADP_IMAGE_TAG: "agent-data-plane:${ADP_IMAGE_VERSION}"
+  ADP_IMAGE_TAG_FIPS: "agent-data-plane:${ADP_IMAGE_VERSION_FIPS}"
 
-  ADP_IMAGE_TAG: "${IMAGE_REGISTRY}/saluki/${ADP_IMAGE_NAME_TAGGED}"
-  ADP_IMAGE_TAG_FIPS: "${IMAGE_REGISTRY}/saluki/${ADP_IMAGE_NAME_TAGGED_FIPS}"
+  # The full image path.
+  #
+  # Used to specifically reference the built ADP image in certain jobs.
+  ADP_FULL_IMAGE_TAG: "${IMAGE_REGISTRY}/saluki/agent-data-plane:${ADP_IMAGE_VERSION}"
+  ADP_FULL_IMAGE_TAG_FIPS: "${IMAGE_REGISTRY}/saluki/agent-data-plane:${ADP_IMAGE_VERSION_FIPS}"
 
 default:
   tags: ["arch:amd64"]

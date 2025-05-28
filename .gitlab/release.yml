@@ -27,13 +27,13 @@ publish-standalone-adp-image-linux:
   needs:
     - build-adp-image
   variables:
-    SOURCE_IMAGE: ${ADP_IMAGE_TAG}
-    TARGET_IMAGE: ${ADP_IMAGE_NAME_TAGGED}
+    SOURCE_IMAGE: ${ADP_FULL_IMAGE_TAG}
+    TARGET_IMAGE: ${ADP_IMAGE_TAG}
 
 publish-standalone-adp-image-linux-fips:
   extends: [.build-common-variables, .publish-image-linux-definition]
   needs:
     - build-adp-image-fips
   variables:
-    SOURCE_IMAGE: ${ADP_IMAGE_TAG_FIPS}
-    TARGET_IMAGE: ${ADP_IMAGE_NAME_TAGGED_FIPS}
+    SOURCE_IMAGE: ${ADP_FULL_IMAGE_TAG_FIPS}
+    TARGET_IMAGE: ${ADP_IMAGE_TAG_FIPS}
