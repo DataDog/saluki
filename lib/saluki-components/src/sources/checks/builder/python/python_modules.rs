@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use pyo3::prelude::*;
 use saluki_error::{generic_error, GenericError};
@@ -8,21 +8,18 @@ use tracing::{debug, error, trace};
 use crate::sources::checks::check_metric::{CheckMetric, MetricType};
 
 // Global state to store the sender
-static METRIC_SENDER: OnceLock<Arc<Mutex<Sender<CheckMetric>>>> = OnceLock::new();
+static METRIC_SENDER: OnceLock<Arc<Sender<CheckMetric>>> = OnceLock::new();
 
 /// Sets the metric sender to be used by the aggregator module.
-pub fn set_metric_sender(sender: Sender<CheckMetric>) -> &'static Arc<Mutex<Sender<CheckMetric>>> {
-    METRIC_SENDER.get_or_init(|| Arc::new(Mutex::new(sender)))
+pub fn set_metric_sender(check_metrics_tx: Sender<CheckMetric>) -> &'static Arc<Sender<CheckMetric>> {
+    METRIC_SENDER.get_or_init(|| Arc::new(check_metrics_tx))
 }
 
 fn try_send_metric(metric: CheckMetric) -> Result<(), GenericError> {
     match METRIC_SENDER.get() {
-        Some(storage) => {
-            let guard = storage.lock().unwrap();
-            guard
-                .try_send(metric)
-                .map_err(|e| generic_error!("Failed to send metric: {}", e))
-        }
+        Some(sender) => sender
+            .try_send(metric)
+            .map_err(|e| generic_error!("Failed to send metric: {}", e)),
         None => Err(generic_error!("Metric sender not initialized.")),
     }
 }
@@ -62,11 +59,8 @@ pub mod aggregator {
 
         let check_metric = CheckMetric::new(name.clone(), mtype.into(), value, tags.clone());
 
-        match try_send_metric(check_metric) {
-            Ok(()) => {}
-            Err(e) => {
-                error!("Failed to send metric: {}", e);
-            }
+        if let Err(e) = try_send_metric(check_metric) {
+            error!("Failed to send metric: {}", e);
         };
     }
 
