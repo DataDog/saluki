@@ -155,6 +155,7 @@ where
         }
     }
 }
+
 impl<B> From<Vec<u8>> for TransactionBody<B> {
     fn from(bytes: Vec<u8>) -> Self {
         Self::Rehydrated(Some(Bytes::from(bytes)))
