@@ -10,7 +10,7 @@ use tracing::warn;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MetricType {
-    Gauge = 0,
+    Gauge,
     Rate,
     Count,
     MonotonicCount,
