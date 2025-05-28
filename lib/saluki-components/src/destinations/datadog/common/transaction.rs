@@ -237,3 +237,35 @@ where
         self.request.body().remaining() as u64
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+
+    use bytes::Buf as _;
+    use http::Request;
+
+    use super::{Metadata, Transaction};
+
+    #[test]
+    fn basic_transaction_ser_deser_roundtrip() {
+        // Create a basic transaction with a simple body.
+        let metadata = Metadata::from_event_count(1);
+        let body = VecDeque::from("hello, world!".as_bytes().to_vec());
+        let request = Request::builder().uri("http://example.com").body(body.clone()).unwrap();
+
+        // Create our `Transaction`, and then roundtrip it: serialize and then deserialize.
+        let transaction = Transaction::from_original(metadata.clone(), request);
+        let serialized = serde_json::to_string(&transaction).unwrap();
+        let deserialized: Transaction<VecDeque<u8>> = serde_json::from_str(&serialized).unwrap();
+
+        // Check some basic properties.
+        assert_eq!(deserialized.metadata.event_count, metadata.event_count);
+        assert_eq!(deserialized.request.uri(), "http://example.com");
+
+        // Clone / drain the request body, and make sure it matches the original body.
+        let req_body_raw = deserialized.request.body().clone();
+        let req_body = VecDeque::from(req_body_raw.chunk().to_vec());
+        assert_eq!(req_body, body);
+    }
+}
