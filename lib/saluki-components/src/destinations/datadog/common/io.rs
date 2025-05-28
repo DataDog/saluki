@@ -388,6 +388,14 @@ async fn run_endpoint_io_loop<S, B>(
 }
 
 fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoint) -> String {
+    // TODO: This logic does not take into account cases where the API key is updated dynamically. While a running
+    // process would just keep using the existing retry queue, based on the queue ID we generate here... the next time
+    // the process restarted, the retry queue ID would change, which could leave behind old transactions that wouldn't
+    // end up being retried.
+    //
+    // The Core Agent is also susceptible to this, I believe... but we should double check that and see what they're
+    // doing if they actually _do_ handle this case.
+
     // We set our queue ID/name to be unique for the component/endpoint/API key combination, which ensures that two
     // instances of the same destination cannot collide with each other if they're using the same endpoint/API key
     // combination.
