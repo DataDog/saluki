@@ -334,6 +334,7 @@ impl ContextResolverBuilder {
         if self.telemetry_enabled {
             tokio::spawn(drive_telemetry(
                 Arc::clone(&context_cache),
+                Arc::clone(&tagset_cache),
                 interner.clone(),
                 telemetry.clone(),
             ));
@@ -442,6 +443,8 @@ impl ContextResolver {
             let context_tag = self.intern(tag)?;
             context_tags.insert_tag(context_tag);
         }
+
+        self.telemetry.resolved_new_tagset_total().increment(1);
 
         Some(context_tags.into_shared())
     }
@@ -553,7 +556,6 @@ impl ContextResolver {
                         self.tagset_cache.insert(tagset_key, tag_set.clone());
                         self.tagset_expiration.mark_entry_accessed(tagset_key);
 
-                        self.telemetry.resolved_new_tagset_total().increment(1);
                         tag_set
                     }
                 };
@@ -644,7 +646,7 @@ async fn drive_expiration(
     }
 }
 
-async fn drive_telemetry(context_cache: Arc<ContextCache>, interner: GenericMapInterner, telemetry: Telemetry) {
+async fn drive_telemetry(context_cache: Arc<ContextCache>, tagset_cache: Arc<TagSetCache>, interner: GenericMapInterner, telemetry: Telemetry) {
     loop {
         sleep(Duration::from_secs(1)).await;
 
@@ -655,6 +657,7 @@ async fn drive_telemetry(context_cache: Arc<ContextCache>, interner: GenericMapI
         telemetry.interner_len_bytes().set(interner.len_bytes() as f64);
 
         telemetry.cached_contexts().set(context_cache.len() as f64);
+        telemetry.cached_tagsets().set(tagset_cache.len() as f64);
     }
 }
 
