@@ -82,12 +82,6 @@ build-adp-check-image:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
 
-    # Build baseline from `main`. A more correct approach here would be to check
-    # out all but the dockerfile for saluki from the branch point and build that
-    # way but this should be Good Enough for a while.
-    - git fetch --all
-    - git switch main
-
     # Actually build.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx build
