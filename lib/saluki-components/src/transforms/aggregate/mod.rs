@@ -223,7 +223,7 @@ impl AggregateConfiguration {
 #[async_trait]
 impl TransformBuilder for AggregateConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
-        let metrics_builder = MetricsBuilder::from_component_context(context);
+        let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = Telemetry::new(&metrics_builder);
 
         let state = AggregationState::new(
