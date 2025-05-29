@@ -1,4 +1,4 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use pyo3::prelude::*;
 use saluki_error::{generic_error, GenericError};
@@ -8,11 +8,11 @@ use tracing::{debug, error, trace};
 use crate::sources::checks::check_metric::{CheckMetric, MetricType};
 
 // Global state to store the sender
-static METRIC_SENDER: OnceLock<Arc<Sender<CheckMetric>>> = OnceLock::new();
+static METRIC_SENDER: OnceLock<Sender<CheckMetric>> = OnceLock::new();
 
 /// Sets the metric sender to be used by the aggregator module.
-pub fn set_metric_sender(check_metrics_tx: Sender<CheckMetric>) -> &'static Arc<Sender<CheckMetric>> {
-    METRIC_SENDER.get_or_init(|| Arc::new(check_metrics_tx))
+pub fn set_metric_sender(check_metrics_tx: Sender<CheckMetric>) -> &'static Sender<CheckMetric> {
+    METRIC_SENDER.get_or_init(|| check_metrics_tx)
 }
 
 fn try_send_metric(metric: CheckMetric) -> Result<(), GenericError> {

@@ -55,7 +55,7 @@ impl Check for PythonCheck {
     }
 }
 
-static PYTHON_ENV_INITIALIZE: OnceLock<Result<(), GenericError>> = OnceLock::new();
+static INTERPRETER_INITIALIZED_AND_READY: OnceLock<bool> = OnceLock::new();
 
 pub struct PythonCheckBuilder {
     check_events_tx: Sender<CheckMetric>,
@@ -70,8 +70,8 @@ impl PythonCheckBuilder {
         }
     }
 
-    fn python_initialized(&self) -> &Result<(), GenericError> {
-        PYTHON_ENV_INITIALIZE.get_or_init(|| {
+    fn interpreter_initialized_and_ready(&self) -> bool {
+        *INTERPRETER_INITIALIZED_AND_READY.get_or_init(|| {
             pyo3::append_to_inittab!(datadog_agent);
             pyo3::append_to_inittab!(pyagg);
             pyo3::prepare_freethreaded_python();
@@ -118,14 +118,11 @@ impl PythonCheckBuilder {
                     super::python_modules::set_metric_sender(self.check_events_tx.clone());
 
                     info!("Python runtime loaded successfully and initialized for checks.");
-                    Ok(())
+                    true
                 }
                 Err(e) => {
                     warn!(error = %e, "Failed to load/initialize Python runtime for checks. Python checks will be unavailable.");
-                    Err(generic_error!(
-                        "Failed to initialize Python environment for checks: {}",
-                        e
-                    ))
+                    false
                 }
             }
         })
@@ -136,7 +133,7 @@ impl CheckBuilder for PythonCheckBuilder {
     fn build_check(
         &self, name: &str, instance: &Instance, init_config: &Data, source: &MetaString,
     ) -> Option<Arc<dyn Check + Send + Sync>> {
-        if self.python_initialized().is_err() {
+        if !self.interpreter_initialized_and_ready() {
             return None;
         }
 
@@ -188,18 +185,16 @@ fn register_check_from_imports(
         }
         let (_check_key, check_value) = &checks[0];
         debug!(path = import_path, "Found base class for check.");
-        let mut version = "unversioned".to_string();
-        if let Ok(check_version) = check_value.getattr("__version__") {
-            if let Ok(v) = check_version.extract::<String>() {
-                version = v;
-            }
-        }
 
-        let min_interval = if let Some(value) = instance.get("min_collection_interval") {
-            value.as_u64().unwrap_or_default()
-        } else {
-            0
-        };
+        let version = check_value
+            .getattr("__version__")
+            .and_then(|cv| cv.extract::<String>())
+            .unwrap_or_else(|_| "unversioned".to_string());
+
+        let min_interval = instance
+            .get("min_collection_interval")
+            .and_then(|value| value.as_u64())
+            .unwrap_or_default();
 
         let kwargs = PyDict::new(py);
         let parsed_config = map_to_pydict(init_config.get_value(), &py)?;
