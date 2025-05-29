@@ -1,6 +1,6 @@
 use std::{
     future::Future,
-    path::PathBuf,
+    path::{Path, PathBuf},
     pin::Pin,
     task::{ready, Context, Poll},
     time::Duration,
@@ -27,16 +27,15 @@ use tracing::warn;
 
 use crate::helpers::tonic::{build_datadog_agent_ipc_https_connector, BearerAuthInterceptor};
 
+const DEFAULT_DATADOG_AGENT_CONFIG_DIR: &str = "/etc/datadog-agent";
+const DEFAULT_IPC_CERT_FILE_NAME: &str = "ipc_cert.pem";
+
 fn default_agent_ipc_endpoint() -> Uri {
     Uri::from_static("https://127.0.0.1:5001")
 }
 
 fn default_agent_auth_token_file_path() -> PathBuf {
     PathBuf::from("/etc/datadog-agent/auth_token")
-}
-
-fn default_agent_ipc_cert_file_path() -> PathBuf {
-    PathBuf::from("/etc/datadog-agent/ipc_cert.pem")
 }
 
 const fn default_connect_retry_attempts() -> usize {
@@ -76,9 +75,10 @@ struct RemoteAgentClientConfiguration {
     /// used to verify the TLS server certificate presented by the Agent, and the certificate and private key will be
     /// used together to provide client authentication _to_ the Agent.
     ///
-    /// Defaults to `/etc/datadog-agent/ipc_cert.pem`.
-    #[serde(default = "default_agent_ipc_cert_file_path")]
-    ipc_cert_file_path: PathBuf,
+    /// Defaults to `ipc_cert.pem` in the same directory as the Agent authentication token file. (e.g., if
+    /// `auth_token_file_path` is `/etc/datadog-agent/auth_token`, this will be `/etc/datadog-agent/ipc_cert.pem`.)
+    #[serde(default)]
+    ipc_cert_file_path: Option<PathBuf>,
 
     /// Number of allowed retry attempts when initially connecting.
     ///
@@ -134,16 +134,11 @@ impl RemoteAgentClient {
         // We could potentially just use a retry middleware, but Tonic does have its own reconnection logic, so we'd
         // have to test it out to make sure it behaves sensibly.
         let service_builder = || async {
-            let interceptor = BearerAuthInterceptor::from_file(&config.auth_token_file_path)
-                .await
-                .with_error_context(|| {
-                    format!(
-                        "Failed to read API authentication token from file '{}'.",
-                        config.auth_token_file_path.display()
-                    )
-                })?;
+            let auth_interceptor = BearerAuthInterceptor::from_file(&config.auth_token_file_path).await?;
+            let ipc_cert_file_path =
+                get_ipc_cert_file_path(config.ipc_cert_file_path.as_ref(), &config.auth_token_file_path);
 
-            let https_connector = build_datadog_agent_ipc_https_connector(&config.ipc_cert_file_path).await?;
+            let https_connector = build_datadog_agent_ipc_https_connector(ipc_cert_file_path).await?;
 
             let channel = Endpoint::from(config.ipc_endpoint.clone())
                 .connect_timeout(Duration::from_secs(2))
@@ -153,7 +148,7 @@ impl RemoteAgentClient {
                     format!("Failed to connect to Datadog Agent API at '{}'.", config.ipc_endpoint)
                 })?;
 
-            Ok::<_, GenericError>(InterceptedService::new(channel, interceptor))
+            Ok::<_, GenericError>(InterceptedService::new(channel, auth_interceptor))
         };
 
         let service = service_builder
@@ -344,5 +339,69 @@ async fn try_query_agent_api(
             )),
             _ => Err(e.into()),
         },
+    }
+}
+
+fn get_ipc_cert_file_path(ipc_cert_file_path: Option<&PathBuf>, auth_token_file_path: &Path) -> PathBuf {
+    // If the IPC cert file path is set explicitly, we always prefer that.
+    if let Some(path) = ipc_cert_file_path {
+        return path.clone();
+    }
+
+    // Otherwise, we default to the same directory as the auth token file, with the default certificate file name.
+    let mut cert_path = auth_token_file_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_DATADOG_AGENT_CONFIG_DIR));
+
+    cert_path.push(DEFAULT_IPC_CERT_FILE_NAME);
+    cert_path
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::{
+        default_agent_auth_token_file_path, get_ipc_cert_file_path, DEFAULT_DATADOG_AGENT_CONFIG_DIR,
+        DEFAULT_IPC_CERT_FILE_NAME,
+    };
+
+    #[test]
+    fn ipc_cert_file_path_defaults() {
+        let default_auth_token_path = default_agent_auth_token_file_path();
+        let custom_auth_token_path = PathBuf::from("/secret/auth_token");
+        let invalid_auth_token_path = PathBuf::from("/");
+        let custom_ipc_cert_path = PathBuf::from("/tmp/custom_ipc_cert.pem");
+
+        // When the IPC cert file path is explicitly set, it should be used.
+        let result = get_ipc_cert_file_path(Some(&custom_ipc_cert_path), &default_auth_token_path);
+        assert_eq!(result, custom_ipc_cert_path);
+
+        // When the IPC cert file path is not set, it should default to the same directory as the auth token file using
+        // the default certificate file name.
+        let result = get_ipc_cert_file_path(None, &default_auth_token_path);
+        assert_eq!(result.parent(), default_auth_token_path.as_path().parent());
+        assert_eq!(
+            result.file_name().and_then(|s| s.to_str()),
+            Some(DEFAULT_IPC_CERT_FILE_NAME)
+        );
+
+        // This should hold when using a custom auth token file path as well.
+        let result = get_ipc_cert_file_path(None, &custom_auth_token_path);
+        assert_eq!(result.parent(), custom_auth_token_path.as_path().parent());
+        assert_eq!(
+            result.file_name().and_then(|s| s.to_str()),
+            Some(DEFAULT_IPC_CERT_FILE_NAME)
+        );
+
+        // If the auth token file path is somehow unset or invalid (e.g., no parent directory), we should use the same
+        // logic but with the default Datadog Agent configuration directory.
+        let result = get_ipc_cert_file_path(None, &invalid_auth_token_path);
+        assert_eq!(result.parent(), Some(Path::new(DEFAULT_DATADOG_AGENT_CONFIG_DIR)));
+        assert_eq!(
+            result.file_name().and_then(|s| s.to_str()),
+            Some(DEFAULT_IPC_CERT_FILE_NAME)
+        );
     }
 }
