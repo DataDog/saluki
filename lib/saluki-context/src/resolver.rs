@@ -646,7 +646,10 @@ async fn drive_expiration(
     }
 }
 
-async fn drive_telemetry(context_cache: Arc<ContextCache>, tagset_cache: Arc<TagSetCache>, interner: GenericMapInterner, telemetry: Telemetry) {
+async fn drive_telemetry(
+    context_cache: Arc<ContextCache>, tagset_cache: Arc<TagSetCache>, interner: GenericMapInterner,
+    telemetry: Telemetry,
+) {
     loop {
         sleep(Duration::from_secs(1)).await;
 
