@@ -8,6 +8,7 @@ repository = { workspace = true }
 [features]
 default = []
 fips = ["saluki-app/tls-fips"]
+python-checks = []
 
 [dependencies]
 async-trait = { workspace = true }
