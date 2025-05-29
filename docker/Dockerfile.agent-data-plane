@@ -41,10 +41,10 @@ RUN apt-get update && \
 RUN if echo "${BUILD_FEATURES}" | grep -q "python-checks"; then \
     # Docs here https://pyo3.rs/v0.14.5/building_and_distribution#configuring-the-python-version
     # If needed, ENV PYO3_PYTHON="/opt/datadog-agent/embedded/bin/python3.12" could be used, but auto-detection works in our case
-    COPY --from=agent "/opt/datadog-agent/embedded" "/opt/datadog-agent/embedded"
-    ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
-    ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
-    fi
+    COPY --from=agent "/opt/datadog-agent/embedded" "/opt/datadog-agent/embedded" && \
+    ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}" && \
+    ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"; \
+fi
 
 # Install Go, which we need to build AWS-LC in FIPS-compliant mode.
 ENV PATH="/usr/local/go/bin:${PATH}"
@@ -98,11 +98,10 @@ COPY --from=builder /adp/target/bin/agent-data-plane /usr/local/bin/agent-data-p
 RUN if echo "${BUILD_FEATURES}" | grep -q "python-checks"; then \
     # Docs here https://pyo3.rs/v0.14.5/building_and_distribution#configuring-the-python-version
     # If needed, ENV PYO3_PYTHON="/opt/datadog-agent/embedded/bin/python3.12" could be used, but auto-detection works in our case
-    # Copy the Datadog Agent's embedded Python environment into the image to resolve Python dependencies
-    COPY --from=agent "/opt/datadog-agent/embedded" "/opt/datadog-agent/embedded"
-    ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
-    ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
-    fi
+    COPY --from=agent "/opt/datadog-agent/embedded" "/opt/datadog-agent/embedded" && \
+    ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}" && \
+    ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"; \
+fi
 COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
 COPY --from=license-builder /licenses /opt/datadog/agent-data-plane/LICENSES
 
