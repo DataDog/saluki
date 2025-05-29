@@ -7,7 +7,7 @@
   - export BASELINE_SALUKI_SHA=$(git merge-base origin/main origin/${CI_COMMIT_BRANCH})
   - export COMPARISON_SALUKI_SHA="${CI_COMMIT_SHA}"
   - export BASELINE_SALUKI_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-${CI_PIPELINE_ID}-${BASELINE_SALUKI_SHA}"
-  - export BASELINE_SALUKI_AND_CHECK_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-checks-${CI_PIPELINE_ID}-${BASELINE_SALUKI_SHA}"
+  - export BASELINE_SALUKI_AND_CHECK_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-checks-${CI_PIPELINE_ID}-${COMPARISON_SALUKI_SHA}"
   - export BASELINE_CHECKS_AGENT_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:checks-agent-${CI_PIPELINE_ID}-${BASELINE_SALUKI_SHA}"
   - export COMPARISON_SALUKI_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-${CI_PIPELINE_ID}-${COMPARISON_SALUKI_SHA}"
   - export COMPARISON_CHECKS_AGENT_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:checks-agent-${CI_PIPELINE_ID}-${COMPARISON_SALUKI_SHA}"
@@ -97,7 +97,7 @@ build-adp-check-image:
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
-      --build-arg APP_GIT_HASH=${BASELINE_SALUKI_SHA}
+      --build-arg APP_GIT_HASH=${COMPARISON_SALUKI_SHA}
       --build-arg BUILD_FEATURES=python-checks
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
