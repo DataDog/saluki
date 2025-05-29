@@ -3,6 +3,7 @@ use std::ops::Deref;
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
+use saluki_core::data_model::event::{metric::Metric, Event, EventType};
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
@@ -11,7 +12,6 @@ use saluki_core::{
     topology::OutputDefinition,
 };
 use saluki_error::GenericError;
-use saluki_event::{metric::Metric, DataType};
 use serde::Deserialize;
 use stringtheory::MetaString;
 use tokio::select;
@@ -75,12 +75,12 @@ impl DogstatsDPrefixFilterConfiguration {
 
 #[async_trait]
 impl TransformBuilder for DogstatsDPrefixFilterConfiguration {
-    fn input_data_type(&self) -> DataType {
-        DataType::Metric
+    fn input_event_type(&self) -> EventType {
+        EventType::Metric
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(DataType::Metric)];
+        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(EventType::Metric)];
         OUTPUTS
     }
 
@@ -222,20 +222,20 @@ impl Transform for DogstatsDPrefixFilter {
                 _ = health.live() => continue,
                 maybe_events = context.event_stream().next() => match maybe_events {
                     Some(events) => {
-                        let mut buffered_forwarder = context.forwarder().buffered().expect("default output must always exist");
+                        let mut buffered_dispatcher = context.dispatcher().buffered().expect("default output must always exist");
 
                         for event in events {
                             if let Some(metric) = event.try_into_metric() {
                                 if let Some(new_metric) = self.enrich_metric(metric) {
-                                    if let Err(e) = buffered_forwarder.push(saluki_event::Event::Metric(new_metric)).await {
-                                        error!(error = %e, "Failed to forward event.");
+                                    if let Err(e) = buffered_dispatcher.push(Event::Metric(new_metric)).await {
+                                        error!(error = %e, "Failed to dispatch event.");
                                     }
                                 }
                             }
                         }
 
-                        if let Err(e) = buffered_forwarder.flush().await {
-                            error!(error = %e, "Failed to forward events.");
+                        if let Err(e) = buffered_dispatcher.flush().await {
+                            error!(error = %e, "Failed to dispatch events.");
                         }
 
                     },

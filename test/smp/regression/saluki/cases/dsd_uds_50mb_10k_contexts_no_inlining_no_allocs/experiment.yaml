@@ -15,7 +15,7 @@ target:
     # Sets the memory limit to appropriately allow for the configured number of contexts for this test.
     #
     # We _do_ disable heap allocations here, so the limit should never end up being exceeded, really.
-    DD_MEMORY_LIMIT: "240MiB"
+    DD_MEMORY_LIMIT: "400MiB"
 
     # Sets the context resolver's string interner size to 2MiB.
     DD_DOGSTATSD_STRING_INTERNER_SIZE: "2MiB"

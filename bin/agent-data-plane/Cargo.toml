@@ -1,6 +1,6 @@
 [package]
 name = "agent-data-plane"
-version = "0.1.0"
+version = "0.1.10"
 edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
@@ -29,7 +29,6 @@ saluki-context = { workspace = true }
 saluki-core = { workspace = true }
 saluki-env = { workspace = true }
 saluki-error = { workspace = true }
-saluki-event = { workspace = true }
 saluki-health = { workspace = true }
 saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }

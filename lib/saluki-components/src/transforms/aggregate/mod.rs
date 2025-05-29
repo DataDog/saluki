@@ -10,18 +10,18 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
 use saluki_context::Context;
+use saluki_core::data_model::event::{metric::*, Event, EventType};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     observability::ComponentMetricsExt as _,
     pooling::{ElasticObjectPool, ObjectPool},
     topology::{
-        interconnect::{BufferedForwarder, FixedSizeEventBuffer, FixedSizeEventBufferInner, Forwarder},
+        interconnect::{BufferedDispatcher, Dispatcher, FixedSizeEventBuffer, FixedSizeEventBufferInner},
         OutputDefinition,
     },
 };
 use saluki_env::time::get_unix_timestamp;
 use saluki_error::GenericError;
-use saluki_event::{metric::*, DataType, Event};
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use smallvec::SmallVec;
@@ -223,7 +223,7 @@ impl AggregateConfiguration {
 #[async_trait]
 impl TransformBuilder for AggregateConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
-        let metrics_builder = MetricsBuilder::from_component_context(context);
+        let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = Telemetry::new(&metrics_builder);
 
         let state = AggregationState::new(
@@ -252,12 +252,12 @@ impl TransformBuilder for AggregateConfiguration {
         }))
     }
 
-    fn input_data_type(&self) -> DataType {
-        DataType::Metric
+    fn input_event_type(&self) -> EventType {
+        EventType::Metric
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(DataType::Metric)];
+        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(EventType::Metric)];
 
         OUTPUTS
     }
@@ -341,15 +341,15 @@ impl Transform for Aggregate {
 
                         let should_flush_open_windows = final_primary_flush && self.flush_open_windows;
 
-                        let mut forwarder = context.forwarder().buffered().expect("default output should always exist");
-                        if let Err(e) = self.state.flush(get_unix_timestamp(), should_flush_open_windows, &mut forwarder).await {
+                        let mut dispatcher = context.dispatcher().buffered().expect("default output should always exist");
+                        if let Err(e) = self.state.flush(get_unix_timestamp(), should_flush_open_windows, &mut dispatcher).await {
                             error!(error = %e, "Failed to flush aggregation state.");
                         }
 
                         self.telemetry.increment_flushes();
 
-                        match forwarder.flush().await {
-                            Ok(aggregated_events) => debug!(aggregated_events, "Forwarded events."),
+                        match dispatcher.flush().await {
+                            Ok(aggregated_events) => debug!(aggregated_events, "Dispatched events."),
                             Err(e) => error!(error = %e, "Failed to flush aggregated events."),
                         }
                     }
@@ -360,7 +360,7 @@ impl Transform for Aggregate {
                         break
                     }
                 },
-                _ = passthrough_flush.tick() => self.passthrough_batcher.try_flush(context.forwarder()).await,
+                _ = passthrough_flush.tick() => self.passthrough_batcher.try_flush(context.dispatcher()).await,
                 maybe_events = context.event_stream().next(), if !final_primary_flush => match maybe_events {
                     Some(events) => {
                         trace!(events_len = events.len(), "Received events.");
@@ -378,7 +378,7 @@ impl Transform for Aggregate {
 
                                     // If we have a timestamped metric, then batch it up out-of-band.
                                     if let Some(timestamped_metric) = maybe_timestamped_metric {
-                                        self.passthrough_batcher.push_metric(timestamped_metric, context.forwarder()).await;
+                                        self.passthrough_batcher.push_metric(timestamped_metric, context.dispatcher()).await;
                                         processed_passthrough_metrics = true;
                                     }
 
@@ -417,7 +417,7 @@ impl Transform for Aggregate {
         }
 
         // Do a final flush of any timestamped metrics that we've buffered up.
-        self.passthrough_batcher.try_flush(context.forwarder()).await;
+        self.passthrough_batcher.try_flush(context.dispatcher()).await;
 
         debug!("Aggregation transform stopped.");
 
@@ -475,7 +475,7 @@ impl PassthroughBatcher {
         }
     }
 
-    async fn push_metric(&mut self, metric: Metric, forwarder: &Forwarder) {
+    async fn push_metric(&mut self, metric: Metric, dispatcher: &Dispatcher) {
         // Convert counters to rates before we batch them up.
         //
         // This involves specifying the rate interval as the bucket width of the aggregate transform itself, which when
@@ -490,10 +490,10 @@ impl PassthroughBatcher {
         // If our active buffer is full, then we'll flush the buffer, grab a new one, and push the metric into it.
         if let Some(event) = self.active_buffer.try_push(Event::Metric(metric)) {
             debug!("Passthrough event buffer was full. Flushing...");
-            self.forward_events(forwarder).await;
+            self.dispatch_events(dispatcher).await;
 
             if self.active_buffer.try_push(event).is_some() {
-                error!("Event buffer is full even after forwarding events. Dropping event.");
+                error!("Event buffer is full even after dispatching events. Dropping event.");
                 self.telemetry.increment_events_dropped();
                 return;
             }
@@ -514,16 +514,16 @@ impl PassthroughBatcher {
         self.last_processed_at = Instant::now();
     }
 
-    async fn try_flush(&mut self, forwarder: &Forwarder) {
+    async fn try_flush(&mut self, dispatcher: &Dispatcher) {
         // If our active buffer isn't empty, and we've exceeded our idle flush timeout, then flush the buffer.
         if !self.active_buffer.is_empty() && self.last_processed_at.elapsed() >= self.idle_flush_timeout {
             debug!("Passthrough processing exceeded idle flush timeout. Flushing...");
 
-            self.forward_events(forwarder).await;
+            self.dispatch_events(dispatcher).await;
         }
     }
 
-    async fn forward_events(&mut self, forwarder: &Forwarder) {
+    async fn dispatch_events(&mut self, dispatcher: &Dispatcher) {
         if !self.active_buffer.is_empty() {
             let unaggregated_events = self.active_buffer.len();
 
@@ -537,8 +537,8 @@ impl PassthroughBatcher {
             let new_active_buffer = self.buffer_pool.acquire().await;
             let old_active_buffer = std::mem::replace(&mut self.active_buffer, new_active_buffer);
 
-            match forwarder.forward_buffer(old_active_buffer).await {
-                Ok(()) => debug!(unaggregated_events, "Forwarded events."),
+            match dispatcher.dispatch_buffer(old_active_buffer).await {
+                Ok(()) => debug!(unaggregated_events, "Dispatched events."),
                 Err(e) => error!(error = %e, "Failed to flush unaggregated events."),
             }
         }
@@ -631,12 +631,9 @@ impl AggregationState {
         true
     }
 
-    async fn flush<O>(
-        &mut self, current_time: u64, flush_open_buckets: bool, forwarder: &mut BufferedForwarder<'_, O>,
-    ) -> Result<(), GenericError>
-    where
-        O: ObjectPool<Item = FixedSizeEventBuffer>,
-    {
+    async fn flush(
+        &mut self, current_time: u64, flush_open_buckets: bool, dispatcher: &mut BufferedDispatcher<'_>,
+    ) -> Result<(), GenericError> {
         self.contexts_remove_buf.clear();
 
         let bucket_width_secs = self.bucket_width_secs;
@@ -716,7 +713,7 @@ impl AggregationState {
                     am.metadata.clone(),
                     bucket_width_secs,
                     &self.hist_config,
-                    forwarder,
+                    dispatcher,
                 )
                 .await?;
             }
@@ -738,13 +735,10 @@ impl AggregationState {
     }
 }
 
-async fn transform_and_push_metric<O>(
+async fn transform_and_push_metric(
     context: Context, mut values: MetricValues, metadata: MetricMetadata, bucket_width_secs: u64,
-    hist_config: &HistogramConfiguration, forwarder: &mut BufferedForwarder<'_, O>,
-) -> Result<(), GenericError>
-where
-    O: ObjectPool<Item = FixedSizeEventBuffer>,
-{
+    hist_config: &HistogramConfiguration, dispatcher: &mut BufferedDispatcher<'_>,
+) -> Result<(), GenericError> {
     let bucket_width = Duration::from_secs(bucket_width_secs);
 
     match values {
@@ -774,7 +768,7 @@ where
                     context.clone()
                 };
                 let new_metric = Metric::from_parts(metric_context, distribution_values, metadata.clone());
-                forwarder.push(Event::Metric(new_metric)).await?;
+                dispatcher.push(Event::Metric(new_metric)).await?;
             }
             // We collect our histogram points in their "summary" view, which sorts the underlying samples allowing
             // proper quantile queries to be answered, hence our "sorted" points. We do it this way because rather than
@@ -799,7 +793,7 @@ where
 
                 let new_context = context.with_name(format!("{}.{}", context.name(), statistic.suffix()));
                 let new_metric = Metric::from_parts(new_context, new_values, metadata.clone());
-                forwarder.push(Event::Metric(new_metric)).await?;
+                dispatcher.push(Event::Metric(new_metric)).await?;
             }
 
             Ok(())
@@ -811,7 +805,7 @@ where
             let adjusted_values = counter_values_to_rate(values, bucket_width);
 
             let metric = Metric::from_parts(context, adjusted_values, metadata);
-            forwarder.push(Event::Metric(metric)).await
+            dispatcher.push(Event::Metric(metric)).await
         }
     }
 }
@@ -861,7 +855,7 @@ mod tests {
         components::ComponentContext,
         pooling::ElasticObjectPool,
         topology::{
-            interconnect::{FixedSizeEventBufferInner, Forwarder},
+            interconnect::{Dispatcher, FixedSizeEventBufferInner},
             ComponentId, OutputName,
         },
     };
@@ -891,11 +885,11 @@ mod tests {
         BUCKET_WIDTH_SECS * (step + 1)
     }
 
-    struct ForwarderReceiver {
+    struct DispatcherReceiver {
         receiver: mpsc::Receiver<FixedSizeEventBuffer>,
     }
 
-    impl ForwarderReceiver {
+    impl DispatcherReceiver {
         fn collect_next(&mut self) -> Vec<Metric> {
             match self.receiver.try_recv() {
                 Ok(event_buffer) => {
@@ -912,37 +906,37 @@ mod tests {
         }
     }
 
-    /// Constructs a basic `Forwarder` with a fixed-size event buf
-    fn build_basic_forwarder() -> (Forwarder, ForwarderReceiver) {
+    /// Constructs a basic `Dispatcher` with a fixed-size event buffer.
+    fn build_basic_dispatcher() -> (Dispatcher, DispatcherReceiver) {
         let (event_buffer_pool, _) =
             ElasticObjectPool::with_builder("test", 1, 1, || FixedSizeEventBufferInner::with_capacity(8));
         let component_id = ComponentId::try_from("test").expect("should not fail to create component ID");
-        let mut forwarder = Forwarder::new(ComponentContext::transform(component_id), event_buffer_pool);
+        let mut dispatcher = Dispatcher::new(ComponentContext::transform(component_id), event_buffer_pool);
 
         let (buffer_tx, buffer_rx) = mpsc::channel(1);
-        forwarder.add_output(OutputName::Default, buffer_tx);
+        dispatcher.add_output(OutputName::Default, buffer_tx);
 
-        (forwarder, ForwarderReceiver { receiver: buffer_rx })
+        (dispatcher, DispatcherReceiver { receiver: buffer_rx })
     }
 
     async fn get_flushed_metrics(timestamp: u64, state: &mut AggregationState) -> Vec<Metric> {
-        let (forwarder, mut forwarder_receiver) = build_basic_forwarder();
-        let mut buffered_forwarder = forwarder.buffered().expect("default output should always exist");
+        let (dispatcher, mut dispatcher_receiver) = build_basic_dispatcher();
+        let mut buffered_dispatcher = dispatcher.buffered().expect("default output should always exist");
 
         // Flush the metrics to an event buffer.
         state
-            .flush(timestamp, true, &mut buffered_forwarder)
+            .flush(timestamp, true, &mut buffered_dispatcher)
             .await
             .expect("should not fail to flush aggregation state");
 
-        // Flush our buffered forwarder, which should ensure that the event buffer is sent out, and then read it from the
+        // Flush our buffered dispatcher, which should ensure that the event buffer is sent out, and then read it from the
         // receiver:
-        buffered_forwarder
+        buffered_dispatcher
             .flush()
             .await
             .expect("should not fail to flush buffered sender");
 
-        forwarder_receiver.collect_next()
+        dispatcher_receiver.collect_next()
     }
 
     macro_rules! compare_points {
@@ -1371,17 +1365,17 @@ mod tests {
 
         // Create a basic passthrough batcher and forwarder.
         let mut batcher = PassthroughBatcher::new(1, Duration::from_nanos(1), bucket_width, Telemetry::noop()).await;
-        let (forwarder, mut forwarder_receiver) = build_basic_forwarder();
+        let (dispatcher, mut dispatcher_receiver) = build_basic_dispatcher();
 
         // Create a simple pre-aggregated counter, and batch it.
         let input_metric = Metric::counter("metric1", (timestamp, counter_value));
-        batcher.push_metric(input_metric.clone(), &forwarder).await;
+        batcher.push_metric(input_metric.clone(), &dispatcher).await;
 
         // Flush the batcher, and observe that we've emitted the expected counter and that it has the right
         // value, but specifically that it's a rate with an interval that matches our configured bucket width:
-        batcher.try_flush(&forwarder).await;
+        batcher.try_flush(&dispatcher).await;
 
-        let mut flushed_metrics = forwarder_receiver.collect_next();
+        let mut flushed_metrics = dispatcher_receiver.collect_next();
         assert_eq!(flushed_metrics.len(), 1);
         assert_eq!(
             Metric::rate("metric1", (timestamp, counter_value), bucket_width),

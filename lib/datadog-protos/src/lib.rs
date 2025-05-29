@@ -14,15 +14,21 @@ mod agent_include {
 
 /// Metrics-related definitions.
 pub mod metrics {
-    pub use super::include::dd_metric::metric_payload::*;
-    pub use super::include::dd_metric::sketch_payload::{sketch::*, Sketch};
-    pub use super::include::dd_metric::*;
+    pub use super::include::agent_payload::metric_payload::*;
+    pub use super::include::agent_payload::sketch_payload::{sketch::*, Sketch};
+    pub use super::include::agent_payload::*;
     pub use super::include::ddsketch_full::*;
 }
 
 /// Trace-related definitions.
 pub mod traces {
     pub use super::include::dd_trace::*;
+}
+
+/// Event-related definitions.
+pub mod events {
+    pub use super::include::agent_payload::events_payload::*;
+    pub use super::include::agent_payload::EventsPayload;
 }
 
 /// Agent definitions.

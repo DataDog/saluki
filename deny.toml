@@ -15,6 +15,7 @@ version = 2
 allow = [
   "0BSD",
   "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause",
   "BSD-3-Clause",
   "BSL-1.0",
@@ -23,15 +24,15 @@ allow = [
   "MIT",
   "OpenSSL",
   "Unicode-3.0",
-  "Zlib"
+  "Zlib",
 ]
 
 [sources]
 allow-git = [
-    # Git dependency for `lading_payload`, which isn't published on crates.io. We use a tagged version, though, so this
-    # is reasonable from our perspective... especially considering the fact that we're the ones who own the repository.
-    "https://github.com/DataDog/lading",
+  # Git dependency for `lading_payload`, which isn't published on crates.io. We use a tagged version, though, so this
+  # is reasonable from our perspective... especially considering the fact that we're the ones who own the repository.
+  "https://github.com/DataDog/lading",
 
-    # Git dependency for `triomphe`, due to needing unreleased support for `Arc::into_unique`.
-    "https://github.com/Manishearth/triomphe",
+  # Git dependency for `triomphe`, due to needing unreleased support for `Arc::into_unique`.
+  "https://github.com/Manishearth/triomphe",
 ]

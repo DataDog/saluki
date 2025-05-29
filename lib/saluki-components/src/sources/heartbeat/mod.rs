@@ -4,9 +4,9 @@ use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_context::Context;
 use saluki_core::components::{sources::*, ComponentContext};
+use saluki_core::data_model::event::{metric::Metric, Event, EventType};
 use saluki_core::topology::OutputDefinition;
 use saluki_error::GenericError;
-use saluki_event::{metric::Metric, DataType, Event};
 use tokio::{select, time::interval};
 use tracing::{debug, error};
 
@@ -52,12 +52,12 @@ impl Source for Heartbeat {
                     // Create a simple heartbeat metric
                     let metric_context = Context::from_static_name("heartbeat");
                     let metric = Metric::gauge(metric_context, 1.0);
-                    let mut buffered_forwarder = context.forwarder().buffered().expect("default output must always exist");
+                    let mut buffered_dispatcher = context.dispatcher().buffered().expect("default output must always exist");
 
-                    if let Err(e) = buffered_forwarder.push(Event::Metric(metric)).await {
-                        error!(error = %e, "Failed to forward event.");
-                    } else if let Err(e) = buffered_forwarder.flush().await {
-                        error!(error = %e, "Failed to forward events.");
+                    if let Err(e) = buffered_dispatcher.push(Event::Metric(metric)).await {
+                        error!(error = %e, "Failed to dispatch event.");
+                    } else if let Err(e) = buffered_dispatcher.flush().await {
+                        error!(error = %e, "Failed to dispatch events.");
                     } else {
                         debug!("Emitted heartbeat metric.");
                     }
@@ -79,7 +79,7 @@ impl SourceBuilder for HeartbeatConfiguration {
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: [OutputDefinition; 1] = [OutputDefinition::default_output(DataType::Metric)];
+        static OUTPUTS: [OutputDefinition; 1] = [OutputDefinition::default_output(EventType::Metric)];
 
         &OUTPUTS
     }

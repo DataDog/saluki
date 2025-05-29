@@ -126,23 +126,23 @@ pub struct EndpointConfiguration {
     ///
     /// Defaults to empty.
     #[serde(default)]
-    pub(crate) additional_endpoints: AdditionalEndpoints,
+    additional_endpoints: AdditionalEndpoints,
 }
 
 impl EndpointConfiguration {
-    /// Returns the site to send metrics to.
-    pub fn site(&self) -> &str {
-        &self.site
-    }
-
-    /// Returns the full URL base to send metrics to, if set.
-    pub fn dd_url(&self) -> Option<&str> {
-        self.dd_url.as_deref()
-    }
-
     /// Sets the full URL base to send metrics to.
     pub fn set_dd_url(&mut self, url: String) {
         self.dd_url = Some(url);
+    }
+
+    /// Sets the API key to use.
+    pub fn set_api_key(&mut self, api_key: String) {
+        self.api_key = api_key;
+    }
+
+    /// Clears all additional endpoints.
+    pub fn clear_additional_endpoints(&mut self) {
+        self.additional_endpoints = AdditionalEndpoints::default();
     }
 
     /// Builds the resolved endpoints from the endpoint configuration.
@@ -236,6 +236,11 @@ impl ResolvedEndpoint {
                 }
             }
         }
+        self.api_key.as_str()
+    }
+
+    /// Returns the API key associated with the endpoint without refreshing it.
+    pub fn cached_api_key(&self) -> &str {
         self.api_key.as_str()
     }
 }

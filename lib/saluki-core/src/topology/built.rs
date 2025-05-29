@@ -15,7 +15,7 @@ use tracing::{debug, error_span};
 
 use super::{
     graph::Graph,
-    interconnect::{EventStream, FixedSizeEventBuffer, FixedSizeEventBufferInner, Forwarder},
+    interconnect::{Dispatcher, EventStream, FixedSizeEventBuffer, FixedSizeEventBufferInner},
     running::RunningTopology,
     shutdown::ComponentShutdownCoordinator,
     ComponentId, RegisteredComponent,
@@ -73,23 +73,23 @@ impl BuiltTopology {
 
     fn create_component_interconnects(
         &self, event_buffer_pool: ElasticObjectPool<FixedSizeEventBuffer>,
-    ) -> (HashMap<ComponentId, Forwarder>, HashMap<ComponentId, EventStream>) {
+    ) -> (HashMap<ComponentId, Dispatcher>, HashMap<ComponentId, EventStream>) {
         // Collect all of the outbound edges in our topology graph.
         //
         // This gives us a mapping of components which send events to another component, grouped by output name.
         let outbound_edges = self.graph.get_outbound_directed_edges();
 
-        let mut forwarders = HashMap::new();
+        let mut dispatchers = HashMap::new();
         let mut event_streams = HashMap::new();
         let mut event_stream_senders: HashMap<ComponentId, mpsc::Sender<FixedSizeEventBuffer>> = HashMap::new();
 
         for (upstream_id, output_map) in outbound_edges {
-            // Get a reference to the forwarder for the current upstream component
-            let forwarder: &mut Forwarder = forwarders.entry(upstream_id.clone()).or_insert_with(|| {
-                // TODO: This is wrong, because an upstream component is simply any component that can forward, which is
+            // Get a reference to the dispatcher for the current upstream component
+            let dispatcher = dispatchers.entry(upstream_id.clone()).or_insert_with(|| {
+                // TODO: This is wrong, because an upstream component is simply any component that can dispatch, which is
                 // either a source or transform.
                 let component_context = ComponentContext::source(upstream_id.clone());
-                Forwarder::new(component_context, event_buffer_pool.clone())
+                Dispatcher::new(component_context, event_buffer_pool.clone())
             });
 
             for (upstream_output_id, downstream_ids) in output_map {
@@ -113,13 +113,13 @@ impl BuiltTopology {
                         }
                     };
 
-                    debug!(%upstream_id, %upstream_output_id, %downstream_id, "Adding forwarder output.");
-                    forwarder.add_output(upstream_output_id.clone(), sender);
+                    debug!(%upstream_id, %upstream_output_id, %downstream_id, "Adding dispatcher output.");
+                    dispatcher.add_output(upstream_output_id.clone(), sender);
                 }
             }
         }
 
-        (forwarders, event_streams)
+        (dispatchers, event_streams)
     }
 
     /// Spawns the topology.
@@ -263,7 +263,7 @@ fn spawn_source(
 ) -> AbortHandle {
     let component_span = error_span!(
         "component",
-        "type" = context.component_context().component_type(),
+        "type" = context.component_context().component_type().as_str(),
         id = %context.component_context().component_id(),
     );
 
@@ -282,7 +282,7 @@ fn spawn_transform(
 ) -> AbortHandle {
     let component_span = error_span!(
         "component",
-        "type" = context.component_context().component_type(),
+        "type" = context.component_context().component_type().as_str(),
         id = %context.component_context().component_id(),
     );
 
@@ -301,7 +301,7 @@ fn spawn_destination(
 ) -> AbortHandle {
     let component_span = error_span!(
         "component",
-        "type" = context.component_context().component_type(),
+        "type" = context.component_context().component_type().as_str(),
         id = %context.component_context().component_id(),
     );
 

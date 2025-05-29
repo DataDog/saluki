@@ -5,11 +5,12 @@ use http::{Request, Uri};
 use http_body::Body;
 use http_body_util::BodyExt as _;
 use hyper::{body::Incoming, Response};
-use saluki_common::task::spawn_traced_named;
+use saluki_common::{hash::hash_single_stable, task::spawn_traced_named};
 use saluki_config::RefreshableConfiguration;
+use saluki_core::{components::ComponentContext, pooling::ElasticObjectPool};
 use saluki_error::{generic_error, GenericError};
 use saluki_io::{
-    buf::ReadIoBuffer,
+    buf::{BytesBuffer, FixedSizeVec, ReadIoBuffer},
     net::{
         client::http::HttpClient,
         util::{
@@ -35,6 +36,8 @@ use super::{
     telemetry::{ComponentTelemetry, TransactionQueueTelemetry},
     transaction::{Metadata, Transaction, TransactionBody},
 };
+
+const RB_BUFFER_POOL_BUF_SIZE: usize = 32 * 1024; // 32 KB
 
 /// A handle to the transaction forwarder.
 pub struct Handle<B>
@@ -77,6 +80,7 @@ where
 }
 
 pub struct TransactionForwarder<B> {
+    context: ComponentContext,
     config: ForwarderConfiguration,
     telemetry: ComponentTelemetry,
     metrics_builder: MetricsBuilder,
@@ -92,8 +96,9 @@ where
 {
     /// Creates a new `TransactionForwarder` instance from the given configuration.
     pub fn from_config<F>(
-        config: ForwarderConfiguration, maybe_refreshable_config: Option<RefreshableConfiguration>, endpoint_name: F,
-        telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
+        context: ComponentContext, config: ForwarderConfiguration,
+        maybe_refreshable_config: Option<RefreshableConfiguration>, endpoint_name: F, telemetry: ComponentTelemetry,
+        metrics_builder: MetricsBuilder,
     ) -> Result<Self, GenericError>
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
@@ -114,6 +119,7 @@ where
         let client = client_builder.build()?;
 
         Ok(Self {
+            context,
             config,
             telemetry,
             metrics_builder,
@@ -131,6 +137,7 @@ where
         let (io_shutdown_tx, io_shutdown_rx) = oneshot::channel();
 
         let Self {
+            context,
             config,
             telemetry,
             metrics_builder,
@@ -143,6 +150,7 @@ where
             run_io_loop(
                 transactions_rx,
                 io_shutdown_tx,
+                context,
                 config,
                 client,
                 telemetry,
@@ -160,8 +168,8 @@ where
 
 async fn run_io_loop<S, B>(
     mut transactions_rx: mpsc::Receiver<Transaction<B>>, io_shutdown_tx: oneshot::Sender<()>,
-    config: ForwarderConfiguration, service: S, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
-    resolved_endpoints: Vec<ResolvedEndpoint>,
+    context: ComponentContext, config: ForwarderConfiguration, service: S, telemetry: ComponentTelemetry,
+    metrics_builder: MetricsBuilder, resolved_endpoints: Vec<ResolvedEndpoint>,
 ) where
     S: Service<Request<TransactionBody<B>>, Response = Response<Incoming>> + Clone + Send + 'static,
     S::Future: Send,
@@ -186,6 +194,7 @@ async fn run_io_loop<S, B>(
             run_endpoint_io_loop(
                 endpoint_rx,
                 task_barrier,
+                context.clone(),
                 config.clone(),
                 service.clone(),
                 telemetry.clone(),
@@ -224,14 +233,16 @@ async fn run_io_loop<S, B>(
 }
 
 async fn run_endpoint_io_loop<S, B>(
-    mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, config: ForwarderConfiguration,
-    service: S, telemetry: ComponentTelemetry, txnq_telemetry: TransactionQueueTelemetry, endpoint: ResolvedEndpoint,
+    mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, context: ComponentContext,
+    config: ForwarderConfiguration, service: S, telemetry: ComponentTelemetry,
+    txnq_telemetry: TransactionQueueTelemetry, endpoint: ResolvedEndpoint,
 ) where
     S: Service<Request<TransactionBody<B>>, Response = Response<Incoming>> + Send + 'static,
     S::Future: Send + 'static,
     S::Error: Into<BoxError> + Send + Sync + 'static,
     B: Body + ReadIoBuffer + Clone + Send + 'static,
 {
+    let queue_id = generate_retry_queue_id(context, &endpoint);
     let endpoint_url = endpoint.endpoint().to_string();
     debug!(
         endpoint_url,
@@ -254,7 +265,7 @@ async fn run_endpoint_io_loop<S, B>(
         ))
         .service(service.map_err(|e| e.into()));
 
-    let mut retry_queue = RetryQueue::new(endpoint_url.clone(), config.retry().queue_max_size_bytes());
+    let mut retry_queue = RetryQueue::new(queue_id.clone(), config.retry().queue_max_size_bytes());
 
     // If the storage size is set, enable disk persistence for the retry queue.
     if config.retry().storage_max_size_bytes() > 0 {
@@ -270,7 +281,7 @@ async fn run_endpoint_io_loop<S, B>(
             .await
             .unwrap_or_else(|e| {
                 error!(endpoint_url, error = %e, "Failed to initialize disk persistence for retry queue. Transactions will not be persisted.");
-                RetryQueue::new(endpoint_url.clone(), config.retry().queue_max_size_bytes())
+                RetryQueue::new(queue_id, config.retry().queue_max_size_bytes())
             });
     }
     let mut pending_txns = PendingTransactions::new(config.endpoint_buffer_size(), retry_queue, txnq_telemetry);
@@ -374,6 +385,27 @@ async fn run_endpoint_io_loop<S, B>(
 
     // Signal to the main I/O task that we've finished.
     task_barrier.wait().await;
+}
+
+fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoint) -> String {
+    // TODO: This logic does not take into account cases where the API key is updated dynamically. While a running
+    // process would just keep using the existing retry queue, based on the queue ID we generate here... the next time
+    // the process restarted, the retry queue ID would change, which could leave behind old transactions that wouldn't
+    // end up being retried.
+    //
+    // The Core Agent is also susceptible to this, I believe... but we should double check that and see what they're
+    // doing if they actually _do_ handle this case.
+
+    // We set our queue ID/name to be unique for the component/endpoint/API key combination, which ensures that two
+    // instances of the same destination cannot collide with each other if they're using the same endpoint/API key
+    // combination.
+    let hash = hash_single_stable((context.component_id(), endpoint.endpoint(), endpoint.cached_api_key()));
+
+    let endpoint_host = endpoint
+        .endpoint()
+        .host_str()
+        .expect("resolved endpoint must have a host");
+    format!("{}/{}/{:x}", context.component_id(), endpoint_host, hash)
 }
 
 async fn process_http_response(
@@ -543,4 +575,85 @@ impl<T: Retryable> PendingTransactions<T> {
 
         Ok(push_result)
     }
+}
+
+/// Returns the minimum and maximum size of the request builder buffer pool for the given forwarder configuration and
+/// maximum request size.
+///
+/// Buffer pool sizing can have an impact on performance/correctness, as we must ensure that enough buffers are
+/// available to build requests when the forwarder is under backpressure/retrying. This function consolidates that logic
+/// in a single path.
+///
+/// `max_request_size` must specify the largest possible request body size that can be built by the destination using
+/// the resulting buffer pool.
+pub const fn get_buffer_pool_min_max_size(config: &ForwarderConfiguration, max_request_size: usize) -> (usize, usize) {
+    // Just enough to build a single instance of the largest possible request.
+    let max_request_size = max_request_size.next_multiple_of(RB_BUFFER_POOL_BUF_SIZE);
+    let minimum_size = max_request_size / RB_BUFFER_POOL_BUF_SIZE;
+
+    // At the top end, we may create up to `forwarder_high_prio_buffer_size` requests in memory, each of which may be up
+    // to `max_request_size` in size. We also need to account for the retry queue's maximum size, which is already
+    // defined in bytes for us.
+    let high_prio_pending_requests_size_bytes = config.endpoint_buffer_size() * max_request_size;
+    let retry_queue_max_size_bytes = config.retry().queue_max_size_bytes() as usize;
+    let retry_queue_max_size_bytes_rounded = retry_queue_max_size_bytes.next_multiple_of(RB_BUFFER_POOL_BUF_SIZE);
+    let maximum_size = minimum_size
+        + ((high_prio_pending_requests_size_bytes + retry_queue_max_size_bytes_rounded) / RB_BUFFER_POOL_BUF_SIZE);
+
+    (minimum_size, maximum_size)
+}
+
+/// Returns the minimum and maximum size of the request builder buffer pool for the given forwarder configuration and
+/// maximum request size, in bytes.
+///
+/// See [`get_buffer_pool_min_max_size`] for more details.
+pub const fn get_buffer_pool_min_max_size_bytes(
+    config: &ForwarderConfiguration, max_request_size: usize,
+) -> (usize, usize) {
+    let (minimum_size, maximum_size) = get_buffer_pool_min_max_size(config, max_request_size);
+    (
+        minimum_size * RB_BUFFER_POOL_BUF_SIZE,
+        maximum_size * RB_BUFFER_POOL_BUF_SIZE,
+    )
+}
+
+/// Creates a new request builder buffer pool for the given forwarder configuration and maximum request size.
+///
+/// See [`get_buffer_pool_min_max_size`] for more details on how the buffer pool is sized.
+pub async fn create_request_builder_buffer_pool(
+    destination_type: &'static str, config: &ForwarderConfiguration, max_request_size: usize,
+) -> ElasticObjectPool<BytesBuffer> {
+    // Create the underlying buffer pool for the individual chunks.
+    //
+    // We size this buffer pool in the following way:
+    //
+    // - regardless of the size, we split it up into many smaller chunks which can be allocated incrementally by the
+    //   request builders as needed
+    // - the minimum pool size is such that we can handle encoding the biggest possible request (3.2MB) in one go
+    //   without needing another buffer to be allocated, so that when we're building big requests, we hopefully don't
+    //   need to allocate on demand
+    // - the maximum pool size is an additional increase over the minimum size based on the allowable in-memory size of
+    //   the retry queue: if we're enqueuing requests in-memory due to retry backoff, we want to allow the request
+    //   builders to keep building new requests without being blocked by the buffer pool, such that there's enough
+    //   capacity to build requests until the retry queue starts throwing away the oldest ones to make room
+    //
+    // Our chunk size is 32KB: no strong reason for this, just a decent balance between being big enough to allow
+    // compressor output blocks to fit entirely but small enough to not be too wasteful.
+
+    let (minimum_size, maximum_size) = get_buffer_pool_min_max_size(config, max_request_size);
+    let (pool, shrinker) = ElasticObjectPool::with_builder(
+        format!("dd_{}_request_buffer", destination_type),
+        minimum_size,
+        maximum_size,
+        || FixedSizeVec::with_capacity(RB_BUFFER_POOL_BUF_SIZE),
+    );
+
+    spawn_traced_named(format!("dd-{}-buffer-pool-shrinker", destination_type), shrinker);
+
+    debug!(
+        destination_type,
+        minimum_size, maximum_size, "Created request builder buffer pool."
+    );
+
+    pool
 }

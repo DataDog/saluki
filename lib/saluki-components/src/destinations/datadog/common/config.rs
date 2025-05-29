@@ -83,7 +83,7 @@ impl ForwarderConfiguration {
     }
 
     /// Returns a reference to the endpoint configuration.
-    pub fn endpoint(&self) -> &EndpointConfiguration {
+    pub const fn endpoint(&self) -> &EndpointConfiguration {
         &self.endpoint
     }
 
@@ -93,12 +93,12 @@ impl ForwarderConfiguration {
     }
 
     /// Returns a reference to the retry configuration.
-    pub fn retry(&self) -> &RetryConfiguration {
+    pub const fn retry(&self) -> &RetryConfiguration {
         &self.retry
     }
 
     /// Returns a reference to the proxy configuration.
-    pub fn proxy(&self) -> &Option<ProxyConfiguration> {
+    pub const fn proxy(&self) -> &Option<ProxyConfiguration> {
         &self.proxy
     }
 

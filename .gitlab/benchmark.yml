@@ -10,14 +10,14 @@
   - export BASELINE_CHECKS_AGENT_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:checks-agent-${CI_PIPELINE_ID}-${BASELINE_SALUKI_SHA}"
   - export COMPARISON_SALUKI_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-${CI_PIPELINE_ID}-${COMPARISON_SALUKI_SHA}"
   - export COMPARISON_CHECKS_AGENT_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:checks-agent-${CI_PIPELINE_ID}-${COMPARISON_SALUKI_SHA}"
-  - export BASELINE_DSD_VERSION="${BASE_DD_AGENT_VERSION}"
-  - export COMPARISON_DSD_VERSION="${BASE_DD_AGENT_VERSION}"
-  - export SOURCE_DSD_IMG="public.ecr.aws/datadog/dogstatsd:${BASE_DD_AGENT_VERSION}"
+  - export BASELINE_DSD_VERSION="${PUBLIC_DD_AGENT_VERSION}"
+  - export COMPARISON_DSD_VERSION="${PUBLIC_DD_AGENT_VERSION}"
+  - export SOURCE_DSD_IMG="public.ecr.aws/datadog/dogstatsd:${PUBLIC_DD_AGENT_VERSION}"
   - export SOURCE_CHECK_AGENT_GO_SHA="f61d1f4e054b884cb1894254ab2714b84b4684cb"
   - export SOURCE_CHECK_AGENT_GO_IMG="registry.ddbuild.io/ci/datadog-agent/agent:v63008797-f61d1f4e-7-full-amd64"
   - export BASELINE_CHECK_AGENT_GO_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:check-agent-go"
-  - export BASELINE_DSD_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:dogstatsd-${BASE_DD_AGENT_VERSION}"
-  - export COMPARISON_DSD_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:dogstatsd-${BASE_DD_AGENT_VERSION}"
+  - export BASELINE_DSD_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:dogstatsd-${PUBLIC_DD_AGENT_VERSION}"
+  - export COMPARISON_DSD_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:dogstatsd-${PUBLIC_DD_AGENT_VERSION}"
 
 build-adp-baseline-image:
   extends: .build-common-variables

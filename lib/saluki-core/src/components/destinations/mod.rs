@@ -22,7 +22,7 @@ pub trait Destination {
     ///
     /// Destinations are expected to run indefinitely until their event stream is terminated, or an error occurs.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If an unrecoverable error occurs while running, an error is returned.
     async fn run(self: Box<Self>, context: DestinationContext) -> Result<(), GenericError>;

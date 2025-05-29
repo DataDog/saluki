@@ -1,10 +1,9 @@
 use async_trait::async_trait;
 use memory_accounting::MemoryBounds;
 use saluki_error::GenericError;
-use saluki_event::DataType;
 
 use super::Destination;
-use crate::components::ComponentContext;
+use crate::{components::ComponentContext, data_model::event::EventType};
 
 /// A destination builder.
 ///
@@ -12,8 +11,8 @@ use crate::components::ComponentContext;
 /// aspects of the built destination, such as the data types allowed for input events.
 #[async_trait]
 pub trait DestinationBuilder: MemoryBounds {
-    /// Data types allowed as input events to this destination.
-    fn input_data_type(&self) -> DataType;
+    /// Event types allowed as input events to this destination.
+    fn input_event_type(&self) -> EventType;
 
     /// Builds an instance of the destination.
     ///

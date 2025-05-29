@@ -12,13 +12,9 @@ use saluki_context::{
     origin::OriginTagCardinality,
     tags::{BorrowedTag, RawTags},
 };
-use saluki_core::constants::datadog::{
-    CARDINALITY_TAG_KEY, ENTITY_ID_IGNORE_VALUE, ENTITY_ID_TAG_KEY, JMX_CHECK_NAME_TAG_KEY,
-};
-use saluki_event::{
-    eventd::{AlertType, EventD, Priority},
-    metric::*,
-    service_check::{CheckStatus, ServiceCheck},
+use saluki_core::{
+    constants::datadog::{CARDINALITY_TAG_KEY, ENTITY_ID_IGNORE_VALUE, ENTITY_ID_TAG_KEY, JMX_CHECK_NAME_TAG_KEY},
+    data_model::event::{eventd::*, metric::*, service_check::*},
 };
 use snafu::Snafu;
 
@@ -353,8 +349,8 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
     // if it's any of the protocol extensions we know of.
     //
     // Priority and Alert Type have default values
-    let mut maybe_priority = Some(saluki_event::eventd::Priority::Normal);
-    let mut maybe_alert_type = Some(saluki_event::eventd::AlertType::Info);
+    let mut maybe_priority = Some(Priority::Normal);
+    let mut maybe_alert_type = Some(AlertType::Info);
     let mut maybe_timestamp = None;
     let mut maybe_hostname = None;
     let mut maybe_aggregation_key = None;
@@ -507,7 +503,7 @@ fn parse_dogstatsd_service_check<'a>(
     } else {
         remaining
     };
-    let service_check = saluki_event::service_check::ServiceCheck::new(name, check_status)
+    let service_check = ServiceCheck::new(name, check_status)
         .with_timestamp(maybe_timestamp)
         .with_hostname(maybe_hostname)
         .with_tags(maybe_tags)
@@ -710,7 +706,7 @@ mod tests {
         tags::{Tag, TagSet},
         Context,
     };
-    use saluki_event::{
+    use saluki_core::data_model::event::{
         eventd::{AlertType, EventD, Priority},
         metric::*,
         service_check::{CheckStatus, ServiceCheck},

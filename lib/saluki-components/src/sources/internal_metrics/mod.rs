@@ -3,13 +3,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::StreamExt as _;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_core::data_model::event::EventType;
 use saluki_core::{
     components::{sources::*, ComponentContext},
     observability::metrics::MetricsStream,
     topology::OutputDefinition,
 };
 use saluki_error::GenericError;
-use saluki_event::DataType;
 use tokio::select;
 use tracing::{debug, error};
 
@@ -25,7 +25,7 @@ impl SourceBuilder for InternalMetricsConfiguration {
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(DataType::Metric)];
+        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(EventType::Metric)];
 
         OUTPUTS
     }
@@ -65,8 +65,8 @@ impl Source for InternalMetrics {
                         debug!(metrics_len = metrics.len(), "Received internal metrics.");
 
                         let events = Arc::unwrap_or_clone(metrics);
-                        if let Err(e) = context.forwarder().forward(events).await {
-                            error!(error = %e, "Failed to forward events.");
+                        if let Err(e) = context.dispatcher().dispatch(events).await {
+                            error!(error = %e, "Failed to dispatch events.");
                         }
                     },
                     None => {

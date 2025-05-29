@@ -1,50 +1,8 @@
-.setup-release-env:
-  extends: .build-common-variables
-  variables:
-    SOURCE_ADP_RELEASE_IMAGE: "${ADP_RELEASE_IMAGE_TAG}"
-    AGENT_ADP_IMAGE_BASE: "${SALUKI_IMAGE_REPO_BASE}/releases/agent"
-    AGENT_ADP_IMAGE_TAG: "${BASE_DD_AGENT_VERSION}-v${CI_COMMIT_TAG}-adp-beta"
-    AGENT_ADP_IMAGE: "${AGENT_ADP_IMAGE_BASE}:${AGENT_ADP_IMAGE_TAG}"
-    TARGET_AGENT_ADP_RELEASE_IMAGE: "agent:${AGENT_ADP_IMAGE_TAG}"
-
-build-bundled-agent-adp-image-linux:
-  stage: release
-  image: ${DOCKER_BUILD_IMAGE}
-  rules:
-    - if: !reference [.on_official_release, rules, if]
-  extends: .setup-release-env
-  needs:
-    - build-adp-image-release
-  parallel:
-    matrix:
-      - JMX:
-        - ""
-        - "-jmx"
-  script:
-    - docker buildx build
-      --platform linux/amd64,linux/arm64
-      --file ./docker/Dockerfile.datadog-agent
-      --build-arg "DD_AGENT_IMAGE=${PUBLIC_DD_AGENT_IMAGE}${JMX}"
-      --build-arg "ADP_IMAGE=${SOURCE_ADP_RELEASE_IMAGE}"
-      --tag ${AGENT_ADP_IMAGE}${JMX}
-      --label "org.opencontainers.image.authors=Datadog <package@datadoghq.com>"
-      --label "org.opencontainers.image.base.name=${PUBLIC_DD_AGENT_IMAGE}${JMX}"
-      --label "org.opencontainers.image.created=${CI_PIPELINE_CREATED_AT}"
-      --label "org.opencontainers.image.ref.name=${PUBLIC_DD_AGENT_IMAGE_BASE}"
-      --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}"
-      --label "org.opencontainers.image.source=https://github.com/DataDog/saluki"
-      --label "org.opencontainers.image.title=Datadog Agent (with ADP)"
-      --label "org.opencontainers.image.vendor=Datadog, Inc."
-      --label "org.opencontainers.image.version=${CI_COMMIT_TAG}"
-      --push
-      .
-
-publish-bundled-agent-adp-image-linux:
+.publish-image-linux-definition:
   stage: release
   rules:
     - if: !reference [.on_official_release, rules, if]
       when: manual
-  extends: .setup-release-env
   needs:
     - unit-tests-linux-amd64
     - unit-tests-miri-linux-amd64
@@ -53,44 +11,29 @@ publish-bundled-agent-adp-image-linux:
     - check-deny
     - check-licenses
     - run-ground-truth
-    - job: build-bundled-agent-adp-image-linux
-      parallel:
-        matrix:
-          - JMX: [""]
   trigger:
     project: DataDog/public-images
     branch: main
     strategy: depend
   variables:
     IMG_REGISTRIES: public
-    IMG_SOURCES: ${AGENT_ADP_IMAGE}
-    IMG_DESTINATIONS: ${TARGET_AGENT_ADP_RELEASE_IMAGE}
+    IMG_SOURCES: ${SOURCE_IMAGE}
+    IMG_DESTINATIONS: ${TARGET_IMAGE}
     IMG_SIGNING: "false"
 
-publish-bundled-agent-adp-image-linux-jmx:
-  stage: release
-  rules:
-    - if: !reference [.on_official_release, rules, if]
-      when: manual
-  extends: .setup-release-env
+# Publish our standalone ADP images,
+publish-standalone-adp-image-linux:
+  extends: [.build-common-variables, .publish-image-linux-definition]
   needs:
-    - unit-tests-linux-amd64
-    - unit-tests-miri-linux-amd64
-    - unit-tests-linux-arm64
-    - unit-tests-miri-linux-arm64
-    - check-deny
-    - check-licenses
-    - run-ground-truth
-    - job: build-bundled-agent-adp-image-linux
-      parallel:
-        matrix:
-          - JMX: ["-jmx"]
-  trigger:
-    project: DataDog/public-images
-    branch: main
-    strategy: depend
+    - build-adp-image
   variables:
-    IMG_REGISTRIES: public
-    IMG_SOURCES: ${AGENT_ADP_IMAGE}-jmx
-    IMG_DESTINATIONS: ${TARGET_AGENT_ADP_RELEASE_IMAGE}-jmx
-    IMG_SIGNING: "false"
+    SOURCE_IMAGE: ${ADP_FULL_IMAGE_TAG}
+    TARGET_IMAGE: ${ADP_IMAGE_TAG}
+
+publish-standalone-adp-image-linux-fips:
+  extends: [.build-common-variables, .publish-image-linux-definition]
+  needs:
+    - build-adp-image-fips
+  variables:
+    SOURCE_IMAGE: ${ADP_FULL_IMAGE_TAG_FIPS}
+    TARGET_IMAGE: ${ADP_IMAGE_TAG_FIPS}

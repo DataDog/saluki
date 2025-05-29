@@ -1,10 +1,9 @@
 use async_trait::async_trait;
 use memory_accounting::MemoryBounds;
 use saluki_error::GenericError;
-use saluki_event::DataType;
 
 use super::{SynchronousTransform, Transform};
-use crate::{components::ComponentContext, topology::OutputDefinition};
+use crate::{components::ComponentContext, data_model::event::EventType, topology::OutputDefinition};
 
 /// A transform builder.
 ///
@@ -13,8 +12,8 @@ use crate::{components::ComponentContext, topology::OutputDefinition};
 /// transform.
 #[async_trait]
 pub trait TransformBuilder: MemoryBounds {
-    /// Data type allowed as input events to this transform.
-    fn input_data_type(&self) -> DataType;
+    /// Event type allowed as input events to this transform.
+    fn input_event_type(&self) -> EventType;
 
     /// Event outputs exposed by this transform.
     fn outputs(&self) -> &[OutputDefinition];
@@ -36,8 +35,10 @@ pub trait TransformBuilder: MemoryBounds {
 pub trait SynchronousTransformBuilder: MemoryBounds {
     /// Builds an instance of the synchronous transform.
     ///
+    /// The provided context is relative to the parent component that is building this synchronous transform.
+    ///
     /// ## Errors
     ///
     /// If the synchronous transform cannot be built for any reason, an error is returned.
-    async fn build(&self) -> Result<Box<dyn SynchronousTransform + Send>, GenericError>;
+    async fn build(&self, context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError>;
 }

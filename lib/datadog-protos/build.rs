@@ -2,9 +2,9 @@ fn main() {
     // Always rerun if the build script itself changes.
     println!("cargo:rerun-if-changed=build.rs");
 
+    println!("cargo:rerun-if-changed=proto/agent_payload.proto");
     println!("cargo:rerun-if-changed=proto/dd_trace.proto");
     println!("cargo:rerun-if-changed=proto/ddsketch_full.proto");
-    println!("cargo:rerun-if-changed=proto/dd_metric.proto");
     println!("cargo:rerun-if-changed=proto/datadog/api/v1/api.proto");
     println!("cargo:rerun-if-changed=proto/datadog/workloadmeta/workloadmeta.proto");
     println!("cargo:rerun-if-changed=proto/datadog/remoteagent/remoteagent.proto");
@@ -22,8 +22,8 @@ fn main() {
         .protoc()
         .includes(["proto"])
         .inputs([
+            "proto/agent_payload.proto",
             "proto/ddsketch_full.proto",
-            "proto/dd_metric.proto",
             "proto/dd_trace.proto",
         ])
         .cargo_out_dir("protos")

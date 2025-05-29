@@ -27,12 +27,13 @@ ifeq ($(CONTAINER_TOOL),auto)
 		override CONTAINER_TOOL = unknown
 	endif
 endif
+
 # Basic settings for base build images. These are varied between local development and CI.
 export RUST_VERSION ?= $(shell grep channel rust-toolchain.toml | cut -d '"' -f 2)
 export ADP_BUILD_IMAGE ?= rust:$(RUST_VERSION)-bookworm
-export ADP_APP_IMAGE ?= ubuntu:22.04
+export ADP_APP_IMAGE ?= ubuntu:24.04
 export GO_BUILD_IMAGE ?= golang:1.23-bullseye
-export GO_APP_IMAGE ?= ubuntu:22.04
+export GO_APP_IMAGE ?= ubuntu:24.04
 export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
 export GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
 
@@ -245,6 +246,17 @@ run-checks-agent-standalone: build-checks-agent
 run-checks-agent-standalone: ## Runs Checks Agent locally in standalone mode (debug)
 	@echo "[*] Running Checks Agent..."
 	@DD_ADP_STANDALONE_MODE=true \
+	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=check-agent-standalone \
+	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
+	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	target/debug/checks-agent
+
+.PHONY: run-checks-agent
+run-checks-agent: build-checks-agent
+run-checks-agent: ## Runs Checks Agent alongside the core Agent (debug)
+	@echo "[*] Running Checks Agent..."
+	@DD_ADP_STANDALONE_MODE=false \
+	DD_AUTH_TOKEN_FILE_PATH=../datadog-agent/bin/agent/dist/auth_token \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=check-agent-standalone \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/debug/checks-agent
@@ -532,6 +544,21 @@ emit-build-metadata: ## Emits build metadata shell variables suitable for use du
 	@echo "APP_GIT_HASH=${APP_GIT_HASH}"
 	@echo "APP_VERSION=${APP_VERSION}"
 	@echo "APP_BUILD_TIME=${APP_BUILD_TIME}"
+
+##@ Docs
+
+.PHONY: check-js-build-tools
+check-js-build-tools:
+ifeq ($(shell command -v bun >/dev/null || echo not-found), not-found)
+	$(error "Please install Bun: https://bun.sh/docs/installation")
+endif
+
+.PHONY: run-docs
+run-docs: check-js-build-tools
+run-docs: ## Runs a local development server for documentation
+	@echo "[*] Running local development server for documentation..."
+	@bun install
+	@bun run docs:dev
 
 ##@ Utility
 

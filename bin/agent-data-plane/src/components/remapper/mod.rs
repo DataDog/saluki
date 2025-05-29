@@ -4,12 +4,12 @@ use async_trait::async_trait;
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
+use saluki_core::data_model::event::{metric::*, Event, EventType};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     topology::OutputDefinition,
 };
 use saluki_error::{generic_error, GenericError};
-use saluki_event::{metric::*, DataType, Event};
 use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, error};
@@ -39,22 +39,23 @@ impl AgentTelemetryRemapperConfiguration {
 
 #[async_trait]
 impl TransformBuilder for AgentTelemetryRemapperConfiguration {
-    fn input_data_type(&self) -> DataType {
-        DataType::Metric
+    fn input_event_type(&self) -> EventType {
+        EventType::Metric
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(DataType::Metric)];
+        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(EventType::Metric)];
         OUTPUTS
     }
 
-    async fn build(&self, _: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let context_string_interner_size = NonZeroUsize::new(self.context_string_interner_bytes.as_u64() as usize)
             .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
-        let context_resolver = ContextResolverBuilder::from_name("agent_telemetry_remapper")
-            .expect("resolver name is not empty")
-            .with_interner_capacity_bytes(context_string_interner_size)
-            .build();
+        let context_resolver =
+            ContextResolverBuilder::from_name(format!("{}/remapper/primary", context.component_id()))
+                .expect("resolver name is not empty")
+                .with_interner_capacity_bytes(context_string_interner_size)
+                .build();
 
         Ok(Box::new(AgentTelemetryRemapper {
             context_resolver,
@@ -110,21 +111,21 @@ impl Transform for AgentTelemetryRemapper {
                 _ = health.live() => continue,
                 maybe_events = context.event_stream().next() => match maybe_events {
                     Some(events) => {
-                        let mut buffered_forwarder = context.forwarder().buffered().expect("default output must always exist");
+                        let mut buffered_dispatcher = context.dispatcher().buffered().expect("default output must always exist");
                         for event in &events {
                             if let Some(new_event) = event.try_as_metric().and_then(|metric| self.try_remap_metric(metric).map(Event::Metric)) {
-                                if let Err(e) = buffered_forwarder.push(new_event).await {
-                                    error!(error = %e, "Failed to forward event.");
+                                if let Err(e) = buffered_dispatcher.push(new_event).await {
+                                    error!(error = %e, "Failed to dispatch event.");
                                 }
                             }
                         }
 
-                        if let Err(e) = buffered_forwarder.flush().await {
-                            error!(error = %e, "Failed to forward events.");
+                        if let Err(e) = buffered_dispatcher.flush().await {
+                            error!(error = %e, "Failed to dispatch events.");
                         }
 
-                        if let Err(e) = context.forwarder().forward_buffer(events).await {
-                            error!(error = %e, "Failed to forward events.");
+                        if let Err(e) = context.dispatcher().dispatch_buffer(events).await {
+                            error!(error = %e, "Failed to dispatch events.");
                         }
                     },
                     None => break,

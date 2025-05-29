@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::{components::transforms::*, topology::interconnect::FixedSizeEventBuffer};
+use saluki_core::{
+    components::{transforms::*, ComponentContext},
+    topology::interconnect::FixedSizeEventBuffer,
+};
 use saluki_error::GenericError;
 
 /// PreaggregationFilter synchronous transform.
@@ -19,7 +22,7 @@ impl MemoryBounds for PreaggregationFilterConfiguration {
 
 #[async_trait]
 impl SynchronousTransformBuilder for PreaggregationFilterConfiguration {
-    async fn build(&self) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         Ok(Box::new(PreaggregationFilter {}))
     }
 }
@@ -29,21 +32,15 @@ pub struct PreaggregationFilter {}
 
 impl SynchronousTransform for PreaggregationFilter {
     fn transform_buffer(&mut self, event_buffer: &mut FixedSizeEventBuffer) {
-        // Extract and discard sketch metrics
-        let _ = event_buffer.extract(|event| {
-            if let Some(metric) = event.try_as_metric() {
-                metric.values().is_sketch()
-            } else {
-                false
-            }
-        });
+        // Discard any sketch metrics.
+        event_buffer.remove_if(|event| event.try_as_metric().is_some_and(|metric| metric.values().is_sketch()));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use saluki_context::Context;
-    use saluki_event::{metric::Metric, Event};
+    use saluki_core::data_model::event::{metric::Metric, Event};
 
     use super::*;
 

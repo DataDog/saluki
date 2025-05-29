@@ -1,4 +1,4 @@
-use containerd_client::services::v1::Envelope;
+use containerd_client::types::Envelope;
 use prost::{DecodeError, Name};
 use stringtheory::MetaString;
 

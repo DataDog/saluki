@@ -1,6 +1,7 @@
 use std::{num::NonZeroUsize, time::Duration};
 
 use saluki_context::{ContextResolver, ContextResolverBuilder};
+use saluki_core::components::ComponentContext;
 use saluki_error::{generic_error, GenericError};
 
 use super::{DogStatsDConfiguration, DogStatsDOriginTagResolver};
@@ -20,14 +21,15 @@ impl ContextResolvers {
     /// If the context resolver string interner size is invalid, or there is an error creating either of the context
     /// resolvers, an error is returned.
     pub fn new(
-        config: &DogStatsDConfiguration, maybe_origin_tags_resolver: Option<DogStatsDOriginTagResolver>,
+        config: &DogStatsDConfiguration, context: &ComponentContext,
+        maybe_origin_tags_resolver: Option<DogStatsDOriginTagResolver>,
     ) -> Result<Self, GenericError> {
         // We'll use the same string interner size for both context resolvers, which does mean double the usage, but
         // it's simpler this way for the moment.
         let context_string_interner_size = NonZeroUsize::new(config.context_string_interner_bytes.as_u64() as usize)
             .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
 
-        let primary_resolver = ContextResolverBuilder::from_name("dogstatsd_primary")?
+        let primary_resolver = ContextResolverBuilder::from_name(format!("{}/dsd/primary", context.component_id()))?
             .with_interner_capacity_bytes(context_string_interner_size)
             .with_idle_context_expiration(Duration::from_secs(30))
             .with_expiration_interval(Duration::from_secs(1))
@@ -35,7 +37,7 @@ impl ContextResolvers {
             .with_origin_tags_resolver(maybe_origin_tags_resolver.clone())
             .build();
 
-        let no_agg_resolver = ContextResolverBuilder::from_name("dogstatsd_no_agg")?
+        let no_agg_resolver = ContextResolverBuilder::from_name(format!("{}/dsd/no_agg", context.component_id()))?
             .with_interner_capacity_bytes(context_string_interner_size)
             .without_caching()
             .with_heap_allocations(config.allow_context_heap_allocations)

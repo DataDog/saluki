@@ -102,6 +102,7 @@ find test/smp/regression/dogstatsd/cases -mindepth 1 -maxdepth 1 -type d | sed s
 adp_only_experiments=$(comm -23 adp-experiments dsd-experiments)
 dsd_only_experiments=$(comm -13 adp-experiments dsd-experiments)
 common_experiments=$(comm -12 adp-experiments dsd-experiments)
+checks_agent_experiments=$(find test/smp/regression/checks-agent/cases -mindepth 1 -maxdepth 1 -type d | sed s#test/smp/regression/checks-agent/cases/##g | sort | uniq)
 
 # Write out our table of links, doing common experiments first, then ADP-only, then DSD-only.
 echo "## ADP Experiment Result Links"
@@ -136,7 +137,10 @@ echo ""
 echo "| experiment | link(s) |"
 echo "|------------|---------|"
 
-checks_continuous_profiler_url=$(get_continuous_profiler_url "$checks_run_id" "$common_checks_start_time" "$common_checks_end_time" "quality_gates_idle_rss")
-checks_smp_dashboard_url=$(get_checks_smp_dashboard_url "$checks_run_id" "$checks_go_run_id" "$common_checks_start_time" "$common_checks_end_time" "quality_gates_idle_rss")
+for experiment in $checks_agent_experiments; do
+    checks_continuous_profiler_url=$(get_continuous_profiler_url "$checks_run_id" "$checks_start_time" "$checks_end_time" "$experiment")
+    checks_smp_dashboard_url=$(get_checks_smp_dashboard_url "$checks_run_id" "$checks_go_run_id" "$common_checks_start_time" "$common_checks_end_time" "$experiment")
 
-echo "| quality_gates_idle_rss | \\[[Profiling]($checks_continuous_profiler_url)\\] \\[[SMP Dashboard]($checks_smp_dashboard_url)\\] |"
+    echo "| $experiment | \\[[Profiling]($checks_continuous_profiler_url)\\] \\[[SMP Dashboard]($checks_smp_dashboard_url)\\] |"
+done
+

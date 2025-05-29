@@ -1,14 +1,18 @@
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_error::GenericError;
-use saluki_event::DataType;
 
 use super::OutputDefinition;
-use crate::components::{
-    destinations::{Destination, DestinationBuilder, DestinationContext},
-    sources::{Source, SourceBuilder, SourceContext},
-    transforms::{Transform, TransformBuilder, TransformContext},
-    ComponentContext,
+use crate::{
+    components::{
+        destinations::*,
+        encoders::*,
+        forwarders::{Forwarder, ForwarderBuilder, ForwarderContext},
+        sources::*,
+        transforms::*,
+        ComponentContext,
+    },
+    data_model::{event::EventType, payload::PayloadType},
 };
 
 struct TestSource;
@@ -25,9 +29,9 @@ pub struct TestSourceBuilder {
 }
 
 impl TestSourceBuilder {
-    pub fn default_output(data_ty: DataType) -> Self {
+    pub fn default_output(event_ty: EventType) -> Self {
         Self {
-            outputs: vec![OutputDefinition::default_output(data_ty)],
+            outputs: vec![OutputDefinition::default_output(event_ty)],
         }
     }
 }
@@ -57,27 +61,27 @@ impl Transform for TestTransform {
 }
 
 pub struct TestTransformBuilder {
-    input_data_ty: DataType,
+    input_event_ty: EventType,
     outputs: Vec<OutputDefinition>,
 }
 
 impl TestTransformBuilder {
-    pub fn default_output(input_data_ty: DataType, output_data_ty: DataType) -> Self {
+    pub fn default_output(input_event_ty: EventType, output_event_ty: EventType) -> Self {
         Self {
-            input_data_ty,
-            outputs: vec![OutputDefinition::default_output(output_data_ty)],
+            input_event_ty,
+            outputs: vec![OutputDefinition::default_output(output_event_ty)],
         }
     }
 
     pub fn multiple_outputs<'a>(
-        input_data_ty: DataType, outputs: impl Iterator<Item = &'a (Option<&'a str>, DataType)>,
+        input_event_ty: EventType, outputs: impl Iterator<Item = &'a (Option<&'a str>, EventType)>,
     ) -> Self {
         Self {
-            input_data_ty,
+            input_event_ty,
             outputs: outputs
-                .map(|(name, data_ty)| match name {
-                    Some(name) => OutputDefinition::named_output(name.to_string(), *data_ty),
-                    None => OutputDefinition::default_output(*data_ty),
+                .map(|(name, event_ty)| match name {
+                    Some(name) => OutputDefinition::named_output(name.to_string(), *event_ty),
+                    None => OutputDefinition::default_output(*event_ty),
                 })
                 .collect(),
         }
@@ -86,8 +90,8 @@ impl TestTransformBuilder {
 
 #[async_trait]
 impl TransformBuilder for TestTransformBuilder {
-    fn input_data_type(&self) -> DataType {
-        self.input_data_ty
+    fn input_event_type(&self) -> EventType {
+        self.input_event_ty
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
@@ -113,19 +117,19 @@ impl Destination for TestDestination {
 }
 
 pub struct TestDestinationBuilder {
-    input_data_ty: DataType,
+    input_event_ty: EventType,
 }
 
 impl TestDestinationBuilder {
-    pub fn with_input_type(input_data_ty: DataType) -> Self {
-        Self { input_data_ty }
+    pub fn with_input_type(input_event_ty: EventType) -> Self {
+        Self { input_event_ty }
     }
 }
 
 #[async_trait]
 impl DestinationBuilder for TestDestinationBuilder {
-    fn input_data_type(&self) -> DataType {
-        self.input_data_ty
+    fn input_event_type(&self) -> EventType {
+        self.input_event_ty
     }
 
     async fn build(&self, _: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
@@ -134,5 +138,80 @@ impl DestinationBuilder for TestDestinationBuilder {
 }
 
 impl MemoryBounds for TestDestinationBuilder {
+    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+}
+
+struct TestEncoder;
+
+#[async_trait]
+impl Encoder for TestEncoder {
+    async fn run(self: Box<Self>, _context: EncoderContext) -> Result<(), GenericError> {
+        Ok(())
+    }
+}
+
+pub struct TestEncoderBuilder {
+    input_event_ty: EventType,
+    output_payload_ty: PayloadType,
+}
+
+impl TestEncoderBuilder {
+    pub fn with_input_and_output_type(input_event_ty: EventType, output_payload_ty: PayloadType) -> Self {
+        Self {
+            input_event_ty,
+            output_payload_ty,
+        }
+    }
+}
+
+impl EncoderBuilder for TestEncoderBuilder {
+    fn input_event_type(&self) -> EventType {
+        self.input_event_ty
+    }
+
+    fn output_payload_type(&self) -> PayloadType {
+        self.output_payload_ty
+    }
+
+    fn build(&self, _: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
+        Ok(Box::new(TestEncoder))
+    }
+}
+
+impl MemoryBounds for TestEncoderBuilder {
+    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+}
+
+struct TestForwarder;
+
+#[async_trait]
+impl Forwarder for TestForwarder {
+    async fn run(self: Box<Self>, _context: ForwarderContext) -> Result<(), GenericError> {
+        Ok(())
+    }
+}
+
+pub struct TestForwarderBuilder {
+    input_payload_ty: PayloadType,
+}
+
+impl TestForwarderBuilder {
+    pub fn with_input_type(input_payload_ty: PayloadType) -> Self {
+        Self { input_payload_ty }
+    }
+}
+
+#[async_trait]
+impl ForwarderBuilder for TestForwarderBuilder {
+    fn input_payload_type(&self) -> PayloadType {
+        self.input_payload_ty
+    }
+
+    async fn build(&self, _: ComponentContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
+        Ok(Box::new(TestForwarder))
+    }
+}
+
+impl MemoryBounds for TestForwarderBuilder {
     fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
 }

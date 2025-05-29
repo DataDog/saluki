@@ -27,6 +27,8 @@ memory-accounting = { workspace = true }
 metrics = { workspace = true }
 pin-project = { workspace = true }
 protobuf = { workspace = true }
+pyo3 = { workspace = true }
+rand = { workspace = true, features = ["std", "std_rng"] }
 regex = { workspace = true }
 saluki-common = { workspace = true }
 saluki-config = { workspace = true }
@@ -34,7 +36,7 @@ saluki-context = { workspace = true }
 saluki-core = { workspace = true }
 saluki-env = { workspace = true }
 saluki-error = { workspace = true }
-saluki-event = { workspace = true }
+saluki-health = { workspace = true }
 saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }
 saluki-metrics = { workspace = true }
@@ -45,7 +47,15 @@ serde_yaml = { workspace = true }
 smallvec = { workspace = true }
 snafu = { workspace = true }
 stringtheory = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
+tokio = { workspace = true, features = [
+  "io-util",
+  "macros",
+  "net",
+  "rt",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+] }
 tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tracing = { workspace = true }
 url = { workspace = true }

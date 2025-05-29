@@ -13,13 +13,7 @@ target:
     DD_DD_URL: http://127.0.0.1:9091
 
     # Sets the memory limit for bounds verification.
-    #
-    # This is currently set empirically around where we see the memory level off, but where the memory levels off _is_
-    # above the firm limit because we don't (yet) have any limiting at the context resolver step, which means we
-    # allocate in an unbounded fashion.
-    #
-    # There is work slated to address that, which when it happens, will allow us to ratchet this limit down.
-    DD_MEMORY_LIMIT: "250MiB"
+    DD_MEMORY_LIMIT: "410MiB"
 
     # Set the context limit in the aggregator to right above 50K, which matches the maximum number of contexts we expect
     # to generate. We essentially don't want the aggregator to be a limiting factor.

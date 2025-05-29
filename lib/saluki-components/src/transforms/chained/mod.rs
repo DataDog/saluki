@@ -1,12 +1,12 @@
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::strings::lower_alphanumeric;
+use saluki_core::data_model::event::EventType;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     topology::OutputDefinition,
 };
 use saluki_error::GenericError;
-use saluki_event::DataType;
 use tokio::select;
 use tracing::{debug, error};
 
@@ -55,22 +55,22 @@ impl MemoryBounds for ChainedConfiguration {
 
 #[async_trait]
 impl TransformBuilder for ChainedConfiguration {
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let mut subtransforms = Vec::new();
         for (subtransform_id, subtransform_builder) in &self.subtransform_builders {
-            let subtransform = subtransform_builder.build().await?;
+            let subtransform = subtransform_builder.build(context.clone()).await?;
             subtransforms.push((subtransform_id.clone(), subtransform));
         }
 
         Ok(Box::new(Chained { subtransforms }))
     }
 
-    fn input_data_type(&self) -> DataType {
-        DataType::all_bits()
+    fn input_event_type(&self) -> EventType {
+        EventType::all_bits()
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(DataType::all_bits())];
+        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(EventType::all_bits())];
 
         OUTPUTS
     }
@@ -116,8 +116,8 @@ impl Transform for Chained {
                             transform.transform_buffer(&mut event_buffer);
                         }
 
-                        if let Err(e) = context.forwarder().forward_buffer(event_buffer).await {
-                            error!(error = %e, "Failed to forward events.");
+                        if let Err(e) = context.dispatcher().dispatch_buffer(event_buffer).await {
+                            error!(error = %e, "Failed to dispatch events.");
                         }
                     },
                     None => break,

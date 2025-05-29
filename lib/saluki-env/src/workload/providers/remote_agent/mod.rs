@@ -13,7 +13,7 @@ use saluki_health::{Health, HealthRegistry};
 use stringtheory::interning::GenericMapInterner;
 
 #[cfg(target_os = "linux")]
-use crate::workload::{collectors::CgroupsMetadataCollector, on_demand_pid::OnDemandPIDResolver};
+use crate::workload::collectors::CgroupsMetadataCollector;
 use crate::{
     features::{Feature, FeatureDetector},
     workload::{
@@ -22,6 +22,7 @@ use crate::{
             ContainerdMetadataCollector, RemoteAgentTaggerMetadataCollector, RemoteAgentWorkloadMetadataCollector,
         },
         entity::EntityId,
+        on_demand_pid::OnDemandPIDResolver,
         origin::{OriginResolver, ResolvedOrigin},
         stores::{ExternalDataStore, TagStore, TagStoreQuerier},
     },
@@ -60,8 +61,6 @@ const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = unsafe { NonZeroUsize::
 pub struct RemoteAgentWorkloadProvider {
     tags_querier: TagStoreQuerier,
     origin_resolver: OriginResolver,
-    #[cfg(target_os = "linux")]
-    on_demand_pid_resolver: OnDemandPIDResolver,
 }
 
 impl RemoteAgentWorkloadProvider {
@@ -150,7 +149,9 @@ impl RemoteAgentWorkloadProvider {
 
         aggregator.add_store(external_data_store);
 
-        let origin_resolver = OriginResolver::new(external_data_resolver);
+        let on_demand_pid_resolver =
+            OnDemandPIDResolver::from_configuration(config, feature_detector, string_interner)?;
+        let origin_resolver = OriginResolver::new(tags_querier.clone(), external_data_resolver, on_demand_pid_resolver);
 
         // With the aggregator configured, update the memory bounds and spawn the aggregator.
         provider_bounds.with_subcomponent("aggregator", &aggregator);
@@ -160,9 +161,6 @@ impl RemoteAgentWorkloadProvider {
         Ok(Self {
             tags_querier,
             origin_resolver,
-
-            #[cfg(target_os = "linux")]
-            on_demand_pid_resolver: OnDemandPIDResolver::from_configuration(config, feature_detector, string_interner)?,
         })
     }
 
@@ -180,22 +178,7 @@ impl WorkloadProvider for RemoteAgentWorkloadProvider {
     fn visit_tags_for_entity(
         &self, entity_id: &EntityId, cardinality: OriginTagCardinality, tag_visitor: &mut dyn TagVisitor,
     ) -> bool {
-        if !self.tags_querier.visit_entity_tags(entity_id, cardinality, tag_visitor) {
-            // If we get nothing back, see if this is a process ID entity, and if so, attempt to resolve it on-demand to
-            // a container ID, which we'll then try getting the tags for.
-            #[cfg(target_os = "linux")]
-            if let EntityId::ContainerPid(pid) = entity_id {
-                if let Some(container_eid) = self.on_demand_pid_resolver.resolve(*pid) {
-                    return self
-                        .tags_querier
-                        .visit_entity_tags(&container_eid, cardinality, tag_visitor);
-                }
-            }
-
-            false
-        } else {
-            true
-        }
+        self.tags_querier.visit_entity_tags(entity_id, cardinality, tag_visitor)
     }
 
     fn resolve_origin(&self, origin: RawOrigin<'_>) -> Option<OriginKey> {

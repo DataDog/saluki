@@ -14,11 +14,11 @@ use saluki_common::collections::FastIndexMap;
 use saluki_config::GenericConfiguration;
 use saluki_context::{tags::Tagged as _, Context};
 use saluki_core::components::{destinations::*, ComponentContext};
-use saluki_error::GenericError;
-use saluki_event::{
+use saluki_core::data_model::event::{
     metric::{Histogram, Metric, MetricValues},
-    DataType,
+    EventType,
 };
+use saluki_error::GenericError;
 use saluki_io::net::{
     listener::ConnectionOrientedListener,
     server::http::{ErrorHandle, HttpServer, ShutdownHandle},
@@ -31,7 +31,7 @@ use tracing::debug;
 
 const CONTEXT_LIMIT: usize = 1000;
 const PAYLOAD_SIZE_LIMIT_BYTES: usize = 512 * 1024;
-const PAYLOAD_BUFFER_SIZE_LIMIT_BYTES: usize = 16384;
+const PAYLOAD_BUFFER_SIZE_LIMIT_BYTES: usize = 128 * 1024;
 const TAGS_BUFFER_SIZE_LIMIT_BYTES: usize = 1024;
 const NAME_NORMALIZATION_BUFFER_SIZE: usize = 512;
 
@@ -84,8 +84,8 @@ impl PrometheusConfiguration {
 
 #[async_trait]
 impl DestinationBuilder for PrometheusConfiguration {
-    fn input_data_type(&self) -> DataType {
-        DataType::Metric
+    fn input_event_type(&self) -> EventType {
+        EventType::Metric
     }
 
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {

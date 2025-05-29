@@ -7,6 +7,9 @@ const ENTITY_PREFIX_CONTAINER_ID: &str = "container_id://";
 const ENTITY_PREFIX_CONTAINER_INODE: &str = "container_inode://";
 const ENTITY_PREFIX_CONTAINER_PID: &str = "container_pid://";
 
+const RAW_CONTAINER_ID_PREFIX_INODE: &str = "in-";
+const RAW_CONTAINER_ID_PREFIX_CID: &str = "ci-";
+
 /// An entity identifier.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum EntityId {
@@ -41,22 +44,36 @@ pub enum EntityId {
 impl EntityId {
     /// Creates an `EntityId` from a raw container ID.
     ///
-    /// This handles the special case where the "container ID" is actually the inode of the cgroups controller for the
-    /// container, and so should be used in scenarios where a raw container "ID" is received that can either be the true
-    /// ID or the inode value.
+    /// This method handles two special cases when the raw container ID is prefixed with "ci-" or "in-":
     ///
-    /// If the raw container ID value starts with "in-", but the remainder is not a valid integer, this will return `None`.
+    /// - "ci-" indicates that the raw container ID is a real container ID, but just with an identifying prefix. The
+    ///   prefix is stripped and the remainder is treated as the container ID.
+    /// - "in-" indicates that the raw container ID is actually the inode of the cgroups controller for a container. The
+    ///   prefix is stripped and the remainder is parsed as an integer, and the result is treated as the container inode.
+    ///
+    /// If the raw container ID does not start with either of these prefixes, we assume the entire value is the
+    /// container ID. If the raw container ID starts with the "in-" prefix, but the remainder is not a valid integer,
+    /// `None` is returned.
     pub fn from_raw_container_id<S>(raw_container_id: S) -> Option<Self>
     where
         S: AsRef<str> + Into<MetaString>,
     {
-        if raw_container_id.as_ref().starts_with("in-") {
+        if raw_container_id.as_ref().starts_with(RAW_CONTAINER_ID_PREFIX_INODE) {
             // We have a "container ID" that is actually the inode of the cgroups controller for the container where
             // the metric originated. We treat this separately from true container IDs, which are typically 64 character
             // hexadecimal strings.
-            let raw_inode = raw_container_id.as_ref().trim_start_matches("in-");
+            let raw_inode = raw_container_id
+                .as_ref()
+                .trim_start_matches(RAW_CONTAINER_ID_PREFIX_INODE);
             let inode = raw_inode.parse().ok()?;
             Some(Self::ContainerInode(inode))
+        } else if raw_container_id.as_ref().starts_with(RAW_CONTAINER_ID_PREFIX_CID) {
+            // We have a real container ID, but just with an identifying prefix. We can simply strip the prefix and
+            // treat the remainder as the container ID.
+            let raw_cid = raw_container_id
+                .as_ref()
+                .trim_start_matches(RAW_CONTAINER_ID_PREFIX_CID);
+            Some(Self::Container(raw_cid.into()))
         } else {
             Some(Self::Container(raw_container_id.into()))
         }
@@ -73,6 +90,16 @@ impl EntityId {
             return None;
         }
         Some(Self::PodUid(pod_uid.into()))
+    }
+
+    /// Returns the inner container ID value, if this entity ID is a `Container`.
+    ///
+    /// Otherwise, `None` is returned and the original entity ID is consumed.
+    pub fn try_into_container(self) -> Option<MetaString> {
+        match self {
+            Self::Container(container_id) => Some(container_id),
+            _ => None,
+        }
     }
 
     fn precedence_value(&self) -> usize {
@@ -160,5 +187,47 @@ impl Ord for HighestPrecedenceEntityIdRef<'_> {
             (EntityId::ContainerPid(self_pid), EntityId::ContainerPid(other_pid)) => self_pid.cmp(other_pid),
             _ => unreachable!("entities with different precedence should not be compared"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_container_id_inode_valid() {
+        let container_inode = 123456;
+        let raw_container_id = format!("{}{}", RAW_CONTAINER_ID_PREFIX_INODE, container_inode);
+        let entity_id = EntityId::from_raw_container_id(raw_container_id).unwrap();
+        assert_eq!(entity_id, EntityId::ContainerInode(container_inode));
+    }
+
+    #[test]
+    fn raw_container_id_inode_invalid() {
+        let raw_container_id = format!("{}invalid", RAW_CONTAINER_ID_PREFIX_INODE);
+        let entity_id = EntityId::from_raw_container_id(raw_container_id);
+        assert!(entity_id.is_none());
+    }
+
+    #[test]
+    fn raw_container_id_cid() {
+        let container_id = "abcdef1234567890";
+        let raw_container_id = format!("{}{}", RAW_CONTAINER_ID_PREFIX_CID, container_id);
+        let entity_id = EntityId::from_raw_container_id(raw_container_id).unwrap();
+        assert_eq!(entity_id, EntityId::Container(MetaString::from(container_id)));
+    }
+
+    #[test]
+    fn pod_uid_valid() {
+        let pod_uid = "abcdef1234567890";
+        let entity_id = EntityId::from_pod_uid(pod_uid).unwrap();
+        assert_eq!(entity_id, EntityId::PodUid(MetaString::from(pod_uid)));
+    }
+
+    #[test]
+    fn pod_uid_none() {
+        let pod_uid = "none";
+        let entity_id = EntityId::from_pod_uid(pod_uid);
+        assert!(entity_id.is_none());
     }
 }

@@ -8,6 +8,8 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use metrics::{Counter, Gauge, Histogram};
 use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
+use saluki_core::data_model::event::metric::{MetricMetadata, MetricOrigin};
+use saluki_core::data_model::event::{metric::Metric, Event, EventType};
 use saluki_core::{
     components::{sources::*, ComponentContext},
     observability::ComponentMetricsExt as _,
@@ -20,8 +22,6 @@ use saluki_core::{
 };
 use saluki_env::WorkloadProvider;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_event::metric::{MetricMetadata, MetricOrigin};
-use saluki_event::{metric::Metric, DataType, Event};
 use saluki_io::{
     buf::{BytesBuffer, FixedSizeVec},
     deser::{
@@ -322,7 +322,7 @@ impl DogStatsDConfiguration {
 
 #[async_trait]
 impl SourceBuilder for DogStatsDConfiguration {
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
         let listeners = self.build_listeners().await?;
         if listeners.is_empty() {
             return Err(Error::NoListenersConfigured.into());
@@ -341,7 +341,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             .workload_provider
             .clone()
             .map(|provider| DogStatsDOriginTagResolver::new(self.origin_enrichment.clone(), provider));
-        let context_resolvers = ContextResolvers::new(self, maybe_origin_tags_resolver)
+        let context_resolvers = ContextResolvers::new(self, &context, maybe_origin_tags_resolver)
             .error_context("Failed to create context resolvers.")?;
 
         let codec_config = DogstatsdCodecConfiguration::default()
@@ -371,9 +371,9 @@ impl SourceBuilder for DogStatsDConfiguration {
     fn outputs(&self) -> &[OutputDefinition] {
         static OUTPUTS: LazyLock<Vec<OutputDefinition>> = LazyLock::new(|| {
             vec![
-                OutputDefinition::named_output("metrics", DataType::Metric),
-                OutputDefinition::named_output("events", DataType::EventD),
-                OutputDefinition::named_output("service_checks", DataType::ServiceCheck),
+                OutputDefinition::named_output("metrics", EventType::Metric),
+                OutputDefinition::named_output("events", EventType::EventD),
+                OutputDefinition::named_output("service_checks", EventType::ServiceCheck),
             ]
         });
 
@@ -501,7 +501,7 @@ impl Metrics {
 }
 
 fn build_metrics(listen_addr: &ListenAddress, context: ComponentContext) -> Metrics {
-    let builder = MetricsBuilder::from_component_context(context);
+    let builder = MetricsBuilder::from_component_context(&context);
 
     let listener_type = match listen_addr {
         ListenAddress::Tcp(_) => unreachable!("TCP is not supported for DogStatsD"),
@@ -779,7 +779,7 @@ async fn drive_stream(
                                     Ok(Some(event)) => {
                                         if let Some((event, event_buffer)) = event_buffer_manager.try_push(event).await {
                                             debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
-                                            forward_events(event_buffer, &source_context, &listen_addr).await;
+                                            dispatch_events(event_buffer, &source_context, &listen_addr).await;
 
                                             // Try to push the event again now that we have a new event buffer.
                                             if event_buffer_manager.try_push(event).await.is_some() {
@@ -839,14 +839,14 @@ async fn drive_stream(
 
             _ = buffer_flush.tick() => {
                 if let Some(event_buffer) = event_buffer_manager.consume() {
-                    forward_events(event_buffer, &source_context, &listen_addr).await;
+                    dispatch_events(event_buffer, &source_context, &listen_addr).await;
                 }
             },
         }
     }
 
     if let Some(event_buffer) = event_buffer_manager.consume() {
-        forward_events(event_buffer, &source_context, &listen_addr).await;
+        dispatch_events(event_buffer, &source_context, &listen_addr).await;
     }
 
     metrics.connections_active().decrement(1);
@@ -962,47 +962,51 @@ fn handle_metric_packet(
     }
 }
 
-async fn forward_events(
+async fn dispatch_events(
     mut event_buffer: FixedSizeEventBuffer, source_context: &SourceContext, listen_addr: &ListenAddress,
 ) {
     debug!(%listen_addr, events_len = event_buffer.len(), "Forwarding events.");
 
-    // TODO: This is maybe a little dicey because if we fail to forward the events, we may not have iterated over all of
+    // TODO: This is maybe a little dicey because if we fail to dispatch the events, we may not have iterated over all of
     // them, so there might still be eventd events when get to the service checks point, and eventd events and/or service
     // check events when we get to the metrics point, and so on.
     //
     // There's probably something to be said for erroring out fully if this happens, since we should only fail to
-    // forward if the downstream component fails entirely... and unless we have a way to restart the component, then
-    // we're going to continue to fail to forward any more events until the process is restarted anyways.
+    // dispatch if the downstream component fails entirely... and unless we have a way to restart the component, then
+    // we're going to continue to fail to dispatch any more events until the process is restarted anyways.
 
-    // Forward any eventd events, if present.
-    if event_buffer.has_data_type(DataType::EventD) {
+    // Dispatch any eventd events, if present.
+    if event_buffer.has_event_type(EventType::EventD) {
         let eventd_events = event_buffer.extract(Event::is_eventd);
-        if let Err(e) = source_context.forwarder().forward_named("events", eventd_events).await {
-            error!(%listen_addr, error = %e, "Failed to forward eventd events.");
+        if let Err(e) = source_context
+            .dispatcher()
+            .dispatch_named("events", eventd_events)
+            .await
+        {
+            error!(%listen_addr, error = %e, "Failed to dispatch eventd events.");
         }
     }
 
-    // Forward any service check events, if present.
-    if event_buffer.has_data_type(DataType::ServiceCheck) {
+    // Dispatch any service check events, if present.
+    if event_buffer.has_event_type(EventType::ServiceCheck) {
         let service_check_events = event_buffer.extract(Event::is_service_check);
         if let Err(e) = source_context
-            .forwarder()
-            .forward_named("service_checks", service_check_events)
+            .dispatcher()
+            .dispatch_named("service_checks", service_check_events)
             .await
         {
-            error!(%listen_addr, error = %e, "Failed to forward service check events.");
+            error!(%listen_addr, error = %e, "Failed to dispatch service check events.");
         }
     }
 
-    // Finally, if there are events left, they'll be metrics, so forward them.
+    // Finally, if there are events left, they'll be metrics, so dispatch them.
     if !event_buffer.is_empty() {
         if let Err(e) = source_context
-            .forwarder()
-            .forward_buffer_named("metrics", event_buffer)
+            .dispatcher()
+            .dispatch_buffer_named("metrics", event_buffer)
             .await
         {
-            error!(%listen_addr, error = %e, "Failed to forward metric events.");
+            error!(%listen_addr, error = %e, "Failed to dispatch metric events.");
         }
     }
 }

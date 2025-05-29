@@ -16,10 +16,11 @@ use saluki_context::{
     tags::{Tag, TagSet},
     Context, ContextResolver, ContextResolverBuilder,
 };
-use saluki_event::{metric::*, Event};
 use tokio::sync::broadcast::{self, error::RecvError, Receiver};
 use tokio_util::sync::ReusableBoxFuture;
 use tracing::debug;
+
+use crate::data_model::event::{metric::*, Event};
 
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 const INTERNAL_METRICS_INTERNER_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(8192) };
@@ -217,7 +218,7 @@ impl MetricsContextResolver {
     fn new(resolver_interner_size_bytes: NonZeroUsize) -> Self {
         Self {
             // Set up our context resolver without caching, since we will be caching the contexts ourselves.
-            context_resolver: ContextResolverBuilder::from_name("internal_metrics")
+            context_resolver: ContextResolverBuilder::from_name("core/internal_metrics")
                 .expect("resolver name is not empty")
                 .with_interner_capacity_bytes(resolver_interner_size_bytes)
                 .without_caching()

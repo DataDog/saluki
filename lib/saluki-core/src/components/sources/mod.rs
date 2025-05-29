@@ -22,7 +22,7 @@ pub trait Source {
     ///
     /// Sources are expected to run indefinitely until their shutdown is triggered by the topology, or an error occurs.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If an unrecoverable error occurs while running, an error is returned.
     async fn run(self: Box<Self>, context: SourceContext) -> Result<(), GenericError>;

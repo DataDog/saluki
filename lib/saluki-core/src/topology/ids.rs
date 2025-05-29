@@ -1,7 +1,7 @@
 use core::fmt;
 use std::{borrow::Cow, ops::Deref};
 
-use saluki_event::DataType;
+use crate::data_model::event::EventType;
 
 const INVALID_COMPONENT_ID: &str =
     "component IDs may only contain alphanumeric characters (a-z, A-Z, or 0-9), underscores, and hyphens";
@@ -81,6 +81,11 @@ impl ComponentOutputId {
             OutputName::Default
         }
     }
+
+    /// Returns `true` if this is a default output.
+    pub fn is_default(&self) -> bool {
+        self.0.split_once('.').is_none()
+    }
 }
 
 impl TryFrom<&str> for ComponentOutputId {
@@ -109,7 +114,7 @@ const fn validate_component_id(id: &str, as_output_id: bool) -> bool {
         return false;
     }
 
-    // Keep track of whether or not we've seen a period yet. If we have, we track it's index, which serves two purposes:
+    // Keep track of whether or not we've seen a period yet. If we have, we track its index, which serves two purposes:
     // figure out if we see _another_ period (can only have one), and ensure that either side of the string (when split
     // by the separator) isn't empty.
     let mut idx = 0;
@@ -170,26 +175,26 @@ impl fmt::Display for OutputName {
 #[derive(Clone, Debug)]
 pub struct OutputDefinition {
     name: OutputName,
-    data_ty: DataType,
+    event_ty: EventType,
 }
 
 impl OutputDefinition {
     /// Creates a default output with the given data type.
-    pub const fn default_output(data_ty: DataType) -> Self {
+    pub const fn default_output(event_ty: EventType) -> Self {
         Self {
             name: OutputName::Default,
-            data_ty,
+            event_ty,
         }
     }
 
     /// Creates a named output with the given name and data type.
-    pub fn named_output<S>(name: S, data_ty: DataType) -> Self
+    pub fn named_output<S>(name: S, event_ty: EventType) -> Self
     where
         S: Into<Cow<'static, str>>,
     {
         Self {
             name: OutputName::Given(name.into()),
-            data_ty,
+            event_ty,
         }
     }
 
@@ -203,9 +208,9 @@ impl OutputDefinition {
         }
     }
 
-    /// Returns the data type.
-    pub fn data_ty(&self) -> DataType {
-        self.data_ty
+    /// Returns the event type.
+    pub fn event_ty(&self) -> EventType {
+        self.event_ty
     }
 }
 
@@ -213,12 +218,12 @@ impl OutputDefinition {
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TypedComponentOutputId {
     component_output: ComponentOutputId,
-    output_ty: DataType,
+    output_ty: EventType,
 }
 
 impl TypedComponentOutputId {
     /// Creates a new `TypedComponentOutputId` from the given component output ID and output data type.
-    pub fn new(component_output: ComponentOutputId, output_ty: DataType) -> Self {
+    pub fn new(component_output: ComponentOutputId, output_ty: EventType) -> Self {
         Self {
             component_output,
             output_ty,
@@ -231,7 +236,55 @@ impl TypedComponentOutputId {
     }
 
     /// Returns the output data type.
-    pub fn output_ty(&self) -> DataType {
+    pub fn output_ty(&self) -> EventType {
         self.output_ty
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn component_id() {
+        let id = ComponentId::try_from("component").unwrap();
+        assert_eq!(id, ComponentId::try_from("component").unwrap());
+        assert_eq!(&*id, "component");
+
+        let id = ComponentId::try_from("component_1").unwrap();
+        assert_eq!(id, ComponentId::try_from("component_1").unwrap());
+        assert_eq!(&*id, "component_1");
+    }
+
+    #[test]
+    fn component_id_invalid() {
+        assert!(ComponentId::try_from("").is_err());
+        assert!(ComponentId::try_from("non_alphanumeric_$#!").is_err());
+        assert!(ComponentId::try_from("cant_have_periods_for_non_component_output_id.foo").is_err());
+    }
+
+    #[test]
+    fn component_output_id_default() {
+        let id = ComponentOutputId::try_from("component").unwrap();
+        assert_eq!(id.component_id(), ComponentId::try_from("component").unwrap());
+        assert_eq!(id.output(), OutputName::Default);
+        assert!(id.is_default());
+    }
+
+    #[test]
+    fn component_output_id_named() {
+        let id = ComponentOutputId::try_from("component.metrics").unwrap();
+        assert_eq!(id.component_id(), ComponentId::try_from("component").unwrap());
+        assert_eq!(id.output(), OutputName::Given("metrics".into()));
+        assert!(!id.is_default());
+    }
+
+    #[test]
+    fn component_output_id_invalid() {
+        assert!(ComponentOutputId::try_from("").is_err());
+        assert!(ComponentOutputId::try_from("non_alphanumeric_$#!").is_err());
+        assert!(ComponentOutputId::try_from("too.many.periods").is_err());
+        assert!(ComponentOutputId::try_from(".one_side_of_named_output_is_empty").is_err());
+        assert!(ComponentOutputId::try_from("one_side_of_named_output_is_empty.").is_err());
     }
 }
