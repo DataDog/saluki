@@ -116,17 +116,19 @@ struct ChecksSource {
 impl ChecksSource {
     /// Builds the check builders for the source.
     fn builders(&self, check_metrics_tx: mpsc::Sender<CheckMetric>) -> Vec<Arc<dyn CheckBuilder + Send + Sync>> {
-        let mut builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> = vec![];
-
         #[cfg(feature = "python-checks")]
         {
-            builders.push(Arc::new(PythonCheckBuilder::new(
+            vec![Arc::new(PythonCheckBuilder::new(
                 check_metrics_tx,
                 self.custom_checks_dirs.clone(),
-            )));
+            ))]
         }
-
-        builders
+        #[cfg(not(feature = "python-checks"))]
+        {
+            let _ = check_metrics_tx; // Suppress unused variable warning
+            let _ = &self.custom_checks_dirs; // Suppress unused field warning
+            vec![]
+        }
     }
 }
 
