@@ -3291,6 +3291,7 @@ dependencies = [
  "saluki-error",
  "saluki-metrics",
  "serde",
+ "smallvec",
  "stringtheory",
  "tokio",
  "tracing",
