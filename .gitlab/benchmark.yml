@@ -93,6 +93,7 @@ build-adp-check-image:
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${COMPARISON_SALUKI_SHA}
       --build-arg BUILD_FEATURES=python-checks
+      --build-arg BUILDER_BASE=builder-python
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
