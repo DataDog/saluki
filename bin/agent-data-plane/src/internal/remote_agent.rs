@@ -4,9 +4,8 @@ use std::{collections::HashMap, net::SocketAddr};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use datadog_protos::agent::{
-    get_telemetry_response::Payload, GetFlareFilesRequest, GetFlareFilesResponse, GetStatusDetailsRequest,
-    GetStatusDetailsResponse, GetTelemetryRequest, GetTelemetryResponse, PushedConfig, RemoteAgent, RemoteAgentServer,
-    StatusSection,
+    get_telemetry_response::Payload, ConfigEvent, GetFlareFilesRequest, GetFlareFilesResponse, GetStatusDetailsRequest,
+    GetStatusDetailsResponse, GetTelemetryRequest, GetTelemetryResponse, RemoteAgent, RemoteAgentServer, StatusSection,
 };
 use http::{Request, Uri};
 use http_body_util::BodyExt;
@@ -245,14 +244,16 @@ impl RemoteAgent for RemoteAgentImpl {
     }
 
     #[allow(unused)]
-    async fn stream_config_updates(
-        &self, request: tonic::Request<tonic::Streaming<PushedConfig>>,
+    async fn stream_config_events(
+        &self, request: tonic::Request<tonic::Streaming<ConfigEvent>>,
     ) -> Result<tonic::Response<()>, tonic::Status> {
         let mut stream = request.into_inner();
 
         loop {
             match stream.message().await {
-                Ok(Some(config_update)) => {}
+                Ok(Some(config_event)) => {
+                    // TODO: Handle config events.
+                }
                 Ok(None) => {
                     break;
                 }

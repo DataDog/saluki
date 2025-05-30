@@ -8,6 +8,7 @@ repository = { workspace = true }
 [dependencies]
 bytes = { workspace = true }
 prost = { workspace = true, features = ["derive", "std"] }
+prost-types = { workspace = true }
 protobuf = { workspace = true }
 tonic = { workspace = true, features = ["codegen", "prost"] }
 

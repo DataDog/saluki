@@ -20,6 +20,7 @@ http-body-util = { workspace = true }
 hyper = { workspace = true }
 memory-accounting = { workspace = true }
 papaya = { workspace = true }
+prost-types = { workspace = true }
 rand = { workspace = true }
 saluki-app = { workspace = true, features = ["full"] }
 saluki-common = { workspace = true }
