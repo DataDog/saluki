@@ -60,11 +60,14 @@ impl CheckMetric {
 
 impl From<CheckMetric> for Event {
     fn from(check_metric: CheckMetric) -> Self {
-        let tags: Vec<Tag> = check_metric.tags.into_iter().map(Tag::from).collect();
+        let tags = check_metric
+            .tags
+            .into_iter()
+            .map(Tag::from)
+            .collect::<TagSet>()
+            .into_shared();
 
-        let tagset: TagSet = tags.into_iter().collect();
-
-        let context = Context::from_parts(check_metric.name, tagset);
+        let context = Context::from_parts(check_metric.name, tags);
         let metadata = MetricMetadata::default();
 
         let values = match check_metric.metric_type {
