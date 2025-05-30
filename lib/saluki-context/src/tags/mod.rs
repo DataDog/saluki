@@ -353,17 +353,6 @@ impl TagSet {
     pub fn into_shared(self) -> SharedTagSet {
         SharedTagSet(Arc::new(self))
     }
-
-    /// Returns the size of the tag set, in bytes.
-    ///
-    /// This includes the size of the vector holding the tags as well as each individual tag.
-    ///
-    /// Additionally, the value returned by this method does not compensate for externalities such as whether or not
-    /// tags are are inlined, interned, or heap allocated. This means that the value returned is essentially the
-    /// worst-case usage, and should be used as a rough estimate.
-    pub(crate) fn size_of(&self) -> usize {
-        (self.len() * std::mem::size_of::<Tag>()) + self.0.iter().map(|tag| tag.len()).sum::<usize>()
-    }
 }
 
 impl PartialEq<TagSet> for TagSet {
@@ -448,7 +437,7 @@ impl fmt::Display for TagSet {
 }
 
 /// A shared, read-only set of tags.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct SharedTagSet(Arc<TagSet>);
 
 impl SharedTagSet {
@@ -481,6 +470,17 @@ impl SharedTagSet {
         T: AsRef<str>,
     {
         self.0.get_single_tag(tag_name)
+    }
+
+    /// Returns the size of the tag set, in bytes.
+    ///
+    /// This includes the size of the vector holding the tags as well as each individual tag.
+    ///
+    /// Additionally, the value returned by this method does not compensate for externalities such as whether or not
+    /// tags are are inlined, interned, or heap allocated. This means that the value returned is essentially the
+    /// worst-case usage, and should be used as a rough estimate.
+    pub(crate) fn size_of(&self) -> usize {
+        (self.len() * std::mem::size_of::<Tag>()) + self.0.deref().into_iter().map(|tag| tag.len()).sum::<usize>()
     }
 }
 
@@ -526,6 +526,12 @@ impl<'a> IntoIterator for &'a SharedTagSet {
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.deref().into_iter()
+    }
+}
+
+impl FromIterator<Tag> for SharedTagSet {
+    fn from_iter<I: IntoIterator<Item = Tag>>(iter: I) -> Self {
+        iter.into_iter().collect::<TagSet>().into_shared()
     }
 }
 

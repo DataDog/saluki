@@ -7,7 +7,10 @@ use saluki_common::{
 
 use crate::origin::OriginKey;
 
-/// Hashes a `Resolvable`.
+/// Hashes a metric context.
+///
+/// Takes a metric name, an iterator of tags, and an optional origin key, and returns a tuple containing a unique hash
+/// key for the overall context, and a unique hash key for the tags by themselves.
 ///
 /// Tags are hashed in an order-oblivious (XOR) manner, which allows tags to be hashed in any order while still
 /// resulting in the same overall hash. This function is _not_ oblivious to the actual tag values themselves, though, so
@@ -19,7 +22,7 @@ use crate::origin::OriginKey;
 /// set.
 ///
 /// Returns a hash that uniquely identifies the combination of name, tags, and origin of the value.
-pub fn hash_context<I, T>(name: &str, tags: I, origin_key: Option<OriginKey>) -> ContextKey
+pub fn hash_context<I, T>(name: &str, tags: I, origin_key: Option<OriginKey>) -> (ContextKey, TagSetKey)
 where
     I: IntoIterator<Item = T>,
     T: AsRef<str>,
@@ -28,7 +31,10 @@ where
     hash_context_with_seen(name, tags, origin_key, &mut seen)
 }
 
-/// Hashes a `Resolvable`, using a provided set to track which tags have already been hashed.
+/// Hashes a metric context, using a provided set to track which tags have already been hashed.
+///
+/// Takes a metric name, an iterator of tags, and an optional origin key, and returns a tuple containing a unique hash
+/// key for the overall context, and a unique hash key for the tags by themselves.
 ///
 /// Tags are hashed in an order-oblivious (XOR) manner, which allows tags to be hashed in any order while still
 /// resulting in the same overall hash. This function is _not_ oblivious to the actual tag values themselves, though, so
@@ -41,7 +47,7 @@ where
 /// Returns a hash that uniquely identifies the combination of name, tags, and origin of the value.
 pub(super) fn hash_context_with_seen<I, T>(
     name: &str, tags: I, origin_key: Option<OriginKey>, seen: &mut PrehashedHashSet<u64>,
-) -> ContextKey
+) -> (ContextKey, TagSetKey)
 where
     I: IntoIterator<Item = T>,
     T: AsRef<str>,
@@ -74,10 +80,20 @@ where
         origin_key.hash(&mut hasher);
     }
 
-    ContextKey { hash: hasher.finish() }
+    let context_key = ContextKey { hash: hasher.finish() };
+    let tagset_key = TagSetKey {
+        hash: combined_tags_hash,
+    };
+
+    (context_key, tagset_key)
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ContextKey {
+    hash: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct TagSetKey {
     hash: u64,
 }
