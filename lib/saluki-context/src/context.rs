@@ -15,7 +15,7 @@ use stringtheory::MetaString;
 use crate::{
     hash::{hash_context, ContextKey},
     origin::OriginTags,
-    tags::{Tag, TagSet, Tagged},
+    tags::{SharedTagSet, Tag, TagSet, Tagged},
 };
 
 const BASE_CONTEXT_SIZE: usize = std::mem::size_of::<Context>() + std::mem::size_of::<ContextInner>();
@@ -31,11 +31,11 @@ impl Context {
     pub fn from_static_name(name: &'static str) -> Self {
         const EMPTY_TAGS: &[&str] = &[];
 
-        let key = hash_context(name, EMPTY_TAGS, None);
+        let (key, _) = hash_context(name, EMPTY_TAGS, None);
         Self {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
-                tags: TagSet::default(),
+                tags: SharedTagSet::default(),
                 origin_tags: OriginTags::empty(),
                 origin_tags_size: AtomicUsize::new(0),
                 key,
@@ -51,11 +51,11 @@ impl Context {
             tag_set.insert_tag(MetaString::from_static(tag));
         }
 
-        let key = hash_context(name, tags, None);
+        let (key, _) = hash_context(name, tags, None);
         Self {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
-                tags: tag_set,
+                tags: tag_set.into_shared(),
                 origin_tags: OriginTags::empty(),
                 origin_tags_size: AtomicUsize::new(0),
                 key,
@@ -65,9 +65,9 @@ impl Context {
     }
 
     /// Creates a new `Context` from the given name and given tags.
-    pub fn from_parts<S: Into<MetaString>>(name: S, tags: TagSet) -> Self {
+    pub fn from_parts<S: Into<MetaString>>(name: S, tags: SharedTagSet) -> Self {
         let name = name.into();
-        let key = hash_context(&name, &tags, None);
+        let (key, _) = hash_context(&name, &tags, None);
         Self {
             inner: Arc::new(ContextInner {
                 name,
@@ -85,7 +85,7 @@ impl Context {
         // Regenerate the context key to account for the new name.
         let name = name.into();
         let tags = self.inner.tags.clone();
-        let key = hash_context(&name, &tags, None);
+        let (key, _) = hash_context(&name, &tags, None);
 
         Self {
             inner: Arc::new(ContextInner {
@@ -114,7 +114,7 @@ impl Context {
     }
 
     /// Returns the instrumented tags of this context.
-    pub fn tags(&self) -> &TagSet {
+    pub fn tags(&self) -> &SharedTagSet {
         &self.inner.tags
     }
 
@@ -204,7 +204,7 @@ impl Tagged for Context {
 pub(super) struct ContextInner {
     key: ContextKey,
     name: MetaString,
-    tags: TagSet,
+    tags: SharedTagSet,
     origin_tags: OriginTags,
     origin_tags_size: AtomicUsize,
     active_count: Gauge,
@@ -212,7 +212,7 @@ pub(super) struct ContextInner {
 
 impl ContextInner {
     pub fn from_parts(
-        key: ContextKey, name: MetaString, tags: TagSet, origin_tags: OriginTags, active_count: Gauge,
+        key: ContextKey, name: MetaString, tags: SharedTagSet, origin_tags: OriginTags, active_count: Gauge,
     ) -> Self {
         Self {
             key,
@@ -288,17 +288,17 @@ mod tests {
     const SIZE_OF_CONTEXT_TAGS: &[&str] = &["size_of_test_tag1", "size_of_test_tag2"];
     const SIZE_OF_CONTEXT_ORIGIN_TAGS: &[&str] = &["size_of_test_origin_tag1", "size_of_test_origin_tag2"];
 
-    fn tag_set(tags: &[&str]) -> TagSet {
-        tags.iter().map(|s| Tag::from(*s)).collect::<TagSet>()
+    fn tag_set(tags: &[&str]) -> SharedTagSet {
+        tags.iter().map(|s| Tag::from(*s)).collect::<TagSet>().into_shared()
     }
 
     #[derive(Clone, Default)]
     struct MockOriginTagsResolver {
-        tags: Arc<Mutex<TagSet>>,
+        tags: Arc<Mutex<SharedTagSet>>,
     }
 
     impl MockOriginTagsResolver {
-        fn set_tags(&self, tag_set: TagSet) {
+        fn set_tags(&self, tag_set: SharedTagSet) {
             let mut tags = self.tags.lock().unwrap();
             *tags = tag_set;
         }
@@ -382,8 +382,10 @@ mod tests {
         let origin_key = OriginKey::from_opaque(42);
         let origin_tags = OriginTags::from_resolved(origin_key, shared_tags_resolver);
 
+        let (key, _) = hash_context(SIZE_OF_CONTEXT_NAME, SIZE_OF_CONTEXT_TAGS, None);
+
         let context = Context::from_inner(ContextInner {
-            key: hash_context(SIZE_OF_CONTEXT_NAME, SIZE_OF_CONTEXT_TAGS, None),
+            key,
             name: MetaString::from_static(SIZE_OF_CONTEXT_NAME),
             tags: tags.clone(),
             origin_tags: origin_tags.clone(),
