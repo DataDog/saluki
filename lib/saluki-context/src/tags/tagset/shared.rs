@@ -18,7 +18,7 @@ use crate::tags::{Tag, Tagged};
 /// allocate enough underlying storage to hold all of the individual tags. Extending a `SharedTagSet` will allocate a
 /// small amount of memory (8 bytes) for each additional `SharedTagSet` that is chained after the first additional one:
 /// this means that all new `SharedTagSet` instances can be extended once with no allocations whatsoever.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct SharedTagSet(SmallVec<[Arc<TagSet>; 2]>);
 
 impl SharedTagSet {
