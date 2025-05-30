@@ -1,4 +1,5 @@
 use std::sync::Arc;
+#[cfg(feature = "python-checks")]
 pub mod python;
 use saluki_env::autodiscovery::{Data, Instance};
 use stringtheory::MetaString;
