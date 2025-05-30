@@ -47,7 +47,7 @@ ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
 # Build Checks Agent.
 WORKDIR /checks-agent
 COPY . /checks-agent
-RUN mkdir -p /checks-agent/target/bin &&  cargo build --profile ${BUILD_PROFILE} --bin checks-agent --features ${BUILD_FEATURES} --target-dir /checks-agent/target && \
+RUN mkdir -p /checks-agent/target/bin &&  cargo build --profile ${BUILD_PROFILE} --package checks-agent --features ${BUILD_FEATURES} --target-dir /checks-agent/target && \
 cp /checks-agent/target/${BUILD_PROFILE}/checks-agent /checks-agent/target/bin/
 
 # Calculate the necessary licenses that we need to include in the final image.
