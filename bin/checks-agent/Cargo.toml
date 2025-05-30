@@ -5,6 +5,9 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[features]
+default = []
+
 [dependencies]
 memory-accounting = { workspace = true }
 saluki-app = { workspace = true, features = ["full"] }
