@@ -44,7 +44,7 @@ RUN chmod +x /install-protoc.sh && /install-protoc.sh
 # Build ADP.
 WORKDIR /adp
 COPY . /adp
-RUN cargo build --profile ${BUILD_PROFILE} --bin agent-data-plane --features ${BUILD_FEATURES}
+RUN cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES}
 
 # Calculate the necessary licenses that we need to include in the final image.
 FROM ${BUILD_IMAGE} AS license-builder

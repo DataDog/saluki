@@ -6,26 +6,38 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
+use saluki_core::data_model::event::Event;
 use saluki_core::{
     components::{sources::*, ComponentContext},
     data_model::event::EventType,
-    topology::OutputDefinition,
+    topology::{
+        shutdown::{ComponentShutdownHandle, DynamicShutdownCoordinator, DynamicShutdownHandle},
+        OutputDefinition,
+    },
 };
 use saluki_env::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider};
 use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use tokio::select;
-use tracing::{debug, error, info, warn};
+use tokio::sync::mpsc;
+use tracing::{debug, error, info, trace, warn};
 
 mod scheduler;
 use self::scheduler::Scheduler;
+
+mod check_metric;
+use self::check_metric::CheckMetric;
 
 mod check;
 use self::check::Check;
 
 mod builder;
-use self::builder::{CheckBuilder, PythonCheckBuilder};
+
+#[cfg(feature = "python-checks")]
+use self::builder::python::builder::PythonCheckBuilder;
+use self::builder::CheckBuilder;
 
 const fn default_check_runners() -> usize {
     4
@@ -101,26 +113,52 @@ struct ChecksSource {
     custom_checks_dirs: Option<Vec<String>>,
 }
 
+impl ChecksSource {
+    /// Builds the check builders for the source.
+    fn builders(&self, check_metrics_tx: mpsc::Sender<CheckMetric>) -> Vec<Arc<dyn CheckBuilder + Send + Sync>> {
+        #[cfg(feature = "python-checks")]
+        {
+            vec![Arc::new(PythonCheckBuilder::new(
+                check_metrics_tx,
+                self.custom_checks_dirs.clone(),
+            ))]
+        }
+        #[cfg(not(feature = "python-checks"))]
+        {
+            let _ = check_metrics_tx; // Suppress unused variable warning
+            let _ = &self.custom_checks_dirs; // Suppress unused field warning
+            vec![]
+        }
+    }
+}
+
 #[async_trait]
 impl Source for ChecksSource {
     async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
-        let mut global_shutdown: saluki_core::topology::shutdown::ComponentShutdownHandle =
-            context.take_shutdown_handle();
+        let mut global_shutdown: ComponentShutdownHandle = context.take_shutdown_handle();
         let mut health = context.take_health_handle();
         health.mark_ready();
 
         info!("Checks source started.");
 
+        let (check_metrics_tx, check_metrics_rx) = mpsc::channel(128);
+
         let mut event_rx = self.autodiscovery.subscribe().await;
-        let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> =
-            vec![Arc::new(PythonCheckBuilder::new(self.custom_checks_dirs))];
+        let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> = self.builders(check_metrics_tx);
         let mut check_ids = HashSet::new();
         let scheduler = Scheduler::new(self.check_runners);
+
+        let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
+
+        spawn_traced_named(
+            "checks-events-listener",
+            drain_and_dispatch_check_metrics(listener_shutdown_coordinator.register(), context, check_metrics_rx),
+        );
 
         loop {
             select! {
                 _ = &mut global_shutdown => {
-                    debug!("Received shutdown signal.");
+                    debug!("Checks source received shutdown signal.");
                     scheduler.shutdown().await;
                     break
                 },
@@ -173,8 +211,45 @@ impl Source for ChecksSource {
             }
         }
 
+        listener_shutdown_coordinator.shutdown().await;
+
         info!("Checks source stopped.");
 
         Ok(())
+    }
+}
+
+async fn drain_and_dispatch_check_metrics(
+    shutdown_handle: DynamicShutdownHandle, context: SourceContext, mut check_metrics_rx: mpsc::Receiver<CheckMetric>,
+) {
+    tokio::pin!(shutdown_handle);
+
+    loop {
+        select! {
+            _ = &mut shutdown_handle => {
+                debug!("Checks events listerners received shutdown signal.");
+                break;
+            }
+            result = check_metrics_rx.recv() => match result {
+                None => break,
+                Some(check_metric) => {
+                    let mut buffered_dispatcher = context
+                        .dispatcher()
+                        .buffered()
+                        .expect("checks source should always have default output");
+
+                    trace!("Received check metric: {:?}", check_metric);
+                    let event: Event = check_metric.into();
+
+                    if let Err(e) = buffered_dispatcher.push(event).await {
+                        error!(error = %e, "Failed to forward check metrics.");
+                    }
+
+                    if let Err(e) = buffered_dispatcher.flush().await {
+                        error!(error = %e, "Failed to flush check metrics.");
+                    }
+                }
+            }
+        }
     }
 }

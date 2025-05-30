@@ -1,9 +1,9 @@
 use std::sync::Arc;
-mod python;
+#[cfg(feature = "python-checks")]
+pub mod python;
 use saluki_env::autodiscovery::{Data, Instance};
 use stringtheory::MetaString;
 
-pub use self::python::PythonCheckBuilder;
 use crate::sources::checks::check::Check;
 /// Check builder trait
 ///
