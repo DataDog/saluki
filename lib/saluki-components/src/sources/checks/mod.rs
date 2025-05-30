@@ -34,7 +34,10 @@ mod check;
 use self::check::Check;
 
 mod builder;
-use self::builder::{python::builder::PythonCheckBuilder, CheckBuilder};
+
+#[cfg(feature = "python-checks")]
+use self::builder::python::builder::PythonCheckBuilder;
+use self::builder::CheckBuilder;
 
 const fn default_check_runners() -> usize {
     4
@@ -110,6 +113,23 @@ struct ChecksSource {
     custom_checks_dirs: Option<Vec<String>>,
 }
 
+impl ChecksSource {
+    /// Builds the check builders for the source.
+    fn builders(&self, check_metrics_tx: mpsc::Sender<CheckMetric>) -> Vec<Arc<dyn CheckBuilder + Send + Sync>> {
+        let mut builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> = vec![];
+
+        #[cfg(feature = "python-checks")]
+        {
+            builders.push(Arc::new(PythonCheckBuilder::new(
+                check_metrics_tx,
+                self.custom_checks_dirs.clone(),
+            )));
+        }
+
+        builders
+    }
+}
+
 #[async_trait]
 impl Source for ChecksSource {
     async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
@@ -122,10 +142,7 @@ impl Source for ChecksSource {
         let (check_metrics_tx, check_metrics_rx) = mpsc::channel(128);
 
         let mut event_rx = self.autodiscovery.subscribe().await;
-        let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> = vec![Arc::new(PythonCheckBuilder::new(
-            check_metrics_tx,
-            self.custom_checks_dirs,
-        ))];
+        let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> = self.builders(check_metrics_tx);
         let mut check_ids = HashSet::new();
         let scheduler = Scheduler::new(self.check_runners);
 
