@@ -85,6 +85,12 @@ build-adp: check-rust-build-tools
 build-adp: ## Builds the ADP binary in debug mode
 	@echo "[*] Building ADP locally..."
 	@cargo build --profile dev --package agent-data-plane
+	
+.PHONY: build-adp-and-checks
+build-adp-and-checks: check-rust-build-tools
+build-adp-and-checks: ## Builds the ADP binary in debug mode
+	@echo "[*] Building ADP & Checks locally..."
+	@cargo build --profile dev --package agent-data-plane --features python-checks
 
 .PHONY: build-checks-agent
 build-checks-agent: check-rust-build-tools
@@ -237,6 +243,17 @@ run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	@echo "[*] Running ADP..."
 	@DD_ADP_STANDALONE_MODE=true \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
+	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
+	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	target/debug/agent-data-plane
+	
+.PHONY: run-adp-standalone-with-checks
+run-adp-standalone-with-checks: build-adp-and-checks
+run-adp-standalone-with-checks: ## Runs ADP locally in standalone mode (debug)
+	@echo "[*] Running ADP..."
+	@DD_ADP_STANDALONE_MODE=true \
+	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
+	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/debug/agent-data-plane

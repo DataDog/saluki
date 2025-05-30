@@ -1,6 +1,10 @@
 use memory_accounting::ComponentRegistry;
 use saluki_config::GenericConfiguration;
 use saluki_env::{
+    autodiscovery::providers::{
+        BoxedAutodiscoveryProvider, LocalAutodiscoveryProvider, RemoteAgentAutodiscoveryProvider,
+    },
+    helpers::remote_agent::RemoteAgentClient,
     host::providers::{BoxedHostProvider, FixedHostProvider, RemoteAgentHostProvider},
     workload::providers::{RemoteAgentWorkloadAPIHandler, RemoteAgentWorkloadProvider},
     EnvironmentProvider,
@@ -22,10 +26,12 @@ use tracing::{debug, warn};
 ///
 /// This will effectively disable origin enrichment (no entity tags) and cause metrics to be tagged with a fixed
 /// hostname based on the configuration value of `hostname`.
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct ADPEnvironmentProvider {
     host_provider: BoxedHostProvider,
     workload_provider: Option<RemoteAgentWorkloadProvider>,
+    autodiscovery_provider: BoxedAutodiscoveryProvider,
 }
 
 impl ADPEnvironmentProvider {
@@ -61,9 +67,24 @@ impl ADPEnvironmentProvider {
             Some(provider)
         };
 
+        let autodiscovery_provider = if in_standalone_mode {
+            debug!("Using local autodiscovery provider due to standalone mode.");
+            let config_dir = config.get_typed_or_default::<String>("checks_config_dir");
+            let paths = if config_dir.is_empty() {
+                vec!["/etc/datadog-agent/conf.d"]
+            } else {
+                config_dir.split(",").collect::<Vec<&str>>()
+            };
+            BoxedAutodiscoveryProvider::from_provider(LocalAutodiscoveryProvider::new(paths))
+        } else {
+            let client = RemoteAgentClient::from_configuration(config).await?;
+            BoxedAutodiscoveryProvider::from_provider(RemoteAgentAutodiscoveryProvider::new(client))
+        };
+
         Ok(Self {
             host_provider,
             workload_provider,
+            autodiscovery_provider,
         })
     }
 
@@ -73,6 +94,11 @@ impl ADPEnvironmentProvider {
     /// See [`RemoteAgentWorkloadAPIHandler`] for more information about routes and responses.
     pub fn workload_api_handler(&self) -> Option<RemoteAgentWorkloadAPIHandler> {
         self.workload_provider.as_ref().map(|provider| provider.api_handler())
+    }
+
+    #[allow(dead_code)]
+    pub fn autodiscovery_provider(&self) -> &BoxedAutodiscoveryProvider {
+        &self.autodiscovery_provider
     }
 }
 

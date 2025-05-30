@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
+#[cfg(feature = "python-checks")]
+use saluki_components::{destinations::BlackholeConfiguration, sources::ChecksConfiguration};
 use saluki_components::{
     destinations::{DatadogEventsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration},
     sources::DogStatsDConfiguration,
@@ -226,6 +228,9 @@ async fn create_topology(
         .connect_component("dd_events_out", ["dsd_in.events"])?
         .connect_component("dd_service_checks_out", ["dsd_in.service_checks"])?;
 
+    #[cfg(feature = "python-checks")]
+    add_checks_to_blueprint(&mut blueprint, configuration, env_provider)?;
+
     if configuration.get_typed_or_default::<bool>("enable_preaggr_pipeline") {
         let preaggr_dd_url = configuration
             .try_get_typed::<String>("preaggr_dd_url")
@@ -260,6 +265,24 @@ async fn create_topology(
     }
 
     Ok(blueprint)
+}
+
+#[cfg(feature = "python-checks")]
+fn add_checks_to_blueprint(
+    blueprint: &mut TopologyBlueprint, configuration: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
+) -> Result<(), GenericError> {
+    let checks_config = ChecksConfiguration::from_configuration(configuration)
+        .error_context("Failed to configure Python checks source.")?
+        .with_autodiscovery_provider(env_provider.autodiscovery_provider().clone());
+
+    let blackhole_config = BlackholeConfiguration;
+
+    blueprint
+        .add_source("checks_in", checks_config)?
+        .add_destination("checks_out", blackhole_config)?
+        .connect_component("checks_out", ["checks_in"])?;
+
+    Ok(())
 }
 
 fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
