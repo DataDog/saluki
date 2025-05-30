@@ -81,7 +81,6 @@ impl SynchronousTransformBuilder for HostTagsConfiguration {
                 .expect("resolver name is not empty")
                 .with_interner_capacity_bytes(context_string_interner_size)
                 .with_idle_context_expiration(Duration::from_secs(30))
-                .with_expiration_interval(Duration::from_secs(1))
                 .build();
         Ok(Box::new(HostTagsEnrichment {
             start: Instant::now(),
