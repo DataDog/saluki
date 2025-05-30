@@ -9,7 +9,7 @@ use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{
-    tags::{Tag, TagSet},
+    tags::{SharedTagSet, Tag, TagSet},
     ContextResolver, ContextResolverBuilder,
 };
 use saluki_core::{components::transforms::*, topology::interconnect::FixedSizeEventBuffer};
@@ -112,7 +112,7 @@ pub struct HostTagsEnrichment {
     start: Instant,
     context_resolver: Option<ContextResolver>,
     expected_tags_duration: Duration,
-    host_tags: Option<TagSet>,
+    host_tags: Option<SharedTagSet>,
     ignore_duration: bool,
 }
 
