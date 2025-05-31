@@ -6,7 +6,7 @@ members = [
   "bin/correctness/ground-truth",
   "bin/correctness/metrics-intake",
   "bin/correctness/millstone",
-  "bin/correctness/stele",
+  "bin/correctness/stele", "bin/supervisor-test",
   "lib/datadog-protos",
   "lib/ddsketch-agent",
   "lib/memory-accounting",
