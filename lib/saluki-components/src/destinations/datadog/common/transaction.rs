@@ -117,6 +117,16 @@ where
             ),
         }
     }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        match self {
+            Self::Original(body) => body.size_hint(),
+            Self::Rehydrated(body) => match body.as_ref() {
+                Some(body) => http_body::SizeHint::with_exact(body.len() as u64),
+                None => http_body::SizeHint::with_exact(0),
+            },
+        }
+    }
 }
 
 impl<B> Serialize for TransactionBody<B>
