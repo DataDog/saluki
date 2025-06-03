@@ -3372,6 +3372,7 @@ dependencies = [
  "hyper-util",
  "indexmap 2.9.0",
  "memory-accounting",
+ "moka",
  "papaya",
  "pin-project-lite",
  "proptest",

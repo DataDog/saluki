@@ -1,7 +1,12 @@
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 #[cfg(target_os = "linux")]
-use saluki_common::collections::FastConcurrentHashMap;
+use moka::{
+    policy::EvictionPolicy,
+    sync::{Cache, CacheBuilder},
+};
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use stringtheory::interning::GenericMapInterner;
@@ -12,6 +17,13 @@ use tracing::{debug, trace};
 use super::helpers::cgroups::{CgroupsConfiguration, CgroupsReader};
 use crate::{features::FeatureDetector, workload::EntityId};
 
+#[cfg(target_os = "linux")]
+type PIDCache = Cache<u32, EntityId>;
+#[cfg(target_os = "linux")]
+const DEFAULT_PID_CACHE_CACHED_CONTEXTS_LIMIT: usize = 500_000;
+#[cfg(target_os = "linux")]
+const DEFAULT_PID_CACHE_IDLE_CONTEXT_EXPIRATION: Duration = Duration::from_secs(30);
+
 enum Inner {
     #[allow(dead_code)]
     Noop,
@@ -19,7 +31,7 @@ enum Inner {
     #[cfg(target_os = "linux")]
     Linux {
         cgroups_reader: CgroupsReader,
-        pid_mappings_cache: FastConcurrentHashMap<u32, EntityId>,
+        pid_mappings_cache: PIDCache,
     },
 }
 
@@ -81,10 +93,17 @@ impl OnDemandPIDResolver {
             }
         };
 
+        let pid_cache_builder = CacheBuilder::new(DEFAULT_PID_CACHE_CACHED_CONTEXTS_LIMIT as u64)
+            .name("on-demand-pid-cache")
+            .eviction_policy(EvictionPolicy::tiny_lfu())
+            .time_to_idle(DEFAULT_PID_CACHE_IDLE_CONTEXT_EXPIRATION);
+
+        let pid_cache = pid_cache_builder.build();
+
         Ok(Self {
             inner: Arc::new(Inner::Linux {
                 cgroups_reader,
-                pid_mappings_cache: FastConcurrentHashMap::default(),
+                pid_mappings_cache: pid_cache,
             }),
         })
     }
@@ -104,7 +123,7 @@ fn resolve_noop_pid(_process_id: u32) -> Option<EntityId> {
 
 #[cfg(target_os = "linux")]
 fn resolve_linux_pid(
-    process_id: u32, pid_mappings_cache: &FastConcurrentHashMap<u32, EntityId>, cgroups_reader: &CgroupsReader,
+    process_id: u32, pid_mappings_cache: &PIDCache, cgroups_reader: &CgroupsReader,
 ) -> Option<EntityId> {
     // First, check our PID mapping cache.
     //
@@ -113,7 +132,7 @@ fn resolve_linux_pid(
     //
     // This is simply a stopgap to make sure this functionality, overall, works for the purposes of origin
     // detection.
-    if let Some(container_id) = pid_mappings_cache.pin().get(&process_id).cloned() {
+    if let Some(container_id) = pid_mappings_cache.get(&process_id) {
         trace!(
             "Resolved PID {} to container ID {} from cache.",
             process_id,
@@ -129,7 +148,7 @@ fn resolve_linux_pid(
 
             debug!("Resolved PID {} to container ID {}.", process_id, container_eid);
 
-            pid_mappings_cache.pin().insert(process_id, container_eid.clone());
+            pid_mappings_cache.insert(process_id, container_eid.clone());
             Some(container_eid)
         }
         None => {
