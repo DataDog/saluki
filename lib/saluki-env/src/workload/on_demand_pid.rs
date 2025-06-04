@@ -10,7 +10,6 @@ use saluki_metrics::static_metrics;
 use stringtheory::interning::GenericMapInterner;
 #[cfg(target_os = "linux")]
 use tokio::time::sleep;
-
 #[cfg(target_os = "linux")]
 use tracing::{debug, trace};
 
@@ -26,8 +25,7 @@ static_metrics! {
         gauge(interner_len_bytes),
         gauge(interner_entries),
 
-        gauge(active_pid),
-        gauge(cached_pid),
+        gauge(cached_pids),
         counter(resolved_existing_pid_total),
         counter(resolved_new_pid_total),
     ],
@@ -144,7 +142,7 @@ async fn drive_telemetry(inner: Arc<Inner>, interner: GenericMapInterner, teleme
 
             #[cfg(target_os = "linux")]
             Inner::Linux { pid_mappings_cache, .. } => {
-                telemetry.cached_pid().set(pid_mappings_cache.len() as f64);
+                telemetry.cached_pids().set(pid_mappings_cache.len() as f64);
             }
         }
     }
@@ -185,7 +183,6 @@ fn resolve_linux_pid(
             debug!("Resolved PID {} to container ID {}.", process_id, container_eid);
 
             pid_mappings_cache.pin().insert(process_id, container_eid.clone());
-            telemetry.active_pid().increment(1);
             telemetry.resolved_new_pid_total().increment(1);
             Some(container_eid)
         }
