@@ -1,10 +1,14 @@
 use memory_accounting::ComponentRegistry;
 use saluki_config::GenericConfiguration;
-use saluki_env::autodiscovery::providers::{
-    BoxedAutodiscoveryProvider, LocalAutodiscoveryProvider, RemoteAgentAutodiscoveryProvider,
+use saluki_env::{
+    autodiscovery::providers::{
+        BoxedAutodiscoveryProvider, LocalAutodiscoveryProvider, RemoteAgentAutodiscoveryProvider,
+    },
+    helpers::remote_agent::RemoteAgentClient,
+    host::providers::{BoxedHostProvider, FixedHostProvider, RemoteAgentHostProvider},
+    workload::providers::RemoteAgentWorkloadProvider,
+    EnvironmentProvider,
 };
-use saluki_env::helpers::remote_agent::RemoteAgentClient;
-use saluki_env::host::providers::{BoxedHostProvider, FixedHostProvider, RemoteAgentHostProvider};
 use saluki_error::GenericError;
 use tracing::{debug, warn};
 
@@ -26,6 +30,7 @@ use tracing::{debug, warn};
 pub struct ChecksAgentEnvProvider {
     host_provider: BoxedHostProvider,
     autodiscovery_provider: BoxedAutodiscoveryProvider,
+    workload_provider: Option<RemoteAgentWorkloadProvider>,
 }
 
 impl ChecksAgentEnvProvider {
@@ -69,10 +74,24 @@ impl ChecksAgentEnvProvider {
         Ok(Self {
             host_provider,
             autodiscovery_provider,
+            workload_provider: None,
         })
     }
 
     pub fn autodiscovery_provider(&self) -> &BoxedAutodiscoveryProvider {
         &self.autodiscovery_provider
+    }
+}
+
+impl EnvironmentProvider for ChecksAgentEnvProvider {
+    type Host = BoxedHostProvider;
+    type Workload = Option<RemoteAgentWorkloadProvider>;
+
+    fn host(&self) -> &Self::Host {
+        &self.host_provider
+    }
+
+    fn workload(&self) -> &Self::Workload {
+        &self.workload_provider
     }
 }
