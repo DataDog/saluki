@@ -1,4 +1,6 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 use saluki_common::collections::FastConcurrentHashMap;
@@ -6,7 +8,9 @@ use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use saluki_metrics::static_metrics;
 use stringtheory::interning::GenericMapInterner;
+#[cfg(target_os = "linux")]
 use tokio::time::sleep;
+
 #[cfg(target_os = "linux")]
 use tracing::{debug, trace};
 
@@ -124,6 +128,7 @@ impl OnDemandPIDResolver {
     }
 }
 
+#[cfg(target_os = "linux")]
 async fn drive_telemetry(inner: Arc<Inner>, interner: GenericMapInterner, telemetry: Telemetry) {
     loop {
         sleep(Duration::from_secs(1)).await;
