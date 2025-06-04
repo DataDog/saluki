@@ -30,7 +30,6 @@ use tracing::{debug, warn};
 pub struct ChecksAgentEnvProvider {
     host_provider: BoxedHostProvider,
     autodiscovery_provider: BoxedAutodiscoveryProvider,
-    workload_provider: Option<RemoteAgentWorkloadProvider>,
 }
 
 impl ChecksAgentEnvProvider {
@@ -74,7 +73,6 @@ impl ChecksAgentEnvProvider {
         Ok(Self {
             host_provider,
             autodiscovery_provider,
-            workload_provider: None,
         })
     }
 
@@ -92,6 +90,6 @@ impl EnvironmentProvider for ChecksAgentEnvProvider {
     }
 
     fn workload(&self) -> &Self::Workload {
-        &self.workload_provider
+        &None
     }
 }
