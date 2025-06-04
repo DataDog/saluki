@@ -33,6 +33,7 @@ saluki-context = { workspace = true }
 saluki-core = { workspace = true }
 saluki-error = { workspace = true }
 saluki-health = { workspace = true }
+saluki-metrics = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["std"] }
 serde_yaml = { workspace = true }
