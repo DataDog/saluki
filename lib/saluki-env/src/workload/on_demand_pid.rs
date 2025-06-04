@@ -37,11 +37,12 @@ enum Inner {
     Linux {
         cgroups_reader: CgroupsReader,
         pid_mappings_cache: FastConcurrentHashMap<u32, EntityId>,
+        telemetry: Telemetry,
     },
 }
 
 impl Inner {
-    fn resolve(&self, process_id: u32, telemetry: Telemetry) -> Option<EntityId> {
+    fn resolve(&self, process_id: u32) -> Option<EntityId> {
         match self {
             Inner::Noop => resolve_noop_pid(process_id),
 
@@ -49,6 +50,7 @@ impl Inner {
             Inner::Linux {
                 pid_mappings_cache,
                 cgroups_reader,
+                telemetry,
             } => resolve_linux_pid(process_id, pid_mappings_cache, cgroups_reader, telemetry),
         }
     }
@@ -65,7 +67,6 @@ impl Inner {
 #[derive(Clone)]
 pub struct OnDemandPIDResolver {
     inner: Arc<Inner>,
-    telemetry: Telemetry,
 }
 
 impl OnDemandPIDResolver {
@@ -73,7 +74,6 @@ impl OnDemandPIDResolver {
     pub fn noop() -> Self {
         Self {
             inner: Arc::new(Inner::Noop),
-            telemetry: Telemetry::new(),
         }
     }
 
@@ -108,18 +108,19 @@ impl OnDemandPIDResolver {
         let inner = Arc::new(Inner::Linux {
             cgroups_reader,
             pid_mappings_cache: FastConcurrentHashMap::default(),
+            telemetry: telemetry.clone(),
         });
 
         tokio::spawn(drive_telemetry(Arc::clone(&inner), interner.clone(), telemetry.clone()));
 
-        Ok(Self { inner, telemetry })
+        Ok(Self { inner })
     }
 
     /// Resolves a process ID to the container ID of the container is part of.
     ///
     /// If the process ID is not part of a container, or cannot be found, `None` is returned.
-    pub fn resolve(&self, process_id: u32, telemetry: Telemetry) -> Option<EntityId> {
-        self.inner.resolve(process_id, telemetry)
+    pub fn resolve(&self, process_id: u32) -> Option<EntityId> {
+        self.inner.resolve(process_id)
     }
 }
 
@@ -152,7 +153,7 @@ fn resolve_noop_pid(_process_id: u32) -> Option<EntityId> {
 #[cfg(target_os = "linux")]
 fn resolve_linux_pid(
     process_id: u32, pid_mappings_cache: &FastConcurrentHashMap<u32, EntityId>, cgroups_reader: &CgroupsReader,
-    telemetry: Telemetry,
+    telemetry: &Telemetry,
 ) -> Option<EntityId> {
     // First, check our PID mapping cache.
     //
