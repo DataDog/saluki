@@ -6,6 +6,7 @@ use saluki_context::{
     origin::OriginTagCardinality,
     tags::{SharedTagSet, TagSet, TagVisitor},
 };
+use saluki_metrics::static_metrics;
 use tracing::{debug, trace};
 
 use crate::workload::{
@@ -13,6 +14,19 @@ use crate::workload::{
     entity::EntityId,
     metadata::{MetadataAction, MetadataOperation},
 };
+
+static_metrics!(
+    name => Telemetry,
+    prefix => tag_store,
+    metrics => [
+        gauge(entity_limit),
+        gauge(active_entities),
+        gauge(entity_aliases),
+        counter(ops_delete_total),
+        counter(ops_set_tags_total),
+        counter(ops_add_alias_total),
+   ],
+);
 
 #[derive(Clone, Default)]
 struct TagStorage {
@@ -60,6 +74,7 @@ pub struct TagStore {
     active_entities: Arc<FastConcurrentHashSet<EntityId>>,
     entity_aliases: Arc<FastConcurrentHashMap<EntityId, EntityId>>,
     entity_tags: TagStorage,
+    telemetry: Telemetry,
 }
 
 impl TagStore {
@@ -68,11 +83,15 @@ impl TagStore {
     /// The entity limit is the maximum number of unique entities that can be stored. Once the limit is reached, new
     /// entities will not be added to the store.
     pub fn with_entity_limit(entity_limit: NonZeroUsize) -> Self {
+        let telemetry = Telemetry::new();
+        telemetry.entity_limit().set(entity_limit.get() as f64);
+
         Self {
             entity_limit,
             active_entities: Arc::new(FastConcurrentHashSet::default()),
             entity_aliases: Arc::new(FastConcurrentHashMap::default()),
             entity_tags: TagStorage::default(),
+            telemetry,
         }
     }
 
@@ -92,16 +111,21 @@ impl TagStore {
             return false;
         }
 
+        self.telemetry.active_entities().increment(1);
         let _ = self.active_entities.insert(entity_id.clone(), &guard);
         true
     }
 
     fn delete_entity(&mut self, entity_id: &EntityId) {
-        self.active_entities.pin().remove(entity_id);
+        if self.active_entities.pin().remove(entity_id) {
+            self.telemetry.active_entities().decrement(1);
+        }
 
         // Delete all of the tags for the entity, and any alias mapping that may exist.
         self.entity_tags.delete_entity(entity_id);
-        self.entity_aliases.pin().remove(entity_id);
+        if self.entity_aliases.pin().remove(entity_id).is_some() {
+            self.telemetry.entity_aliases().decrement(1);
+        }
     }
 
     fn set_entity_tags(&mut self, entity_id: EntityId, tags: TagSet, cardinality: OriginTagCardinality) {
@@ -118,7 +142,14 @@ impl TagStore {
     }
 
     fn add_entity_alias(&mut self, source_entity_id: EntityId, target_entity_id: EntityId) {
-        let _ = self.entity_aliases.pin().insert(source_entity_id, target_entity_id);
+        if self
+            .entity_aliases
+            .pin()
+            .insert(source_entity_id, target_entity_id)
+            .is_none()
+        {
+            self.telemetry.entity_aliases().increment(1);
+        }
     }
 
     /// Returns a `TagStoreQuerier` that can be used to concurrently query the tag store.
@@ -144,11 +175,16 @@ impl MetadataStore for TagStore {
         let entity_id = operation.entity_id;
         for action in operation.actions {
             match action {
-                MetadataAction::Delete => self.delete_entity(&entity_id.clone()),
+                MetadataAction::Delete => {
+                    self.telemetry.ops_delete_total().increment(1);
+                    self.delete_entity(&entity_id.clone())
+                }
                 MetadataAction::AddAlias { target_entity_id } => {
+                    self.telemetry.ops_add_alias_total().increment(1);
                     self.add_entity_alias(entity_id.clone(), target_entity_id)
                 }
                 MetadataAction::SetTags { cardinality, tags } => {
+                    self.telemetry.ops_set_tags_total().increment(1);
                     self.set_entity_tags(entity_id.clone(), tags, cardinality)
                 }
                 // We don't care about External Data.
