@@ -158,7 +158,7 @@ async fn drive_telemetry(inner: Arc<Inner>, interner: GenericMapInterner, teleme
 
             #[cfg(target_os = "linux")]
             Inner::Linux { pid_mappings_cache, .. } => {
-                telemetry.cached_pids().set(pid_mappings_cache.len() as f64);
+                telemetry.cached_pids().set(pid_mappings_cache.entry_count() as f64);
             }
         }
     }
