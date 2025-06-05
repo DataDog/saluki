@@ -23,9 +23,9 @@ use crate::{features::FeatureDetector, workload::EntityId};
 #[cfg(target_os = "linux")]
 type PIDCache = Cache<u32, EntityId>;
 #[cfg(target_os = "linux")]
-const DEFAULT_PID_CACHE_CACHED_CONTEXTS_LIMIT: usize = 500_000;
+const DEFAULT_PID_CACHE_CACHED_PIDS_LIMIT: usize = 500_000;
 #[cfg(target_os = "linux")]
-const DEFAULT_PID_CACHE_IDLE_CONTEXT_EXPIRATION: Duration = Duration::from_secs(30);
+const DEFAULT_PID_CACHE_IDLE_PID_EXPIRATION: Duration = Duration::from_secs(30);
 
 static_metrics! {
     name => Telemetry,
@@ -117,10 +117,10 @@ impl OnDemandPIDResolver {
             }
         };
 
-        let pid_cache_builder = CacheBuilder::new(DEFAULT_PID_CACHE_CACHED_CONTEXTS_LIMIT as u64)
+        let pid_cache_builder = CacheBuilder::new(DEFAULT_PID_CACHE_CACHED_PIDS_LIMIT as u64)
             .name("on-demand-pid-resolver-cache")
             .eviction_policy(EvictionPolicy::tiny_lfu())
-            .time_to_idle(DEFAULT_PID_CACHE_IDLE_CONTEXT_EXPIRATION);
+            .time_to_idle(DEFAULT_PID_CACHE_IDLE_PID_EXPIRATION);
         let pid_cache = pid_cache_builder.build();
 
         let inner = Arc::new(Inner::Linux {
