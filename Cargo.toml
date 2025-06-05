@@ -151,6 +151,7 @@ windows-sys = { version = "0.59", default-features = false }
 rustls-native-certs = { version = "0.8", default-features = false }
 hashbrown = { version = "0.15", default-features = false }
 quick_cache = { version = "0.6", default-features = false }
+moka = { version = "0.12", default-features = false }
 crossbeam-queue = { version = "0.3", default-features = false }
 float-cmp = { version = "0.10", default-features = false }
 tower-http = { version = "0.6", default-features = false }
