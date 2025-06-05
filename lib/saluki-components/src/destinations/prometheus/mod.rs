@@ -29,10 +29,10 @@ use stringtheory::{interning::FixedSizeInterner, MetaString};
 use tokio::{select, sync::RwLock};
 use tracing::debug;
 
-const CONTEXT_LIMIT: usize = 1000;
-const PAYLOAD_SIZE_LIMIT_BYTES: usize = 512 * 1024;
+const CONTEXT_LIMIT: usize = 10_000;
+const PAYLOAD_SIZE_LIMIT_BYTES: usize = 1024 * 1024;
 const PAYLOAD_BUFFER_SIZE_LIMIT_BYTES: usize = 128 * 1024;
-const TAGS_BUFFER_SIZE_LIMIT_BYTES: usize = 1024;
+const TAGS_BUFFER_SIZE_LIMIT_BYTES: usize = 2048;
 const NAME_NORMALIZATION_BUFFER_SIZE: usize = 512;
 
 // Histogram-related constants and pre-calculated buckets.
@@ -53,8 +53,8 @@ const METRIC_NAME_STRING_INTERNER_BYTES: NonZeroUsize = unsafe { NonZeroUsize::n
 ///
 /// # Limits
 ///
-/// - Number of contexts (unique series) is limited to 1000.
-/// - Maximum size of scrape payload response is ~512KB.
+/// - Number of contexts (unique series) is limited to 10,000.
+/// - Maximum size of scrape payload response is ~1MiB.
 ///
 /// # Missing
 ///
