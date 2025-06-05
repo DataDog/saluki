@@ -4,11 +4,23 @@ use arc_swap::ArcSwap;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::collections::{FastHashSet, FastIndexMap};
 use saluki_context::origin::{ExternalData, RawExternalData};
+use saluki_metrics::static_metrics;
 use tracing::{debug, trace};
 
 use crate::workload::{
     aggregator::MetadataStore, origin::ResolvedExternalData, EntityId, MetadataAction, MetadataOperation,
 };
+
+static_metrics!(
+    name => Telemetry,
+    prefix => external_data_store,
+    metrics => [
+        gauge(entity_limit),
+        gauge(active_entities),
+        counter(ops_delete_total),
+        counter(ops_attach_external_data_total),
+   ],
+);
 
 /// A store for External Data entity mappings.
 ///
@@ -33,6 +45,7 @@ pub struct ExternalDataStore {
     active_entities: FastHashSet<EntityId>,
     forward_mappings: FastIndexMap<ExternalData, ResolvedExternalData>,
     reverse_mappings: FastIndexMap<EntityId, ExternalData>,
+    telemetry: Telemetry,
 }
 
 impl ExternalDataStore {
@@ -41,12 +54,16 @@ impl ExternalDataStore {
     /// The entity limit is the maximum number of unique entities that can be stored. Once the limit is reached, new
     /// entities will not be added to the store.
     pub fn with_entity_limit(entity_limit: NonZeroUsize) -> Self {
+        let telemetry = Telemetry::new();
+        telemetry.entity_limit().set(entity_limit.get() as f64);
+
         Self {
             snapshot: Arc::new(ArcSwap::new(Arc::new(ExternalDataSnapshot::default()))),
             entity_limit,
             active_entities: FastHashSet::default(),
             forward_mappings: FastIndexMap::default(),
             reverse_mappings: FastIndexMap::default(),
+            telemetry,
         }
     }
 
@@ -64,6 +81,7 @@ impl ExternalDataStore {
             return false;
         }
 
+        self.telemetry.active_entities().increment(1);
         let _ = self.active_entities.insert(entity_id.clone());
         true
     }
@@ -90,6 +108,8 @@ impl ExternalDataStore {
         if !self.active_entities.remove(&entity_id) {
             return;
         }
+
+        self.telemetry.active_entities().decrement(1);
 
         if let Some(external_data) = self.reverse_mappings.swap_remove(&entity_id) {
             let _ = self.forward_mappings.swap_remove(&external_data);
@@ -118,9 +138,11 @@ impl MetadataStore for ExternalDataStore {
         for action in operation.actions {
             match action {
                 MetadataAction::AttachExternalData { external_data } => {
+                    self.telemetry.ops_attach_external_data_total().increment(1);
                     self.add_mapping(external_data, entity_id.clone());
                 }
                 MetadataAction::Delete => {
+                    self.telemetry.ops_delete_total().increment(1);
                     self.remove_mapping(entity_id.clone());
                 }
 
