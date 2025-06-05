@@ -8,6 +8,7 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use saluki_health::Health;
+use saluki_metrics::static_metrics;
 use stringtheory::interning::GenericMapInterner;
 use tokio::{select, sync::mpsc, time::sleep};
 use tracing::{debug, error, warn};
@@ -24,6 +25,18 @@ use crate::workload::{
 
 static CONTAINERD_WATCH_EVENTS: &[ContainerdTopic] = &[ContainerdTopic::TaskStarted, ContainerdTopic::TaskDeleted];
 
+static_metrics!(
+   name => Telemetry,
+   prefix => containerd_metadata_collector,
+   labels => [namespace: String],
+   metrics => [
+       counter(rpc_errors_total),
+       counter(intern_failed_total),
+       counter(events_task_started_total),
+       counter(events_task_deleted_total),
+   ],
+);
+
 /// A metadata collector that watches for updates from containerd.
 pub struct ContainerdMetadataCollector {
     client: ContainerdClient,
@@ -35,7 +48,7 @@ pub struct ContainerdMetadataCollector {
 impl ContainerdMetadataCollector {
     /// Creates a new `ContainerdMetadataCollector` from the given configuration.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the containerd gRPC client cannot be created, or listing the namespaces in the containerd runtime fails, an
     /// error will be returned.
@@ -104,25 +117,32 @@ struct NamespaceWatcher {
     namespace: Namespace,
     client: ContainerdClient,
     tag_interner: GenericMapInterner,
+    telemetry: Telemetry,
 }
 
 impl NamespaceWatcher {
     fn new(client: ContainerdClient, namespace: Namespace, tag_interner: GenericMapInterner) -> Self {
+        let telemetry = Telemetry::new(namespace.name.clone());
         Self {
             client,
             namespace,
             tag_interner,
+            telemetry,
         }
     }
 
     async fn process_event(&self, event: ContainerdEvent) -> Option<MetadataOperation> {
         match event {
             ContainerdEvent::TaskStarted { id, pid } => {
+                self.telemetry.events_task_started_total().increment(1);
                 let pid_entity_id = EntityId::ContainerPid(pid);
                 let container_entity_id = EntityId::Container(id);
                 Some(MetadataOperation::add_alias(pid_entity_id, container_entity_id))
             }
-            ContainerdEvent::TaskDeleted { pid, .. } => Some(MetadataOperation::delete(EntityId::ContainerPid(pid))),
+            ContainerdEvent::TaskDeleted { pid, .. } => {
+                self.telemetry.events_task_deleted_total().increment(1);
+                Some(MetadataOperation::delete(EntityId::ContainerPid(pid)))
+            }
         }
     }
 
@@ -133,6 +153,7 @@ impl NamespaceWatcher {
         let containers = match self.client.list_containers(&self.namespace).await {
             Ok(containers) => containers,
             Err(e) => {
+                self.telemetry.rpc_errors_total().increment(1);
                 error!(namespace = self.namespace.name, error = %e, "Error listing containers.");
                 return None;
             }
@@ -154,6 +175,7 @@ impl NamespaceWatcher {
                         }
                     }
 
+                    self.telemetry.rpc_errors_total().increment(1);
                     error!(namespace = self.namespace.name, container_id = container.id, error = %e, "Error getting PIDs for container.");
                     continue;
                 }
@@ -168,6 +190,7 @@ impl NamespaceWatcher {
                         operations.push(MetadataOperation::add_alias(pid_entity_id, container_entity_id));
                     }
                     None => {
+                        self.telemetry.intern_failed_total().increment(1);
                         warn!(
                             namespace = self.namespace.name,
                             container_id = container.id,
@@ -206,6 +229,7 @@ impl NamespaceWatcher {
                 let mut event_stream = match self.client.watch_events(CONTAINERD_WATCH_EVENTS, &self.namespace).await {
                     Ok(stream) => stream,
                     Err(e) => {
+                        self.telemetry.rpc_errors_total().increment(1);
                         error!(namespace = self.namespace.name, error = %e, "Error watching container events.");
 
                         sleep(Duration::from_secs(1)).await;

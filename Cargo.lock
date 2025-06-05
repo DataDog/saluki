@@ -3360,6 +3360,7 @@ dependencies = [
  "saluki-core",
  "saluki-error",
  "saluki-health",
+ "saluki-metrics",
  "serde",
  "serde_json",
  "serde_yaml",
