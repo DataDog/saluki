@@ -32,7 +32,6 @@ impl ContextResolvers {
         let primary_resolver = ContextResolverBuilder::from_name(format!("{}/dsd/primary", context.component_id()))?
             .with_interner_capacity_bytes(context_string_interner_size)
             .with_idle_context_expiration(Duration::from_secs(30))
-            .with_expiration_interval(Duration::from_secs(1))
             .with_heap_allocations(config.allow_context_heap_allocations)
             .with_origin_tags_resolver(maybe_origin_tags_resolver.clone())
             .build();

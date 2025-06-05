@@ -1,6 +1,10 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
-use quick_cache::{sync::Cache, UnitWeighter};
+use moka::{
+    notification::RemovalCause,
+    policy::EvictionPolicy,
+    sync::{Cache, CacheBuilder},
+};
 use saluki_common::{collections::PrehashedHashSet, hash::NoopU64BuildHasher};
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::static_metrics;
@@ -10,13 +14,13 @@ use tracing::debug;
 
 use crate::{
     context::{Context, ContextInner},
-    expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle},
     hash::{hash_context_with_seen, ContextKey, TagSetKey},
     origin::{OriginKey, OriginTags, OriginTagsResolver, RawOrigin},
     tags::{SharedTagSet, TagSet},
 };
 
 const DEFAULT_CONTEXT_RESOLVER_CACHED_CONTEXTS_LIMIT: usize = 500_000;
+const DEFAULT_CACHE_MAINTENANCE_INTERVAL: Duration = Duration::from_millis(200);
 
 // SAFETY: We know, unquestionably, that this value is not zero.
 const DEFAULT_CONTEXT_RESOLVER_INTERNER_CAPACITY_BYTES: NonZeroUsize =
@@ -24,8 +28,8 @@ const DEFAULT_CONTEXT_RESOLVER_INTERNER_CAPACITY_BYTES: NonZeroUsize =
 
 const SEEN_HASHSET_INITIAL_CAPACITY: usize = 128;
 
-type ContextCache = Cache<ContextKey, Context, UnitWeighter, NoopU64BuildHasher, ExpiryCapableLifecycle<ContextKey>>;
-type TagSetCache = Cache<TagSetKey, SharedTagSet, UnitWeighter, NoopU64BuildHasher, ExpiryCapableLifecycle<TagSetKey>>;
+type ContextCache = Cache<ContextKey, Context, NoopU64BuildHasher>;
+type TagSetCache = Cache<TagSetKey, SharedTagSet, NoopU64BuildHasher>;
 
 static_metrics! {
     name => Telemetry,
@@ -62,7 +66,7 @@ pub struct ContextResolverBuilder {
     caching_enabled: bool,
     cached_contexts_limit: Option<usize>,
     idle_context_expiration: Option<Duration>,
-    expiration_interval: Option<Duration>,
+    maintenance_interval: Option<Duration>,
     interner_capacity_bytes: Option<NonZeroUsize>,
     allow_heap_allocations: Option<bool>,
     origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
@@ -90,7 +94,7 @@ impl ContextResolverBuilder {
             caching_enabled: true,
             cached_contexts_limit: None,
             idle_context_expiration: None,
-            expiration_interval: None,
+            maintenance_interval: Some(DEFAULT_CACHE_MAINTENANCE_INTERVAL),
             interner_capacity_bytes: None,
             allow_heap_allocations: None,
             origin_tags_resolver: None,
@@ -146,20 +150,18 @@ impl ContextResolverBuilder {
         self
     }
 
-    /// Sets the interval at which the expiration process will run.
+    /// Disables the background maintenance task that performs periodic cache maintenance.
     ///
-    /// This controls how often the expiration process will run to check for expired contexts. While contexts become
-    /// _eligible_ for expiration after being idle for the time-to-idle duration, they are not _guaranteed_ to be
-    /// removed immediately: the expiration process must still run to actually find the eligible contexts and remove them.
+    /// The internal caches have a number of tasks that must be performed periodically in order to ensure expired values
+    /// are removed promptly, and to make room when the cache capacity is exceeded. These tasks will be performed
+    /// synchronously during read/write operations against the cache if necessary, but this can lead to increased tail
+    /// latencies in resolving. By default, we perform these tasks in a dedicated background task to try and avoid ever
+    /// having to perform them in the hot path of resolving contexts.
     ///
-    /// This means that the rough upper bound for how long a context may be kept alive after going idle is the sum of
-    /// both the time-to-idle value and the expiration interval.
-    ///
-    /// This value is only relevant if the idle context expiration was set.
-    ///
-    /// Defaults to 1 second.
-    pub fn with_expiration_interval(mut self, expiration_interval: Duration) -> Self {
-        self.expiration_interval = Some(expiration_interval);
+    /// In some cases, it may be desirable, or necessary, to disable this background maintenance task completely, such
+    /// as in tests.
+    pub fn without_background_maintenance(mut self) -> Self {
+        self.maintenance_interval = None;
         self
     }
 
@@ -245,6 +247,7 @@ impl ContextResolverBuilder {
     /// - unlimited context cache size
     /// - no-op interner (all strings are heap-allocated)
     /// - heap allocations allowed
+    /// - background maintenance disabled
     /// - telemetry disabled
     ///
     /// This is generally only useful for testing purposes, and is exposed publicly in order to be used in cross-crate
@@ -255,6 +258,7 @@ impl ContextResolverBuilder {
             .with_cached_contexts_limit(usize::MAX)
             .with_interner_capacity_bytes(NonZeroUsize::new(1).expect("not zero"))
             .with_heap_allocations(true)
+            .without_background_maintenance()
             .without_telemetry()
     }
 
@@ -272,62 +276,43 @@ impl ContextResolverBuilder {
 
         let interner = GenericMapInterner::new(interner_capacity_bytes);
 
-        let telemetry = Telemetry::new(self.name);
+        let telemetry = Telemetry::new(self.name.clone());
         telemetry
             .interner_capacity_bytes()
             .set(interner.capacity_bytes() as f64);
 
-        let mut context_expiration_builder = ExpirationBuilder::new();
-        let mut tagset_expiration_builder = ExpirationBuilder::new();
+        // Build and configure the context and tagset caches.
+        let context_cache_name = format!("{}-contexts", self.name);
+        let mut context_cache_builder = CacheBuilder::new(cached_context_limit as u64)
+            .name(&context_cache_name)
+            .eviction_policy(EvictionPolicy::tiny_lfu())
+            .eviction_listener(create_eviction_listener(telemetry.contexts_expired_total()));
+
+        let tagset_cache_name = format!("{}-tagsets", self.name);
+        let mut tagset_cache_builder = CacheBuilder::new(cached_context_limit as u64)
+            .name(&tagset_cache_name)
+            .eviction_policy(EvictionPolicy::tiny_lfu())
+            .eviction_listener(create_eviction_listener(telemetry.tagsets_expired_total()));
+
         if let Some(time_to_idle) = self.idle_context_expiration {
             if self.caching_enabled {
-                context_expiration_builder = context_expiration_builder.with_time_to_idle(time_to_idle);
-                tagset_expiration_builder = tagset_expiration_builder.with_time_to_idle(time_to_idle);
+                context_cache_builder = context_cache_builder.time_to_idle(time_to_idle);
+                tagset_cache_builder = tagset_cache_builder.time_to_idle(time_to_idle);
             }
         }
-        let (context_expiration, context_lifecycle) = context_expiration_builder.build();
-        let (tagset_expiration, tagset_lifecycle) = tagset_expiration_builder.build();
 
-        // NOTE: We specifically use the cached context limit for both the estimated items capacity _and_ weight
-        // capacity, where weight capacity relates to "maximum size in bytes", because we're using the unit weighter,
-        // which counts every cache entry as a weight of one.
-        //
-        // In the future, if we wanted to weight contexts differently -- heap-allocated contexts "weigh" more than
-        // fully-interned contexts, etc -- then we would want to expose those, but for now, it's simpler to have users
-        // simply configure a larger interner rather than having to consider the trade-offs between configuring the
-        // interner capacity _and_ the overall cached contexts capacity, etc.
-        let context_cache = Arc::new(ContextCache::with(
-            cached_context_limit,
-            cached_context_limit as u64,
-            UnitWeighter,
-            NoopU64BuildHasher,
-            context_lifecycle,
-        ));
+        let context_cache = Arc::new(context_cache_builder.build_with_hasher(NoopU64BuildHasher));
+        let tagset_cache = Arc::new(tagset_cache_builder.build_with_hasher(NoopU64BuildHasher));
 
-        let tagset_cache = Arc::new(TagSetCache::with(
-            cached_context_limit,
-            cached_context_limit as u64,
-            UnitWeighter,
-            NoopU64BuildHasher,
-            tagset_lifecycle,
-        ));
-
-        // If an idle context expiration was specified, spawn a background task to actually drive expiration.
-        if let Some(expiration_interval) = self.expiration_interval {
+        // If caching is enabled and maintenance is not disabled, spawn blocking background tasks to drive cache maintenance.
+        if let Some(maintenance_interval) = self.maintenance_interval {
             if self.caching_enabled {
                 let context_cache = Arc::clone(&context_cache);
                 let tagset_cache = Arc::clone(&tagset_cache);
 
-                let context_expiration = context_expiration.clone();
-                let tagset_expiration = tagset_expiration.clone();
-                tokio::spawn(drive_expiration(
-                    context_cache,
-                    tagset_cache,
-                    telemetry.clone(),
-                    context_expiration,
-                    tagset_expiration,
-                    expiration_interval,
-                ));
+                // Spawn these as dedicated threads since they may have a variable amount of work to perform.
+                std::thread::spawn(move || perform_cache_maintenance_tasks(context_cache, maintenance_interval));
+                std::thread::spawn(move || perform_cache_maintenance_tasks(tagset_cache, maintenance_interval));
             }
         }
 
@@ -345,9 +330,7 @@ impl ContextResolverBuilder {
             interner,
             caching_enabled: self.caching_enabled,
             context_cache,
-            context_expiration,
             tagset_cache,
-            tagset_expiration,
             hash_seen_buffer: PrehashedHashSet::with_capacity_and_hasher(
                 SEEN_HASHSET_INITIAL_CAPACITY,
                 NoopU64BuildHasher,
@@ -386,9 +369,7 @@ pub struct ContextResolver {
     interner: GenericMapInterner,
     caching_enabled: bool,
     context_cache: Arc<ContextCache>,
-    context_expiration: Expiration<ContextKey>,
     tagset_cache: Arc<TagSetCache>,
-    tagset_expiration: Expiration<TagSetKey>,
     hash_seen_buffer: PrehashedHashSet<u64>,
     origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
     allow_heap_allocations: bool,
@@ -537,7 +518,6 @@ impl ContextResolver {
         match self.context_cache.get(&context_key) {
             Some(context) => {
                 self.telemetry.resolved_existing_context_total().increment(1);
-                self.context_expiration.mark_entry_accessed(context_key);
 
                 Some(context)
             }
@@ -546,15 +526,12 @@ impl ContextResolver {
                 let tag_set = match self.tagset_cache.get(&tagset_key) {
                     Some(tag_set) => {
                         self.telemetry.resolved_existing_tagset_total().increment(1);
-                        self.tagset_expiration.mark_entry_accessed(tagset_key);
                         tag_set
                     }
                     None => {
                         // If the tagset is not cached, we need to create it.
                         let tag_set = self.create_tag_set(tags)?;
-
                         self.tagset_cache.insert(tagset_key, tag_set.clone());
-                        self.tagset_expiration.mark_entry_accessed(tagset_key);
 
                         tag_set
                     }
@@ -563,7 +540,6 @@ impl ContextResolver {
                 let context = self.create_context(context_key, name, tag_set, origin_tags)?;
 
                 self.context_cache.insert(context_key, context.clone());
-                self.context_expiration.mark_entry_accessed(context_key);
 
                 debug!(?context_key, ?context, "Resolved new context.");
                 Some(context)
@@ -579,9 +555,7 @@ impl Clone for ContextResolver {
             interner: self.interner.clone(),
             caching_enabled: self.caching_enabled,
             context_cache: Arc::clone(&self.context_cache),
-            context_expiration: self.context_expiration.clone(),
             tagset_cache: Arc::clone(&self.tagset_cache),
-            tagset_expiration: self.tagset_expiration.clone(),
             hash_seen_buffer: PrehashedHashSet::with_capacity_and_hasher(
                 SEEN_HASHSET_INITIAL_CAPACITY,
                 NoopU64BuildHasher,
@@ -592,57 +566,16 @@ impl Clone for ContextResolver {
     }
 }
 
-async fn drive_expiration(
-    context_cache: Arc<ContextCache>, tagset_cache: Arc<TagSetCache>, telemetry: Telemetry,
-    context_expiration: Expiration<ContextKey>, tagset_expiration: Expiration<TagSetKey>,
-    expiration_interval: Duration,
-) {
-    let mut expired_context_entries = Vec::new();
-    let mut expired_tagset_entries = Vec::new();
-
+fn perform_cache_maintenance_tasks<K, V, S>(cache: Arc<Cache<K, V, S>>, maintenance_interval: Duration)
+where
+    K: Eq + std::hash::Hash + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+    S: std::hash::BuildHasher + Clone + Send + Sync + 'static,
+{
     loop {
-        sleep(expiration_interval).await;
+        std::thread::sleep(maintenance_interval);
 
-        // Check for expired contexts first, since removing them will then unlock expired tagsets that they were
-        // referencing.
-        context_expiration.drain_expired_entries(&mut expired_context_entries);
-
-        let num_expired_contexts = expired_context_entries.len();
-        if num_expired_contexts != 0 {
-            telemetry
-                .contexts_expired_total()
-                .increment(num_expired_contexts as u64);
-            telemetry
-                .contexts_expired_batch_size()
-                .record(num_expired_contexts as f64);
-        }
-
-        debug!(num_expired_contexts, "Found expired contexts.");
-
-        for entry in expired_context_entries.drain(..) {
-            context_cache.remove(&entry);
-        }
-
-        debug!(num_expired_contexts, "Removed expired contexts.");
-
-        // Now go through and do the same thing for tagsets.
-        tagset_expiration.drain_expired_entries(&mut expired_tagset_entries);
-
-        let num_expired_tagsets = expired_tagset_entries.len();
-        if num_expired_tagsets != 0 {
-            telemetry.tagsets_expired_total().increment(num_expired_tagsets as u64);
-            telemetry
-                .tagsets_expired_batch_size()
-                .record(num_expired_tagsets as f64);
-        }
-
-        debug!(num_expired_tagsets, "Found expired tagsets.");
-
-        for entry in expired_tagset_entries.drain(..) {
-            tagset_cache.remove(&entry);
-        }
-
-        debug!(num_expired_tagsets, "Removed expired tagsets.");
+        cache.run_pending_tasks();
     }
 }
 
@@ -659,8 +592,19 @@ async fn drive_telemetry(
             .set(interner.capacity_bytes() as f64);
         telemetry.interner_len_bytes().set(interner.len_bytes() as f64);
 
-        telemetry.cached_contexts().set(context_cache.len() as f64);
-        telemetry.cached_tagsets().set(tagset_cache.len() as f64);
+        telemetry.cached_contexts().set(context_cache.entry_count() as f64);
+        telemetry.cached_tagsets().set(tagset_cache.entry_count() as f64);
+    }
+}
+
+fn create_eviction_listener<K, V>(
+    expired_counter: &metrics::Counter,
+) -> impl Fn(Arc<K>, V, RemovalCause) + Send + Sync + 'static {
+    let expired_counter = expired_counter.clone();
+    move |_key, _value, cause| {
+        if cause == RemovalCause::Expired {
+            expired_counter.increment(1);
+        }
     }
 }
 
@@ -880,13 +824,13 @@ mod tests {
         let context1 = resolver
             .resolve(name, &tags[..], Some(origin1.clone()))
             .expect("should not fail to resolve");
-        assert_eq!(resolver.context_cache.len(), 0);
+        assert_eq!(resolver.context_cache.entry_count(), 0);
 
         // Create a second context with the same name and tags, and verify that it is not cached:
         let context2 = resolver
             .resolve(name, &tags[..], Some(origin1))
             .expect("should not fail to resolve");
-        assert_eq!(resolver.context_cache.len(), 0);
+        assert_eq!(resolver.context_cache.entry_count(), 0);
 
         // The contexts should be equal to each other, but the underlying `Arc` pointers should be different since
         // they're two distinct contexts in terms of not being cached:

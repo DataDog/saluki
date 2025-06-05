@@ -11,7 +11,7 @@ hashbrown = { workspace = true }
 indexmap = { workspace = true }
 memchr = { workspace = true }
 metrics = { workspace = true }
-quick_cache = { workspace = true, features = ["parking_lot"] }
+moka = { workspace = true, features = ["sync"] }
 saluki-common = { workspace = true }
 saluki-error = { workspace = true }
 saluki-metrics = { workspace = true }
