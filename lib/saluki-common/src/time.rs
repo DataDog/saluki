@@ -11,6 +11,7 @@ use std::{
 
 static COARSE_TIME_INITIALIZED: Once = Once::new();
 static COARSE_TIME: AtomicU64 = AtomicU64::new(0);
+const COARSE_TIME_UPDATE_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Get the current Unix timestamp, in seconds.
 ///
@@ -33,8 +34,8 @@ pub fn get_unix_timestamp() -> u64 {
 ///
 /// # Accuracy
 ///
-/// The underlying coarse time is updated roughly every 100 milliseconds, so the value returned by this function may be
-/// behind by up to 100 milliseconds. This means that if calling the function at true time `t` (where `t` is in
+/// The underlying coarse time is updated roughly every 250 milliseconds, so the value returned by this function may be
+/// behind by up to 250 milliseconds. This means that if calling the function at true time `t` (where `t` is in
 /// seconds), the value returned may be `t-1` _or_ `t`, but will never be behind by more than 250 milliseconds, and
 /// never _ahead_ of `t`.
 pub fn get_coarse_unix_timestamp() -> u64 {
@@ -46,7 +47,7 @@ pub fn get_coarse_unix_timestamp() -> u64 {
         thread::spawn(|| {
             loop {
                 // Sleep for 250 milliseconds.
-                thread::sleep(Duration::from_millis(250));
+                thread::sleep(COARSE_TIME_UPDATE_INTERVAL);
 
                 // Update the coarse time with the current Unix timestamp.
                 COARSE_TIME.store(get_unix_timestamp(), Relaxed);
