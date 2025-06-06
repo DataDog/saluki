@@ -195,7 +195,10 @@ display-image-tags:
       # ADP Image Tags
 
       ## Internal (baked with necessary tools for internal deployments)
-      Non-FIPS:     ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG}
-      FIPS:         ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG_FIPS}
-      Checks Agent: ${IMAGE_REGISTRY}/${CHECKS_AGENT_TAG}
+      Non-FIPS: ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG}
+      FIPS:     ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG_FIPS}
+      
+      # checks-agent Image Tags
+      ## Internal (baked with necessary tools for internal deployments)
+      Non-FIPS: ${IMAGE_REGISTRY}/${CHECKS_AGENT_TAG}
       EOF
