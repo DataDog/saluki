@@ -19,7 +19,7 @@ checksum = "512761e0bb2578dd7380c6baaa0f4ce03e84f95e960231d1dec8bf4d7d6e2627"
 
 [[package]]
 name = "agent-data-plane"
-version = "0.1.11"
+version = "0.1.13"
 dependencies = [
  "async-trait",
  "bytesize",
@@ -3360,6 +3360,7 @@ dependencies = [
  "saluki-core",
  "saluki-error",
  "saluki-health",
+ "saluki-metrics",
  "serde",
  "serde_json",
  "serde_yaml",
