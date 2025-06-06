@@ -56,6 +56,7 @@ variables:
   ADP_BUILD_IMAGE: "${SALUKI_BUILD_CI_IMAGE}"
 
   ADP_IMAGE_REPO_NAME: "${SALUKI_IMAGE_REPO_PREFIX}/agent-data-plane"
+  CHECKS_AGENT_IMAGE_REPO_NAME: "${SALUKI_IMAGE_REPO_PREFIX}/checks-agent"
 
   # The image version depending on whether this is an official release or not: v3727183-d55fef5a (not official) va
   # 0.1.10 (official), etc.
@@ -68,12 +69,14 @@ variables:
   # varied depending on where it's being pushed.
   ADP_IMAGE_TAG: "agent-data-plane:${ADP_IMAGE_VERSION}"
   ADP_IMAGE_TAG_FIPS: "agent-data-plane:${ADP_IMAGE_VERSION_FIPS}"
+  CHECKS_AGENT_TAG: "checks-agent:${ADP_IMAGE_VERSION}"
 
   # The full image path.
   #
   # Used to specifically reference the built ADP image in certain jobs.
   ADP_FULL_IMAGE_TAG: "${IMAGE_REGISTRY}/saluki/agent-data-plane:${ADP_IMAGE_VERSION}"
   ADP_FULL_IMAGE_TAG_FIPS: "${IMAGE_REGISTRY}/saluki/agent-data-plane:${ADP_IMAGE_VERSION_FIPS}"
+  CHECKS_AGENT_FULL_IMAGE_TAG: "${IMAGE_REGISTRY}/saluki/checks-agent:${ADP_IMAGE_VERSION}"
 
 default:
   tags: ["arch:amd64"]
