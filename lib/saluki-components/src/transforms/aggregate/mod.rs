@@ -8,6 +8,7 @@ use ddsketch_agent::DDSketch;
 use hashbrown::{hash_map::Entry, HashMap};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::task::spawn_traced_named;
+use saluki_common::time::get_unix_timestamp;
 use saluki_config::GenericConfiguration;
 use saluki_context::Context;
 use saluki_core::data_model::event::{metric::*, Event, EventType};
@@ -20,7 +21,6 @@ use saluki_core::{
         OutputDefinition,
     },
 };
-use saluki_env::time::get_unix_timestamp;
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;

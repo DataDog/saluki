@@ -12,7 +12,6 @@ pub mod autodiscovery;
 pub mod features;
 pub mod helpers;
 pub mod host;
-pub mod time;
 pub mod workload;
 
 use std::sync::Arc;
