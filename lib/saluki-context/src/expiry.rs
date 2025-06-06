@@ -1,12 +1,12 @@
 use std::{
     marker::PhantomData,
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 
 use crossbeam_queue::ArrayQueue;
 use quick_cache::Lifecycle;
-use saluki_common::collections::PrehashedHashMap;
+use saluki_common::{collections::PrehashedHashMap, time::get_unix_timestamp};
 
 /// Builder for creating an expiration configuration.
 pub struct ExpirationBuilder<K> {
@@ -193,10 +193,7 @@ where
             // Calculate the cutoff time for entries to be considered expired.
             //
             // Our math here shouldn't ever fail, but if it does, we just return and wait for the next attempt.
-            let now = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+            let now = get_unix_timestamp();
             let last_seen_cutoff = match now.checked_sub(inner.time_to_idle.as_secs()) {
                 Some(cutoff) => cutoff,
                 None => return,
