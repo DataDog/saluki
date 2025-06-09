@@ -150,6 +150,10 @@ where
 
     fn process_pending_operations(&self, pending_op: Option<ExpirationOp<K>>) {
         let mut inner = self.inner.lock().unwrap();
+        self.process_pending_operations_with_inner(&mut inner, pending_op);
+    }
+
+    fn process_pending_operations_with_inner(&self, inner: &mut Inner<K>, pending_op: Option<ExpirationOp<K>>) {
         while let Some(op) = self.pending_ops.pop() {
             inner.process_operation(op);
         }
@@ -196,6 +200,9 @@ where
     pub fn drain_expired_items(&self, entries: &mut Vec<K>) {
         if let Some(state) = self.state.as_ref() {
             let mut inner = state.inner.lock().unwrap();
+
+            // With the inner lock held, process any pending operations first to ensure that the state is up-to-date.
+            state.process_pending_operations_with_inner(&mut inner, None);
 
             // Calculate the cutoff time for entries to be considered expired.
             //
