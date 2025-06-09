@@ -9,7 +9,7 @@ use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{
-    tags::{SharedTagSet, Tag, TagSet},
+    tags::{SharedTagSet, Tag},
     ContextResolver, ContextResolverBuilder,
 };
 use saluki_core::{components::transforms::*, topology::interconnect::FixedSizeEventBuffer};
@@ -70,7 +70,7 @@ impl SynchronousTransformBuilder for HostTagsConfiguration {
             .map(|s| Arc::from(s.as_str()))
             .map(MetaString::from)
             .map(Tag::from)
-            .collect::<TagSet>();
+            .collect::<SharedTagSet>();
 
         let context_string_interner_size =
             NonZeroUsize::new(self.host_tags_context_string_interner_bytes.as_u64() as usize)
@@ -162,7 +162,7 @@ mod tests {
     #[tokio::test]
     async fn basic() {
         let context_resolver = ContextResolverBuilder::for_tests().build();
-        let host_tags = TagSet::from_iter(vec![Tag::from("hosttag1"), Tag::from("hosttag2")]);
+        let host_tags = SharedTagSet::from_iter(vec![Tag::from("hosttag1"), Tag::from("hosttag2")]);
         let mut host_tags_enrichment = HostTagsEnrichment {
             start: Instant::now(),
             context_resolver: Some(context_resolver),
@@ -174,7 +174,7 @@ mod tests {
         let mut metric1 = Metric::gauge(Context::from_static_parts("test", &[]), 1.0);
         host_tags_enrichment.enrich_metric(&mut metric1);
         assert_eq!(metric1.context().tags().len(), host_tags.len());
-        for tag in host_tags {
+        for tag in &host_tags {
             assert!(metric1.context().tags().has_tag(tag));
         }
 

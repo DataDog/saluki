@@ -72,6 +72,18 @@ impl SharedTagSet {
     pub fn as_tag_sets(&self) -> &[Arc<TagSet>] {
         &self.0
     }
+
+    /// Returns the size of the tag set, in bytes.
+    ///
+    /// This includes the size of the vector holding any chained tagsets as well as each individual tag.
+    ///
+    /// Additionally, the value returned by this method does not compensate for externalities such as whether or not
+    /// tags are are inlined, interned, or heap allocated. This means that the value returned is essentially the
+    /// worst-case usage, and should be used as a rough estimate.
+    pub fn size_of(&self) -> usize {
+        // Calculate the size of the SharedTagSet, which includes the size of the SmallVec and the size of each Arc.
+        (self.0.len() * std::mem::size_of::<Arc<TagSet>>()) + self.0.iter().map(|ts| ts.size_of()).sum::<usize>()
+    }
 }
 
 impl From<TagSet> for SharedTagSet {
@@ -176,7 +188,14 @@ impl<'a> IntoIterator for &'a SharedTagSet {
     }
 }
 
+impl FromIterator<Tag> for SharedTagSet {
+    fn from_iter<T: IntoIterator<Item = Tag>>(iter: T) -> Self {
+        TagSet::from_iter(iter).into_shared()
+    }
+}
+
 /// Iterator over the tags in a `SharedTagSet`.
+#[derive(Clone)]
 pub struct SharedTagSetIterator<'a> {
     inner: std::slice::Iter<'a, Arc<TagSet>>,
     current: Option<std::slice::Iter<'a, Tag>>,
