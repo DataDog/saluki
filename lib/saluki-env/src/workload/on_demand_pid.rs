@@ -1,4 +1,5 @@
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
