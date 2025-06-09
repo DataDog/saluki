@@ -201,9 +201,7 @@ opt-level = 3
 debug = false
 
 [profile.optimized-release.package.checks-agent]
-inherits = "release"
-lto = "fat"
-codegen-units = 1
+inherits = "optimized-release"
 debug = false
 
 [workspace.lints.clippy]
