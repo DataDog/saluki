@@ -1,12 +1,15 @@
 use std::{
     marker::PhantomData,
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 
 use crossbeam_queue::ArrayQueue;
 use quick_cache::Lifecycle;
-use saluki_common::collections::PrehashedHashMap;
+use saluki_common::{
+    collections::PrehashedHashMap,
+    time::{get_coarse_unix_timestamp, get_unix_timestamp},
+};
 
 /// Builder for creating an expiration configuration.
 pub struct ExpirationBuilder<K> {
@@ -62,27 +65,18 @@ enum ExpirationOp<K> {
 
 #[derive(Debug)]
 struct AccessState {
-    accesses: u32,
     last_accessed: u64,
 }
 
 impl AccessState {
     fn new() -> Self {
         Self {
-            accesses: 1,
-            last_accessed: 0,
+            last_accessed: get_coarse_unix_timestamp(),
         }
     }
 
     fn mark_accessed(&mut self) {
-        self.accesses += 1;
-    }
-
-    fn update_last_changed(&mut self, now: u64) {
-        if self.accesses > 0 {
-            self.last_accessed = now;
-            self.accesses = 0;
-        }
+        self.last_accessed = get_coarse_unix_timestamp();
     }
 
     fn accessed_since(&self, since: u64) -> bool {
@@ -193,19 +187,15 @@ where
             // Calculate the cutoff time for entries to be considered expired.
             //
             // Our math here shouldn't ever fail, but if it does, we just return and wait for the next attempt.
-            let now = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+            let now = get_unix_timestamp();
             let last_seen_cutoff = match now.checked_sub(inner.time_to_idle.as_secs()) {
                 Some(cutoff) => cutoff,
                 None => return,
             };
 
-            let expired_entries = inner.last_seen.extract_if(|_, state| {
-                state.update_last_changed(now);
-                !state.accessed_since(last_seen_cutoff)
-            });
+            let expired_entries = inner
+                .last_seen
+                .extract_if(|_, state| !state.accessed_since(last_seen_cutoff));
             entries.extend(expired_entries.map(|(k, _)| k));
         }
     }
