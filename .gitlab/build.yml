@@ -170,7 +170,7 @@ publish-checks-agent-image-internal:
     branch: master
     strategy: depend
   variables:
-    IMAGE_NAME: checks-agent
+    IMAGE_NAME: saluki-checks-agent
     IMAGE_VERSION: tmpl-v1
     TMPL_SRC_REPO: ${CHECKS_AGENT_IMAGE_REPO_NAME}
     TMPL_SRC_IMAGE: ${ADP_IMAGE_VERSION}
