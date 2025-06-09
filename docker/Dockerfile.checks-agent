@@ -90,10 +90,6 @@ RUN test -d /usr/share/ca-certificates || (apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates=20240203 && \
     apt-get clean && rm -rf /var/lib/apt/lists)
 COPY --from=builder /checks-agent/target/bin/checks-agent /usr/local/bin/checks-agent
-# Copy the Datadog Agent's embedded Python environment into the image to resolve Python dependencies
-COPY --from=agent "/opt/datadog-agent/embedded" "/opt/datadog-agent/embedded"
-ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
-ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
 COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/checks-agent/
 COPY --from=license-builder /licenses /opt/datadog/checks-agent/LICENSES
 
