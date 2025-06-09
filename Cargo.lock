@@ -3193,12 +3193,15 @@ dependencies = [
 name = "saluki-common"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-queue",
  "foldhash",
  "hashbrown 0.15.3",
  "indexmap 2.9.0",
  "memory-accounting",
  "papaya",
  "pin-project",
+ "quick_cache",
+ "saluki-error",
  "saluki-metrics",
  "sha3",
  "tokio",
