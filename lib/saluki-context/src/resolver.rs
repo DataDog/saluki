@@ -358,7 +358,10 @@ impl ContextResolver {
             .and_then(|resolver| {
                 maybe_origin
                     .and_then(|origin| resolver.resolve_origin_key(origin))
-                    .map(|origin_key| OriginTags::from_resolved(origin_key, Arc::clone(resolver)))
+                    .map(|origin_key| {
+                        let tags = resolver.resolve_origin_tags(origin_key);
+                        OriginTags::from_resolved(origin_key, tags)
+                    })
             })
             .unwrap_or_else(OriginTags::empty)
     }
@@ -545,7 +548,6 @@ mod tests {
     };
 
     use super::*;
-    use crate::tags::TagVisitor;
 
     fn get_gauge_value(metrics: &[(CompositeKey, Option<Unit>, Option<SharedString>, DebugValue)], key: &str) -> f64 {
         metrics
@@ -565,7 +567,9 @@ mod tests {
             Some(OriginKey::from_opaque(info))
         }
 
-        fn visit_origin_tags(&self, _: OriginKey, _: &mut dyn TagVisitor) {}
+        fn resolve_origin_tags(&self, _: OriginKey) -> SharedTagSet {
+            TagSet::default().into_shared()
+        }
     }
 
     #[test]

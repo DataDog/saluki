@@ -174,7 +174,7 @@ impl OriginTagsResolver for DogStatsDOriginTagResolver {
         self.workload_provider.resolve_origin(origin)
     }
 
-    fn visit_origin_tags(&self, origin_key: OriginKey, visitor: &mut dyn TagVisitor) {
+    fn resolve_origin_tags(&self, origin_key: OriginKey, visitor: &mut dyn TagVisitor) {
         if let Some(origin) = self.workload_provider.get_resolved_origin_by_key(&origin_key) {
             self.visit_origin_tags(origin, visitor);
         }
