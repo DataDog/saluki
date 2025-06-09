@@ -99,7 +99,7 @@ build-adp-comparison-image:
       --push
       .
 
-build-checks-agent-image:
+build-checks-agent-baseline-image:
   extends: .build-common-variables
   stage: benchmark
   image: "${SALUKI_SMP_CI_IMAGE}"
@@ -128,7 +128,7 @@ build-checks-agent-image:
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx build
       --platform linux/amd64,linux/arm64
-      --file ./docker/Dockerfile.checks-agent
+      --file ./docker/Dockerfile.checks-agent-standalone
       --tag ${BASELINE_CHECKS_AGENT_IMG}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
@@ -165,7 +165,7 @@ build-checks-agent-comparison-image:
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx build
       --platform linux/amd64,linux/arm64
-      --file ./docker/Dockerfile.checks-agent
+      --file ./docker/Dockerfile.checks-agent-standalone
       --tag ${COMPARISON_CHECKS_AGENT_IMG}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
@@ -352,7 +352,7 @@ run-benchmarks-checks-agent:
   timeout: 1h
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs:
-    - build-checks-agent-image
+    - build-checks-agent-baseline-image
     - build-checks-agent-comparison-image
   allow_failure: true
   before_script:
