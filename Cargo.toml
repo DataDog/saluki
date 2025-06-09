@@ -197,7 +197,6 @@ debug = true
 
 [profile.release.package.checks-agent]
 inherits = "release"
-opt-level = 3
 debug = false
 
 [profile.optimized-release.package.checks-agent]
