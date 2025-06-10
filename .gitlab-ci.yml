@@ -69,7 +69,6 @@ variables:
   # varied depending on where it's being pushed.
   ADP_IMAGE_TAG: "agent-data-plane:${ADP_IMAGE_VERSION}"
   ADP_IMAGE_TAG_FIPS: "agent-data-plane:${ADP_IMAGE_VERSION_FIPS}"
-  CHECKS_AGENT_TAG: "saluki-checks-agent:${ADP_IMAGE_VERSION}"
 
   # The full image path.
   #
