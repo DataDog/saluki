@@ -6,12 +6,15 @@ license = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
+crossbeam-queue = { workspace = true }
 foldhash = { workspace = true }
 hashbrown = { workspace = true }
 indexmap = { workspace = true }
 memory-accounting = { workspace = true }
 papaya = { workspace = true }
 pin-project = { workspace = true }
+quick_cache = { workspace = true }
+saluki-error = { workspace = true }
 saluki-metrics = { workspace = true }
 sha3 = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
