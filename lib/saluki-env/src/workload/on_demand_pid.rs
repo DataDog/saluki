@@ -5,10 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
-use saluki_common::{
-    cache::{weight::ItemCountWeighter, Cache, CacheBuilder},
-    hash::FastBuildHasher,
-};
+use saluki_common::cache::{Cache, CacheBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use saluki_metrics::static_metrics;
@@ -33,7 +30,7 @@ static_metrics! {
 }
 
 #[cfg(target_os = "linux")]
-type PIDCache = Cache<u32, EntityId, ItemCountWeighter, FastBuildHasher>;
+type PIDCache = Cache<u32, EntityId>;
 #[cfg(target_os = "linux")]
 const DEFAULT_PID_CACHE_CACHED_PIDS_LIMIT: usize = 500_000;
 #[cfg(target_os = "linux")]

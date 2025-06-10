@@ -260,7 +260,7 @@ where
 
 /// A simple concurrent cache.
 #[derive(Clone)]
-pub struct Cache<K, V, W, H> {
+pub struct Cache<K, V, W = ItemCountWeighter, H = FastBuildHasher> {
     inner: Arc<InnerCache<K, V, W, H>>,
     expiration: Expiration<K>,
     telemetry: Telemetry,
