@@ -2782,7 +2782,6 @@ checksum = "6b450dad8382b1b95061d5ca1eb792081fb082adf48c678791fe917509596d5f"
 dependencies = [
  "equivalent",
  "hashbrown 0.15.3",
- "parking_lot",
 ]
 
 [[package]]
@@ -3286,7 +3285,6 @@ dependencies = [
  "metrics",
  "metrics-util",
  "proptest",
- "quick_cache",
  "saluki-common",
  "saluki-error",
  "saluki-metrics",

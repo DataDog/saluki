@@ -5,8 +5,6 @@
 mod context;
 pub use self::context::Context;
 
-mod expiry;
-
 mod hash;
 
 pub mod origin;
