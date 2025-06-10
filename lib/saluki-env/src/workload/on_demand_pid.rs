@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use std::time::Duration;
@@ -9,13 +11,26 @@ use saluki_common::{
 };
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
+use saluki_metrics::static_metrics;
 use stringtheory::interning::GenericMapInterner;
+#[cfg(target_os = "linux")]
+use tokio::time::sleep;
 #[cfg(target_os = "linux")]
 use tracing::{debug, trace};
 
 #[cfg(target_os = "linux")]
 use super::helpers::cgroups::{CgroupsConfiguration, CgroupsReader};
 use crate::{features::FeatureDetector, workload::EntityId};
+
+static_metrics! {
+    name => Telemetry,
+    prefix => pid_resolver,
+    metrics => [
+        gauge(interner_capacity_bytes),
+        gauge(interner_len_bytes),
+        gauge(interner_entries),
+    ],
+}
 
 #[cfg(target_os = "linux")]
 type PIDCache = Cache<u32, EntityId, ItemCountWeighter, FastBuildHasher>;
@@ -87,7 +102,10 @@ impl OnDemandPIDResolver {
     pub fn from_configuration(
         config: &GenericConfiguration, feature_detector: FeatureDetector, interner: GenericMapInterner,
     ) -> Result<Self, GenericError> {
-        use std::num::NonZeroUsize;
+        let telemetry = Telemetry::new();
+        telemetry
+            .interner_capacity_bytes()
+            .set(interner.capacity_bytes() as f64);
 
         let cgroups_config = CgroupsConfiguration::from_configuration(config, feature_detector)?;
         let cgroups_reader = match CgroupsReader::try_from_config(&cgroups_config, interner.clone())? {
@@ -107,6 +125,8 @@ impl OnDemandPIDResolver {
             pid_mappings_cache: cache_builder.build(),
         });
 
+        tokio::spawn(drive_telemetry(interner.clone(), telemetry.clone()));
+
         Ok(Self { inner })
     }
 
@@ -115,6 +135,19 @@ impl OnDemandPIDResolver {
     /// If the process ID is not part of a container, or cannot be found, `None` is returned.
     pub fn resolve(&self, process_id: u32) -> Option<EntityId> {
         self.inner.resolve(process_id)
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn drive_telemetry(interner: GenericMapInterner, telemetry: Telemetry) {
+    loop {
+        sleep(Duration::from_secs(1)).await;
+
+        telemetry.interner_entries().set(interner.len() as f64);
+        telemetry
+            .interner_capacity_bytes()
+            .set(interner.capacity_bytes() as f64);
+        telemetry.interner_len_bytes().set(interner.len_bytes() as f64);
     }
 }
 
