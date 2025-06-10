@@ -38,8 +38,6 @@ type PIDCache = Cache<u32, EntityId, ItemCountWeighter, FastBuildHasher>;
 const DEFAULT_PID_CACHE_CACHED_PIDS_LIMIT: usize = 500_000;
 #[cfg(target_os = "linux")]
 const DEFAULT_PID_CACHE_IDLE_PID_EXPIRATION: Duration = Duration::from_secs(30);
-#[cfg(target_os = "linux")]
-const DEFAULT_PID_CACHE_EXPIRATION_INTERVAL: Duration = Duration::from_secs(1);
 
 enum Inner {
     #[allow(dead_code)]
@@ -117,8 +115,7 @@ impl OnDemandPIDResolver {
 
         let cache_builder = CacheBuilder::from_identifier("on_demand_pid_resolver")?
             .with_capacity(NonZeroUsize::new(DEFAULT_PID_CACHE_CACHED_PIDS_LIMIT).unwrap())
-            .with_time_to_idle(Some(DEFAULT_PID_CACHE_IDLE_PID_EXPIRATION))
-            .with_expiration_interval(DEFAULT_PID_CACHE_EXPIRATION_INTERVAL);
+            .with_time_to_idle(Some(DEFAULT_PID_CACHE_IDLE_PID_EXPIRATION));
 
         let inner = Arc::new(Inner::Linux {
             cgroups_reader,
