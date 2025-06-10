@@ -87,7 +87,7 @@ impl<K, V> CacheBuilder<K, V> {
     pub fn for_tests() -> CacheBuilder<K, V> {
         CacheBuilder::from_identifier("noop")
             .expect("cache identifier not empty")
-            .without_telemetry()
+            .with_telemetry(false)
     }
 }
 
@@ -111,10 +111,17 @@ impl<K, V, W, H> CacheBuilder<K, V, W, H> {
     /// from the cache shortly thereafter. For the purposes of expiration, "accessed" is either when the item was first
     /// inserted or when it was last read.
     ///
+    /// If the given value is `None`, expiration is disabled.
+    ///
     /// Defaults to no expiration.
-    pub fn with_time_to_idle(mut self, idle_period: Duration) -> Self {
-        self.idle_period = Some(idle_period);
-        self.expiration_interval = self.expiration_interval.or(Some(Duration::from_secs(1)));
+    pub fn with_time_to_idle(mut self, idle_period: Option<Duration>) -> Self {
+        self.idle_period = idle_period;
+
+        // Make sure we have an expiration interval set if expiration is enabled.
+        if self.idle_period.is_some() {
+            self.expiration_interval = self.expiration_interval.or(Some(Duration::from_secs(1)));
+        }
+
         self
     }
 
@@ -190,8 +197,8 @@ impl<K, V, W, H> CacheBuilder<K, V, W, H> {
     /// disabling telemetry reporting in those cases.
     ///
     /// Defaults to telemetry enabled.
-    pub fn without_telemetry(mut self) -> Self {
-        self.telemetry_enabled = false;
+    pub fn with_telemetry(mut self, enabled: bool) -> Self {
+        self.telemetry_enabled = enabled;
         self
     }
 }
@@ -266,13 +273,18 @@ where
     W: Weighter<K, V> + Clone,
     H: std::hash::BuildHasher + Clone,
 {
+    /// Returns `true` if the cache is empty.
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
     /// Returns the number of items currently in the cache.
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.inner.len()
     }
 
     /// Returns the total weight of all items in the cache.
-    fn weight(&self) -> u64 {
+    pub fn weight(&self) -> u64 {
         self.inner.weight()
     }
 
