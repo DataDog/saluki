@@ -200,5 +200,5 @@ display-image-tags:
       
       # checks-agent Image Tags
       ## Internal (baked with necessary tools for internal deployments)
-      Non-FIPS: ${IMAGE_REGISTRY}/${CHECKS_AGENT_TAG}
+      Non-FIPS: ${IMAGE_REGISTRY}/images/${CHECKS_AGENT_TAG}
       EOF
