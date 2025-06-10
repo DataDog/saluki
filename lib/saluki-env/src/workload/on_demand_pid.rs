@@ -1,16 +1,35 @@
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 use saluki_common::collections::FastConcurrentHashMap;
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
+use saluki_metrics::static_metrics;
 use stringtheory::interning::GenericMapInterner;
+#[cfg(target_os = "linux")]
+use tokio::time::sleep;
 #[cfg(target_os = "linux")]
 use tracing::{debug, trace};
 
 #[cfg(target_os = "linux")]
 use super::helpers::cgroups::{CgroupsConfiguration, CgroupsReader};
 use crate::{features::FeatureDetector, workload::EntityId};
+
+static_metrics! {
+    name => Telemetry,
+    prefix => pid_resolver,
+    metrics => [
+        gauge(interner_capacity_bytes),
+        gauge(interner_len_bytes),
+        gauge(interner_entries),
+
+        gauge(cached_pids),
+        counter(resolved_existing_pid_total),
+        counter(resolved_new_pid_total),
+    ],
+}
 
 enum Inner {
     #[allow(dead_code)]
@@ -20,6 +39,7 @@ enum Inner {
     Linux {
         cgroups_reader: CgroupsReader,
         pid_mappings_cache: FastConcurrentHashMap<u32, EntityId>,
+        telemetry: Telemetry,
     },
 }
 
@@ -32,7 +52,8 @@ impl Inner {
             Inner::Linux {
                 pid_mappings_cache,
                 cgroups_reader,
-            } => resolve_linux_pid(process_id, pid_mappings_cache, cgroups_reader),
+                telemetry,
+            } => resolve_linux_pid(process_id, pid_mappings_cache, cgroups_reader, telemetry),
         }
     }
 }
@@ -73,20 +94,28 @@ impl OnDemandPIDResolver {
     pub fn from_configuration(
         config: &GenericConfiguration, feature_detector: FeatureDetector, interner: GenericMapInterner,
     ) -> Result<Self, GenericError> {
+        let telemetry = Telemetry::new();
+        telemetry
+            .interner_capacity_bytes()
+            .set(interner.capacity_bytes() as f64);
+
         let cgroups_config = CgroupsConfiguration::from_configuration(config, feature_detector)?;
-        let cgroups_reader = match CgroupsReader::try_from_config(&cgroups_config, interner)? {
+        let cgroups_reader = match CgroupsReader::try_from_config(&cgroups_config, interner.clone())? {
             Some(reader) => reader,
             None => {
                 return Err(GenericError::msg("Failed to detect any cgroups v1/v2 hierarchy."));
             }
         };
 
-        Ok(Self {
-            inner: Arc::new(Inner::Linux {
-                cgroups_reader,
-                pid_mappings_cache: FastConcurrentHashMap::default(),
-            }),
-        })
+        let inner = Arc::new(Inner::Linux {
+            cgroups_reader,
+            pid_mappings_cache: FastConcurrentHashMap::default(),
+            telemetry: telemetry.clone(),
+        });
+
+        tokio::spawn(drive_telemetry(Arc::clone(&inner), interner.clone(), telemetry.clone()));
+
+        Ok(Self { inner })
     }
 
     /// Resolves a process ID to the container ID of the container is part of.
@@ -94,6 +123,28 @@ impl OnDemandPIDResolver {
     /// If the process ID is not part of a container, or cannot be found, `None` is returned.
     pub fn resolve(&self, process_id: u32) -> Option<EntityId> {
         self.inner.resolve(process_id)
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn drive_telemetry(inner: Arc<Inner>, interner: GenericMapInterner, telemetry: Telemetry) {
+    loop {
+        sleep(Duration::from_secs(1)).await;
+
+        telemetry.interner_entries().set(interner.len() as f64);
+        telemetry
+            .interner_capacity_bytes()
+            .set(interner.capacity_bytes() as f64);
+        telemetry.interner_len_bytes().set(interner.len_bytes() as f64);
+
+        match inner.as_ref() {
+            Inner::Noop => {}
+
+            #[cfg(target_os = "linux")]
+            Inner::Linux { pid_mappings_cache, .. } => {
+                telemetry.cached_pids().set(pid_mappings_cache.len() as f64);
+            }
+        }
     }
 }
 
@@ -105,6 +156,7 @@ fn resolve_noop_pid(_process_id: u32) -> Option<EntityId> {
 #[cfg(target_os = "linux")]
 fn resolve_linux_pid(
     process_id: u32, pid_mappings_cache: &FastConcurrentHashMap<u32, EntityId>, cgroups_reader: &CgroupsReader,
+    telemetry: &Telemetry,
 ) -> Option<EntityId> {
     // First, check our PID mapping cache.
     //
@@ -119,6 +171,7 @@ fn resolve_linux_pid(
             process_id,
             container_id
         );
+        telemetry.resolved_existing_pid_total().increment(1);
         return Some(container_id);
     }
 
@@ -130,6 +183,7 @@ fn resolve_linux_pid(
             debug!("Resolved PID {} to container ID {}.", process_id, container_eid);
 
             pid_mappings_cache.pin().insert(process_id, container_eid.clone());
+            telemetry.resolved_new_pid_total().increment(1);
             Some(container_eid)
         }
         None => {

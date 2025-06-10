@@ -9,8 +9,11 @@ export TARGET_TRIPLE ?= $(shell command -v rustc 1>/dev/null && rustc -vV | sed 
 
 # High-level settings that ultimately get passed down to build-specific targets.
 export APP_FULL_NAME ?= Agent Data Plane
+export CHECKS_FULL_NAME ?= Checks Agent
 export APP_SHORT_NAME ?= data-plane
 export APP_IDENTIFIER ?= adp
+export CHECKS_SHORT_NAME ?= checks-agent
+export CHECKS_IDENTIFIER ?= checks-agent
 export APP_GIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
 export APP_VERSION ?= $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
 
@@ -112,6 +115,22 @@ build-adp-image: ## Builds the ADP container image in release mode ('latest' tag
 		--build-arg "APP_VERSION=$(APP_VERSION)" \
 		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
 		--file ./docker/Dockerfile.agent-data-plane \
+		.
+		
+.PHONY: build-checks-agent-image
+build-checks-agent-image: ## Builds the ADP container image in release mode ('latest' tag)
+	@echo "[*] Building Check Agent image..."
+	@$(CONTAINER_TOOL) build \
+		--tag saluki-images/check-agent:latest \
+		--tag local.dev/saluki-images/check-agent:testing \
+		--build-arg "BUILD_IMAGE=$(ADP_BUILD_IMAGE)" \
+		--build-arg "APP_IMAGE=$(ADP_APP_IMAGE)" \
+		--build-arg "APP_FULL_NAME=$(CHECKS_FULL_NAME)" \
+		--build-arg "APP_SHORT_NAME=$(CHECKS_SHORT_NAME)" \
+		--build-arg "APP_IDENTIFIER=$(CHECKS_IDENTIFIER)" \
+		--build-arg "APP_VERSION=$(APP_VERSION)" \
+		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
+		--file ./docker/Dockerfile.checks-agent \
 		.
 
 .PHONY: build-datadog-agent-image
@@ -544,6 +563,9 @@ emit-build-metadata: ## Emits build metadata shell variables suitable for use du
 	@echo "APP_GIT_HASH=${APP_GIT_HASH}"
 	@echo "APP_VERSION=${APP_VERSION}"
 	@echo "APP_BUILD_TIME=${APP_BUILD_TIME}"
+	@echo "CHECKS_FULL_NAME=${CHECKS_FULL_NAME}"
+	@echo "CHECKS_SHORT_NAME=${CHECKS_SHORT_NAME}"
+	@echo "CHECKS_IDENTIFIER=${CHECKS_IDENTIFIER}"
 
 ##@ Docs
 

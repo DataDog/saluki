@@ -24,14 +24,13 @@ fn main() {
     //
     // For the patch component, we also split on hyphens to remove any pre-release or build metadata, and only return
     // the first portion, assuming it's a number.
-    let version_parts: Vec<&str> = app_version.split('.').collect();
-    let major = version_parts.first().unwrap_or(&"0").parse::<u32>().unwrap_or(0);
-    let minor = version_parts.first().unwrap_or(&"0").parse::<u32>().unwrap_or(0);
+    let mut version_parts = app_version.split('.');
+    let major = version_parts.next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+    let minor = version_parts.next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
     let patch = version_parts
-        .first()
-        .map(|s| s.split('-').next().unwrap_or(s))
-        .unwrap_or("0")
-        .parse::<u32>()
+        .flat_map(|s| s.split('-'))
+        .next()
+        .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(0);
 
     let details_file = std::env::var("OUT_DIR").unwrap() + "/details.rs";

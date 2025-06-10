@@ -43,11 +43,15 @@ RUN apt-get update && \
 COPY --from=agent "/opt/datadog-agent/embedded" "/opt/datadog-agent/embedded"
 ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
 ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
+
+# Install Protocol Buffers compiler by hand, since we want a specific minimum version that Debian Buster does not have.
+COPY .ci/install-protoc.sh /
+RUN chmod +x /install-protoc.sh && /install-protoc.sh
     
 # Build Checks Agent.
 WORKDIR /checks-agent
 COPY . /checks-agent
-RUN mkdir -p /checks-agent/target/bin &&  cargo build --profile ${BUILD_PROFILE} --bin checks-agent --features ${BUILD_FEATURES} --target-dir /checks-agent/target && \
+RUN mkdir -p /checks-agent/target/bin &&  cargo build --profile ${BUILD_PROFILE} --package checks-agent --features ${BUILD_FEATURES} --target-dir /checks-agent/target && \
 cp /checks-agent/target/${BUILD_PROFILE}/checks-agent /checks-agent/target/bin/
 
 # Calculate the necessary licenses that we need to include in the final image.
@@ -68,11 +72,6 @@ RUN tail -n +2 /tmp/LICENSE-3rdparty.csv | awk -F ',' '{print $3}' | awk -F' ' '
 # Now stick our resulting binary and licenses in a clean image.
 FROM ${APP_IMAGE}
 
-# Docs here https://pyo3.rs/v0.14.5/building_and_distribution#configuring-the-python-version
-# If needed, ENV PYO3_PYTHON="/opt/datadog-agent/embedded/bin/python3.12" could be used, but auto-detection works in our case
-ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
-ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
-
 # Only install ca-certificates if the directory doesn't exist.
 #
 # We do this because we don't want to set the user to `root` in the application image, but we need `root` to use
@@ -83,13 +82,9 @@ ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
 # the `root` user, so we can install them without issue.
 USER root
 RUN test -d /usr/share/ca-certificates || (apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates=20240203~22.04.1 && \
+    apt-get install -y --no-install-recommends ca-certificates=20240203 && \
     apt-get clean && rm -rf /var/lib/apt/lists)
 COPY --from=builder /checks-agent/target/bin/checks-agent /usr/local/bin/checks-agent
-# Copy the Datadog Agent's embedded Python environment into the image to resolve Python dependencies
-COPY --from=agent "/opt/datadog-agent/embedded" "/opt/datadog-agent/embedded"
-ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
-ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
 COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/checks-agent/
 COPY --from=license-builder /licenses /opt/datadog/checks-agent/LICENSES
 

@@ -27,7 +27,7 @@ pub struct BearerAuthInterceptor {
 impl BearerAuthInterceptor {
     /// Creates a new `BearerAuthInterceptor` from the bearer token in the given file.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the file path is invalid, if the file cannot be read, or if the bearer token is not valid ASCII, an error
     /// variant will be returned.
@@ -36,13 +36,20 @@ impl BearerAuthInterceptor {
         P: AsRef<Path>,
     {
         let file_path = file_path.as_ref();
-        let raw_bearer_token = tokio::fs::read_to_string(file_path).await?;
+        let raw_bearer_token = tokio::fs::read_to_string(file_path).await.map_err(|e| {
+            generic_error!(
+                "Failed to read bearer token from file '{}' ({}).",
+                file_path.display(),
+                e.kind()
+            )
+        })?;
 
         let raw_bearer_token = format!("bearer {}", raw_bearer_token);
         match MetadataValue::<Ascii>::from_str(&raw_bearer_token) {
             Ok(bearer_token) => Ok(Self { bearer_token }),
             Err(_) => Err(generic_error!(
-                "token must only container visible ASCII characters (32-127)"
+                "Found invalid characters for bearer token in file '{}'. Bearer token can only contain visible ASCII characters (0x20 - 0x7F).",
+                file_path.display(),
             )),
         }
     }
@@ -67,26 +74,30 @@ pub async fn build_datadog_agent_ipc_https_connector<P: AsRef<Path>>(
     cert_path: P,
 ) -> Result<HttpsConnector<HttpConnector>, GenericError> {
     // Read the certificate file, and extract the certificate and private key from it.
-    let raw_cert_data = tokio::fs::read(cert_path.as_ref())
-        .await
-        .with_error_context(|| format!("Failed to file contents for '{}'.", cert_path.as_ref().display()))?;
+    let raw_cert_data = tokio::fs::read(cert_path.as_ref()).await.map_err(|e| {
+        generic_error!(
+            "Failed to read certificate file '{}' ({}).",
+            cert_path.as_ref().display(),
+            e.kind()
+        )
+    })?;
 
     let mut cert_reader = Cursor::new(&raw_cert_data);
     let parsed_cert = rustls_pemfile::certs(&mut cert_reader)
         .next()
-        .ok_or_else(|| GenericError::msg("No certificate found in file."))?
+        .ok_or_else(|| generic_error!("No certificate found in file."))?
         .with_error_context(|| format!("Failed to parse certificate file '{}'.", cert_path.as_ref().display()))?;
 
     let mut key_reader = Cursor::new(&raw_cert_data);
     let parsed_key = rustls_pemfile::private_key(&mut key_reader)
         .with_error_context(|| format!("Failed to parse private key file '{}'.", cert_path.as_ref().display()))?
-        .ok_or_else(|| GenericError::msg("No private key found in file."))?;
+        .ok_or_else(|| generic_error!("No private key found in file."))?;
 
     // Build our client TLS configuration to use the parsed certificate for server verification, and then to send it for
     // client authentication.
     let crypto_provider = rustls::crypto::CryptoProvider::get_default()
         .map(Arc::clone)
-        .ok_or_else(|| GenericError::msg("Default cryptography provider not yet installed."))?;
+        .ok_or_else(|| generic_error!("Default cryptography provider not yet installed."))?;
     let agent_cert_verifier = Arc::new(DatadogAgentServerCertVerifier::from_certificate_and_provider(
         parsed_cert.clone(),
         crypto_provider,

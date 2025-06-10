@@ -5,10 +5,13 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[features]
+default = []
+
 [dependencies]
 memory-accounting = { workspace = true }
 saluki-app = { workspace = true, features = ["full"] }
-saluki-components = { workspace = true }
+saluki-components = { workspace = true, features = ["python-checks"] }
 saluki-config = { workspace = true }
 saluki-core = { workspace = true }
 saluki-env = { workspace = true }

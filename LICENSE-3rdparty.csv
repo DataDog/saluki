@@ -127,8 +127,10 @@ ident_case,https://github.com/TedDriggs/ident_case,MIT OR Apache-2.0,Ted Driggs 
 idna_adapter,https://github.com/hsivonen/idna_adapter,Apache-2.0 OR MIT,The rust-url developers
 indexmap,https://github.com/bluss/indexmap,Apache-2.0 OR MIT,The indexmap Authors
 indexmap,https://github.com/indexmap-rs/indexmap,Apache-2.0 OR MIT,The indexmap Authors
+indoc,https://github.com/dtolnay/indoc,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
 inlinable_string,https://github.com/fitzgen/inlinable_string,Apache-2.0 OR MIT,Nick Fitzgerald <fitzgen@gmail.com>
 ipnet,https://github.com/krisprice/ipnet,MIT OR Apache-2.0,Kris Price <kris@krisprice.nz>
+iri-string,https://github.com/lo48576/iri-string,MIT OR Apache-2.0,YOSHIOKA Takuma <nop_thread@nops.red>
 is_terminal_polyfill,https://github.com/polyfill-rs/is_terminal_polyfill,MIT OR Apache-2.0,The is_terminal_polyfill Authors
 itertools,https://github.com/rust-itertools/itertools,MIT OR Apache-2.0,bluss
 itoa,https://github.com/dtolnay/itoa,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
@@ -169,6 +171,7 @@ num-traits,https://github.com/rust-num/num-traits,MIT OR Apache-2.0,The Rust Pro
 num_threads,https://github.com/jhpratt/num_threads,MIT OR Apache-2.0,Jacob Pratt <open-source@jhpratt.dev>
 object,https://github.com/gimli-rs/object,Apache-2.0 OR MIT,The object Authors
 once_cell,https://github.com/matklad/once_cell,MIT OR Apache-2.0,Aleksey Kladov <aleksey.kladov@gmail.com>
+once_cell_polyfill,https://github.com/polyfill-rs/once_cell_polyfill,MIT OR Apache-2.0,The once_cell_polyfill Authors
 oorandom,https://hg.sr.ht/~icefox/oorandom,MIT,Simon Heath <icefox@dreamquest.io>
 openssl-probe,https://github.com/alexcrichton/openssl-probe,MIT OR Apache-2.0,Alex Crichton <alex@alexcrichton.com>
 opentelemetry,https://github.com/open-telemetry/opentelemetry-rust,Apache-2.0,The opentelemetry Authors
@@ -329,7 +332,6 @@ windows-core,https://github.com/microsoft/windows-rs,MIT OR Apache-2.0,Microsoft
 windows-implement,https://github.com/microsoft/windows-rs,MIT OR Apache-2.0,Microsoft
 windows-interface,https://github.com/microsoft/windows-rs,MIT OR Apache-2.0,Microsoft
 windows-link,https://github.com/microsoft/windows-rs,MIT OR Apache-2.0,Microsoft
-windows-registry,https://github.com/microsoft/windows-rs,MIT OR Apache-2.0,Microsoft
 windows-result,https://github.com/microsoft/windows-rs,MIT OR Apache-2.0,Microsoft
 windows-strings,https://github.com/microsoft/windows-rs,MIT OR Apache-2.0,Microsoft
 windows-sys,https://github.com/microsoft/windows-rs,MIT OR Apache-2.0,Microsoft

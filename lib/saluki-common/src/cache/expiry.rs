@@ -6,7 +6,8 @@ use std::{
 
 use crossbeam_queue::ArrayQueue;
 use quick_cache::Lifecycle;
-use saluki_common::{
+
+use crate::{
     collections::PrehashedHashMap,
     time::{get_coarse_unix_timestamp, get_unix_timestamp},
 };
@@ -59,8 +60,13 @@ where
 }
 
 enum ExpirationOp<K> {
+    /// The item was accessed.
     Accessed(K),
-    Evicted(K),
+
+    /// The item was removed.
+    ///
+    /// It may have been removed manually, or due to eviction.
+    Removed(K),
 }
 
 #[derive(Debug)]
@@ -102,7 +108,8 @@ where
                     self.last_seen.insert(key, AccessState::new());
                 }
             },
-            ExpirationOp::Evicted(key) => {
+            ExpirationOp::Removed(key) => {
+                // When an entry is removed, we also remove it from the last seen map.
                 self.last_seen.remove(&key);
             }
         }
@@ -135,14 +142,18 @@ where
         }
     }
 
-    fn mark_entry_evicted(&self, key: K) {
-        if let Err(op) = self.pending_ops.push(ExpirationOp::Evicted(key)) {
+    fn mark_entry_removed(&self, key: K) {
+        if let Err(op) = self.pending_ops.push(ExpirationOp::Removed(key)) {
             self.process_pending_operations(Some(op));
         }
     }
 
     fn process_pending_operations(&self, pending_op: Option<ExpirationOp<K>>) {
         let mut inner = self.inner.lock().unwrap();
+        self.process_pending_operations_with_inner(&mut inner, pending_op);
+    }
+
+    fn process_pending_operations_with_inner(&self, inner: &mut Inner<K>, pending_op: Option<ExpirationOp<K>>) {
         while let Some(op) = self.pending_ops.pop() {
             inner.process_operation(op);
         }
@@ -180,9 +191,18 @@ where
         }
     }
 
-    pub fn drain_expired_entries(&self, entries: &mut Vec<K>) {
+    pub fn mark_entry_removed(&self, key: K) {
+        if let Some(state) = self.state.as_ref() {
+            state.mark_entry_removed(key);
+        }
+    }
+
+    pub fn drain_expired_items(&self, entries: &mut Vec<K>) {
         if let Some(state) = self.state.as_ref() {
             let mut inner = state.inner.lock().unwrap();
+
+            // With the inner lock held, process any pending operations first to ensure that the state is up-to-date.
+            state.process_pending_operations_with_inner(&mut inner, None);
 
             // Calculate the cutoff time for entries to be considered expired.
             //
@@ -206,7 +226,7 @@ where
 /// This lifecycle implementation is used for [`quick_cache`] to ensure that we collect eviction events so that those
 /// entries can be removed from expiration tracking.
 #[derive(Clone)]
-pub struct ExpiryCapableLifecycle<K> {
+pub(super) struct ExpiryCapableLifecycle<K> {
     state: Option<Arc<State<K>>>,
 }
 
@@ -232,7 +252,7 @@ where
     #[inline]
     fn on_evict(&self, _state: &mut Self::RequestState, key: K, _value: V) {
         if let Some(state) = self.state.as_ref() {
-            state.mark_entry_evicted(key);
+            state.mark_entry_removed(key);
         }
     }
 }
