@@ -117,7 +117,7 @@ impl OnDemandPIDResolver {
 
         let cache_builder = CacheBuilder::from_identifier("on_demand_pid_resolver")?
             .with_capacity(NonZeroUsize::new(DEFAULT_PID_CACHE_CACHED_PIDS_LIMIT).unwrap())
-            .with_time_to_idle(DEFAULT_PID_CACHE_IDLE_PID_EXPIRATION)
+            .with_time_to_idle(Some(DEFAULT_PID_CACHE_IDLE_PID_EXPIRATION))
             .with_expiration_interval(DEFAULT_PID_CACHE_EXPIRATION_INTERVAL);
 
         let inner = Arc::new(Inner::Linux {
