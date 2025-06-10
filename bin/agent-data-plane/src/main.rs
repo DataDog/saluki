@@ -7,6 +7,7 @@
 #![deny(missing_docs)]
 use std::time::{Duration, Instant};
 
+use clap::Parser as _;
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
 use saluki_components::{
@@ -26,6 +27,9 @@ use tokio::select;
 use tracing::{error, info, warn};
 
 mod components;
+
+mod config;
+use self::config::{Action, Cli};
 
 mod env_provider;
 use self::env_provider::ADPEnvironmentProvider;
@@ -48,8 +52,9 @@ static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System
 #[tokio::main]
 async fn main() {
     let started = Instant::now();
+    let cli = Cli::parse();
 
-    if let Err(e) = initialize_dynamic_logging(None).await {
+    if let Err(e) = initialize_dynamic_logging(Some(cli.log_level())).await {
         fatal_and_exit(format!("failed to initialize logging: {}", e));
     }
 
@@ -65,7 +70,7 @@ async fn main() {
         fatal_and_exit(format!("failed to initialize TLS: {}", e));
     }
 
-    match run(started).await {
+    match run(started, cli).await {
         Ok(()) => info!("Agent Data Plane stopped."),
         Err(e) => {
             error!("{:?}", e);
@@ -74,94 +79,100 @@ async fn main() {
     }
 }
 
-async fn run(started: Instant) -> Result<(), GenericError> {
-    let app_details = saluki_metadata::get_app_details();
-    info!(
-        version = app_details.version().raw(),
-        git_hash = app_details.git_hash(),
-        target_arch = app_details.target_arch(),
-        build_time = app_details.build_time(),
-        "Agent Data Plane starting..."
-    );
+async fn run(started: Instant, cli: Cli) -> Result<(), GenericError> {
+    
+    match cli.action {
+        Action::Run(run_config) => {
+            let app_details = saluki_metadata::get_app_details();
+            info!(
+                version = app_details.version().raw(),
+                git_hash = app_details.git_hash(),
+                target_arch = app_details.target_arch(),
+                build_time = app_details.build_time(),
+                // Q: add config path here?
+                "Agent Data Plane starting..."
+            );
 
-    // Load our configuration and create all high-level primitives (health registry, component registry, environment
-    // provider, etc) that are needed to build the topology.
-    let configuration = ConfigurationLoader::default()
-        .try_from_yaml("/etc/datadog-agent/datadog.yaml")
-        .from_environment("DD")?
-        .with_default_secrets_resolution()
-        .await?
-        .into_generic()?;
+            // Load our configuration and create all high-level primitives (health registry, component registry, environment
+            // provider, etc) that are needed to build the topology.
+            let configuration = ConfigurationLoader::default()
+                .try_from_yaml(&run_config.config)
+                .from_environment("DD")?
+                .with_default_secrets_resolution()
+                .await?
+                .into_generic()?;
 
-    // Set up all of the building blocks for building our topologies and launching internal processes.
-    let component_registry = ComponentRegistry::default();
-    let health_registry = HealthRegistry::new();
-    let env_provider =
-        ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry).await?;
+            // Set up all of the building blocks for building our topologies and launching internal processes.
+            let component_registry = ComponentRegistry::default();
+            let health_registry = HealthRegistry::new();
+            let env_provider =
+                ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry).await?;
 
-    // Create our primary data topology and spawn any internal processes, which will ensure all relevant components are
-    // registered and accounted for in terms of memory usage.
-    let blueprint = create_topology(&configuration, &env_provider, &component_registry).await?;
+            // Create our primary data topology and spawn any internal processes, which will ensure all relevant components are
+            // registered and accounted for in terms of memory usage.
+            let blueprint = create_topology(&configuration, &env_provider, &component_registry).await?;
 
-    spawn_internal_observability_topology(&configuration, &component_registry, health_registry.clone())
-        .error_context("Failed to spawn internal observability topology.")?;
-    spawn_control_plane(
-        configuration.clone(),
-        &component_registry,
-        health_registry.clone(),
-        env_provider,
-    )
-    .error_context("Failed to spawn control plane.")?;
+            spawn_internal_observability_topology(&configuration, &component_registry, health_registry.clone())
+                .error_context("Failed to spawn internal observability topology.")?;
+            spawn_control_plane(
+                configuration.clone(),
+                &component_registry,
+                health_registry.clone(),
+                env_provider,
+            )
+            .error_context("Failed to spawn control plane.")?;
 
-    // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
-    let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;
-    let memory_limiter = initialize_memory_bounds(bounds_configuration, &component_registry)?;
+            // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
+            let bounds_configuration = MemoryBoundsConfiguration::try_from_config(&configuration)?;
+            let memory_limiter = initialize_memory_bounds(bounds_configuration, &component_registry)?;
 
-    if let Ok(val) = std::env::var("DD_ADP_WRITE_SIZING_GUIDE") {
-        if val != "false" {
-            if let Err(error) = write_sizing_guide(component_registry.as_bounds()) {
-                warn!("Failed to write sizing guide: {}", error);
-            } else {
-                return Ok(());
+            if let Ok(val) = std::env::var("DD_ADP_WRITE_SIZING_GUIDE") {
+                if val != "false" {
+                    if let Err(error) = write_sizing_guide(component_registry.as_bounds()) {
+                        warn!("Failed to write sizing guide: {}", error);
+                    } else {
+                        return Ok(());
+                    }
+                }
+            }
+
+            // Bounds validation succeeded, so now we'll build and spawn the topology.
+            let built_topology = blueprint.build().await?;
+            let mut running_topology = built_topology.spawn(&health_registry, memory_limiter).await?;
+
+            let startup_time = started.elapsed();
+
+            // Emit the startup metrics for the application.
+            emit_startup_metrics();
+
+            info!(
+                init_time_ms = startup_time.as_millis(),
+                "Topology running, waiting for interrupt..."
+            );
+
+            let mut finished_with_error = false;
+            select! {
+                _ = running_topology.wait_for_unexpected_finish() => {
+                    error!("Component unexpectedly finished. Shutting down...");
+                    finished_with_error = true;
+                },
+                _ = tokio::signal::ctrl_c() => {
+                    info!("Received SIGINT, shutting down...");
+                }
+            }
+
+            match running_topology.shutdown_with_timeout(Duration::from_secs(30)).await {
+                Ok(()) => {
+                    if finished_with_error {
+                        warn!("Topology shutdown complete despite error(s).")
+                    } else {
+                        info!("Topology shutdown successfully.")
+                    }
+                    Ok(())
+                }
+                Err(e) => Err(e),
             }
         }
-    }
-
-    // Bounds validation succeeded, so now we'll build and spawn the topology.
-    let built_topology = blueprint.build().await?;
-    let mut running_topology = built_topology.spawn(&health_registry, memory_limiter).await?;
-
-    let startup_time = started.elapsed();
-
-    // Emit the startup metrics for the application.
-    emit_startup_metrics();
-
-    info!(
-        init_time_ms = startup_time.as_millis(),
-        "Topology running, waiting for interrupt..."
-    );
-
-    let mut finished_with_error = false;
-    select! {
-        _ = running_topology.wait_for_unexpected_finish() => {
-            error!("Component unexpectedly finished. Shutting down...");
-            finished_with_error = true;
-        },
-        _ = tokio::signal::ctrl_c() => {
-            info!("Received SIGINT, shutting down...");
-        }
-    }
-
-    match running_topology.shutdown_with_timeout(Duration::from_secs(30)).await {
-        Ok(()) => {
-            if finished_with_error {
-                warn!("Topology shutdown complete despite error(s).")
-            } else {
-                info!("Topology shutdown successfully.")
-            }
-            Ok(())
-        }
-        Err(e) => Err(e),
     }
 }
 
