@@ -19,6 +19,7 @@ use std::{
     task::{Context, Poll},
 };
 
+use crossbeam_utils::CachePadded;
 use pin_project::pin_project;
 
 const STATS_LAYOUT: Layout = Layout::new::<*const AllocationStats>();
@@ -117,19 +118,19 @@ fn get_layout_with_group_trailer(layout: Layout) -> (Layout, usize) {
 
 /// Statistics for an allocation group.
 pub struct AllocationStats {
-    allocated_bytes: AtomicUsize,
-    allocated_objects: AtomicUsize,
-    deallocated_bytes: AtomicUsize,
-    deallocated_objects: AtomicUsize,
+    allocated_bytes: CachePadded<AtomicUsize>,
+    allocated_objects: CachePadded<AtomicUsize>,
+    deallocated_bytes: CachePadded<AtomicUsize>,
+    deallocated_objects: CachePadded<AtomicUsize>,
 }
 
 impl AllocationStats {
     const fn new() -> Self {
         Self {
-            allocated_bytes: AtomicUsize::new(0),
-            allocated_objects: AtomicUsize::new(0),
-            deallocated_bytes: AtomicUsize::new(0),
-            deallocated_objects: AtomicUsize::new(0),
+            allocated_bytes: CachePadded::new(AtomicUsize::new(0)),
+            allocated_objects: CachePadded::new(AtomicUsize::new(0)),
+            deallocated_bytes: CachePadded::new(AtomicUsize::new(0)),
+            deallocated_objects: CachePadded::new(AtomicUsize::new(0)),
         }
     }
 
