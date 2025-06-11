@@ -80,7 +80,6 @@ async fn main() {
 }
 
 async fn run(started: Instant, cli: Cli) -> Result<(), GenericError> {
-    
     match cli.action {
         Action::Run(run_config) => {
             let app_details = saluki_metadata::get_app_details();
@@ -106,7 +105,8 @@ async fn run(started: Instant, cli: Cli) -> Result<(), GenericError> {
             let component_registry = ComponentRegistry::default();
             let health_registry = HealthRegistry::new();
             let env_provider =
-                ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry).await?;
+                ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry)
+                    .await?;
 
             // Create our primary data topology and spawn any internal processes, which will ensure all relevant components are
             // registered and accounted for in terms of memory usage.

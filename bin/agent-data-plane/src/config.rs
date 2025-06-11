@@ -39,4 +39,4 @@ pub struct RunConfig {
     /// Path to the configuration file
     #[arg(long = "config", default_value = "/etc/datadog-agent/datadog.yaml")]
     pub config: PathBuf,
-} 
+}
