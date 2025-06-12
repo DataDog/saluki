@@ -71,15 +71,13 @@ async fn main() {
     }
 
     match cli.action {
-        Some(Action::Run(run_config)) => {
-            match run(started, run_config).await {
-                Ok(()) => info!("Agent Data Plane stopped."),
-                Err(e) => {
-                    error!("{:?}", e);
-                    std::process::exit(1);
-                }
+        Some(Action::Run(run_config)) => match run(started, run_config).await {
+            Ok(()) => info!("Agent Data Plane stopped."),
+            Err(e) => {
+                error!("{:?}", e);
+                std::process::exit(1);
             }
-        }
+        },
         None => {
             // Use default configuration path when no subcommand is provided
             let default_run_config = RunConfig {
@@ -119,8 +117,7 @@ async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericError
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
     let env_provider =
-        ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry)
-            .await?;
+        ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry).await?;
 
     // Create our primary data topology and spawn any internal processes, which will ensure all relevant components are
     // registered and accounted for in terms of memory usage.
