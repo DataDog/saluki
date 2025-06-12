@@ -134,6 +134,25 @@ impl EndpointEncoder for MetricsEndpointEncoder {
     }
 
     fn encode(&mut self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
+        // NOTE: We're passing _four_ buffers to `encode_single_metric`, which is a lot, but with good reason.
+        //
+        // The first buffer, `buffer`, is the overall output buffer: the caller expects us to put the full encoded
+        // metric payload into this buffer.
+        //
+        // The second and third buffers, `primary_scratch_buf` and `secondary_scratch_buf`, are used for roughly the
+        // same thing but deal with _nesting_. When writing a "message" in Protocol Buffers, the message data itself is
+        // prefixed with the field number and a length delimiter that specifies how long the message is. We can't write
+        // that length delimiter until we know the full size of the message, so we write the message to a scratch
+        // buffer, calculate its size, and then write the field number and length delimiter to the output buffer
+        // followed by the message data from the scratch buffer.
+        //
+        // We have _two_ scratch buffers because you need a dedicated buffer for each level of nested message. We have
+        // to be able to nest up to two levels deep in our metrics payload, so we need two scratch buffers to handle
+        // that.
+        //
+        // The fourth buffer, `packed_scratch_buf`, is used for writing out packed repeated fields. This is similar to
+        // the situation describe above, except it's not _exactly_ the same as an additional level of nesting.. so I
+        // just decided to give it a somewhat more descriptive name.
         encode_single_metric(
             input,
             buffer,
@@ -170,37 +189,6 @@ fn field_number_for_metric_type(metric: &Metric) -> u32 {
     }
 }
 
-fn encode_single_metric(
-    metric: &Metric, output_buf: &mut Vec<u8>, primary_scratch_buf: &mut Vec<u8>, secondary_scratch_buf: &mut Vec<u8>,
-    packed_scratch_buf: &mut Vec<u8>,
-) -> Result<(), protobuf::Error> {
-    // Encode the metric based on its type.
-    match metric.values() {
-        MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..) => {
-            encode_series_metric(metric, primary_scratch_buf, secondary_scratch_buf)?;
-        }
-        MetricValues::Histogram(..) | MetricValues::Distribution(..) => {
-            encode_sketch_metric(metric, primary_scratch_buf, secondary_scratch_buf, packed_scratch_buf)?;
-        }
-    }
-
-    // Write the encoded metric to the output buffer.
-    //
-    // We do this as a separate step because we need to know the full length of the encoded metric before we can write
-    // the field number, length delimiter, etc.
-    let mut output_stream = CodedOutputStream::vec(output_buf);
-
-    // Write the field tag, then the message's length delimiter, and then the message itself.
-    let field_number = field_number_for_metric_type(metric);
-    output_stream.write_tag(field_number, WireType::LengthDelimited)?;
-
-    let message_size = get_message_size_from_buffer(primary_scratch_buf)?;
-    output_stream.write_raw_varint32(message_size)?;
-
-    output_stream.write_raw_bytes(primary_scratch_buf)?;
-    output_stream.flush()
-}
-
 fn get_message_size(raw_msg_size: usize) -> Result<u32, protobuf::Error> {
     const MAX_MESSAGE_SIZE: u64 = i32::MAX as u64;
 
@@ -220,52 +208,36 @@ fn get_message_size_from_buffer(buf: &[u8]) -> Result<u32, protobuf::Error> {
     get_message_size(buf.len())
 }
 
-fn encode_series_metric(
-    metric: &Metric, output_buf: &mut Vec<u8>, scratch_buf: &mut Vec<u8>,
+fn encode_single_metric(
+    metric: &Metric, output_buf: &mut Vec<u8>, primary_scratch_buf: &mut Vec<u8>, secondary_scratch_buf: &mut Vec<u8>,
+    packed_scratch_buf: &mut Vec<u8>,
 ) -> Result<(), protobuf::Error> {
-    output_buf.clear();
-
     let mut output_stream = CodedOutputStream::vec(output_buf);
+    let field_number = field_number_for_metric_type(metric);
 
+    write_nested_message(&mut output_stream, primary_scratch_buf, field_number, |os| {
+        // Depending on the metric type, we write out the appropriate fields.
+        match metric.values() {
+            MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..) => {
+                encode_series_metric(metric, os, secondary_scratch_buf)
+            }
+            MetricValues::Histogram(..) | MetricValues::Distribution(..) => {
+                encode_sketch_metric(metric, os, secondary_scratch_buf, packed_scratch_buf)
+            }
+        }
+    })
+}
+
+fn encode_series_metric(
+    metric: &Metric, output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>,
+) -> Result<(), protobuf::Error> {
     // Write the metric name and tags.
     output_stream.write_string(SERIES_METRIC_FIELD_NUMBER, metric.context().name())?;
-
-    let mut encode_error = None;
-    metric.context().visit_tags_deduped(|current_tag| {
-        let tag_encoder =
-            |tag: &Tag, os: &mut CodedOutputStream<'_>, buf: &mut Vec<u8>| -> Result<(), protobuf::Error> {
-                // If this is a resource tag, we'll convert it directly to a resource entry.
-                if tag.name() == "dd.internal.resource" {
-                    if let Some((resource_type, resource_name)) = tag.value().and_then(|s| s.split_once(':')) {
-                        write_resource(os, buf, resource_type, resource_name)
-                    } else {
-                        Ok(())
-                    }
-                } else {
-                    // We're dealing with a normal tag.
-                    os.write_string(SERIES_TAGS_FIELD_NUMBER, tag.as_str())
-                }
-            };
-
-        // If the last tag encoding attempt resulted in an error, we skip further processing.
-        if encode_error.is_some() {
-            return;
-        }
-
-        // Try to encode the tag, capturing any errors that occur.
-        if let Err(e) = tag_encoder(current_tag, &mut output_stream, scratch_buf) {
-            encode_error = Some(e);
-        }
-    });
-
-    // Make sure we didn't encounter any errors while encoding tags.
-    if let Some(e) = encode_error {
-        return Err(e);
-    }
+    write_series_tags(metric, output_stream, scratch_buf)?;
 
     // Set the host resource.
     write_resource(
-        &mut output_stream,
+        output_stream,
         scratch_buf,
         "host",
         metric.metadata().hostname().unwrap_or_default(),
@@ -283,7 +255,7 @@ fn encode_series_metric(
                 product_detail,
             } => {
                 write_origin_metadata(
-                    &mut output_stream,
+                    output_stream,
                     scratch_buf,
                     SERIES_METADATA_FIELD_NUMBER,
                     *product,
@@ -312,7 +284,7 @@ fn encode_series_metric(
             .unwrap_or(value);
         let timestamp = timestamp.map(|ts| ts.get()).unwrap_or(0) as i64;
 
-        write_point(&mut output_stream, scratch_buf, value, timestamp)?;
+        write_point(output_stream, scratch_buf, value, timestamp)?;
     }
 
     if let Some(interval) = maybe_interval {
@@ -323,27 +295,12 @@ fn encode_series_metric(
 }
 
 fn encode_sketch_metric(
-    metric: &Metric, output_buf: &mut Vec<u8>, scratch_buf: &mut Vec<u8>, packed_scratch_buf: &mut Vec<u8>,
+    metric: &Metric, output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>,
+    packed_scratch_buf: &mut Vec<u8>,
 ) -> Result<(), protobuf::Error> {
-    output_buf.clear();
-
-    let mut output_stream = CodedOutputStream::vec(output_buf);
-
     // Write the metric name and tags.
     output_stream.write_string(SKETCH_METRIC_FIELD_NUMBER, metric.context().name())?;
-
-    let mut encode_error = None;
-    metric.context().visit_tags_deduped(|tag| {
-        // If the last tag encoding attempt resulted in an error, we skip further processing.
-        if encode_error.is_some() {
-            return;
-        }
-
-        // Try to encode the tag, capturing any errors that occur.
-        if let Err(e) = output_stream.write_string(SKETCH_TAGS_FIELD_NUMBER, tag.as_str()) {
-            encode_error = Some(e);
-        }
-    });
+    write_sketch_tags(metric, output_stream, scratch_buf)?;
 
     // Write the host.
     output_stream.write_string(
@@ -359,7 +316,7 @@ fn encode_sketch_metric(
     }) = metric.metadata().origin()
     {
         write_origin_metadata(
-            &mut output_stream,
+            output_stream,
             scratch_buf,
             SKETCH_METADATA_FIELD_NUMBER,
             *product,
@@ -372,7 +329,7 @@ fn encode_sketch_metric(
     match metric.values() {
         MetricValues::Distribution(sketches) => {
             for (timestamp, value) in sketches {
-                write_dogsketch(&mut output_stream, scratch_buf, packed_scratch_buf, timestamp, value)?;
+                write_dogsketch(output_stream, scratch_buf, packed_scratch_buf, timestamp, value)?;
             }
         }
         MetricValues::Histogram(points) => {
@@ -383,13 +340,7 @@ fn encode_sketch_metric(
                     ddsketch.insert_n(sample.value.into_inner(), sample.weight as u32);
                 }
 
-                write_dogsketch(
-                    &mut output_stream,
-                    scratch_buf,
-                    packed_scratch_buf,
-                    timestamp,
-                    &ddsketch,
-                )?;
+                write_dogsketch(output_stream, scratch_buf, packed_scratch_buf, timestamp, &ddsketch)?;
             }
         }
         _ => unreachable!(),
@@ -401,29 +352,20 @@ fn encode_sketch_metric(
 fn write_resource(
     output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, resource_type: &str, resource_name: &str,
 ) -> Result<(), protobuf::Error> {
-    scratch_buf.clear();
-
-    {
-        let mut resource_output_stream = CodedOutputStream::vec(scratch_buf);
-        resource_output_stream.write_string(RESOURCES_TYPE_FIELD_NUMBER, resource_type)?;
-        resource_output_stream.write_string(RESOURCES_NAME_FIELD_NUMBER, resource_name)?;
-        resource_output_stream.flush()?;
-    }
-
-    output_stream.write_tag(SERIES_RESOURCES_FIELD_NUMBER, WireType::LengthDelimited)?;
-
-    let resource_message_size = get_message_size_from_buffer(scratch_buf)?;
-    output_stream.write_raw_varint32(resource_message_size)?;
-    output_stream.write_raw_bytes(scratch_buf)
+    write_nested_message(output_stream, scratch_buf, SERIES_RESOURCES_FIELD_NUMBER, |os| {
+        os.write_string(RESOURCES_TYPE_FIELD_NUMBER, resource_type)?;
+        os.write_string(RESOURCES_NAME_FIELD_NUMBER, resource_name)
+    })
 }
 
 fn write_origin_metadata(
     output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, field_number: u32, origin_product: u32,
     origin_category: u32, origin_service: u32,
 ) -> Result<(), protobuf::Error> {
+    // TODO: Figure out how to cleanly use `write_nested_message` here.
+
     scratch_buf.clear();
 
-    // `Origin`
     {
         let mut origin_output_stream = CodedOutputStream::vec(scratch_buf);
         origin_output_stream.write_uint32(ORIGIN_ORIGIN_PRODUCT_FIELD_NUMBER, origin_product)?;
@@ -458,20 +400,10 @@ fn write_origin_metadata(
 fn write_point(
     output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, value: f64, timestamp: i64,
 ) -> Result<(), protobuf::Error> {
-    scratch_buf.clear();
-
-    {
-        let mut point_output_stream = CodedOutputStream::vec(scratch_buf);
-        point_output_stream.write_double(METRIC_POINT_VALUE_FIELD_NUMBER, value)?;
-        point_output_stream.write_int64(METRIC_POINT_TIMESTAMP_FIELD_NUMBER, timestamp)?;
-        point_output_stream.flush()?;
-    }
-
-    output_stream.write_tag(SERIES_POINTS_FIELD_NUMBER, WireType::LengthDelimited)?;
-
-    let point_message_size = get_message_size_from_buffer(scratch_buf)?;
-    output_stream.write_raw_varint32(point_message_size)?;
-    output_stream.write_raw_bytes(scratch_buf)
+    write_nested_message(output_stream, scratch_buf, SERIES_POINTS_FIELD_NUMBER, |os| {
+        os.write_double(METRIC_POINT_VALUE_FIELD_NUMBER, value)?;
+        os.write_int64(METRIC_POINT_TIMESTAMP_FIELD_NUMBER, timestamp)
+    })
 }
 
 fn write_dogsketch(
@@ -484,78 +416,131 @@ fn write_dogsketch(
         return Ok(());
     }
 
-    scratch_buf.clear();
-
-    {
-        let mut dogsketch_output_stream = CodedOutputStream::vec(scratch_buf);
-        dogsketch_output_stream.write_int64(DOGSKETCH_TS_FIELD_NUMBER, timestamp.map_or(0, |ts| ts.get() as i64))?;
-        dogsketch_output_stream.write_int64(DOGSKETCH_CNT_FIELD_NUMBER, sketch.count() as i64)?;
-        dogsketch_output_stream.write_double(DOGSKETCH_MIN_FIELD_NUMBER, sketch.min().unwrap())?;
-        dogsketch_output_stream.write_double(DOGSKETCH_MAX_FIELD_NUMBER, sketch.max().unwrap())?;
-        dogsketch_output_stream.write_double(DOGSKETCH_AVG_FIELD_NUMBER, sketch.avg().unwrap())?;
-        dogsketch_output_stream.write_double(DOGSKETCH_SUM_FIELD_NUMBER, sketch.sum().unwrap())?;
+    write_nested_message(output_stream, scratch_buf, SKETCH_DOGSKETCHES_FIELD_NUMBER, |os| {
+        os.write_int64(DOGSKETCH_TS_FIELD_NUMBER, timestamp.map_or(0, |ts| ts.get() as i64))?;
+        os.write_int64(DOGSKETCH_CNT_FIELD_NUMBER, sketch.count() as i64)?;
+        os.write_double(DOGSKETCH_MIN_FIELD_NUMBER, sketch.min().unwrap())?;
+        os.write_double(DOGSKETCH_MAX_FIELD_NUMBER, sketch.max().unwrap())?;
+        os.write_double(DOGSKETCH_AVG_FIELD_NUMBER, sketch.avg().unwrap())?;
+        os.write_double(DOGSKETCH_SUM_FIELD_NUMBER, sketch.sum().unwrap())?;
 
         let bin_keys = sketch.bins().iter().map(|bin| bin.key());
-        write_repeated_packed_sint32_from_iter(
-            &mut dogsketch_output_stream,
+        write_repeated_packed_from_iter(
+            os,
             packed_scratch_buf,
             DOGSKETCH_K_FIELD_NUMBER,
             bin_keys,
+            |inner_os, value| inner_os.write_sint32_no_tag(value),
         )?;
 
         let bin_counts = sketch.bins().iter().map(|bin| bin.count());
-        write_repeated_packed_uint32_from_iter(
-            &mut dogsketch_output_stream,
+        write_repeated_packed_from_iter(
+            os,
             packed_scratch_buf,
             DOGSKETCH_N_FIELD_NUMBER,
             bin_counts,
-        )?;
-
-        dogsketch_output_stream.flush()?;
-    }
-
-    output_stream.write_tag(SKETCH_DOGSKETCHES_FIELD_NUMBER, WireType::LengthDelimited)?;
-
-    let dogsketch_message_size = get_message_size_from_buffer(scratch_buf)?;
-    output_stream.write_raw_varint32(dogsketch_message_size)?;
-    output_stream.write_raw_bytes(scratch_buf)
+            |inner_os, value| inner_os.write_uint32_no_tag(value),
+        )
+    })
 }
 
-fn write_repeated_packed_sint32_from_iter<I>(
-    output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, field_number: u32, values: I,
+fn write_tags<F>(
+    metric: &Metric, output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, tag_encoder: F,
 ) -> Result<(), protobuf::Error>
 where
-    I: Iterator<Item = i32>,
+    F: Fn(&Tag, &mut CodedOutputStream<'_>, &mut Vec<u8>) -> Result<(), protobuf::Error>,
+{
+    // This function hides the boilerplate of writing tags to the output stream through the required visitor pattern.
+    //
+    // The visitor pattern makes it more difficult to bail early on errors, so it tracks that error state separately as
+    // it goes through the tags, and ensures that we stop processing additional tags after we hit the first error, if any.
+    let mut maybe_encode_error = None;
+
+    metric.context().visit_tags_deduped(|tag| {
+        // If the last tag encoding attempt resulted in an error, we skip further processing.
+        if maybe_encode_error.is_some() {
+            return;
+        }
+
+        // Try to encode the tag, capturing any errors that occur.
+        if let Err(e) = tag_encoder(tag, output_stream, scratch_buf) {
+            maybe_encode_error = Some(e);
+        }
+    });
+
+    // Make sure we didn't encounter any errors while encoding tags.
+    maybe_encode_error.map(Err).unwrap_or(Ok(()))
+}
+
+fn write_series_tags(
+    metric: &Metric, output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>,
+) -> Result<(), protobuf::Error> {
+    write_tags(metric, output_stream, scratch_buf, |tag, os, buf| {
+        // If this is a resource tag, we'll convert it directly to a resource entry.
+        if tag.name() == "dd.internal.resource" {
+            if let Some((resource_type, resource_name)) = tag.value().and_then(|s| s.split_once(':')) {
+                write_resource(os, buf, resource_type, resource_name)
+            } else {
+                Ok(())
+            }
+        } else {
+            // We're dealing with a normal tag.
+            os.write_string(SERIES_TAGS_FIELD_NUMBER, tag.as_str())
+        }
+    })
+}
+
+fn write_sketch_tags(
+    metric: &Metric, output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>,
+) -> Result<(), protobuf::Error> {
+    write_tags(metric, output_stream, scratch_buf, |tag, os, _buf| {
+        // We always write the tags as-is, without any special handling for resource tags.
+        os.write_string(SKETCH_TAGS_FIELD_NUMBER, tag.as_str())
+    })
+}
+
+fn write_nested_message<F>(
+    output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, field_number: u32, writer: F,
+) -> Result<(), protobuf::Error>
+where
+    F: FnOnce(&mut CodedOutputStream<'_>) -> Result<(), protobuf::Error>,
 {
     scratch_buf.clear();
 
     {
-        let mut packed_output_stream = CodedOutputStream::vec(scratch_buf);
-        for value in values {
-            packed_output_stream.write_sint32_no_tag(value)?;
-        }
-        packed_output_stream.flush()?;
+        let mut nested_output_stream = CodedOutputStream::vec(scratch_buf);
+        writer(&mut nested_output_stream)?;
+        nested_output_stream.flush()?;
     }
-
-    let data_size = get_message_size_from_buffer(scratch_buf)?;
 
     output_stream.write_tag(field_number, WireType::LengthDelimited)?;
-    output_stream.write_raw_varint32(data_size)?;
+
+    let nested_message_size = get_message_size_from_buffer(scratch_buf)?;
+    output_stream.write_raw_varint32(nested_message_size)?;
     output_stream.write_raw_bytes(scratch_buf)
 }
 
-fn write_repeated_packed_uint32_from_iter<I>(
-    output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, field_number: u32, values: I,
+fn write_repeated_packed_from_iter<I, T, F>(
+    output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, field_number: u32, values: I, writer: F,
 ) -> Result<(), protobuf::Error>
 where
-    I: Iterator<Item = u32>,
+    I: Iterator<Item = T>,
+    F: Fn(&mut CodedOutputStream<'_>, T) -> Result<(), protobuf::Error>,
 {
+    // This is a helper function that lets us write out a packed repeated field from an iterator of values.
+    // `CodedOutputStream` has similar functions to handle this, but they require a slice of values, which would mean we
+    // need to either allocate a new vector each time to hold the values, or thread through two additional vectors (one
+    // for `i32`, one for `u32`) to reuse the allocation... both of which are not great options.
+    //
+    // We've simply opted to pass through a _single_ vector that we can reuse, and write the packed values directly to
+    // that, almost identically to how `CodedOutputStream::write_repeated_packed_*` methods would do it.
+
     scratch_buf.clear();
 
     {
         let mut packed_output_stream = CodedOutputStream::vec(scratch_buf);
         for value in values {
-            packed_output_stream.write_uint32_no_tag(value)?;
+            writer(&mut packed_output_stream, value)?;
         }
         packed_output_stream.flush()?;
     }
@@ -571,6 +556,7 @@ where
 mod tests {
     use std::time::Duration;
 
+    use protobuf::CodedOutputStream;
     use saluki_core::data_model::event::metric::Metric;
 
     use super::{encode_sketch_metric, MetricsEndpoint, MetricsEndpointEncoder};
@@ -591,12 +577,18 @@ mod tests {
         let mut buf2 = Vec::new();
 
         let mut histogram_payload = Vec::new();
-        encode_sketch_metric(&histogram, &mut histogram_payload, &mut buf1, &mut buf2)
-            .expect("Failed to encode histogram as sketch");
+        {
+            let mut histogram_writer = CodedOutputStream::vec(&mut histogram_payload);
+            encode_sketch_metric(&histogram, &mut histogram_writer, &mut buf1, &mut buf2)
+                .expect("Failed to encode histogram as sketch");
+        }
 
         let mut distribution_payload = Vec::new();
-        encode_sketch_metric(&distribution, &mut distribution_payload, &mut buf1, &mut buf2)
-            .expect("Failed to encode distribution as sketch");
+        {
+            let mut distribution_writer = CodedOutputStream::vec(&mut distribution_payload);
+            encode_sketch_metric(&distribution, &mut distribution_writer, &mut buf1, &mut buf2)
+                .expect("Failed to encode distribution as sketch");
+        }
 
         assert_eq!(histogram_payload, distribution_payload);
     }
