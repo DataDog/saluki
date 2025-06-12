@@ -54,7 +54,7 @@ async fn main() {
     let started = Instant::now();
     let cli = Cli::parse();
 
-    if let Err(e) = initialize_dynamic_logging(Some(cli.log_level())).await {
+    if let Err(e) = initialize_dynamic_logging(None).await {
         fatal_and_exit(format!("failed to initialize logging: {}", e));
     }
 
@@ -71,14 +71,18 @@ async fn main() {
     }
 
     match cli.action {
-        Some(Action::Run(run_config)) => match run(started, run_config).await {
-            Ok(()) => info!("Agent Data Plane stopped."),
-            Err(e) => {
-                error!("{:?}", e);
-                std::process::exit(1);
+        Some(Action::Run(run_config)) => {
+            println!("brianna: run subcommand detected");
+            match run(started, run_config).await {
+                Ok(()) => info!("Agent Data Plane stopped."),
+                Err(e) => {
+                    error!("{:?}", e);
+                    std::process::exit(1);
+                }
             }
-        },
+        }
         None => {
+            println!("brianna: no subcommand detected, using default config");
             // Use default configuration path when no subcommand is provided
             let default_run_config = RunConfig {
                 config: std::path::PathBuf::from("/etc/datadog-agent/datadog.yaml"),
@@ -95,6 +99,7 @@ async fn main() {
 }
 
 async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericError> {
+    println!("brianna run_config: {:?}", run_config);
     let app_details = saluki_metadata::get_app_details();
     info!(
         version = app_details.version().raw(),
@@ -103,7 +108,7 @@ async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericError
         build_time = app_details.build_time(),
         "Agent Data Plane starting..."
     );
-
+    println!("brianna: in b/w lines");
     // Load our configuration and create all high-level primitives (health registry, component registry, environment
     // provider, etc) that are needed to build the topology.
     let configuration = ConfigurationLoader::default()
@@ -113,6 +118,7 @@ async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericError
         .await?
         .into_generic()?;
 
+    println!("brianna: configuration: {:?}", configuration);
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();

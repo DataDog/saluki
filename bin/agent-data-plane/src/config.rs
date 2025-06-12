@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
-use tracing::level_filters::LevelFilter;
 
 #[derive(Parser)]
 #[command(about)]
@@ -13,17 +12,6 @@ pub struct Cli {
     /// Subcommand to run.    
     #[command(subcommand)]
     pub action: Option<Action>, // Makes subcommands optional
-}
-
-impl Cli {
-    /// Gets the configured log level based on the user-supplied verbosity level.
-    pub fn log_level(&self) -> LevelFilter {
-        match self.verbose {
-            0 => LevelFilter::INFO,
-            1 => LevelFilter::DEBUG,
-            _ => LevelFilter::TRACE,
-        }
-    }
 }
 
 #[derive(Subcommand)]
