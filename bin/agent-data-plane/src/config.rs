@@ -4,7 +4,7 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 use tracing::level_filters::LevelFilter;
 
 #[derive(Parser)]
-#[command(about)] // Q: Is a description needed here?
+#[command(about)]
 pub struct Cli {
     /// Enable verbose output. (Specify twice for more verbosity.)
     #[arg(global = true, short = 'v', long, action = ArgAction::Count, default_value_t = 0)]
@@ -12,7 +12,7 @@ pub struct Cli {
 
     /// Subcommand to run.    
     #[command(subcommand)]
-    pub action: Action,
+    pub action: Option<Action>, // Makes subcommands optional
 }
 
 impl Cli {
@@ -28,13 +28,13 @@ impl Cli {
 
 #[derive(Subcommand)]
 pub enum Action {
-    /// run subcommand for the ADP binary
+    /// Run subcommand for the ADP binary
     #[command(name = "run")]
     Run(RunConfig),
 }
 
-/// run subcommand configuration
-#[derive(Args)]
+/// Run subcommand configuration
+#[derive(Args, Debug)]
 pub struct RunConfig {
     /// Path to the configuration file
     #[arg(long = "config", default_value = "/etc/datadog-agent/datadog.yaml")]
