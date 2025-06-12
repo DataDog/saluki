@@ -20,6 +20,7 @@ use chrono::{
     Utc,
 };
 use chrono_tz::Tz;
+use rolling_file::{BasicRollingFileAppender, RollingConditionBasic};
 use saluki_api::{
     extract::{Query, State},
     response::IntoResponse,
@@ -30,6 +31,7 @@ use saluki_common::task::spawn_traced_named;
 use serde::Deserialize;
 use tokio::{select, sync::mpsc, time::sleep};
 use tracing::{error, field, info, level_filters::LevelFilter, Event, Subscriber};
+use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{
     field::VisitOutput,
     fmt::{format::Writer, FmtContext, FormatEvent, FormatFields},
@@ -50,6 +52,14 @@ pub fn fatal_and_exit(message: String) {
     std::process::exit(1);
 }
 
+#[cfg(target_os = "linux")]
+/// The default log file path for ADP on Linux.
+pub const DEFAULT_ADP_LOG_FILE: &str = "/var/log/datadog/adp.log";
+
+#[cfg(not(target_os = "linux"))]
+/// The default log file path for ADP on non-Linux platforms.
+pub const DEFAULT_ADP_LOG_FILE: &str = "/opt/datadog-agent/logs/adp.log";
+
 /// Initializes the logging subsystem for `tracing`.
 ///
 /// This function reads the `DD_LOG_LEVEL` environment variable to determine the log level to use. If the environment
@@ -61,7 +71,9 @@ pub fn fatal_and_exit(message: String) {
 /// # Errors
 ///
 /// If the logging subsystem was already initialized, an error will be returned.
-pub fn initialize_logging(default_level: Option<LevelFilter>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub fn initialize_logging(
+    default_level: Option<LevelFilter>,
+) -> Result<WorkerGuard, Box<dyn std::error::Error + Send + Sync>> {
     initialize_logging_inner(default_level, false)
 }
 
@@ -82,7 +94,7 @@ pub fn initialize_logging(default_level: Option<LevelFilter>) -> Result<(), Box<
 /// If the logging subsystem was already initialized, an error will be returned.
 pub async fn initialize_dynamic_logging(
     default_level: Option<LevelFilter>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<WorkerGuard, Box<dyn std::error::Error + Send + Sync>> {
     // We go through this wrapped initialize approach so that we can mark `initialize_dynamic_logging` as `async`, which
     // ensures we call it in an asynchronous context, thereby all but ensuring we're in a Tokio context when we try to
     // spawn the background task that handles reloading the filtering layer.
@@ -91,7 +103,7 @@ pub async fn initialize_dynamic_logging(
 
 fn initialize_logging_inner(
     default_level: Option<LevelFilter>, with_reload: bool,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<WorkerGuard, Box<dyn std::error::Error + Send + Sync>> {
     let is_json = std::env::var("DD_LOG_FORMAT_JSON")
         .map(|s| s.trim().to_lowercase())
         .map(|s| s == "true" || s == "1")
@@ -115,19 +127,38 @@ fn initialize_logging_inner(
             .replace(LoggingAPIHandler::new(shared_level_filter.clone(), reload_handle));
     }
 
+    let adp_log_file = std::env::var("DD_ADP_LOG_FILE").unwrap_or(DEFAULT_ADP_LOG_FILE.to_string());
+    let file_appender =
+        BasicRollingFileAppender::new(adp_log_file, RollingConditionBasic::new().max_size(10485760), 1)?;
+    let (file_nb, guard) = tracing_appender::non_blocking(file_appender);
+    let file_level_filter = EnvFilter::builder()
+        .with_default_directive(default_level.unwrap_or(LevelFilter::INFO).into())
+        .with_env_var("DD_LOG_LEVEL")
+        .from_env_lossy();
+
     if is_json {
         let json_layer = initialize_tracing_json();
         tracing_subscriber::registry()
             .with(json_layer.with_filter(filter_layer))
+            .with(
+                tracing_subscriber::fmt::Layer::new()
+                    .with_writer(file_nb)
+                    .with_filter(file_level_filter),
+            )
             .try_init()?;
     } else {
         let pretty_layer = initialize_tracing_pretty();
         tracing_subscriber::registry()
             .with(pretty_layer.with_filter(filter_layer))
+            .with(
+                tracing_subscriber::fmt::Layer::new()
+                    .with_writer(file_nb)
+                    .with_filter(file_level_filter),
+            )
             .try_init()?;
     }
 
-    Ok(())
+    Ok(guard)
 }
 
 fn initialize_tracing_json<S>() -> impl Layer<S>

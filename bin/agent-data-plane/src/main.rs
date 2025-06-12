@@ -49,9 +49,13 @@ static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System
 async fn main() {
     let started = Instant::now();
 
-    if let Err(e) = initialize_dynamic_logging(None).await {
-        fatal_and_exit(format!("failed to initialize logging: {}", e));
-    }
+    let _guard = match initialize_dynamic_logging(None).await {
+        Ok(guard) => guard,
+        Err(e) => {
+            fatal_and_exit(format!("failed to initialize logging: {}", e));
+            return;
+        }
+    };
 
     if let Err(e) = initialize_metrics("adp").await {
         fatal_and_exit(format!("failed to initialize metrics: {}", e));
