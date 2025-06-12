@@ -145,10 +145,7 @@ impl DriverConfig {
             ));
         }
 
-        let entrypoint = vec![
-            config.binary_path,
-            "run --config=/etc/datadog-agent/datadog.yaml".to_string(),
-        ];
+        let entrypoint = vec![config.binary_path];
 
         let driver_config = DriverConfig::from_image("agent-data-plane", config.image)
             .with_entrypoint(entrypoint)
