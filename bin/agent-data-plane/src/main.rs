@@ -70,19 +70,15 @@ async fn main() {
         fatal_and_exit(format!("failed to initialize TLS: {}", e));
     }
 
-    match cli.action {
-        Some(Action::Run(config)) => run_with_config(started, config).await,
-        None => {
-            let default_config = RunConfig {
-                config: std::path::PathBuf::from("/etc/datadog-agent/datadog.yaml"),
-            };
-            run_with_config(started, default_config).await
-        }
-    }
-}
+    // Use default configuration path when no subcommand is provided
+    let run_config = match cli.action {
+        Some(Action::Run(config)) => config,
+        None => RunConfig {
+            config: std::path::PathBuf::from("/etc/datadog-agent/datadog.yaml"),
+        },
+    };
 
-async fn run_with_config(started: Instant, config: RunConfig) {
-    match run(started, config).await {
+    match run(started, run_config).await {
         Ok(()) => info!("Agent Data Plane stopped."),
         Err(e) => {
             error!("{:?}", e);
