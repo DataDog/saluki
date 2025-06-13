@@ -32,6 +32,7 @@ dependencies = [
  "hyper",
  "memory-accounting",
  "papaya",
+ "prost-types",
  "rand",
  "saluki-app",
  "saluki-common",
@@ -920,6 +921,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "prost",
+ "prost-types",
  "protobuf",
  "protobuf-codegen",
  "tonic",
