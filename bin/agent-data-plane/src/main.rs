@@ -70,7 +70,7 @@ async fn main() {
         fatal_and_exit(format!("failed to initialize TLS: {}", e));
     }
 
-    // Use default configuration path when no subcommand is provided
+    // Use default configuration path when no subcommand is provided.
     let run_config = match cli.action {
         Some(Action::Run(config)) => config,
         None => RunConfig {
