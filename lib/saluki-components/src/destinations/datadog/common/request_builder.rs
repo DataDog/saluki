@@ -65,7 +65,7 @@ pub trait EndpointEncoder: std::fmt::Debug {
     /// # Errors
     ///
     /// If the input cannot otherwise be encoded for any reason, an error will be returned.
-    fn encode(&self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError>;
+    fn encode(&mut self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError>;
 
     /// Returns the URI of the endpoint that this encoder is associated with.
     fn endpoint_uri(&self) -> Uri;
@@ -746,7 +746,7 @@ mod tests {
             self.uncompressed_size_limit
         }
 
-        fn encode(&self, input: &String, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
+        fn encode(&mut self, input: &String, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
             // We just write the input string to the buffer as-is.
             buffer.extend_from_slice(input.as_bytes());
             Ok(())
