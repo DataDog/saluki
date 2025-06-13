@@ -11,11 +11,11 @@ hashbrown = { workspace = true }
 indexmap = { workspace = true }
 memchr = { workspace = true }
 metrics = { workspace = true }
-quick_cache = { workspace = true, features = ["parking_lot"] }
 saluki-common = { workspace = true }
 saluki-error = { workspace = true }
 saluki-metrics = { workspace = true }
 serde = { workspace = true }
+smallvec = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time"] }
 tracing = { workspace = true }

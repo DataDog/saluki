@@ -110,7 +110,7 @@ impl Config {
 /// A sketch bin.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-pub(crate) struct Bin {
+pub struct Bin {
     /// The bin index.
     k: i16,
 
@@ -119,6 +119,16 @@ pub(crate) struct Bin {
 }
 
 impl Bin {
+    /// Returns the key of the bin.
+    pub fn key(&self) -> i32 {
+        self.k as i32
+    }
+
+    /// Returns the number of observations within the bin.
+    pub fn count(&self) -> u32 {
+        self.n as u32
+    }
+
     #[allow(clippy::cast_possible_truncation)]
     fn increment(&mut self, n: u32) -> u32 {
         let next = n + u32::from(self.n);
@@ -202,11 +212,6 @@ impl DDSketch {
         self.bins.len()
     }
 
-    #[cfg(test)]
-    fn bins(&self) -> &[Bin] {
-        &self.bins
-    }
-
     /// Whether or not this sketch is empty.
     pub fn is_empty(&self) -> bool {
         self.count == 0
@@ -259,6 +264,11 @@ impl DDSketch {
         } else {
             Some(self.avg)
         }
+    }
+
+    /// Returns the current bins of this sketch.
+    pub fn bins(&self) -> &[Bin] {
+        &self.bins
     }
 
     /// Clears the sketch, removing all bins and resetting all statistics.

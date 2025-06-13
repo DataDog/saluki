@@ -2783,7 +2783,6 @@ checksum = "6b450dad8382b1b95061d5ca1eb792081fb082adf48c678791fe917509596d5f"
 dependencies = [
  "equivalent",
  "hashbrown 0.15.3",
- "parking_lot",
 ]
 
 [[package]]
@@ -3194,12 +3193,15 @@ dependencies = [
 name = "saluki-common"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-queue",
  "foldhash",
  "hashbrown 0.15.3",
  "indexmap 2.9.0",
  "memory-accounting",
  "papaya",
  "pin-project",
+ "quick_cache",
+ "saluki-error",
  "saluki-metrics",
  "sha3",
  "tokio",
@@ -3284,11 +3286,11 @@ dependencies = [
  "metrics",
  "metrics-util",
  "proptest",
- "quick_cache",
  "saluki-common",
  "saluki-error",
  "saluki-metrics",
  "serde",
+ "smallvec",
  "stringtheory",
  "tokio",
  "tracing",
