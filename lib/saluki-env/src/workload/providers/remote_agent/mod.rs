@@ -6,7 +6,7 @@ use memory_accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{
     origin::{OriginKey, OriginTagCardinality, RawOrigin},
-    tags::TagVisitor,
+    tags::SharedTagSet,
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_health::{Health, HealthRegistry};
@@ -175,10 +175,8 @@ impl RemoteAgentWorkloadProvider {
 }
 
 impl WorkloadProvider for RemoteAgentWorkloadProvider {
-    fn visit_tags_for_entity(
-        &self, entity_id: &EntityId, cardinality: OriginTagCardinality, tag_visitor: &mut dyn TagVisitor,
-    ) -> bool {
-        self.tags_querier.visit_entity_tags(entity_id, cardinality, tag_visitor)
+    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
+        self.tags_querier.get_entity_tags(entity_id, cardinality)
     }
 
     fn resolve_origin(&self, origin: RawOrigin<'_>) -> Option<OriginKey> {

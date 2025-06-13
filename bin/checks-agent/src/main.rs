@@ -70,7 +70,7 @@ async fn main() {
 
 async fn run(started: Instant) -> Result<(), Box<dyn std::error::Error>> {
     let configuration = ConfigurationLoader::default()
-        .try_from_yaml("./datadog.yaml")
+        .try_from_yaml("/etc/datadog-agent/datadog.yaml")
         .from_environment("DD")?
         .with_default_secrets_resolution()
         .await?
