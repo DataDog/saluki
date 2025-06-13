@@ -50,6 +50,7 @@ tikv-jemallocator = { workspace = true, features = [
   "background_threads",
   "unprefixed_malloc_on_supported_platforms",
   "stats",
+  "disable_cache_oblivious",
 ] }
 
 [build-dependencies]

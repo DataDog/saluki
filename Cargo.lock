@@ -4012,8 +4012,7 @@ dependencies = [
 [[package]]
 name = "tikv-jemalloc-ctl"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f21f216790c8df74ce3ab25b534e0718da5a1916719771d3fec23315c99e468b"
+source = "git+https://github.com/tikv/jemallocator?branch=main#5c5a9f79b3be3c19e253527f16a091132a455c2e"
 dependencies = [
  "libc",
  "paste",
@@ -4023,8 +4022,7 @@ dependencies = [
 [[package]]
 name = "tikv-jemalloc-sys"
 version = "0.6.0+5.3.0-1-ge13ca993e8ccb9ba9847cc330696e02839f328f7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd3c60906412afa9c2b5b5a48ca6a5abe5736aec9eb48ad05037a677e52e4e2d"
+source = "git+https://github.com/tikv/jemallocator?branch=main#5c5a9f79b3be3c19e253527f16a091132a455c2e"
 dependencies = [
  "cc",
  "libc",
@@ -4033,8 +4031,7 @@ dependencies = [
 [[package]]
 name = "tikv-jemallocator"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cec5ff18518d81584f477e9bfdf957f5bb0979b0bac3af4ca30b5b3ae2d2865"
+source = "git+https://github.com/tikv/jemallocator?branch=main#5c5a9f79b3be3c19e253527f16a091132a455c2e"
 dependencies = [
  "libc",
  "tikv-jemalloc-sys",

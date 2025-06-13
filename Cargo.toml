@@ -180,6 +180,12 @@ twox-hash = { version = "2", features = ["xxhash64"] }
 sha3 = { version = "0.10", default-features = false }
 pyo3 = { version = "0.25", default-features = false }
 
+[patch.crates-io]
+# Pulling in update that exposes `disable_cache_oblivious` feature flag.
+tikv-jemallocator = { git = "https://github.com/tikv/jemallocator", branch = "main" }
+tikv-jemalloc-sys = { git = "https://github.com/tikv/jemallocator", branch = "main" }
+tikv-jemalloc-ctl = { git = "https://github.com/tikv/jemallocator", branch = "main" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 4
