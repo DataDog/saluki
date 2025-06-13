@@ -11,6 +11,8 @@ use tracing::warn;
 use crate::destinations::datadog::common::request_builder::EndpointEncoder;
 
 // Protocol Buffers field numbers for series and sketch payload messages.
+//
+// These field numbers come from the Protocol Buffers definitions in `lib/datadog-protos/proto/agent_payload.proto`.
 const RESOURCES_TYPE_FIELD_NUMBER: u32 = 1;
 const RESOURCES_NAME_FIELD_NUMBER: u32 = 2;
 
