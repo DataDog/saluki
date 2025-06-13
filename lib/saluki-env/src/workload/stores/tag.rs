@@ -4,7 +4,7 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::collections::{FastConcurrentHashMap, FastConcurrentHashSet};
 use saluki_context::{
     origin::OriginTagCardinality,
-    tags::{SharedTagSet, TagSet, TagVisitor},
+    tags::{SharedTagSet, TagSet},
 };
 use saluki_metrics::static_metrics;
 use tracing::{debug, trace};
@@ -235,7 +235,7 @@ pub struct TagStoreQuerier {
 }
 
 impl TagStoreQuerier {
-    /// Visits all tags for an entity at the requested cardinality and below.
+    /// Gets all tags for an entity at the requested cardinality and below.
     ///
     /// This means that tags from the requested cardinality, and all lower precedence cardinality levels, will be
     /// visited. The cardinality levels, in order of precedence (lowest to highest), are:
@@ -246,26 +246,22 @@ impl TagStoreQuerier {
     ///
     /// When an entity is aliased, the tags for the aliased entity will be visited instead of any tags for the entity itself.
     ///
-    /// Returns `false` if the entity does not exist at all (no alias, no tags), `true` otherwise.
-    pub fn visit_entity_tags(
-        &self, entity_id: &EntityId, cardinality: OriginTagCardinality, tag_visitor: &mut dyn TagVisitor,
-    ) -> bool {
+    /// Returns `Some(SharedTagSet)` with all tags for the entity at the requested cardinality level, or `None` if the
+    /// entity has no tags at the requested cardinality level or if the entity does not exist.
+    pub fn get_entity_tags(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
         const CARDINALITY_LEVELS: [OriginTagCardinality; 3] = [
             OriginTagCardinality::Low,
             OriginTagCardinality::Orchestrator,
             OriginTagCardinality::High,
         ];
 
-        let mut entity_exists = false;
+        let mut maybe_entity_tags: Option<SharedTagSet> = None;
 
         // If an entity is aliased, use that entity's tags instead of the entity's tags.
         let aliases = self.aliases.pin();
         let entity_id = match aliases.get(entity_id) {
             Some(alias) => {
-                // If an alias exists, then the original entity also "exists".
-                entity_exists = true;
                 trace!(?alias, ?entity_id, "Entity is aliased.");
-
                 alias
             }
             None => entity_id,
@@ -279,10 +275,10 @@ impl TagStoreQuerier {
                     cardinality = current_cardinality.as_str(),
                     "Visiting tags for entity."
                 );
-                entity_exists = true;
 
-                for tag in &tags {
-                    tag_visitor.visit_tag(tag);
+                match maybe_entity_tags.as_mut() {
+                    Some(existing) => existing.extend_from_shared(&tags),
+                    None => maybe_entity_tags = Some(tags),
                 }
             }
 
@@ -292,7 +288,7 @@ impl TagStoreQuerier {
             }
         }
 
-        entity_exists
+        maybe_entity_tags
     }
 
     /// Gets the alias for the given entity, if one exists.
@@ -340,7 +336,7 @@ impl TagStoreQuerier {
 mod tests {
     use std::num::NonZeroUsize;
 
-    use saluki_context::tags::{Tag, TagSet};
+    use saluki_context::tags::TagSet;
     use stringtheory::MetaString;
 
     use super::*;
@@ -392,11 +388,10 @@ mod tests {
     }
 
     fn visit_tags(querier: &TagStoreQuerier, entity_id: &EntityId, cardinality: OriginTagCardinality) -> TagSet {
-        let mut tags = TagSet::default();
-        querier.visit_entity_tags(entity_id, cardinality, &mut |tag: &Tag| {
-            tags.insert_tag(tag.clone());
-        });
-        tags
+        match querier.get_entity_tags(entity_id, cardinality) {
+            Some(tags) => TagSet::from_iter((&tags).into_iter().cloned()),
+            None => TagSet::default(),
+        }
     }
 
     fn sorted_ts(tags: TagSet) -> Vec<MetaString> {

@@ -8,7 +8,7 @@ use crossbeam_queue::ArrayQueue;
 use quick_cache::Lifecycle;
 
 use crate::{
-    collections::PrehashedHashMap,
+    collections::FastHashMap,
     time::{get_coarse_unix_timestamp, get_unix_timestamp},
 };
 
@@ -92,7 +92,7 @@ impl AccessState {
 
 #[derive(Debug)]
 struct Inner<K> {
-    last_seen: PrehashedHashMap<K, AccessState>,
+    last_seen: FastHashMap<K, AccessState>,
     time_to_idle: Duration,
 }
 
@@ -129,7 +129,7 @@ where
     fn new(time_to_idle: Duration) -> Self {
         Self {
             inner: Mutex::new(Inner {
-                last_seen: PrehashedHashMap::default(),
+                last_seen: FastHashMap::default(),
                 time_to_idle,
             }),
             pending_ops: ArrayQueue::new(128),

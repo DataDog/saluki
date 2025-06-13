@@ -8,7 +8,7 @@ use serde::Deserialize;
 use stringtheory::MetaString;
 use tracing::warn;
 
-use crate::tags::{Tag, TagVisitor, Tagged};
+use crate::tags::{SharedTagSet, Tag, Tagged};
 
 /// The cardinality of tags associated with the origin entity.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
@@ -256,42 +256,27 @@ impl std::hash::Hash for OriginKey {
     }
 }
 
-#[derive(Clone)]
-enum OriginTagsInner {
-    Empty,
-    Resolved {
-        key: OriginKey,
-        resolver: Arc<dyn OriginTagsResolver>,
-    },
-}
-
 /// A set of tags associated with the origin of a metric.
 #[derive(Clone)]
 pub struct OriginTags {
-    inner: OriginTagsInner,
+    key: Option<OriginKey>,
+    tags: SharedTagSet,
 }
 
 impl OriginTags {
     pub(super) fn empty() -> Self {
         Self {
-            inner: OriginTagsInner::Empty,
+            key: None,
+            tags: SharedTagSet::default(),
         }
     }
 
-    pub(super) fn from_resolved(origin_key: OriginKey, resolver: Arc<dyn OriginTagsResolver>) -> Self {
-        Self {
-            inner: OriginTagsInner::Resolved {
-                key: origin_key,
-                resolver,
-            },
-        }
+    pub(super) fn from_resolved(key: OriginKey, tags: SharedTagSet) -> Self {
+        Self { key: Some(key), tags }
     }
 
     pub(super) fn key(&self) -> Option<OriginKey> {
-        match self.inner {
-            OriginTagsInner::Empty => None,
-            OriginTagsInner::Resolved { key, .. } => Some(key),
-        }
+        self.key
     }
 
     /// Returns the size of the origin tag set, in bytes.
@@ -303,7 +288,7 @@ impl OriginTags {
     /// worst-case usage, and should be used as a rough estimate.
     pub(super) fn size_of(&self) -> usize {
         let mut tags_size = 0;
-        self.visit_tags(|tag| {
+        self.tags.visit_tags(|tag| {
             tags_size += tag.len();
         });
         tags_size
@@ -311,14 +296,11 @@ impl OriginTags {
 }
 
 impl Tagged for OriginTags {
-    fn visit_tags<F>(&self, mut visitor: F)
+    fn visit_tags<F>(&self, visitor: F)
     where
         F: FnMut(&Tag),
     {
-        match self.inner {
-            OriginTagsInner::Empty => {}
-            OriginTagsInner::Resolved { key, ref resolver } => resolver.visit_origin_tags(key, &mut visitor),
-        }
+        self.tags.visit_tags(visitor);
     }
 }
 
@@ -329,8 +311,8 @@ pub trait OriginTagsResolver: Send + Sync {
     /// If the given origin information cannot be found/resolved, `None` is returned.
     fn resolve_origin_key(&self, origin: RawOrigin<'_>) -> Option<OriginKey>;
 
-    /// Visits the tags associated with the given origin key.
-    fn visit_origin_tags(&self, origin_key: OriginKey, visitor: &mut dyn TagVisitor);
+    /// Resolves the origin tags for the given origin key.
+    fn resolve_origin_tags(&self, origin_key: OriginKey) -> SharedTagSet;
 }
 
 impl<T> OriginTagsResolver for Arc<T>
@@ -341,8 +323,8 @@ where
         (**self).resolve_origin_key(origin)
     }
 
-    fn visit_origin_tags(&self, origin_key: OriginKey, visitor: &mut dyn TagVisitor) {
-        (**self).visit_origin_tags(origin_key, visitor)
+    fn resolve_origin_tags(&self, origin_key: OriginKey) -> SharedTagSet {
+        (**self).resolve_origin_tags(origin_key)
     }
 }
 
@@ -354,9 +336,12 @@ where
         self.as_ref().and_then(|resolver| resolver.resolve_origin_key(origin))
     }
 
-    fn visit_origin_tags(&self, origin_key: OriginKey, visitor: &mut dyn TagVisitor) {
+    fn resolve_origin_tags(&self, origin_key: OriginKey) -> SharedTagSet {
         if let Some(resolver) = self.as_ref() {
-            resolver.visit_origin_tags(origin_key, visitor)
+            resolver.resolve_origin_tags(origin_key)
+        } else {
+            // If there is no resolver, return an empty tag set.
+            SharedTagSet::default()
         }
     }
 }
