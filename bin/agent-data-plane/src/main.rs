@@ -71,25 +71,22 @@ async fn main() {
     }
 
     match cli.action {
-        Some(Action::Run(run_config)) => match run(started, run_config).await {
-            Ok(()) => info!("Agent Data Plane stopped."),
-            Err(e) => {
-                error!("{:?}", e);
-                std::process::exit(1);
-            }
-        },
+        Some(Action::Run(config)) => run_with_config(started, config).await,
         None => {
-            // Use default configuration path when no subcommand is provided
-            let default_run_config = RunConfig {
+            let default_config = RunConfig {
                 config: std::path::PathBuf::from("/etc/datadog-agent/datadog.yaml"),
             };
-            match run(started, default_run_config).await {
-                Ok(()) => info!("Agent Data Plane stopped."),
-                Err(e) => {
-                    error!("{:?}", e);
-                    std::process::exit(1);
-                }
-            }
+            run_with_config(started, default_config).await
+        }
+    }
+}
+
+async fn run_with_config(started: Instant, config: RunConfig) {
+    match run(started, config).await {
+        Ok(()) => info!("Agent Data Plane stopped."),
+        Err(e) => {
+            error!("{:?}", e);
+            std::process::exit(1);
         }
     }
 }
