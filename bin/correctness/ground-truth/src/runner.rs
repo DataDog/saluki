@@ -86,11 +86,7 @@ impl TestRunner {
 
         let adp_config = DriverConfig::agent_data_plane(self.adp_config.clone())
             .await?
-            .with_env_var("DD_API_KEY", "dummy-api-key-correctness-testing")
-            .with_env_var("DD_ADP_STANDALONE_MODE", "true")
-            .with_env_var("DD_TELEMETRY_ENABLED", "true")
-            .with_env_var("DD_PROMETHEUS_LISTEN_ADDR", "tcp://0.0.0.0:5102")
-            .with_exposed_port("tcp", 6000);
+            .with_env_var("DD_API_KEY", "dummy-api-key-correctness-testing");
 
         group_runner
             .with_driver(DriverConfig::metrics_intake(self.metrics_intake_config.clone()).await?)?
