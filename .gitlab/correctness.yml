@@ -11,7 +11,7 @@ build-metrics-intake-image:
     KUBERNETES_MEMORY_LIMIT: "12Gi"
   script:
     - docker buildx build
-      --platform linux/amd64,linux/arm64
+      --platform linux/amd64
       --file ./docker/Dockerfile.metrics-intake
       --tag ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
@@ -38,11 +38,39 @@ build-millstone-image:
     KUBERNETES_MEMORY_LIMIT: "12Gi"
   script:
     - docker buildx build
-      --platform linux/amd64,linux/arm64
+      --platform linux/amd64
       --file ./docker/Dockerfile.millstone
       --tag ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
+      --build-arg BUILD_PROFILE=release
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --push
+      .
+
+build-bundled-agent-adp-image:
+  stage: correctness
+  image: ${DOCKER_BUILD_IMAGE}
+  needs:
+    - build-adp-image
+  retry: 2
+  timeout: 10m
+  variables:
+    # Compiling Rust is intensive. ¯\_(ツ)_/¯
+    KUBERNETES_CPU_REQUEST: "16"
+    KUBERNETES_MEMORY_REQUEST: "8Gi"
+    KUBERNETES_MEMORY_LIMIT: "12Gi"
+  script:
+    - docker buildx build
+      --platform linux/amd64
+      --file ./docker/Dockerfile.datadog-agent
+      --tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
+      --build-arg DD_AGENT_VERSION=${PUBLIC_DD_AGENT_VERSION}
+      --build-arg ADP_IMAGE=${ADP_FULL_IMAGE_TAG}
       --build-arg BUILD_PROFILE=release
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}

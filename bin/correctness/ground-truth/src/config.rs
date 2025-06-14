@@ -63,9 +63,13 @@ pub struct Cli {
     #[arg(long)]
     pub dsd_image: String,
 
-    /// Path to the DogStatsD binary.
-    #[arg(short = 'b', long, default_value = "/dogstatsd")]
-    pub binary_path: String,
+    /// Entrypoint for the DogStatsD container.
+    #[arg(long, default_values_t = vec!["/entrypoint.sh".to_string()])]
+    pub dsd_entrypoint: Vec<String>,
+
+    /// Command to run in the container to start DogStatsD.
+    #[arg(long, default_values_t = vec!["/dogstatsd".to_string(), "start".to_string(), "--cfgpath".to_string(), "/etc/datadog-agent".to_string()])]
+    pub dsd_command: Vec<String>,
 
     /// Path to the DogStatsD configuration file to use.
     ///
@@ -91,9 +95,13 @@ pub struct Cli {
     #[arg(long)]
     pub adp_image: String,
 
-    /// Path to the Agent Data Plane binary.
-    #[arg(long, default_value = "/usr/local/bin/agent-data-plane")]
-    pub adp_binary_path: String,
+    /// Entrypoint for the Agent Data Plane container.
+    #[arg(long, default_values_t = vec!["/entrypoint.sh".to_string()])]
+    pub adp_entrypoint: Vec<String>,
+
+    /// Command to run in the container to start Agent Data Plane.
+    #[arg(long, default_values_t = vec!["/usr/local/bin/agent-data-plane".to_string(), "run".to_string(), "--config".to_string(), "/etc/datadog-agent/datadog.yaml".to_string()])]
+    pub adp_command: Vec<String>,
 
     /// Path to the Agent Data Plane configuration file to use.
     ///
@@ -138,7 +146,8 @@ impl Cli {
     pub fn dsd_config(&self) -> DSDConfig {
         DSDConfig {
             image: self.dsd_image.clone(),
-            binary_path: self.binary_path.clone(),
+            entrypoint: self.dsd_entrypoint.clone(),
+            command: self.dsd_command.clone(),
             config_path: self.dsd_config_path.clone(),
             additional_env_args: self.dsd_additional_env_args.clone(),
         }
@@ -147,7 +156,8 @@ impl Cli {
     pub fn adp_config(&self) -> ADPConfig {
         ADPConfig {
             image: self.adp_image.clone(),
-            binary_path: self.adp_binary_path.clone(),
+            entrypoint: self.adp_entrypoint.clone(),
+            command: self.adp_command.clone(),
             config_path: self.adp_config_path.clone(),
             additional_env_args: self.adp_additional_env_args.clone(),
         }

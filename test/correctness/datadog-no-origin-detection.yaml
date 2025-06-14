@@ -14,6 +14,9 @@ dd_url: "http://metrics-intake:2049"
 dogstatsd_port: 0
 dogstatsd_socket: /airlock/metrics.sock
 
+# Ensure origin detection is disabled since we can't support it with ADP in standalone mode.
+dogstatsd_origin_detection: false
+
 # Gauges can be processed out-of-order when multiple workers are used, while ADP does not use multiple workers, so ADP
 # always ends up with the correct (last seen) value, while DSD might return the last seen value... or the value seen
 # four updates ago, etc etc.
@@ -21,5 +24,4 @@ dogstatsd_workers_count: 1
 
 # We don't have an Agent available for ADP to query, so we run ADP the same way we run it in the regression tests, where
 # it just uses `hostname`/`DD_HOSTNAME` as the hostname, and doesn't do any workload provider-based enrichment.
-adp_use_fixed_host_provider: true
-adp_use_noop_workload_provider: true
+adp_standalone_mode: true

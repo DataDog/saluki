@@ -113,12 +113,16 @@ pub struct DSDConfig {
     ///
     /// The `dogstatsd` binary must exist at `/dogstatsd` in the image. Otherwise, the binary path can be overridden
     /// with the `binary-path` argument.
-    #[arg(short = 'i', long)]
+    #[arg(long)]
     pub image: String,
 
-    /// Path to the DogStatsD binary.
-    #[arg(short = 'b', long, default_value = "/dogstatsd")]
-    pub binary_path: String,
+    /// Entrypoint to execute..
+    #[arg(short = 'e', long, default_values_t = vec!["/entrypoint.sh".to_string()])]
+    pub entrypoint: Vec<String>,
+
+    /// Command to run DogStatsD with.
+    #[arg(short = 'b', long, default_values_t = vec!["/dogstatsd".to_string(), "start".to_string(), "--cfgpath".to_string(), "/etc/datadog-agent".to_string()])]
+    pub command: Vec<String>,
 
     /// Path to the DogStatsD configuration file to use.
     ///
@@ -148,9 +152,13 @@ pub struct ADPConfig {
     #[arg(short = 'i', long)]
     pub image: String,
 
-    /// Path to the Agent Data Plane binary.
-    #[arg(short = 'b', long, default_value = "/usr/bin/agent-data-plane")]
-    pub binary_path: String,
+    /// Entrypoint to execute.
+    #[arg(short = 'e', long, default_values_t = vec!["/entrypoint.sh".to_string()])]
+    pub entrypoint: Vec<String>,
+
+    /// Command to run Agent Data Plane with.
+    #[arg(short = 'b', long, default_values_t = vec!["/usr/local/bin/agent-data-plane".to_string(), "run".to_string(), "--config".to_string(), "/etc/datadog-agent/datadog.yaml".to_string()])]
+    pub command: Vec<String>,
 
     /// Path to the Agent Data Plane configuration file to use.
     ///

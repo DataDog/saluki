@@ -18,4 +18,9 @@ COPY --from=adp /opt/datadog/agent-data-plane /opt/datadog/agent-data-plane
 COPY docker/cont-init.d /etc/cont-init.d/
 COPY docker/s6-services /etc/services.d/
 
+COPY --chmod=755 docker/entrypoint.sh /entrypoint.sh
+
+# Remove default check configuration to ensure no checks end up running by default.
+RUN rm -rf /etc/datadog-agent/conf.d/*
+
 # Everything else we'll leave at the defaults of the Datadog Agent image.
