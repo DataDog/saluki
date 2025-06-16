@@ -70,7 +70,10 @@ async fn main() {
         fatal_and_exit(format!("failed to initialize TLS: {}", e));
     }
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap();
     match cli.action {
         Some(Action::Run(config)) => match run(started, config).await {
             Ok(()) => info!("Agent Data Plane stopped."),
@@ -83,7 +86,7 @@ async fn main() {
             // TODO: call to /logging/reset
             println!("brianna Resetting log level");
 
-            let response = match client.post("http://localhost:5101/logging/reset").send().await {
+            let response = match client.post("https://localhost:5101/logging/reset").send().await {
                 Ok(resp) => resp,
                 Err(e) => {
                     error!("Failed to send request: {}", e);
@@ -110,7 +113,7 @@ async fn main() {
             println!("brianna Duration: {}", duration_secs);
 
             let response = match client
-                .post("http://localhost:5101/logging/override")
+                .post("https://localhost:5101/logging/override")
                 .query(&[("time_secs", duration_secs)])
                 .body(filter_directives)
                 .send()
