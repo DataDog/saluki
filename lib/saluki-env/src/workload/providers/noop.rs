@@ -1,5 +1,5 @@
 use saluki_context::{
-    origin::{OriginKey, OriginTagCardinality, RawOrigin},
+    origin::{OriginTagCardinality, RawOrigin},
     tags::SharedTagSet,
 };
 
@@ -17,11 +17,7 @@ impl WorkloadProvider for NoopWorkloadProvider {
         None
     }
 
-    fn resolve_origin(&self, _: RawOrigin<'_>) -> Option<OriginKey> {
-        None
-    }
-
-    fn get_resolved_origin_by_key(&self, _: &OriginKey) -> Option<ResolvedOrigin> {
+    fn get_resolved_origin(&self, _: RawOrigin<'_>) -> Option<ResolvedOrigin> {
         None
     }
 }
