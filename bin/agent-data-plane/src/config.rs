@@ -16,7 +16,7 @@ pub enum Action {
     #[command(name = "run")]
     Run(RunConfig),
 
-    /// Configures the log level of the data plane.
+    /// Various debugging commands.
     #[command(subcommand)]
     Debug(DebugConfig),
 }
@@ -36,7 +36,7 @@ pub enum DebugConfig {
     #[command(name = "reset-log-level")]
     ResetLogLevel,
 
-    /// Overrides the default log filtering directives.
+    /// Overrides the current log level.
     #[command(name = "set-log-level")]
     SetLogLevel(SetLogLevelConfig),
 }
@@ -48,7 +48,7 @@ pub struct SetLogLevelConfig {
     #[arg(required = true)]
     pub filter_directives: String,
 
-    /// Duration in seconds for which the override will be applied.
+    /// Amount of time to apply the log level override, in seconds.
     #[arg(required = true)]
     pub duration_secs: u64,
 }
