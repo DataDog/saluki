@@ -70,6 +70,7 @@ async fn main() {
         fatal_and_exit(format!("failed to initialize TLS: {}", e));
     }
 
+    let client = reqwest::Client::new();
     match cli.action {
         Some(Action::Run(config)) => match run(started, config).await {
             Ok(()) => info!("Agent Data Plane stopped."),
@@ -80,12 +81,46 @@ async fn main() {
         },
         Some(Action::Debug(DebugConfig::ResetLogLevel)) => {
             // TODO: call to /logging/reset
+            let response = match client
+                .post("http://localhost:8080/logging/reset")
+                .send()
+                .await {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        error!("Failed to send request: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+
+            if response.status().is_success() {
+                println!("Log level reset successful");
+            } else {
+                eprintln!("Failed to reset log level: {}", response.status());
+            }
         }
         Some(Action::Debug(DebugConfig::SetLogLevel(config))) => {
             // TODO: call to /logging/override
-            let _filter_directives = config.filter_directives;
-            let _duration_secs = config.duration_secs;
-        }
+            let filter_directives = config.filter_directives;
+            let duration_secs = config.duration_secs;
+            let response = match client
+                .post("http://localhost:8080/logging/override")
+                .query(&[("time_secs", duration_secs)])
+                .body(filter_directives)
+                .send()
+                .await {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        error!("Failed to send request: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+
+            if response.status().is_success() {
+                println!("Log level override successful");
+            } else {
+                eprintln!("Failed to override log level: {}", response.status());
+            }
+       }
         None => {
             let default_config = RunConfig {
                 config: std::path::PathBuf::from("/etc/datadog-agent/datadog.yaml"),
