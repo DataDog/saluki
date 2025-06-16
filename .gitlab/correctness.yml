@@ -110,3 +110,40 @@ run-ground-truth:
       --dsd-config-path $(pwd)/test/correctness/datadog.yaml
       --adp-image ${ADP_FULL_IMAGE_TAG}
       --adp-config-path $(pwd)/test/correctness/datadog.yaml
+
+run-ground-truth-origin-detection:
+  extends: [.build-common-variables]
+  stage: correctness
+  tags: ["docker-in-docker:amd64"]
+  needs:
+    - build-adp-image
+    - build-metrics-intake-image
+    - build-millstone-image
+    - build-bundled-agent-adp-image
+  retry: 2
+  timeout: 10m
+  image: "${SALUKI_BUILD_CI_IMAGE}"
+  artifacts:
+    expire_in: 1 weeks
+    paths:
+      - /tmp/ground-truth/  # for debugging
+    when: always
+  variables:
+    DD_LOG_LEVEL: "ground_truth=debug,info"
+    GROUND_TRUTH_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
+  script:
+    - make build-ground-truth
+    - target/debug/ground-truth
+      --millstone-image ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
+      --millstone-config-path $(pwd)/test/correctness/millstone.yaml
+      --metrics-intake-image ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
+      --metrics-intake-config-path $(pwd)/test/correctness/metrics-intake.yaml
+      --dsd-image gcr.io/datadoghq/agent:${PUBLIC_DD_AGENT_VERSION}
+      --dsd-entrypoint /bin/entrypoint.sh
+      --dsd-command /init
+      --dsd-config-path $(pwd)/test/correctness/datadog-origin-detection.yaml
+      --adp-image ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
+      --adp-command /init
+      --adp-config-path $(pwd)/test/correctness/datadog-origin-detection.yaml
+      --adp-env-arg DD_ADP_ENABLED=true
+      --adp-env-arg DD_AGGREGATE_CONTEXT_LIMIT=500000
