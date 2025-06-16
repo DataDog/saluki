@@ -29,7 +29,7 @@ use tracing::{error, info, warn};
 mod components;
 
 mod config;
-use self::config::{Action, Cli, RunConfig};
+use self::config::{Action, Cli, DebugConfig, RunConfig};
 
 mod env_provider;
 use self::env_provider::ADPEnvironmentProvider;
@@ -70,19 +70,35 @@ async fn main() {
         fatal_and_exit(format!("failed to initialize TLS: {}", e));
     }
 
-    // Use default configuration path when no subcommand is provided.
-    let run_config = match cli.action {
-        Some(Action::Run(config)) => config,
-        None => RunConfig {
-            config: std::path::PathBuf::from("/etc/datadog-agent/datadog.yaml"),
-        },
-    };
-
-    match run(started, run_config).await {
-        Ok(()) => info!("Agent Data Plane stopped."),
-        Err(e) => {
-            error!("{:?}", e);
-            std::process::exit(1);
+    match cli.action {
+        Some(Action::Run(config)) => {
+            match run(started, config).await {
+                Ok(()) => info!("Agent Data Plane stopped."),
+                Err(e) => {
+                    error!("{:?}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Action::Debug(DebugConfig::ResetLogLevel)) => {
+            // TODO: call to /logging/reset
+        }
+        Some(Action::Debug(DebugConfig::SetLogLevel(config))) => {
+            // TODO: call to /logging/override
+            let _filter_directives = config.filter_directives;
+            let _duration_secs = config.duration_secs;
+        }
+        None => {
+            let default_config = RunConfig {
+                config: std::path::PathBuf::from("/etc/datadog-agent/datadog.yaml"),
+            };
+            match run(started, default_config).await {
+                Ok(()) => info!("Agent Data Plane stopped."),
+                Err(e) => {
+                    error!("{:?}", e);
+                    std::process::exit(1);
+                }
+            }
         }
     }
 }
