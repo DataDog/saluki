@@ -81,16 +81,13 @@ async fn main() {
         },
         Some(Action::Debug(DebugConfig::ResetLogLevel)) => {
             // TODO: call to /logging/reset
-            let response = match client
-                .post("http://localhost:8080/logging/reset")
-                .send()
-                .await {
-                    Ok(resp) => resp,
-                    Err(e) => {
-                        error!("Failed to send request: {}", e);
-                        std::process::exit(1);
-                    }
-                };
+            let response = match client.post("http://localhost:8080/logging/reset").send().await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    error!("Failed to send request: {}", e);
+                    std::process::exit(1);
+                }
+            };
 
             if response.status().is_success() {
                 println!("Log level reset successful");
@@ -107,20 +104,21 @@ async fn main() {
                 .query(&[("time_secs", duration_secs)])
                 .body(filter_directives)
                 .send()
-                .await {
-                    Ok(resp) => resp,
-                    Err(e) => {
-                        error!("Failed to send request: {}", e);
-                        std::process::exit(1);
-                    }
-                };
+                .await
+            {
+                Ok(resp) => resp,
+                Err(e) => {
+                    error!("Failed to send request: {}", e);
+                    std::process::exit(1);
+                }
+            };
 
             if response.status().is_success() {
                 println!("Log level override successful");
             } else {
                 eprintln!("Failed to override log level: {}", response.status());
             }
-       }
+        }
         None => {
             let default_config = RunConfig {
                 config: std::path::PathBuf::from("/etc/datadog-agent/datadog.yaml"),
