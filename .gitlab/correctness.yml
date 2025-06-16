@@ -107,9 +107,9 @@ run-ground-truth:
       --metrics-intake-image ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
       --metrics-intake-config-path $(pwd)/test/correctness/metrics-intake.yaml
       --dsd-image gcr.io/datadoghq/dogstatsd:${PUBLIC_DD_AGENT_VERSION}
-      --dsd-config-path $(pwd)/test/correctness/datadog.yaml
+      --dsd-config-path $(pwd)/test/correctness/datadog-no-origin-detection.yaml
       --adp-image ${ADP_FULL_IMAGE_TAG}
-      --adp-config-path $(pwd)/test/correctness/datadog.yaml
+      --adp-config-path $(pwd)/test/correctness/datadog-no-origin-detection.yaml
 
 run-ground-truth-origin-detection:
   extends: [.build-common-variables]
@@ -133,12 +133,15 @@ run-ground-truth-origin-detection:
     GROUND_TRUTH_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
   script:
     - make build-ground-truth
+    # We use the same container images for both DSD/ADP because our custom bundled image will remove all of the default
+    # checks, which we don't want to be executed during our test. This also has the nice side effect of ensuring we're
+    # running the same exact version of the Agent on both sides.
     - target/debug/ground-truth
       --millstone-image ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
       --millstone-config-path $(pwd)/test/correctness/millstone.yaml
       --metrics-intake-image ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
       --metrics-intake-config-path $(pwd)/test/correctness/metrics-intake.yaml
-      --dsd-image gcr.io/datadoghq/agent:${PUBLIC_DD_AGENT_VERSION}
+      --dsd-image ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
       --dsd-entrypoint /bin/entrypoint.sh
       --dsd-command /init
       --dsd-config-path $(pwd)/test/correctness/datadog-origin-detection.yaml
