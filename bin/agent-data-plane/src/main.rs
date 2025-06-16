@@ -8,7 +8,6 @@
 use std::time::{Duration, Instant};
 
 use clap::Parser as _;
-use http::{Request, Uri};
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
 use saluki_components::{
@@ -24,7 +23,6 @@ use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
-use saluki_io::net::client::http::HttpClient;
 use tokio::select;
 use tracing::{error, info, warn};
 
@@ -72,7 +70,11 @@ async fn main() {
         fatal_and_exit(format!("failed to initialize TLS: {}", e));
     }
 
-    let mut client: HttpClient<String> = HttpClient::builder().build().unwrap();
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap();
+
     match cli.action {
         Some(Action::Run(config)) => match run(started, config).await {
             Ok(()) => info!("Agent Data Plane stopped."),
@@ -84,38 +86,30 @@ async fn main() {
         Some(Action::Debug(DebugConfig::ResetLogLevel)) => {
             // TODO: call to /logging/reset
             println!("brianna Resetting log level");
-
-            let uri_string = "https://localhost:5101/logging/reset".to_string();
-            let uri = match uri_string.parse::<Uri>() {
-                Ok(uri) => uri,
+            let response = match client.post("https://localhost:5101/logging/reset").send().await {
+                Ok(resp) => resp,
                 Err(e) => {
-                    error!("Failed to parse URI: {}", e);
+                    error!("Failed to send request: {}", e);
                     std::process::exit(1);
                 }
             };
-            let request = match Request::builder()
-                .uri(uri)
-                .body(String::new()) {
-                    Ok(req) => req,
-                    Err(e) => {
-                        error!("Failed to build request: {}", e);
-                        std::process::exit(1);
-                    }
-                };
-            let resp = client.send(request).await.unwrap();
+            println!("brianna Response: {:?}", response);
+            if response.status().is_success() {
+                println!("Log level reset successful");
+            } else {
+                eprintln!("Failed to reset log level: {}", response.status());
+            }
 
-            println!("brianna Response: {:?}", resp);
+            println!("brianna Response: {:?}", response);
         }
         Some(Action::Debug(DebugConfig::SetLogLevel(config))) => {
             // TODO: call to /logging/override
             println!("brianna Setting log level");
-
             let filter_directives = config.filter_directives;
             let duration_secs = config.duration_secs;
-
             println!("brianna Filter directives: {}", filter_directives);
             println!("brianna Duration: {}", duration_secs);
-            /*
+
             let response = match client
                 .post("https://localhost:5101/logging/override")
                 .query(&[("time_secs", duration_secs)])
@@ -129,15 +123,12 @@ async fn main() {
                     std::process::exit(1);
                 }
             };
-
             println!("brianna Response: {:?}", response);
-
             if response.status().is_success() {
                 println!("Log level override successful");
             } else {
                 eprintln!("Failed to override log level: {}", response.status());
             }
-            */
         }
         None => {
             let default_config = RunConfig {
