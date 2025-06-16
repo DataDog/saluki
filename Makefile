@@ -498,12 +498,11 @@ test-correctness-origin-detection: ## Runs the metrics correctness (ground-truth
 		--dsd-entrypoint /bin/entrypoint.sh \
 		--dsd-command /init \
 		--dsd-config-path $(shell pwd)/test/correctness/datadog-origin-detection.yaml \
-		--dsd-env-arg DOCKER_DD_AGENT=true \
 		--adp-image saluki-images/datadog-agent:latest \
 		--adp-command /init \
 		--adp-config-path $(shell pwd)/test/correctness/datadog-origin-detection.yaml \
 		--adp-env-arg DD_ADP_ENABLED=true \
-		--adp-env-arg DOCKER_DD_AGENT=true
+		--adp-env-arg DD_AGGREGATE_CONTEXT_LIMIT=500000
 
 .PHONY: ensure-rust-miri
 ensure-rust-miri:
