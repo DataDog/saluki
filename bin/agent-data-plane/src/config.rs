@@ -32,11 +32,11 @@ pub struct RunConfig {
 /// Debug subcommand configuration.
 #[derive(Subcommand, Debug)]
 pub enum DebugConfig {
-    /// Resets the log level.
+    /// Resets log level.
     #[command(name = "reset-log-level")]
     ResetLogLevel,
 
-    /// Sets the log level.
+    /// Overrides the default log filtering directives.
     #[command(name = "set-log-level")]
     SetLogLevel(SetLogLevelConfig),
 }
@@ -44,7 +44,7 @@ pub enum DebugConfig {
 /// Set log level configuration.
 #[derive(Args, Debug)]
 pub struct SetLogLevelConfig {
-    /// Filter directives to apply (e.g., "info", "debug", "trace", "saluki_components::transforms=debug,info")
+    /// Filter directives to apply.
     #[arg(required = true)]
     pub filter_directives: String,
 
