@@ -139,7 +139,7 @@ impl CgroupsReader {
                 );
 
                 return Some(Cgroup {
-                    ino: metadata.ino(),
+                    ino: Some(metadata.ino()),
                     container_id,
                 });
             }
@@ -175,13 +175,23 @@ impl CgroupsReader {
         // to the container based on the name, and if so, return it.
         for entry in lines.iter().filter_map(|s| CgroupControllerEntry::try_from_str(s)) {
             if entry.name == base_controller_name {
-                let full_entry_path = self
-                    .hierarchy_reader
-                    .root_path()
-                    .join(entry.path.strip_prefix("/").unwrap_or(entry.path));
-                if let Some(cgroup) = self.try_cgroup_from_path(&full_entry_path) {
-                    return Some(cgroup);
+                // We explicitly try to extract the container ID from the reported cgroup controller path, rather than
+                // trying to stick it on the end of our configured root cgroups path. This is because unless we're in the
+                // host's cgroup namespace, the path we get here will be the leaf directory -- the part with the
+                // container ID in it -- but it will be relative in a way that doesn't allow it to be appended to the
+                // root cgroups path, and so trying to query it to get the controller inode, and all of that, will fail.
+                //
+                // All we need is the leaf directory anyways.
+                if let Some(proc_cgroup_path) = entry.path.file_name().and_then(|s| s.to_str()) {
+                    if let Some(container_id) = extract_container_id(proc_cgroup_path, &self.interner) {
+                        return Some(Cgroup {
+                            ino: None,
+                            container_id,
+                        });
+                    }
                 }
+            } else {
+                debug!(pid, cgroup_lookup_path = %proc_pid_cgroup_path.display(), base_controller_name, "Found cgroup controller for process, but it doesn't match the base controller.");
             }
         }
 
@@ -320,13 +330,13 @@ impl HierarchyReader {
 
 /// A container cgroup.
 pub struct Cgroup {
-    ino: u64,
+    ino: Option<u64>,
     container_id: MetaString,
 }
 
 impl Cgroup {
-    /// Returns the inode of the cgroup controller.
-    pub fn inode(&self) -> u64 {
+    /// Returns the inode of the cgroup controller, if available.
+    pub fn inode(&self) -> Option<u64> {
         self.ino
     }
 
