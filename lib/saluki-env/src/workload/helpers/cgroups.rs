@@ -329,6 +329,7 @@ impl HierarchyReader {
 }
 
 /// A container cgroup.
+#[derive(Debug)]
 pub struct Cgroup {
     ino: Option<u64>,
     container_id: MetaString,

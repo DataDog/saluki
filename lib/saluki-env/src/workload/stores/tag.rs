@@ -25,6 +25,7 @@ static_metrics!(
         counter(ops_delete_total),
         counter(ops_set_tags_total),
         counter(ops_add_alias_total),
+        counter(ops_remove_alias_total),
    ],
 );
 
@@ -123,9 +124,7 @@ impl TagStore {
 
         // Delete all of the tags for the entity, and any alias mapping that may exist.
         self.entity_tags.delete_entity(entity_id);
-        if self.entity_aliases.pin().remove(entity_id).is_some() {
-            self.telemetry.entity_aliases().decrement(1);
-        }
+        self.remove_entity_alias(entity_id);
     }
 
     fn set_entity_tags(&mut self, entity_id: EntityId, tags: TagSet, cardinality: OriginTagCardinality) {
@@ -149,6 +148,12 @@ impl TagStore {
             .is_none()
         {
             self.telemetry.entity_aliases().increment(1);
+        }
+    }
+
+    fn remove_entity_alias(&mut self, source_entity_id: &EntityId) {
+        if self.entity_aliases.pin().remove(source_entity_id).is_some() {
+            self.telemetry.entity_aliases().decrement(1);
         }
     }
 
@@ -177,11 +182,15 @@ impl MetadataStore for TagStore {
             match action {
                 MetadataAction::Delete => {
                     self.telemetry.ops_delete_total().increment(1);
-                    self.delete_entity(&entity_id.clone())
+                    self.delete_entity(&entity_id)
                 }
                 MetadataAction::AddAlias { target_entity_id } => {
                     self.telemetry.ops_add_alias_total().increment(1);
                     self.add_entity_alias(entity_id.clone(), target_entity_id)
+                }
+                MetadataAction::RemoveAlias { .. } => {
+                    self.telemetry.ops_remove_alias_total().increment(1);
+                    self.remove_entity_alias(&entity_id);
                 }
                 MetadataAction::SetTags { cardinality, tags } => {
                     self.telemetry.ops_set_tags_total().increment(1);
