@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::{collections::hash_map::Entry, time::Duration};
 use std::{collections::HashMap, net::SocketAddr};
 
@@ -204,9 +205,25 @@ impl RemoteAgent for RemoteAgentImpl {
     async fn get_flare_files(
         &self, _request: tonic::Request<GetFlareFilesRequest>,
     ) -> Result<tonic::Response<GetFlareFilesResponse>, tonic::Status> {
-        let response = GetFlareFilesResponse {
-            files: HashMap::default(),
-        };
+        let mut files = HashMap::new();
+
+        let log_file_path = PathBuf::from(
+            std::env::var("DD_ADP_LOG_FILE").unwrap_or(saluki_app::logging::DEFAULT_ADP_LOG_FILE.to_string()),
+        );
+
+        if let Some(log_file_name) = log_file_path.file_name() {
+            match tokio::fs::read(&log_file_path).await {
+                Ok(content) => {
+                    files.insert(log_file_name.to_string_lossy().to_string(), content);
+                }
+                Err(e) => {
+                    debug!("Failed to read {} log file for flare: {}", log_file_path.display(), e);
+                }
+            }
+        }
+
+        let response = GetFlareFilesResponse { files };
+
         Ok(tonic::Response::new(response))
     }
 

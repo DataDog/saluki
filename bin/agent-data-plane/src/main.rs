@@ -54,9 +54,10 @@ async fn main() {
     let started = Instant::now();
     let cli = Cli::parse();
 
-    if let Err(e) = initialize_dynamic_logging(None).await {
+    let _guard = initialize_dynamic_logging(None).await.unwrap_or_else(|e| {
         fatal_and_exit(format!("failed to initialize logging: {}", e));
-    }
+        unreachable!() // This will never be reached since fatal_and_exit exits
+    });
 
     if let Err(e) = initialize_metrics("adp").await {
         fatal_and_exit(format!("failed to initialize metrics: {}", e));
