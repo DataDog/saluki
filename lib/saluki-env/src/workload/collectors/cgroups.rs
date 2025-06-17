@@ -119,12 +119,14 @@ fn traverse_cgroups(
     let child_cgroups = reader.get_child_cgroups();
     let child_cgroups_len = child_cgroups.len();
     for child_cgroup in child_cgroups {
-        // Create an ancestry link between the container inode and the container ID.
-        let entity_id = EntityId::ContainerInode(child_cgroup.inode());
-        let ancestor_entity_id = EntityId::Container(child_cgroup.into_container_id());
+        // Create an ancestry link between the container inode and the container ID, if available.
+        if let Some(cgroup_inode) = child_cgroup.inode() {
+            let entity_id = EntityId::ContainerInode(cgroup_inode);
+            let ancestor_entity_id = EntityId::Container(child_cgroup.into_container_id());
 
-        let operation = MetadataOperation::add_alias(entity_id, ancestor_entity_id);
-        operations.push(operation);
+            let operation = MetadataOperation::add_alias(entity_id, ancestor_entity_id);
+            operations.push(operation);
+        }
     }
 
     let elapsed = start.elapsed();
