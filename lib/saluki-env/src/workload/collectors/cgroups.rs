@@ -77,9 +77,7 @@ impl MetadataCollector for CgroupsMetadataCollector {
                 let mut cgroups_manager = SynchronousCgroupsManager::from_reader(self.reader.clone());
                 let operations_tx = operations_tx.clone();
 
-                poller_handle = Some(tokio::task::spawn_blocking(move || {
-                    cgroups_manager.poll(operations_tx)
-                }));
+                poller_handle = Some(tokio::task::spawn_blocking(move || cgroups_manager.poll(operations_tx)));
 
                 debug!("Spawned cgroups background poller task.");
             }
