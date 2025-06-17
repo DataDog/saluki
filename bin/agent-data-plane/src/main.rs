@@ -84,8 +84,6 @@ async fn main() {
             }
         },
         Some(Action::Debug(DebugConfig::ResetLogLevel)) => {
-            // TODO: call to /logging/reset
-            println!("brianna Resetting log level");
             let response = match client.post("https://localhost:5101/logging/reset").send().await {
                 Ok(resp) => resp,
                 Err(e) => {
@@ -93,22 +91,16 @@ async fn main() {
                     std::process::exit(1);
                 }
             };
-            println!("brianna Response: {:?}", response);
+
             if response.status().is_success() {
                 println!("Log level reset successful");
             } else {
                 eprintln!("Failed to reset log level: {}", response.status());
             }
-
-            println!("brianna Response: {:?}", response);
         }
         Some(Action::Debug(DebugConfig::SetLogLevel(config))) => {
-            // TODO: call to /logging/override
-            println!("brianna Setting log level");
             let filter_directives = config.filter_directives;
             let duration_secs = config.duration_secs;
-            println!("brianna Filter directives: {}", filter_directives);
-            println!("brianna Duration: {}", duration_secs);
 
             let response = match client
                 .post("https://localhost:5101/logging/override")
@@ -123,7 +115,7 @@ async fn main() {
                     std::process::exit(1);
                 }
             };
-            println!("brianna Response: {:?}", response);
+
             if response.status().is_success() {
                 println!("Log level override successful");
             } else {
