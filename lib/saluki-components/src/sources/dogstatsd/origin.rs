@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use saluki_context::{
-    origin::{OriginKey, OriginTagCardinality, OriginTagsResolver, RawOrigin},
+    origin::{OriginTagCardinality, OriginTagsResolver, RawOrigin},
     tags::SharedTagSet,
 };
 use saluki_env::{workload::origin::ResolvedOrigin, WorkloadProvider};
@@ -101,6 +101,7 @@ impl DogStatsDOriginTagResolver {
         // - entity ID (extracted from `dd.internal.entity_id` tag; non-prefixed pod UID)
         // - container ID (extracted from special "container ID" extension in DogStatsD protocol; non-prefixed container ID)
         // - container ID via origin PID (extracted via UDS socket credentials)
+        let maybe_process_id = origin.process_id();
         let maybe_entity_id = origin.pod_uid();
         let maybe_container_id = origin.container_id();
 
@@ -114,19 +115,24 @@ impl DogStatsDOriginTagResolver {
 
             // If we discovered an entity ID via origin detection, and no client-provided entity ID was provided (or it was,
             // but entity ID precedence is disabled), then try to get tags for the detected entity ID.
-            if let Some(origin_cid) = maybe_container_id {
+            if let Some(entity_id) = maybe_process_id {
                 if maybe_entity_id.is_none() || !self.config.entity_id_precedence {
-                    if let Some(tags) = self.workload_provider.get_tags_for_entity(origin_cid, tag_cardinality) {
+                    if let Some(tags) = self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
                         collected_tags.extend_from_shared(&tags);
                     } else {
-                        trace!(entity_id = ?origin_cid, cardinality = tag_cardinality.as_str(), "No tags found for entity.");
+                        trace!(
+                            ?entity_id,
+                            cardinality = tag_cardinality.as_str(),
+                            "No tags found for entity."
+                        );
                     }
                 }
             }
 
             // If we have a client-provided entity ID, try to get tags for the entity based on those. A
             // client-provided entity ID takes precedence over the container ID.
-            if let Some(entity_id) = maybe_entity_id {
+            let maybe_client_entity_id = maybe_entity_id.or(maybe_container_id);
+            if let Some(entity_id) = maybe_client_entity_id {
                 if let Some(tags) = self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
                     collected_tags.extend_from_shared(&tags);
                 } else {
@@ -143,11 +149,13 @@ impl DogStatsDOriginTagResolver {
                 return collected_tags;
             }
 
-            // Try all possible detected entity IDs, enriching in the following order of precedence: local container ID,
-            // client-provided entity ID, External Data-based pod ID, and External Data-based container ID.
+            // Try all possible detected entity IDs, enriching in the following order of precedence: local process ID,
+            // local container ID, client-provided entity ID, External Data-based pod ID, and External Data-based
+            // container ID.
             let maybe_external_data_pod_uid = origin.resolved_external_data().map(|red| red.pod_entity_id());
             let maybe_external_data_container_id = origin.resolved_external_data().map(|red| red.container_entity_id());
             let maybe_entity_ids = &[
+                maybe_process_id,
                 maybe_container_id,
                 maybe_entity_id,
                 maybe_external_data_pod_uid,
@@ -171,15 +179,11 @@ impl DogStatsDOriginTagResolver {
 }
 
 impl OriginTagsResolver for DogStatsDOriginTagResolver {
-    fn resolve_origin_key(&self, origin: RawOrigin<'_>) -> Option<OriginKey> {
-        self.workload_provider.resolve_origin(origin)
-    }
-
-    fn resolve_origin_tags(&self, origin_key: OriginKey) -> SharedTagSet {
-        match self.workload_provider.get_resolved_origin_by_key(&origin_key) {
-            Some(origin) => self.collect_origin_tags(origin),
+    fn resolve_origin_tags(&self, origin: RawOrigin<'_>) -> SharedTagSet {
+        match self.workload_provider.get_resolved_origin(origin.clone()) {
+            Some(resolved_origin) => self.collect_origin_tags(resolved_origin),
             None => {
-                trace!(?origin_key, "No resolved origin found for key.");
+                trace!(?origin, "No resolved origin found for origin.");
                 SharedTagSet::default()
             }
         }

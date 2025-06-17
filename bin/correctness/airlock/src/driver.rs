@@ -101,21 +101,11 @@ impl DriverConfig {
             ));
         }
 
-        // We run the regular entrypoint bundled in the DogStatsD container because it contains the necessary logic to
-        // ensure the DogStatsD binary is executable, and we simply put the things we care about the `command` field,
-        // which the `entrypoint.sh` script will dutifully pass through to `exec`.
-        let entrypoint = vec!["/entrypoint.sh".to_string()];
-        let command = vec![
-            config.binary_path,
-            "start".to_string(),
-            "--cfgpath".to_string(),
-            "/etc/datadog-agent".to_string(),
-        ];
-
         let driver_config = DriverConfig::from_image("dogstatsd", config.image)
-            .with_entrypoint(entrypoint)
-            .with_command(command)
-            .with_bind_mount(config.config_path, "/etc/datadog-agent/dogstatsd.yaml")
+            .with_entrypoint(config.entrypoint)
+            .with_command(config.command)
+            .with_bind_mount(config.config_path.clone(), "/etc/datadog-agent/dogstatsd.yaml")
+            .with_bind_mount(config.config_path, "/etc/datadog-agent/datadog.yaml")
             // We override the default health check baked into the image, which is egregiously long in my opinion. It
             // has an interval of 60 seconds, with no startup allowance... which means it takes a full minute before the
             // first healthcheck is even triggered, even if the Agent is healthy long before that. Very dumb.
@@ -145,10 +135,9 @@ impl DriverConfig {
             ));
         }
 
-        let entrypoint = vec![config.binary_path];
-
         let driver_config = DriverConfig::from_image("agent-data-plane", config.image)
-            .with_entrypoint(entrypoint)
+            .with_entrypoint(config.entrypoint)
+            .with_command(config.command)
             .with_bind_mount(config.config_path, "/etc/datadog-agent/datadog.yaml")
             .with_env_vars(config.additional_env_args);
 
@@ -556,6 +545,12 @@ impl Driver {
         // isolation group will use.
         binds.push(format!("{}:/airlock:z", self.isolation_group_name));
 
+        // Map specific host-level paths into the containers so they can access host-level resources needed for origin
+        // detection.
+        binds.push("/proc:/host/proc:ro".to_string());
+        binds.push("/sys/fs/cgroup:/host/sys/fs/cgroup:ro".to_string());
+        binds.push("/var/run/docker.sock:/var/run/docker.sock:ro".to_string());
+
         let (publish_all_ports, exposed_ports) = if self.config.exposed_ports.is_empty() {
             (None, None)
         } else {
@@ -577,6 +572,7 @@ impl Driver {
                 binds: Some(binds),
                 network_mode: Some(self.isolation_group_name.clone()),
                 publish_all_ports,
+                pid_mode: Some("host".to_string()),
                 ..Default::default()
             }),
             healthcheck: self.config.healthcheck.clone(),

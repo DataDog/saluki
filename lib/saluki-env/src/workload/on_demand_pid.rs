@@ -75,13 +75,6 @@ pub struct OnDemandPIDResolver {
 }
 
 impl OnDemandPIDResolver {
-    #[cfg(test)]
-    pub fn noop() -> Self {
-        Self {
-            inner: Arc::new(Inner::Noop),
-        }
-    }
-
     /// Creates a new `OnDemandPIDResolver` from the given configuration.
     #[cfg(not(target_os = "linux"))]
     pub fn from_configuration(

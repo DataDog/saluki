@@ -291,11 +291,6 @@ impl TagStoreQuerier {
         maybe_entity_tags
     }
 
-    /// Gets the alias for the given entity, if one exists.
-    pub fn get_entity_alias(&self, entity_id: &EntityId) -> Option<EntityId> {
-        self.aliases.pin().get(entity_id).cloned()
-    }
-
     /// Gets the exact tags for an entity at the specific cardinality.
     ///
     /// Unlike `visit_entity_tags`, this method does not visit tags at lower cardinalities, and it does not visit tags
