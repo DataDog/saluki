@@ -30,7 +30,7 @@ impl EndpointEncoder for EventsEndpointEncoder {
         UNCOMPRESSED_SIZE_LIMIT
     }
 
-    fn encode(&self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
+    fn encode(&mut self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
         encode_and_write_eventd(input, buffer)
     }
 

@@ -7,8 +7,8 @@
 //! aggregation -- along with a default workload provider implementation based on the Datadog Agent.
 
 use saluki_context::{
-    origin::{OriginKey, OriginTagCardinality, RawOrigin},
-    tags::TagVisitor,
+    origin::{OriginTagCardinality, RawOrigin},
+    tags::SharedTagSet,
 };
 
 mod aggregator;
@@ -32,52 +32,37 @@ mod stores;
 
 /// Provides information about workloads running on the process host.
 pub trait WorkloadProvider {
-    /// Visits the tags for an entity.
+    /// Gets the tags for an entity.
     ///
     /// Entities are workload resources running on the process host, such as containers or pods. The cardinality of the
     /// tags to get can be controlled via `cardinality`.
     ///
-    /// All tags found for the entity at the given cardinality will be passed to the `tag_visitor` in an unspecified
-    /// order. Tags may or may not be duplicated, so it is the caller's responsibility to handle duplicates.
-    ///
-    /// Returns `false` if the entity does not exist at all, `true` otherwise.
-    fn visit_tags_for_entity(
-        &self, entity_id: &EntityId, cardinality: OriginTagCardinality, tag_visitor: &mut dyn TagVisitor,
-    ) -> bool;
+    /// Returns `Some(SharedTagSet)` if the entity has tags, or `None` if the entity does not have any tags or if the
+    /// entity was not found.
+    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet>;
 
-    /// Resolves an origin, mapping it to a unique, opaque key.
+    /// Resolves a raw origin.
     ///
-    /// If the origin is empty, `None` is returned. Otherwise, `Some(OriginKey)` will be returned, which is a unique,
-    /// but opaque, key that can be used to retrieve the origin at a later time. The returned key will always be equal
-    /// to the key returned for the same origin in the same process.
-    fn resolve_origin(&self, origin: RawOrigin<'_>) -> Option<OriginKey>;
-
-    /// Gets a resolved origin by its key.
-    fn get_resolved_origin_by_key(&self, origin_key: &OriginKey) -> Option<ResolvedOrigin>;
+    ///  If the origin is empty, `None` is returned. Otherwise, `Some(ResolvedOrigin)` will be returned, which contains
+    ///  fully resolved versions of the raw origin components.
+    fn get_resolved_origin(&self, origin: RawOrigin<'_>) -> Option<ResolvedOrigin>;
 }
 
 impl<T> WorkloadProvider for Option<T>
 where
     T: WorkloadProvider,
 {
-    fn visit_tags_for_entity(
-        &self, entity_id: &EntityId, cardinality: OriginTagCardinality, tag_visitor: &mut dyn TagVisitor,
-    ) -> bool {
+    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
         match self.as_ref() {
-            Some(provider) => provider.visit_tags_for_entity(entity_id, cardinality, tag_visitor),
-            None => false,
-        }
-    }
-
-    fn resolve_origin(&self, origin: RawOrigin<'_>) -> Option<OriginKey> {
-        match self.as_ref() {
-            Some(provider) => provider.resolve_origin(origin),
+            Some(provider) => provider.get_tags_for_entity(entity_id, cardinality),
             None => None,
         }
     }
 
-    fn get_resolved_origin_by_key(&self, origin_key: &OriginKey) -> Option<ResolvedOrigin> {
-        self.as_ref()
-            .and_then(|provider| provider.get_resolved_origin_by_key(origin_key))
+    fn get_resolved_origin(&self, origin: RawOrigin<'_>) -> Option<ResolvedOrigin> {
+        match self.as_ref() {
+            Some(provider) => provider.get_resolved_origin(origin),
+            None => None,
+        }
     }
 }

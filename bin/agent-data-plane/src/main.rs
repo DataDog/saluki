@@ -7,6 +7,7 @@
 #![deny(missing_docs)]
 use std::time::{Duration, Instant};
 
+use clap::Parser as _;
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
 use saluki_components::{
@@ -26,6 +27,9 @@ use tokio::select;
 use tracing::{error, info, warn};
 
 mod components;
+
+mod config;
+use self::config::{Action, Cli, RunConfig};
 
 mod env_provider;
 use self::env_provider::ADPEnvironmentProvider;
@@ -48,6 +52,7 @@ static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System
 #[tokio::main]
 async fn main() {
     let started = Instant::now();
+    let cli = Cli::parse();
 
     let _guard = initialize_dynamic_logging(None).await.unwrap_or_else(|e| {
         fatal_and_exit(format!("failed to initialize logging: {}", e));
@@ -66,7 +71,15 @@ async fn main() {
         fatal_and_exit(format!("failed to initialize TLS: {}", e));
     }
 
-    match run(started).await {
+    // Use default configuration path when no subcommand is provided.
+    let run_config = match cli.action {
+        Some(Action::Run(config)) => config,
+        None => RunConfig {
+            config: std::path::PathBuf::from("/etc/datadog-agent/datadog.yaml"),
+        },
+    };
+
+    match run(started, run_config).await {
         Ok(()) => info!("Agent Data Plane stopped."),
         Err(e) => {
             error!("{:?}", e);
@@ -75,7 +88,7 @@ async fn main() {
     }
 }
 
-async fn run(started: Instant) -> Result<(), GenericError> {
+async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
     info!(
         version = app_details.version().raw(),
@@ -84,11 +97,10 @@ async fn run(started: Instant) -> Result<(), GenericError> {
         build_time = app_details.build_time(),
         "Agent Data Plane starting..."
     );
-
     // Load our configuration and create all high-level primitives (health registry, component registry, environment
     // provider, etc) that are needed to build the topology.
     let configuration = ConfigurationLoader::default()
-        .try_from_yaml("/etc/datadog-agent/datadog.yaml")
+        .try_from_yaml(&run_config.config)
         .from_environment("DD")?
         .with_default_secrets_resolution()
         .await?

@@ -13,6 +13,7 @@ fips = ["saluki-app/tls-fips"]
 async-trait = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
+clap = { workspace = true, features = ["std", "color", "derive", "help", "wrap_help", "usage", "error-context", "suggestions"] }
 datadog-protos = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }

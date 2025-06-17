@@ -388,7 +388,7 @@ impl EndpointEncoder for ServiceChecksEndpointEncoder {
         UNCOMPRESSED_SIZE_LIMIT
     }
 
-    fn encode(&self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
+    fn encode(&mut self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
         serde_json::to_writer(buffer, input)
     }
 

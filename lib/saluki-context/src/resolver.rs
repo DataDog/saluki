@@ -14,7 +14,7 @@ use tracing::debug;
 use crate::{
     context::{Context, ContextInner},
     hash::{hash_context_with_seen, ContextKey, TagSetKey},
-    origin::{OriginKey, OriginTags, OriginTagsResolver, RawOrigin},
+    origin::{OriginTagsResolver, RawOrigin},
     tags::{SharedTagSet, TagSet},
 };
 
@@ -352,26 +352,22 @@ impl ContextResolver {
             })
     }
 
-    fn resolve_origin_tags(&self, maybe_origin: Option<RawOrigin<'_>>) -> OriginTags {
+    fn resolve_origin_tags(&self, maybe_origin: Option<RawOrigin<'_>>) -> SharedTagSet {
         self.origin_tags_resolver
             .as_ref()
-            .and_then(|resolver| {
-                maybe_origin
-                    .and_then(|origin| resolver.resolve_origin_key(origin))
-                    .map(|origin_key| OriginTags::from_resolved(origin_key, Arc::clone(resolver)))
-            })
-            .unwrap_or_else(OriginTags::empty)
+            .and_then(|resolver| maybe_origin.map(|origin| resolver.resolve_origin_tags(origin)))
+            .unwrap_or_default()
     }
 
-    fn create_context_key<N, I, T>(
-        &mut self, name: N, tags: I, maybe_origin_key: Option<OriginKey>,
-    ) -> (ContextKey, TagSetKey)
+    fn create_context_key<N, I, I2, T, T2>(&mut self, name: N, tags: I, origin_tags: I2) -> (ContextKey, TagSetKey)
     where
-        N: AsRef<str> + CheapMetaString,
+        N: AsRef<str>,
         I: IntoIterator<Item = T>,
-        T: AsRef<str> + CheapMetaString,
+        T: AsRef<str>,
+        I2: IntoIterator<Item = T2>,
+        T2: AsRef<str>,
     {
-        hash_context_with_seen(name.as_ref(), tags, maybe_origin_key, &mut self.hash_seen_buffer)
+        hash_context_with_seen(name.as_ref(), tags, origin_tags, &mut self.hash_seen_buffer)
     }
 
     fn create_tag_set<I, T>(&mut self, tags: I) -> Option<SharedTagSet>
@@ -391,7 +387,7 @@ impl ContextResolver {
     }
 
     fn create_context<N>(
-        &self, key: ContextKey, name: N, context_tags: SharedTagSet, origin_tags: OriginTags,
+        &self, key: ContextKey, name: N, context_tags: SharedTagSet, origin_tags: SharedTagSet,
     ) -> Option<Context>
     where
         N: AsRef<str> + CheapMetaString,
@@ -449,7 +445,7 @@ impl ContextResolver {
     /// This method is intended primarily to allow for resolving contexts in a consistent way while _reusing_ the origin
     /// tags from another context, such as when remapping the name and/or instrumented tags of a given metric, while
     /// maintaining its origin association.
-    pub fn resolve_with_origin_tags<N, I, T>(&mut self, name: N, tags: I, origin_tags: OriginTags) -> Option<Context>
+    pub fn resolve_with_origin_tags<N, I, T>(&mut self, name: N, tags: I, origin_tags: SharedTagSet) -> Option<Context>
     where
         N: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T> + Clone,
@@ -458,13 +454,13 @@ impl ContextResolver {
         self.resolve_inner(name, tags, origin_tags)
     }
 
-    fn resolve_inner<N, I, T>(&mut self, name: N, tags: I, origin_tags: OriginTags) -> Option<Context>
+    fn resolve_inner<N, I, T>(&mut self, name: N, tags: I, origin_tags: SharedTagSet) -> Option<Context>
     where
         N: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str> + CheapMetaString,
     {
-        let (context_key, tagset_key) = self.create_context_key(&name, tags.clone(), origin_tags.key());
+        let (context_key, tagset_key) = self.create_context_key(&name, tags.clone(), &origin_tags);
 
         // Fast path to avoid looking up the context in the cache if caching is disabled.
         if !self.caching_enabled {
@@ -543,9 +539,9 @@ mod tests {
         debugging::{DebugValue, DebuggingRecorder},
         CompositeKey,
     };
+    use saluki_common::hash::hash_single_fast;
 
     use super::*;
-    use crate::tags::TagVisitor;
 
     fn get_gauge_value(metrics: &[(CompositeKey, Option<Unit>, Option<SharedString>, DebugValue)], key: &str) -> f64 {
         metrics
@@ -561,11 +557,13 @@ mod tests {
     struct DummyOriginTagsResolver;
 
     impl OriginTagsResolver for DummyOriginTagsResolver {
-        fn resolve_origin_key(&self, info: RawOrigin<'_>) -> Option<OriginKey> {
-            Some(OriginKey::from_opaque(info))
-        }
+        fn resolve_origin_tags(&self, origin: RawOrigin<'_>) -> SharedTagSet {
+            let origin_key = hash_single_fast(origin);
 
-        fn visit_origin_tags(&self, _: OriginKey, _: &mut dyn TagVisitor) {}
+            let mut tags = TagSet::default();
+            tags.insert_tag(format!("origin_key:{}", origin_key));
+            tags.into_shared()
+        }
     }
 
     #[test]
@@ -719,9 +717,9 @@ mod tests {
 
         assert_eq!(context1, context2);
 
-        // Now build a context resolver with an origin tags resolver that trivially returns the origin key based on the
-        // hash of the origin info, which should result in the contexts incorporating the origin information into their
-        // equality/hashing, thus no longer comparing as equal:
+        // Now build a context resolver with an origin tags resolver that trivially returns the hash of the origin info
+        // as a tag, which should result in differeing sets of origin tags between the two origins, thus no longer
+        // comparing as equal:
         let mut resolver = ContextResolverBuilder::for_tests()
             .with_origin_tags_resolver(Some(DummyOriginTagsResolver))
             .build();

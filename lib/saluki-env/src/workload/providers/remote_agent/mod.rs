@@ -5,8 +5,8 @@ use std::{future::Future, num::NonZeroUsize};
 use memory_accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{
-    origin::{OriginKey, OriginTagCardinality, RawOrigin},
-    tags::TagVisitor,
+    origin::{OriginTagCardinality, RawOrigin},
+    tags::SharedTagSet,
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_health::{Health, HealthRegistry};
@@ -61,6 +61,7 @@ const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = unsafe { NonZeroUsize::
 pub struct RemoteAgentWorkloadProvider {
     tags_querier: TagStoreQuerier,
     origin_resolver: OriginResolver,
+    on_demand_pid_resolver: OnDemandPIDResolver,
 }
 
 impl RemoteAgentWorkloadProvider {
@@ -151,7 +152,7 @@ impl RemoteAgentWorkloadProvider {
 
         let on_demand_pid_resolver =
             OnDemandPIDResolver::from_configuration(config, feature_detector, string_interner)?;
-        let origin_resolver = OriginResolver::new(tags_querier.clone(), external_data_resolver, on_demand_pid_resolver);
+        let origin_resolver = OriginResolver::new(external_data_resolver);
 
         // With the aggregator configured, update the memory bounds and spawn the aggregator.
         provider_bounds.with_subcomponent("aggregator", &aggregator);
@@ -161,6 +162,7 @@ impl RemoteAgentWorkloadProvider {
         Ok(Self {
             tags_querier,
             origin_resolver,
+            on_demand_pid_resolver,
         })
     }
 
@@ -175,18 +177,27 @@ impl RemoteAgentWorkloadProvider {
 }
 
 impl WorkloadProvider for RemoteAgentWorkloadProvider {
-    fn visit_tags_for_entity(
-        &self, entity_id: &EntityId, cardinality: OriginTagCardinality, tag_visitor: &mut dyn TagVisitor,
-    ) -> bool {
-        self.tags_querier.visit_entity_tags(entity_id, cardinality, tag_visitor)
+    fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
+        // Query the tag store for the tags associated with the given entity ID.
+        match self.tags_querier.get_entity_tags(entity_id, cardinality) {
+            Some(tags) => Some(tags),
+            None => {
+                // If no tags came back, check if the entity ID is a PID. If it is, we can try to resolve it to a
+                // container ID first before trying again.
+                if let EntityId::ContainerPid(pid) = entity_id {
+                    if let Some(container_id) = self.on_demand_pid_resolver.resolve(*pid) {
+                        // If we successfully resolved the PID to a container ID, try again.
+                        return self.tags_querier.get_entity_tags(&container_id, cardinality);
+                    }
+                }
+
+                None
+            }
+        }
     }
 
-    fn resolve_origin(&self, origin: RawOrigin<'_>) -> Option<OriginKey> {
-        self.origin_resolver.resolve_origin(origin)
-    }
-
-    fn get_resolved_origin_by_key(&self, origin_key: &OriginKey) -> Option<ResolvedOrigin> {
-        self.origin_resolver.get_resolved_origin_by_key(origin_key)
+    fn get_resolved_origin(&self, origin: RawOrigin<'_>) -> Option<ResolvedOrigin> {
+        self.origin_resolver.get_resolved_origin(origin)
     }
 }
 

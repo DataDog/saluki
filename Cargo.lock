@@ -24,6 +24,7 @@ dependencies = [
  "async-trait",
  "bytesize",
  "chrono",
+ "clap",
  "datadog-protos",
  "futures",
  "http",

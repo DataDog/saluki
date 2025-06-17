@@ -11,7 +11,7 @@ build-metrics-intake-image:
     KUBERNETES_MEMORY_LIMIT: "12Gi"
   script:
     - docker buildx build
-      --platform linux/amd64,linux/arm64
+      --platform linux/amd64
       --file ./docker/Dockerfile.metrics-intake
       --tag ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
@@ -38,11 +38,39 @@ build-millstone-image:
     KUBERNETES_MEMORY_LIMIT: "12Gi"
   script:
     - docker buildx build
-      --platform linux/amd64,linux/arm64
+      --platform linux/amd64
       --file ./docker/Dockerfile.millstone
       --tag ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
+      --build-arg BUILD_PROFILE=release
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --push
+      .
+
+build-bundled-agent-adp-image:
+  stage: correctness
+  image: ${DOCKER_BUILD_IMAGE}
+  needs:
+    - build-adp-image
+  retry: 2
+  timeout: 10m
+  variables:
+    # Compiling Rust is intensive. ¯\_(ツ)_/¯
+    KUBERNETES_CPU_REQUEST: "16"
+    KUBERNETES_MEMORY_REQUEST: "8Gi"
+    KUBERNETES_MEMORY_LIMIT: "12Gi"
+  script:
+    - docker buildx build
+      --platform linux/amd64
+      --file ./docker/Dockerfile.datadog-agent
+      --tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
+      --build-arg DD_AGENT_VERSION=${PUBLIC_DD_AGENT_VERSION}
+      --build-arg ADP_IMAGE=${ADP_FULL_IMAGE_TAG}
       --build-arg BUILD_PROFILE=release
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
@@ -79,6 +107,46 @@ run-ground-truth:
       --metrics-intake-image ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
       --metrics-intake-config-path $(pwd)/test/correctness/metrics-intake.yaml
       --dsd-image gcr.io/datadoghq/dogstatsd:${PUBLIC_DD_AGENT_VERSION}
-      --dsd-config-path $(pwd)/test/correctness/datadog.yaml
+      --dsd-config-path $(pwd)/test/correctness/datadog-no-origin-detection.yaml
       --adp-image ${ADP_FULL_IMAGE_TAG}
-      --adp-config-path $(pwd)/test/correctness/datadog.yaml
+      --adp-config-path $(pwd)/test/correctness/datadog-no-origin-detection.yaml
+
+run-ground-truth-origin-detection:
+  extends: [.build-common-variables]
+  stage: correctness
+  tags: ["docker-in-docker:amd64"]
+  needs:
+    - build-adp-image
+    - build-metrics-intake-image
+    - build-millstone-image
+    - build-bundled-agent-adp-image
+  retry: 2
+  timeout: 10m
+  image: "${SALUKI_BUILD_CI_IMAGE}"
+  artifacts:
+    expire_in: 1 weeks
+    paths:
+      - /tmp/ground-truth/  # for debugging
+    when: always
+  variables:
+    DD_LOG_LEVEL: "ground_truth=debug,info"
+    GROUND_TRUTH_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
+  script:
+    - make build-ground-truth
+    # We use the same container images for both DSD/ADP because our custom bundled image will remove all of the default
+    # checks, which we don't want to be executed during our test. This also has the nice side effect of ensuring we're
+    # running the same exact version of the Agent on both sides.
+    - target/debug/ground-truth
+      --millstone-image ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
+      --millstone-config-path $(pwd)/test/correctness/millstone.yaml
+      --metrics-intake-image ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
+      --metrics-intake-config-path $(pwd)/test/correctness/metrics-intake.yaml
+      --dsd-image ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
+      --dsd-entrypoint /bin/entrypoint.sh
+      --dsd-command /init
+      --dsd-config-path $(pwd)/test/correctness/datadog-origin-detection.yaml
+      --adp-image ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
+      --adp-command /init
+      --adp-config-path $(pwd)/test/correctness/datadog-origin-detection.yaml
+      --adp-env-arg DD_ADP_ENABLED=true
+      --adp-env-arg DD_AGGREGATE_CONTEXT_LIMIT=500000
