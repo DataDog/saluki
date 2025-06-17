@@ -108,7 +108,7 @@ impl MemoryBounds for CgroupsMetadataCollector {
             .with_array::<MetadataOperation>("metadata operations", 64);
         // TODO: Kind of a throwaway calculation because nothing about the reader can really be bounded at the moment.
         //
-        // Specifically, we don't know the number of cgroups that will be present... and we have a map that both holds
+        // Specifically, we don't know the number of cgroups that will be present... and we have both a map that holds
         // the active cgroups _and_ a map to track the cgroups seen during a single traversal, which we need to
         // determine which cgroups have been removed. This means we might end up with like 3 copies of the same cgroup
         // times however many cgroups there are at peak.
