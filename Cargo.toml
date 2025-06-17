@@ -193,6 +193,3 @@ debug = true
 
 [workspace.lints.clippy]
 new_without_default = "allow"
-
-[patch.crates-io]
-openssl-macros = { git = "https://github.com/sfackler/rust-openssl" }
