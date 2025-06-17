@@ -5,7 +5,6 @@ use stringtheory::MetaString;
 
 use crate::{
     hash::{hash_context, ContextKey},
-    origin::OriginTags,
     tags::{SharedTagSet, Tag, TagSet, Tagged},
 };
 
@@ -20,14 +19,15 @@ pub struct Context {
 impl Context {
     /// Creates a new `Context` from the given static name.
     pub fn from_static_name(name: &'static str) -> Self {
-        const EMPTY_TAGS: &[&str] = &[];
+        let tags = SharedTagSet::default();
+        let origin_tags = SharedTagSet::default();
 
-        let (key, _) = hash_context(name, EMPTY_TAGS, None);
+        let (key, _) = hash_context(name, &tags, &origin_tags);
         Self {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
-                tags: SharedTagSet::default(),
-                origin_tags: OriginTags::empty(),
+                tags,
+                origin_tags,
                 key,
                 active_count: Gauge::noop(),
             }),
@@ -41,12 +41,14 @@ impl Context {
             tag_set.insert_tag(MetaString::from_static(tag));
         }
 
-        let (key, _) = hash_context(name, tags, None);
+        let origin_tags = SharedTagSet::default();
+
+        let (key, _) = hash_context(name, tags, &origin_tags);
         Self {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
                 tags: tag_set.into_shared(),
-                origin_tags: OriginTags::empty(),
+                origin_tags,
                 key,
                 active_count: Gauge::noop(),
             }),
@@ -56,12 +58,13 @@ impl Context {
     /// Creates a new `Context` from the given name and given tags.
     pub fn from_parts<S: Into<MetaString>>(name: S, tags: SharedTagSet) -> Self {
         let name = name.into();
-        let (key, _) = hash_context(&name, &tags, None);
+        let origin_tags = SharedTagSet::default();
+        let (key, _) = hash_context(&name, &tags, &origin_tags);
         Self {
             inner: Arc::new(ContextInner {
                 name,
                 tags,
-                origin_tags: OriginTags::empty(),
+                origin_tags,
                 key,
                 active_count: Gauge::noop(),
             }),
@@ -73,13 +76,14 @@ impl Context {
         // Regenerate the context key to account for the new name.
         let name = name.into();
         let tags = self.inner.tags.clone();
-        let (key, _) = hash_context(&name, &tags, self.origin_tags().key());
+        let origin_tags = self.inner.origin_tags.clone();
+        let (key, _) = hash_context(&name, &tags, &origin_tags);
 
         Self {
             inner: Arc::new(ContextInner {
                 name,
                 tags,
-                origin_tags: self.inner.origin_tags.clone(),
+                origin_tags,
                 key,
                 active_count: Gauge::noop(),
             }),
@@ -106,7 +110,7 @@ impl Context {
     }
 
     /// Returns the origin tags of this context.
-    pub fn origin_tags(&self) -> &OriginTags {
+    pub fn origin_tags(&self) -> &SharedTagSet {
         &self.inner.origin_tags
     }
 
@@ -183,13 +187,13 @@ pub(super) struct ContextInner {
     key: ContextKey,
     name: MetaString,
     tags: SharedTagSet,
-    origin_tags: OriginTags,
+    origin_tags: SharedTagSet,
     active_count: Gauge,
 }
 
 impl ContextInner {
     pub fn from_parts(
-        key: ContextKey, name: MetaString, tags: SharedTagSet, origin_tags: OriginTags, active_count: Gauge,
+        key: ContextKey, name: MetaString, tags: SharedTagSet, origin_tags: SharedTagSet, active_count: Gauge,
     ) -> Self {
         Self {
             key,
@@ -251,7 +255,6 @@ impl fmt::Debug for ContextInner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::origin::OriginKey;
 
     const SIZE_OF_CONTEXT_NAME: &str = "size_of_test_metric";
     const SIZE_OF_CONTEXT_CHANGED_NAME: &str = "size_of_test_metric_changed";
@@ -314,10 +317,7 @@ mod tests {
         let tags = tag_set(SIZE_OF_CONTEXT_TAGS);
         let origin_tags = tag_set(SIZE_OF_CONTEXT_ORIGIN_TAGS);
 
-        let origin_key = OriginKey::from_opaque(42);
-        let origin_tags = OriginTags::from_resolved(origin_key, origin_tags.clone());
-
-        let (key, _) = hash_context(SIZE_OF_CONTEXT_NAME, SIZE_OF_CONTEXT_TAGS, None);
+        let (key, _) = hash_context(SIZE_OF_CONTEXT_NAME, SIZE_OF_CONTEXT_TAGS, SIZE_OF_CONTEXT_ORIGIN_TAGS);
 
         let context = Context::from_inner(ContextInner {
             key,

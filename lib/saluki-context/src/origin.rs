@@ -1,3 +1,4 @@
+#![allow(warnings)]
 //! Metric origin.
 
 use std::{fmt, num::NonZeroU32, sync::Arc};
@@ -236,95 +237,18 @@ impl fmt::Display for RawOrigin<'_> {
     }
 }
 
-/// A key that uniquely identifies the origin of a metric.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct OriginKey(u64);
-
-impl OriginKey {
-    /// Creates a new `OriginKey` from the given opaque value by hashing it.
-    pub fn from_opaque<O>(opaque: O) -> Self
-    where
-        O: std::hash::Hash,
-    {
-        Self(hash_single_fast(opaque))
-    }
-}
-
-impl std::hash::Hash for OriginKey {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.0.hash(state);
-    }
-}
-
-/// A set of tags associated with the origin of a metric.
-#[derive(Clone)]
-pub struct OriginTags {
-    key: Option<OriginKey>,
-    tags: SharedTagSet,
-}
-
-impl OriginTags {
-    pub(super) fn empty() -> Self {
-        Self {
-            key: None,
-            tags: SharedTagSet::default(),
-        }
-    }
-
-    pub(super) fn from_resolved(key: OriginKey, tags: SharedTagSet) -> Self {
-        Self { key: Some(key), tags }
-    }
-
-    pub(super) fn key(&self) -> Option<OriginKey> {
-        self.key
-    }
-
-    /// Returns the size of the origin tag set, in bytes.
-    ///
-    /// This includes the size of each individual tag.
-    ///
-    /// Additionally, the value returned by this method does not compensate for externalities such as whether or not
-    /// tags are are inlined, interned, or heap allocated. This means that the value returned is essentially the
-    /// worst-case usage, and should be used as a rough estimate.
-    pub(super) fn size_of(&self) -> usize {
-        let mut tags_size = 0;
-        self.tags.visit_tags(|tag| {
-            tags_size += tag.len();
-        });
-        tags_size
-    }
-}
-
-impl Tagged for OriginTags {
-    fn visit_tags<F>(&self, visitor: F)
-    where
-        F: FnMut(&Tag),
-    {
-        self.tags.visit_tags(visitor);
-    }
-}
-
 /// A resolver for mapping origins to their associated tags.
 pub trait OriginTagsResolver: Send + Sync {
-    /// Resolves the origin key for the given origin information.
-    ///
-    /// If the given origin information cannot be found/resolved, `None` is returned.
-    fn resolve_origin_key(&self, origin: RawOrigin<'_>) -> Option<OriginKey>;
-
-    /// Resolves the origin tags for the given origin key.
-    fn resolve_origin_tags(&self, origin_key: OriginKey) -> SharedTagSet;
+    /// Resolves the origin tags for the given raw origin.
+    fn resolve_origin_tags(&self, origin: RawOrigin<'_>) -> SharedTagSet;
 }
 
 impl<T> OriginTagsResolver for Arc<T>
 where
     T: OriginTagsResolver,
 {
-    fn resolve_origin_key(&self, origin: RawOrigin<'_>) -> Option<OriginKey> {
-        (**self).resolve_origin_key(origin)
-    }
-
-    fn resolve_origin_tags(&self, origin_key: OriginKey) -> SharedTagSet {
-        (**self).resolve_origin_tags(origin_key)
+    fn resolve_origin_tags(&self, origin: RawOrigin<'_>) -> SharedTagSet {
+        (**self).resolve_origin_tags(origin)
     }
 }
 
@@ -332,17 +256,10 @@ impl<T> OriginTagsResolver for Option<T>
 where
     T: OriginTagsResolver,
 {
-    fn resolve_origin_key(&self, origin: RawOrigin<'_>) -> Option<OriginKey> {
-        self.as_ref().and_then(|resolver| resolver.resolve_origin_key(origin))
-    }
-
-    fn resolve_origin_tags(&self, origin_key: OriginKey) -> SharedTagSet {
-        if let Some(resolver) = self.as_ref() {
-            resolver.resolve_origin_tags(origin_key)
-        } else {
-            // If there is no resolver, return an empty tag set.
-            SharedTagSet::default()
-        }
+    fn resolve_origin_tags(&self, origin: RawOrigin<'_>) -> SharedTagSet {
+        self.as_ref()
+            .map(|resolver| resolver.resolve_origin_tags(origin))
+            .unwrap_or_else(|| SharedTagSet::default())
     }
 }
 
