@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::{collections::hash_map::Entry, time::Duration};
 use std::{collections::HashMap, net::SocketAddr};
 
@@ -19,8 +20,6 @@ use saluki_io::net::client::http::HttpClient;
 use tokio::time::{interval, MissedTickBehavior};
 use tracing::debug;
 use uuid::Uuid;
-
-use std::path::PathBuf;
 
 use crate::state::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor};
 
