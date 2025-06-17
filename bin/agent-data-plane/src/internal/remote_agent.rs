@@ -20,6 +20,8 @@ use tokio::time::{interval, MissedTickBehavior};
 use tracing::debug;
 use uuid::Uuid;
 
+use std::path::PathBuf;
+
 use crate::state::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor};
 
 const EVENTS_RECEIVED: &str = "adp.component_events_received_total";
@@ -206,15 +208,18 @@ impl RemoteAgent for RemoteAgentImpl {
     ) -> Result<tonic::Response<GetFlareFilesResponse>, tonic::Status> {
         let mut files = HashMap::new();
 
-        let log_file_path =
-            std::env::var("DD_ADP_LOG_FILE").unwrap_or(saluki_app::logging::DEFAULT_ADP_LOG_FILE.to_string());
+        let log_file_path = PathBuf::from(
+            std::env::var("DD_ADP_LOG_FILE").unwrap_or(saluki_app::logging::DEFAULT_ADP_LOG_FILE.to_string()),
+        );
 
-        match tokio::fs::read(&log_file_path).await {
-            Ok(content) => {
-                files.insert(log_file_path, content);
-            }
-            Err(e) => {
-                debug!("Failed to read {} log file for flare: {}", log_file_path, e);
+        if let Some(log_file_name) = log_file_path.file_name() {
+            match tokio::fs::read(&log_file_path).await {
+                Ok(content) => {
+                    files.insert(log_file_name.to_string_lossy().to_string(), content);
+                }
+                Err(e) => {
+                    debug!("Failed to read {} log file for flare: {}", log_file_path.display(), e);
+                }
             }
         }
 

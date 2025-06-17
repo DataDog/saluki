@@ -56,10 +56,16 @@ pub fn fatal_and_exit(message: String) {
 /// The default log file path for ADP on Linux.
 pub const DEFAULT_ADP_LOG_FILE: &str = "/var/log/datadog/adp.log";
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 /// The default log file path for ADP on non-Linux platforms.
 pub const DEFAULT_ADP_LOG_FILE: &str = "/opt/datadog-agent/logs/adp.log";
 
+#[cfg(target_os = "windows")]
+/// The default log file path for ADP on Windows.
+pub const DEFAULT_ADP_LOG_FILE: &str = "C:\\ProgramData\\Datadog\\logs\\adp.log";
+
+const DEFAULT_LOG_FILE_MAX_SIZE: u64 = 10485760;
+const DEFAULT_LOG_FILE_MAX_ROLLS: usize = 1;
 /// Initializes the logging subsystem for `tracing`.
 ///
 /// This function reads the `DD_LOG_LEVEL` environment variable to determine the log level to use. If the environment
@@ -128,8 +134,17 @@ fn initialize_logging_inner(
     }
 
     let adp_log_file = std::env::var("DD_ADP_LOG_FILE").unwrap_or(DEFAULT_ADP_LOG_FILE.to_string());
-    let file_appender =
-        BasicRollingFileAppender::new(adp_log_file, RollingConditionBasic::new().max_size(10485760), 1)?;
+    let log_file_max_size = std::env::var("DD_LOG_FILE_MAX_SIZE")
+        .map(|s| s.parse::<u64>().unwrap_or(DEFAULT_LOG_FILE_MAX_SIZE))
+        .unwrap_or(DEFAULT_LOG_FILE_MAX_SIZE);
+    let log_file_max_rolls = std::env::var("DD_LOG_FILE_MAX_ROLLS")
+        .map(|s| s.parse::<usize>().unwrap_or(DEFAULT_LOG_FILE_MAX_ROLLS))
+        .unwrap_or(DEFAULT_LOG_FILE_MAX_ROLLS);
+    let file_appender = BasicRollingFileAppender::new(
+        adp_log_file,
+        RollingConditionBasic::new().max_size(log_file_max_size),
+        log_file_max_rolls,
+    )?;
     let (file_nb, guard) = tracing_appender::non_blocking(file_appender);
     let file_level_filter = EnvFilter::builder()
         .with_default_directive(default_level.unwrap_or(LevelFilter::INFO).into())
