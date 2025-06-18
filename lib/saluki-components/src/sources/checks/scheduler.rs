@@ -184,8 +184,8 @@ impl Scheduler {
 
     /// Get the next worker ID
     fn next_worker_id(&self) -> u64 {
-        let mut rng = rand::thread_rng();
-        rng.gen_range(1..=u64::MAX)
+        let mut rng = rand::rng();
+        rng.random_range(1..=u64::MAX)
     }
 
     /// Add a new worker

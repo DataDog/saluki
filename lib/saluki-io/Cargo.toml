@@ -25,7 +25,8 @@ metrics = { workspace = true }
 nom = { workspace = true, features = ["alloc"] }
 pin-project = { workspace = true }
 pin-project-lite = { workspace = true }
-rand = { workspace = true, features = ["std", "std_rng"] }
+rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
+rand_distr = { workspace = true }
 rustls = { workspace = true }
 saluki-common = { workspace = true }
 saluki-context = { workspace = true }
