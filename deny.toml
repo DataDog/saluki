@@ -35,4 +35,8 @@ allow-git = [
 
   # Git dependency for `triomphe`, due to needing unreleased support for `Arc::into_unique`.
   "https://github.com/Manishearth/triomphe",
+
+  # Git dependency for `containerd-client`, to pull in an updated version that uses more recent transitive dependencies,
+  # and isn't yet released.
+  "https://github.com/containerd/rust-extensions"
 ]

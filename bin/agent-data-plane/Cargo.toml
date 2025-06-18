@@ -22,6 +22,7 @@ hyper = { workspace = true }
 memory-accounting = { workspace = true }
 papaya = { workspace = true }
 rand = { workspace = true }
+rand_distr = { workspace = true } 
 saluki-app = { workspace = true, features = ["full"] }
 saluki-common = { workspace = true }
 saluki-components = { workspace = true }
