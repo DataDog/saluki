@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use rand::{thread_rng, Rng as _, RngCore};
+use rand::{rng, Rng as _, RngCore};
 
 #[derive(Clone)]
 pub enum BackoffRng {
@@ -31,29 +31,22 @@ impl fmt::Debug for BackoffRng {
 impl RngCore for BackoffRng {
     fn next_u32(&mut self) -> u32 {
         match self {
-            BackoffRng::SecureDefault => thread_rng().next_u32(),
+            BackoffRng::SecureDefault => rng().next_u32(),
             BackoffRng::Shared(rng) => rng.lock().unwrap().next_u32(),
         }
     }
 
     fn next_u64(&mut self) -> u64 {
         match self {
-            BackoffRng::SecureDefault => thread_rng().next_u64(),
+            BackoffRng::SecureDefault => rng().next_u64(),
             BackoffRng::Shared(rng) => rng.lock().unwrap().next_u64(),
         }
     }
 
     fn fill_bytes(&mut self, dest: &mut [u8]) {
         match self {
-            BackoffRng::SecureDefault => thread_rng().fill_bytes(dest),
+            BackoffRng::SecureDefault => rng().fill_bytes(dest),
             BackoffRng::Shared(rng) => rng.lock().unwrap().fill_bytes(dest),
-        }
-    }
-
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand::Error> {
-        match self {
-            BackoffRng::SecureDefault => thread_rng().try_fill_bytes(dest),
-            BackoffRng::Shared(rng) => rng.lock().unwrap().try_fill_bytes(dest),
         }
     }
 }
@@ -137,7 +130,7 @@ impl ExponentialBackoff {
         if self.min_backoff_factor > 1.0 {
             let backoff_lower = backoff.div_f64(self.min_backoff_factor);
             let backoff_upper = backoff;
-            backoff = self.rng.gen_range(backoff_lower..=backoff_upper)
+            backoff = self.rng.random_range(backoff_lower..=backoff_upper)
         }
 
         backoff.clamp(self.min_backoff, self.max_backoff)

@@ -11,10 +11,8 @@ use airlock::{
     config::{ADPConfig, DSDConfig, MetricsIntakeConfig, MillstoneConfig},
     driver::{Driver, DriverConfig, DriverDetails, ExitStatus},
 };
-use rand::{
-    distributions::{Alphanumeric, DistString as _},
-    thread_rng,
-};
+use rand::{distr::SampleString as _, rng};
+use rand_distr::Alphanumeric;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stele::Metric;
 use tokio::{select, task::JoinHandle, time::sleep};
@@ -514,5 +512,5 @@ async fn spawn_driver_with_details(
 
 /// Generates a random 16-character alphanumeric string suitable for use as an isolation group ID.
 fn generate_isolation_group_id() -> String {
-    Alphanumeric.sample_string(&mut thread_rng(), 8)
+    Alphanumeric.sample_string(&mut rng(), 8)
 }
