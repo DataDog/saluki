@@ -29,7 +29,7 @@ use tracing::{error, info, warn};
 mod components;
 
 mod config;
-use self::config::{Action, Cli, RunConfig};
+use self::config::{Action, Cli, DebugConfig, RunConfig};
 
 mod env_provider;
 use self::env_provider::ADPEnvironmentProvider;
@@ -70,19 +70,69 @@ async fn main() {
         fatal_and_exit(format!("failed to initialize TLS: {}", e));
     }
 
-    // Use default configuration path when no subcommand is provided.
-    let run_config = match cli.action {
-        Some(Action::Run(config)) => config,
-        None => RunConfig {
-            config: std::path::PathBuf::from("/etc/datadog-agent/datadog.yaml"),
-        },
-    };
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap();
 
-    match run(started, run_config).await {
-        Ok(()) => info!("Agent Data Plane stopped."),
-        Err(e) => {
-            error!("{:?}", e);
-            std::process::exit(1);
+    match cli.action {
+        Some(Action::Run(config)) => match run(started, config).await {
+            Ok(()) => info!("Agent Data Plane stopped."),
+            Err(e) => {
+                error!("{:?}", e);
+                std::process::exit(1);
+            }
+        },
+        Some(Action::Debug(DebugConfig::ResetLogLevel)) => {
+            let response = match client.post("https://localhost:5101/logging/reset").send().await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    error!("Failed to send request: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            if response.status().is_success() {
+                println!("Log level reset successful");
+            } else {
+                eprintln!("Failed to reset log level: {}", response.status());
+            }
+        }
+        Some(Action::Debug(DebugConfig::SetLogLevel(config))) => {
+            let filter_directives = config.filter_directives;
+            let duration_secs = config.duration_secs;
+
+            let response = match client
+                .post("https://localhost:5101/logging/override")
+                .query(&[("time_secs", duration_secs)])
+                .body(filter_directives)
+                .send()
+                .await
+            {
+                Ok(resp) => resp,
+                Err(e) => {
+                    error!("Failed to send request: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            if response.status().is_success() {
+                println!("Log level override successful");
+            } else {
+                eprintln!("Failed to override log level: {}", response.status());
+            }
+        }
+        None => {
+            let default_config = RunConfig {
+                config: std::path::PathBuf::from("/etc/datadog-agent/datadog.yaml"),
+            };
+            match run(started, default_config).await {
+                Ok(()) => info!("Agent Data Plane stopped."),
+                Err(e) => {
+                    error!("{:?}", e);
+                    std::process::exit(1);
+                }
+            }
         }
     }
 }
@@ -217,8 +267,8 @@ async fn create_topology(
         }
         Err(_) => {
             info!(
-                "Dynamic configuration refreshing will be unavailable due to failure to configure refresher configuration."
-            )
+               "Dynamic configuration refreshing will be unavailable due to failure to configure refresher configuration."
+           )
         }
     }
 

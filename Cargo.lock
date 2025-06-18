@@ -34,6 +34,7 @@ dependencies = [
  "papaya",
  "rand 0.9.1",
  "rand_distr",
+ "reqwest",
  "saluki-app",
  "saluki-common",
  "saluki-components",
