@@ -91,6 +91,89 @@ impl<'a> Iterator for RawTagsIter<'a> {
     }
 }
 
+/// A trait for a predicate that can be used to filter raw tags.
+pub trait RawTagsFilterPredicate {
+    /// Returns `true` if the given tag matches the predicate.
+    fn matches(&self, tag: &str) -> bool;
+}
+
+impl<F> RawTagsFilterPredicate for F
+where
+    F: Fn(&str) -> bool,
+{
+    fn matches(&self, tag: &str) -> bool {
+        self(tag)
+    }
+}
+
+/// An iterator that filters raw tags.
+///
+/// This iterator can be used to separate out a configured set of tags, in both directions, from a set of raw tags.
+///
+/// In providing logic to either include or exclude tags based on a predicate, we can ensure that callers can easily
+/// extract a disjoint set of tags from a set of raw tags when utilizing the same predicate.
+pub struct RawTagsFilter<'a, F> {
+    raw: RawTagsIter<'a>,
+    predicate: F,
+    include: bool,
+}
+
+impl<'a, F> RawTagsFilter<'a, F> {
+    /// Creates a new `RawTagsFilter` that includes only the tags that match the given predicate.
+    pub fn include(raw: RawTags<'a>, predicate: F) -> RawTagsFilter<'a, F> {
+        Self {
+            raw: raw.into_iter(),
+            predicate,
+            include: true,
+        }
+    }
+
+    /// Creates a new `RawTagsFilter` that excludes any tags that match the given predicate.
+    pub fn exclude(raw: RawTags<'a>, predicate: F) -> RawTagsFilter<'a, F> {
+        Self {
+            raw: raw.into_iter(),
+            predicate,
+            include: false,
+        }
+    }
+}
+
+impl<'a, F> Clone for RawTagsFilter<'a, F>
+where
+    F: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            raw: self.raw.clone(),
+            predicate: self.predicate.clone(),
+            include: self.include,
+        }
+    }
+}
+
+impl<'a, F> Iterator for RawTagsFilter<'a, F>
+where
+    F: RawTagsFilterPredicate,
+{
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        for raw_tag in self.raw.by_ref() {
+            if self.predicate.matches(raw_tag) {
+                if self.include {
+                    // The predicate matched, and we're configured to include only matching tags.
+                    return Some(raw_tag);
+                }
+            } else if !self.include {
+                // The predicate did not match, but we're configured to exclude matching tags.
+                return Some(raw_tag);
+            }
+        }
+
+        None
+    }
+}
+
 #[inline]
 fn limit_str_to_len(s: &str, limit: usize) -> &str {
     if limit >= s.len() {
@@ -128,6 +211,109 @@ fn split_at_delimiter(input: &str, delimiter: u8) -> Option<(&str, &str)> {
             } else {
                 Some((input, ""))
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use proptest::{collection::vec as arb_vec, prelude::*, proptest, sample::subsequence};
+
+    use super::*;
+
+    fn filter_key2_tag(tag: &str) -> bool {
+        tag.starts_with("key2:")
+    }
+
+    fn arb_raw_tags_and_filters() -> impl Strategy<Value = (String, Vec<String>)> {
+        // We want to create a set of random tags and then take a random subset of those tags.
+        arb_vec("key[0-9]+:[a-zA-Z0-9]+", 1..=10).prop_flat_map(|raw_tags| {
+            // Take a subsequence of up to half of the raw tags.
+            let subset = 0..=raw_tags.len() / 2;
+            (Just(raw_tags.clone().join(",")), subsequence(raw_tags, subset))
+        })
+    }
+
+    #[test]
+    fn raw_tags_filter_include() {
+        let raw_tags_input = "key1:value1,key2:value2,key3:value3";
+        let raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
+        let filtered_raw_tags = RawTagsFilter::include(raw_tags, filter_key2_tag);
+
+        let filtered_tags = filtered_raw_tags.into_iter().collect::<Vec<_>>();
+        assert_eq!(filtered_tags.len(), 1);
+        assert_eq!(filtered_tags[0], "key2:value2");
+    }
+
+    #[test]
+    fn raw_tags_filter_include_duplicates() {
+        let raw_tags_input = "key1:value1,key2:value2,key3:value3,key2:value4";
+        let raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
+        let filtered_raw_tags = RawTagsFilter::include(raw_tags, filter_key2_tag);
+
+        let filtered_tags = filtered_raw_tags.into_iter().collect::<Vec<_>>();
+        assert_eq!(filtered_tags.len(), 2);
+        assert!(filtered_tags.contains(&"key2:value2"));
+        assert!(filtered_tags.contains(&"key2:value4"));
+    }
+
+    #[test]
+    fn raw_tags_filter_exclude() {
+        let raw_tags_input = "key1:value1,key2:value2,key3:value3";
+        let raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
+        let filtered_raw_tags = RawTagsFilter::exclude(raw_tags, filter_key2_tag);
+
+        let filtered_tags = filtered_raw_tags.into_iter().collect::<Vec<_>>();
+        assert_eq!(filtered_tags.len(), 2);
+        assert_eq!(filtered_tags[0], "key1:value1");
+        assert_eq!(filtered_tags[1], "key3:value3");
+    }
+
+    #[test]
+    fn raw_tags_filter_exclude_duplicates() {
+        let raw_tags_input = "key1:value1,key2:value2,key3:value3,key1:value9,key2:value6";
+        let raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
+        let filtered_raw_tags = RawTagsFilter::exclude(raw_tags, filter_key2_tag);
+
+        let filtered_tags = filtered_raw_tags.into_iter().collect::<Vec<_>>();
+        assert_eq!(filtered_tags.len(), 3);
+        assert_eq!(filtered_tags[0], "key1:value1");
+        assert_eq!(filtered_tags[1], "key3:value3");
+        assert_eq!(filtered_tags[2], "key1:value9");
+    }
+
+    proptest! {
+        #[test]
+        fn property_test_raw_tags_filter_include_exclude_dispoint((inputs, filters) in arb_raw_tags_and_filters()) {
+            // We handle the raw tags, and the filtered tags, as hash sets.
+            //
+            // This is because we may have duplicate tags in the input, and so we need to discard all of thos duplicates
+            // when ensuring that the resulting filtered sets are disjoint, and that they both add up to the original
+            // set of raw tags.
+
+            let raw_tags = RawTags::new(&inputs, usize::MAX, usize::MAX)
+                .into_iter()
+                .collect::<HashSet<_>>();
+            let predicate = |tag: &str| filters.iter().any(|filter| tag.starts_with(filter));
+
+            let raw_tags_include = RawTags::new(&inputs, usize::MAX, usize::MAX);
+            let filtered_raw_tags_include = RawTagsFilter::include(raw_tags_include, predicate);
+
+            let raw_tags_exclude = RawTags::new(&inputs, usize::MAX, usize::MAX);
+            let filtered_raw_tags_exclude = RawTagsFilter::exclude(raw_tags_exclude, predicate);
+
+            let filtered_tags_include = filtered_raw_tags_include.into_iter().collect::<HashSet<_>>();
+            let filtered_tags_exclude = filtered_raw_tags_exclude.into_iter().collect::<HashSet<_>>();
+
+            prop_assert!(filtered_tags_include.is_disjoint(&filtered_tags_exclude));
+
+            // Combine the filtered tags into a single set, which should be equal to the original set of raw tags (deduplicated, of course).
+            //
+            // We check in both directions since `is_superset` only checks if the first set is a superset of the second set.
+            let filtered_tags_combined = filtered_tags_include.union(&filtered_tags_exclude).copied().collect::<HashSet<_>>();
+            prop_assert_eq!(filtered_tags_combined.symmetric_difference(&raw_tags).count(), 0);
         }
     }
 }

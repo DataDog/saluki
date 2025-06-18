@@ -13,7 +13,7 @@ use super::stores::ExternalDataStoreResolver;
 use crate::workload::EntityId;
 
 // SAFETY: This number is obviously non-zero.
-const DEFAULT_ORIGIN_CACHE_ITEM_LIMIT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(500_000) };
+const DEFAULT_ORIGIN_CACHE_ITEM_LIMIT: NonZeroUsize = NonZeroUsize::new(500_000).unwrap();
 const DEFAULT_ORIGIN_CACHE_ITEM_TIME_TO_IDLE: Duration = Duration::from_secs(30);
 
 /// A resolved External Data entry.

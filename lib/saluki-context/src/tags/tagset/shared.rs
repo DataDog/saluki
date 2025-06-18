@@ -4,7 +4,7 @@ use serde::{ser::SerializeSeq as _, Serialize};
 use smallvec::SmallVec;
 
 use super::TagSet;
-use crate::tags::{Tag, Tagged};
+use crate::tags::Tag;
 
 /// A shared, read-only set of tags.
 ///
@@ -136,6 +136,16 @@ impl PartialEq<SharedTagSet> for SharedTagSet {
     }
 }
 
+impl Eq for SharedTagSet {}
+
+impl std::hash::Hash for SharedTagSet {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        for tag in self {
+            tag.hash(state);
+        }
+    }
+}
+
 impl fmt::Display for SharedTagSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[")?;
@@ -162,17 +172,6 @@ impl Serialize for SharedTagSet {
             seq.serialize_element(tag)?;
         }
         seq.end()
-    }
-}
-
-impl Tagged for SharedTagSet {
-    fn visit_tags<F>(&self, mut visitor: F)
-    where
-        F: FnMut(&Tag),
-    {
-        for tag_set in &self.0 {
-            tag_set.visit_tags(&mut visitor);
-        }
     }
 }
 

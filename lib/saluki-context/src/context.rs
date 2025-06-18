@@ -5,7 +5,7 @@ use stringtheory::MetaString;
 
 use crate::{
     hash::{hash_context, ContextKey},
-    tags::{SharedTagSet, Tag, TagSet, Tagged},
+    tags::{SharedTagSet, TagSet},
 };
 
 const BASE_CONTEXT_SIZE: usize = std::mem::size_of::<Context>() + std::mem::size_of::<ContextInner>();
@@ -173,16 +173,6 @@ impl fmt::Display for Context {
     }
 }
 
-impl Tagged for Context {
-    fn visit_tags<F>(&self, mut visitor: F)
-    where
-        F: FnMut(&Tag),
-    {
-        self.tags().visit_tags(&mut visitor);
-        self.origin_tags().visit_tags(&mut visitor);
-    }
-}
-
 pub(super) struct ContextInner {
     key: ContextKey,
     name: MetaString,
@@ -255,6 +245,7 @@ impl fmt::Debug for ContextInner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tags::Tag;
 
     const SIZE_OF_CONTEXT_NAME: &str = "size_of_test_metric";
     const SIZE_OF_CONTEXT_CHANGED_NAME: &str = "size_of_test_metric_changed";

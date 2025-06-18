@@ -10,9 +10,9 @@ use ddsketch_agent::DDSketch;
 use http::{Request, Response};
 use hyper::{body::Incoming, service::service_fn};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_common::collections::FastIndexMap;
+use saluki_common::{collections::FastIndexMap, iter::ReusableDeduplicator};
 use saluki_config::GenericConfiguration;
-use saluki_context::{tags::Tagged as _, Context};
+use saluki_context::{tags::Tag, Context};
 use saluki_core::components::{destinations::*, ComponentContext};
 use saluki_core::data_model::event::{
     metric::{Histogram, Metric, MetricValues},
@@ -25,7 +25,10 @@ use saluki_io::net::{
     ListenAddress,
 };
 use serde::Deserialize;
-use stringtheory::{interning::FixedSizeInterner, MetaString};
+use stringtheory::{
+    interning::{FixedSizeInterner, Interner as _},
+    MetaString,
+};
 use tokio::{select, sync::RwLock};
 use tracing::debug;
 
@@ -45,7 +48,7 @@ static NON_TIME_HISTOGRAM_BUCKETS: LazyLock<[(f64, &'static str); NON_TIME_HISTO
     LazyLock::new(|| histogram_buckets::<NON_TIME_HISTOGRAM_BUCKET_COUNT>(1.0, 2.0));
 
 // SAFETY: This is obviously not zero.
-const METRIC_NAME_STRING_INTERNER_BYTES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(65536) };
+const METRIC_NAME_STRING_INTERNER_BYTES: NonZeroUsize = NonZeroUsize::new(65536).unwrap();
 
 /// Prometheus destination.
 ///
@@ -153,6 +156,7 @@ impl Destination for Prometheus {
 
         let mut contexts = 0;
         let mut name_buf = String::with_capacity(NAME_NORMALIZATION_BUFFER_SIZE);
+        let mut tags_deduplicator = ReusableDeduplicator::new();
 
         loop {
             select! {
@@ -163,29 +167,38 @@ impl Destination for Prometheus {
                         // inserting it for the first time.
                         for event in events {
                             if let Some(metric) = event.try_into_metric() {
-                                let (prom_context, context, prom_value) = match into_prometheus_metric(metric, &mut name_buf, &interner) {
-                                    Some(v) => v,
+                                // Break apart our metric into its constituent parts, and then normalize it for
+                                // Prometheus: adjust the name if necessary, figuring out the equivalent Prometheus
+                                // metric type, and so on.
+                                let prom_context = match into_prometheus_metric(&metric, &mut name_buf, &interner) {
+                                    Some(prom_context) => prom_context,
                                     None => continue,
                                 };
 
-                                let existing_contexts = metrics.entry(prom_context).or_default();
+                                let (context, values, _) = metric.into_parts();
+
+                                // Create an entry for the context if we don't already have one, obeying our configured context limit.
+                                let existing_contexts = metrics.entry(prom_context.clone()).or_default();
                                 match existing_contexts.get_mut(&context) {
-                                    Some(existing_prom_value) => existing_prom_value.merge(prom_value),
+                                    Some(existing_prom_value) => merge_metric_values_with_prom_value(values, existing_prom_value),
                                     None => {
                                         if contexts >= CONTEXT_LIMIT {
                                             debug!("Prometheus destination reached context limit. Skipping metric '{}'.", context.name());
                                             continue
                                         }
 
-                                        existing_contexts.insert(context, prom_value);
+                                        let mut new_prom_value = get_prom_value_for_prom_context(&prom_context);
+                                        merge_metric_values_with_prom_value(values, &mut new_prom_value);
+
+                                        existing_contexts.insert(context, new_prom_value);
                                         contexts += 1;
-                                    },
+                                    }
                                 }
                             }
                         }
 
                         // Regenerate the scrape payload.
-                        regenerate_payload(&metrics, &payload, &mut payload_buffer, &mut tags_buffer).await;
+                        regenerate_payload(&metrics, &payload, &mut payload_buffer, &mut tags_buffer, &mut tags_deduplicator).await;
                     },
                     None => break,
                 },
@@ -226,7 +239,7 @@ fn spawn_prom_scrape_service(
 #[allow(clippy::mutable_key_type)]
 async fn regenerate_payload(
     metrics: &FastIndexMap<PrometheusContext, FastIndexMap<Context, PrometheusValue>>, payload: &Arc<RwLock<String>>,
-    payload_buffer: &mut String, tags_buffer: &mut String,
+    payload_buffer: &mut String, tags_buffer: &mut String, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
 ) {
     let mut payload = payload.write().await;
     payload.clear();
@@ -235,7 +248,7 @@ async fn regenerate_payload(
     let metrics_total = metrics.len();
 
     for (prom_context, contexts) in metrics {
-        if write_metrics(payload_buffer, tags_buffer, prom_context, contexts) {
+        if write_metrics(payload_buffer, tags_buffer, prom_context, contexts, tags_deduplicator) {
             if payload.len() + payload_buffer.len() > PAYLOAD_SIZE_LIMIT_BYTES {
                 debug!(
                     metrics_written,
@@ -278,13 +291,16 @@ fn get_help_text(metric_name: &str) -> Option<&'static str> {
         "aggregator__dogstatsd_contexts" => Some("Count the number of dogstatsd contexts in the aggregator"),
         "aggregator__processed" => Some("Amount of metrics/services_checks/events processed by the aggregator"),
         "dogstatsd__processed" => Some("Count of service checks/events/metrics processed by dogstatsd"),
+        "dogstatsd__packet_pool_get" => Some("Count of get done in the packet pool"),
+        "dogstatsd__packet_pool_put" => Some("Count of put done in the packet pool"),
+        "dogstatsd__packet_pool" => Some("Usage of the packet pool in dogstatsd"),
         _ => None,
     }
 }
 
 fn write_metrics(
     payload_buffer: &mut String, tags_buffer: &mut String, prom_context: &PrometheusContext,
-    contexts: &FastIndexMap<Context, PrometheusValue>,
+    contexts: &FastIndexMap<Context, PrometheusValue>, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
 ) -> bool {
     if contexts.is_empty() {
         debug!("No contexts for metric '{}'. Skipping.", prom_context.metric_name);
@@ -315,7 +331,7 @@ fn write_metrics(
         tags_buffer.clear();
 
         // Format/encode the tags.
-        if !format_tags(tags_buffer, context) {
+        if !format_tags(tags_buffer, context, tags_deduplicator) {
             return false;
         }
 
@@ -400,16 +416,13 @@ fn write_metrics(
     true
 }
 
-fn format_tags(tags_buffer: &mut String, context: &Context) -> bool {
+fn format_tags(tags_buffer: &mut String, context: &Context, tags_deduplicator: &mut ReusableDeduplicator<Tag>) -> bool {
     let mut has_tags = false;
-    let mut exceeded = false;
 
-    context.visit_tags_deduped(|tag| {
-        // If we've previously exceeded the tags buffer size limit, we can't write any more tags.
-        if exceeded {
-            return;
-        }
+    let chained_tags = context.tags().into_iter().chain(context.origin_tags());
+    let deduplicated_tags = tags_deduplicator.deduplicated(chained_tags);
 
+    for tag in deduplicated_tags {
         // If we're not the first tag to be written, add a comma to separate the tags.
         if has_tags {
             tags_buffer.push(',');
@@ -420,7 +433,7 @@ fn format_tags(tags_buffer: &mut String, context: &Context) -> bool {
             Some(value) => value,
             None => {
                 debug!("Skipping bare tag.");
-                return;
+                continue;
             }
         };
 
@@ -429,22 +442,17 @@ fn format_tags(tags_buffer: &mut String, context: &Context) -> bool {
         // Can't exceed the tags buffer size limit: we calculate the addition as tag name/value length plus three bytes
         // to account for having to format it as `name="value",`.
         if tags_buffer.len() + tag_name.len() + tag_value.len() + 4 > TAGS_BUFFER_SIZE_LIMIT_BYTES {
-            exceeded = true;
-            return;
+            debug!("Tags buffer size limit exceeded. Tags may be missing from this metric.");
+            return false;
         }
 
         write!(tags_buffer, "{}=\"{}\"", tag_name, tag_value).unwrap();
-    });
-
-    if exceeded {
-        debug!("Tags buffer size limit exceeded. Tags may be missing from this metric.");
-        false
-    } else {
-        true
     }
+
+    true
 }
 
-#[derive(Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 enum PrometheusType {
     Counter,
     Gauge,
@@ -463,7 +471,7 @@ impl PrometheusType {
     }
 }
 
-#[derive(Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 struct PrometheusContext {
     metric_name: MetaString,
     metric_type: PrometheusType,
@@ -476,88 +484,79 @@ enum PrometheusValue {
     Summary(DDSketch),
 }
 
-impl PrometheusValue {
-    fn merge(&mut self, other: Self) {
-        match (self, other) {
-            (Self::Counter(a), Self::Counter(b)) => *a += b,
-            (Self::Gauge(a), Self::Gauge(b)) => *a = b,
-            (Self::Histogram(a), Self::Histogram(b)) => a.merge(&b),
-            (Self::Summary(a), Self::Summary(b)) => a.merge(&b),
-            _ => unreachable!(),
-        }
-    }
-}
-
 fn into_prometheus_metric(
-    metric: Metric, name_buf: &mut String, interner: &FixedSizeInterner<1>,
-) -> Option<(PrometheusContext, Context, PrometheusValue)> {
-    let (context, values, _) = metric.into_parts();
-
+    metric: &Metric, name_buf: &mut String, interner: &FixedSizeInterner<1>,
+) -> Option<PrometheusContext> {
     // Normalize the metric name first, since we might fail due to the interner being full.
-    let metric_name = match normalize_metric_name(context.name(), name_buf, interner) {
+    let metric_name = match normalize_metric_name(metric.context().name(), name_buf, interner) {
         Some(name) => name,
         None => {
             debug!(
                 "Failed to intern normalized metric name. Skipping metric '{}'.",
-                context.name()
+                metric.context().name()
             );
             return None;
         }
     };
 
-    let (metric_type, metric_value) = match values {
-        MetricValues::Counter(points) => {
-            let value = points.into_iter().map(|(_, value)| value).sum();
-            (PrometheusType::Counter, PrometheusValue::Counter(value))
-        }
-        MetricValues::Gauge(points) => {
-            let latest_value = points
-                .into_iter()
-                .max_by_key(|(ts, _)| ts.map(|v| v.get()).unwrap_or_default())
-                .map(|(_, value)| value);
-            (
-                PrometheusType::Gauge,
-                PrometheusValue::Gauge(latest_value.unwrap_or_default()),
-            )
-        }
-        MetricValues::Set(points) => {
-            let latest_value = points
-                .into_iter()
-                .max_by_key(|(ts, _)| ts.map(|v| v.get()).unwrap_or_default())
-                .map(|(_, value)| value);
-            (
-                PrometheusType::Gauge,
-                PrometheusValue::Gauge(latest_value.unwrap_or_default()),
-            )
-        }
-        MetricValues::Histogram(histograms) => {
-            let prom_hist =
-                histograms
-                    .into_iter()
-                    .fold(PrometheusHistogram::new(&metric_name), |mut acc, (_, hist)| {
-                        acc.merge_histogram(&hist);
-                        acc
-                    });
-            (PrometheusType::Histogram, PrometheusValue::Histogram(prom_hist))
-        }
-        MetricValues::Distribution(sketches) => {
-            let sketch = sketches.into_iter().fold(DDSketch::default(), |mut acc, (_, sketch)| {
-                acc.merge(&sketch);
-                acc
-            });
-            (PrometheusType::Summary, PrometheusValue::Summary(sketch))
-        }
+    let metric_type = match metric.values() {
+        MetricValues::Counter(_) => PrometheusType::Counter,
+        MetricValues::Gauge(_) | MetricValues::Set(_) => PrometheusType::Gauge,
+        MetricValues::Histogram(_) => PrometheusType::Histogram,
+        MetricValues::Distribution(_) => PrometheusType::Summary,
         _ => return None,
     };
 
-    Some((
-        PrometheusContext {
-            metric_name,
-            metric_type,
-        },
-        context,
-        metric_value,
-    ))
+    Some(PrometheusContext {
+        metric_name,
+        metric_type,
+    })
+}
+
+fn get_prom_value_for_prom_context(prom_context: &PrometheusContext) -> PrometheusValue {
+    match prom_context.metric_type {
+        PrometheusType::Counter => PrometheusValue::Counter(0.0),
+        PrometheusType::Gauge => PrometheusValue::Gauge(0.0),
+        PrometheusType::Histogram => PrometheusValue::Histogram(PrometheusHistogram::new(&prom_context.metric_name)),
+        PrometheusType::Summary => PrometheusValue::Summary(DDSketch::default()),
+    }
+}
+
+fn merge_metric_values_with_prom_value(values: MetricValues, prom_value: &mut PrometheusValue) {
+    match (values, prom_value) {
+        (MetricValues::Counter(counter_values), PrometheusValue::Counter(prom_counter)) => {
+            for (_, value) in counter_values {
+                *prom_counter += value;
+            }
+        }
+        (MetricValues::Gauge(gauge_values), PrometheusValue::Gauge(prom_gauge)) => {
+            let latest_value = gauge_values
+                .into_iter()
+                .max_by_key(|(ts, _)| ts.map(|v| v.get()).unwrap_or_default())
+                .map(|(_, value)| value)
+                .unwrap_or_default();
+            *prom_gauge = latest_value;
+        }
+        (MetricValues::Set(set_values), PrometheusValue::Gauge(prom_gauge)) => {
+            let latest_value = set_values
+                .into_iter()
+                .max_by_key(|(ts, _)| ts.map(|v| v.get()).unwrap_or_default())
+                .map(|(_, value)| value)
+                .unwrap_or_default();
+            *prom_gauge = latest_value;
+        }
+        (MetricValues::Histogram(histogram_values), PrometheusValue::Histogram(prom_histogram)) => {
+            for (_, value) in histogram_values {
+                prom_histogram.merge_histogram(&value);
+            }
+        }
+        (MetricValues::Distribution(distribution_values), PrometheusValue::Summary(prom_summary)) => {
+            for (_, value) in distribution_values {
+                prom_summary.merge(&value);
+            }
+        }
+        _ => panic!("Mismatched metric types"),
+    }
 }
 
 fn normalize_metric_name(name: &str, name_buf: &mut String, interner: &FixedSizeInterner<1>) -> Option<MetaString> {
@@ -618,20 +617,6 @@ impl PrometheusHistogram {
             sum: 0.0,
             count: 0,
             buckets,
-        }
-    }
-
-    fn merge(&mut self, other: &Self) {
-        self.sum += other.sum;
-        self.count += other.count;
-
-        assert!(
-            self.buckets.len() == other.buckets.len(),
-            "histograms should always have identical bucket counts when selected for merge"
-        );
-
-        for (i, (_, _, other_count)) in other.buckets.iter().enumerate() {
-            self.buckets[i].2 += other_count;
         }
     }
 
@@ -734,35 +719,6 @@ mod tests {
 
             // Adjust the expected bucket count to fully account for the current sample before moving on.
             expected_bucket_count += sample.1;
-        }
-    }
-
-    #[test]
-    fn prom_histogram_merge() {
-        let mut histogram1 = PrometheusHistogram::new("");
-        let mut histogram2 = PrometheusHistogram::new("");
-
-        histogram1.add_sample(0.5, 2);
-        histogram1.add_sample(1.0, 3);
-        histogram1.add_sample(0.25, 1);
-
-        histogram2.add_sample(0.25, 1);
-        histogram2.add_sample(1.0, 3);
-        histogram2.add_sample(2.0, 4);
-
-        let mut merged = histogram1.clone();
-        merged.merge(&histogram2);
-
-        // Make sure the sum and count are correct.
-        let expected_sum = histogram1.sum + histogram2.sum;
-        let expected_count = histogram1.count + histogram2.count;
-        assert_eq!(merged.sum, expected_sum);
-        assert_eq!(merged.count, expected_count);
-
-        // Make sure the buckets are correct.
-        for (i, bucket) in merged.buckets.iter().enumerate() {
-            let expected_bucket_count = histogram1.buckets[i].2 + histogram2.buckets[i].2;
-            assert_eq!(bucket.2, expected_bucket_count);
         }
     }
 

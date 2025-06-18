@@ -2,12 +2,13 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_common::collections::{FastHashMap, FastHashSet};
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, GenericError};
 use saluki_health::Health;
-use stringtheory::interning::GenericMapInterner;
-use tokio::{select, sync::mpsc, time::interval};
-use tracing::{debug, error};
+use stringtheory::{interning::GenericMapInterner, MetaString};
+use tokio::{select, sync::mpsc};
+use tracing::{debug, error, warn};
 
 use super::MetadataCollector;
 use crate::{
@@ -36,7 +37,7 @@ pub struct CgroupsMetadataCollector {
 impl CgroupsMetadataCollector {
     /// Creates a new `CgroupsMetadataCollector` from the given configuration.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If a valid cgroups hierarchy can not be located at the configured path, an error will be returned.
     pub async fn from_configuration(
@@ -63,38 +64,37 @@ impl MetadataCollector for CgroupsMetadataCollector {
     async fn watch(&mut self, operations_tx: &mut mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {
         self.health.mark_ready();
 
-        let mut traverse_interval = interval(Duration::from_secs(2));
-        let mut reader = Some(self.reader.clone());
-        let mut operations = Some(Vec::with_capacity(64));
+        let mut poller_handle = None;
 
-        // Repeatedly traverse the cgroups hierarchy in a loop, generating ancestry links for controller inode/container
-        // ID pairs that we find. We do this using a simple heuristic to determine if the control group name is actually
-        // a container ID or something unrelated.
+        // Drive a blocking background task that polls the cgroups hierarchy on a regular interval, and sends metadata
+        // updates when cgroups are created or deleted. We do this in a blocking task since all of the I/O operations
+        // are synchronous.
         //
-        // We batch these metadata operations and then send them all at the end of the loop.
+        // Our loop here ensures that we always keep a single instance of the poller running.
         loop {
+            // Ensure that we have a poller task running.
+            if poller_handle.is_none() {
+                let mut cgroups_manager = SynchronousCgroupsManager::from_reader(self.reader.clone());
+                let operations_tx = operations_tx.clone();
+
+                poller_handle = Some(tokio::task::spawn_blocking(move || cgroups_manager.poll(operations_tx)));
+
+                debug!("Spawned cgroups background poller task.");
+            }
+
             select! {
                 _ = self.health.live() => {},
-                _ = traverse_interval.tick() => {
-                    // This is a little clunky but necessary in order to reuse the reader/operations given that we have
-                    // to transfer ownership when we spawn the blocking task.
-                    let old_reader = reader.take().expect("reader should be present");
-                    let old_operations = operations.take().expect("operations should be present");
+                result = poller_handle.as_mut().unwrap() => {
+                    // The poller task completed -- for some reason -- so drop our handle to signal that the next loop
+                    // iteration needs to recreate it, and provide some information on _why_ the previous task stopped.
+                    poller_handle = None;
 
-                    let traverse_result = tokio::task::spawn_blocking(|| traverse_cgroups(old_reader, old_operations));
-                    match traverse_result.await {
-                        Ok(Ok((new_reader, mut new_operations))) => {
-                            for operation in new_operations.drain(..) {
-                                operations_tx.send(operation).await?;
-                            }
-
-                            reader = Some(new_reader);
-                            operations = Some(new_operations);
-                        },
-                        Ok(Err(e)) => error!(error = %e, "Failed to read cgroups."),
-                        Err(e) => error!(error = %e, "Failed to spawn cgroups traverse task."),
+                    match result {
+                        Ok(Ok(())) => unreachable!("Cgroups background poller task should run indefinitely"),
+                        Ok(Err(e)) => error!(error = ?e, "Cgroups background poller task encountered an error."),
+                        Err(e) => error!(error = ?e, "Cgroups background poller task panicked."),
                     }
-                },
+                }
             }
         }
     }
@@ -107,30 +107,109 @@ impl MemoryBounds for CgroupsMetadataCollector {
             // Pre-allocated operation batch buffer. This is only the minimum, as it could grow larger.
             .with_array::<MetadataOperation>("metadata operations", 64);
         // TODO: Kind of a throwaway calculation because nothing about the reader can really be bounded at the moment.
+        //
+        // Specifically, we don't know the number of cgroups that will be present... and we have both a map that holds
+        // the active cgroups _and_ a map to track the cgroups seen during a single traversal, which we need to
+        // determine which cgroups have been removed. This means we might end up with like 3 copies of the same cgroup
+        // times however many cgroups there are at peak.
         builder.firm().with_single_value::<Self>("component struct");
     }
 }
 
-fn traverse_cgroups(
-    reader: CgroupsReader, mut operations: Vec<MetadataOperation>,
-) -> Result<(CgroupsReader, Vec<MetadataOperation>), GenericError> {
-    let start = std::time::Instant::now();
+struct SynchronousCgroupsManager {
+    reader: CgroupsReader,
+    active_cgroups: FastHashMap<u64, MetaString>,
+    operations: Vec<MetadataOperation>,
+}
 
-    let child_cgroups = reader.get_child_cgroups();
-    let child_cgroups_len = child_cgroups.len();
-    for child_cgroup in child_cgroups {
-        // Create an ancestry link between the container inode and the container ID, if available.
-        if let Some(cgroup_inode) = child_cgroup.inode() {
-            let entity_id = EntityId::ContainerInode(cgroup_inode);
-            let ancestor_entity_id = EntityId::Container(child_cgroup.into_container_id());
-
-            let operation = MetadataOperation::add_alias(entity_id, ancestor_entity_id);
-            operations.push(operation);
+impl SynchronousCgroupsManager {
+    fn from_reader(reader: CgroupsReader) -> Self {
+        Self {
+            reader,
+            active_cgroups: FastHashMap::default(),
+            operations: Vec::with_capacity(64),
         }
     }
 
-    let elapsed = start.elapsed();
-    debug!(elapsed = ?elapsed, child_cgroups_len, "Traversed cgroups.");
+    fn poll(&mut self, operations_tx: mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {
+        let mut traversed_cgroups = FastHashSet::default();
+        let mut cgroups_to_delete = Vec::new();
 
-    Ok((reader, operations))
+        loop {
+            // Make sure we should still be running.
+            if operations_tx.is_closed() {
+                return Ok(());
+            }
+
+            traversed_cgroups.clear();
+
+            let start = std::time::Instant::now();
+
+            // Traverse the cgroups hierarchy and collect all child cgroups that we can find that are attached to a
+            // container and have a controller inode for us to attach an alias to.
+            let child_cgroups = self.reader.get_child_cgroups();
+            let child_cgroups_len = child_cgroups.len();
+            for child_cgroup in child_cgroups {
+                if let Some(cgroup_inode) = child_cgroup.inode() {
+                    traversed_cgroups.insert(cgroup_inode);
+
+                    // If we haven't seen this cgroup before, start tracking it.
+                    if !self.active_cgroups.contains_key(&cgroup_inode) {
+                        let container_id = child_cgroup.into_container_id();
+                        debug!(%cgroup_inode, %container_id, "Found new container-based cgroup.");
+
+                        self.active_cgroups.insert(cgroup_inode, container_id.clone());
+
+                        // Emit an operation to add an alias between the cgroup inode and the container ID.
+                        let entity_id = EntityId::ContainerInode(cgroup_inode);
+                        let ancestor_entity_id = EntityId::Container(container_id);
+
+                        let operation = MetadataOperation::add_alias(entity_id, ancestor_entity_id);
+                        self.operations.push(operation);
+                    }
+                } else {
+                    // If the cgroup has no inode, we can't track it.
+                    let container_id = child_cgroup.into_container_id();
+                    warn!(%container_id, "Encountered cgroup without controller inode during metadata traversal. This is unexpected.");
+                    continue;
+                }
+            }
+
+            // Figure out which cgroups are no longer active and mark them for deletion.
+            for cgroup_inode in self.active_cgroups.keys() {
+                if !traversed_cgroups.contains(cgroup_inode) {
+                    // This cgroup is no longer present, so we need to delete it.
+                    cgroups_to_delete.push(*cgroup_inode);
+                }
+            }
+
+            // Process the deletions.
+            for cgroup_inode in cgroups_to_delete.drain(..) {
+                if let Some(container_id) = self.active_cgroups.remove(&cgroup_inode) {
+                    debug!(%cgroup_inode, %container_id, "Removing old container-based cgroup.");
+
+                    // Emit a metadata operation to remove the alias between the cgroup inode and the container ID.
+                    let entity_id = EntityId::ContainerInode(cgroup_inode);
+                    let ancestor_entity_id = EntityId::Container(container_id);
+
+                    let operation = MetadataOperation::remove_alias(entity_id, ancestor_entity_id);
+                    self.operations.push(operation);
+                } else {
+                    warn!(%cgroup_inode, "Tried to remove a cgroup that was not in the active set.");
+                }
+            }
+
+            let elapsed = start.elapsed();
+            debug!(elapsed = ?elapsed, child_cgroups_len, "Traversed cgroups.");
+
+            // Send all collected operations to the channel.
+            for operation in self.operations.drain(..) {
+                if operations_tx.blocking_send(operation).is_err() {
+                    return Err(GenericError::msg("Operations channel unexpectedly closed."));
+                }
+            }
+
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    }
 }

@@ -5,11 +5,11 @@ use std::{fmt, num::NonZeroU32, sync::Arc};
 
 use indexmap::Equivalent;
 use saluki_common::hash::hash_single_fast;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use stringtheory::MetaString;
 use tracing::warn;
 
-use crate::tags::{SharedTagSet, Tag, Tagged};
+use crate::tags::{SharedTagSet, Tag};
 
 /// The cardinality of tags associated with the origin entity.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
@@ -289,7 +289,7 @@ where
 /// - `cn-<container_name>`: The container name associated with the entity.
 ///
 /// For parsing external data strings without allocating, see [`RawExternalData`].
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ExternalData {
     pod_uid: MetaString,
     container_name: MetaString,

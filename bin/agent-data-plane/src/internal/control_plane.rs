@@ -1,15 +1,16 @@
 use std::future::pending;
 
 use memory_accounting::ComponentRegistry;
-use saluki_app::{api::APIBuilder, prelude::acquire_logging_api_handler};
+use saluki_app::{api::APIBuilder, config::ConfigAPIHandler, prelude::acquire_logging_api_handler};
 use saluki_common::task::spawn_traced_named;
+use saluki_components::destinations::DogStatsDStatisticsConfiguration;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use saluki_io::net::ListenAddress;
 use tracing::{error, info};
 
-use super::remote_agent::RemoteAgentHelperConfiguration;
+use crate::internal::remote_agent::RemoteAgentHelperConfiguration;
 use crate::{env_provider::ADPEnvironmentProvider, internal::initialize_and_launch_runtime};
 
 const PRIMARY_UNPRIVILEGED_API_PORT: u16 = 5100;
@@ -26,7 +27,7 @@ const PRIMARY_PRIVILEGED_API_PORT: u16 = 5101;
 /// If the APIs cannot be spawned, or if the health registry cannot be spawned, an error will be returned.
 pub fn spawn_control_plane(
     config: GenericConfiguration, component_registry: &ComponentRegistry, health_registry: HealthRegistry,
-    env_provider: ADPEnvironmentProvider,
+    env_provider: ADPEnvironmentProvider, dsd_stats_config: DogStatsDStatisticsConfiguration,
 ) -> Result<(), GenericError> {
     // Build our unprivileged and privileged API server.
     //
@@ -39,7 +40,9 @@ pub fn spawn_control_plane(
     let privileged_api = APIBuilder::new()
         .with_self_signed_tls()
         .with_optional_handler(acquire_logging_api_handler())
-        .with_optional_handler(env_provider.workload_api_handler());
+        .with_handler(ConfigAPIHandler::new(config.clone()))
+        .with_optional_handler(env_provider.workload_api_handler())
+        .with_handler(dsd_stats_config.api_handler());
 
     let init = async move {
         // Handle any final configuration of our API endpoints and spawn them.

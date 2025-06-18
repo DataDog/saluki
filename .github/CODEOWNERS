@@ -1,7 +1,9 @@
-# Currently, Agent Metric Pipelines owns all code in this repository.
+# Agent Metric Pipelines has default ownership over everything.
 * @DataDog/agent-metric-pipelines
 
-# We publish public ADP-bundled Agent images based on CI triggered through this repository,
+/lib/saluki-components/src/sources/checks/  @DataDog/agent-runtimes
+
+# We publish public standalone ADP container images based on CI triggered through this repository,
 # and the code ownership arrangement is to ensure that Agent Delivery has a stake in the configuration
 # on those CI jobs, such that any changes we make the image tags we're publishing, or how we build the
 # images, and so on, are reviewed by the Agent Delivery team to their satisfaction and in keeping with

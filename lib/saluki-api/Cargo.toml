@@ -5,6 +5,9 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[lints]
+workspace = true
+
 [dependencies]
 axum = { workspace = true, features = ["http1", "tokio"] }
 axum-extra = { workspace = true, features = ["query"] }

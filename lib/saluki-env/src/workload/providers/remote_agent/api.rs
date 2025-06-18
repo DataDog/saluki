@@ -9,9 +9,13 @@ use saluki_context::{
     origin::OriginTagCardinality,
     tags::{SharedTagSet, TagSet},
 };
-use serde::Serialize;
+use serde::{ser::SerializeSeq as _, Serialize};
 
-use crate::workload::{entity::HighestPrecedenceEntityIdRef, stores::TagStoreQuerier, EntityId};
+use crate::workload::{
+    entity::HighestPrecedenceEntityIdRef,
+    stores::{ExternalDataStoreResolver, TagStoreQuerier},
+    EntityId,
+};
 
 #[derive(Serialize)]
 struct EntityTags {
@@ -30,10 +34,19 @@ struct EntityInformation<'a> {
     tags: EntityTags,
 }
 
+#[derive(Serialize)]
+struct ExternalDataInformation<'a> {
+    pod_uid: &'a str,
+    container_name: &'a str,
+    init_container: bool,
+    container_id: &'a EntityId,
+}
+
 /// State used for the Remote Agent workload API handler.
 #[derive(Clone)]
 pub struct RemoteAgentWorkloadState {
     tag_querier: TagStoreQuerier,
+    eds_resolver: ExternalDataStoreResolver,
 }
 
 impl RemoteAgentWorkloadState {
@@ -86,6 +99,13 @@ impl RemoteAgentWorkloadState {
 
         serde_json::to_string(&entity_info).unwrap()
     }
+
+    fn get_eds_dump_response(&self) -> String {
+        let eds_serializer = ExternalDataSerializer {
+            eds_resolver: &self.eds_resolver,
+        };
+        serde_json::to_string(&eds_serializer).unwrap()
+    }
 }
 
 /// An API handler for interacting with the underlying data stores that comprise the Remote Agent workload provider.
@@ -106,14 +126,21 @@ pub struct RemoteAgentWorkloadAPIHandler {
 }
 
 impl RemoteAgentWorkloadAPIHandler {
-    pub(crate) fn from_state(tag_querier: TagStoreQuerier) -> Self {
+    pub(crate) fn from_state(tag_querier: TagStoreQuerier, eds_resolver: ExternalDataStoreResolver) -> Self {
         Self {
-            state: RemoteAgentWorkloadState { tag_querier },
+            state: RemoteAgentWorkloadState {
+                tag_querier,
+                eds_resolver,
+            },
         }
     }
 
     async fn tags_dump_handler(State(state): State<RemoteAgentWorkloadState>) -> impl IntoResponse {
         state.get_tags_dump_response()
+    }
+
+    async fn eds_dump_handler(State(state): State<RemoteAgentWorkloadState>) -> impl IntoResponse {
+        state.get_eds_dump_response()
     }
 }
 
@@ -125,6 +152,45 @@ impl APIHandler for RemoteAgentWorkloadAPIHandler {
     }
 
     fn generate_routes(&self) -> Router<Self::State> {
-        Router::new().route("/workload/remote_agent/tags/dump", get(Self::tags_dump_handler))
+        Router::new()
+            .route("/workload/remote_agent/tags/dump", get(Self::tags_dump_handler))
+            .route("/workload/remote_agent/external_data/dump", get(Self::eds_dump_handler))
+    }
+}
+
+struct ExternalDataSerializer<'a> {
+    eds_resolver: &'a ExternalDataStoreResolver,
+}
+
+impl<'a> Serialize for ExternalDataSerializer<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut last_error = None;
+
+        let mut seq = serializer.serialize_seq(None)?;
+        self.eds_resolver.with_latest_snapshot(|ed, cid| {
+            if last_error.is_some() {
+                return;
+            }
+
+            let eds_info = ExternalDataInformation {
+                pod_uid: ed.pod_uid(),
+                container_name: ed.container_name(),
+                init_container: ed.is_init_container(),
+                container_id: cid,
+            };
+
+            if let Err(e) = seq.serialize_element(&eds_info) {
+                last_error = Some(e);
+            }
+        });
+
+        if let Some(e) = last_error {
+            return Err(e);
+        }
+
+        seq.end()
     }
 }

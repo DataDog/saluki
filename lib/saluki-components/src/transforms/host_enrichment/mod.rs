@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::{components::transforms::*, topology::interconnect::FixedSizeEventBuffer};
+use saluki_core::{components::transforms::*, topology::EventsBuffer};
 use saluki_core::{components::ComponentContext, data_model::event::metric::Metric};
 use saluki_env::{EnvironmentProvider, HostProvider};
 use saluki_error::GenericError;
@@ -80,7 +80,7 @@ impl HostEnrichment {
 }
 
 impl SynchronousTransform for HostEnrichment {
-    fn transform_buffer(&mut self, event_buffer: &mut FixedSizeEventBuffer) {
+    fn transform_buffer(&mut self, event_buffer: &mut EventsBuffer) {
         for event in event_buffer {
             if let Some(metric) = event.try_as_metric_mut() {
                 self.enrich_metric(metric)

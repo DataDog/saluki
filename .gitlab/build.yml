@@ -4,12 +4,8 @@
   needs:
     - calculate-build-metadata
   retry: 2
-  timeout: 20m
+  timeout: 12m
   variables:
-    # Compiling Rust is intensive. ¯\_(ツ)_/¯
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_MEMORY_REQUEST: "8Gi"
-    KUBERNETES_MEMORY_LIMIT: "12Gi"
     APP_BUILD_TIME: "${CI_PIPELINE_CREATED_AT}"
     DDCI_CONFIGURE_OTEL_EXPORTER: true
   script:
@@ -20,9 +16,10 @@
       --metadata-file /tmp/build.metadata
       --tag ${IMAGE_TAG}
       --build-arg BUILD_IMAGE=${ADP_BUILD_IMAGE}
-      --build-arg APP_IMAGE=${ADP_APP_IMAGE}
+      --build-arg APP_IMAGE=${APP_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg BUILD_FEATURES=${BUILD_FEATURES}
+      --build-arg BUILDER_BASE=${BUILDER_BASE}
       --build-arg APP_FULL_NAME="${APP_FULL_NAME}"
       --build-arg APP_SHORT_NAME=${APP_SHORT_NAME}
       --build-arg APP_IDENTIFIER=${APP_IDENTIFIER}
@@ -31,56 +28,12 @@
       --build-arg APP_BUILD_TIME=${APP_BUILD_TIME}
       --build-arg APP_DEV_BUILD=${APP_DEV_BUILD}
       --label "org.opencontainers.image.authors=Datadog <package@datadoghq.com>"
-      --label "org.opencontainers.image.base.name=${ADP_APP_IMAGE}"
+      --label "org.opencontainers.image.base.name=${APP_IMAGE}"
       --label "org.opencontainers.image.created=${CI_PIPELINE_CREATED_AT}"
       --label "org.opencontainers.image.ref.name=agent-data-plane"
       --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}"
       --label "org.opencontainers.image.source=https://github.com/DataDog/saluki"
       --label "org.opencontainers.image.title=Agent Data Plane"
-      --label "org.opencontainers.image.vendor=Datadog, Inc."
-      --label "org.opencontainers.image.version=${ADP_IMAGE_VERSION}"
-      --push
-      .
-      
-.build-checks-agent-definition:
-  stage: build
-  image: ${DOCKER_BUILD_IMAGE}
-  needs:
-    - calculate-build-metadata
-  retry: 2
-  timeout: 20m
-  variables:
-    # Compiling Rust is intensive. ¯\_(ツ)_/¯
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_MEMORY_REQUEST: "8Gi"
-    KUBERNETES_MEMORY_LIMIT: "12Gi"
-    APP_BUILD_TIME: "${CI_PIPELINE_CREATED_AT}"
-    DDCI_CONFIGURE_OTEL_EXPORTER: true
-  script:
-    - 'echo "Building Checks Agent image ${IMAGE_TAG}... (image version: ${ADP_IMAGE_VERSION})..."'
-    - docker buildx build
-      --platform linux/amd64,linux/arm64
-      --file ./docker/Dockerfile.checks-agent
-      --metadata-file /tmp/build.metadata
-      --tag ${IMAGE_TAG}
-      --build-arg BUILD_IMAGE=${ADP_BUILD_IMAGE}
-      --build-arg APP_IMAGE=${ADP_APP_IMAGE}
-      --build-arg BUILD_PROFILE=${BUILD_PROFILE}
-      --build-arg BUILD_FEATURES=${BUILD_FEATURES}
-      --build-arg APP_FULL_NAME="${CHECKS_FULL_NAME}"
-      --build-arg APP_SHORT_NAME=${CHECKS_SHORT_NAME}
-      --build-arg APP_IDENTIFIER=${CHECKS_IDENTIFIER}
-      --build-arg APP_VERSION=${APP_VERSION}
-      --build-arg APP_GIT_HASH=${APP_GIT_HASH}
-      --build-arg APP_BUILD_TIME=${APP_BUILD_TIME}
-      --build-arg APP_DEV_BUILD=${APP_DEV_BUILD}
-      --label "org.opencontainers.image.authors=Datadog <package@datadoghq.com>"
-      --label "org.opencontainers.image.base.name=${ADP_APP_IMAGE}"
-      --label "org.opencontainers.image.created=${CI_PIPELINE_CREATED_AT}"
-      --label "org.opencontainers.image.ref.name=checks-agent"
-      --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}"
-      --label "org.opencontainers.image.source=https://github.com/DataDog/saluki"
-      --label "org.opencontainers.image.title=Checks Agent"
       --label "org.opencontainers.image.vendor=Datadog, Inc."
       --label "org.opencontainers.image.version=${ADP_IMAGE_VERSION}"
       --push
@@ -99,19 +52,39 @@ calculate-build-metadata:
 build-adp-image:
   extends: [.build-common-variables, .build-adp-definition]
   variables:
+    APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
     IMAGE_TAG: ${ADP_FULL_IMAGE_TAG}
 
 build-adp-image-fips:
   extends: [.build-common-variables, .build-adp-definition]
   variables:
+    APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
     IMAGE_TAG: ${ADP_FULL_IMAGE_TAG_FIPS}
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
-    
-build-checks-agent-image:
-  extends: [.build-common-variables, .build-checks-agent-definition]
+
+build-adp-checks-image:
+  extends: [.build-common-variables, .build-adp-definition]
   variables:
-    IMAGE_TAG: ${CHECKS_AGENT_FULL_IMAGE_TAG}
+    APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
+    IMAGE_TAG: ${ADP_CHECKS_FULL_IMAGE_TAG}
+    BUILD_FEATURES: "python-checks"
+    BUILDER_BASE: "builder-python"
+
+# Internal-specific build variants that use a GBI-compliant base image.
+build-adp-image-internal:
+  extends: [.build-common-variables, .build-adp-definition]
+  variables:
+    APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
+    IMAGE_TAG: ${ADP_FULL_IMAGE_TAG}-internal
+
+build-adp-image-fips-internal:
+  extends: [.build-common-variables, .build-adp-definition]
+  variables:
+    APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
+    IMAGE_TAG: ${ADP_FULL_IMAGE_TAG_FIPS}-internal
+    BUILD_FEATURES: "fips"
+    FIPS_ENABLED: "true"
 
 # Finally, we publish our internal images after running through a small build process to add some necessary tooling
 # required for the images to be deployed/used internally.
@@ -126,7 +99,7 @@ publish-adp-image-internal:
   stage: build
   extends: [.build-common-variables]
   needs:
-    - build-adp-image
+    - build-adp-image-internal
   trigger:
     project: DataDog/images
     branch: master
@@ -135,7 +108,7 @@ publish-adp-image-internal:
     IMAGE_NAME: agent-data-plane
     IMAGE_VERSION: tmpl-v1
     TMPL_SRC_REPO: ${ADP_IMAGE_REPO_NAME}
-    TMPL_SRC_IMAGE: ${ADP_IMAGE_VERSION}
+    TMPL_SRC_IMAGE: ${ADP_IMAGE_VERSION}-internal
     RELEASE_TAG: ${ADP_IMAGE_VERSION}
     BUILD_TAG: "${ADP_IMAGE_VERSION}-build"
     RELEASE_STAGING: "true"
@@ -145,7 +118,7 @@ publish-adp-image-internal-fips:
   stage: build
   extends: [.build-common-variables]
   needs:
-    - build-adp-image-fips
+    - build-adp-image-fips-internal
   trigger:
     project: DataDog/images
     branch: master
@@ -154,7 +127,7 @@ publish-adp-image-internal-fips:
     IMAGE_NAME: agent-data-plane
     IMAGE_VERSION: tmpl-v1
     TMPL_SRC_REPO: ${ADP_IMAGE_REPO_NAME}
-    TMPL_SRC_IMAGE: ${ADP_IMAGE_VERSION_FIPS}
+    TMPL_SRC_IMAGE: ${ADP_IMAGE_VERSION_FIPS}-internal
     RELEASE_TAG: ${ADP_IMAGE_VERSION_FIPS}
     BUILD_TAG: "${ADP_IMAGE_VERSION_FIPS}-build"
     RELEASE_STAGING: "true"
@@ -164,21 +137,20 @@ display-image-tags:
   extends: [.build-common-variables]
   stage: build
   needs:
-    - build-adp-image
-    - build-adp-image-fips
+    - build-adp-image-internal
+    - build-adp-image-fips-internal
+    - build-adp-checks-image
     - publish-adp-image-internal
     - publish-adp-image-internal-fips
-    - build-checks-agent-image
   script:
     - |-
       cat <<EOF
-      # ADP Image Tags
+      # Image Tags
 
-      ## Internal (baked with necessary tools for internal deployments)
+      ## Agent Data Plane (suitable for internal deployments, GBI-based)
       Non-FIPS: ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG}
       FIPS:     ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG_FIPS}
-      
-      # checks-agent Image Tags
-      ## Internal (baked with necessary tools for internal deployments)
-      Non-FIPS: ${CHECKS_AGENT_FULL_IMAGE_TAG}
+
+      ## Agent Data Plane w/ Checks (not GBI-based)
+      Non-FIPS: ${IMAGE_REGISTRY}/${ADP_CHECKS_TAG}
       EOF

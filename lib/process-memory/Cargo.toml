@@ -5,13 +5,21 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[lints]
+workspace = true
+
 [dependencies]
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 libc = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+windows-sys = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_System",
+  "Win32_System_ProcessStatus",
+  "Win32_System_Threading",
+] }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 mach2 = { version = "0.4.2" }

@@ -9,6 +9,7 @@ use std::time::Duration;
 use pyo3::types::{PyDict, PyList, PyNone, PyTuple, PyType};
 use pyo3::PyObject;
 use pyo3::{prelude::*, IntoPyObjectExt};
+use saluki_core::data_model::event::Event;
 use saluki_env::autodiscovery::{Data, Instance, RawData};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stringtheory::MetaString;
@@ -19,7 +20,7 @@ use super::python_modules::aggregator as pyagg;
 use super::python_modules::datadog_agent;
 use crate::sources::checks::builder::CheckBuilder;
 use crate::sources::checks::check::Check;
-use crate::sources::checks::check_metric::CheckMetric;
+use crate::sources::checks::execution_context::ExecutionContext;
 
 struct PythonCheck {
     version: String,
@@ -58,15 +59,19 @@ impl Check for PythonCheck {
 static INTERPRETER_INITIALIZED_AND_READY: OnceLock<bool> = OnceLock::new();
 
 pub struct PythonCheckBuilder {
-    check_events_tx: Sender<CheckMetric>,
+    check_events_tx: Sender<Event>,
     custom_checks_folders: Option<Vec<String>>,
+    execution_context: ExecutionContext,
 }
 
 impl PythonCheckBuilder {
-    pub fn new(check_events_tx: Sender<CheckMetric>, custom_checks_folders: Option<Vec<String>>) -> Self {
+    pub fn new(
+        check_events_tx: Sender<Event>, custom_checks_folders: Option<Vec<String>>, execution_context: ExecutionContext,
+    ) -> Self {
         Self {
             check_events_tx,
             custom_checks_folders,
+            execution_context,
         }
     }
 
@@ -115,7 +120,8 @@ impl PythonCheckBuilder {
             match result {
                 Ok(()) => {
                     // Initialize global state for our Python modules.
-                    super::python_modules::set_metric_sender(self.check_events_tx.clone());
+                    super::python_modules::set_event_sender(self.check_events_tx.clone());
+                    super::python_modules::set_execution_context(self.execution_context.clone());
 
                     info!("Python runtime loaded successfully and initialized for checks.");
                     true

@@ -16,7 +16,7 @@ use saluki_io::net::{
     ListenAddress,
 };
 use tokio::select;
-use tonic::{body::BoxBody, server::NamedService, service::RoutesBuilder};
+use tonic::{body::Body, server::NamedService, service::RoutesBuilder};
 use tower::Service;
 
 /// An API builder.
@@ -80,10 +80,11 @@ impl APIBuilder {
     /// Add the given gRPC service to this builder.
     pub fn with_grpc_service<S>(mut self, svc: S) -> Self
     where
-        S: Service<Request<BoxBody>, Response = Response<BoxBody>, Error = Infallible>
+        S: Service<Request<Body>, Response = Response<Body>, Error = Infallible>
             + NamedService
             + Clone
             + Send
+            + Sync
             + 'static,
         S::Future: Send + 'static,
         S::Error: Into<Box<dyn Error + Send + Sync>> + Send,

@@ -1,35 +1,35 @@
-use memory_accounting::{ComponentRegistry, MemoryLimiter};
-use saluki_health::{Health, HealthRegistry};
-use tokio::runtime::Handle;
+use memory_accounting::ComponentRegistry;
+use saluki_health::Health;
 
-use crate::{components::ComponentContext, topology::interconnect::EventStream};
+use crate::{
+    components::ComponentContext,
+    topology::{EventsConsumer, PayloadsDispatcher, TopologyContext},
+};
 
 /// Encoder context.
 pub struct EncoderContext {
+    topology_context: TopologyContext,
     component_context: ComponentContext,
-    events: EventStream,
-    memory_limiter: MemoryLimiter,
-    health_handle: Option<Health>,
-    health_registry: HealthRegistry,
     component_registry: ComponentRegistry,
-    thread_pool: Handle,
+    health_handle: Option<Health>,
+    dispatcher: PayloadsDispatcher,
+    consumer: EventsConsumer,
 }
 
 impl EncoderContext {
     /// Creates a new `EncoderContext`.
     pub fn new(
-        component_context: ComponentContext, events: EventStream, memory_limiter: MemoryLimiter,
-        component_registry: ComponentRegistry, health_handle: Health, health_registry: HealthRegistry,
-        thread_pool: Handle,
+        topology_context: &TopologyContext, component_context: &ComponentContext,
+        component_registry: ComponentRegistry, health_handle: Health, dispatcher: PayloadsDispatcher,
+        consumer: EventsConsumer,
     ) -> Self {
         Self {
-            component_context,
-            events,
-            memory_limiter,
-            health_handle: Some(health_handle),
-            health_registry,
+            topology_context: topology_context.clone(),
+            component_context: component_context.clone(),
             component_registry,
-            thread_pool,
+            health_handle: Some(health_handle),
+            dispatcher,
+            consumer,
         }
     }
 
@@ -42,24 +42,14 @@ impl EncoderContext {
         self.health_handle.take().expect("health handle already taken")
     }
 
-    /// Returns the component context.
-    pub fn component_context(&self) -> ComponentContext {
-        self.component_context.clone()
+    /// Gets a reference to the topology context.
+    pub fn topology_context(&self) -> &TopologyContext {
+        &self.topology_context
     }
 
-    /// Gets a mutable reference to the event stream.
-    pub fn events(&mut self) -> &mut EventStream {
-        &mut self.events
-    }
-
-    /// Gets a reference to the memory limiter.
-    pub fn memory_limiter(&self) -> &MemoryLimiter {
-        &self.memory_limiter
-    }
-
-    /// Gets a reference to the health registry.
-    pub fn health_registry(&mut self) -> &HealthRegistry {
-        &self.health_registry
+    /// Gets a reference to the component context.
+    pub fn component_context(&self) -> &ComponentContext {
+        &self.component_context
     }
 
     /// Gets a reference to the component registry.
@@ -67,8 +57,13 @@ impl EncoderContext {
         &self.component_registry
     }
 
-    /// Gets a reference to the global thread pool.
-    pub fn global_thread_pool(&self) -> &Handle {
-        &self.thread_pool
+    /// Gets a reference to the payloads dispatcher.
+    pub fn dispatcher(&self) -> &PayloadsDispatcher {
+        &self.dispatcher
+    }
+
+    /// Gets a mutable reference to the events consumer.
+    pub fn events(&mut self) -> &mut EventsConsumer {
+        &mut self.consumer
     }
 }

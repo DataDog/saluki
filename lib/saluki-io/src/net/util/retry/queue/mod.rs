@@ -259,7 +259,8 @@ where
 mod tests {
     use std::path::Path;
 
-    use rand::{distributions::Alphanumeric, Rng as _};
+    use rand::Rng as _;
+    use rand_distr::Alphanumeric;
     use serde::Deserialize;
 
     use super::*;
@@ -273,12 +274,8 @@ mod tests {
     impl FakeData {
         fn random() -> Self {
             Self {
-                name: rand::thread_rng()
-                    .sample_iter(&Alphanumeric)
-                    .take(8)
-                    .map(char::from)
-                    .collect(),
-                value: rand::thread_rng().gen_range(0..100),
+                name: rand::rng().sample_iter(&Alphanumeric).take(8).map(char::from).collect(),
+                value: rand::rng().random_range(0..100),
             }
         }
     }

@@ -162,7 +162,7 @@ where
     fn get_io_mut(&mut self) -> io::Result<&mut T> {
         match self.io.as_mut() {
             Some(io) => Ok(io),
-            None => Err(io::Error::new(io::ErrorKind::Other, "no file set in scanner")),
+            None => Err(io::Error::other("no file set in scanner")),
         }
     }
 

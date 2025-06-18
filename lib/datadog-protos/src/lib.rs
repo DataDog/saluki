@@ -4,6 +4,7 @@
 //! communicate with the Datadog Platform, specifically for shipping metrics and traces.
 #![deny(warnings)]
 #![allow(clippy::enum_variant_names)]
+#![allow(clippy::doc_overindented_list_items)]
 mod include {
     include!(concat!(env!("OUT_DIR"), "/protos/mod.rs"));
 }
@@ -17,12 +18,6 @@ pub mod metrics {
     pub use super::include::agent_payload::metric_payload::*;
     pub use super::include::agent_payload::sketch_payload::{sketch::*, Sketch};
     pub use super::include::agent_payload::*;
-    pub use super::include::ddsketch_full::*;
-}
-
-/// Trace-related definitions.
-pub mod traces {
-    pub use super::include::dd_trace::*;
 }
 
 /// Event-related definitions.

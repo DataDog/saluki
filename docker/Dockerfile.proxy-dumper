@@ -22,7 +22,7 @@ FROM ${APP_IMAGE}
 # For local builds, the regular Ubuntu application image needs to have the CA certificates installed, but it also uses
 # the `root` user, so we can install them without issue.
 RUN test -d /usr/local/share/ca-certificates || apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates=20240203~22.04.1 && \
+    apt-get install -y --no-install-recommends ca-certificates=20240203 && \
     apt-get clean
 COPY --from=builder /src/app/target/proxy-dumper /proxy-dumper
 

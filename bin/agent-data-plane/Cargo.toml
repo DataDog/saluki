@@ -1,19 +1,35 @@
 [package]
 name = "agent-data-plane"
-version = "0.1.13"
+version = "0.1.21"
 edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[lints]
+workspace = true
+
 [features]
 default = []
 fips = ["saluki-app/tls-fips"]
+python-checks = ["saluki-components/python-checks"]
 
 [dependencies]
+arc-swap = { workspace = true }
 async-trait = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
-clap = { workspace = true, features = ["std", "color", "derive", "help", "wrap_help", "usage", "error-context", "suggestions"] }
+clap = { workspace = true, features = [
+  "std",
+  "color",
+  "derive",
+  "help",
+  "wrap_help",
+  "usage",
+  "error-context",
+  "suggestions",
+] }
+colored = { workspace = true }
+comfy-table = { workspace = true }
 datadog-protos = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
@@ -21,7 +37,14 @@ http-body-util = { workspace = true }
 hyper = { workspace = true }
 memory-accounting = { workspace = true }
 papaya = { workspace = true }
+prost-types = { workspace = true }
 rand = { workspace = true }
+rand_distr = { workspace = true }
+reqwest = { workspace = true, features = [
+  "rustls-tls-native-roots-no-provider",
+  "json",
+] }
+saluki-api = { workspace = true }
 saluki-app = { workspace = true, features = ["full"] }
 saluki-common = { workspace = true }
 saluki-components = { workspace = true }
@@ -33,7 +56,9 @@ saluki-error = { workspace = true }
 saluki-health = { workspace = true }
 saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = [
   "macros",

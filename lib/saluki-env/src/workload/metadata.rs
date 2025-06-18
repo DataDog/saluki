@@ -29,6 +29,14 @@ impl MetadataOperation {
         }
     }
 
+    /// Creates a new `MetadataOperation` that removes an alias to another entity.
+    pub fn remove_alias(entity_id: EntityId, target_entity_id: EntityId) -> Self {
+        Self {
+            entity_id,
+            actions: OneOrMany::One(MetadataAction::RemoveAlias { target_entity_id }),
+        }
+    }
+
     /// Creates a new `MetadataOperation` that deletes all metadata for an entity.
     pub fn delete(entity_id: EntityId) -> Self {
         Self {
@@ -64,6 +72,12 @@ pub enum MetadataAction {
         target_entity_id: EntityId,
     },
 
+    /// Removes an alias to the entity.
+    RemoveAlias {
+        /// Entity ID of the target to remove the alias to.
+        target_entity_id: EntityId,
+    },
+
     /// Sets the tags for the entity.
     ///
     /// This overwrites any existing tags for the entity.
@@ -91,6 +105,7 @@ impl fmt::Debug for MetadataAction {
         match self {
             Self::Delete => write!(f, "Delete"),
             Self::AddAlias { target_entity_id } => write!(f, "AddAlias({:?})", target_entity_id),
+            Self::RemoveAlias { target_entity_id } => write!(f, "RemoveAlias({:?})", target_entity_id),
             Self::SetTags { cardinality, tags } => write!(f, "SetTags(cardinality={:?}, tags={:?})", cardinality, tags),
             Self::AttachExternalData { external_data } => write!(f, "AttachExternalData({:?})", external_data),
         }

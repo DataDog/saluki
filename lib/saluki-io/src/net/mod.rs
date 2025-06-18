@@ -12,3 +12,6 @@ pub use self::stream::{Connection, Stream};
 pub mod unix;
 
 pub mod util;
+
+mod ipc;
+pub use self::ipc::{build_datadog_agent_ipc_https_connector, build_datadog_agent_ipc_tls_config};

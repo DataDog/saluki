@@ -3,6 +3,9 @@ datadog:
   appKeyExistingSecret: datadog-secret
   agentDataPlane:
     enabled: true
+    image:
+      repository: local.dev/saluki-images/agent-data-plane
+      tag: testing
   # We have to compensate for the fact that we're running in Minikube by adjusting some settings
   # so that the Agent can figure out where it's running and how to talk to Kubelet.
   env:
@@ -10,19 +13,3 @@ datadog:
       value: minikube
   kubelet:
     tlsVerify: false
-agents:
-  image:
-    repository: local.dev/saluki-images/datadog-agent
-    tag: testing
-    doNotCheckTag: true
-  containers:
-    agent:
-      env:
-        # Disable DogStatsD on the core Agent and only use Agent Data Plane.
-        - name: DD_USE_DOGSTATSD
-          value: "false"
-    agentDataPlane:
-      logLevel: saluki_components::transforms=debug,info
-      env:
-        - name: DD_DD_URL
-          value: http://proxy-dumper.adp-testing.svc.cluster.local:8081

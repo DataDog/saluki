@@ -5,6 +5,9 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[lints]
+workspace = true
+
 [features]
 default = []
 python-checks = ["dep:pyo3"]
@@ -13,6 +16,7 @@ python-checks = ["dep:pyo3"]
 async-trait = { workspace = true }
 bytes = { workspace = true }
 bytesize = { workspace = true }
+chrono = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }
@@ -33,7 +37,8 @@ pin-project = { workspace = true }
 protobuf = { workspace = true }
 pyo3 = { workspace = true, features = ["macros"], optional = true }
 rand = { workspace = true, features = ["std", "std_rng"] }
-regex = { workspace = true }
+regex = { workspace = true, features = ["unicode-perl"] }
+saluki-api = { workspace = true }
 saluki-common = { workspace = true }
 saluki-config = { workspace = true }
 saluki-context = { workspace = true }
@@ -65,4 +70,7 @@ tracing = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
+pyo3-ffi = { workspace = true }
 saluki-metrics = { workspace = true, features = ["test"] }
+test-strategy = { workspace = true }

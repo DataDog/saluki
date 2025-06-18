@@ -7,11 +7,11 @@ use std::{
 use indexmap::IndexSet;
 use snafu::Snafu;
 
-use super::{ComponentId, ComponentOutputId, OutputDefinition, OutputName, TypedComponentOutputId};
+use super::{ComponentId, ComponentOutputId, OutputDefinition, OutputName, TypedComponentId, TypedComponentOutputId};
 use crate::{
     components::{
         destinations::DestinationBuilder, encoders::EncoderBuilder, forwarders::ForwarderBuilder,
-        sources::SourceBuilder, transforms::TransformBuilder,
+        sources::SourceBuilder, transforms::TransformBuilder, ComponentType,
     },
     data_model::{event::EventType, payload::PayloadType},
 };
@@ -459,14 +459,60 @@ impl Graph {
         }
     }
 
+    fn get_component_type(&self, id: &ComponentId) -> Option<ComponentType> {
+        match self.nodes.get(id) {
+            Some(node) => match node {
+                Node::Source { .. } => Some(ComponentType::Source),
+                Node::Transform { .. } => Some(ComponentType::Transform),
+                Node::Destination { .. } => Some(ComponentType::Destination),
+                Node::Encoder { .. } => Some(ComponentType::Encoder),
+                Node::Forwarder { .. } => Some(ComponentType::Forwarder),
+            },
+            None => None,
+        }
+    }
+
     /// Returns a mapping of component IDs to their outputs and the component IDs that are connected to them.
-    pub fn get_outbound_directed_edges(&self) -> HashMap<ComponentId, HashMap<OutputName, Vec<ComponentId>>> {
-        let mut mappings: HashMap<ComponentId, HashMap<OutputName, Vec<ComponentId>>> = HashMap::new();
+    pub fn get_outbound_directed_edges(&self) -> HashMap<TypedComponentId, HashMap<OutputName, Vec<TypedComponentId>>> {
+        let mut mappings: HashMap<TypedComponentId, HashMap<OutputName, Vec<TypedComponentId>>> = HashMap::new();
+
+        // Populate the map so that every component has its outputs represented.
+        //
+        // We want to ensure that the caller can reconstruct all of the _configured_ outputs of a component,
+        // even if an output doesn't have any edges (connections).
+        for (component_id, node) in &self.nodes {
+            let component_type = self.get_component_type(component_id).unwrap();
+            let typed_component_id = TypedComponentId::new(component_id.clone(), component_type);
+
+            match node {
+                Node::Source { outputs } | Node::Transform { outputs, .. } => {
+                    let per_component = mappings.entry(typed_component_id).or_default();
+                    for output in outputs {
+                        per_component.insert(output.component_output().output(), Vec::new());
+                    }
+                }
+                Node::Encoder { .. } => {
+                    // Encoders have a default output
+                    let per_component = mappings.entry(typed_component_id).or_default();
+                    per_component.insert(OutputName::Default, Vec::new());
+                }
+                _ => {}
+            }
+        }
 
         for edge in &self.edges {
-            let per_component = mappings.entry(edge.from.component_id()).or_default();
+            let raw_from_id = edge.from.component_id();
+            let from_type = self.get_component_type(&raw_from_id).expect("component ID not found");
+            let from_id = TypedComponentId::new(raw_from_id, from_type);
+
+            let per_component = mappings.entry(from_id).or_default();
             let per_output = per_component.entry(edge.from.output()).or_default();
-            per_output.push(edge.to.clone());
+
+            let raw_to_id = edge.to.clone();
+            let to_type = self.get_component_type(&raw_to_id).expect("component ID not found");
+            let to_id = TypedComponentId::new(raw_to_id, to_type);
+
+            per_output.push(to_id);
         }
 
         mappings
@@ -508,8 +554,6 @@ fn construct_typed_output_ids(
 
 #[cfg(test)]
 mod test {
-    use similar_asserts::assert_eq;
-
     use super::*;
     use crate::topology::test_util::{
         TestDestinationBuilder, TestEncoderBuilder, TestForwarderBuilder, TestSourceBuilder, TestTransformBuilder,
@@ -928,5 +972,71 @@ mod test {
             .with_edge("eventd_to_http_payload", "out_http");
 
         assert_eq!(Ok(()), graph.validate());
+    }
+
+    #[test]
+    fn get_outbound_directed_edges_includes_all_configured_outputs() {
+        let mut graph = Graph::default();
+
+        // Create a source with default output (connected)
+        graph.with_source("source1", EventType::EventD);
+
+        // Create a transform with multiple outputs - one connected, one not connected
+        graph.with_transform_multiple_outputs(
+            "transform1",
+            EventType::EventD,
+            &[(None, EventType::EventD), (Some("errors"), EventType::EventD)],
+        );
+
+        // Create destinations
+        graph.with_destination("dest1", EventType::EventD);
+
+        // Add edges - note that transform1.errors is NOT connected to anything
+        graph.with_edge("source1", "transform1");
+        graph.with_edge("transform1", "dest1");
+        // Intentionally NOT adding: graph.with_edge("transform1.errors", "dest1");
+
+        let outbound_edges = graph.get_outbound_directed_edges();
+
+        // Verify source1 has its default output
+        let source1_id = TypedComponentId::new(ComponentId::try_from("source1").unwrap(), ComponentType::Source);
+        let source1_outputs = outbound_edges
+            .get(&source1_id)
+            .expect("source1 should be in outbound edges");
+        assert!(
+            source1_outputs.contains_key(&OutputName::Default),
+            "source1 should have default output"
+        );
+
+        // Verify transform1 has BOTH configured outputs (default and errors) even though errors is not connected
+        let transform1_id =
+            TypedComponentId::new(ComponentId::try_from("transform1").unwrap(), ComponentType::Transform);
+        let transform1_outputs = outbound_edges
+            .get(&transform1_id)
+            .expect("transform1 should be in outbound edges");
+
+        // Check that both outputs are present
+        assert!(
+            transform1_outputs.contains_key(&OutputName::Default),
+            "transform1 should have default output"
+        );
+        assert!(
+            transform1_outputs.contains_key(&OutputName::Given("errors".into())),
+            "transform1 should have errors output"
+        );
+
+        // Check that default output has connections but errors output is empty
+        let default_connections = transform1_outputs.get(&OutputName::Default).unwrap();
+        assert_eq!(default_connections.len(), 1, "default output should have 1 connection");
+
+        let errors_connections = transform1_outputs.get(&OutputName::Given("errors".into())).unwrap();
+        assert_eq!(errors_connections.len(), 0, "errors output should have 0 connections");
+
+        // Verify destinations are NOT in the outbound edges (they don't have outputs)
+        let dest1_id = TypedComponentId::new(ComponentId::try_from("dest1").unwrap(), ComponentType::Destination);
+        assert!(
+            !outbound_edges.contains_key(&dest1_id),
+            "destinations should not be in outbound edges"
+        );
     }
 }

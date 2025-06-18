@@ -184,8 +184,8 @@ impl Scheduler {
 
     /// Get the next worker ID
     fn next_worker_id(&self) -> u64 {
-        let mut rng = rand::thread_rng();
-        rng.gen_range(1..=u64::MAX)
+        let mut rng = rand::rng();
+        rng.random_range(1..=u64::MAX)
     }
 
     /// Add a new worker
@@ -349,7 +349,7 @@ mod tests {
 
         {
             let checks = scheduler.checks.lock().unwrap();
-            assert!(checks.len() == 0, "No checks handle should exist for one-time checks");
+            assert!(checks.is_empty(), "No checks handle should exist for one-time checks");
         }
 
         time::sleep(Duration::from_secs(1)).await;

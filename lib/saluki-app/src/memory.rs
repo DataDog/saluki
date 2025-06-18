@@ -144,13 +144,12 @@ pub fn initialize_memory_bounds(
         }
     };
 
-    let limiter = configuration
-        .enable_global_limiter
-        .then(|| {
-            MemoryLimiter::new(initial_grant)
-                .ok_or_else(|| generic_error!("Memory statistics cannot be gathered on this system."))
-        })
-        .unwrap_or_else(|| Ok(MemoryLimiter::noop()))?;
+    let limiter = if configuration.enable_global_limiter {
+        MemoryLimiter::new(initial_grant)
+            .ok_or_else(|| generic_error!("Memory statistics cannot be gathered on this system."))
+    } else {
+        Ok(MemoryLimiter::noop())
+    }?;
 
     info!(
 		"Verified memory bounds. Minimum memory requirement of {}, with a calculated firm memory bound of {} out of {} available, from an initial {} grant.",

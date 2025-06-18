@@ -12,7 +12,10 @@ use std::{
 use regex::Regex;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use stringtheory::{interning::GenericMapInterner, MetaString};
+use stringtheory::{
+    interning::{GenericMapInterner, Interner as _},
+    MetaString,
+};
 use tracing::{debug, error, trace};
 
 use crate::features::{Feature, FeatureDetector};

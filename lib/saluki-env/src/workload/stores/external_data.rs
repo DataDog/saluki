@@ -194,6 +194,17 @@ impl ExternalDataStoreResolver {
         let snapshot = self.snapshot.load();
         snapshot.forward_mappings.get(external_data).cloned()
     }
+
+    /// Executes the given function for each forward mapping in the latest snapshot.
+    pub fn with_latest_snapshot<F>(&self, mut f: F)
+    where
+        F: FnMut(&ExternalData, &EntityId),
+    {
+        let snapshot = self.snapshot.load();
+        for (external_data, resolved_ed) in snapshot.forward_mappings.iter() {
+            f(external_data, resolved_ed.container_entity_id());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -205,7 +216,7 @@ mod tests {
     use super::ExternalDataStore;
     use crate::workload::{aggregator::MetadataStore as _, origin::ResolvedExternalData, EntityId, MetadataOperation};
 
-    const DEFAULT_ENTITY_LIMIT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(10) };
+    const DEFAULT_ENTITY_LIMIT: NonZeroUsize = NonZeroUsize::new(10).unwrap();
 
     fn entity_id_container(id: &str) -> EntityId {
         EntityId::Container(id.into())

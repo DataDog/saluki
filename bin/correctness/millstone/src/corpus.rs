@@ -75,8 +75,8 @@ where
             // We set our `max_bytes` to 8192, which is the default packet size for the Datadog Agent's DogStatsD
             // server. It _can_ be increased beyond that, but rarely is, and so that's the fixed size we're going to
             // target here.
-            let generator = DogStatsD::new(config, &mut rng)?;
-            generate_payloads_inner(&generator, rng, &mut payloads, blueprint.size, 8192)?
+            let mut generator = DogStatsD::new(config, &mut rng)?;
+            generate_payloads_inner(&mut generator, rng, &mut payloads, blueprint.size, 8192)?
         }
     }
 
@@ -90,7 +90,7 @@ where
 }
 
 fn generate_payloads_inner<G, R>(
-    generator: &G, mut rng: R, payloads: &mut Vec<Bytes>, size: NonZeroUsize, max_bytes: usize,
+    generator: &mut G, mut rng: R, payloads: &mut Vec<Bytes>, size: NonZeroUsize, max_bytes: usize,
 ) -> Result<(), GenericError>
 where
     G: lading_payload::Serialize,

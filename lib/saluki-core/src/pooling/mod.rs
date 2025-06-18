@@ -9,6 +9,9 @@ pub use self::elastic::ElasticObjectPool;
 mod fixed;
 pub use self::fixed::FixedSizeObjectPool;
 
+mod on_demand;
+pub use self::on_demand::OnDemandObjectPool;
+
 pub mod helpers;
 
 /// An item that can be cleared.

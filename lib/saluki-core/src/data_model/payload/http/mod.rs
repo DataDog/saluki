@@ -1,19 +1,23 @@
-use http::{HeaderMap, HeaderValue, Method};
+use http::Request;
+use saluki_common::buf::FrozenChunkedBytesBuffer;
+
+use super::PayloadMetadata;
 
 /// An HTTP payload.
+#[derive(Clone)]
 pub struct HttpPayload {
-    /// The HTTP method.
-    pub method: Method,
+    metadata: PayloadMetadata,
+    req: Request<FrozenChunkedBytesBuffer>,
+}
 
-    /// The HTTP host.
-    pub host: String,
+impl HttpPayload {
+    /// Creates a new `HttpPayload` from the given request.
+    pub fn new(metadata: PayloadMetadata, req: Request<FrozenChunkedBytesBuffer>) -> Self {
+        HttpPayload { metadata, req }
+    }
 
-    /// The HTTP path.
-    pub path: String,
-
-    /// The HTTP headers.
-    pub headers: HeaderMap<HeaderValue>,
-
-    /// The payload body.
-    pub body: Vec<u8>,
+    /// Consumes the HTTP payload and returns the individual parts.
+    pub fn into_parts(self) -> (PayloadMetadata, Request<FrozenChunkedBytesBuffer>) {
+        (self.metadata, self.req)
+    }
 }
