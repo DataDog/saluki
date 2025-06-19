@@ -19,8 +19,9 @@ use saluki_components::{
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration, RefresherConfiguration};
+use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::topology::TopologyBlueprint;
-use saluki_env::EnvironmentProvider as _;
+use saluki_env::{helpers::remote_agent::RemoteAgentClient, EnvironmentProvider as _};
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use tokio::select;
@@ -301,18 +302,26 @@ async fn create_topology(
             .error_context("Failed to query pre-aggregation pipeline request path.")?
             .unwrap_or_else(|| "/api/intake/pipelines/ddseries".to_string());
 
-        let mut preaggr_processing = ChainedConfiguration::default()
+        let preaggr_processing = ChainedConfiguration::default()
             .with_transform_builder("preaggr_filter", PreaggregationFilterConfiguration::default());
 
-        if !in_standalone_mode {
-            let mut host_tags_config = HostTagsConfiguration::from_configuration(configuration).await?;
-            host_tags_config.ignore_duration();
-            preaggr_processing = preaggr_processing.with_transform_builder("preaggr_host_tags", host_tags_config);
-        }
-
-        let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
+        let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
             .and_then(|config| config.with_endpoint_override(preaggr_dd_url, preaggr_api_key, preaggr_request_path))
             .error_context("Failed to configure pre-aggregation Datadog Metrics destination.")?;
+
+        if !in_standalone_mode {
+            let remote_agent_client = RemoteAgentClient::from_configuration(configuration).await?;
+            let host_tags = remote_agent_client
+                .get_host_tags()
+                .await?
+                .into_inner()
+                .system
+                .into_iter()
+                .map(Tag::from)
+                .collect::<SharedTagSet>();
+
+            dd_metrics_config = dd_metrics_config.with_additional_tags(host_tags);
+        }
 
         blueprint
             .add_transform("preaggr_processing", preaggr_processing)?

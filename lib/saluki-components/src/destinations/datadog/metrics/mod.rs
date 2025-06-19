@@ -5,6 +5,7 @@ use http::{uri::PathAndQuery, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::task::HandleExt as _;
 use saluki_config::{GenericConfiguration, RefreshableConfiguration};
+use saluki_context::tags::SharedTagSet;
 use saluki_core::data_model::event::{metric::Metric, EventType};
 use saluki_core::{
     components::{destinations::*, ComponentContext},
@@ -119,6 +120,10 @@ pub struct DatadogMetricsConfiguration {
     /// Endpoint path override for all metric types.
     #[serde(default, skip)]
     endpoint_path_override: Option<PathAndQuery>,
+
+    /// Additional tags to apply to all forwarded metrics.
+    #[serde(default, skip)]
+    additional_tags: Option<SharedTagSet>,
 }
 
 impl DatadogMetricsConfiguration {
@@ -161,6 +166,13 @@ impl DatadogMetricsConfiguration {
 
         Ok(self)
     }
+
+    /// Sets additional tags to be applied uniformly to all metrics forwarded by this destination.
+    pub fn with_additional_tags(mut self, additional_tags: SharedTagSet) -> Self {
+        // Add the additional tags to the forwarder configuration.
+        self.additional_tags = Some(additional_tags);
+        self
+    }
 }
 
 #[async_trait]
@@ -190,11 +202,17 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         )
         .await;
 
-        let series_encoder = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Series);
+        let mut series_encoder = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Series);
+        let mut sketches_encoder = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Sketches);
+
+        if let Some(additional_tags) = self.additional_tags.as_ref() {
+            series_encoder = series_encoder.with_additional_tags(additional_tags.clone());
+            sketches_encoder = sketches_encoder.with_additional_tags(additional_tags.clone());
+        }
+
         let mut series_rb = RequestBuilder::new(series_encoder, rb_buffer_pool.clone(), compression_scheme).await?;
         series_rb.with_max_inputs_per_payload(self.max_metrics_per_payload);
 
-        let sketches_encoder = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Sketches);
         let mut sketches_rb = RequestBuilder::new(sketches_encoder, rb_buffer_pool.clone(), compression_scheme).await?;
         sketches_rb.with_max_inputs_per_payload(self.max_metrics_per_payload);
 

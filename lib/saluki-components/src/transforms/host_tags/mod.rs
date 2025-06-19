@@ -119,9 +119,7 @@ impl HostTagsEnrichment {
         let tags = metric.context().tags().into_iter().chain(host_tags);
         let origin_tags = metric.context().origin_tags().clone();
 
-        if let Some(context) =
-            resolver.resolve_with_origin_tags(metric.context().name(), tags, origin_tags)
-        {
+        if let Some(context) = resolver.resolve_with_origin_tags(metric.context().name(), tags, origin_tags) {
             *metric.context_mut() = context;
         }
     }
