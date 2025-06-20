@@ -11,13 +11,13 @@ use clap::Parser as _;
 use saluki_app::prelude::*;
 use tracing::{error, info};
 
-
 mod components;
 
 mod config;
 use self::config::{Action, Cli, DebugConfig, RunConfig};
 
 mod env_provider;
+
 mod internal;
 
 mod run_subcommand;
