@@ -12,7 +12,7 @@ use hyper::{body::Incoming, service::service_fn};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::collections::FastIndexMap;
 use saluki_config::GenericConfiguration;
-use saluki_context::{tags::Tagged as _, Context};
+use saluki_context::{tags::TagsExt as _, Context};
 use saluki_core::components::{destinations::*, ComponentContext};
 use saluki_core::data_model::event::{
     metric::{Histogram, Metric, MetricValues},
@@ -402,14 +402,10 @@ fn write_metrics(
 
 fn format_tags(tags_buffer: &mut String, context: &Context) -> bool {
     let mut has_tags = false;
-    let mut exceeded = false;
 
-    context.visit_tags_deduped(|tag| {
-        // If we've previously exceeded the tags buffer size limit, we can't write any more tags.
-        if exceeded {
-            return;
-        }
+    let tags = context.tags().into_iter().chain(context.origin_tags()).deduplicated();
 
+    for tag in tags {
         // If we're not the first tag to be written, add a comma to separate the tags.
         if has_tags {
             tags_buffer.push(',');
@@ -420,7 +416,7 @@ fn format_tags(tags_buffer: &mut String, context: &Context) -> bool {
             Some(value) => value,
             None => {
                 debug!("Skipping bare tag.");
-                return;
+                continue;
             }
         };
 
@@ -429,19 +425,14 @@ fn format_tags(tags_buffer: &mut String, context: &Context) -> bool {
         // Can't exceed the tags buffer size limit: we calculate the addition as tag name/value length plus three bytes
         // to account for having to format it as `name="value",`.
         if tags_buffer.len() + tag_name.len() + tag_value.len() + 4 > TAGS_BUFFER_SIZE_LIMIT_BYTES {
-            exceeded = true;
-            return;
+            debug!("Tags buffer size limit exceeded. Tags may be missing from this metric.");
+            return false;
         }
 
         write!(tags_buffer, "{}=\"{}\"", tag_name, tag_value).unwrap();
-    });
-
-    if exceeded {
-        debug!("Tags buffer size limit exceeded. Tags may be missing from this metric.");
-        false
-    } else {
-        true
     }
+
+    true
 }
 
 #[derive(Eq, Hash, Ord, PartialEq, PartialOrd)]
