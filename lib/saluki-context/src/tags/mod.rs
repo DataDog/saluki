@@ -2,6 +2,7 @@
 
 use std::{fmt, hash, ops::Deref as _};
 
+use saluki_common::collections::FastHashSet;
 use serde::Serialize;
 use stringtheory::{CheapMetaString, MetaString};
 
@@ -10,9 +11,6 @@ pub use self::raw::RawTags;
 
 mod tagset;
 pub use self::tagset::{SharedTagSet, TagSet};
-
-mod visit;
-pub use self::visit::{TagVisitor, Tagged};
 
 /// A metric tag.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -194,5 +192,46 @@ impl AsRef<str> for BorrowedTag<'_> {
 impl hash::Hash for BorrowedTag<'_> {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         self.raw.hash(state);
+    }
+}
+
+/// An iterator for deduplicating tags.
+pub struct DeduplicatedTags<I> {
+    tags: I,
+    seen: FastHashSet<Tag>,
+}
+
+/// Helper trait for iterators dealing with tags.
+pub trait TagsExt {
+    /// Creates an iterator that deduplicates tags.
+    fn deduplicated(self) -> DeduplicatedTags<Self>
+    where
+        Self: Sized;
+}
+
+impl<I> TagsExt for I {
+    fn deduplicated(self) -> DeduplicatedTags<Self>
+    where
+        Self: Sized,
+    {
+        DeduplicatedTags {
+            tags: self,
+            seen: FastHashSet::default(),
+        }
+    }
+}
+
+impl<'a, I> Iterator for DeduplicatedTags<I>
+where
+    I: Iterator<Item = &'a Tag>,
+{
+    type Item = &'a Tag;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // TODO: This clone is suboptimal.
+        //
+        // Ideally we'd just use a borrowed version of the tag for our hashset to at least minimize the hit of
+        // cloning, but the required lifetimes to do so, or if it's even possible, are currently beyond me.
+        self.tags.by_ref().find(|&tag| self.seen.insert(tag.clone()))
     }
 }
