@@ -55,10 +55,6 @@ const _INVARIANTS_CHECK: () = {
     compile_error!("`stringtheory` is only supported on 64-bit little-endian platforms.");
 };
 
-const fn is_tagged(cap: u8) -> bool {
-    cap & 0b10000000 != 0
-}
-
 const fn tag_cap(cap: usize) -> usize {
     cap | TOP_MOST_BIT
 }
@@ -108,8 +104,8 @@ struct OwnedUnion {
 }
 
 impl OwnedUnion {
-    #[inline]
-    fn as_str(&self) -> &str {
+    #[inline(always)]
+    const fn as_str(&self) -> &str {
         // SAFETY: We know our pointer is valid, and non-null, since it's derived from a valid `String`, and that the
         // data it points to is valid UTF-8, again, by virtue of it being derived from a valid `String`.
         unsafe { from_utf8_unchecked(from_raw_parts(self.ptr, self.len)) }
@@ -131,7 +127,7 @@ struct StaticUnion {
 }
 
 impl StaticUnion {
-    #[inline]
+    #[inline(always)]
     const fn as_str(&self) -> &str {
         // SAFETY: We know our pointer is valid, and non-null, since it's derived from a valid static string reference,
         // and that the data it points to is valid UTF-8, again, by virtue of it being derived from a valid static
@@ -153,7 +149,7 @@ struct SharedUnion {
 }
 
 impl SharedUnion {
-    #[inline]
+    #[inline(always)]
     const fn as_str(&self) -> &str {
         // SAFETY: The pointee is still live by virtue of being held in an `Arc`.
         unsafe { self.ptr.as_ref() }
@@ -168,7 +164,7 @@ struct InlinedUnion {
 }
 
 impl InlinedUnion {
-    #[inline]
+    #[inline(always)]
     fn as_str(&self) -> &str {
         let len = self.data[INLINED_STR_MAX_LEN] as usize;
 
@@ -196,14 +192,14 @@ enum UnionType {
 }
 
 impl UnionType {
-    #[inline]
+    #[inline(always)]
     const fn is_owned(&self) -> bool {
         matches!(self, UnionType::Owned)
     }
 }
 
 impl DiscriminantUnion {
-    #[inline]
+    #[inline(always)]
     const fn get_union_type(&self) -> UnionType {
         // At a high level, we encode the type of the union into the last byte of the struct, which overlaps with the
         // capacity of owned strings, the length of an inlined string, and the unused field of other string types.
@@ -213,7 +209,7 @@ impl DiscriminantUnion {
         // - Allocations can only ever be as large as `isize::MAX`, which means that the top-most bit of the capacity
         //   value would never be used for a valid allocation.
         // - In turn, the length of a string can also only ever be as large as `isize::MAX`, which means that the
-        //   top-most bit of the length byte for any string type would never be used
+        //   top-most bit of the length byte for any string type would never be used.
         // - Inlined strings can only ever be up to 23 bytes long, which means that the top-most bit of the length byte
         //   for an inlined string would never be used.
         // - Static strings and interned strings only occupy the first two fields, which means their capacity should not
@@ -276,13 +272,6 @@ impl DiscriminantUnion {
         // here, and our pointer field isn't all zeroes and our length field isn't all zeroes, that we _have_ to be
         // an owned string if our capacity is tagged.
 
-        // If the top bit is set, we know we're dealing with an owned string.
-        if is_tagged(self.tag_byte) {
-            return UnionType::Owned;
-        }
-
-        // The top-most bit has to be set for an owned string, but isn't set for any other type, so try differentiating
-        // at this point.
         match self.tag_byte {
             // Empty string. Easy.
             0 => UnionType::Empty,
@@ -295,9 +284,9 @@ impl DiscriminantUnion {
             UNION_TYPE_TAG_VALUE_INTERNED => UnionType::Interned,
             UNION_TYPE_TAG_VALUE_SHARED => UnionType::Shared,
 
-            // If we haven't matched any specific type tag value, then this is something else that we don't handle or
-            // know about... which we handle as just acting like we're an empty string for simplicity.
-            _ => UnionType::Empty,
+            // If we haven't matched any specific type tag value, then the only other thing this could be is an owned
+            // string.
+            _ => UnionType::Owned,
         }
     }
 }
@@ -424,10 +413,14 @@ impl Inner {
         }
     }
 
-    #[inline]
+    #[inline(always)]
+    const fn get_union_type(&self) -> UnionType {
+        unsafe { self.discriminant.get_union_type() }
+    }
+
+    #[inline(always)]
     fn as_str(&self) -> &str {
-        let union_type = unsafe { self.discriminant.get_union_type() };
-        match union_type {
+        match self.get_union_type() {
             UnionType::Empty => "",
             UnionType::Owned => {
                 let owned = unsafe { &self.owned };
@@ -452,14 +445,8 @@ impl Inner {
         }
     }
 
-    #[inline]
-    const fn get_union_type(&self) -> UnionType {
-        unsafe { self.discriminant.get_union_type() }
-    }
-
     fn into_owned(mut self) -> String {
-        let union_type = unsafe { self.discriminant.get_union_type() };
-        match union_type {
+        match self.get_union_type() {
             UnionType::Empty => String::new(),
             UnionType::Owned => {
                 // We're (`Inner`) being consumed here, but we need to update our internal state to ensure that our drop
@@ -491,8 +478,7 @@ impl Inner {
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        let union_type = unsafe { self.discriminant.get_union_type() };
-        match union_type {
+        match self.get_union_type() {
             UnionType::Owned => {
                 let owned = unsafe { &mut self.owned };
 
@@ -533,8 +519,7 @@ impl Drop for Inner {
 
 impl Clone for Inner {
     fn clone(&self) -> Self {
-        let union_type = unsafe { self.discriminant.get_union_type() };
-        match union_type {
+        match self.get_union_type() {
             UnionType::Empty => Self::empty(),
             UnionType::Owned => {
                 let owned = unsafe { self.owned };

@@ -16,4 +16,9 @@ protobuf = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 proptest = { workspace = true }
+
+[[bench]]
+name = "deref"
+harness = false
