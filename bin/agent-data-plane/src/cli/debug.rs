@@ -18,6 +18,7 @@ pub async fn handle_debug_command(config: DebugConfig) {
     }
 }
 
+/// Resets the log level to the default configuration.
 async fn reset_log_level(client: reqwest::Client) {
     let response = match client.post("https://localhost:5101/logging/reset").send().await {
         Ok(resp) => resp,
@@ -34,6 +35,7 @@ async fn reset_log_level(client: reqwest::Client) {
     }
 }
 
+/// Sets the log level filter directives for a specified duration.
 async fn set_log_level(client: reqwest::Client, config: SetLogLevelConfig) {
     let filter_directives = config.filter_directives;
     let duration_secs = config.duration_secs;

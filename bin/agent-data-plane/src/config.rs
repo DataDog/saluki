@@ -44,7 +44,7 @@ pub enum DebugConfig {
 /// Set log level configuration.
 #[derive(Args, Debug)]
 pub struct SetLogLevelConfig {
-    /// Filter directives to apply.
+    /// Filter directives to apply (e.g. "info, debug, trace, warn, error").
     #[arg(required = true)]
     pub filter_directives: String,
 
