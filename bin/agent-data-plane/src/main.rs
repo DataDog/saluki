@@ -14,14 +14,14 @@ use tracing::{error, info};
 mod components;
 
 mod config;
-use self::config::{Action, Cli, DebugConfig, RunConfig};
+use self::config::{Action, Cli, RunConfig};
 
 mod env_provider;
 
 mod internal;
 
 mod cli;
-use self::cli::run::run;
+use self::cli::{debug::handle_debug_command, run::run};
 
 pub(crate) mod state;
 
@@ -56,11 +56,6 @@ async fn main() {
         fatal_and_exit(format!("failed to initialize TLS: {}", e));
     }
 
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .build()
-        .unwrap();
-
     match cli.action {
         Some(Action::Run(config)) => match run(started, config).await {
             Ok(()) => info!("Agent Data Plane stopped."),
@@ -69,44 +64,8 @@ async fn main() {
                 std::process::exit(1);
             }
         },
-        Some(Action::Debug(DebugConfig::ResetLogLevel)) => {
-            let response = match client.post("https://localhost:5101/logging/reset").send().await {
-                Ok(resp) => resp,
-                Err(e) => {
-                    error!("Failed to send request: {}", e);
-                    std::process::exit(1);
-                }
-            };
-
-            if response.status().is_success() {
-                println!("Log level reset successful");
-            } else {
-                eprintln!("Failed to reset log level: {}", response.status());
-            }
-        }
-        Some(Action::Debug(DebugConfig::SetLogLevel(config))) => {
-            let filter_directives = config.filter_directives;
-            let duration_secs = config.duration_secs;
-
-            let response = match client
-                .post("https://localhost:5101/logging/override")
-                .query(&[("time_secs", duration_secs)])
-                .body(filter_directives)
-                .send()
-                .await
-            {
-                Ok(resp) => resp,
-                Err(e) => {
-                    error!("Failed to send request: {}", e);
-                    std::process::exit(1);
-                }
-            };
-
-            if response.status().is_success() {
-                println!("Log level override successful");
-            } else {
-                eprintln!("Failed to override log level: {}", response.status());
-            }
+        Some(Action::Debug(debug_config)) => {
+            handle_debug_command(debug_config).await;
         }
         None => {
             let default_config = RunConfig {
