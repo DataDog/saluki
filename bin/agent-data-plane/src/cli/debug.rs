@@ -35,7 +35,7 @@ async fn reset_log_level(client: reqwest::Client) {
     }
 }
 
-/// Sets the log level filter directives for a specified duration.
+/// Sets the log level filter directives for a specified duration in seconds.
 async fn set_log_level(client: reqwest::Client, config: SetLogLevelConfig) {
     let filter_directives = config.filter_directives;
     let duration_secs = config.duration_secs;
