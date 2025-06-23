@@ -67,7 +67,7 @@ async fn main() {
         Some(Action::Debug(debug_config)) => {
             handle_debug_command(debug_config).await;
         }
-        // If no subcommand is provided, runs the run subcommand with the default configuration.
+        // If no subcommand is provided, the run subcommand is executed with the default configuration.
         None => {
             let default_config = RunConfig {
                 config: std::path::PathBuf::from("/etc/datadog-agent/datadog.yaml"),
