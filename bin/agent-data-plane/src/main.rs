@@ -20,8 +20,8 @@ mod env_provider;
 
 mod internal;
 
-mod run_subcommand;
-use self::run_subcommand::run;
+mod cli;
+use self::cli::run::run;
 
 pub(crate) mod state;
 

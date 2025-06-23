@@ -224,7 +224,7 @@ fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
         io::{BufWriter, Write},
     };
 
-    let template = include_str!("sizing_guide_template.html");
+    let template = include_str!("../sizing_guide_template.html");
     let mut output = BufWriter::new(File::create("sizing_guide.html")?);
     for line in template.lines() {
         if line.trim() == "<!-- INSERT GENERATED CONTENT -->" {
