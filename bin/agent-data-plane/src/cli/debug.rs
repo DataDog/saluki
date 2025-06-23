@@ -2,6 +2,7 @@ use tracing::error;
 
 use crate::config::{DebugConfig, SetLogLevelConfig};
 
+/// Handles the various debug subcommands.
 pub async fn handle_debug_command(config: DebugConfig) {
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
