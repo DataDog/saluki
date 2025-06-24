@@ -1,4 +1,4 @@
-use tracing::error;
+use tracing::{error, info};
 
 use crate::config::{DebugConfig, SetLogLevelConfig};
 
@@ -24,15 +24,15 @@ async fn reset_log_level(client: reqwest::Client) {
     let response = match client.post("https://localhost:5101/logging/reset").send().await {
         Ok(resp) => resp,
         Err(e) => {
-            error!("Failed to send request: {}", e);
+            error!("Failed to send request: {}.", e);
             std::process::exit(1);
         }
     };
 
     if response.status().is_success() {
-        println!("Log level reset successful");
+        info!("Log level reset successful.");
     } else {
-        eprintln!("Failed to reset log level: {}", response.status());
+        error!("Failed to reset log level: {}.", response.status());
     }
 }
 
@@ -50,14 +50,14 @@ async fn set_log_level(client: reqwest::Client, config: SetLogLevelConfig) {
     {
         Ok(resp) => resp,
         Err(e) => {
-            error!("Failed to send request: {}", e);
+            error!("Failed to send request: {}.", e);
             std::process::exit(1);
         }
     };
 
     if response.status().is_success() {
-        println!("Log level override successful");
+        info!("Log level override successful.");
     } else {
-        eprintln!("Failed to override log level: {}", response.status());
+        error!("Failed to override log level: {}.", response.status());
     }
 }
