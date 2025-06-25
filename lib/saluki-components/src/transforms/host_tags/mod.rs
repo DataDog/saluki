@@ -26,7 +26,6 @@ pub struct HostTagsConfiguration {
     client: RemoteAgentClient,
     host_tags_context_string_interner_bytes: ByteSize,
     expected_tags_duration: u64,
-    ignore_duration: bool,
 }
 
 const DEFAULT_EXPECTED_TAGS_DURATION: u64 = 0;
@@ -47,13 +46,7 @@ impl HostTagsConfiguration {
             client,
             host_tags_context_string_interner_bytes,
             expected_tags_duration,
-            ignore_duration: false,
         })
-    }
-
-    /// Ignore `expected_tags_duration` and always add host tags.
-    pub fn ignore_duration(&mut self) {
-        self.ignore_duration = true;
     }
 }
 
@@ -87,7 +80,6 @@ impl SynchronousTransformBuilder for HostTagsConfiguration {
             context_resolver: Some(context_resolver),
             expected_tags_duration: Duration::from_secs(self.expected_tags_duration),
             host_tags: Some(host_tags),
-            ignore_duration: self.ignore_duration,
         }))
     }
 }
@@ -112,22 +104,22 @@ pub struct HostTagsEnrichment {
     context_resolver: Option<ContextResolver>,
     expected_tags_duration: Duration,
     host_tags: Option<SharedTagSet>,
-    ignore_duration: bool,
 }
 
 impl HostTagsEnrichment {
     fn enrich_metric(&mut self, metric: &mut Metric) {
-        if self.context_resolver.is_none() || self.host_tags.is_none() {
-            return;
-        }
-        let resolver = self.context_resolver.as_mut().unwrap();
-        let host_tags = self.host_tags.as_ref().unwrap();
+        // Get our context resolver and host tags.
+        //
+        // If they're not available, then we skip adding host tags.
+        let (resolver, host_tags) = match (self.context_resolver.as_mut(), self.host_tags.as_ref()) {
+            (Some(resolver), Some(host_tags)) => (resolver, host_tags),
+            _ => return,
+        };
 
         let tags = metric.context().tags().into_iter().chain(host_tags);
+        let origin_tags = metric.context().origin_tags().clone();
 
-        if let Some(context) =
-            resolver.resolve_with_origin_tags(metric.context().name(), tags, metric.context().origin_tags().clone())
-        {
+        if let Some(context) = resolver.resolve_with_origin_tags(metric.context().name(), tags, origin_tags) {
             *metric.context_mut() = context;
         }
     }
@@ -135,12 +127,13 @@ impl HostTagsEnrichment {
 
 impl SynchronousTransform for HostTagsEnrichment {
     fn transform_buffer(&mut self, event_buffer: &mut FixedSizeEventBuffer) {
-        // Skip adding host tags if duration has elapsed
-        if !self.ignore_duration && self.start.elapsed() >= self.expected_tags_duration {
+        // Skip adding host tags if duration has elapsed.
+        if self.start.elapsed() >= self.expected_tags_duration {
             self.context_resolver = None;
             self.host_tags = None;
             return;
         }
+
         for event in event_buffer {
             if let Some(metric) = event.try_as_metric_mut() {
                 self.enrich_metric(metric);
@@ -158,8 +151,8 @@ mod tests {
 
     use super::*;
 
-    #[tokio::test]
-    async fn basic() {
+    #[test]
+    fn basic() {
         let context_resolver = ContextResolverBuilder::for_tests().build();
         let host_tags = SharedTagSet::from_iter(vec![Tag::from("hosttag1"), Tag::from("hosttag2")]);
         let mut host_tags_enrichment = HostTagsEnrichment {
@@ -167,9 +160,9 @@ mod tests {
             context_resolver: Some(context_resolver),
             expected_tags_duration: Duration::from_secs(30),
             host_tags: Some(host_tags.clone()),
-            ignore_duration: false,
         };
 
+        // Enrich a metric, and ensure the host tags are added.
         let mut metric1 = Metric::gauge(Context::from_static_parts("test", &[]), 1.0);
         host_tags_enrichment.enrich_metric(&mut metric1);
         assert_eq!(metric1.context().tags().len(), host_tags.len());
@@ -177,9 +170,11 @@ mod tests {
             assert!(metric1.context().tags().has_tag(tag));
         }
 
-        // Simulate expected_tags_duration elapsing with context_resolver and host_tags being None
+        // Simulate exceeding our configured enrichment duration by clearing the context resolver and host tags.
         host_tags_enrichment.context_resolver = None;
         host_tags_enrichment.host_tags = None;
+
+        // We should no longer enrich the metric with host tags.
         let mut metric2 = Metric::gauge(Context::from_static_parts("test", &[]), 1.0);
         host_tags_enrichment.enrich_metric(&mut metric2);
         assert_eq!(metric2.context().tags().len(), 0);

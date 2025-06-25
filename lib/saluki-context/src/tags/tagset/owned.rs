@@ -3,7 +3,7 @@ use std::{fmt, ops::Deref as _};
 use serde::Serialize;
 
 use super::SharedTagSet;
-use crate::tags::{Tag, TagVisitor, Tagged};
+use crate::tags::Tag;
 
 /// A set of tags.
 #[derive(Clone, Debug, Default, Serialize)]
@@ -191,17 +191,6 @@ impl Extend<Tag> for TagSet {
 impl From<Tag> for TagSet {
     fn from(tag: Tag) -> Self {
         Self(vec![tag])
-    }
-}
-
-impl Tagged for TagSet {
-    fn visit_tags<F>(&self, mut visitor: F)
-    where
-        F: FnMut(&Tag),
-    {
-        for tag in &self.0 {
-            visitor.visit_tag(tag);
-        }
     }
 }
 

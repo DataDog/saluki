@@ -4,7 +4,7 @@ use datadog_protos::metrics as proto;
 use ddsketch_agent::DDSketch;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use protobuf::{rt::WireType, CodedOutputStream, Enum};
-use saluki_context::tags::{Tag, Tagged as _};
+use saluki_context::tags::{SharedTagSet, Tag, TagsExt as _};
 use saluki_core::data_model::event::metric::*;
 use tracing::warn;
 
@@ -100,17 +100,29 @@ pub struct MetricsEndpointEncoder {
     primary_scratch_buf: Vec<u8>,
     secondary_scratch_buf: Vec<u8>,
     packed_scratch_buf: Vec<u8>,
+    additional_tags: SharedTagSet,
 }
 
 impl MetricsEndpointEncoder {
     /// Creates a new `MetricsEndpointEncoder` for the given endpoint.
-    pub const fn from_endpoint(endpoint: MetricsEndpoint) -> Self {
+    pub fn from_endpoint(endpoint: MetricsEndpoint) -> Self {
         Self {
             endpoint,
             primary_scratch_buf: Vec::new(),
             secondary_scratch_buf: Vec::new(),
             packed_scratch_buf: Vec::new(),
+            additional_tags: SharedTagSet::default(),
         }
+    }
+
+    /// Sets the additional tags to be included with every metric encoded by this encoder.
+    ///
+    /// These tags are added in a deduplicated fashion, the same as instrumented tags and origin tags. This is an
+    /// optimized codepath for tag inclusion in high-volume scenarios such as pre-aggregation, where creating new,
+    /// additional contexts through the traditional means (e.g., `ContextResolver`) would be too expensive.
+    pub fn with_additional_tags(mut self, additional_tags: SharedTagSet) -> Self {
+        self.additional_tags = additional_tags;
+        self
     }
 }
 
@@ -157,6 +169,7 @@ impl EndpointEncoder for MetricsEndpointEncoder {
         // just decided to give it a somewhat more descriptive name.
         encode_single_metric(
             input,
+            &self.additional_tags,
             buffer,
             &mut self.primary_scratch_buf,
             &mut self.secondary_scratch_buf,
@@ -211,8 +224,8 @@ fn get_message_size_from_buffer(buf: &[u8]) -> Result<u32, protobuf::Error> {
 }
 
 fn encode_single_metric(
-    metric: &Metric, output_buf: &mut Vec<u8>, primary_scratch_buf: &mut Vec<u8>, secondary_scratch_buf: &mut Vec<u8>,
-    packed_scratch_buf: &mut Vec<u8>,
+    metric: &Metric, additional_tags: &SharedTagSet, output_buf: &mut Vec<u8>, primary_scratch_buf: &mut Vec<u8>,
+    secondary_scratch_buf: &mut Vec<u8>, packed_scratch_buf: &mut Vec<u8>,
 ) -> Result<(), protobuf::Error> {
     let mut output_stream = CodedOutputStream::vec(output_buf);
     let field_number = field_number_for_metric_type(metric);
@@ -221,21 +234,24 @@ fn encode_single_metric(
         // Depending on the metric type, we write out the appropriate fields.
         match metric.values() {
             MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..) => {
-                encode_series_metric(metric, os, secondary_scratch_buf)
+                encode_series_metric(metric, additional_tags, os, secondary_scratch_buf)
             }
             MetricValues::Histogram(..) | MetricValues::Distribution(..) => {
-                encode_sketch_metric(metric, os, secondary_scratch_buf, packed_scratch_buf)
+                encode_sketch_metric(metric, additional_tags, os, secondary_scratch_buf, packed_scratch_buf)
             }
         }
     })
 }
 
 fn encode_series_metric(
-    metric: &Metric, output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>,
+    metric: &Metric, additional_tags: &SharedTagSet, output_stream: &mut CodedOutputStream<'_>,
+    scratch_buf: &mut Vec<u8>,
 ) -> Result<(), protobuf::Error> {
     // Write the metric name and tags.
     output_stream.write_string(SERIES_METRIC_FIELD_NUMBER, metric.context().name())?;
-    write_series_tags(metric, output_stream, scratch_buf)?;
+
+    let deduplicated_tags = get_deduplicated_tags(metric, additional_tags);
+    write_series_tags(deduplicated_tags, output_stream, scratch_buf)?;
 
     // Set the host resource.
     write_resource(
@@ -297,12 +313,14 @@ fn encode_series_metric(
 }
 
 fn encode_sketch_metric(
-    metric: &Metric, output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>,
-    packed_scratch_buf: &mut Vec<u8>,
+    metric: &Metric, additional_tags: &SharedTagSet, output_stream: &mut CodedOutputStream<'_>,
+    scratch_buf: &mut Vec<u8>, packed_scratch_buf: &mut Vec<u8>,
 ) -> Result<(), protobuf::Error> {
     // Write the metric name and tags.
     output_stream.write_string(SKETCH_METRIC_FIELD_NUMBER, metric.context().name())?;
-    write_sketch_tags(metric, output_stream, scratch_buf)?;
+
+    let deduplicated_tags = get_deduplicated_tags(metric, additional_tags);
+    write_sketch_tags(deduplicated_tags, output_stream, scratch_buf)?;
 
     // Write the host.
     output_stream.write_string(
@@ -446,38 +464,37 @@ fn write_dogsketch(
     })
 }
 
-fn write_tags<F>(
-    metric: &Metric, output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, tag_encoder: F,
-) -> Result<(), protobuf::Error>
-where
-    F: Fn(&Tag, &mut CodedOutputStream<'_>, &mut Vec<u8>) -> Result<(), protobuf::Error>,
-{
-    // This function hides the boilerplate of writing tags to the output stream through the required visitor pattern.
-    //
-    // The visitor pattern makes it more difficult to bail early on errors, so it tracks that error state separately as
-    // it goes through the tags, and ensures that we stop processing additional tags after we hit the first error, if any.
-    let mut maybe_encode_error = None;
-
-    metric.context().visit_tags_deduped(|tag| {
-        // If the last tag encoding attempt resulted in an error, we skip further processing.
-        if maybe_encode_error.is_some() {
-            return;
-        }
-
-        // Try to encode the tag, capturing any errors that occur.
-        if let Err(e) = tag_encoder(tag, output_stream, scratch_buf) {
-            maybe_encode_error = Some(e);
-        }
-    });
-
-    // Make sure we didn't encounter any errors while encoding tags.
-    maybe_encode_error.map(Err).unwrap_or(Ok(()))
+fn get_deduplicated_tags<'a>(metric: &'a Metric, additional_tags: &'a SharedTagSet) -> impl Iterator<Item = &'a Tag> {
+    metric
+        .context()
+        .tags()
+        .into_iter()
+        .chain(additional_tags)
+        .chain(metric.context().origin_tags())
+        .deduplicated()
 }
 
-fn write_series_tags(
-    metric: &Metric, output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>,
-) -> Result<(), protobuf::Error> {
-    write_tags(metric, output_stream, scratch_buf, |tag, os, buf| {
+fn write_tags<'a, I, F>(
+    tags: I, output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, tag_encoder: F,
+) -> Result<(), protobuf::Error>
+where
+    I: Iterator<Item = &'a Tag>,
+    F: Fn(&Tag, &mut CodedOutputStream<'_>, &mut Vec<u8>) -> Result<(), protobuf::Error>,
+{
+    for tag in tags {
+        tag_encoder(tag, output_stream, scratch_buf)?;
+    }
+
+    Ok(())
+}
+
+fn write_series_tags<'a, I>(
+    tags: I, output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>,
+) -> Result<(), protobuf::Error>
+where
+    I: Iterator<Item = &'a Tag>,
+{
+    write_tags(tags, output_stream, scratch_buf, |tag, os, buf| {
         // If this is a resource tag, we'll convert it directly to a resource entry.
         if tag.name() == "dd.internal.resource" {
             if let Some((resource_type, resource_name)) = tag.value().and_then(|s| s.split_once(':')) {
@@ -492,10 +509,13 @@ fn write_series_tags(
     })
 }
 
-fn write_sketch_tags(
-    metric: &Metric, output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>,
-) -> Result<(), protobuf::Error> {
-    write_tags(metric, output_stream, scratch_buf, |tag, os, _buf| {
+fn write_sketch_tags<'a, I>(
+    tags: I, output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>,
+) -> Result<(), protobuf::Error>
+where
+    I: Iterator<Item = &'a Tag>,
+{
+    write_tags(tags, output_stream, scratch_buf, |tag, os, _buf| {
         // We always write the tags as-is, without any special handling for resource tags.
         os.write_string(SKETCH_TAGS_FIELD_NUMBER, tag.as_str())
     })
@@ -559,6 +579,7 @@ mod tests {
     use std::time::Duration;
 
     use protobuf::CodedOutputStream;
+    use saluki_context::tags::SharedTagSet;
     use saluki_core::data_model::event::metric::Metric;
 
     use super::{encode_sketch_metric, MetricsEndpoint, MetricsEndpointEncoder};
@@ -574,6 +595,7 @@ mod tests {
         let samples = &[1.0, 2.0, 3.0, 4.0, 5.0];
         let histogram = Metric::histogram("simple_samples", samples);
         let distribution = Metric::distribution("simple_samples", samples);
+        let host_tags = SharedTagSet::default();
 
         let mut buf1 = Vec::new();
         let mut buf2 = Vec::new();
@@ -581,15 +603,21 @@ mod tests {
         let mut histogram_payload = Vec::new();
         {
             let mut histogram_writer = CodedOutputStream::vec(&mut histogram_payload);
-            encode_sketch_metric(&histogram, &mut histogram_writer, &mut buf1, &mut buf2)
+            encode_sketch_metric(&histogram, &host_tags, &mut histogram_writer, &mut buf1, &mut buf2)
                 .expect("Failed to encode histogram as sketch");
         }
 
         let mut distribution_payload = Vec::new();
         {
             let mut distribution_writer = CodedOutputStream::vec(&mut distribution_payload);
-            encode_sketch_metric(&distribution, &mut distribution_writer, &mut buf1, &mut buf2)
-                .expect("Failed to encode distribution as sketch");
+            encode_sketch_metric(
+                &distribution,
+                &host_tags,
+                &mut distribution_writer,
+                &mut buf1,
+                &mut buf2,
+            )
+            .expect("Failed to encode distribution as sketch");
         }
 
         assert_eq!(histogram_payload, distribution_payload);
