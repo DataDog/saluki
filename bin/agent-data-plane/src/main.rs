@@ -5,10 +5,11 @@
 
 #![deny(warnings)]
 #![deny(missing_docs)]
+use std::path::PathBuf;
 use std::time::Instant;
 
 use clap::Parser as _;
-use saluki_app::prelude::*;
+use saluki_app::{logging::LoggingConfiguration, prelude::*};
 use tracing::{error, info};
 
 mod components;
@@ -40,7 +41,7 @@ async fn main() {
     let started = Instant::now();
     let cli = Cli::parse();
 
-    let configuration = load_configuration(PathBuf::from("/etc/datadog-agent/datadog.yaml"))
+    let configuration = cli::run::load_configuration(PathBuf::from("/etc/datadog-agent/datadog.yaml"))
         .await
         .unwrap();
     let logging_config = LoggingConfiguration::try_from_config(&configuration).unwrap();
@@ -87,15 +88,4 @@ async fn main() {
             }
         }
     }
-}
-
-async fn load_configuration(config_path: PathBuf) -> Result<GenericConfiguration, GenericError> {
-    let configuration = ConfigurationLoader::default()
-        .try_from_yaml(config_path)
-        .from_environment("DD")?
-        .with_default_secrets_resolution()
-        .await?
-        .into_generic()?;
-
-    Ok(configuration)
 }

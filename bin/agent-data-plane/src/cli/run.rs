@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
@@ -34,12 +37,7 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
     );
     // Load our configuration and create all high-level primitives (health registry, component registry, environment
     // provider, etc) that are needed to build the topology.
-    let configuration = ConfigurationLoader::default()
-        .try_from_yaml(&run_config.config)
-        .from_environment("DD")?
-        .with_default_secrets_resolution()
-        .await?
-        .into_generic()?;
+    let configuration = load_configuration(run_config.config).await?;
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
@@ -238,4 +236,15 @@ fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
     output.flush()?;
 
     Ok(())
+}
+
+pub async fn load_configuration(config_path: PathBuf) -> Result<GenericConfiguration, GenericError> {
+    let configuration = ConfigurationLoader::default()
+        .try_from_yaml(config_path)
+        .from_environment("DD")?
+        .with_default_secrets_resolution()
+        .await?
+        .into_generic()?;
+
+    Ok(configuration)
 }
