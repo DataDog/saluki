@@ -5,11 +5,14 @@
 
 #![deny(warnings)]
 #![deny(missing_docs)]
-use std::time::{Duration, Instant};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use clap::Parser as _;
 use memory_accounting::{ComponentBounds, ComponentRegistry};
-use saluki_app::prelude::*;
+use saluki_app::{logging::LoggingConfiguration, prelude::*};
 use saluki_components::{
     destinations::{DatadogEventsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration},
     sources::DogStatsDConfiguration,
@@ -54,7 +57,12 @@ async fn main() {
     let started = Instant::now();
     let cli = Cli::parse();
 
-    let _guard = initialize_dynamic_logging(None).await.unwrap_or_else(|e| {
+    let configuration = load_configuration(PathBuf::from("/etc/datadog-agent/datadog.yaml"))
+        .await
+        .unwrap();
+    let logging_config = LoggingConfiguration::try_from_config(&configuration).unwrap();
+
+    let _guard = initialize_dynamic_logging(&logging_config).await.unwrap_or_else(|e| {
         fatal_and_exit(format!("failed to initialize logging: {}", e));
         unreachable!() // This will never be reached since fatal_and_exit exits
     });
@@ -99,12 +107,7 @@ async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericError
     );
     // Load our configuration and create all high-level primitives (health registry, component registry, environment
     // provider, etc) that are needed to build the topology.
-    let configuration = ConfigurationLoader::default()
-        .try_from_yaml(&run_config.config)
-        .from_environment("DD")?
-        .with_default_secrets_resolution()
-        .await?
-        .into_generic()?;
+    let configuration = load_configuration(run_config.config).await?;
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
@@ -295,4 +298,15 @@ fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
     output.flush()?;
 
     Ok(())
+}
+
+async fn load_configuration(config_path: PathBuf) -> Result<GenericConfiguration, GenericError> {
+    let configuration = ConfigurationLoader::default()
+        .try_from_yaml(config_path)
+        .from_environment("DD")?
+        .with_default_secrets_resolution()
+        .await?
+        .into_generic()?;
+
+    Ok(configuration)
 }

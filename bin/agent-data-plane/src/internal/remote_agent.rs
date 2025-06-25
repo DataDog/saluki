@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::{collections::hash_map::Entry, time::Duration};
 use std::{collections::HashMap, net::SocketAddr};
 
@@ -11,6 +10,7 @@ use datadog_protos::agent::{
 use http::{Request, Uri};
 use http_body_util::BodyExt;
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
+use saluki_app::logging::LoggingConfiguration;
 use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
 use saluki_core::state::reflector::Reflector;
@@ -45,6 +45,7 @@ pub struct RemoteAgentHelperConfiguration {
     client: RemoteAgentClient,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
     prometheus_listen_addr: Option<SocketAddr>,
+    logging_config: LoggingConfiguration,
 }
 
 impl RemoteAgentHelperConfiguration {
@@ -59,6 +60,7 @@ impl RemoteAgentHelperConfiguration {
             .replace("_", "-")
             .to_lowercase();
         let client = RemoteAgentClient::from_configuration(config).await?;
+        let logging_config = LoggingConfiguration::try_from_config(config)?;
 
         Ok(Self {
             id: format!("{}-{}", formatted_full_name, Uuid::now_v7()),
@@ -67,6 +69,7 @@ impl RemoteAgentHelperConfiguration {
             client,
             internal_metrics: get_shared_metrics_state().await,
             prometheus_listen_addr,
+            logging_config,
         })
     }
 
@@ -80,6 +83,7 @@ impl RemoteAgentHelperConfiguration {
             started: Utc::now(),
             internal_metrics: self.internal_metrics.clone(),
             prometheus_listen_addr: self.prometheus_listen_addr,
+            logging_config: self.logging_config,
         };
         let service = RemoteAgentServer::new(service_impl);
 
@@ -129,6 +133,7 @@ pub struct RemoteAgentImpl {
     started: DateTime<Utc>,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
     prometheus_listen_addr: Option<SocketAddr>,
+    logging_config: LoggingConfiguration,
 }
 
 impl RemoteAgentImpl {
@@ -207,17 +212,17 @@ impl RemoteAgent for RemoteAgentImpl {
     ) -> Result<tonic::Response<GetFlareFilesResponse>, tonic::Status> {
         let mut files = HashMap::new();
 
-        let log_file_path = PathBuf::from(
-            std::env::var("DD_ADP_LOG_FILE").unwrap_or(saluki_app::logging::DEFAULT_ADP_LOG_FILE.to_string()),
-        );
-
-        if let Some(log_file_name) = log_file_path.file_name() {
-            match tokio::fs::read(&log_file_path).await {
+        if let Some(log_file_name) = self.logging_config.log_file.file_name() {
+            match tokio::fs::read(&self.logging_config.log_file).await {
                 Ok(content) => {
                     files.insert(log_file_name.to_string_lossy().to_string(), content);
                 }
                 Err(e) => {
-                    debug!("Failed to read {} log file for flare: {}", log_file_path.display(), e);
+                    debug!(
+                        "Failed to read {} log file for flare: {}",
+                        self.logging_config.log_file.display(),
+                        e
+                    );
                 }
             }
         }
