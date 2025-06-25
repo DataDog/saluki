@@ -113,6 +113,12 @@ pub struct LoggingConfiguration {
     #[serde(default = "default_log_file", rename = "adp_log_file")]
     pub log_file: PathBuf,
 
+    /// Whether to enable dynamic reloading of the log level filtering directives.
+    ///
+    /// Defaults to `false`.
+    #[serde(default, rename = "adp_log_reload_enabled")]
+    pub reload_enabled: bool,
+
     #[serde(skip)]
     default_level: Option<LevelFilter>,
 }
@@ -149,11 +155,15 @@ impl LoggingConfiguration {
     }
 
     /// Sets the log level used for the default directive.
-    pub fn with_default_level(self, level: LevelFilter) -> Self {
-        Self {
-            default_level: Some(level),
-            ..self
-        }
+    pub fn with_default_level(mut self, level: LevelFilter) -> Self {
+        self.default_level = Some(level);
+        self
+    }
+
+    /// Sets whether to enable dynamic reloading of the log level filtering directives.
+    pub fn with_reload(mut self, reload: bool) -> Self {
+        self.reload_enabled = reload;
+        self
     }
 }
 /// Initializes the logging subsystem for `tracing`.
@@ -163,8 +173,8 @@ impl LoggingConfiguration {
 /// If the logging subsystem was already initialized, an error will be returned.
 pub fn initialize_logging(
     config: &LoggingConfiguration,
-) -> Result<WorkerGuard, Box<dyn std::error::Error + Send + Sync>> {
-    initialize_logging_inner(config, false)
+) -> Result<Option<WorkerGuard>, Box<dyn std::error::Error + Send + Sync>> {
+    initialize_logging_inner(config)
 }
 
 /// Initializes the logging subsystem for `tracing` with the ability to dynamically update the log filtering directives
@@ -178,16 +188,16 @@ pub fn initialize_logging(
 /// If the logging subsystem was already initialized, an error will be returned.
 pub async fn initialize_dynamic_logging(
     config: &LoggingConfiguration,
-) -> Result<WorkerGuard, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Option<WorkerGuard>, Box<dyn std::error::Error + Send + Sync>> {
     // We go through this wrapped initialize approach so that we can mark `initialize_dynamic_logging` as `async`, which
     // ensures we call it in an asynchronous context, thereby all but ensuring we're in a Tokio context when we try to
     // spawn the background task that handles reloading the filtering layer.
-    initialize_logging_inner(config, true)
+    initialize_logging_inner(config)
 }
 
 fn initialize_logging_inner(
-    config: &LoggingConfiguration, with_reload: bool,
-) -> Result<WorkerGuard, Box<dyn std::error::Error + Send + Sync>> {
+    config: &LoggingConfiguration,
+) -> Result<Option<WorkerGuard>, Box<dyn std::error::Error + Send + Sync>> {
     // Load our level filtering directives from the environment, or fallback to INFO if the environment variable is not
     // specified.
     //
@@ -198,13 +208,53 @@ fn initialize_logging_inner(
 
     let shared_level_filter = Arc::new(level_filter);
     let (filter_layer, reload_handle) = ReloadLayer::new(into_shared_dyn_filter(Arc::clone(&shared_level_filter)));
-    if with_reload {
+    if config.reload_enabled {
         API_HANDLER
             .lock()
             .unwrap()
             .replace(LoggingAPIHandler::new(shared_level_filter.clone(), reload_handle));
     }
 
+    let is_json = config.log_format_json;
+
+    let mut worker_guard = None;
+
+    if is_json {
+        let json_layer = initialize_tracing_json();
+        let maybe_file_layer = if config.log_file_enabled {
+            let (file_nb, guard, file_level_filter) = setup_file_logging(config)?;
+            worker_guard = Some(guard);
+            Some(initialize_tracing_json_with_file(file_nb).with_filter(file_level_filter))
+        } else {
+            None
+        };
+
+        tracing_subscriber::registry()
+            .with(json_layer.with_filter(filter_layer))
+            .with(maybe_file_layer)
+            .try_init()?;
+    } else {
+        let pretty_layer = initialize_tracing_pretty();
+        let maybe_file_layer = if config.log_file_enabled {
+            let (file_nb, guard, file_level_filter) = setup_file_logging(config)?;
+            worker_guard = Some(guard);
+            Some(initialize_tracing_pretty_with_file(file_nb).with_filter(file_level_filter))
+        } else {
+            None
+        };
+
+        tracing_subscriber::registry()
+            .with(pretty_layer.with_filter(filter_layer))
+            .with(maybe_file_layer)
+            .try_init()?;
+    }
+
+    Ok(worker_guard)
+}
+
+fn setup_file_logging(
+    config: &LoggingConfiguration,
+) -> Result<(NonBlocking, WorkerGuard, EnvFilter), Box<dyn std::error::Error + Send + Sync>> {
     let adp_log_file = &config.log_file;
     let log_file_max_size = config.log_file_max_size;
     let log_file_max_rolls = config.log_file_max_rolls;
@@ -218,35 +268,7 @@ fn initialize_logging_inner(
         .with_default_directive(config.default_level.unwrap_or(LevelFilter::INFO).into())
         .parse_lossy(&config.log_level);
 
-    let is_json = config.log_format_json;
-
-    if is_json {
-        let json_layer = initialize_tracing_json();
-        let maybe_file_layer = if config.log_file_enabled {
-            Some(initialize_tracing_json_with_file(file_nb).with_filter(file_level_filter))
-        } else {
-            None
-        };
-
-        tracing_subscriber::registry()
-            .with(json_layer.with_filter(filter_layer))
-            .with(maybe_file_layer)
-            .try_init()?;
-    } else {
-        let pretty_layer = initialize_tracing_pretty();
-        let maybe_file_layer = if config.log_file_enabled {
-            Some(initialize_tracing_pretty_with_file(file_nb).with_filter(file_level_filter))
-        } else {
-            None
-        };
-
-        tracing_subscriber::registry()
-            .with(pretty_layer.with_filter(filter_layer))
-            .with(maybe_file_layer)
-            .try_init()?;
-    }
-
-    Ok(guard)
+    Ok((file_nb, guard, file_level_filter))
 }
 
 fn initialize_tracing_json<S>() -> impl Layer<S>

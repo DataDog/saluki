@@ -38,7 +38,7 @@ static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System
 async fn main() {
     let started = Instant::now();
 
-    let _guard = initialize_dynamic_logging(&LoggingConfiguration::default())
+    let _guard = initialize_dynamic_logging(&LoggingConfiguration::default().with_reload(true))
         .await
         .unwrap_or_else(|e| {
             fatal_and_exit(format!("failed to initialize logging: {}", e));

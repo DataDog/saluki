@@ -43,12 +43,20 @@ async fn main() {
 
     let configuration = cli::run::load_configuration(PathBuf::from("/etc/datadog-agent/datadog.yaml"))
         .await
-        .unwrap();
-    let logging_config = LoggingConfiguration::try_from_config(&configuration).unwrap();
+        .unwrap_or_else(|e| {
+            fatal_and_exit(format!("failed to load configuration: {}", e));
+            unreachable!()
+        });
+    let logging_config = LoggingConfiguration::try_from_config(&configuration)
+        .unwrap_or_else(|e| {
+            fatal_and_exit(format!("failed to load logging configuration: {}", e));
+            unreachable!()
+        })
+        .with_reload(true);
 
     let _guard = initialize_dynamic_logging(&logging_config).await.unwrap_or_else(|e| {
         fatal_and_exit(format!("failed to initialize logging: {}", e));
-        unreachable!() // This will never be reached since fatal_and_exit exits
+        unreachable!()
     });
 
     if let Err(e) = initialize_metrics("adp").await {
