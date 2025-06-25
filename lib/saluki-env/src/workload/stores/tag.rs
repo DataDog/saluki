@@ -198,6 +198,7 @@ impl MetadataStore for TagStore {
                 }
                 // We don't care about External Data.
                 MetadataAction::AttachExternalData { .. } => {}
+                MetadataAction::DetachExternalData { .. } => {}
             }
         }
     }

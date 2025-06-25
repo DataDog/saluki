@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use datadog_protos::agent::{KubernetesPod, WorkloadmetaEventType};
+use datadog_protos::agent::{KubernetesPod, OrchestratorContainer, WorkloadmetaEventType};
 use futures::StreamExt as _;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
@@ -89,12 +89,11 @@ impl MetadataCollector for RemoteAgentWorkloadMetadataCollector {
                                 match event_type {
                                     WorkloadmetaEventType::EventTypeSet => {
                                         self.telemetry.events_kubernetes_pod_updated_total().increment(1);
-                                        process_kubernetes_pod_external_data(kubernetes_pod, &self.interner, &self.telemetry, operations_tx).await?;
+                                        process_updated_kubernetes_pod(kubernetes_pod, &self.interner, &self.telemetry, operations_tx).await?;
                                     },
                                     WorkloadmetaEventType::EventTypeUnset => {
                                         self.telemetry.events_kubernetes_pod_removed_total().increment(1);
-                                        // TODO: Potentially handle removal of external data here. For now, we just want
-                                        // telemetry about removals.
+                                        process_removed_kubernetes_pod(kubernetes_pod, operations_tx).await?;
                                     },
                                     _ => continue,
                                 }
@@ -128,7 +127,7 @@ impl MemoryBounds for RemoteAgentWorkloadMetadataCollector {
     }
 }
 
-async fn process_kubernetes_pod_external_data(
+async fn process_updated_kubernetes_pod(
     kubernetes_pod: KubernetesPod, interner: &GenericMapInterner, telemetry: &Telemetry,
     operations_tx: &mut mpsc::Sender<MetadataOperation>,
 ) -> Result<(), GenericError> {
@@ -172,6 +171,32 @@ async fn process_kubernetes_pod_external_data(
 
         let external_data = ExternalData::new(pod_uid.clone(), container_name, is_init);
         let operation = MetadataOperation::attach_external_data(entity_id, external_data);
+        if let Err(e) = operations_tx.send(operation).await {
+            debug!(error = %e, "Failed to send metadata operation.");
+        }
+    }
+
+    Ok(())
+}
+
+async fn process_removed_kubernetes_pod(
+    kubernetes_pod: KubernetesPod, operations_tx: &mut mpsc::Sender<MetadataOperation>,
+) -> Result<(), GenericError> {
+    let pod_uid = match kubernetes_pod.entity_id {
+        Some(entity_id) => MetaString::from(entity_id.id),
+        None => {
+            trace!("Received Kubernetes Pod event without UID; skipping.");
+            return Ok(());
+        }
+    };
+
+    let init_container_ids = kubernetes_pod.init_containers.into_iter().map(|container| container.id);
+    let non_init_container_ids = kubernetes_pod.containers.into_iter().map(|container| container.id);
+
+    for container_id in init_container_ids.chain(non_init_container_ids) {
+        let entity_id = EntityId::Container(container_id.into());
+
+        let operation = MetadataOperation::detach_external_data(entity_id);
         if let Err(e) = operations_tx.send(operation).await {
             debug!(error = %e, "Failed to send metadata operation.");
         }

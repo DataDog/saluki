@@ -19,7 +19,8 @@ static_metrics!(
         gauge(active_entities),
         counter(ops_delete_total),
         counter(ops_attach_external_data_total),
-   ],
+        counter(ops_detach_external_data_total),
+    ],
 );
 
 /// A store for External Data entity mappings.
@@ -140,6 +141,10 @@ impl MetadataStore for ExternalDataStore {
                 MetadataAction::AttachExternalData { external_data } => {
                     self.telemetry.ops_attach_external_data_total().increment(1);
                     self.add_mapping(external_data, entity_id.clone());
+                }
+                MetadataAction::DetachExternalData { .. } => {
+                    self.telemetry.ops_detach_external_data_total().increment(1);
+                    self.remove_mapping(entity_id.clone());
                 }
                 MetadataAction::Delete => {
                     self.telemetry.ops_delete_total().increment(1);

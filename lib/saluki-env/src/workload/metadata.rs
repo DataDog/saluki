@@ -52,6 +52,14 @@ impl MetadataOperation {
             actions: OneOrMany::One(MetadataAction::AttachExternalData { external_data }),
         }
     }
+
+    /// Creates a new `MetadataOperation` that detaches External Data from an entity.
+    pub fn detach_external_data(entity_id: EntityId) -> Self {
+        Self {
+            entity_id,
+            actions: OneOrMany::One(MetadataAction::DetachExternalData),
+        }
+    }
 }
 
 /// A metadata action.
@@ -98,6 +106,13 @@ pub enum MetadataAction {
         /// External Data to attach.
         external_data: ExternalData,
     },
+
+    /// Detaches External Data from the entity.
+    ///
+    /// External Data is free-form string data that is attached to entities from external systems to allow resolving the
+    /// entity's ID when it cannot be passed directly to the entity such that the entity can provide it in telemetry
+    /// payloads itself.
+    DetachExternalData,
 }
 
 impl fmt::Debug for MetadataAction {
@@ -108,6 +123,7 @@ impl fmt::Debug for MetadataAction {
             Self::RemoveAlias { target_entity_id } => write!(f, "RemoveAlias({:?})", target_entity_id),
             Self::SetTags { cardinality, tags } => write!(f, "SetTags(cardinality={:?}, tags={:?})", cardinality, tags),
             Self::AttachExternalData { external_data } => write!(f, "AttachExternalData({:?})", external_data),
+            Self::DetachExternalData => write!(f, "DetachExternalData"),
         }
     }
 }
