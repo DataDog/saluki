@@ -226,7 +226,7 @@ unsafe impl Sync for StringState {}
 struct InternerStorage {
     // Direct pieces of our buffer allocation.
     ptr: NonNull<u8>,
-    len: usize,
+    offset: usize,
     capacity: NonZeroUsize,
 
     // Markers for entries that can be reused.
@@ -253,7 +253,7 @@ impl InternerStorage {
 
         Self {
             ptr,
-            len: 0,
+            offset: 0,
             capacity,
             reclaimed: ReclaimedEntries::new(),
         }
@@ -261,7 +261,7 @@ impl InternerStorage {
 
     /// Returns the total number of unused bytes that are available for interning.
     fn available(&self) -> usize {
-        self.capacity.get() - self.len
+        self.capacity.get() - self.offset
     }
 
     fn get_entry_ptr(&self, offset: usize) -> NonNull<EntryHeader> {
@@ -309,8 +309,8 @@ impl InternerStorage {
         let entry_header = EntryHeader::from_string(s);
 
         // Write the entry to the end of the data buffer.
-        let entry_offset = self.len;
-        self.len += entry_header.entry_len();
+        let entry_offset = self.offset;
+        self.offset += entry_header.entry_len();
 
         (entry_offset, self.write_entry(entry_offset, entry_header, s))
     }
@@ -587,7 +587,7 @@ impl GenericMapInterner {
 
     /// Returns the total number of bytes in the interner.
     pub fn len_bytes(&self) -> usize {
-        self.state.lock().unwrap().storage.len
+        self.state.lock().unwrap().storage.offset
     }
 
     /// Returns the total number of bytes the interner can hold.
