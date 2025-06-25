@@ -9,7 +9,8 @@ use datadog_protos::agent::{
 };
 use http::{Request, Uri};
 use http_body_util::BodyExt;
-use rand::{distributions::Alphanumeric, thread_rng, Rng};
+use rand::{rng, Rng};
+use rand_distr::Alphanumeric;
 use saluki_app::logging::LoggingConfiguration;
 use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
@@ -100,11 +101,7 @@ async fn run_remote_agent_helper(
     id: String, display_name: String, local_api_listen_addr: SocketAddr, mut client: RemoteAgentClient,
 ) {
     let local_api_listen_addr = local_api_listen_addr.to_string();
-    let auth_token: String = thread_rng()
-        .sample_iter(&Alphanumeric)
-        .take(64)
-        .map(char::from)
-        .collect();
+    let auth_token: String = rng().sample_iter(&Alphanumeric).take(64).map(char::from).collect();
 
     let mut register_agent = interval(Duration::from_secs(10));
     register_agent.set_missed_tick_behavior(MissedTickBehavior::Delay);

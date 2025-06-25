@@ -38,7 +38,7 @@ saluki-metadata = { workspace = true }
 saluki-tls = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "sync"], optional = true }
-tonic = { workspace = true, features = ["transport"] }
+tonic = { workspace = true, features = ["router", "transport"] }
 tower = { workspace = true, features = ["util"], optional = true }
 tracing = { workspace = true, optional = true }
 tracing-appender = { workspace = true }

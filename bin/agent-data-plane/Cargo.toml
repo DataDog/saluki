@@ -1,6 +1,6 @@
 [package]
 name = "agent-data-plane"
-version = "0.1.13"
+version = "0.1.15"
 edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
@@ -22,6 +22,8 @@ hyper = { workspace = true }
 memory-accounting = { workspace = true }
 papaya = { workspace = true }
 rand = { workspace = true }
+rand_distr = { workspace = true } 
+reqwest = { workspace = true, features = ["rustls-tls-native-roots-no-provider", "json"] }
 saluki-app = { workspace = true, features = ["full"] }
 saluki-common = { workspace = true }
 saluki-components = { workspace = true }

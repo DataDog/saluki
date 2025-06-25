@@ -347,7 +347,7 @@ async fn try_deserialize_entry<T: DeserializeOwned>(entry: &PersistedEntry) -> R
 fn generate_timestamped_filename() -> (PathBuf, u128) {
     let now = Utc::now();
     let now_ts = datetime_to_timestamp(now);
-    let nonce = rand::thread_rng().gen_range(100000000..999999999);
+    let nonce = rand::rng().random_range(100000000..999999999);
 
     let filename = format!("retry-{}-{}.json", now.format("%Y%m%d%H%M%S%f"), nonce).into();
 
@@ -403,7 +403,7 @@ async fn create_directory_recursive(path: PathBuf) -> Result<(), GenericError> {
 
 #[cfg(test)]
 mod tests {
-    use rand::distributions::Alphanumeric;
+    use rand_distr::Alphanumeric;
     use serde::Deserialize;
 
     use super::*;
@@ -417,12 +417,8 @@ mod tests {
     impl FakeData {
         fn random() -> Self {
             Self {
-                name: rand::thread_rng()
-                    .sample_iter(&Alphanumeric)
-                    .take(8)
-                    .map(char::from)
-                    .collect(),
-                value: rand::thread_rng().gen_range(0..100),
+                name: rand::rng().sample_iter(&Alphanumeric).take(8).map(char::from).collect(),
+                value: rand::rng().random_range(0..100),
             }
         }
     }

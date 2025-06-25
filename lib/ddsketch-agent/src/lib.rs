@@ -853,7 +853,7 @@ fn generate_bins(bins: &mut SmallVec<[Bin; 4]>, k: i16, n: u32) {
 #[cfg(test)]
 mod tests {
     use ordered_float::OrderedFloat;
-    use rand::thread_rng;
+    use rand::rng;
     use rand_distr::{Distribution, Pareto};
 
     use super::{config::AGENT_DEFAULT_EPS, Bucket, Config, DDSketch, MAX_KEY, SKETCH_CONFIG};
@@ -866,7 +866,7 @@ mod tests {
         // represent latencies that bottom out at 15 milliseconds and tail off all the way up to 10 seconds.
         let distribution = Pareto::new(1.0, 1.0).expect("pareto distribution should be valid");
         let mut samples = distribution
-            .sample_iter(thread_rng())
+            .sample_iter(rng())
             // Scale by 10,000 to get microseconds.
             .map(|n| n * 10_000.0)
             .filter(|n| *n > 15_000.0 && *n < 10_000_000.0)
