@@ -204,6 +204,7 @@ opt-level = "s"
 lto = "fat"
 codegen-units = 1
 debug = false
+panic = "abort"
 
 [workspace.lints.clippy]
 new_without_default = "allow"
