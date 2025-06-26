@@ -44,7 +44,7 @@ export GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-
 export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.3
 export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.3
 export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
-export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.72
+export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.99
 export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
 export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
 export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
@@ -116,7 +116,7 @@ build-adp-image: ## Builds the ADP container image in release mode ('latest' tag
 		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
-		
+
 .PHONY: build-checks-agent-image
 build-checks-agent-image: ## Builds the ADP container image in release mode ('latest' tag)
 	@echo "[*] Building Check Agent image..."
