@@ -596,7 +596,7 @@ impl GenericMapInterner {
         self.state.lock().unwrap().storage.len
     }
 
-    /// returns offset
+    /// Returns the offset of the interner.
     pub fn offset(&self) -> usize {
         self.state.lock().unwrap().storage.offset
     }
