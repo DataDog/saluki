@@ -593,7 +593,7 @@ impl GenericMapInterner {
 
     /// Returns the total number of bytes in the interner.
     pub fn len_bytes(&self) -> usize {
-        self.state.lock().unwrap().storage.offset
+        self.state.lock().unwrap().storage.len
     }
 
     /// Returns the total number of bytes the interner can hold.
