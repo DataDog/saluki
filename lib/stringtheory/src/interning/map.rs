@@ -228,6 +228,7 @@ struct InternerStorage {
     ptr: NonNull<u8>,
     offset: usize,
     capacity: NonZeroUsize,
+    len: usize,
 
     // Markers for entries that can be reused.
     reclaimed: ReclaimedEntries,
@@ -255,6 +256,7 @@ impl InternerStorage {
             ptr,
             offset: 0,
             capacity,
+            len: 0,
             reclaimed: ReclaimedEntries::new(),
         }
     }
@@ -288,6 +290,7 @@ impl InternerStorage {
         );
 
         let entry_ptr = self.get_entry_ptr(offset);
+        let entry_len = entry_header.entry_len();
 
         // Write the entry header.
         unsafe { entry_ptr.as_ptr().write(entry_header) };
@@ -301,6 +304,8 @@ impl InternerStorage {
             std::slice::from_raw_parts_mut(entry_s_ptr, s_buf.len())
         };
         entry_s_buf.copy_from_slice(s_buf);
+
+        self.len += entry_len;
 
         entry_ptr
     }
@@ -384,6 +389,7 @@ impl InternerStorage {
 
         let entry = ReclaimedEntry::new(entry_offset as usize, entry_len);
         self.add_reclaimed(entry);
+        self.len -= entry_len;
     }
 }
 
@@ -520,7 +526,7 @@ unsafe impl Sync for InternerState {}
 /// ┗━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━━━┛ ┗━━━━━━━━━━━━┛ ┗━━━━━━━━━━━━┛
 /// ▲                                   ▲                           ▲
 /// └────────── `EntryHeader` ──────────┘                           └── aligned for `EntryHeader`
-///          (8 byte alignment)                                         via trailing padding    
+///          (8 byte alignment)                                         via trailing padding   
 /// ```
 ///
 /// The backing buffer is always aligned properly for `EntryHeader`, so that the first entry can be referenced
