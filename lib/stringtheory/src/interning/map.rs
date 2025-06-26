@@ -226,8 +226,9 @@ unsafe impl Sync for StringState {}
 struct InternerStorage {
     // Direct pieces of our buffer allocation.
     ptr: NonNull<u8>,
-    len: usize,
+    offset: usize,
     capacity: NonZeroUsize,
+    len: usize,
 
     // Markers for entries that can be reused.
     reclaimed: ReclaimedEntries,
@@ -253,15 +254,16 @@ impl InternerStorage {
 
         Self {
             ptr,
-            len: 0,
+            offset: 0,
             capacity,
+            len: 0,
             reclaimed: ReclaimedEntries::new(),
         }
     }
 
     /// Returns the total number of unused bytes that are available for interning.
     fn available(&self) -> usize {
-        self.capacity.get() - self.len
+        self.capacity.get() - self.offset
     }
 
     fn get_entry_ptr(&self, offset: usize) -> NonNull<EntryHeader> {
@@ -288,6 +290,7 @@ impl InternerStorage {
         );
 
         let entry_ptr = self.get_entry_ptr(offset);
+        let entry_len = entry_header.entry_len();
 
         // Write the entry header.
         unsafe { entry_ptr.as_ptr().write(entry_header) };
@@ -302,6 +305,8 @@ impl InternerStorage {
         };
         entry_s_buf.copy_from_slice(s_buf);
 
+        self.len += entry_len;
+
         entry_ptr
     }
 
@@ -309,8 +314,8 @@ impl InternerStorage {
         let entry_header = EntryHeader::from_string(s);
 
         // Write the entry to the end of the data buffer.
-        let entry_offset = self.len;
-        self.len += entry_header.entry_len();
+        let entry_offset = self.offset;
+        self.offset += entry_header.entry_len();
 
         (entry_offset, self.write_entry(entry_offset, entry_header, s))
     }
@@ -384,6 +389,7 @@ impl InternerStorage {
 
         let entry = ReclaimedEntry::new(entry_offset as usize, entry_len);
         self.add_reclaimed(entry);
+        self.len -= entry_len;
     }
 }
 
@@ -520,7 +526,7 @@ unsafe impl Sync for InternerState {}
 /// ┗━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━━━┛ ┗━━━━━━━━━━━━┛ ┗━━━━━━━━━━━━┛
 /// ▲                                   ▲                           ▲
 /// └────────── `EntryHeader` ──────────┘                           └── aligned for `EntryHeader`
-///          (8 byte alignment)                                         via trailing padding    
+///          (8 byte alignment)                                         via trailing padding   
 /// ```
 ///
 /// The backing buffer is always aligned properly for `EntryHeader`, so that the first entry can be referenced
@@ -588,6 +594,11 @@ impl GenericMapInterner {
     /// Returns the total number of bytes in the interner.
     pub fn len_bytes(&self) -> usize {
         self.state.lock().unwrap().storage.len
+    }
+
+    /// Returns the offset of the interner.
+    pub fn offset(&self) -> usize {
+        self.state.lock().unwrap().storage.offset
     }
 
     /// Returns the total number of bytes the interner can hold.
@@ -892,6 +903,68 @@ mod tests {
         assert_eq!(interner.len(), 1);
         assert_eq!(reclaimed_len(&interner), 0);
         assert_eq!(s1_reclaimed_expected, s2_reclaimed_expected);
+    }
+
+    #[test]
+    fn len_equals_offset_minus_reclaimed_sum() {
+        let interner = create_interner(256);
+
+        // Intern a string.
+        let s1 = interner.try_intern("hello world!").expect("should not fail to intern");
+        assert_eq!(interner.len(), 1);
+
+        // Get the initial values of len, offset, and reclaimed sum.
+        let initial_len = interner.len_bytes();
+        let initial_offset = interner.offset();
+        let initial_reclaimed_sum: usize = interner
+            .state
+            .lock()
+            .unwrap()
+            .storage
+            .reclaimed
+            .iter()
+            .map(|entry| entry.capacity())
+            .sum();
+
+        assert_eq!(initial_len, initial_offset - initial_reclaimed_sum);
+
+        // Drop the string, which should decrement the len and add to reclaimed.
+        drop(s1);
+        assert_eq!(interner.len(), 0);
+
+        let reclaimed_len = interner.len_bytes();
+        let reclaimed_offset = interner.offset();
+        let reclaimed_sum: usize = interner
+            .state
+            .lock()
+            .unwrap()
+            .storage
+            .reclaimed
+            .iter()
+            .map(|entry| entry.capacity())
+            .sum();
+
+        assert_eq!(reclaimed_len, reclaimed_offset - reclaimed_sum);
+
+        // Intern a new string to reuse the reclaimed space.
+        let _s2 = interner
+            .try_intern("hello again, world")
+            .expect("should not fail to intern");
+        assert_eq!(interner.len(), 1);
+
+        let reuse_len = interner.len_bytes();
+        let reuse_offset = interner.offset();
+        let reuse_sum: usize = interner
+            .state
+            .lock()
+            .unwrap()
+            .storage
+            .reclaimed
+            .iter()
+            .map(|entry| entry.capacity())
+            .sum();
+
+        assert_eq!(reuse_len, reuse_offset - reuse_sum);
     }
 
     proptest! {
