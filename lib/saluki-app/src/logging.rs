@@ -10,6 +10,7 @@
 
 use std::{
     fmt,
+    path::PathBuf,
     str::FromStr as _,
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
@@ -20,6 +21,7 @@ use chrono::{
     Utc,
 };
 use chrono_tz::Tz;
+use rolling_file::{BasicRollingFileAppender, RollingConditionBasic};
 use saluki_api::{
     extract::{Query, State},
     response::IntoResponse,
@@ -27,9 +29,12 @@ use saluki_api::{
     APIHandler, StatusCode,
 };
 use saluki_common::task::spawn_traced_named;
+use saluki_config::GenericConfiguration;
+use saluki_error::{ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tokio::{select, sync::mpsc, time::sleep};
 use tracing::{error, field, info, level_filters::LevelFilter, Event, Subscriber};
+use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
 use tracing_subscriber::{
     field::VisitOutput,
     fmt::{format::Writer, FmtContext, FormatEvent, FormatFields},
@@ -50,29 +55,130 @@ pub fn fatal_and_exit(message: String) {
     std::process::exit(1);
 }
 
+#[cfg(target_os = "linux")]
+/// The default log file path for ADP on Linux.
+pub const DEFAULT_ADP_LOG_FILE: &str = "/var/log/datadog/adp.log";
+
+#[cfg(target_os = "macos")]
+/// The default log file path for ADP on non-Linux platforms.
+pub const DEFAULT_ADP_LOG_FILE: &str = "/opt/datadog-agent/logs/adp.log";
+
+#[cfg(target_os = "windows")]
+/// The default log file path for ADP on Windows.
+pub const DEFAULT_ADP_LOG_FILE: &str = "C:\\ProgramData\\Datadog\\logs\\adp.log";
+
+const DEFAULT_LOG_FILE_MAX_SIZE: u64 = 10485760;
+const DEFAULT_LOG_FILE_MAX_ROLLS: usize = 1;
+const DEFAULT_LOG_LEVEL: &str = "info";
+
+/// Configuration for logging.
+#[derive(Deserialize, Default, Debug)]
+pub struct LoggingConfiguration {
+    /// Whether to format logs as JSON.
+    ///
+    /// Defaults to `false`.
+    #[serde(default)]
+    pub log_format_json: bool,
+
+    /// The log level.
+    ///
+    /// Defaults to `info`.
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+
+    /// Whether to enable logging to a file.
+    ///
+    /// Defaults to `false`.
+    #[serde(default, rename = "adp_log_file_enabled")]
+    pub log_file_enabled: bool,
+
+    /// The maximum size of the log file before it is rolled.
+    ///
+    /// Defaults to 10MB.
+    #[serde(default = "default_log_file_max_size")]
+    pub log_file_max_size: u64,
+
+    /// The maximum number of log files to keep.
+    ///
+    /// Defaults to 1.
+    #[serde(default = "default_log_file_max_rolls")]
+    pub log_file_max_rolls: usize,
+
+    /// The path to the log file.
+    ///
+    /// Defaults to
+    /// `/var/log/datadog/adp.log` on Linux,
+    /// `/opt/datadog-agent/logs/adp.log` on macOS, and
+    /// `C:\\ProgramData\\Datadog\\logs\\adp.log` on Windows.
+    #[serde(default = "default_log_file", rename = "adp_log_file")]
+    pub log_file: PathBuf,
+
+    /// Whether to enable dynamic reloading of the log level filtering directives.
+    ///
+    /// Defaults to `false`.
+    #[serde(default, rename = "adp_log_reload_enabled")]
+    pub reload_enabled: bool,
+
+    #[serde(skip)]
+    default_level: Option<LevelFilter>,
+}
+
+const fn default_log_file_max_size() -> u64 {
+    DEFAULT_LOG_FILE_MAX_SIZE
+}
+
+const fn default_log_file_max_rolls() -> usize {
+    DEFAULT_LOG_FILE_MAX_ROLLS
+}
+
+fn default_log_level() -> String {
+    DEFAULT_LOG_LEVEL.to_owned()
+}
+
+/// The default log file path for ADP.
+pub fn default_log_file() -> PathBuf {
+    PathBuf::from(DEFAULT_ADP_LOG_FILE)
+}
+
+impl LoggingConfiguration {
+    /// Attempts to read logging configuration from the provided configuration.
+    ///
+    /// ## Errors
+    ///
+    /// If an error occurs during deserialization, an error will be returned.
+    pub fn try_from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        let logging_config = config
+            .as_typed::<Self>()
+            .error_context("Failed to parse logging configuration.")?;
+
+        Ok(logging_config)
+    }
+
+    /// Sets the log level used for the default directive.
+    pub fn with_default_level(mut self, level: LevelFilter) -> Self {
+        self.default_level = Some(level);
+        self
+    }
+
+    /// Sets whether to enable dynamic reloading of the log level filtering directives.
+    pub fn with_reload(mut self, reload: bool) -> Self {
+        self.reload_enabled = reload;
+        self
+    }
+}
 /// Initializes the logging subsystem for `tracing`.
-///
-/// This function reads the `DD_LOG_LEVEL` environment variable to determine the log level to use. If the environment
-/// variable is not set, the default log level is `INFO`. Additionally, it reads the `DD_LOG_FORMAT_JSON` environment
-/// variable to determine which output format to use. If it is set to `json` (case insensitive), the logs will be
-/// formatted as JSON. If it is set to any other value, or not set at all, the logs will default to a rich, colored,
-/// human-readable format.
 ///
 /// # Errors
 ///
 /// If the logging subsystem was already initialized, an error will be returned.
-pub fn initialize_logging(default_level: Option<LevelFilter>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    initialize_logging_inner(default_level, false)
+pub fn initialize_logging(
+    config: &LoggingConfiguration,
+) -> Result<Option<WorkerGuard>, Box<dyn std::error::Error + Send + Sync>> {
+    initialize_logging_inner(config)
 }
 
 /// Initializes the logging subsystem for `tracing` with the ability to dynamically update the log filtering directives
 /// at runtime.
-///
-/// This function reads the `DD_LOG_LEVEL` environment variable to determine the log level to use. If the environment
-/// variable is not set, the default log level is `INFO`. Additionally, it reads the `DD_LOG_FORMAT_JSON` environment
-/// variable to determine which output format to use. If it is set to `json` (case insensitive), the logs will be
-/// formatted as JSON. If it is set to any other value, or not set at all, the logs will default to a rich, colored,
-/// human-readable format.
 ///
 /// An API handler can be acquired (via [`acquires_logging_api_handler`]) to install the API routes which allow for
 /// dynamically controlling the logging level filtering. See [`LoggingAPIHandler`] for more information.
@@ -81,53 +187,88 @@ pub fn initialize_logging(default_level: Option<LevelFilter>) -> Result<(), Box<
 ///
 /// If the logging subsystem was already initialized, an error will be returned.
 pub async fn initialize_dynamic_logging(
-    default_level: Option<LevelFilter>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    config: &LoggingConfiguration,
+) -> Result<Option<WorkerGuard>, Box<dyn std::error::Error + Send + Sync>> {
     // We go through this wrapped initialize approach so that we can mark `initialize_dynamic_logging` as `async`, which
     // ensures we call it in an asynchronous context, thereby all but ensuring we're in a Tokio context when we try to
     // spawn the background task that handles reloading the filtering layer.
-    initialize_logging_inner(default_level, true)
+    initialize_logging_inner(config)
 }
 
 fn initialize_logging_inner(
-    default_level: Option<LevelFilter>, with_reload: bool,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let is_json = std::env::var("DD_LOG_FORMAT_JSON")
-        .map(|s| s.trim().to_lowercase())
-        .map(|s| s == "true" || s == "1")
-        .unwrap_or(false);
-
+    config: &LoggingConfiguration,
+) -> Result<Option<WorkerGuard>, Box<dyn std::error::Error + Send + Sync>> {
     // Load our level filtering directives from the environment, or fallback to INFO if the environment variable is not
     // specified.
     //
     // We also do a little bit of a dance to get the filter into the right shape for use in the dynamic filter layer.
     let level_filter = EnvFilter::builder()
-        .with_default_directive(default_level.unwrap_or(LevelFilter::INFO).into())
-        .with_env_var("DD_LOG_LEVEL")
-        .from_env_lossy();
+        .with_default_directive(config.default_level.unwrap_or(LevelFilter::INFO).into())
+        .parse_lossy(&config.log_level);
 
     let shared_level_filter = Arc::new(level_filter);
     let (filter_layer, reload_handle) = ReloadLayer::new(into_shared_dyn_filter(Arc::clone(&shared_level_filter)));
-    if with_reload {
+    if config.reload_enabled {
         API_HANDLER
             .lock()
             .unwrap()
             .replace(LoggingAPIHandler::new(shared_level_filter.clone(), reload_handle));
     }
 
+    let is_json = config.log_format_json;
+
+    let mut worker_guard = None;
+
     if is_json {
         let json_layer = initialize_tracing_json();
+        let maybe_file_layer = if config.log_file_enabled {
+            let (file_nb, guard, file_level_filter) = setup_file_logging(config)?;
+            worker_guard = Some(guard);
+            Some(initialize_tracing_json_with_file(file_nb).with_filter(file_level_filter))
+        } else {
+            None
+        };
+
         tracing_subscriber::registry()
             .with(json_layer.with_filter(filter_layer))
+            .with(maybe_file_layer)
             .try_init()?;
     } else {
         let pretty_layer = initialize_tracing_pretty();
+        let maybe_file_layer = if config.log_file_enabled {
+            let (file_nb, guard, file_level_filter) = setup_file_logging(config)?;
+            worker_guard = Some(guard);
+            Some(initialize_tracing_pretty_with_file(file_nb).with_filter(file_level_filter))
+        } else {
+            None
+        };
+
         tracing_subscriber::registry()
             .with(pretty_layer.with_filter(filter_layer))
+            .with(maybe_file_layer)
             .try_init()?;
     }
 
-    Ok(())
+    Ok(worker_guard)
+}
+
+fn setup_file_logging(
+    config: &LoggingConfiguration,
+) -> Result<(NonBlocking, WorkerGuard, EnvFilter), Box<dyn std::error::Error + Send + Sync>> {
+    let adp_log_file = &config.log_file;
+    let log_file_max_size = config.log_file_max_size;
+    let log_file_max_rolls = config.log_file_max_rolls;
+    let file_appender = BasicRollingFileAppender::new(
+        adp_log_file,
+        RollingConditionBasic::new().max_size(log_file_max_size),
+        log_file_max_rolls,
+    )?;
+    let (file_nb, guard) = tracing_appender::non_blocking(file_appender);
+    let file_level_filter = EnvFilter::builder()
+        .with_default_directive(config.default_level.unwrap_or(LevelFilter::INFO).into())
+        .parse_lossy(&config.log_level);
+
+    Ok((file_nb, guard, file_level_filter))
 }
 
 fn initialize_tracing_json<S>() -> impl Layer<S>
@@ -147,6 +288,28 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     tracing_subscriber::fmt::Layer::new().event_format(AgentLikeFormatter::new())
+}
+
+fn initialize_tracing_json_with_file<S>(file_nb: NonBlocking) -> impl Layer<S>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    tracing_subscriber::fmt::Layer::new()
+        .json()
+        .flatten_event(true)
+        .with_target(true)
+        .with_file(true)
+        .with_line_number(true)
+        .with_writer(file_nb)
+}
+
+fn initialize_tracing_pretty_with_file<S>(file_nb: NonBlocking) -> impl Layer<S>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    tracing_subscriber::fmt::Layer::new()
+        .event_format(AgentLikeFormatter::new())
+        .with_writer(file_nb)
 }
 
 /// Acquires the logging API handler.

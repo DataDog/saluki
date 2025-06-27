@@ -5,10 +5,11 @@
 
 #![deny(warnings)]
 #![deny(missing_docs)]
+use std::path::PathBuf;
 use std::time::Instant;
 
 use clap::Parser as _;
-use saluki_app::prelude::*;
+use saluki_app::{logging::LoggingConfiguration, prelude::*};
 use tracing::{error, info};
 
 mod components;
@@ -40,9 +41,23 @@ async fn main() {
     let started = Instant::now();
     let cli = Cli::parse();
 
-    if let Err(e) = initialize_dynamic_logging(None).await {
+    let configuration = cli::run::load_configuration(PathBuf::from("/etc/datadog-agent/datadog.yaml"))
+        .await
+        .unwrap_or_else(|e| {
+            fatal_and_exit(format!("failed to load configuration: {}", e));
+            unreachable!()
+        });
+    let logging_config = LoggingConfiguration::try_from_config(&configuration)
+        .unwrap_or_else(|e| {
+            fatal_and_exit(format!("failed to load logging configuration: {}", e));
+            unreachable!()
+        })
+        .with_reload(true);
+
+    let _guard = initialize_dynamic_logging(&logging_config).await.unwrap_or_else(|e| {
         fatal_and_exit(format!("failed to initialize logging: {}", e));
-    }
+        unreachable!()
+    });
 
     if let Err(e) = initialize_metrics("adp").await {
         fatal_and_exit(format!("failed to initialize metrics: {}", e));
