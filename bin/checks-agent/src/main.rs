@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
 use memory_accounting::ComponentRegistry;
@@ -23,6 +24,10 @@ use tracing::{error, info};
 use self::env_provider::ChecksAgentEnvProvider;
 
 const PRIMARY_UNPRIVILEGED_API_PORT: u16 = 5105;
+// SAFETY: These are obviously all non-zero.
+const CHECKS_AGENT_EVENT_BUFFER_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(100) };
+const CHECKS_AGENT_EVENT_BUFFER_POOL_SIZE_MIN: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(1) };
+const CHECKS_AGENT_EVENT_BUFFER_POOL_SIZE_MAX: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(4) };
 
 #[cfg(target_os = "linux")]
 #[global_allocator]
@@ -34,7 +39,7 @@ static ALLOC: memory_accounting::allocator::TrackingAllocator<tikv_jemallocator:
 static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System> =
     memory_accounting::allocator::TrackingAllocator::new(std::alloc::System);
 
-#[tokio::main]
+#[tokio::main(worker_threads = 2)]
 async fn main() {
     let started = Instant::now();
 
@@ -164,6 +169,11 @@ async fn create_topology(
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
 
     blueprint
+        .with_global_event_buffer_pool_size(
+            CHECKS_AGENT_EVENT_BUFFER_SIZE,
+            CHECKS_AGENT_EVENT_BUFFER_POOL_SIZE_MIN,
+            CHECKS_AGENT_EVENT_BUFFER_POOL_SIZE_MAX,
+        )
         .add_source("checks_in", checks_config)?
         .add_destination("metrics_out", metrics_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
