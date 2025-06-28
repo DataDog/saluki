@@ -4141,6 +4141,7 @@ dependencies = [
 name = "stringtheory"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "foldhash",
  "loom",
  "proptest",
