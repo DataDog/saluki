@@ -3,7 +3,7 @@ ARG DD_AGENT_IMAGE=datadog/agent:${DD_AGENT_VERSION}
 
 FROM ${DD_AGENT_IMAGE} AS agent
 
-FROM registry.ddbuild.io/images/mirror/ubuntu:14.04
+FROM registry.ddbuild.io/images/mirror/ubuntu:24.04
 
 ARG RUST_VERSION=1.85.0
 ARG TARGETARCH
