@@ -263,7 +263,7 @@ impl InternerStorage {
 
     /// Returns the total number of unused bytes that are available for interning.
     fn available(&self) -> usize {
-        self.capacity.get() - self.offset
+        self.capacity.get() - self.len
     }
 
     fn get_entry_ptr(&self, offset: usize) -> NonNull<EntryHeader> {
