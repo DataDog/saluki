@@ -684,10 +684,6 @@ mod tests {
         interner.state.lock().unwrap().storage.reclaimed.first().unwrap()
     }
 
-    fn offset(interner: &GenericMapInterner) -> usize {
-        interner.state.lock().unwrap().storage.offset
-    }
-
     const fn entry_len(s: &str) -> usize {
         EntryHeader::len_for(s)
     }
@@ -911,65 +907,36 @@ mod tests {
     }
 
     #[test]
-    fn len_equals_offset_minus_reclaimed_sum() {
+    fn len_bytes_reps_active_interned_entries() {
         let interner = create_interner(256);
+        let mut active_interned_entries_len = 0;
+        let string_1 = "hello world!";
+        let string_2 = "hello again, world";
+        let string_3 = "this is another string";
 
         // Intern a string.
-        let s1 = interner.try_intern("hello world!").expect("should not fail to intern");
+        let s1 = interner.try_intern(string_1).expect("should not fail to intern");
+        active_interned_entries_len += entry_len(string_1);
         assert_eq!(interner.len(), 1);
+        assert_eq!(interner.len_bytes(), active_interned_entries_len);
 
-        // Get the initial values of len, offset, and reclaimed sum.
-        let initial_len = interner.len_bytes();
-        let initial_offset = offset(&interner);
-        let initial_reclaimed_sum: usize = interner
-            .state
-            .lock()
-            .unwrap()
-            .storage
-            .reclaimed
-            .iter()
-            .map(|entry| entry.capacity())
-            .sum();
+        // Intern a second string.
+        let _s2 = interner.try_intern(string_2).expect("should not fail to intern");
+        active_interned_entries_len += entry_len(string_2);
+        assert_eq!(interner.len(), 2);
+        assert_eq!(interner.len_bytes(), active_interned_entries_len);
 
-        assert_eq!(initial_len, initial_offset - initial_reclaimed_sum);
-
-        // Drop the string, which should decrement the len and add to reclaimed.
+        // Drop the first string.
         drop(s1);
-        assert_eq!(interner.len(), 0);
-
-        let reclaimed_len = interner.len_bytes();
-        let reclaimed_offset = offset(&interner);
-        let reclaimed_sum: usize = interner
-            .state
-            .lock()
-            .unwrap()
-            .storage
-            .reclaimed
-            .iter()
-            .map(|entry| entry.capacity())
-            .sum();
-
-        assert_eq!(reclaimed_len, reclaimed_offset - reclaimed_sum);
-
-        // Intern a new string to reuse the reclaimed space.
-        let _s2 = interner
-            .try_intern("hello again, world")
-            .expect("should not fail to intern");
+        active_interned_entries_len -= entry_len(string_1);
         assert_eq!(interner.len(), 1);
+        assert_eq!(interner.len_bytes(), active_interned_entries_len);
 
-        let reuse_len = interner.len_bytes();
-        let reuse_offset = offset(&interner);
-        let reuse_sum: usize = interner
-            .state
-            .lock()
-            .unwrap()
-            .storage
-            .reclaimed
-            .iter()
-            .map(|entry| entry.capacity())
-            .sum();
-
-        assert_eq!(reuse_len, reuse_offset - reuse_sum);
+        // Intern a new string.
+        let _s3 = interner.try_intern(string_3).expect("should not fail to intern");
+        active_interned_entries_len += entry_len(string_3);
+        assert_eq!(interner.len(), 2);
+        assert_eq!(interner.len_bytes(), active_interned_entries_len);
     }
 
     proptest! {
