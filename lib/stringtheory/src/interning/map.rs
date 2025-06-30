@@ -596,11 +596,6 @@ impl GenericMapInterner {
         self.state.lock().unwrap().storage.len
     }
 
-    /// Returns the offset of the interner.
-    pub fn offset(&self) -> usize {
-        self.state.lock().unwrap().storage.offset
-    }
-
     /// Returns the total number of bytes the interner can hold.
     pub fn capacity_bytes(&self) -> usize {
         self.state.lock().unwrap().storage.capacity.get()
@@ -681,6 +676,10 @@ mod tests {
 
     fn first_reclaimed_entry(interner: &GenericMapInterner) -> ReclaimedEntry {
         interner.state.lock().unwrap().storage.reclaimed.first().unwrap()
+    }
+
+    fn offset(interner: &GenericMapInterner) -> usize {
+        interner.state.lock().unwrap().storage.offset
     }
 
     const fn entry_len(s: &str) -> usize {
@@ -915,7 +914,7 @@ mod tests {
 
         // Get the initial values of len, offset, and reclaimed sum.
         let initial_len = interner.len_bytes();
-        let initial_offset = interner.offset();
+        let initial_offset = offset(&interner);
         let initial_reclaimed_sum: usize = interner
             .state
             .lock()
@@ -933,7 +932,7 @@ mod tests {
         assert_eq!(interner.len(), 0);
 
         let reclaimed_len = interner.len_bytes();
-        let reclaimed_offset = interner.offset();
+        let reclaimed_offset = offset(&interner);
         let reclaimed_sum: usize = interner
             .state
             .lock()
@@ -953,7 +952,7 @@ mod tests {
         assert_eq!(interner.len(), 1);
 
         let reuse_len = interner.len_bytes();
-        let reuse_offset = interner.offset();
+        let reuse_offset = offset(&interner);
         let reuse_sum: usize = interner
             .state
             .lock()
