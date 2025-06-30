@@ -261,9 +261,15 @@ impl InternerStorage {
         }
     }
 
+    #[allow(dead_code)]
     /// Returns the total number of unused bytes that are available for interning.
     fn available(&self) -> usize {
         self.capacity.get() - self.len
+    }
+
+    /// Returns the total number of bytes of continguous, unoccupied space at the end of the data buffer.
+    fn available_unoccupied(&self) -> usize {
+        self.capacity.get() - self.offset
     }
 
     fn get_entry_ptr(&self, offset: usize) -> NonNull<EntryHeader> {
@@ -471,16 +477,8 @@ impl InternerState {
         // have no reclaimed entries, then we'll just try to fit it in the remaining capacity of our data buffer.
         let maybe_reclaimed_entry = self.storage.reclaimed.take_if(|entry| entry.capacity() >= required_cap);
         let (entry_offset, entry_ptr) = if let Some(reclaimed_entry) = maybe_reclaimed_entry {
-            println!(
-                "brianna - writing to reclaimed entry of size: {}",
-                reclaimed_entry.capacity()
-            );
             self.storage.write_to_reclaimed_entry(reclaimed_entry, s)
-        } else if required_cap <= self.storage.available() {
-            println!(
-                "brianna - writing to unoccupied with available: {}",
-                self.storage.available()
-            );
+        } else if required_cap <= self.storage.available_unoccupied() {
             self.storage.write_to_unoccupied(s)
         } else {
             // We don't have enough space to intern this string at all, so we'll just return `None`.
@@ -792,13 +790,6 @@ mod tests {
         let s_medium2 = "if you want to go fast, go alone; if you want to go far, go together";
         let s_small = "are you there god? it's me, margaret";
 
-        println!(
-            "brianna - s_large: {}, s_medium1: {}, s_medium2: {}, s_small: {}",
-            entry_len(s_large),
-            entry_len(s_medium1),
-            entry_len(s_medium2),
-            entry_len(s_small)
-        );
         let phase1_available_capacity = capacity - entry_len(s_large) - entry_len(s_medium1);
         assert!(phase1_available_capacity < entry_len(s_small));
         assert!((entry_len(s_large) - entry_len(s_medium2)) < entry_len(s_small));
@@ -811,21 +802,11 @@ mod tests {
         assert_eq!(interner.len(), 2);
         assert_eq!(available_len(&interner), phase1_available_capacity);
         assert_eq!(reclaimed_len(&interner), 0);
-        println!(
-            "brianna - phase 1: available_len={}, reclaimed_len={}",
-            available_len(&interner),
-            reclaimed_len(&interner)
-        );
 
         // Phase 2: drop `s_large` so it gets reclaimed.
         drop(s1);
         assert_eq!(interner.len(), 1);
         assert_eq!(reclaimed_len(&interner), 1);
-        println!(
-            "brianna - phase 2: available_len={}, reclaimed_len={}",
-            available_len(&interner),
-            reclaimed_len(&interner)
-        );
 
         // Phase 3: intern `s_medium2`, which should fit in the reclaimed entry for `s_large`. This should leave a
         // small, split off reclaimed entry.
@@ -833,22 +814,10 @@ mod tests {
 
         assert_eq!(interner.len(), 2);
         assert_eq!(reclaimed_len(&interner), 1);
-        println!(
-            "brianna - phase 3: available_len={}, reclaimed_len={}",
-            available_len(&interner),
-            reclaimed_len(&interner)
-        );
 
         // Phase 4: intern `s_small`, which should not fit in the leftover reclaimed entry from `s_large` _or_ the
         // available capacity.
-        println!(
-            "brianna - Before s_small: available_len={}, reclaimed_len={}, s_small_entry_len={}",
-            available_len(&interner),
-            reclaimed_len(&interner),
-            entry_len(s_small)
-        );
         let s4 = interner.try_intern(s_small);
-        println!("brianna - After s_small: s4={:?}", s4);
         assert_eq!(s4, None);
 
         assert_eq!(interner.len(), 2);
