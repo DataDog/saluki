@@ -1,5 +1,8 @@
 //! Source implementations.
 
+mod datadog_traces;
+pub use self::datadog_traces::DatadogTracesConfiguration;
+
 mod dogstatsd;
 pub use self::dogstatsd::DogStatsDConfiguration;
 

@@ -3,8 +3,11 @@ use std::time::{Duration, Instant};
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
 use saluki_components::{
-    destinations::{DatadogEventsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration},
-    sources::DogStatsDConfiguration,
+    destinations::{
+        BlackholeConfiguration, DatadogEventsConfiguration, DatadogMetricsConfiguration,
+        DatadogServiceChecksConfiguration,
+    },
+    sources::{DatadogTracesConfiguration, DogStatsDConfiguration},
     transforms::{
         AggregateConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration, DogstatsDPrefixFilterConfiguration,
         HostEnrichmentConfiguration, HostTagsConfiguration, PreaggregationFilterConfiguration,
@@ -158,21 +161,27 @@ async fn create_topology(
         }
     }
 
+    let dd_traces_config = DatadogTracesConfiguration::from_configuration(configuration)
+        .error_context("Failed to configure Datadog Traces destination.")?;
+
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
     blueprint
         .add_source("dsd_in", dsd_config)?
+        .add_source("dd_traces_in", dd_traces_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
         .add_transform("enrich", enrich_config)?
         .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
         .add_destination("dd_metrics_out", dd_metrics_config)?
         .add_destination("dd_events_out", dd_events_config)?
         .add_destination("dd_service_checks_out", dd_service_checks_config)?
+        .add_destination("dd_traces_blackhole", BlackholeConfiguration)?
         .connect_component("dsd_agg", ["dsd_in.metrics"])?
         .connect_component("dsd_prefix_filter", ["dsd_agg"])?
         .connect_component("enrich", ["dsd_prefix_filter"])?
         .connect_component("dd_metrics_out", ["enrich"])?
         .connect_component("dd_events_out", ["dsd_in.events"])?
-        .connect_component("dd_service_checks_out", ["dsd_in.service_checks"])?;
+        .connect_component("dd_service_checks_out", ["dsd_in.service_checks"])?
+        .connect_component("dd_traces_blackhole", ["dd_traces_in"])?;
 
     if configuration.get_typed_or_default::<bool>("enable_preaggr_pipeline") {
         let preaggr_dd_url = configuration
