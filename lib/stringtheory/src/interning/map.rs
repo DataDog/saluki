@@ -261,7 +261,7 @@ impl InternerStorage {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     /// Returns the total number of unused bytes that are available for interning.
     fn available(&self) -> usize {
         self.capacity.get() - self.len
