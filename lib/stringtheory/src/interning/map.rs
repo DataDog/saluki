@@ -226,8 +226,9 @@ unsafe impl Sync for StringState {}
 struct InternerStorage {
     // Direct pieces of our buffer allocation.
     ptr: NonNull<u8>,
-    len: usize,
+    offset: usize,
     capacity: NonZeroUsize,
+    len: usize,
 
     // Markers for entries that can be reused.
     reclaimed: ReclaimedEntries,
@@ -253,15 +254,22 @@ impl InternerStorage {
 
         Self {
             ptr,
-            len: 0,
+            offset: 0,
             capacity,
+            len: 0,
             reclaimed: ReclaimedEntries::new(),
         }
     }
 
+    #[cfg(test)]
     /// Returns the total number of unused bytes that are available for interning.
     fn available(&self) -> usize {
         self.capacity.get() - self.len
+    }
+
+    /// Returns the total number of bytes of continguous, unoccupied space at the end of the data buffer.
+    fn available_unoccupied(&self) -> usize {
+        self.capacity.get() - self.offset
     }
 
     fn get_entry_ptr(&self, offset: usize) -> NonNull<EntryHeader> {
@@ -288,6 +296,7 @@ impl InternerStorage {
         );
 
         let entry_ptr = self.get_entry_ptr(offset);
+        let entry_len = entry_header.entry_len();
 
         // Write the entry header.
         unsafe { entry_ptr.as_ptr().write(entry_header) };
@@ -302,6 +311,8 @@ impl InternerStorage {
         };
         entry_s_buf.copy_from_slice(s_buf);
 
+        self.len += entry_len;
+
         entry_ptr
     }
 
@@ -309,8 +320,8 @@ impl InternerStorage {
         let entry_header = EntryHeader::from_string(s);
 
         // Write the entry to the end of the data buffer.
-        let entry_offset = self.len;
-        self.len += entry_header.entry_len();
+        let entry_offset = self.offset;
+        self.offset += entry_header.entry_len();
 
         (entry_offset, self.write_entry(entry_offset, entry_header, s))
     }
@@ -384,6 +395,7 @@ impl InternerStorage {
 
         let entry = ReclaimedEntry::new(entry_offset as usize, entry_len);
         self.add_reclaimed(entry);
+        self.len -= entry_len;
     }
 }
 
@@ -466,7 +478,7 @@ impl InternerState {
         let maybe_reclaimed_entry = self.storage.reclaimed.take_if(|entry| entry.capacity() >= required_cap);
         let (entry_offset, entry_ptr) = if let Some(reclaimed_entry) = maybe_reclaimed_entry {
             self.storage.write_to_reclaimed_entry(reclaimed_entry, s)
-        } else if required_cap <= self.storage.available() {
+        } else if required_cap <= self.storage.available_unoccupied() {
             self.storage.write_to_unoccupied(s)
         } else {
             // We don't have enough space to intern this string at all, so we'll just return `None`.
@@ -520,7 +532,7 @@ unsafe impl Sync for InternerState {}
 /// ┗━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━━━┛ ┗━━━━━━━━━━━━┛ ┗━━━━━━━━━━━━┛
 /// ▲                                   ▲                           ▲
 /// └────────── `EntryHeader` ──────────┘                           └── aligned for `EntryHeader`
-///          (8 byte alignment)                                         via trailing padding    
+///          (8 byte alignment)                                         via trailing padding   
 /// ```
 ///
 /// The backing buffer is always aligned properly for `EntryHeader`, so that the first entry can be referenced
@@ -892,6 +904,39 @@ mod tests {
         assert_eq!(interner.len(), 1);
         assert_eq!(reclaimed_len(&interner), 0);
         assert_eq!(s1_reclaimed_expected, s2_reclaimed_expected);
+    }
+
+    #[test]
+    fn len_bytes_reps_active_interned_entries() {
+        let interner = create_interner(256);
+        let mut active_interned_entries_len = 0;
+        let string_1 = "hello world!";
+        let string_2 = "hello again, world";
+        let string_3 = "this is another string";
+
+        // Intern a string.
+        let s1 = interner.try_intern(string_1).expect("should not fail to intern");
+        active_interned_entries_len += entry_len(string_1);
+        assert_eq!(interner.len(), 1);
+        assert_eq!(interner.len_bytes(), active_interned_entries_len);
+
+        // Intern a second string.
+        let _s2 = interner.try_intern(string_2).expect("should not fail to intern");
+        active_interned_entries_len += entry_len(string_2);
+        assert_eq!(interner.len(), 2);
+        assert_eq!(interner.len_bytes(), active_interned_entries_len);
+
+        // Drop the first string.
+        drop(s1);
+        active_interned_entries_len -= entry_len(string_1);
+        assert_eq!(interner.len(), 1);
+        assert_eq!(interner.len_bytes(), active_interned_entries_len);
+
+        // Intern a new string.
+        let _s3 = interner.try_intern(string_3).expect("should not fail to intern");
+        active_interned_entries_len += entry_len(string_3);
+        assert_eq!(interner.len(), 2);
+        assert_eq!(interner.len_bytes(), active_interned_entries_len);
     }
 
     proptest! {
