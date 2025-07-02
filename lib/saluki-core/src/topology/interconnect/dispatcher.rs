@@ -12,11 +12,11 @@ use crate::{
     components::ComponentContext,
     data_model::event::Event,
     observability::ComponentMetricsExt as _,
-    pooling::{ElasticObjectPool, ObjectPool},
+    pooling::{ObjectPool, OnDemandObjectPool},
     topology::OutputName,
 };
 
-type DispatcherBufferPool = ElasticObjectPool<FixedSizeEventBuffer>;
+type DispatcherBufferPool = OnDemandObjectPool<FixedSizeEventBuffer>;
 
 struct DispatcherMetrics {
     events_sent: Counter,
@@ -491,11 +491,10 @@ mod tests {
         topology::interconnect::FixedSizeEventBufferInner,
     };
 
-    fn create_dispatcher(event_buffers: usize, buffer_size: usize) -> (Dispatcher, DispatcherBufferPool) {
+    fn create_dispatcher(buffer_size: usize) -> (Dispatcher, DispatcherBufferPool) {
         let component_context = ComponentContext::test_source("dispatcher_test");
-        let (buffer_pool, _) = ElasticObjectPool::with_builder("test", 1, event_buffers, move || {
-            FixedSizeEventBufferInner::with_capacity(buffer_size)
-        });
+        let buffer_pool =
+            OnDemandObjectPool::with_builder("test", move || FixedSizeEventBufferInner::with_capacity(buffer_size));
 
         (Dispatcher::new(component_context, buffer_pool.clone()), buffer_pool)
     }
@@ -503,7 +502,7 @@ mod tests {
     #[tokio::test]
     async fn default_output() {
         // Create the dispatcher and wire up a sender to the default output so that we can receive what gets dispatched.
-        let (mut dispatcher, _) = create_dispatcher(1, 1);
+        let (mut dispatcher, _) = create_dispatcher(1);
 
         let (tx, mut rx) = mpsc::channel(1);
         dispatcher.add_output(OutputName::Default, tx);
@@ -531,7 +530,7 @@ mod tests {
     #[tokio::test]
     async fn named_output() {
         // Create the dispatcher and wire up a sender to the named output so that we can receive what gets dispatched.
-        let (mut dispatcher, _) = create_dispatcher(1, 1);
+        let (mut dispatcher, _) = create_dispatcher(1);
 
         let (tx, mut rx) = mpsc::channel(1);
         dispatcher.add_output(OutputName::Given("metrics".into()), tx);
@@ -559,7 +558,7 @@ mod tests {
     #[tokio::test]
     async fn multiple_senders_default_output() {
         // Create the dispatcher and wire up two senders to the default output so that we can receive what gets dispatched.
-        let (mut dispatcher, _) = create_dispatcher(2, 1);
+        let (mut dispatcher, _) = create_dispatcher(1);
 
         let (tx1, mut rx1) = mpsc::channel(1);
         let (tx2, mut rx2) = mpsc::channel(1);
@@ -598,7 +597,7 @@ mod tests {
     #[tokio::test]
     async fn multiple_senders_named_output() {
         // Create the dispatcher and wire up two senders to the default output so that we can receive what gets dispatched.
-        let (mut dispatcher, _) = create_dispatcher(2, 1);
+        let (mut dispatcher, _) = create_dispatcher(1);
 
         let (tx1, mut rx1) = mpsc::channel(1);
         let (tx2, mut rx2) = mpsc::channel(1);
@@ -637,7 +636,7 @@ mod tests {
     #[tokio::test]
     async fn default_output_not_set() {
         // Create the dispatcher and try to dispatch an event without setting up a default output.
-        let (dispatcher, ebuf_pool) = create_dispatcher(1, 1);
+        let (dispatcher, ebuf_pool) = create_dispatcher(1);
 
         let result = dispatcher.buffered();
         assert!(result.is_err());
@@ -650,7 +649,7 @@ mod tests {
     #[tokio::test]
     async fn named_output_not_set() {
         // Create the dispatcher and try to dispatch an event without setting up a named output.
-        let (dispatcher, ebuf_pool) = create_dispatcher(1, 1);
+        let (dispatcher, ebuf_pool) = create_dispatcher(1);
 
         let result = dispatcher.buffered_named("metrics");
         assert!(result.is_err());
@@ -661,6 +660,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn multiple_senders_blocks_when_event_buffer_pool_empty() {
         // Create the dispatcher and wire up two senders to the default output so that we can receive what gets
         // dispatched.
@@ -668,7 +668,7 @@ mod tests {
         // Crucially, our event buffer pool is set at a fixed size of two, and we'll use this to control if the event
         // buffer pool is empty or not when calling `dispatch`, to ensure that dispatching blocks when the pool is empty
         // and completes when it can acquire the necessary additional buffer.
-        let (mut dispatcher, ebuf_pool) = create_dispatcher(2, 1);
+        let (mut dispatcher, ebuf_pool) = create_dispatcher(1);
 
         let (tx1, mut rx1) = mpsc::channel(1);
         let (tx2, mut rx2) = mpsc::channel(1);

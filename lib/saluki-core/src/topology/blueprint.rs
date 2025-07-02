@@ -17,10 +17,8 @@ use crate::{
     data_model::event::Event,
 };
 
-// SAFETY: These are obviously all non-zero.
+// SAFETY: This is obviously non-zero.
 const DEFAULT_EVENT_BUFFER_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(1024) };
-const DEFAULT_EVENT_BUFFER_POOL_SIZE_MIN: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(32) };
-const DEFAULT_EVENT_BUFFER_POOL_SIZE_MAX: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(512) };
 
 /// A topology blueprint error.
 #[derive(Debug, Snafu)]
@@ -53,8 +51,6 @@ pub struct TopologyBlueprint {
     destinations: HashMap<ComponentId, RegisteredComponent<Box<dyn DestinationBuilder + Send>>>,
     component_registry: ComponentRegistry,
     event_buffer_pool_buffer_size: usize,
-    event_buffer_pool_size_min: usize,
-    event_buffer_pool_size_max: usize,
 }
 
 impl TopologyBlueprint {
@@ -71,16 +67,10 @@ impl TopologyBlueprint {
             destinations: HashMap::new(),
             component_registry,
             event_buffer_pool_buffer_size: 0,
-            event_buffer_pool_size_min: 0,
-            event_buffer_pool_size_max: 0,
         };
 
         // Set our default event buffer pool sizing.
-        blueprint.with_global_event_buffer_pool_size(
-            DEFAULT_EVENT_BUFFER_SIZE,
-            DEFAULT_EVENT_BUFFER_POOL_SIZE_MIN,
-            DEFAULT_EVENT_BUFFER_POOL_SIZE_MAX,
-        );
+        blueprint.with_global_event_buffer_pool_size(DEFAULT_EVENT_BUFFER_SIZE);
 
         blueprint
     }
@@ -99,14 +89,9 @@ impl TopologyBlueprint {
     /// The global event buffer pool is used by components to acquire an event buffer that can be used to forward events
     /// to the next component in the topology.
     ///
-    /// Each individual event buffer will be allocated to hold `buffer_size` events, and the pool will be sized to hold
-    /// a minimum of `size_min` buffer, and up to a maximum of `size_max` event buffers.
-    pub fn with_global_event_buffer_pool_size(
-        &mut self, buffer_size: NonZeroUsize, size_min: NonZeroUsize, size_max: NonZeroUsize,
-    ) -> &mut Self {
+    /// Each individual event buffer will be allocated to hold `buffer_size` events.
+    pub fn with_global_event_buffer_pool_size(&mut self, buffer_size: NonZeroUsize) -> &mut Self {
         self.event_buffer_pool_buffer_size = buffer_size.get();
-        self.event_buffer_pool_size_min = size_min.get();
-        self.event_buffer_pool_size_max = size_max.get();
 
         // Account for our global event buffer pool, which has a lower and upper bound for the pooled object limit, but
         // using fixed-size event buffers.
@@ -114,9 +99,10 @@ impl TopologyBlueprint {
         // Based on how minimum/firm limits are calculated, we have to subtract the minimum size from our firm size.
         let buffer_size_bytes = std::mem::size_of::<FixedSizeEventBufferInner>()
             + (self.event_buffer_pool_buffer_size * std::mem::size_of::<Event>());
-        let event_buffer_pool_min_bytes = self.event_buffer_pool_size_min * buffer_size_bytes;
-        let event_buffer_pool_max_bytes =
-            (self.event_buffer_pool_size_max * buffer_size_bytes) - event_buffer_pool_min_bytes;
+
+        // TODO: Our upper bound here is really the sum of the size of all component channels... but I'm just faking this for now.
+        let event_buffer_pool_min_bytes = 0;
+        let event_buffer_pool_max_bytes = (512 * buffer_size_bytes) - event_buffer_pool_min_bytes;
 
         let mut bounds_builder = self.component_registry.bounds_builder();
         let mut bounds_builder = bounds_builder.subcomponent("buffer_pools/event_buffer");
@@ -312,8 +298,6 @@ impl TopologyBlueprint {
             self.name,
             self.graph,
             self.event_buffer_pool_buffer_size,
-            self.event_buffer_pool_size_min,
-            self.event_buffer_pool_size_max,
             sources,
             transforms,
             destinations,

@@ -4,7 +4,7 @@ use tokio::runtime::Handle;
 
 use crate::{
     components::ComponentContext,
-    pooling::ElasticObjectPool,
+    pooling::OnDemandObjectPool,
     topology::interconnect::{Dispatcher, EventStream, FixedSizeEventBuffer},
 };
 
@@ -13,7 +13,7 @@ pub struct TransformContext {
     component_context: ComponentContext,
     dispatcher: Dispatcher,
     event_stream: EventStream,
-    event_buffer_pool: ElasticObjectPool<FixedSizeEventBuffer>,
+    event_buffer_pool: OnDemandObjectPool<FixedSizeEventBuffer>,
     memory_limiter: MemoryLimiter,
     health_handle: Option<Health>,
     health_registry: HealthRegistry,
@@ -26,7 +26,7 @@ impl TransformContext {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         component_context: ComponentContext, dispatcher: Dispatcher, event_stream: EventStream,
-        event_buffer_pool: ElasticObjectPool<FixedSizeEventBuffer>, memory_limiter: MemoryLimiter,
+        event_buffer_pool: OnDemandObjectPool<FixedSizeEventBuffer>, memory_limiter: MemoryLimiter,
         component_registry: ComponentRegistry, health_handle: Health, health_registry: HealthRegistry,
         thread_pool: Handle,
     ) -> Self {
@@ -68,7 +68,7 @@ impl TransformContext {
     }
 
     /// Gets a reference to the event buffer pool.
-    pub fn event_buffer_pool(&self) -> &ElasticObjectPool<FixedSizeEventBuffer> {
+    pub fn event_buffer_pool(&self) -> &OnDemandObjectPool<FixedSizeEventBuffer> {
         &self.event_buffer_pool
     }
 
