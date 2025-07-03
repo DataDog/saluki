@@ -18,7 +18,7 @@ use super::{
     interconnect::{Dispatcher, EventStream, FixedSizeEventBuffer, FixedSizeEventBufferInner},
     running::RunningTopology,
     shutdown::ComponentShutdownCoordinator,
-    ComponentId, RegisteredComponent,
+    ComponentId, RegisteredComponent, COMPONENT_INTERCONNECT_CAPACITY,
 };
 use crate::{
     components::{
@@ -306,5 +306,5 @@ fn spawn_destination(
 }
 
 fn build_interconnect_channel() -> (mpsc::Sender<FixedSizeEventBuffer>, mpsc::Receiver<FixedSizeEventBuffer>) {
-    mpsc::channel(128)
+    mpsc::channel(COMPONENT_INTERCONNECT_CAPACITY)
 }

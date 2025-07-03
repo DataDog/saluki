@@ -8,7 +8,7 @@ use super::{
     built::BuiltTopology,
     graph::{Graph, GraphError},
     interconnect::{FixedSizeEventBuffer, FixedSizeEventBufferInner},
-    ComponentId, RegisteredComponent,
+    ComponentId, RegisteredComponent, COMPONENT_INTERCONNECT_CAPACITY,
 };
 use crate::{
     components::{
@@ -17,8 +17,9 @@ use crate::{
     data_model::event::Event,
 };
 
-// SAFETY: This is obviously non-zero.
+// SAFETY: These are obviously non-zero.
 const DEFAULT_EVENT_BUFFER_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(1024) };
+const DEFAULT_INTERCONNECT_CAPACITY: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(128) };
 
 /// A topology blueprint error.
 #[derive(Debug, Snafu)]
@@ -50,7 +51,8 @@ pub struct TopologyBlueprint {
     transforms: HashMap<ComponentId, RegisteredComponent<Box<dyn TransformBuilder + Send>>>,
     destinations: HashMap<ComponentId, RegisteredComponent<Box<dyn DestinationBuilder + Send>>>,
     component_registry: ComponentRegistry,
-    event_buffer_pool_buffer_size: usize,
+    event_buffer_pool_buffer_size: NonZeroUsize,
+    interconnect_capacity: NonZeroUsize,
 }
 
 impl TopologyBlueprint {
@@ -59,68 +61,84 @@ impl TopologyBlueprint {
         // Create a nested component registry for this topology.
         let component_registry = component_registry.get_or_create("topology").get_or_create(name);
 
-        let mut blueprint = Self {
+        Self {
             name: name.to_string(),
             graph: Graph::default(),
             sources: HashMap::new(),
             transforms: HashMap::new(),
             destinations: HashMap::new(),
             component_registry,
-            event_buffer_pool_buffer_size: 0,
-        };
-
-        // Set our default event buffer pool sizing.
-        blueprint.with_global_event_buffer_pool_size(DEFAULT_EVENT_BUFFER_SIZE);
-
-        blueprint
+            event_buffer_pool_buffer_size: DEFAULT_EVENT_BUFFER_SIZE,
+            interconnect_capacity: DEFAULT_INTERCONNECT_CAPACITY,
+        }
     }
 
-    fn update_bounds_for_interconnect(&mut self) {
-        // Increment the size of our interconnects-related bounds to account for a newly-added transform or destination.
-        self.component_registry
-            .get_or_create("interconnects")
-            .bounds_builder()
-            .minimum()
-            .with_array::<FixedSizeEventBuffer>("fixed size event buffers", 128);
-    }
-
-    /// Sets the global event buffer pool sizing.
+    /// Sets the size of event buffers in the global event buffer pool.
     ///
     /// The global event buffer pool is used by components to acquire an event buffer that can be used to forward events
-    /// to the next component in the topology.
+    /// to the next component in the topology. Each individual event buffer will be allocated to hold `buffer_size` events.
     ///
-    /// Each individual event buffer will be allocated to hold `buffer_size` events.
+    /// Defaults to 1024 events.
     pub fn with_global_event_buffer_pool_size(&mut self, buffer_size: NonZeroUsize) -> &mut Self {
-        self.event_buffer_pool_buffer_size = buffer_size.get();
+        self.event_buffer_pool_buffer_size = buffer_size;
+        self.recalculate_bounds();
+        self
+    }
 
-        // Account for our global event buffer pool, which has a lower and upper bound for the pooled object limit, but
-        // using fixed-size event buffers.
+    /// Sets the component interconnect capacity.
+    ///
+    /// This controls how many outstanding event buffers can be queued for each component before backpressure is applied
+    /// to upstream components. Changing this value allows trading off between the peak memory usage when processing a high
+    /// volume of events and the amount of buffering that takes place to smooth out processing speed and efficiency.
+    ///
+    /// Defaults to 128.
+    pub fn with_component_interconnect_capacity(&mut self, capacity: NonZeroUsize) -> &mut Self {
+        self.interconnect_capacity = capacity;
+        self.recalculate_bounds();
+        self
+    }
+
+    fn recalculate_bounds(&mut self) {
+        // Adjust the bounds related to interconnects.
         //
-        // Based on how minimum/firm limits are calculated, we have to subtract the minimum size from our firm size.
-        let buffer_size_bytes = std::mem::size_of::<FixedSizeEventBufferInner>()
-            + (self.event_buffer_pool_buffer_size * std::mem::size_of::<Event>());
+        // Every non-source component has an interconnect.
+        let total_interconnect_capacity =
+            (self.transforms.len() + self.destinations.len()) * self.interconnect_capacity.get();
+        let mut bounds_builder = self.component_registry.bounds_builder();
+        let mut bounds_builder = bounds_builder.subcomponent("interconnects");
 
-        // TODO: Our upper bound here is really the sum of the size of all component channels... but I'm just faking this for now.
-        let event_buffer_pool_min_bytes = 0;
-        let event_buffer_pool_max_bytes = (512 * buffer_size_bytes) - event_buffer_pool_min_bytes;
+        bounds_builder.reset();
+        bounds_builder
+            .minimum()
+            .with_array::<FixedSizeEventBuffer>("fixed size event buffers", total_interconnect_capacity);
+
+        // Adjust the bounds related to event buffers themselves.
+        //
+        // We calculate the maximum number of event buffers by adding up the total capacity of all non-source components, plus the count
+        // of non-destination components. This is the effective upper bound because once all component channels are full, sending
+        // components can only allocate one more event buffer before being blocked on sending, which is then the effective upper bound.
+        let max_in_flight_event_buffers = ((self.transforms.len() + self.destinations.len())
+            * COMPONENT_INTERCONNECT_CAPACITY)
+            + self.sources.len()
+            + self.transforms.len();
+
+        let buffer_size_bytes = std::mem::size_of::<FixedSizeEventBufferInner>()
+            + (self.event_buffer_pool_buffer_size.get() * std::mem::size_of::<Event>());
+
+        let event_buffer_pool_max_bytes = max_in_flight_event_buffers * buffer_size_bytes;
 
         let mut bounds_builder = self.component_registry.bounds_builder();
         let mut bounds_builder = bounds_builder.subcomponent("buffer_pools/event_buffer");
 
         bounds_builder.reset();
         bounds_builder
-            .minimum()
-            .with_fixed_amount("global event buffer pool", event_buffer_pool_min_bytes);
-        bounds_builder
             .firm()
             .with_fixed_amount("global event buffer pool", event_buffer_pool_max_bytes);
-
-        self
     }
 
     /// Adds a source component to the blueprint.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
     pub fn add_source<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, GenericError>
@@ -139,6 +157,8 @@ impl TopologyBlueprint {
         let mut bounds_builder = source_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
 
+        self.recalculate_bounds();
+
         let _ = self.sources.insert(
             component_id,
             RegisteredComponent::new(Box::new(builder), source_registry),
@@ -149,7 +169,7 @@ impl TopologyBlueprint {
 
     /// Adds a transform component to the blueprint.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
     pub fn add_transform<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, GenericError>
@@ -162,13 +182,13 @@ impl TopologyBlueprint {
             .add_transform(component_id, &builder)
             .error_context("Failed to add transform to topology graph.")?;
 
-        self.update_bounds_for_interconnect();
-
         let mut transform_registry = self
             .component_registry
             .get_or_create(format!("components.transforms.{}", component_id));
         let mut bounds_builder = transform_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
+
+        self.recalculate_bounds();
 
         let _ = self.transforms.insert(
             component_id,
@@ -180,7 +200,7 @@ impl TopologyBlueprint {
 
     /// Adds a destination component to the blueprint.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
     pub fn add_destination<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, GenericError>
@@ -193,13 +213,13 @@ impl TopologyBlueprint {
             .add_destination(component_id, &builder)
             .error_context("Failed to add destination to topology graph.")?;
 
-        self.update_bounds_for_interconnect();
-
         let mut destination_registry = self
             .component_registry
             .get_or_create(format!("components.destinations.{}", component_id));
         let mut bounds_builder = destination_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
+
+        self.recalculate_bounds();
 
         let _ = self.destinations.insert(
             component_id,
@@ -211,7 +231,7 @@ impl TopologyBlueprint {
 
     /// Connects one or more source component outputs to a destination component.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the destination component ID, or any of the source component IDs, are invalid or do not exist, or if the data
     /// types between one of the source/destination component pairs is incompatible, an error is returned.
@@ -234,7 +254,7 @@ impl TopologyBlueprint {
 
     /// Builds the topology.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If any of the components could not be built, an error is returned.
     pub async fn build(mut self) -> Result<BuiltTopology, GenericError> {
@@ -297,7 +317,7 @@ impl TopologyBlueprint {
         Ok(BuiltTopology::from_parts(
             self.name,
             self.graph,
-            self.event_buffer_pool_buffer_size,
+            self.event_buffer_pool_buffer_size.get(),
             sources,
             transforms,
             destinations,

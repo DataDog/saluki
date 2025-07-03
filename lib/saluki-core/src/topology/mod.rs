@@ -22,6 +22,8 @@ pub(super) mod test_util;
 
 pub use self::ids::*;
 
+const COMPONENT_INTERCONNECT_CAPACITY: usize = 128;
+
 pub(super) struct RegisteredComponent<T> {
     component: T,
     component_registry: ComponentRegistry,
