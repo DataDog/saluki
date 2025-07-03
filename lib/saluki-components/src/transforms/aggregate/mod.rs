@@ -853,7 +853,7 @@ mod tests {
     use float_cmp::ApproxEqRatio as _;
     use saluki_core::{
         components::ComponentContext,
-        pooling::ElasticObjectPool,
+        pooling::OnDemandObjectPool,
         topology::{
             interconnect::{Dispatcher, FixedSizeEventBufferInner},
             ComponentId, OutputName,
@@ -908,8 +908,8 @@ mod tests {
 
     /// Constructs a basic `Dispatcher` with a fixed-size event buffer.
     fn build_basic_dispatcher() -> (Dispatcher, DispatcherReceiver) {
-        let (event_buffer_pool, _) =
-            ElasticObjectPool::with_builder("test", 1, 1, || FixedSizeEventBufferInner::with_capacity(8));
+        let event_buffer_pool =
+            OnDemandObjectPool::with_builder("test", || FixedSizeEventBufferInner::with_capacity(8));
         let component_id = ComponentId::try_from("test").expect("should not fail to create component ID");
         let mut dispatcher = Dispatcher::new(ComponentContext::transform(component_id), event_buffer_pool);
 

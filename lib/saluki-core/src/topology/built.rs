@@ -4,7 +4,7 @@ use memory_accounting::{
     allocator::{AllocationGroupToken, Tracked},
     MemoryLimiter,
 };
-use saluki_common::task::{spawn_traced_named, JoinSetExt as _};
+use saluki_common::task::JoinSetExt as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use tokio::{
@@ -18,7 +18,7 @@ use super::{
     interconnect::{Dispatcher, EventStream, FixedSizeEventBuffer, FixedSizeEventBufferInner},
     running::RunningTopology,
     shutdown::ComponentShutdownCoordinator,
-    ComponentId, RegisteredComponent,
+    ComponentId, RegisteredComponent, COMPONENT_INTERCONNECT_CAPACITY,
 };
 use crate::{
     components::{
@@ -27,7 +27,7 @@ use crate::{
         transforms::{Transform, TransformContext},
         ComponentContext,
     },
-    pooling::ElasticObjectPool,
+    pooling::OnDemandObjectPool,
 };
 
 /// A built topology.
@@ -40,8 +40,6 @@ pub struct BuiltTopology {
     name: String,
     graph: Graph,
     event_buffer_pool_buffer_size: usize,
-    event_buffer_pool_size_min: usize,
-    event_buffer_pool_size_max: usize,
     sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
     transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
     destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
@@ -51,8 +49,7 @@ pub struct BuiltTopology {
 impl BuiltTopology {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(
-        name: String, graph: Graph, event_buffer_pool_buffer_size: usize, event_buffer_pool_size_min: usize,
-        event_buffer_pool_size_max: usize,
+        name: String, graph: Graph, event_buffer_pool_buffer_size: usize,
         sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
         transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
         destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
@@ -62,8 +59,6 @@ impl BuiltTopology {
             name,
             graph,
             event_buffer_pool_buffer_size,
-            event_buffer_pool_size_min,
-            event_buffer_pool_size_max,
             sources,
             transforms,
             destinations,
@@ -72,7 +67,7 @@ impl BuiltTopology {
     }
 
     fn create_component_interconnects(
-        &self, event_buffer_pool: ElasticObjectPool<FixedSizeEventBuffer>,
+        &self, event_buffer_pool: OnDemandObjectPool<FixedSizeEventBuffer>,
     ) -> (HashMap<ComponentId, Dispatcher>, HashMap<ComponentId, EventStream>) {
         // Collect all of the outbound edges in our topology graph.
         //
@@ -147,13 +142,9 @@ impl BuiltTopology {
         let mut component_task_map = HashMap::new();
 
         // Build our interconnects, which we'll grab from piecemeal as we spawn our components.
-        let (event_buffer_pool, shrinker) = ElasticObjectPool::with_builder(
-            "global_event_buffers",
-            self.event_buffer_pool_size_min,
-            self.event_buffer_pool_size_max,
-            move || FixedSizeEventBufferInner::with_capacity(self.event_buffer_pool_buffer_size),
-        );
-        spawn_traced_named("global-event-buffer-pool-shrinker", shrinker);
+        let event_buffer_pool = OnDemandObjectPool::with_builder("global_event_buffers", move || {
+            FixedSizeEventBufferInner::with_capacity(self.event_buffer_pool_buffer_size)
+        });
 
         let (mut forwarders, mut event_streams) = self.create_component_interconnects(event_buffer_pool.clone());
 
@@ -315,5 +306,5 @@ fn spawn_destination(
 }
 
 fn build_interconnect_channel() -> (mpsc::Sender<FixedSizeEventBuffer>, mpsc::Receiver<FixedSizeEventBuffer>) {
-    mpsc::channel(128)
+    mpsc::channel(COMPONENT_INTERCONNECT_CAPACITY)
 }

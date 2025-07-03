@@ -10,10 +10,8 @@ use tracing::{info, warn};
 
 use crate::{components::remapper::AgentTelemetryRemapperConfiguration, internal::initialize_and_launch_runtime};
 
-// SAFETY: These are obviously all non-zero.
-const INTERNAL_TELEMETRY_EVENT_BUFFER_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(768) };
-const INTERNAL_TELEMETRY_EVENT_BUFFER_POOL_SIZE_MIN: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(1) };
-const INTERNAL_TELEMETRY_EVENT_BUFFER_POOL_SIZE_MAX: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(4) };
+// SAFETY: This is obviously non-zero.
+const INTERNAL_TELEMETRY_INTERCONNECT_CAPACITY: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(4) };
 
 pub fn spawn_internal_observability_topology(
     config: &GenericConfiguration, component_registry: &ComponentRegistry, health_registry: HealthRegistry,
@@ -37,14 +35,7 @@ pub fn spawn_internal_observability_topology(
 
     let mut blueprint = TopologyBlueprint::new("internal", component_registry);
     blueprint
-        // We use a custom sized global event buffer pool since we send a fixed number of events on a fixed schedule,
-        // and without lowering the size of the pool, we'd both needlessly pre-allocate buffers _and_ have a very large
-        // firm bound for this topology.
-        .with_global_event_buffer_pool_size(
-            INTERNAL_TELEMETRY_EVENT_BUFFER_SIZE,
-            INTERNAL_TELEMETRY_EVENT_BUFFER_POOL_SIZE_MIN,
-            INTERNAL_TELEMETRY_EVENT_BUFFER_POOL_SIZE_MAX,
-        )
+        .with_component_interconnect_capacity(INTERNAL_TELEMETRY_INTERCONNECT_CAPACITY)
         .add_source("internal_metrics_in", int_metrics_config)?
         .add_transform("internal_metrics_remap", int_metrics_remap_config)?
         .add_destination("internal_metrics_out", prometheus_config)?
