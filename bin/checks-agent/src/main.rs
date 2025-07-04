@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use memory_accounting::ComponentRegistry;
 use saluki_app::{api::APIBuilder, metrics::emit_startup_metrics, prelude::*};
 use saluki_components::{
-    destinations::{DatadogMetricsConfiguration, PrometheusConfiguration},
+    destinations::{DatadogMetricsConfiguration, DatadogServiceChecksConfiguration, PrometheusConfiguration},
     sources::{ChecksConfiguration, InternalMetricsConfiguration},
     transforms::{AggregateConfiguration, ChainedConfiguration, HostEnrichmentConfiguration},
 };
@@ -149,10 +149,14 @@ async fn create_topology(
     // Create a ChecksConfiguration source
     let checks_config = ChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure checks source.")?
-        .with_autodiscovery_provider(env_provider.autodiscovery_provider().clone());
+        .with_autodiscovery_provider(env_provider.autodiscovery_provider().clone())
+        .with_hostname_provider(env_provider.host().clone());
     // Add a destination component to receive data from the source
     let metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure metrics destination.")?;
+
+    let service_checks_config = DatadogServiceChecksConfiguration::from_configuration(configuration)
+        .error_context("Failed to configure Datadog Service Checks destination.")?;
 
     let dsd_agg_config = AggregateConfiguration::from_configuration(configuration)
         .error_context("Failed to configure aggregate transform.")?;
@@ -166,11 +170,13 @@ async fn create_topology(
     blueprint
         .add_source("checks_in", checks_config)?
         .add_destination("metrics_out", metrics_config)?
+        .add_destination("service_checks_out", service_checks_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
         .add_transform("enrich", enrich_config)?
-        .connect_component("dsd_agg", ["checks_in"])?
+        .connect_component("dsd_agg", ["checks_in.metrics"])?
         .connect_component("enrich", ["dsd_agg"])?
-        .connect_component("metrics_out", ["enrich"])?;
+        .connect_component("metrics_out", ["enrich"])?
+        .connect_component("service_checks_out", ["checks_in.service_checks"])?;
 
     // When telemetry is enabled, we need to collect internal metrics, so add those components and route them here.
     let telemetry_enabled = configuration.get_typed_or_default::<bool>("telemetry_enabled");
