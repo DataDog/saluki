@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use clap::Parser as _;
+use saluki_app::logging::LoggingConfiguration;
 use saluki_app::prelude::*;
 use saluki_error::{generic_error, GenericError};
 use tracing::{error, info};
@@ -15,7 +16,7 @@ use self::driver::{Driver, DriverConfig};
 async fn main() {
     let cli = Cli::parse();
 
-    if let Err(e) = initialize_logging(Some(cli.log_level())) {
+    if let Err(e) = initialize_logging(&LoggingConfiguration::default().with_default_level(cli.log_level())) {
         fatal_and_exit(format!("failed to initialize logging: {}", e));
     }
 

@@ -4,6 +4,7 @@
 #![deny(missing_docs)]
 
 use clap::Parser as _;
+use saluki_app::logging::LoggingConfiguration;
 use saluki_app::prelude::*;
 use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{error, info};
@@ -22,7 +23,7 @@ mod sync;
 async fn main() {
     let cli = Cli::parse();
 
-    if let Err(e) = initialize_logging(Some(cli.log_level())) {
+    if let Err(e) = initialize_logging(&LoggingConfiguration::default()) {
         fatal_and_exit(format!("failed to initialize logging: {}", e));
     }
 

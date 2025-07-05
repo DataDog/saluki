@@ -8,7 +8,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use saluki_app::prelude::*;
+use saluki_app::{logging::LoggingConfiguration, prelude::*};
 use saluki_error::GenericError;
 use tokio::{
     net::TcpListener,
@@ -27,7 +27,7 @@ use self::state::*;
 
 #[tokio::main]
 async fn main() {
-    if let Err(e) = initialize_logging(None) {
+    if let Err(e) = initialize_logging(&LoggingConfiguration::default()) {
         fatal_and_exit(format!("failed to initialize logging: {}", e));
     }
 
