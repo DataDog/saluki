@@ -1,0 +1,14 @@
+[package]
+name = "subagent-supervisor"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+debug = false
+panic = "abort"
