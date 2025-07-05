@@ -34,7 +34,7 @@ static ALLOC: memory_accounting::allocator::TrackingAllocator<tikv_jemallocator:
 static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System> =
     memory_accounting::allocator::TrackingAllocator::new(std::alloc::System);
 
-#[tokio::main]
+#[tokio::main(worker_threads = 2)]
 async fn main() {
     let started = Instant::now();
 
