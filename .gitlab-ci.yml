@@ -33,6 +33,7 @@ variables:
   IMAGE_REGISTRY: "registry.ddbuild.io"
   DOCKER_BUILD_IMAGE: "registry.ddbuild.io/docker:24.0.4-jammy"
   GBI_BASE_IMAGE: "${IMAGE_REGISTRY}/images/base/gbi-ubuntu_2204:release"
+  PUBLIC_BASE_IMAGE: "${IMAGE_REGISTRY}/images/mirror/ubuntu:24.04"
 
   # Base repository paths for where our CI images go, whether they're helper images or actual
   # output artifacts like ADP itself.
@@ -49,7 +50,7 @@ variables:
   # Base images to copy Agent Data Plane into, depending on whether the image is meant for our internal environment or
   # public registries.
   ADP_INTERNAL_BASE_IMAGE: "${GBI_BASE_IMAGE}"
-  ADP_PUBLIC_BASE_IMAGE: "ubuntu:24.04"
+  ADP_PUBLIC_BASE_IMAGE: "${PUBLIC_BASE_IMAGE}"
 
   # We use our specific build image as it's built to have the right (specifically: old enough) version of glibc, and
   # other necessary tooling, to build ADP for the target platforms we need it to be able to run on.
