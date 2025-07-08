@@ -19,9 +19,9 @@ use saluki_health::HealthRegistry;
 use tokio::select;
 use tracing::{error, info, warn};
 
-use crate::config::RunConfig;
 use crate::env_provider::ADPEnvironmentProvider;
 use crate::internal::{spawn_control_plane, spawn_internal_observability_topology};
+use crate::{config::RunConfig, internal::BasicTopologyConfiguration};
 
 pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
@@ -115,7 +115,7 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
 
 async fn create_topology(
     configuration: &GenericConfiguration, env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
-) -> Result<TopologyBlueprint, GenericError> {
+) -> Result<TopologyBlueprint<BasicTopologyConfiguration>, GenericError> {
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
     let dsd_config = DogStatsDConfiguration::from_configuration(configuration)
@@ -158,7 +158,8 @@ async fn create_topology(
         }
     }
 
-    let mut blueprint = TopologyBlueprint::new("primary", component_registry);
+    let primary_config = BasicTopologyConfiguration::primary();
+    let mut blueprint = TopologyBlueprint::new("primary", primary_config, component_registry);
     blueprint
         .add_source("dsd_in", dsd_config)?
         .add_transform("dsd_agg", dsd_agg_config)?

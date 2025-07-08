@@ -3,6 +3,9 @@ use std::future::Future;
 use saluki_app::metrics::collect_runtime_metrics;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 
+mod config;
+pub use self::config::BasicTopologyConfiguration;
+
 mod control_plane;
 pub use self::control_plane::spawn_control_plane;
 
