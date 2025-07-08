@@ -3,6 +3,7 @@ use std::{collections::HashMap, net::SocketAddr};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use datadog_protos::agent::{config_event, ConfigEvent};
 use datadog_protos::agent::{
     get_telemetry_response::Payload, GetFlareFilesRequest, GetFlareFilesResponse, GetStatusDetailsRequest,
     GetStatusDetailsResponse, GetTelemetryRequest, GetTelemetryResponse, RemoteAgent, RemoteAgentServer, StatusSection,
@@ -18,7 +19,7 @@ use saluki_env::helpers::remote_agent::RemoteAgentClient;
 use saluki_error::GenericError;
 use saluki_io::net::client::http::HttpClient;
 use tokio::time::{interval, MissedTickBehavior};
-use tracing::debug;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::state::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor};
@@ -238,6 +239,36 @@ impl RemoteAgent for RemoteAgentImpl {
             }
             Err(e) => Err(tonic::Status::internal(e.to_string())),
         }
+    }
+
+    async fn stream_config_events(
+        &self, request: tonic::Request<tonic::Streaming<ConfigEvent>>,
+    ) -> Result<tonic::Response<()>, tonic::Status> {
+        let mut stream = request.into_inner();
+        loop {
+            match stream.message().await {
+                Ok(Some(event)) => match event.event {
+                    Some(config_event::Event::Snapshot(_snapshot)) => {
+                        // TODO: Handle config snapshot
+                    }
+                    Some(config_event::Event::Update(_update)) => {
+                        // TODO: Handle config update
+                    }
+                    None => {
+                        warn!("Received a ConfigEvent with no event data");
+                    }
+                },
+                Ok(None) => {
+                    debug!("Config event stream has been closed.");
+                    break;
+                }
+                Err(e) => {
+                    warn!("Error while reading config event stream: {}", e);
+                    return Err(tonic::Status::internal(e.to_string()));
+                }
+            }
+        }
+        Ok(tonic::Response::new(()))
     }
 }
 
