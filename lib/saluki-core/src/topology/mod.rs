@@ -1,12 +1,15 @@
 //! Topology building.
 
-mod blueprint;
 use memory_accounting::ComponentRegistry;
 
+mod blueprint;
 pub use self::blueprint::{BlueprintError, TopologyBlueprint};
 
 mod built;
 pub use self::built::BuiltTopology;
+
+mod config;
+pub use self::config::TopologyConfiguration;
 
 mod graph;
 mod ids;
@@ -21,8 +24,6 @@ pub mod shutdown;
 pub(super) mod test_util;
 
 pub use self::ids::*;
-
-const COMPONENT_INTERCONNECT_CAPACITY: usize = 128;
 
 pub(super) struct RegisteredComponent<T> {
     component: T,
