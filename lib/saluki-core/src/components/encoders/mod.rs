@@ -11,6 +11,7 @@ mod context;
 pub use self::context::EncoderContext;
 
 /// Encoder process result.
+#[allow(clippy::large_enum_variant)]
 pub enum ProcessResult {
     /// The encoder processed the event successfully and is ready to process more events.
     Continue,
