@@ -8,18 +8,18 @@ use super::{
     built::BuiltTopology,
     graph::{Graph, GraphError},
     interconnect::{FixedSizeEventBuffer, FixedSizeEventBufferInner},
-    ComponentId, RegisteredComponent, COMPONENT_INTERCONNECT_CAPACITY,
+    ComponentId, RegisteredComponent,
 };
 use crate::{
     components::{
         destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder, ComponentContext,
     },
     data_model::event::Event,
+    topology::TopologyConfiguration,
 };
 
 // SAFETY: These are obviously non-zero.
 const DEFAULT_EVENT_BUFFER_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(1024) };
-const DEFAULT_INTERCONNECT_CAPACITY: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(128) };
 
 /// A topology blueprint error.
 #[derive(Debug, Snafu)]
@@ -44,32 +44,32 @@ pub enum BlueprintError {
 }
 
 /// A topology blueprint represents a directed graph of components.
-pub struct TopologyBlueprint {
+pub struct TopologyBlueprint<T> {
     name: String,
+    config: T,
     graph: Graph,
     sources: HashMap<ComponentId, RegisteredComponent<Box<dyn SourceBuilder + Send>>>,
     transforms: HashMap<ComponentId, RegisteredComponent<Box<dyn TransformBuilder + Send>>>,
     destinations: HashMap<ComponentId, RegisteredComponent<Box<dyn DestinationBuilder + Send>>>,
     component_registry: ComponentRegistry,
     event_buffer_pool_buffer_size: NonZeroUsize,
-    interconnect_capacity: NonZeroUsize,
 }
 
-impl TopologyBlueprint {
-    /// Creates an empty `TopologyBlueprint` with the given name.
-    pub fn new(name: &str, component_registry: &ComponentRegistry) -> Self {
+impl<T: TopologyConfiguration> TopologyBlueprint<T> {
+    /// Creates an empty `TopologyBlueprint` with the given name and configuration.
+    pub fn new(name: &str, config: T, component_registry: &ComponentRegistry) -> Self {
         // Create a nested component registry for this topology.
         let component_registry = component_registry.get_or_create("topology").get_or_create(name);
 
         Self {
             name: name.to_string(),
+            config,
             graph: Graph::default(),
             sources: HashMap::new(),
             transforms: HashMap::new(),
             destinations: HashMap::new(),
             component_registry,
             event_buffer_pool_buffer_size: DEFAULT_EVENT_BUFFER_SIZE,
-            interconnect_capacity: DEFAULT_INTERCONNECT_CAPACITY,
         }
     }
 
@@ -85,25 +85,13 @@ impl TopologyBlueprint {
         self
     }
 
-    /// Sets the component interconnect capacity.
-    ///
-    /// This controls how many outstanding event buffers can be queued for each component before backpressure is applied
-    /// to upstream components. Changing this value allows trading off between the peak memory usage when processing a high
-    /// volume of events and the amount of buffering that takes place to smooth out processing speed and efficiency.
-    ///
-    /// Defaults to 128.
-    pub fn with_component_interconnect_capacity(&mut self, capacity: NonZeroUsize) -> &mut Self {
-        self.interconnect_capacity = capacity;
-        self.recalculate_bounds();
-        self
-    }
-
     fn recalculate_bounds(&mut self) {
+        let interconnect_capacity = self.config.interconnect_capacity().get();
+
         // Adjust the bounds related to interconnects.
         //
         // Every non-source component has an interconnect.
-        let total_interconnect_capacity =
-            (self.transforms.len() + self.destinations.len()) * self.interconnect_capacity.get();
+        let total_interconnect_capacity = interconnect_capacity * (self.transforms.len() + self.destinations.len());
         let mut bounds_builder = self.component_registry.bounds_builder();
         let mut bounds_builder = bounds_builder.subcomponent("interconnects");
 
@@ -117,8 +105,7 @@ impl TopologyBlueprint {
         // We calculate the maximum number of event buffers by adding up the total capacity of all non-source components, plus the count
         // of non-destination components. This is the effective upper bound because once all component channels are full, sending
         // components can only allocate one more event buffer before being blocked on sending, which is then the effective upper bound.
-        let max_in_flight_event_buffers = ((self.transforms.len() + self.destinations.len())
-            * COMPONENT_INTERCONNECT_CAPACITY)
+        let max_in_flight_event_buffers = ((self.transforms.len() + self.destinations.len()) * interconnect_capacity)
             + self.sources.len()
             + self.transforms.len();
 
@@ -235,13 +222,13 @@ impl TopologyBlueprint {
     ///
     /// If the destination component ID, or any of the source component IDs, are invalid or do not exist, or if the data
     /// types between one of the source/destination component pairs is incompatible, an error is returned.
-    pub fn connect_component<DI, SI, T>(
+    pub fn connect_component<DI, SI, I>(
         &mut self, destination_component_id: DI, source_output_component_ids: SI,
     ) -> Result<&mut Self, GenericError>
     where
         DI: AsRef<str>,
-        SI: IntoIterator<Item = T>,
-        T: AsRef<str>,
+        SI: IntoIterator<Item = I>,
+        I: AsRef<str>,
     {
         for source_output_component_id in source_output_component_ids.into_iter() {
             self.graph
@@ -257,7 +244,7 @@ impl TopologyBlueprint {
     /// # Errors
     ///
     /// If any of the components could not be built, an error is returned.
-    pub async fn build(mut self) -> Result<BuiltTopology, GenericError> {
+    pub async fn build(mut self) -> Result<BuiltTopology<T>, GenericError> {
         self.graph.validate().error_context("Failed to build topology graph.")?;
 
         let mut sources = HashMap::new();
@@ -316,6 +303,7 @@ impl TopologyBlueprint {
 
         Ok(BuiltTopology::from_parts(
             self.name,
+            self.config,
             self.graph,
             self.event_buffer_pool_buffer_size.get(),
             sources,

@@ -18,7 +18,7 @@ use super::{
     interconnect::{Dispatcher, EventStream, FixedSizeEventBuffer, FixedSizeEventBufferInner},
     running::RunningTopology,
     shutdown::ComponentShutdownCoordinator,
-    ComponentId, RegisteredComponent, COMPONENT_INTERCONNECT_CAPACITY,
+    ComponentId, RegisteredComponent,
 };
 use crate::{
     components::{
@@ -28,6 +28,7 @@ use crate::{
         ComponentContext,
     },
     pooling::OnDemandObjectPool,
+    topology::TopologyConfiguration,
 };
 
 /// A built topology.
@@ -36,8 +37,9 @@ use crate::{
 /// connections to other components, was validated and built successfully.
 ///
 /// A built topology must be spawned via [`spawn`][Self::spawn].
-pub struct BuiltTopology {
+pub struct BuiltTopology<T> {
     name: String,
+    config: T,
     graph: Graph,
     event_buffer_pool_buffer_size: usize,
     sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
@@ -46,10 +48,10 @@ pub struct BuiltTopology {
     component_token: AllocationGroupToken,
 }
 
-impl BuiltTopology {
+impl<T: TopologyConfiguration> BuiltTopology<T> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(
-        name: String, graph: Graph, event_buffer_pool_buffer_size: usize,
+        name: String, config: T, graph: Graph, event_buffer_pool_buffer_size: usize,
         sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
         transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
         destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
@@ -57,6 +59,7 @@ impl BuiltTopology {
     ) -> Self {
         Self {
             name,
+            config,
             graph,
             event_buffer_pool_buffer_size,
             sources,
@@ -95,7 +98,7 @@ impl BuiltTopology {
                     let sender = match event_stream_senders.get(&downstream_id) {
                         Some(sender) => sender.clone(),
                         None => {
-                            let (sender, receiver) = build_interconnect_channel();
+                            let (sender, receiver) = build_interconnect_channel(&self.config);
 
                             // TODO: Similarly broken here, since a downstream component is any component that can
                             // receive events, which is either a transform or destination.
@@ -305,6 +308,8 @@ fn spawn_destination(
     join_set.spawn_traced_named(component_task_name, async move { destination.run(context).await })
 }
 
-fn build_interconnect_channel() -> (mpsc::Sender<FixedSizeEventBuffer>, mpsc::Receiver<FixedSizeEventBuffer>) {
-    mpsc::channel(COMPONENT_INTERCONNECT_CAPACITY)
+fn build_interconnect_channel<T: TopologyConfiguration>(
+    config: &T,
+) -> (mpsc::Sender<FixedSizeEventBuffer>, mpsc::Receiver<FixedSizeEventBuffer>) {
+    mpsc::channel(config.interconnect_capacity().get())
 }
