@@ -287,6 +287,9 @@ fn get_help_text(metric_name: &str) -> Option<&'static str> {
         "aggregator__dogstatsd_contexts" => Some("Count the number of dogstatsd contexts in the aggregator"),
         "aggregator__processed" => Some("Amount of metrics/services_checks/events processed by the aggregator"),
         "dogstatsd__processed" => Some("Count of service checks/events/metrics processed by dogstatsd"),
+        "dogstatsd__packet_pool_get" => Some("Count of get done in the packet pool"),
+        "dogstatsd__packet_pool_put" => Some("Count of put done in the packet pool"),
+        "dogstatsd__packet_pool" => Some("Usage of the packet pool in dogstatsd"),
         _ => None,
     }
 }
