@@ -1,7 +1,7 @@
 //! Component interconnects.
 
 mod event_buffer;
-pub use self::event_buffer::{EventBufferManager, FixedSizeEventBuffer, FixedSizeEventBufferInner};
+pub use self::event_buffer::{EventBufferManager, FixedSizeEventBuffer};
 
 mod event_stream;
 pub use self::event_stream::EventStream;

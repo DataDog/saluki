@@ -357,8 +357,8 @@ where
 async fn run_request_builder<O>(
     mut series_request_builder: RequestBuilder<MetricsEndpointEncoder, O>,
     mut sketches_request_builder: RequestBuilder<MetricsEndpointEncoder, O>, telemetry: ComponentTelemetry,
-    mut request_builder_rx: mpsc::Receiver<FixedSizeEventBuffer>, forwarder_handle: Handle<FrozenChunkedBytesBuffer>,
-    flush_timeout: Duration,
+    mut request_builder_rx: mpsc::Receiver<FixedSizeEventBuffer<1024>>,
+    forwarder_handle: Handle<FrozenChunkedBytesBuffer>, flush_timeout: Duration,
 ) -> Result<(), GenericError>
 where
     O: ObjectPool<Item = BytesBuffer> + 'static,

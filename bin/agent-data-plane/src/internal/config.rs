@@ -30,7 +30,7 @@ impl BasicTopologyConfiguration {
 }
 
 impl TopologyConfiguration for BasicTopologyConfiguration {
-    type Events = FixedSizeEventBuffer;
+    type Events = FixedSizeEventBuffer<1024>;
     type Payloads = Payload;
 
     fn interconnect_capacity(&self) -> NonZeroUsize {

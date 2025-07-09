@@ -124,7 +124,7 @@ impl Transform for AgentTelemetryRemapper {
                             error!(error = %e, "Failed to dispatch events.");
                         }
 
-                        if let Err(e) = context.dispatcher().dispatch_buffer(events).await {
+                        if let Err(e) = context.dispatcher().dispatch(events).await {
                             error!(error = %e, "Failed to dispatch events.");
                         }
                     },

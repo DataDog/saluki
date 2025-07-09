@@ -7,7 +7,7 @@ use snafu::Snafu;
 use super::{
     built::BuiltTopology,
     graph::{Graph, GraphError},
-    interconnect::{FixedSizeEventBuffer, FixedSizeEventBufferInner},
+    interconnect::FixedSizeEventBuffer,
     ComponentId, RegisteredComponent,
 };
 use crate::{
@@ -98,7 +98,7 @@ impl<T: TopologyConfiguration> TopologyBlueprint<T> {
         bounds_builder.reset();
         bounds_builder
             .minimum()
-            .with_array::<FixedSizeEventBuffer>("fixed size event buffers", total_interconnect_capacity);
+            .with_array::<FixedSizeEventBuffer<1024>>("fixed size event buffers", total_interconnect_capacity);
 
         // Adjust the bounds related to event buffers themselves.
         //
@@ -109,8 +109,10 @@ impl<T: TopologyConfiguration> TopologyBlueprint<T> {
             + self.sources.len()
             + self.transforms.len();
 
-        let buffer_size_bytes = std::mem::size_of::<FixedSizeEventBufferInner>()
-            + (self.event_buffer_pool_buffer_size.get() * std::mem::size_of::<Event>());
+        // TODO: This is fragile, and ideally we'd be deriving the of this directly from a method/function we could call with
+        // `FixedSizeEventBuffer<1024>` (or, eventually, `TopologyConfig::Events`) as a parameter to figure it out for us.
+        let buffer_size_bytes =
+            std::mem::size_of::<FixedSizeEventBuffer<1024>>() + (std::mem::size_of::<Event>() * 1024);
 
         let event_buffer_pool_max_bytes = max_in_flight_event_buffers * buffer_size_bytes;
 
@@ -305,7 +307,6 @@ impl<T: TopologyConfiguration> TopologyBlueprint<T> {
             self.name,
             self.config,
             self.graph,
-            self.event_buffer_pool_buffer_size.get(),
             sources,
             transforms,
             destinations,
