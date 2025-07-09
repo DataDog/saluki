@@ -116,7 +116,7 @@ impl Transform for Chained {
                             transform.transform_buffer(&mut event_buffer);
                         }
 
-                        if let Err(e) = context.dispatcher().dispatch_buffer(event_buffer).await {
+                        if let Err(e) = context.dispatcher().dispatch(event_buffer).await {
                             error!(error = %e, "Failed to dispatch events.");
                         }
                     },

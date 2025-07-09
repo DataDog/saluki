@@ -202,7 +202,7 @@ async fn create_topology(
 struct ChecksAgentTopologyConfiguration;
 
 impl TopologyConfiguration for ChecksAgentTopologyConfiguration {
-    type Events = FixedSizeEventBuffer;
+    type Events = FixedSizeEventBuffer<1024>;
     type Payloads = Payload;
 
     fn interconnect_capacity(&self) -> NonZeroUsize {

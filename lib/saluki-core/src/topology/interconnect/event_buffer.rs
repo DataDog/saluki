@@ -2,61 +2,30 @@ use std::{collections::VecDeque, fmt};
 
 use crate::{
     data_model::event::{Event, EventType},
-    pooling::{helpers::pooled_newtype, Clearable, ObjectPool},
+    topology::interconnect::dispatcher::DispatchBuffer,
 };
 
-/// A double-ended queue implemented with a ring buffer that has a fixed capacity at creation.
-struct FixedSizeVecDeque<T>(VecDeque<T>);
-
 /// A fixed-size event buffer.
-pub struct FixedSizeEventBufferInner {
-    events: FixedSizeVecDeque<Event>,
+#[derive(Clone)]
+pub struct FixedSizeEventBuffer<const N: usize> {
+    events: VecDeque<Event>,
     seen_event_types: EventType,
 }
 
-impl FixedSizeEventBufferInner {
-    /// Creates a new fixed-size event buffer with the given capacity.
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            events: FixedSizeVecDeque(VecDeque::with_capacity(capacity)),
-            seen_event_types: EventType::none(),
-        }
-    }
-}
-
-impl Clearable for FixedSizeEventBufferInner {
-    fn clear(&mut self) {
-        self.events.0.clear();
-        self.seen_event_types = EventType::none();
-    }
-}
-
-pooled_newtype! {
-    outer => FixedSizeEventBuffer,
-    inner => FixedSizeEventBufferInner,
-}
-
-impl FixedSizeEventBuffer {
-    /// Creates a new `FixedSizeEventBuffer` with the given capacity, for testing purposes.
-    pub fn for_test(capacity: usize) -> Self {
-        use crate::pooling::helpers::get_pooled_object_via_builder;
-
-        get_pooled_object_via_builder(|| FixedSizeEventBufferInner::with_capacity(capacity))
-    }
-
+impl<const N: usize> FixedSizeEventBuffer<N> {
     /// Returns the total number of events the event buffer can hold.
     pub fn capacity(&self) -> usize {
-        self.data().events.0.capacity()
+        N
     }
 
     /// Returns the number of events in the event buffer.
     pub fn len(&self) -> usize {
-        self.data().events.0.len()
+        self.events.len()
     }
 
     /// Returns `true` if the event buffer contains no events.
     pub fn is_empty(&self) -> bool {
-        self.data().events.0.is_empty()
+        self.events.is_empty()
     }
 
     /// Returns `true` if the event buffer has no remaining capacity.
@@ -66,7 +35,13 @@ impl FixedSizeEventBuffer {
 
     /// Returns `true` if this event buffer contains one or more events of the given event type.
     pub fn has_event_type(&self, event_type: EventType) -> bool {
-        self.data().seen_event_types.contains(event_type)
+        self.seen_event_types.contains(event_type)
+    }
+
+    /// Clears the event buffer, removing all events and resetting the seen event types.
+    pub fn clear(&mut self) {
+        self.events.clear();
+        self.seen_event_types = EventType::none();
     }
 
     /// Attempts to append an event to the back of the event buffer.
@@ -77,8 +52,8 @@ impl FixedSizeEventBuffer {
             return Some(event);
         }
 
-        self.data_mut().seen_event_types |= event.event_type();
-        self.data_mut().events.0.push_back(event);
+        self.seen_event_types |= event.event_type();
+        self.events.push_back(event);
         None
     }
 
@@ -87,14 +62,11 @@ impl FixedSizeEventBuffer {
     where
         F: Fn(&Event) -> bool,
     {
-        let data = self.data_mut();
-        let events = &mut data.events.0;
-
         let mut indices_to_remove = Vec::new();
         let mut removed_events = VecDeque::new();
         let mut seen_event_types = EventType::none();
 
-        for (pos, event) in events.iter_mut().enumerate() {
+        for (pos, event) in self.events.iter_mut().enumerate() {
             if predicate(event) {
                 indices_to_remove.push(pos);
             } else {
@@ -104,13 +76,13 @@ impl FixedSizeEventBuffer {
 
         // Remove elements from back to front to avoid index shifting issues
         for &pos in indices_to_remove.iter().rev() {
-            if pos < events.len() {
-                removed_events.push_back(events.swap_remove_back(pos).unwrap());
+            if pos < self.events.len() {
+                removed_events.push_back(self.events.swap_remove_back(pos).unwrap());
             }
         }
 
         // Update the seen event types to reflect what's left over.
-        data.seen_event_types = seen_event_types;
+        self.seen_event_types = seen_event_types;
 
         removed_events.into_iter()
     }
@@ -120,120 +92,120 @@ impl FixedSizeEventBuffer {
     where
         F: Fn(&Event) -> bool,
     {
-        let data = self.data_mut();
-        let events = &mut data.events.0;
         let mut seen_event_types = EventType::none();
 
         let mut i = 0;
-        let mut end = events.len();
+        let mut end = self.events.len();
         while i < end {
-            if predicate(&events[i]) {
-                events.swap_remove_back(i);
+            if predicate(&self.events[i]) {
+                self.events.swap_remove_back(i);
                 end -= 1;
             } else {
-                seen_event_types |= events[i].event_type();
+                seen_event_types |= self.events[i].event_type();
                 i += 1;
             }
         }
 
         // Update the seen event types to reflect what's left over.
-        data.seen_event_types = seen_event_types;
+        self.seen_event_types = seen_event_types;
     }
 }
 
-impl fmt::Debug for FixedSizeEventBuffer {
+impl<const N: usize> Default for FixedSizeEventBuffer<N> {
+    fn default() -> Self {
+        Self {
+            events: VecDeque::with_capacity(N),
+            seen_event_types: EventType::none(),
+        }
+    }
+}
+
+impl<const N: usize> DispatchBuffer for FixedSizeEventBuffer<N> {
+    type Item = Event;
+
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn is_full(&self) -> bool {
+        self.is_full()
+    }
+
+    fn try_push(&mut self, item: Self::Item) -> Option<Self::Item> {
+        self.try_push(item)
+    }
+}
+
+impl<const N: usize> fmt::Debug for FixedSizeEventBuffer<N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FixedSizeEventBuffer")
-            .field("event_len", &self.len())
+            .field("cap", &N)
+            .field("len", &self.len())
             .finish()
     }
 }
 
-impl IntoIterator for FixedSizeEventBuffer {
+impl<const N: usize> IntoIterator for FixedSizeEventBuffer<N> {
     type Item = Event;
-    type IntoIter = IntoIter;
+    type IntoIter = std::collections::vec_deque::IntoIter<Event>;
 
     fn into_iter(self) -> Self::IntoIter {
-        IntoIter { inner: self }
+        self.events.into_iter()
     }
 }
 
-impl<'a> IntoIterator for &'a FixedSizeEventBuffer {
+impl<'a, const N: usize> IntoIterator for &'a FixedSizeEventBuffer<N> {
     type Item = &'a Event;
     type IntoIter = std::collections::vec_deque::Iter<'a, Event>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.data().events.0.iter()
+        self.events.iter()
     }
 }
 
-impl<'a> IntoIterator for &'a mut FixedSizeEventBuffer {
+impl<'a, const N: usize> IntoIterator for &'a mut FixedSizeEventBuffer<N> {
     type Item = &'a mut Event;
     type IntoIter = std::collections::vec_deque::IterMut<'a, Event>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.data_mut().events.0.iter_mut()
+        self.events.iter_mut()
     }
 }
 
-pub struct IntoIter {
-    inner: FixedSizeEventBuffer,
-}
-
-impl Iterator for IntoIter {
-    type Item = Event;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.data_mut().events.0.pop_front()
-    }
-}
-
-/// An ergonomic wrapper over fallibly writing to event buffers backed by an object pool.
+/// An ergonomic wrapper over fallibly writing to event buffers.
 ///
 /// As `FixedSizeEventBuffer` has a fixed capacity, callers have to handle the scenario where they attempt to push an
 /// event into the event buffer but the buffer has no more capacity. This generally involves having to swap it with a
-/// new buffer, as well as holding the event around until they acquire the new buffer. As these event buffers often come
-/// from an object pool, waiting for the object pool to have a buffer available _before_ sending the currently-full one
-/// can lead to a deadlock condition.
+/// new buffer, as well as holding the event around until they acquire the new buffer.
 ///
 /// `EventBufferManager` provides a simple, ergonomic wrapper over a basic pattern of treating the current buffer as an
 /// optional value, and handling the logic of ensuring we have a buffer to write into only when actually attempting a
 /// write, rather than always holding on to one.
-pub struct EventBufferManager<'a, O>
-where
-    O: ObjectPool<Item = FixedSizeEventBuffer>,
-{
-    pool: &'a O,
-    current: Option<FixedSizeEventBuffer>,
+#[derive(Default)]
+pub struct EventBufferManager {
+    current: Option<FixedSizeEventBuffer<1024>>,
 }
 
-impl<'a, O> EventBufferManager<'a, O>
-where
-    O: ObjectPool<Item = FixedSizeEventBuffer>,
-{
-    /// Creates a new `EventBufferManager` with the given object pool.
-    pub fn new(pool: &'a O) -> Self {
-        Self { pool, current: None }
-    }
-
+impl EventBufferManager {
     /// Attempts to push an event into the current event buffer.
     ///
-    /// This method will acquire an event buffer from the object pool if necessary.
-    ///
-    /// If the event buffer is full, the original event and the current event buffer are returned. Otherwise, `None` is
-    /// returned.
-    pub async fn try_push(&mut self, event: Event) -> Option<(Event, FixedSizeEventBuffer)> {
-        // Consume the event buffer if we have one, or acquire one from the pool on demand.
-        let mut buffer = match self.current.take() {
-            Some(current) => current,
-            None => self.pool.acquire().await,
-        };
+    /// If the event buffer is full, it is replaced with a new event buffer before pushing the event, and `Some(buffer)`
+    /// is returned containing the old event buffer. Otherwise, `None` is returned.
+    pub fn try_push(&mut self, event: Event) -> Option<FixedSizeEventBuffer<1024>> {
+        // Consume the event buffer if we have one, or acquire one on demand.
+        let mut buffer = self.current.take().unwrap_or_default();
 
         // Try writing into the event buffer.
         //
         // If we can't, we'll return it which instructs the caller to flush the buffer and then try again to push the event.
         if let Some(event) = buffer.try_push(event) {
-            Some((event, buffer))
+            let old_buffer = std::mem::take(&mut buffer);
+
+            if buffer.try_push(event).is_some() {
+                panic!("New event buffer is unexpectedly full.")
+            }
+
+            Some(old_buffer)
         } else {
             // Return the event buffer to the caller to allow it to continue to be used.
             self.current.replace(buffer);
@@ -242,7 +214,7 @@ where
     }
 
     /// Consumes the current event buffer, if one exists.
-    pub fn consume(&mut self) -> Option<FixedSizeEventBuffer> {
+    pub fn consume(&mut self) -> Option<FixedSizeEventBuffer<1024>> {
         self.current.take()
     }
 }
@@ -252,19 +224,16 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::FixedSizeEventBuffer;
-    use crate::{
-        data_model::event::{
-            eventd::EventD,
-            metric::Metric,
-            service_check::{CheckStatus, ServiceCheck},
-            Event, EventType,
-        },
-        pooling::Clearable as _,
+    use crate::data_model::event::{
+        eventd::EventD,
+        metric::Metric,
+        service_check::{CheckStatus, ServiceCheck},
+        Event, EventType,
     };
 
     #[test]
     fn capacity() {
-        let mut buffer = FixedSizeEventBuffer::for_test(2);
+        let mut buffer = FixedSizeEventBuffer::<2>::default();
         assert_eq!(buffer.capacity(), 2);
 
         assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 42.0))).is_none());
@@ -275,7 +244,7 @@ mod tests {
     #[test]
     fn clear() {
         // Create an empty event buffer and assert that it's empty and has no seen data types:
-        let mut buffer = FixedSizeEventBuffer::for_test(10);
+        let mut buffer = FixedSizeEventBuffer::<2>::default();
         assert!(buffer.is_empty());
         assert!(!buffer.has_event_type(EventType::Metric));
         assert!(!buffer.has_event_type(EventType::EventD));
@@ -288,9 +257,8 @@ mod tests {
         assert!(!buffer.has_event_type(EventType::EventD));
         assert!(!buffer.has_event_type(EventType::ServiceCheck));
 
-        // Finally, clear the inner data -- this simulates what happens when an object is returned to the pool -- and
-        // assert that the buffer is once again empty and has no seen data types:
-        buffer.data_mut().clear();
+        // Finally, clear the buffer and ensure it's empty and has no seen data types:
+        buffer.clear();
         assert!(buffer.is_empty());
         assert!(!buffer.has_event_type(EventType::Metric));
         assert!(!buffer.has_event_type(EventType::EventD));
@@ -299,7 +267,7 @@ mod tests {
 
     #[test]
     fn has_event_type() {
-        let mut buffer = FixedSizeEventBuffer::for_test(10);
+        let mut buffer = FixedSizeEventBuffer::<2>::default();
         assert!(!buffer.has_event_type(EventType::Metric));
         assert!(!buffer.has_event_type(EventType::EventD));
         assert!(!buffer.has_event_type(EventType::ServiceCheck));
@@ -317,7 +285,7 @@ mod tests {
 
     #[test]
     fn extract() {
-        let mut buffer = FixedSizeEventBuffer::for_test(10);
+        let mut buffer = FixedSizeEventBuffer::<10>::default();
         assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 42.0))).is_none());
         assert!(buffer.try_push(Event::Metric(Metric::counter("foo", 43.0))).is_none());
         assert!(buffer.try_push(Event::EventD(EventD::new("foo1", "bar1"))).is_none());
@@ -364,7 +332,7 @@ mod tests {
         let event3 = Event::EventD(EventD::new("foo2", "bar2"));
         let event4 = Event::ServiceCheck(ServiceCheck::new("foo5", CheckStatus::Ok));
 
-        let mut buffer = FixedSizeEventBuffer::for_test(10);
+        let mut buffer = FixedSizeEventBuffer::<10>::default();
 
         // Add the four events.
         assert!(buffer.try_push(event1.clone()).is_none());

@@ -126,7 +126,7 @@ impl HostTagsEnrichment {
 }
 
 impl SynchronousTransform for HostTagsEnrichment {
-    fn transform_buffer(&mut self, event_buffer: &mut FixedSizeEventBuffer) {
+    fn transform_buffer(&mut self, event_buffer: &mut FixedSizeEventBuffer<1024>) {
         // Skip adding host tags if duration has elapsed.
         if self.start.elapsed() >= self.expected_tags_duration {
             self.context_resolver = None;

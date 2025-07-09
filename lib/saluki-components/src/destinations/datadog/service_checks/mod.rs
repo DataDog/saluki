@@ -251,7 +251,7 @@ impl Destination for DatadogServiceChecks {
 
 async fn run_request_builder(
     mut request_builder: RequestBuilder<ServiceChecksEndpointEncoder, ElasticObjectPool<BytesBuffer>>,
-    telemetry: ComponentTelemetry, mut request_builder_rx: mpsc::Receiver<FixedSizeEventBuffer>,
+    telemetry: ComponentTelemetry, mut request_builder_rx: mpsc::Receiver<FixedSizeEventBuffer<1024>>,
     forwarder_handle: Handle<FrozenChunkedBytesBuffer>, flush_timeout: Duration,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
