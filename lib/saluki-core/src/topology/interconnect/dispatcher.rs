@@ -122,7 +122,7 @@ where
 ///
 /// `BufferedDispatcher` provides an efficient and ergonomic interface to `Dispatcher` that allows for writing events
 /// one-by-one into batches, which are then dispatched to the configured output as needed. This allows callers to focus
-/// on the logic around what events to send, without needing to worry about the details of event buffer sizing or
+/// on the logic around what items to send, without needing to worry about the details of event buffer sizing or
 /// flushing.
 pub struct BufferedDispatcher<'a, T> {
     metrics: &'a DispatcherMetrics,
@@ -221,12 +221,15 @@ where
     }
 }
 
-/// Event dispatcher.
+/// Dispatches items from one component to another.
 ///
-/// [`Dispatcher`] provides an ergonomic interface for sending inputs to a downstream component. It has support for
+/// [`Dispatcher`] provides an ergonomic interface for sending items to a downstream component. It has support for
 /// multiple outputs (a default output, and additional "named" outputs) and provides telemetry around the number of
-/// dispatched events as well as the latency of sending them.
-pub struct Dispatcher<T> {
+/// dispatched items as well as the latency of sending them.
+pub struct Dispatcher<T>
+where
+    T: Dispatchable,
+{
     context: ComponentContext,
     default: Option<DispatchTarget<T>>,
     targets: FastHashMap<String, DispatchTarget<T>>,
@@ -280,7 +283,7 @@ where
         self.dispatch_inner(None, item).await
     }
 
-    /// Dispatches the given events to the given named output.
+    /// Dispatches the given items to the given named output.
     ///
     /// # Errors
     ///
@@ -310,8 +313,8 @@ where
 {
     /// Creates a buffered dispatcher for the default output.
     ///
-    /// This should generally be used if the events being dispatched are not already collected in a container, or exposed
-    /// via an iterable type. It allows for efficiently buffering events one-by-one before dispatching them to the
+    /// This should generally be used if the items being dispatched are not already collected in a container, or exposed
+    /// via an iterable type. It allows for efficiently buffering items one-by-one before dispatching them to the
     /// underlying output.
     ///
     /// # Errors
@@ -323,8 +326,8 @@ where
 
     /// Creates a buffered dispatcher for the given named output.
     ///
-    /// This should generally be used if the events being dispatched are not already collected in a container, or exposed
-    /// via an iterable type. It allows for efficiently buffering events one-by-one before dispatching them to the
+    /// This should generally be used if the items being dispatched are not already collected in a container, or exposed
+    /// via an iterable type. It allows for efficiently buffering items one-by-one before dispatching them to the
     /// underlying output.
     ///
     /// # Errors
@@ -477,7 +480,7 @@ mod tests {
 
     #[tokio::test]
     async fn default_output_not_set() {
-        // Create the dispatcher and try to dispatch an event without setting up a default output.
+        // Create the dispatcher and try to dispatch an item without setting up a default output.
         let dispatcher = unbuffered_dispatcher::<()>();
 
         let result = dispatcher.dispatch(()).await;
