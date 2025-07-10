@@ -9,7 +9,7 @@ use super::Dispatchable;
 /// A stream of events sent to a component.
 ///
 /// This represents the receiving end of a component interconnect, where the sending end is [`Dispatcher<T>`].
-pub struct EventStream<T> {
+pub struct Consumer<T> {
     inner: mpsc::Receiver<T>,
     events_received: Counter,
     events_received_size: Histogram,
