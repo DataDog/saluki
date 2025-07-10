@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
 
 use memory_accounting::{ComponentRegistry, MemoryLimiter};
 use saluki_health::{Health, HealthRegistry};
@@ -6,15 +6,15 @@ use tokio::runtime::Handle;
 
 use crate::{
     components::ComponentContext,
-    topology::{
-        interconnect::{Dispatcher, FixedSizeEventBuffer},
-        shutdown::ComponentShutdownHandle,
-    },
+    topology::{interconnect::Dispatcher, shutdown::ComponentShutdownHandle, TopologyConfiguration},
 };
 
-struct SourceContextInner {
+struct SourceContextInner<T>
+where
+    T: TopologyConfiguration,
+{
     component_context: ComponentContext,
-    dispatcher: Dispatcher<FixedSizeEventBuffer<1024>>,
+    dispatcher: Dispatcher<T::Events>,
     memory_limiter: MemoryLimiter,
     health_registry: HealthRegistry,
     component_registry: ComponentRegistry,
@@ -22,20 +22,26 @@ struct SourceContextInner {
 }
 
 /// Source context.
-pub struct SourceContext {
+pub struct SourceContext<T>
+where
+    T: TopologyConfiguration,
+{
     shutdown_handle: Option<ComponentShutdownHandle>,
     health_handle: Option<Health>,
-    inner: Arc<SourceContextInner>,
+    inner: Arc<SourceContextInner<T>>,
+    _config: PhantomData<T>,
 }
 
-impl SourceContext {
+impl<T> SourceContext<T>
+where
+    T: TopologyConfiguration,
+{
     /// Creates a new `SourceContext`.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         component_context: ComponentContext, shutdown_handle: ComponentShutdownHandle,
-        dispatcher: Dispatcher<FixedSizeEventBuffer<1024>>, memory_limiter: MemoryLimiter,
-        component_registry: ComponentRegistry, health_handle: Health, health_registry: HealthRegistry,
-        thread_pool: Handle,
+        dispatcher: Dispatcher<T::Events>, memory_limiter: MemoryLimiter, component_registry: ComponentRegistry,
+        health_handle: Health, health_registry: HealthRegistry, thread_pool: Handle,
     ) -> Self {
         Self {
             shutdown_handle: Some(shutdown_handle),
@@ -48,6 +54,7 @@ impl SourceContext {
                 component_registry,
                 thread_pool,
             }),
+            _config: PhantomData,
         }
     }
 
@@ -75,7 +82,7 @@ impl SourceContext {
     }
 
     /// Gets a reference to the dispatcher.
-    pub fn dispatcher(&self) -> &Dispatcher<FixedSizeEventBuffer<1024>> {
+    pub fn dispatcher(&self) -> &Dispatcher<T::Events> {
         &self.inner.dispatcher
     }
 
@@ -100,12 +107,16 @@ impl SourceContext {
     }
 }
 
-impl Clone for SourceContext {
+impl<T> Clone for SourceContext<T>
+where
+    T: TopologyConfiguration,
+{
     fn clone(&self) -> Self {
         Self {
             shutdown_handle: None,
             health_handle: None,
             inner: self.inner.clone(),
+            _config: PhantomData,
         }
     }
 }

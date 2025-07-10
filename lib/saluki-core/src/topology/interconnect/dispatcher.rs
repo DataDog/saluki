@@ -8,6 +8,8 @@ use tokio::sync::mpsc;
 
 use crate::{components::ComponentContext, observability::ComponentMetricsExt as _, topology::OutputName};
 
+use super::Dispatchable;
+
 struct DispatcherMetrics {
     events_sent: Counter,
     send_latency: Histogram,
@@ -36,7 +38,7 @@ impl DispatcherMetrics {
 }
 
 /// A type that can be used as a buffer for dispatching items.
-pub trait DispatchBuffer: Clone + Default {
+pub trait DispatchBuffer: Dispatchable + Default {
     /// Type of item that can be pushed into the buffer.
     type Item;
 
@@ -59,7 +61,7 @@ struct DispatchTarget<T> {
 
 impl<T> DispatchTarget<T>
 where
-    T: Clone,
+    T: Dispatchable,
 {
     fn default_output(context: ComponentContext) -> Self {
         Self {
@@ -85,6 +87,7 @@ where
         }
 
         let start = Instant::now();
+        let item_count = item.item_count();
 
         // Send the item to all senders except the last one by cloning the item.
         let cloned_sends = self.senders.len() - 1;
@@ -107,6 +110,9 @@ where
         // TODO: We should consider splitting this out per-sender somehow. We would need to carry around the
         // destination component's ID, though, to properly associate it.
         self.metrics.send_latency.record(elapsed);
+
+        let total_events_sent = (self.senders.len() * item_count) as u64;
+        self.metrics.events_sent.increment(total_events_sent);
 
         Ok(())
     }
@@ -228,7 +234,7 @@ pub struct Dispatcher<T> {
 
 impl<T> Dispatcher<T>
 where
-    T: Clone,
+    T: Dispatchable,
 {
     /// Create a new `Dispatcher` for the given component context.
     pub fn new(context: ComponentContext) -> Self {
@@ -293,8 +299,6 @@ where
         };
 
         target.send(item).await?;
-
-        target.metrics.events_sent.increment(1);
 
         Ok(())
     }

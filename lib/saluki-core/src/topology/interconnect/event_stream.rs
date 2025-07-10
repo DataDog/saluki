@@ -2,23 +2,25 @@ use metrics::{Counter, Histogram};
 use saluki_metrics::MetricsBuilder;
 use tokio::sync::mpsc;
 
-use super::FixedSizeEventBuffer;
 use crate::{components::ComponentContext, observability::ComponentMetricsExt as _};
+
+use super::Dispatchable;
 
 /// A stream of events sent to a component.
 ///
-/// For transforms and destinations, their events can only come from other components that have forwarded them onwards.
-/// `EventStream` is the receiving end of the interconnection between two components, where
-/// [`Dispatcher`][crate::topology::interconnect::Dispatcher] is the sending end.
-pub struct EventStream {
-    inner: mpsc::Receiver<FixedSizeEventBuffer<1024>>,
+/// This represents the receiving end of a component interconnect, where the sending end is [`Dispatcher<T>`].
+pub struct EventStream<T> {
+    inner: mpsc::Receiver<T>,
     events_received: Counter,
     events_received_size: Histogram,
 }
 
-impl EventStream {
+impl<T> EventStream<T>
+where
+    T: Dispatchable,
+{
     /// Create a new `EventStream` for the given component context and inner receiver.
-    pub fn new(context: ComponentContext, inner: mpsc::Receiver<FixedSizeEventBuffer<1024>>) -> Self {
+    pub fn new(context: ComponentContext, inner: mpsc::Receiver<T>) -> Self {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
 
         Self {
@@ -28,15 +30,15 @@ impl EventStream {
         }
     }
 
-    /// Gets the next event buffer in the stream.
+    /// Gets the next event in the stream.
     ///
     /// If the component (or components) connected to this event stream have stopped, `None` is returned.
-    pub async fn next(&mut self) -> Option<FixedSizeEventBuffer<1024>> {
+    pub async fn next(&mut self) -> Option<T> {
         match self.inner.recv().await {
-            Some(buffer) => {
-                self.events_received.increment(buffer.len() as u64);
-                self.events_received_size.record(buffer.len() as f64);
-                Some(buffer)
+            Some(item) => {
+                self.events_received.increment(item.item_count() as u64);
+                self.events_received_size.record(item.item_count() as f64);
+                Some(item)
             }
             None => None,
         }
@@ -50,7 +52,7 @@ mod tests {
     use super::*;
     use crate::topology::ComponentId;
 
-    fn create_event_stream(channel_size: usize) -> (EventStream, mpsc::Sender<FixedSizeEventBuffer<1024>>) {
+    fn create_event_stream(channel_size: usize) -> (EventStream<String>, mpsc::Sender<String>) {
         let component_context = ComponentId::try_from("event_stream_test")
             .map(ComponentContext::source)
             .expect("component ID should never be invalid");
@@ -65,14 +67,14 @@ mod tests {
     async fn next() {
         let (mut event_stream, tx) = create_event_stream(1);
 
-        // Send an event buffer, and make sure we can receive it:
-        let ebuf = FixedSizeEventBuffer::<1024>::default();
-        assert!(ebuf.is_empty());
+        // Send an event, and make sure we can receive it:
+        let input_event = "hello world";
+        tx.send(input_event.to_string())
+            .await
+            .expect("should not fail to send event");
 
-        tx.send(ebuf).await.expect("should not fail to send event buffer");
-
-        let received_ebuf = event_stream.next().await.expect("should receive event buffer");
-        assert!(received_ebuf.is_empty());
+        let output_event = event_stream.next().await.expect("should receive event");
+        assert_eq!(output_event, input_event);
 
         // Now drop the sender, which should close the event stream:
         drop(tx);
