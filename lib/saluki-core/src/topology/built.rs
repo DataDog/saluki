@@ -66,11 +66,11 @@ impl<T: TopologyConfiguration> BuiltTopology<T> {
         }
     }
 
-    fn create_component_interconnects(
+    fn create_event_interconnects(
         &self,
     ) -> (
-        HashMap<ComponentId, Dispatcher<FixedSizeEventBuffer<1024>>>,
-        HashMap<ComponentId, EventStream>,
+        HashMap<ComponentId, Dispatcher<T::Events>>,
+        HashMap<ComponentId, EventStream<T::Events>>,
     ) {
         // Collect all of the outbound edges in our topology graph.
         //
@@ -79,7 +79,7 @@ impl<T: TopologyConfiguration> BuiltTopology<T> {
 
         let mut dispatchers = HashMap::new();
         let mut event_streams = HashMap::new();
-        let mut event_stream_senders: HashMap<ComponentId, mpsc::Sender<FixedSizeEventBuffer<1024>>> = HashMap::new();
+        let mut event_stream_senders: HashMap<ComponentId, mpsc::Sender<T::Events>> = HashMap::new();
 
         for (upstream_id, output_map) in outbound_edges {
             // Get a reference to the dispatcher for the current upstream component
@@ -98,7 +98,7 @@ impl<T: TopologyConfiguration> BuiltTopology<T> {
                     let sender = match event_stream_senders.get(&downstream_id) {
                         Some(sender) => sender.clone(),
                         None => {
-                            let (sender, receiver) = build_interconnect_channel(&self.config);
+                            let (sender, receiver) = build_event_interconnect_channel(&self.config);
 
                             // TODO: Similarly broken here, since a downstream component is any component that can
                             // receive events, which is either a transform or destination.
@@ -145,7 +145,7 @@ impl<T: TopologyConfiguration> BuiltTopology<T> {
         let mut component_task_map = HashMap::new();
 
         // Build our interconnects, which we'll grab from piecemeal as we spawn our components.
-        let (mut forwarders, mut event_streams) = self.create_component_interconnects();
+        let (mut forwarders, mut event_streams) = self.create_event_interconnects();
 
         let mut shutdown_coordinator = ComponentShutdownCoordinator::default();
 
@@ -302,11 +302,8 @@ fn spawn_destination(
     join_set.spawn_traced_named(component_task_name, async move { destination.run(context).await })
 }
 
-fn build_interconnect_channel<T: TopologyConfiguration>(
+fn build_event_interconnect_channel<T: TopologyConfiguration>(
     config: &T,
-) -> (
-    mpsc::Sender<FixedSizeEventBuffer<1024>>,
-    mpsc::Receiver<FixedSizeEventBuffer<1024>>,
-) {
+) -> (mpsc::Sender<T::Events>, mpsc::Receiver<T::Events>) {
     mpsc::channel(config.interconnect_capacity().get())
 }
