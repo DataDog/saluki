@@ -250,9 +250,11 @@ impl RemoteAgent for RemoteAgentImpl {
                 Ok(Some(event)) => match event.event {
                     Some(config_event::Event::Snapshot(_snapshot)) => {
                         // TODO: Handle config snapshot
+                        debug!("received config snapshot: {:#?}", _snapshot);
                     }
                     Some(config_event::Event::Update(_update)) => {
                         // TODO: Handle config update
+                        debug!("received config update: {:#?}", _update);
                     }
                     None => {
                         warn!("Received a ConfigEvent with no event data");
