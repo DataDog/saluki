@@ -4,6 +4,7 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
+use saluki_app::logging::LoggingConfiguration;
 use saluki_app::prelude::*;
 use saluki_error::GenericError;
 use tracing::{error, info};
@@ -19,7 +20,7 @@ use self::driver::Driver;
 mod target;
 
 fn main() {
-    if let Err(e) = initialize_logging(None) {
+    if let Err(e) = initialize_logging(&LoggingConfiguration::default()) {
         fatal_and_exit(format!("failed to initialize logging: {}", e));
     }
 

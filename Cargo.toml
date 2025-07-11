@@ -179,6 +179,8 @@ fnv = { version = "1", default-features = false }
 twox-hash = { version = "2", features = ["xxhash64"] }
 sha3 = { version = "0.10", default-features = false }
 pyo3 = { version = "0.25", default-features = false }
+tracing-appender = { version = "0.2.3", default-features = false }
+rolling-file = { version = "0.2.0", default-features = false }
 
 [profile.release]
 lto = "thin"

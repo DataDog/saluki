@@ -119,6 +119,7 @@ pub struct Cli {
 
 impl Cli {
     /// Gets the configured log level based on the user-supplied verbosity level.
+    #[allow(unused)]
     pub fn log_level(&self) -> LevelFilter {
         match self.verbose {
             0 => LevelFilter::INFO,
