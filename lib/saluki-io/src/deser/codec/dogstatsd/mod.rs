@@ -405,13 +405,13 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
                             .parse(chunk)?;
                     maybe_alert_type = AlertType::try_from_string(alert_type);
                 }
-                // Container ID: client-provided container ID for the container that this metric originated from.
+                // Container ID: client-provided container ID for the container that this event originated from.
                 message::CONTAINER_ID_PREFIX => {
                     let (_, container_id) =
                         all_consuming(preceded(tag(message::CONTAINER_ID_PREFIX), container_id)).parse(chunk)?;
                     maybe_container_id = Some(container_id.into());
                 }
-                // External Data: client-provided data used for resolving the entity ID that this metric originated from.
+                // External Data: client-provided data used for resolving the entity ID that this event originated from.
                 message::EXTERNAL_DATA_PREFIX => {
                     let (_, external_data) =
                         all_consuming(preceded(tag(message::EXTERNAL_DATA_PREFIX), external_data)).parse(chunk)?;
@@ -498,7 +498,7 @@ fn parse_dogstatsd_service_check<'a>(
                     let (_, container_id) = all_consuming(preceded(tag("c:"), container_id)).parse(chunk)?;
                     maybe_container_id = Some(container_id.into());
                 }
-                // External Data: client-provided data used for resolving the entity ID that this metric originated from.
+                // External Data: client-provided data used for resolving the entity ID that this service check originated from.
                 b"e:" => {
                     let (_, external_data) = all_consuming(preceded(tag("e:"), external_data)).parse(chunk)?;
                     maybe_external_data = Some(external_data.into());

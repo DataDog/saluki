@@ -180,7 +180,6 @@ impl Serialize for CheckStatus {
         serializer.serialize_u8(self.as_u8())
     }
 }
-
 /// Error type for parsing CheckStatus.
 #[derive(Debug, Clone)]
 pub struct ParseCheckStatusError;
@@ -192,7 +191,6 @@ impl std::fmt::Display for ParseCheckStatusError {
 }
 
 impl std::error::Error for ParseCheckStatusError {}
-
 impl TryFrom<u8> for CheckStatus {
     type Error = ParseCheckStatusError;
 

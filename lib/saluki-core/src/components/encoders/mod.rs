@@ -18,7 +18,7 @@ pub enum ProcessResult {
     /// The encoder cannot process the event without flushing first.
     ///
     /// The caller should flush the encoder and try again to process the event.
-    FlushRequired(Event),
+    FlushRequired(Box<Event>),
 }
 
 /// A encoder.
