@@ -6,11 +6,11 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::task::HandleExt as _;
 use saluki_config::{GenericConfiguration, RefreshableConfiguration};
 use saluki_core::data_model::event::{service_check::ServiceCheck, EventType};
+use saluki_core::topology::EventsBuffer;
 use saluki_core::{
     components::{destinations::*, ComponentContext},
     observability::ComponentMetricsExt as _,
     pooling::ElasticObjectPool,
-    topology::interconnect::FixedSizeEventBuffer,
 };
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::{
@@ -251,7 +251,7 @@ impl Destination for DatadogServiceChecks {
 
 async fn run_request_builder(
     mut request_builder: RequestBuilder<ServiceChecksEndpointEncoder, ElasticObjectPool<BytesBuffer>>,
-    telemetry: ComponentTelemetry, mut request_builder_rx: mpsc::Receiver<FixedSizeEventBuffer<1024>>,
+    telemetry: ComponentTelemetry, mut request_builder_rx: mpsc::Receiver<EventsBuffer>,
     forwarder_handle: Handle<FrozenChunkedBytesBuffer>, flush_timeout: Duration,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
