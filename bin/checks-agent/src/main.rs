@@ -1,7 +1,4 @@
-use std::{
-    num::NonZeroUsize,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use memory_accounting::ComponentRegistry;
 use saluki_app::{api::APIBuilder, metrics::emit_startup_metrics, prelude::*};
@@ -11,10 +8,7 @@ use saluki_components::{
     transforms::{AggregateConfiguration, ChainedConfiguration, HostEnrichmentConfiguration},
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
-use saluki_core::{
-    data_model::payload::Payload,
-    topology::{interconnect::FixedSizeEventBuffer, TopologyBlueprint, TopologyConfiguration},
-};
+use saluki_core::topology::TopologyBlueprint;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use saluki_io::net::ListenAddress;
@@ -151,7 +145,7 @@ async fn run(started: Instant) -> Result<(), Box<dyn std::error::Error>> {
 
 async fn create_topology(
     configuration: &GenericConfiguration, env_provider: &ChecksAgentEnvProvider, component_registry: &ComponentRegistry,
-) -> Result<TopologyBlueprint<ChecksAgentTopologyConfiguration>, GenericError> {
+) -> Result<TopologyBlueprint, GenericError> {
     // Create a ChecksConfiguration source
     let checks_config = ChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure checks source.")?
@@ -167,8 +161,7 @@ async fn create_topology(
         ChainedConfiguration::default().with_transform_builder("host_enrichment", host_enrichment_config);
 
     // Create a simplified topology with minimal components for now.
-    let primary_config = ChecksAgentTopologyConfiguration;
-    let mut blueprint = TopologyBlueprint::new("primary", primary_config, component_registry);
+    let mut blueprint = TopologyBlueprint::new("primary", component_registry);
 
     blueprint
         .add_source("checks_in", checks_config)?
@@ -197,15 +190,4 @@ async fn create_topology(
     }
 
     Ok(blueprint)
-}
-
-struct ChecksAgentTopologyConfiguration;
-
-impl TopologyConfiguration for ChecksAgentTopologyConfiguration {
-    type Events = FixedSizeEventBuffer<1024>;
-    type Payloads = Payload;
-
-    fn interconnect_capacity(&self) -> NonZeroUsize {
-        NonZeroUsize::new(128).unwrap()
-    }
 }

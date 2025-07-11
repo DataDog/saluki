@@ -1,18 +1,13 @@
 //! Component interconnects.
 
 mod event_buffer;
-use crate::data_model::payload::Payload;
-
 pub use self::event_buffer::{EventBufferManager, FixedSizeEventBuffer};
 
-mod event_stream;
-pub use self::event_stream::EventStream;
+mod consumer;
+pub use self::consumer::Consumer;
 
 mod dispatcher;
 pub use self::dispatcher::{BufferedDispatcher, Dispatcher};
-
-pub type EventDispatcher = Dispatcher<FixedSizeEventBuffer<1024>>;
-pub type PayloadDispatcher = Dispatcher<Payload>;
 
 /// A value that can be dispatched.
 pub trait Dispatchable: Clone {
