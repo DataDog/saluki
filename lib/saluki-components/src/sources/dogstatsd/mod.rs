@@ -10,12 +10,13 @@ use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
 use saluki_core::data_model::event::metric::{MetricMetadata, MetricOrigin};
 use saluki_core::data_model::event::{metric::Metric, Event, EventType};
+use saluki_core::topology::EventsBuffer;
 use saluki_core::{
     components::{sources::*, ComponentContext},
     observability::ComponentMetricsExt as _,
     pooling::FixedSizeObjectPool,
     topology::{
-        interconnect::{EventBufferManager, FixedSizeEventBuffer},
+        interconnect::EventBufferManager,
         shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
         OutputDefinition,
     },
@@ -957,9 +958,7 @@ fn handle_metric_packet(
     }
 }
 
-async fn dispatch_events(
-    mut event_buffer: FixedSizeEventBuffer<1024>, source_context: &SourceContext, listen_addr: &ListenAddress,
-) {
+async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &SourceContext, listen_addr: &ListenAddress) {
     debug!(%listen_addr, events_len = event_buffer.len(), "Forwarding events.");
 
     // TODO: This is maybe a little dicey because if we fail to dispatch the events, we may not have iterated over all of

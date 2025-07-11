@@ -7,11 +7,11 @@ use saluki_common::task::HandleExt as _;
 use saluki_config::{GenericConfiguration, RefreshableConfiguration};
 use saluki_context::tags::SharedTagSet;
 use saluki_core::data_model::event::{metric::Metric, EventType};
+use saluki_core::topology::EventsBuffer;
 use saluki_core::{
     components::{destinations::*, ComponentContext},
     observability::ComponentMetricsExt as _,
     pooling::{ElasticObjectPool, ObjectPool},
-    topology::interconnect::FixedSizeEventBuffer,
 };
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::{
@@ -357,8 +357,8 @@ where
 async fn run_request_builder<O>(
     mut series_request_builder: RequestBuilder<MetricsEndpointEncoder, O>,
     mut sketches_request_builder: RequestBuilder<MetricsEndpointEncoder, O>, telemetry: ComponentTelemetry,
-    mut request_builder_rx: mpsc::Receiver<FixedSizeEventBuffer<1024>>,
-    forwarder_handle: Handle<FrozenChunkedBytesBuffer>, flush_timeout: Duration,
+    mut request_builder_rx: mpsc::Receiver<EventsBuffer>, forwarder_handle: Handle<FrozenChunkedBytesBuffer>,
+    flush_timeout: Duration,
 ) -> Result<(), GenericError>
 where
     O: ObjectPool<Item = BytesBuffer> + 'static,

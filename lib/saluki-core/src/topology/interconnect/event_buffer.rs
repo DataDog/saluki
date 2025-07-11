@@ -172,7 +172,7 @@ impl<'a, const N: usize> IntoIterator for &'a mut FixedSizeEventBuffer<N> {
     }
 }
 
-/// An ergonomic wrapper over fallibly writing to event buffers.
+/// An ergonomic wrapper over fallibly writing to fixed-size event buffers.
 ///
 /// As `FixedSizeEventBuffer` has a fixed capacity, callers have to handle the scenario where they attempt to push an
 /// event into the event buffer but the buffer has no more capacity. This generally involves having to swap it with a
@@ -182,16 +182,16 @@ impl<'a, const N: usize> IntoIterator for &'a mut FixedSizeEventBuffer<N> {
 /// optional value, and handling the logic of ensuring we have a buffer to write into only when actually attempting a
 /// write, rather than always holding on to one.
 #[derive(Default)]
-pub struct EventBufferManager {
-    current: Option<FixedSizeEventBuffer<1024>>,
+pub struct EventBufferManager<const N: usize> {
+    current: Option<FixedSizeEventBuffer<N>>,
 }
 
-impl EventBufferManager {
+impl<const N: usize> EventBufferManager<N> {
     /// Attempts to push an event into the current event buffer.
     ///
     /// If the event buffer is full, it is replaced with a new event buffer before pushing the event, and `Some(buffer)`
     /// is returned containing the old event buffer. Otherwise, `None` is returned.
-    pub fn try_push(&mut self, event: Event) -> Option<FixedSizeEventBuffer<1024>> {
+    pub fn try_push(&mut self, event: Event) -> Option<FixedSizeEventBuffer<N>> {
         // Consume the event buffer if we have one, or acquire one on demand.
         let mut buffer = self.current.take().unwrap_or_default();
 
@@ -214,7 +214,7 @@ impl EventBufferManager {
     }
 
     /// Consumes the current event buffer, if one exists.
-    pub fn consume(&mut self) -> Option<FixedSizeEventBuffer<1024>> {
+    pub fn consume(&mut self) -> Option<FixedSizeEventBuffer<N>> {
         self.current.take()
     }
 }

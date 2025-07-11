@@ -10,14 +10,12 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::time::get_unix_timestamp;
 use saluki_config::GenericConfiguration;
 use saluki_context::Context;
-use saluki_core::data_model::event::{metric::*, Event, EventType};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
+    data_model::event::{metric::*, Event, EventType},
     observability::ComponentMetricsExt as _,
-    topology::{
-        interconnect::{BufferedDispatcher, Dispatcher, FixedSizeEventBuffer},
-        OutputDefinition,
-    },
+    topology::{interconnect::BufferedDispatcher, OutputDefinition},
+    topology::{EventsBuffer, EventsDispatcher},
 };
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
@@ -409,7 +407,7 @@ fn try_split_timestamped_values(mut metric: Metric) -> (Option<Metric>, Option<M
 }
 
 struct PassthroughBatcher {
-    active_buffer: FixedSizeEventBuffer<1024>,
+    active_buffer: EventsBuffer,
     active_buffer_start: Instant,
     last_processed_at: Instant,
     idle_flush_timeout: Duration,
@@ -419,7 +417,7 @@ struct PassthroughBatcher {
 
 impl PassthroughBatcher {
     async fn new(idle_flush_timeout: Duration, bucket_width: Duration, telemetry: Telemetry) -> Self {
-        let active_buffer = FixedSizeEventBuffer::<1024>::default();
+        let active_buffer = EventsBuffer::default();
 
         Self {
             active_buffer,
@@ -431,7 +429,7 @@ impl PassthroughBatcher {
         }
     }
 
-    async fn push_metric(&mut self, metric: Metric, dispatcher: &Dispatcher<FixedSizeEventBuffer<1024>>) {
+    async fn push_metric(&mut self, metric: Metric, dispatcher: &EventsDispatcher) {
         // Convert counters to rates before we batch them up.
         //
         // This involves specifying the rate interval as the bucket width of the aggregate transform itself, which when
@@ -470,7 +468,7 @@ impl PassthroughBatcher {
         self.last_processed_at = Instant::now();
     }
 
-    async fn try_flush(&mut self, dispatcher: &Dispatcher<FixedSizeEventBuffer<1024>>) {
+    async fn try_flush(&mut self, dispatcher: &EventsDispatcher) {
         // If our active buffer isn't empty, and we've exceeded our idle flush timeout, then flush the buffer.
         if !self.active_buffer.is_empty() && self.last_processed_at.elapsed() >= self.idle_flush_timeout {
             debug!("Passthrough processing exceeded idle flush timeout. Flushing...");
@@ -479,7 +477,7 @@ impl PassthroughBatcher {
         }
     }
 
-    async fn dispatch_events(&mut self, dispatcher: &Dispatcher<FixedSizeEventBuffer<1024>>) {
+    async fn dispatch_events(&mut self, dispatcher: &EventsDispatcher) {
         if !self.active_buffer.is_empty() {
             let unaggregated_events = self.active_buffer.len();
 
@@ -490,7 +488,7 @@ impl PassthroughBatcher {
             self.telemetry.increment_passthrough_flushes();
 
             // Swap our active buffer with a new, empty one, and then forward the old one.
-            let new_active_buffer = FixedSizeEventBuffer::<1024>::default();
+            let new_active_buffer = EventsBuffer::default();
             let old_active_buffer = std::mem::replace(&mut self.active_buffer, new_active_buffer);
 
             match dispatcher.dispatch(old_active_buffer).await {
@@ -588,8 +586,7 @@ impl AggregationState {
     }
 
     async fn flush(
-        &mut self, current_time: u64, flush_open_buckets: bool,
-        dispatcher: &mut BufferedDispatcher<'_, FixedSizeEventBuffer<1024>>,
+        &mut self, current_time: u64, flush_open_buckets: bool, dispatcher: &mut BufferedDispatcher<'_, EventsBuffer>,
     ) -> Result<(), GenericError> {
         self.contexts_remove_buf.clear();
 
@@ -694,7 +691,7 @@ impl AggregationState {
 
 async fn transform_and_push_metric(
     context: Context, mut values: MetricValues, metadata: MetricMetadata, bucket_width_secs: u64,
-    hist_config: &HistogramConfiguration, dispatcher: &mut BufferedDispatcher<'_, FixedSizeEventBuffer<1024>>,
+    hist_config: &HistogramConfiguration, dispatcher: &mut BufferedDispatcher<'_, EventsBuffer>,
 ) -> Result<(), GenericError> {
     let bucket_width = Duration::from_secs(bucket_width_secs);
 
@@ -839,7 +836,7 @@ mod tests {
     }
 
     struct DispatcherReceiver {
-        receiver: mpsc::Receiver<FixedSizeEventBuffer<1024>>,
+        receiver: mpsc::Receiver<EventsBuffer>,
     }
 
     impl DispatcherReceiver {
@@ -860,7 +857,7 @@ mod tests {
     }
 
     /// Constructs a basic `Dispatcher` with a fixed-size event buffer.
-    fn build_basic_dispatcher() -> (Dispatcher<FixedSizeEventBuffer<1024>>, DispatcherReceiver) {
+    fn build_basic_dispatcher() -> (EventsDispatcher, DispatcherReceiver) {
         let component_id = ComponentId::try_from("test").expect("should not fail to create component ID");
         let mut dispatcher = Dispatcher::new(ComponentContext::transform(component_id));
 
