@@ -34,6 +34,8 @@ pub struct ServiceCheck {
     #[serde(skip_serializing_if = "MetaString::is_empty")]
     message: MetaString,
     tags: Option<Vec<MetaString>>,
+    container_id: Option<MetaString>,
+    external_data: Option<MetaString>,
 }
 
 impl ServiceCheck {
@@ -77,6 +79,16 @@ impl ServiceCheck {
         self.tags.as_deref()
     }
 
+    /// Returns the container ID associated with the service check.
+    pub fn container_id(&self) -> Option<&str> {
+        self.container_id.as_deref()
+    }
+
+    /// Returns the external data associated with the service check.
+    pub fn external_data(&self) -> Option<&str> {
+        self.external_data.as_deref()
+    }
+
     /// Creates a `ServiceCheck` from the given name and status
     pub fn new(name: &str, status: CheckStatus) -> Self {
         Self {
@@ -86,6 +98,8 @@ impl ServiceCheck {
             hostname: MetaString::empty(),
             message: MetaString::empty(),
             tags: None,
+            container_id: None,
+            external_data: None,
         }
     }
 
@@ -128,6 +142,22 @@ impl ServiceCheck {
         };
         self
     }
+
+    /// Set the container ID of the service check.
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_container_id(mut self, container_id: impl Into<Option<MetaString>>) -> Self {
+        self.container_id = container_id.into();
+        self
+    }
+
+    /// Set the external data of the service check.
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_external_data(mut self, external_data: impl Into<Option<MetaString>>) -> Self {
+        self.external_data = external_data.into();
+        self
+    }
 }
 
 impl CheckStatus {
@@ -150,6 +180,7 @@ impl Serialize for CheckStatus {
         serializer.serialize_u8(self.as_u8())
     }
 }
+
 /// Error type for parsing CheckStatus.
 #[derive(Debug, Clone)]
 pub struct ParseCheckStatusError;
@@ -161,6 +192,7 @@ impl std::fmt::Display for ParseCheckStatusError {
 }
 
 impl std::error::Error for ParseCheckStatusError {}
+
 impl TryFrom<u8> for CheckStatus {
     type Error = ParseCheckStatusError;
 

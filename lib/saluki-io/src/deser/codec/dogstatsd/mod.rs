@@ -356,6 +356,8 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
     let mut maybe_aggregation_key = None;
     let mut maybe_source_type = None;
     let mut maybe_tags = None;
+    let mut maybe_container_id = None;
+    let mut maybe_external_data = None;
 
     let remaining = if !remaining.is_empty() {
         let (mut remaining, _) = tag("|")(remaining)?;
@@ -403,6 +405,18 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
                             .parse(chunk)?;
                     maybe_alert_type = AlertType::try_from_string(alert_type);
                 }
+                // Container ID: client-provided container ID for the container that this metric originated from.
+                message::CONTAINER_ID_PREFIX => {
+                    let (_, container_id) =
+                        all_consuming(preceded(tag(message::CONTAINER_ID_PREFIX), container_id)).parse(chunk)?;
+                    maybe_container_id = Some(container_id.into());
+                }
+                // External Data: client-provided data used for resolving the entity ID that this metric originated from.
+                message::EXTERNAL_DATA_PREFIX => {
+                    let (_, external_data) =
+                        all_consuming(preceded(tag(message::EXTERNAL_DATA_PREFIX), external_data)).parse(chunk)?;
+                    maybe_external_data = Some(external_data.into());
+                }
                 // Tags: additional tags to be added to the event.
                 _ if chunk.starts_with(message::TAGS_PREFIX) => {
                     let (_, tags) =
@@ -429,8 +443,9 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
         .with_priority(maybe_priority)
         .with_source_type_name(maybe_source_type)
         .with_alert_type(maybe_alert_type)
-        .with_tags(maybe_tags);
-
+        .with_tags(maybe_tags)
+        .with_container_id(maybe_container_id)
+        .with_external_data(maybe_external_data);
     Ok((remaining, eventd))
 }
 
@@ -450,6 +465,8 @@ fn parse_dogstatsd_service_check<'a>(
     let mut maybe_hostname = None;
     let mut maybe_tags = None;
     let mut maybe_message = None;
+    let mut maybe_container_id = None;
+    let mut maybe_external_data = None;
     let mut seen_message = false;
 
     let remaining = if !remaining.is_empty() {
@@ -475,6 +492,16 @@ fn parse_dogstatsd_service_check<'a>(
                     let (_, hostname) =
                         all_consuming(preceded(tag(message::HOSTNAME_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
                     maybe_hostname = Some(hostname.into());
+                }
+                // Container ID: client-provided container ID for the container that this service check originated from.
+                b"c:" => {
+                    let (_, container_id) = all_consuming(preceded(tag("c:"), container_id)).parse(chunk)?;
+                    maybe_container_id = Some(container_id.into());
+                }
+                // External Data: client-provided data used for resolving the entity ID that this metric originated from.
+                b"e:" => {
+                    let (_, external_data) = all_consuming(preceded(tag("e:"), external_data)).parse(chunk)?;
+                    maybe_external_data = Some(external_data.into());
                 }
                 // Tags: additional tags to be added to the service check.
                 _ if chunk.starts_with(message::TAGS_PREFIX) => {
@@ -507,7 +534,9 @@ fn parse_dogstatsd_service_check<'a>(
         .with_timestamp(maybe_timestamp)
         .with_hostname(maybe_hostname)
         .with_tags(maybe_tags)
-        .with_message(maybe_message);
+        .with_message(maybe_message)
+        .with_container_id(maybe_container_id)
+        .with_external_data(maybe_external_data);
     Ok((remaining, service_check))
 }
 
@@ -801,6 +830,8 @@ mod tests {
         assert_eq!(expected.source_type_name(), actual.source_type_name());
         assert_eq!(expected.alert_type(), actual.alert_type());
         assert_eq!(expected.tags(), actual.tags());
+        assert_eq!(expected.container_id(), actual.container_id());
+        assert_eq!(expected.external_data(), actual.external_data());
     }
 
     #[track_caller]
@@ -810,6 +841,9 @@ mod tests {
         assert_eq!(expected.timestamp(), actual.timestamp());
         assert_eq!(expected.hostname(), actual.hostname());
         assert_eq!(expected.tags(), actual.tags());
+        assert_eq!(expected.message(), actual.message());
+        assert_eq!(expected.container_id(), actual.container_id());
+        assert_eq!(expected.external_data(), actual.external_data());
     }
 
     #[test]
@@ -1156,9 +1190,11 @@ mod tests {
         let event_source_type = MetaString::from("testsource");
         let event_alert_type = AlertType::Success;
         let event_timestamp = 1234567890;
+        let event_container_id = MetaString::from("abcdef123456");
+        let event_external_data = MetaString::from("it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183");
         let tags = vec!["tag1".into(), "tag2".into()];
         let raw = format!(
-            "_e{{{},{}}}:{}|{}|h:{}|k:{}|p:{}|s:{}|t:{}|d:{}|#{}",
+            "_e{{{},{}}}:{}|{}|h:{}|k:{}|p:{}|s:{}|t:{}|d:{}|c:{}|e:{}|#{}",
             event_title.len(),
             event_text.len(),
             event_title,
@@ -1169,6 +1205,8 @@ mod tests {
             event_source_type,
             event_alert_type,
             event_timestamp,
+            event_container_id,
+            event_external_data,
             tags.join(","),
         );
         let actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
@@ -1179,7 +1217,9 @@ mod tests {
             .with_source_type_name(event_source_type)
             .with_alert_type(event_alert_type)
             .with_timestamp(event_timestamp)
-            .with_tags(tags);
+            .with_tags(tags)
+            .with_container_id(event_container_id)
+            .with_external_data(event_external_data);
         check_basic_eventd_eq(expected, actual);
     }
 
@@ -1232,14 +1272,18 @@ mod tests {
         let sc_status = CheckStatus::Unknown;
         let sc_timestamp = 1234567890;
         let sc_hostname = MetaString::from("myhost");
+        let sc_container_id = MetaString::from("abcdef123456");
+        let sc_external_data = MetaString::from("it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183");
         let tags = vec!["tag1".into(), "tag2".into()];
         let sc_message = MetaString::from("service status unknown");
         let raw = format!(
-            "_sc|{}|{}|d:{}|h:{}|#{}|m:{}",
+            "_sc|{}|{}|d:{}|h:{}|c:{}|e:{}|#{}|m:{}",
             name,
             sc_status.as_u8(),
             sc_timestamp,
             sc_hostname,
+            sc_container_id,
+            sc_external_data,
             tags.join(","),
             sc_message
         );
@@ -1248,7 +1292,9 @@ mod tests {
             .with_timestamp(sc_timestamp)
             .with_hostname(sc_hostname)
             .with_tags(tags)
-            .with_message(sc_message);
+            .with_message(sc_message)
+            .with_container_id(sc_container_id)
+            .with_external_data(sc_external_data);
         check_basic_service_check_eq(expected, actual);
     }
 
