@@ -10,6 +10,7 @@ use process_memory::Querier;
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
 #[test]
+#[cfg_attr(target_os = "macos", ignore = "this test is flaky on macOS")]
 fn no_runtime_allocations() {
     // This test ensures that after initially creating `Querier`, there are _no_ runtime allocations made when calling
     // `resident_set_size`.
