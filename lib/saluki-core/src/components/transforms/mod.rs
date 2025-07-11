@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use saluki_error::GenericError;
 
-use crate::topology::interconnect::FixedSizeEventBuffer;
+use crate::topology::EventsBuffer;
 
 mod builder;
 pub use self::builder::{SynchronousTransformBuilder, TransformBuilder};
@@ -40,5 +40,5 @@ pub trait Transform {
 /// within a single transform component for processing efficiency.
 pub trait SynchronousTransform {
     /// Transforms the events in the event buffer.
-    fn transform_buffer(&mut self, buffer: &mut FixedSizeEventBuffer);
+    fn transform_buffer(&mut self, buffer: &mut EventsBuffer);
 }

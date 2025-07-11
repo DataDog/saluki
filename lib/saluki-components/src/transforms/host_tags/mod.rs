@@ -12,7 +12,7 @@ use saluki_context::{
     tags::{SharedTagSet, Tag},
     ContextResolver, ContextResolverBuilder,
 };
-use saluki_core::{components::transforms::*, topology::interconnect::FixedSizeEventBuffer};
+use saluki_core::{components::transforms::*, topology::EventsBuffer};
 use saluki_core::{components::ComponentContext, data_model::event::metric::Metric};
 use saluki_env::helpers::remote_agent::RemoteAgentClient;
 use saluki_error::{generic_error, GenericError};
@@ -126,7 +126,7 @@ impl HostTagsEnrichment {
 }
 
 impl SynchronousTransform for HostTagsEnrichment {
-    fn transform_buffer(&mut self, event_buffer: &mut FixedSizeEventBuffer) {
+    fn transform_buffer(&mut self, event_buffer: &mut EventsBuffer) {
         // Skip adding host tags if duration has elapsed.
         if self.start.elapsed() >= self.expected_tags_duration {
             self.context_resolver = None;

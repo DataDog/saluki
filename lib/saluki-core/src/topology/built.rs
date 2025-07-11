@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, num::NonZeroUsize};
 
 use memory_accounting::{
     allocator::{AllocationGroupToken, Tracked},
@@ -15,20 +15,16 @@ use tracing::{debug, error_span};
 
 use super::{
     graph::Graph,
-    interconnect::{Dispatcher, EventStream, FixedSizeEventBuffer, FixedSizeEventBufferInner},
+    interconnect::{Consumer, Dispatcher},
     running::RunningTopology,
     shutdown::ComponentShutdownCoordinator,
-    ComponentId, RegisteredComponent,
+    ComponentId, EventsBuffer, RegisteredComponent,
 };
-use crate::{
-    components::{
-        destinations::{Destination, DestinationContext},
-        sources::{Source, SourceContext},
-        transforms::{Transform, TransformContext},
-        ComponentContext,
-    },
-    pooling::OnDemandObjectPool,
-    topology::TopologyConfiguration,
+use crate::components::{
+    destinations::{Destination, DestinationContext},
+    sources::{Source, SourceContext},
+    transforms::{Transform, TransformContext},
+    ComponentContext,
 };
 
 /// A built topology.
@@ -37,41 +33,42 @@ use crate::{
 /// connections to other components, was validated and built successfully.
 ///
 /// A built topology must be spawned via [`spawn`][Self::spawn].
-pub struct BuiltTopology<T> {
+pub struct BuiltTopology {
     name: String,
-    config: T,
     graph: Graph,
-    event_buffer_pool_buffer_size: usize,
     sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
     transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
     destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
     component_token: AllocationGroupToken,
+    interconnect_capacity: NonZeroUsize,
 }
 
-impl<T: TopologyConfiguration> BuiltTopology<T> {
+impl BuiltTopology {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(
-        name: String, config: T, graph: Graph, event_buffer_pool_buffer_size: usize,
+        name: String, graph: Graph,
         sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
         transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
         destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
-        component_token: AllocationGroupToken,
+        component_token: AllocationGroupToken, interconnect_capacity: NonZeroUsize,
     ) -> Self {
         Self {
             name,
-            config,
             graph,
-            event_buffer_pool_buffer_size,
             sources,
             transforms,
             destinations,
             component_token,
+            interconnect_capacity,
         }
     }
 
-    fn create_component_interconnects(
-        &self, event_buffer_pool: OnDemandObjectPool<FixedSizeEventBuffer>,
-    ) -> (HashMap<ComponentId, Dispatcher>, HashMap<ComponentId, EventStream>) {
+    fn create_event_interconnects(
+        &self,
+    ) -> (
+        HashMap<ComponentId, Dispatcher<EventsBuffer>>,
+        HashMap<ComponentId, Consumer<EventsBuffer>>,
+    ) {
         // Collect all of the outbound edges in our topology graph.
         //
         // This gives us a mapping of components which send events to another component, grouped by output name.
@@ -79,7 +76,7 @@ impl<T: TopologyConfiguration> BuiltTopology<T> {
 
         let mut dispatchers = HashMap::new();
         let mut event_streams = HashMap::new();
-        let mut event_stream_senders: HashMap<ComponentId, mpsc::Sender<FixedSizeEventBuffer>> = HashMap::new();
+        let mut event_stream_senders: HashMap<ComponentId, mpsc::Sender<EventsBuffer>> = HashMap::new();
 
         for (upstream_id, output_map) in outbound_edges {
             // Get a reference to the dispatcher for the current upstream component
@@ -87,7 +84,7 @@ impl<T: TopologyConfiguration> BuiltTopology<T> {
                 // TODO: This is wrong, because an upstream component is simply any component that can dispatch, which is
                 // either a source or transform.
                 let component_context = ComponentContext::source(upstream_id.clone());
-                Dispatcher::new(component_context, event_buffer_pool.clone())
+                Dispatcher::new(component_context)
             });
 
             for (upstream_output_id, downstream_ids) in output_map {
@@ -98,12 +95,12 @@ impl<T: TopologyConfiguration> BuiltTopology<T> {
                     let sender = match event_stream_senders.get(&downstream_id) {
                         Some(sender) => sender.clone(),
                         None => {
-                            let (sender, receiver) = build_interconnect_channel(&self.config);
+                            let (sender, receiver) = build_event_interconnect_channel(self.interconnect_capacity);
 
                             // TODO: Similarly broken here, since a downstream component is any component that can
                             // receive events, which is either a transform or destination.
                             let component_context = ComponentContext::destination(downstream_id.clone());
-                            let event_stream = EventStream::new(component_context, receiver);
+                            let event_stream = Consumer::new(component_context, receiver);
 
                             event_streams.insert(downstream_id.clone(), event_stream);
                             event_stream_senders.insert(downstream_id.clone(), sender.clone());
@@ -145,11 +142,7 @@ impl<T: TopologyConfiguration> BuiltTopology<T> {
         let mut component_task_map = HashMap::new();
 
         // Build our interconnects, which we'll grab from piecemeal as we spawn our components.
-        let event_buffer_pool = OnDemandObjectPool::with_builder("global_event_buffers", move || {
-            FixedSizeEventBufferInner::with_capacity(self.event_buffer_pool_buffer_size)
-        });
-
-        let (mut forwarders, mut event_streams) = self.create_component_interconnects(event_buffer_pool.clone());
+        let (mut forwarders, mut event_streams) = self.create_event_interconnects();
 
         let mut shutdown_coordinator = ComponentShutdownCoordinator::default();
 
@@ -171,7 +164,6 @@ impl<T: TopologyConfiguration> BuiltTopology<T> {
                 component_context,
                 shutdown_handle,
                 forwarder,
-                event_buffer_pool.clone(),
                 memory_limiter.clone(),
                 component_registry,
                 health_handle,
@@ -204,7 +196,6 @@ impl<T: TopologyConfiguration> BuiltTopology<T> {
                 component_context,
                 forwarder,
                 event_stream,
-                event_buffer_pool.clone(),
                 memory_limiter.clone(),
                 component_registry,
                 health_handle,
@@ -308,8 +299,8 @@ fn spawn_destination(
     join_set.spawn_traced_named(component_task_name, async move { destination.run(context).await })
 }
 
-fn build_interconnect_channel<T: TopologyConfiguration>(
-    config: &T,
-) -> (mpsc::Sender<FixedSizeEventBuffer>, mpsc::Receiver<FixedSizeEventBuffer>) {
-    mpsc::channel(config.interconnect_capacity().get())
+fn build_event_interconnect_channel(
+    capacity: NonZeroUsize,
+) -> (mpsc::Sender<EventsBuffer>, mpsc::Receiver<EventsBuffer>) {
+    mpsc::channel(capacity.get())
 }

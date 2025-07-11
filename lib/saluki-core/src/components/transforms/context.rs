@@ -4,16 +4,14 @@ use tokio::runtime::Handle;
 
 use crate::{
     components::ComponentContext,
-    pooling::OnDemandObjectPool,
-    topology::interconnect::{Dispatcher, EventStream, FixedSizeEventBuffer},
+    topology::{EventsConsumer, EventsDispatcher},
 };
 
 /// Transform context.
 pub struct TransformContext {
     component_context: ComponentContext,
-    dispatcher: Dispatcher,
-    event_stream: EventStream,
-    event_buffer_pool: OnDemandObjectPool<FixedSizeEventBuffer>,
+    dispatcher: EventsDispatcher,
+    consumer: EventsConsumer,
     memory_limiter: MemoryLimiter,
     health_handle: Option<Health>,
     health_registry: HealthRegistry,
@@ -25,16 +23,14 @@ impl TransformContext {
     /// Creates a new `TransformContext`.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        component_context: ComponentContext, dispatcher: Dispatcher, event_stream: EventStream,
-        event_buffer_pool: OnDemandObjectPool<FixedSizeEventBuffer>, memory_limiter: MemoryLimiter,
-        component_registry: ComponentRegistry, health_handle: Health, health_registry: HealthRegistry,
-        thread_pool: Handle,
+        component_context: ComponentContext, dispatcher: EventsDispatcher, consumer: EventsConsumer,
+        memory_limiter: MemoryLimiter, component_registry: ComponentRegistry, health_handle: Health,
+        health_registry: HealthRegistry, thread_pool: Handle,
     ) -> Self {
         Self {
             component_context,
             dispatcher,
-            event_stream,
-            event_buffer_pool,
+            consumer,
             memory_limiter,
             health_handle: Some(health_handle),
             health_registry,
@@ -57,19 +53,14 @@ impl TransformContext {
         self.component_context.clone()
     }
 
-    /// Gets a reference to the dispatcher.
-    pub fn dispatcher(&self) -> &Dispatcher {
+    /// Gets a reference to the events dispatcher.
+    pub fn dispatcher(&self) -> &EventsDispatcher {
         &self.dispatcher
     }
 
-    /// Gets a mutable reference to the event stream.
-    pub fn event_stream(&mut self) -> &mut EventStream {
-        &mut self.event_stream
-    }
-
-    /// Gets a reference to the event buffer pool.
-    pub fn event_buffer_pool(&self) -> &OnDemandObjectPool<FixedSizeEventBuffer> {
-        &self.event_buffer_pool
+    /// Gets a mutable reference to the events consumer.
+    pub fn events(&mut self) -> &mut EventsConsumer {
+        &mut self.consumer
     }
 
     /// Gets a reference to the memory limiter.

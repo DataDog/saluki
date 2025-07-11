@@ -1,6 +1,7 @@
 use http::{HeaderMap, HeaderValue, Method};
 
 /// An HTTP payload.
+#[derive(Clone)]
 pub struct HttpPayload {
     /// The HTTP method.
     pub method: Method,
