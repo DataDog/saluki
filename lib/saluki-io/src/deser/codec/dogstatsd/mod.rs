@@ -467,7 +467,6 @@ fn parse_dogstatsd_service_check<'a>(
     let mut maybe_message = None;
     let mut maybe_container_id = None;
     let mut maybe_external_data = None;
-    let mut seen_message = false;
 
     let remaining = if !remaining.is_empty() {
         let (mut remaining, _) = tag("|")(remaining)?;
@@ -476,10 +475,6 @@ fn parse_dogstatsd_service_check<'a>(
                 break;
             }
 
-            // Message field must be positioned last among the metadata fields but it was already seen
-            if seen_message {
-                return Err(nom::Err::Error(Error::new(input, ErrorKind::Verify)));
-            }
             match &chunk[..2] {
                 // Timestamp: client-provided timestamp for the event, relative to the Unix epoch, in seconds.
                 message::TIMESTAMP_PREFIX => {
@@ -494,13 +489,15 @@ fn parse_dogstatsd_service_check<'a>(
                     maybe_hostname = Some(hostname.into());
                 }
                 // Container ID: client-provided container ID for the container that this service check originated from.
-                b"c:" => {
-                    let (_, container_id) = all_consuming(preceded(tag("c:"), container_id)).parse(chunk)?;
+                message::CONTAINER_ID_PREFIX => {
+                    let (_, container_id) =
+                        all_consuming(preceded(tag(message::CONTAINER_ID_PREFIX), container_id)).parse(chunk)?;
                     maybe_container_id = Some(container_id.into());
                 }
                 // External Data: client-provided data used for resolving the entity ID that this service check originated from.
-                b"e:" => {
-                    let (_, external_data) = all_consuming(preceded(tag("e:"), external_data)).parse(chunk)?;
+                message::EXTERNAL_DATA_PREFIX => {
+                    let (_, external_data) =
+                        all_consuming(preceded(tag(message::EXTERNAL_DATA_PREFIX), external_data)).parse(chunk)?;
                     maybe_external_data = Some(external_data.into());
                 }
                 // Tags: additional tags to be added to the service check.
@@ -514,9 +511,6 @@ fn parse_dogstatsd_service_check<'a>(
                     let (_, message) =
                         all_consuming(preceded(tag(message::SERVICE_CHECK_MESSAGE_PREFIX), utf8)).parse(chunk)?;
                     maybe_message = Some(message.into());
-
-                    // This field must be positioned last among the metadata fields
-                    seen_message = true;
                 }
                 _ => {
                     // We don't know what this is, so we just skip it.
@@ -1264,6 +1258,27 @@ mod tests {
         let actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
         let expected = ServiceCheck::new(name, sc_status).with_message(sc_message);
         check_basic_service_check_eq(expected, actual);
+    }
+
+    #[test]
+    fn service_check_fields_after_message() {
+        let name = "testsvc";
+        let sc_status = CheckStatus::Ok;
+        let sc_message = MetaString::from("service running properly");
+        let raw = format!(
+            "_sc|{}|{}|#tag1,tag2|m:{}|c:ci-1234567890|e:external-data",
+            name,
+            sc_status.as_u8(),
+            sc_message
+        );
+        let result = parse_dsd_service_check(raw.as_bytes()).unwrap();
+        let expected = ServiceCheck::new(name, sc_status)
+            .with_message(sc_message)
+            .with_tags(vec!["tag1".into(), "tag2".into()])
+            .with_container_id(MetaString::from("ci-1234567890"))
+            .with_external_data(MetaString::from("external-data"));
+
+        check_basic_service_check_eq(expected, result);
     }
 
     #[test]
