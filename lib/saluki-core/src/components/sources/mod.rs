@@ -4,8 +4,6 @@ use async_trait::async_trait;
 use saluki_error::GenericError;
 
 mod builder;
-use crate::topology::TopologyConfiguration;
-
 pub use self::builder::SourceBuilder;
 
 mod context;
@@ -27,5 +25,5 @@ pub trait Source {
     /// # Errors
     ///
     /// If an unrecoverable error occurs while running, an error is returned.
-    async fn run<T: TopologyConfiguration>(self: Box<Self>, context: SourceContext<T>) -> Result<(), GenericError>;
+    async fn run(self: Box<Self>, context: SourceContext) -> Result<(), GenericError>;
 }

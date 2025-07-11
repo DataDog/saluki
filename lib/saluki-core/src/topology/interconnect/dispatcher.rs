@@ -6,9 +6,8 @@ use saluki_error::{generic_error, GenericError};
 use saluki_metrics::MetricsBuilder;
 use tokio::sync::mpsc;
 
-use crate::{components::ComponentContext, observability::ComponentMetricsExt as _, topology::OutputName};
-
 use super::Dispatchable;
+use crate::{components::ComponentContext, observability::ComponentMetricsExt as _, topology::OutputName};
 
 struct DispatcherMetrics {
     events_sent: Counter,

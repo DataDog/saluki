@@ -329,7 +329,7 @@ impl Transform for Aggregate {
                     }
                 },
                 _ = passthrough_flush.tick() => self.passthrough_batcher.try_flush(context.dispatcher()).await,
-                maybe_events = context.event_stream().next(), if !final_primary_flush => match maybe_events {
+                maybe_events = context.events().next(), if !final_primary_flush => match maybe_events {
                     Some(events) => {
                         trace!(events_len = events.len(), "Received events.");
 

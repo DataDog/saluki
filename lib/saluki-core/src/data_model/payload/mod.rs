@@ -44,6 +44,7 @@ impl fmt::Display for PayloadType {
 }
 
 /// An output payload.
+#[derive(Clone)]
 pub enum Payload {
     /// A raw payload.
     ///

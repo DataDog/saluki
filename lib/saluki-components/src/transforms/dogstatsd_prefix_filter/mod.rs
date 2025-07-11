@@ -220,7 +220,7 @@ impl Transform for DogstatsDPrefixFilter {
         loop {
             select! {
                 _ = health.live() => continue,
-                maybe_events = context.event_stream().next() => match maybe_events {
+                maybe_events = context.events().next() => match maybe_events {
                     Some(events) => {
                         let mut buffered_dispatcher = context.dispatcher().buffered().expect("default output must always exist");
 

@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, sync::Arc};
+use std::sync::Arc;
 
 use memory_accounting::{ComponentRegistry, MemoryLimiter};
 use saluki_health::{Health, HealthRegistry};
@@ -6,15 +6,12 @@ use tokio::runtime::Handle;
 
 use crate::{
     components::ComponentContext,
-    topology::{interconnect::Dispatcher, shutdown::ComponentShutdownHandle, TopologyConfiguration},
+    topology::{shutdown::ComponentShutdownHandle, EventsDispatcher},
 };
 
-struct SourceContextInner<T>
-where
-    T: TopologyConfiguration,
-{
+struct SourceContextInner {
     component_context: ComponentContext,
-    dispatcher: Dispatcher<T::Events>,
+    dispatcher: EventsDispatcher,
     memory_limiter: MemoryLimiter,
     health_registry: HealthRegistry,
     component_registry: ComponentRegistry,
@@ -22,26 +19,19 @@ where
 }
 
 /// Source context.
-pub struct SourceContext<T>
-where
-    T: TopologyConfiguration,
-{
+pub struct SourceContext {
     shutdown_handle: Option<ComponentShutdownHandle>,
     health_handle: Option<Health>,
-    inner: Arc<SourceContextInner<T>>,
-    _config: PhantomData<T>,
+    inner: Arc<SourceContextInner>,
 }
 
-impl<T> SourceContext<T>
-where
-    T: TopologyConfiguration,
-{
+impl SourceContext {
     /// Creates a new `SourceContext`.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        component_context: ComponentContext, shutdown_handle: ComponentShutdownHandle,
-        dispatcher: Dispatcher<T::Events>, memory_limiter: MemoryLimiter, component_registry: ComponentRegistry,
-        health_handle: Health, health_registry: HealthRegistry, thread_pool: Handle,
+        component_context: ComponentContext, shutdown_handle: ComponentShutdownHandle, dispatcher: EventsDispatcher,
+        memory_limiter: MemoryLimiter, component_registry: ComponentRegistry, health_handle: Health,
+        health_registry: HealthRegistry, thread_pool: Handle,
     ) -> Self {
         Self {
             shutdown_handle: Some(shutdown_handle),
@@ -54,7 +44,6 @@ where
                 component_registry,
                 thread_pool,
             }),
-            _config: PhantomData,
         }
     }
 
@@ -81,8 +70,8 @@ where
         self.inner.component_context.clone()
     }
 
-    /// Gets a reference to the dispatcher.
-    pub fn dispatcher(&self) -> &Dispatcher<T::Events> {
+    /// Gets a reference to the events dispatcher.
+    pub fn dispatcher(&self) -> &EventsDispatcher {
         &self.inner.dispatcher
     }
 
@@ -107,16 +96,12 @@ where
     }
 }
 
-impl<T> Clone for SourceContext<T>
-where
-    T: TopologyConfiguration,
-{
+impl Clone for SourceContext {
     fn clone(&self) -> Self {
         Self {
             shutdown_handle: None,
             health_handle: None,
             inner: self.inner.clone(),
-            _config: PhantomData,
         }
     }
 }

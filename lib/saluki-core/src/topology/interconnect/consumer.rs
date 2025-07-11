@@ -2,11 +2,10 @@ use metrics::{Counter, Histogram};
 use saluki_metrics::MetricsBuilder;
 use tokio::sync::mpsc;
 
+use super::Dispatchable;
 use crate::{components::ComponentContext, observability::ComponentMetricsExt as _};
 
-use super::Dispatchable;
-
-/// A stream of events sent to a component.
+/// A stream of items sent to a component.
 ///
 /// This represents the receiving end of a component interconnect, where the sending end is [`Dispatcher<T>`].
 pub struct Consumer<T> {
@@ -15,11 +14,11 @@ pub struct Consumer<T> {
     events_received_size: Histogram,
 }
 
-impl<T> EventStream<T>
+impl<T> Consumer<T>
 where
     T: Dispatchable,
 {
-    /// Create a new `EventStream` for the given component context and inner receiver.
+    /// Create a new `Consumer` for the given component context and inner receiver.
     pub fn new(context: ComponentContext, inner: mpsc::Receiver<T>) -> Self {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
 
@@ -30,9 +29,9 @@ where
         }
     }
 
-    /// Gets the next event in the stream.
+    /// Gets the next item in the stream.
     ///
-    /// If the component (or components) connected to this event stream have stopped, `None` is returned.
+    /// If the component (or components) connected to this consumer have stopped, `None` is returned.
     pub async fn next(&mut self) -> Option<T> {
         match self.inner.recv().await {
             Some(item) => {
@@ -52,33 +51,33 @@ mod tests {
     use super::*;
     use crate::topology::ComponentId;
 
-    fn create_event_stream(channel_size: usize) -> (EventStream<String>, mpsc::Sender<String>) {
-        let component_context = ComponentId::try_from("event_stream_test")
+    fn create_consumer(channel_size: usize) -> (Consumer<String>, mpsc::Sender<String>) {
+        let component_context = ComponentId::try_from("consumer_test")
             .map(ComponentContext::source)
             .expect("component ID should never be invalid");
 
         let (tx, rx) = mpsc::channel(channel_size);
-        let event_stream = EventStream::new(component_context, rx);
+        let consumer = Consumer::new(component_context, rx);
 
-        (event_stream, tx)
+        (consumer, tx)
     }
 
     #[tokio::test]
     async fn next() {
-        let (mut event_stream, tx) = create_event_stream(1);
+        let (mut consumer, tx) = create_consumer(1);
 
-        // Send an event, and make sure we can receive it:
-        let input_event = "hello world";
-        tx.send(input_event.to_string())
+        // Send an item, and make sure we can receive it:
+        let input_item = "hello world";
+        tx.send(input_item.to_string())
             .await
-            .expect("should not fail to send event");
+            .expect("should not fail to send item");
 
-        let output_event = event_stream.next().await.expect("should receive event");
-        assert_eq!(output_event, input_event);
+        let output_item = consumer.next().await.expect("should receive item");
+        assert_eq!(output_item, input_item);
 
-        // Now drop the sender, which should close the event stream:
+        // Now drop the sender, which should close the consumer:
         drop(tx);
 
-        assert!(event_stream.next().await.is_none());
+        assert!(consumer.next().await.is_none());
     }
 }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, num::NonZeroUsize};
 
 use memory_accounting::{
     allocator::{AllocationGroupToken, Tracked},
@@ -15,19 +15,16 @@ use tracing::{debug, error_span};
 
 use super::{
     graph::Graph,
-    interconnect::{Dispatcher, EventStream, FixedSizeEventBuffer},
+    interconnect::{Consumer, Dispatcher},
     running::RunningTopology,
     shutdown::ComponentShutdownCoordinator,
-    ComponentId, RegisteredComponent,
+    ComponentId, EventsBuffer, RegisteredComponent,
 };
-use crate::{
-    components::{
-        destinations::{Destination, DestinationContext},
-        sources::{Source, SourceContext},
-        transforms::{Transform, TransformContext},
-        ComponentContext,
-    },
-    topology::TopologyConfiguration,
+use crate::components::{
+    destinations::{Destination, DestinationContext},
+    sources::{Source, SourceContext},
+    transforms::{Transform, TransformContext},
+    ComponentContext,
 };
 
 /// A built topology.
@@ -36,41 +33,41 @@ use crate::{
 /// connections to other components, was validated and built successfully.
 ///
 /// A built topology must be spawned via [`spawn`][Self::spawn].
-pub struct BuiltTopology<T> {
+pub struct BuiltTopology {
     name: String,
-    config: T,
     graph: Graph,
     sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
     transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
     destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
     component_token: AllocationGroupToken,
+    interconnect_capacity: NonZeroUsize,
 }
 
-impl<T: TopologyConfiguration> BuiltTopology<T> {
+impl BuiltTopology {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(
-        name: String, config: T, graph: Graph,
+        name: String, graph: Graph,
         sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
         transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
         destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
-        component_token: AllocationGroupToken,
+        component_token: AllocationGroupToken, interconnect_capacity: NonZeroUsize,
     ) -> Self {
         Self {
             name,
-            config,
             graph,
             sources,
             transforms,
             destinations,
             component_token,
+            interconnect_capacity,
         }
     }
 
     fn create_event_interconnects(
         &self,
     ) -> (
-        HashMap<ComponentId, Dispatcher<T::Events>>,
-        HashMap<ComponentId, EventStream<T::Events>>,
+        HashMap<ComponentId, Dispatcher<EventsBuffer>>,
+        HashMap<ComponentId, Consumer<EventsBuffer>>,
     ) {
         // Collect all of the outbound edges in our topology graph.
         //
@@ -79,7 +76,7 @@ impl<T: TopologyConfiguration> BuiltTopology<T> {
 
         let mut dispatchers = HashMap::new();
         let mut event_streams = HashMap::new();
-        let mut event_stream_senders: HashMap<ComponentId, mpsc::Sender<T::Events>> = HashMap::new();
+        let mut event_stream_senders: HashMap<ComponentId, mpsc::Sender<EventsBuffer>> = HashMap::new();
 
         for (upstream_id, output_map) in outbound_edges {
             // Get a reference to the dispatcher for the current upstream component
@@ -98,12 +95,12 @@ impl<T: TopologyConfiguration> BuiltTopology<T> {
                     let sender = match event_stream_senders.get(&downstream_id) {
                         Some(sender) => sender.clone(),
                         None => {
-                            let (sender, receiver) = build_event_interconnect_channel(&self.config);
+                            let (sender, receiver) = build_event_interconnect_channel(self.interconnect_capacity);
 
                             // TODO: Similarly broken here, since a downstream component is any component that can
                             // receive events, which is either a transform or destination.
                             let component_context = ComponentContext::destination(downstream_id.clone());
-                            let event_stream = EventStream::new(component_context, receiver);
+                            let event_stream = Consumer::new(component_context, receiver);
 
                             event_streams.insert(downstream_id.clone(), event_stream);
                             event_stream_senders.insert(downstream_id.clone(), sender.clone());
@@ -302,8 +299,8 @@ fn spawn_destination(
     join_set.spawn_traced_named(component_task_name, async move { destination.run(context).await })
 }
 
-fn build_event_interconnect_channel<T: TopologyConfiguration>(
-    config: &T,
-) -> (mpsc::Sender<T::Events>, mpsc::Receiver<T::Events>) {
-    mpsc::channel(config.interconnect_capacity().get())
+fn build_event_interconnect_channel(
+    capacity: NonZeroUsize,
+) -> (mpsc::Sender<EventsBuffer>, mpsc::Receiver<EventsBuffer>) {
+    mpsc::channel(capacity.get())
 }

@@ -109,7 +109,7 @@ impl Transform for Chained {
         loop {
             select! {
                 _ = health.live() => continue,
-                maybe_events = context.event_stream().next() => match maybe_events {
+                maybe_events = context.events().next() => match maybe_events {
                     Some(mut event_buffer) => {
                         for (allocation_token, transform) in &mut subtransforms {
                             let _guard = allocation_token.enter();
