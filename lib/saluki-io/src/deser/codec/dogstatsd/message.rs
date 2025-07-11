@@ -16,6 +16,8 @@ pub const SOURCE_TYPE_PREFIX: &[u8] = b"s:";
 pub const ALERT_TYPE_PREFIX: &[u8] = b"t:";
 pub const TAGS_PREFIX: &[u8] = b"#";
 pub const SERVICE_CHECK_MESSAGE_PREFIX: &[u8] = b"m:";
+pub const CONTAINER_ID_PREFIX: &[u8] = b"c:";
+pub const EXTERNAL_DATA_PREFIX: &[u8] = b"e:";
 
 pub fn clean_data(s: &str) -> String {
     s.replace("\\n", "\n")
