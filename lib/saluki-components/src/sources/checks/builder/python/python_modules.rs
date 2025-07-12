@@ -1,6 +1,9 @@
 use std::sync::OnceLock;
 
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
+use saluki_config::GenericConfiguration;
+use saluki_core::data_model::event::{service_check::ServiceCheck, Event};
 use saluki_error::{generic_error, GenericError};
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, trace};
@@ -8,19 +11,57 @@ use tracing::{debug, error, trace};
 use crate::sources::checks::check_metric::{CheckMetric, MetricType};
 
 // Global state to store the sender
-static METRIC_SENDER: OnceLock<Sender<CheckMetric>> = OnceLock::new();
+static METRIC_SENDER: OnceLock<Sender<Event>> = OnceLock::new();
+// Global state to store the configuration
+static GLOBAL_CONFIGURATION: OnceLock<GenericConfiguration> = OnceLock::new();
+// Global state to store the configuration
+static GLOBAL_HOST: OnceLock<String> = OnceLock::new();
 
 /// Sets the metric sender to be used by the aggregator module.
-pub fn set_metric_sender(check_metrics_tx: Sender<CheckMetric>) -> &'static Sender<CheckMetric> {
+pub fn set_metric_sender(check_metrics_tx: Sender<Event>) -> &'static Sender<Event> {
     METRIC_SENDER.get_or_init(|| check_metrics_tx)
+}
+
+/// Stores the configuratioon for integration to use in the Python module.
+pub fn set_configuration(configuration: Option<GenericConfiguration>) -> &'static GenericConfiguration {
+    GLOBAL_CONFIGURATION.get_or_init(move || configuration.unwrap())
+}
+
+/// Stores the configuratioon for integration to use in the Python module.
+pub fn set_hostname(hostname: String) -> &'static String {
+    GLOBAL_HOST.get_or_init(|| hostname)
 }
 
 fn try_send_metric(metric: CheckMetric) -> Result<(), GenericError> {
     match METRIC_SENDER.get() {
         Some(sender) => sender
-            .try_send(metric)
+            .try_send(metric.into())
             .map_err(|e| generic_error!("Failed to send metric: {}", e)),
         None => Err(generic_error!("Metric sender not initialized.")),
+    }
+}
+
+fn try_send_service_check(service_check: ServiceCheck) -> Result<(), GenericError> {
+    match METRIC_SENDER.get() {
+        Some(sender) => sender
+            .try_send(Event::ServiceCheck(service_check))
+            .map_err(|e| generic_error!("Failed to send metric: {}", e)),
+        None => Err(generic_error!("Metric sender not initialized.")),
+    }
+}
+
+fn get_config_key(key: String) -> String {
+    match GLOBAL_CONFIGURATION.get() {
+        Some(configuration) => configuration.get_typed_or_default::<String>(&key),
+
+        None => "".to_string(),
+    }
+}
+
+fn fetch_hostname() -> String {
+    match GLOBAL_HOST.get() {
+        Some(host) => host.clone(),
+        None => "".to_string(),
     }
 }
 
@@ -65,23 +106,46 @@ pub mod aggregator {
     }
 
     #[pyfunction]
-    #[pyo3(signature = (name, status, tags, hostname, message=None))]
-    fn submit_service_check(name: String, status: i32, tags: Vec<String>, hostname: String, message: Option<String>) {
-        println!(
+    fn submit_service_check(
+        _class: PyObject, _check_id: String, name: String, status: i32, tags: Vec<String>, hostname: String,
+        message: Option<String>,
+    ) {
+        trace!(
             "submit_service_check called with name: {}, status: {}, tags: {:?}, hostname: {}, message: {:?}",
-            name, status, tags, hostname, message
+            name,
+            status,
+            tags,
+            hostname,
+            message
         );
+
+        if let Ok(service_check_status) = status.try_into() {
+            let service_check = ServiceCheck::new(&name, service_check_status)
+                .with_tags(Some(tags.into_iter().map(|tag| tag.into()).collect()))
+                .with_hostname(if hostname.is_empty() {
+                    None
+                } else {
+                    Some(hostname.into())
+                })
+                .with_message(Some(message.unwrap_or_default().into()));
+
+            if let Err(e) = try_send_service_check(service_check) {
+                error!("Failed to send service check: {}", e);
+            }
+        } else {
+            error!("Invalid service check status: {}", status);
+        }
     }
 
     #[pyfunction]
-    fn metrics(name: String) -> Vec<String> {
-        println!("metrics called for: {}", name);
-        vec![] // Dummy return
-    }
-
-    #[pyfunction]
-    fn reset() {
-        println!("reset called");
+    fn submit_event(_class: PyObject, _check_id: String, event: PyObject) {
+        // TODO:
+        Python::with_gil(|py| {
+            // Convert PyObject to PyDict
+            if let Ok(event_dict) = event.downcast_bound::<PyDict>(py) {
+                trace!("submit_event called with event dictionary {:?}", event_dict);
+            }
+        })
     }
 }
 
@@ -90,16 +154,18 @@ pub mod datadog_agent {
     use super::*;
 
     #[pyfunction]
-    fn get_hostname() -> &'static str {
+    fn get_hostname() -> String {
         trace!("Called get_hostname()");
-        "stubbed.hostname"
+        let hostname = fetch_hostname();
+        trace!("Hostname fetched: {}", hostname);
+        hostname
     }
 
     #[pyfunction]
-    fn get_config(config_option: String) -> bool {
+    fn get_config(config_option: String) -> String {
         trace!("Called get_config({})", config_option);
 
-        false
+        get_config_key(config_option)
     }
 
     #[pyfunction]
