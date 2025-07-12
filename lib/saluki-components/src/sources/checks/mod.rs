@@ -169,6 +169,8 @@ impl Source for ChecksSource {
                         Ok(event) => {
                             match event {
                                 AutodiscoveryEvent::CheckSchedule { config } => {
+                                    info!("Received check schedule event for '{}'.", config.name);
+
                                     let mut runnable_checks: Vec<Arc<dyn Check + Send + Sync>> = vec![];
                                     for instance in &config.instances {
                                         let check_id = instance.id();
@@ -190,6 +192,7 @@ impl Source for ChecksSource {
                                     }
                                 }
                                 AutodiscoveryEvent::CheckUnscheduled { config } => {
+                                    info!("Received unschedule check event for '{}'.", config.name);
                                     for instance in &config.instances {
                                         let check_id = instance.id();
                                         if !check_ids.contains(check_id) {
