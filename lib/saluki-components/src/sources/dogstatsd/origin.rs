@@ -5,7 +5,7 @@ use saluki_context::{
     tags::SharedTagSet,
 };
 use saluki_env::{workload::origin::ResolvedOrigin, WorkloadProvider};
-use saluki_io::deser::codec::dogstatsd::MetricPacket;
+use saluki_io::deser::codec::dogstatsd::{EventPacket, MetricPacket};
 use serde::Deserialize;
 use tracing::trace;
 
@@ -192,6 +192,16 @@ impl OriginTagsResolver for DogStatsDOriginTagResolver {
 
 /// Builds an `RawOrigin` object from the given metric packet.
 pub fn origin_from_metric_packet<'packet>(packet: &MetricPacket<'packet>) -> RawOrigin<'packet> {
+    let mut origin = RawOrigin::default();
+    origin.set_pod_uid(packet.pod_uid);
+    origin.set_container_id(packet.container_id);
+    origin.set_external_data(packet.external_data);
+    origin.set_cardinality(packet.cardinality);
+    origin
+}
+
+/// Builds an `RawOrigin` object from the given event packet.
+pub fn origin_from_event_packet<'packet>(packet: &EventPacket<'packet>) -> RawOrigin<'packet> {
     let mut origin = RawOrigin::default();
     origin.set_pod_uid(packet.pod_uid);
     origin.set_container_id(packet.container_id);

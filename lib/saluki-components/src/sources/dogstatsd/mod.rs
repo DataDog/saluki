@@ -8,6 +8,7 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use metrics::{Counter, Gauge, Histogram};
 use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
+use saluki_core::data_model::event::eventd::EventD;
 use saluki_core::data_model::event::metric::{MetricMetadata, MetricOrigin};
 use saluki_core::data_model::event::{metric::Metric, Event, EventType};
 use saluki_core::{
@@ -22,6 +23,7 @@ use saluki_core::{
 };
 use saluki_env::WorkloadProvider;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_io::deser::codec::dogstatsd::EventPacket;
 use saluki_io::{
     buf::{BytesBuffer, FixedSizeVec},
     deser::{
@@ -55,7 +57,9 @@ mod io_buffer;
 use self::io_buffer::IoBufferManager;
 
 mod origin;
-use self::origin::{origin_from_metric_packet, DogStatsDOriginTagResolver, OriginEnrichmentConfiguration};
+use self::origin::{
+    origin_from_event_packet, origin_from_metric_packet, DogStatsDOriginTagResolver, OriginEnrichmentConfiguration,
+};
 
 mod resolver;
 use self::resolver::ContextResolvers;
@@ -897,14 +901,19 @@ fn handle_frame(
         }
         ParsedPacket::Event(event) => {
             if !enabled_filter.allow_event(&event) {
-                trace!(
-                    event.title = event.title(),
-                    "Skipping event due to filter configuration."
-                );
+                trace!("Skipping event {} due to filter configuration.", event.title);
                 return Ok(None);
             }
-            source_metrics.events_received().increment(1);
-            Event::EventD(event)
+            match handle_event_packet(event, peer_addr, additional_tags) {
+                Some(event) => {
+                    source_metrics.events_received().increment(1);
+                    Event::EventD(event)
+                }
+                None => {
+                    source_metrics.failed_context_resolve_total().increment(1);
+                    return Ok(None);
+                }
+            }
         }
         ParsedPacket::ServiceCheck(service_check) => {
             if !enabled_filter.allow_service_check(&service_check) {
@@ -960,6 +969,19 @@ fn handle_metric_packet(
         // We failed to resolve the context, likely due to not having enough interner capacity.
         None => None,
     }
+}
+
+#[allow(unused_variables)]
+fn handle_event_packet(
+    packet: EventPacket, peer_addr: &ConnectionAddress, additional_tags: &[String],
+) -> Option<EventD> {
+    let event = EventD::new(packet.title.clone(), packet.text.clone());
+    // Capture the origin from the packet, including any process ID information if we have it.
+    let mut origin = origin_from_event_packet(&packet);
+    if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
+        origin.set_process_id(creds.pid as u32);
+    }
+    Some(event)
 }
 
 async fn dispatch_events(

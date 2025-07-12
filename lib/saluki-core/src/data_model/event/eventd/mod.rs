@@ -342,7 +342,7 @@ impl EventD {
     /// Creates an `EventD` from the given title and text.
     ///
     /// Defaults to an informational alert with normal priority.
-    pub fn new(title: &str, text: &str) -> Self {
+    pub fn new(title: impl Into<MetaString>, text: impl Into<MetaString>) -> Self {
         Self {
             title: title.into(),
             text: text.into(),

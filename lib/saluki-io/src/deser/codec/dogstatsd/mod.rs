@@ -17,6 +17,7 @@ use saluki_core::{
     data_model::event::{eventd::*, metric::*, service_check::*},
 };
 use snafu::Snafu;
+use stringtheory::MetaString;
 
 mod message;
 pub use self::message::{parse_message_type, MessageType};
@@ -139,7 +140,7 @@ impl DogstatsdCodec {
         Ok(parsed_packet)
     }
 
-    fn decode_event(&self, data: &[u8]) -> Result<EventD, ParseError> {
+    fn decode_event<'a>(&self, data: &'a [u8]) -> Result<EventPacket<'a>, ParseError> {
         let (_remaining, event) = parse_dogstatsd_event(data, &self.config)?;
         Ok(event)
     }
@@ -152,7 +153,7 @@ impl DogstatsdCodec {
 
 pub enum ParsedPacket<'a> {
     Metric(MetricPacket<'a>),
-    Event(EventD),
+    Event(EventPacket<'a>),
     ServiceCheck(ServiceCheck),
 }
 
@@ -315,7 +316,25 @@ pub struct MetricPacket<'a> {
     pub jmx_check_name: Option<&'a str>,
 }
 
-fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfiguration) -> IResult<&'a [u8], EventD> {
+pub struct EventPacket<'a> {
+    pub title: MetaString,
+    pub text: MetaString,
+    pub timestamp: Option<u64>,
+    pub hostname: Option<&'a str>,
+    pub aggregation_key: Option<&'a str>,
+    pub priority: Option<Priority>,
+    pub alert_type: Option<AlertType>,
+    pub source_type_name: Option<&'a str>,
+    pub tags: RawTags<'a>,
+    pub container_id: Option<&'a str>,
+    pub external_data: Option<&'a str>,
+    pub pod_uid: Option<&'a str>,
+    pub cardinality: Option<OriginTagCardinality>,
+}
+
+fn parse_dogstatsd_event<'a>(
+    input: &'a [u8], config: &DogstatsdCodecConfiguration,
+) -> IResult<&'a [u8], EventPacket<'a>> {
     // We parse the title length and text length from `_e{<TITLE_UTF8_LENGTH>,<TEXT_UTF8_LENGTH>}:`
     let (remaining, (title_len, text_len)) = delimited(
         tag(message::EVENT_PREFIX),
@@ -419,9 +438,8 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
                 }
                 // Tags: additional tags to be added to the event.
                 _ if chunk.starts_with(message::TAGS_PREFIX) => {
-                    let (_, tags) =
-                        all_consuming(preceded(tag(message::TAGS_PREFIX), metric_tags(config))).parse(chunk)?;
-                    maybe_tags = Some(tags.into_iter().map(|tag| tag.into()).collect());
+                    let (_, tags) = all_consuming(preceded(tag("#"), metric_tags(config))).parse(chunk)?;
+                    maybe_tags = Some(tags);
                 }
                 _ => {
                     // We don't know what this is, so we just skip it.
@@ -436,16 +454,40 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
         remaining
     };
 
-    let eventd = EventD::new(&title, &text)
-        .with_timestamp(maybe_timestamp)
-        .with_hostname(maybe_hostname)
-        .with_aggregation_key(maybe_aggregation_key)
-        .with_priority(maybe_priority)
-        .with_source_type_name(maybe_source_type)
-        .with_alert_type(maybe_alert_type)
-        .with_tags(maybe_tags)
-        .with_container_id(maybe_container_id)
-        .with_external_data(maybe_external_data);
+    let tags = maybe_tags.unwrap_or_else(RawTags::empty);
+
+    let mut pod_uid = None;
+    let mut cardinality = None;
+    for tag in tags.clone() {
+        let tag = BorrowedTag::from(tag);
+        match tag.name_and_value() {
+            (ENTITY_ID_TAG_KEY, Some(entity_id)) if entity_id != ENTITY_ID_IGNORE_VALUE => {
+                pod_uid = Some(entity_id);
+            }
+            (CARDINALITY_TAG_KEY, Some(value)) => {
+                if let Ok(card) = OriginTagCardinality::try_from(value) {
+                    cardinality = Some(card);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let eventd = EventPacket {
+        title: title.into(),
+        text: text.into(),
+        tags,
+        timestamp: maybe_timestamp,
+        hostname: maybe_hostname,
+        aggregation_key: maybe_aggregation_key,
+        priority: maybe_priority,
+        alert_type: maybe_alert_type,
+        source_type_name: maybe_source_type,
+        container_id: maybe_container_id,
+        external_data: maybe_external_data,
+        pod_uid,
+        cardinality,
+    };
     Ok((remaining, eventd))
 }
 
@@ -739,6 +781,7 @@ mod tests {
     use super::{
         parse_dogstatsd_event, parse_dogstatsd_metric, parse_dogstatsd_service_check, DogstatsdCodecConfiguration,
     };
+    use crate::deser::codec::dogstatsd::EventPacket;
 
     type NomResult<'input, T> = Result<T, nom::Err<nom::error::Error<&'input [u8]>>>;
     type OptionalNomResult<'input, T> = Result<Option<T>, nom::Err<nom::error::Error<&'input [u8]>>>;
@@ -764,7 +807,7 @@ mod tests {
         )))
     }
 
-    fn parse_dsd_eventd(input: &[u8]) -> NomResult<'_, EventD> {
+    fn parse_dsd_eventd<'input>(input: &'input [u8]) -> NomResult<'input, EventD> {
         let default_config = DogstatsdCodecConfiguration::default();
         parse_dsd_eventd_with_conf(input, &default_config)
     }
@@ -772,15 +815,15 @@ mod tests {
     fn parse_dsd_eventd_with_conf<'input>(
         input: &'input [u8], config: &DogstatsdCodecConfiguration,
     ) -> NomResult<'input, EventD> {
-        let (remaining, eventd) = parse_dsd_eventd_direct(input, config)?;
+        let (remaining, packet) = parse_dsd_eventd_direct(input, config)?;
         assert!(remaining.is_empty());
 
-        Ok(eventd)
+        Ok(EventD::new(packet.title, packet.text))
     }
 
     fn parse_dsd_eventd_direct<'input>(
         input: &'input [u8], config: &DogstatsdCodecConfiguration,
-    ) -> IResult<&'input [u8], EventD> {
+    ) -> IResult<&'input [u8], EventPacket<'input>> {
         parse_dogstatsd_event(input, config)
     }
 

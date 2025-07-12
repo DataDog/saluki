@@ -1,5 +1,5 @@
-use saluki_core::data_model::event::{eventd::EventD, service_check::ServiceCheck};
-use saluki_io::deser::codec::dogstatsd::MetricPacket;
+use saluki_core::data_model::event::service_check::ServiceCheck;
+use saluki_io::deser::codec::dogstatsd::{EventPacket, MetricPacket};
 
 /// Filters payloads based on whether or not they are enabled.
 ///
@@ -56,7 +56,7 @@ impl EnablePayloadsFilter {
         true
     }
 
-    pub fn allow_event(&self, _event: &EventD) -> bool {
+    pub fn allow_event(&self, _event: &EventPacket) -> bool {
         self.allow_events
     }
 
@@ -90,6 +90,22 @@ mod tests {
         }
     }
 
+    fn event_packet() -> EventPacket<'static> {
+        EventPacket {
+            title: "event".into(),
+            text: "text".into(),
+            timestamp: None,
+            hostname: None,
+            aggregation_key: None,
+            priority: None,
+            alert_type: None,
+            source_type_name: None,
+            tags: RawTags::empty(),
+            container_id: None,
+            external_data: None,
+        }
+    }
+
     #[test]
     fn test_enable_payloads_filter_metrics() {
         let serie_metric = metric_packet(Counter(1.0.into()));
@@ -105,7 +121,7 @@ mod tests {
 
     #[test]
     fn test_enable_payloads_filter_events() {
-        let event = EventD::new("event", "text");
+        let event = event_packet();
         let mut filter = EnablePayloadsFilter::default();
         assert!(filter.allow_event(&event));
 
