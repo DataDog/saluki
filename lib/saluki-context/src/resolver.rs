@@ -254,14 +254,6 @@ impl ContextResolverBuilder {
             .with_telemetry(self.telemetry_enabled)
             .build();
 
-        let tagset_cache = CacheBuilder::from_identifier(format!("{}/tagsets", self.name))
-            .expect("cache identifier cannot possibly be empty")
-            .with_capacity(cached_context_limit)
-            .with_time_to_idle(self.idle_context_expiration)
-            .with_hasher::<NoopU64BuildHasher>()
-            .with_telemetry(self.telemetry_enabled)
-            .build();
-
         if self.telemetry_enabled {
             tokio::spawn(drive_telemetry(interner.clone(), telemetry.clone()));
         }
@@ -271,7 +263,6 @@ impl ContextResolverBuilder {
             interner,
             caching_enabled: self.caching_enabled,
             context_cache,
-            tagset_cache,
             hash_seen_buffer: PrehashedHashSet::with_capacity_and_hasher(
                 SEEN_HASHSET_INITIAL_CAPACITY,
                 NoopU64BuildHasher,
@@ -311,7 +302,6 @@ pub struct ContextResolver {
     interner: GenericMapInterner,
     caching_enabled: bool,
     context_cache: ContextCache,
-    tagset_cache: TagSetCache,
     hash_seen_buffer: PrehashedHashSet<u64>,
     origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
     allow_heap_allocations: bool,
@@ -489,7 +479,6 @@ impl Clone for ContextResolver {
             interner: self.interner.clone(),
             caching_enabled: self.caching_enabled,
             context_cache: self.context_cache.clone(),
-            tagset_cache: self.tagset_cache.clone(),
             hash_seen_buffer: PrehashedHashSet::with_capacity_and_hasher(
                 SEEN_HASHSET_INITIAL_CAPACITY,
                 NoopU64BuildHasher,
