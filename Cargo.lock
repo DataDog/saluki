@@ -3504,6 +3504,7 @@ dependencies = [
  "hyper",
  "hyper-http-proxy",
  "indexmap 2.9.0",
+ "ipnet",
  "memory-accounting",
  "metrics",
  "pin-project",
@@ -3532,6 +3533,7 @@ dependencies = [
  "tower",
  "tracing",
  "url",
+ "wildcard",
 ]
 
 [[package]]
@@ -4958,6 +4960,15 @@ dependencies = [
  "home",
  "once_cell",
  "rustix 0.38.44",
+]
+
+[[package]]
+name = "wildcard"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9b0540e91e49de3817c314da0dd3bc518093ceacc6ea5327cb0e1eb073e5189"
+dependencies = [
+ "thiserror 2.0.12",
 ]
 
 [[package]]
