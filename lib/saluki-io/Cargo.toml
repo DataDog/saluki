@@ -28,6 +28,7 @@ pin-project-lite = { workspace = true }
 rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
 rand_distr = { workspace = true }
 rustls = { workspace = true }
+rustls-pemfile = { workspace = true, features = ["std"] }
 saluki-common = { workspace = true }
 saluki-context = { workspace = true }
 saluki-core = { workspace = true }

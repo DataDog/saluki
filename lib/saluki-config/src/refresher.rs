@@ -3,6 +3,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use reqwest::ClientBuilder;
 use saluki_error::GenericError;
+use saluki_io::net::build_datadog_agent_ipc_tls_config;
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
 use tokio::time::{sleep, Duration};
@@ -11,18 +12,12 @@ use tracing::{debug, error};
 use crate::{ConfigurationError, GenericConfiguration};
 
 const DEFAULT_AGENT_IPC_HOST: &str = "localhost";
-const DEFAULT_AUTH_TOKEN_FILE_PATH: &str = "/etc/datadog-agent/auth_token";
 const DEFAULT_REFRESH_INTERVAL_SECONDS: u64 = 15;
+const DEFAULT_IPC_CERT_FILE_PATH: &str = "/etc/datadog-agent/ipc_cert.pem";
 
 /// Configuration for setting up `RefreshableConfiguration`.
 #[derive(Default, Deserialize)]
 pub struct RefresherConfiguration {
-    /// The location of the auth token used by the Datadog Agent.
-    ///
-    /// Defaults to `/etc/datadog-agent/auth_token`.
-    #[serde(default = "default_auth_token_file_path")]
-    auth_token_file_path: String,
-
     /// The amount of time betweeen each request in seconds.
     ///
     /// Defaults to 15 seconds.
@@ -40,10 +35,14 @@ pub struct RefresherConfiguration {
 
     /// The IPC port used by the Datadog Agent.
     agent_ipc_port: u64,
+
+    /// The path to the IPC certificate file.
+    #[serde(default = "default_ipc_cert_file_path")]
+    ipc_cert_file_path: String,
 }
 
-fn default_auth_token_file_path() -> String {
-    DEFAULT_AUTH_TOKEN_FILE_PATH.to_owned()
+fn default_ipc_cert_file_path() -> String {
+    DEFAULT_IPC_CERT_FILE_PATH.to_owned()
 }
 
 fn default_refresh_interval_seconds() -> u64 {
@@ -58,7 +57,6 @@ fn default_agent_ipc_host() -> String {
 #[derive(Clone, Debug, Default)]
 pub struct RefreshableConfiguration {
     endpoint: String,
-    token: String,
     values: Arc<ArcSwap<Value>>,
     refresh_interval_seconds: u64,
 }
@@ -77,31 +75,32 @@ impl RefresherConfiguration {
     /// If the authentication token be read from the configured authentication token file
     /// path, an error will be returned.
     pub fn build(&self) -> Result<RefreshableConfiguration, GenericError> {
-        let raw_bearer_token = std::fs::read_to_string(&self.auth_token_file_path)?;
         let endpoint = format!("https://{}:{}/config/v1", self.agent_ipc_host, self.agent_ipc_port);
         let refreshable_configuration = RefreshableConfiguration {
             endpoint,
-            token: raw_bearer_token,
             values: Arc::new(ArcSwap::from_pointee(serde_json::Value::Null)),
             refresh_interval_seconds: self.refresh_interval_seconds,
         };
-        refreshable_configuration.clone().spawn_refresh_task();
+        refreshable_configuration
+            .clone()
+            .spawn_refresh_task(self.ipc_cert_file_path.clone());
+
         Ok(refreshable_configuration)
     }
 }
 impl RefreshableConfiguration {
     /// Start a task that queries the datadog-agent config endpoint every 15 seconds.
-    fn spawn_refresh_task(self) {
+    fn spawn_refresh_task(self, ipc_cert_file_path: String) {
         tokio::spawn(async move {
+            let tls_config = build_datadog_agent_ipc_tls_config(ipc_cert_file_path).await.unwrap();
             let client = ClientBuilder::new()
-                .danger_accept_invalid_certs(true) // Allow invalid certificates
+                .use_preconfigured_tls(tls_config)
                 .build()
                 .expect("failed to create http client");
             loop {
                 let response = client
                     .get(self.endpoint.clone())
                     .header("Content-Type", "application/json")
-                    .header("Authorization", format!("Bearer {}", self.token))
                     .header("DD-Agent-Version", "0.1.0")
                     .header("User-Agent", "agent-data-plane/0.1.0")
                     .send()
