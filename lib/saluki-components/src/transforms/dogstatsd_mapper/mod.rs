@@ -9,7 +9,7 @@ use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use regex::Regex;
 use saluki_config::GenericConfiguration;
-use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
+use saluki_context::{Context, ContextResolver, ContextResolverBuilder, TagsResolverBuilder};
 use saluki_core::{
     components::{
         transforms::{SynchronousTransform, SynchronousTransformBuilder},
@@ -129,11 +129,17 @@ impl MapperProfileConfigs {
         let context_string_interner_size = NonZeroUsize::new(context_string_interner_bytes.as_u64() as usize)
             .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))
             .unwrap();
+
+        let tags_resolver = TagsResolverBuilder::from_name(format!("{}/dsd/tags", context.component_id()))?
+            .with_interner_capacity_bytes(context_string_interner_size)
+            .build();
+
         let context_resolver =
             ContextResolverBuilder::from_name(format!("{}/dsd_mapper/primary", context.component_id()))
                 .expect("resolver name is not empty")
                 .with_interner_capacity_bytes(context_string_interner_size)
                 .with_idle_context_expiration(Duration::from_secs(30))
+                .with_tags_resolver(Some(tags_resolver.clone()))
                 .build();
 
         Ok(MetricMapper {

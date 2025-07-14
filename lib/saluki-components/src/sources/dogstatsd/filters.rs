@@ -103,6 +103,8 @@ mod tests {
             tags: RawTags::empty(),
             container_id: None,
             external_data: None,
+            pod_uid: None,
+            cardinality: None,
         }
     }
 

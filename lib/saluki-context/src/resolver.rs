@@ -62,6 +62,7 @@ pub struct ContextResolverBuilder {
     interner_capacity_bytes: Option<NonZeroUsize>,
     allow_heap_allocations: Option<bool>,
     origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
+    tags_resolver: Option<TagsResolver>,
     telemetry_enabled: bool,
 }
 
@@ -89,6 +90,7 @@ impl ContextResolverBuilder {
             interner_capacity_bytes: None,
             allow_heap_allocations: None,
             origin_tags_resolver: None,
+            tags_resolver: None,
             telemetry_enabled: true,
         })
     }
@@ -183,31 +185,9 @@ impl ContextResolverBuilder {
         self
     }
 
-    /// Sets the origin tags resolver to use when building a context.
-    ///
-    /// In some cases, metrics may have enriched tags based on their origin -- the application/host/container/etc that
-    /// emitted the metric -- which has to be considered when build the context itself. As this can be expensive, it is
-    /// useful to split the logic of actually grabbing the enriched tags based on the available origin info into a
-    /// separate phase, and implementation, that can run separately from the initial hash-based approach of checking if
-    /// a context has already been resolved.
-    ///
-    /// When set, any origin information provided will be considered during hashing when looking up a context, and any
-    /// enriched tags attached to the detected origin will be accessible from the context.
-    ///
-    /// Defaults to unset.
-    pub fn with_origin_tags_resolver<R>(mut self, resolver: Option<R>) -> Self
-    where
-        R: OriginTagsResolver + 'static,
-    {
-        self.origin_tags_resolver = match resolver {
-            Some(resolver) => {
-                // We do in fact need this big match statement, instead of a simple `resolver.map(Arc::new)`, in order
-                // to drive the compiler towards coercing our `Arc<R>` into `Arc<dyn OriginTagsResolver>`. ¯\_(ツ)_/¯
-                let resolver = Arc::new(resolver);
-                Some(resolver)
-            }
-            None => None,
-        };
+    /// Sets the tags resolver.
+    pub fn with_tags_resolver(mut self, resolver: Option<TagsResolver>) -> Self {
+        self.tags_resolver = resolver;
         self
     }
 
@@ -242,6 +222,7 @@ impl ContextResolverBuilder {
             .with_cached_contexts_limit(usize::MAX)
             .with_interner_capacity_bytes(NonZeroUsize::new(1).expect("not zero"))
             .with_heap_allocations(true)
+            .with_tags_resolver(Some(TagsResolverBuilder::for_tests().build()))
             .without_telemetry()
     }
 
@@ -297,6 +278,7 @@ impl ContextResolverBuilder {
             ),
             origin_tags_resolver: self.origin_tags_resolver,
             allow_heap_allocations,
+            tags_resolver: self.tags_resolver,
         }
     }
 }
@@ -333,6 +315,7 @@ pub struct ContextResolver {
     hash_seen_buffer: PrehashedHashSet<u64>,
     origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
     allow_heap_allocations: bool,
+    tags_resolver: Option<TagsResolver>,
 }
 
 impl ContextResolver {
@@ -352,13 +335,6 @@ impl ContextResolver {
             })
     }
 
-    fn resolve_origin_tags(&self, maybe_origin: Option<RawOrigin<'_>>) -> SharedTagSet {
-        self.origin_tags_resolver
-            .as_ref()
-            .and_then(|resolver| maybe_origin.map(|origin| resolver.resolve_origin_tags(origin)))
-            .unwrap_or_default()
-    }
-
     fn create_context_key<N, I, I2, T, T2>(&mut self, name: N, tags: I, origin_tags: I2) -> (ContextKey, TagSetKey)
     where
         N: AsRef<str>,
@@ -368,22 +344,6 @@ impl ContextResolver {
         T2: AsRef<str>,
     {
         hash_context_with_seen(name.as_ref(), tags, origin_tags, &mut self.hash_seen_buffer)
-    }
-
-    fn create_tag_set<I, T>(&mut self, tags: I) -> Option<SharedTagSet>
-    where
-        I: IntoIterator<Item = T>,
-        T: AsRef<str> + CheapMetaString,
-    {
-        let mut context_tags = TagSet::default();
-        for tag in tags {
-            let context_tag = self.intern(tag)?;
-            context_tags.insert_tag(context_tag);
-        }
-
-        self.telemetry.resolved_new_tagset_total().increment(1);
-
-        Some(context_tags.into_shared())
     }
 
     fn create_context<N>(
@@ -422,7 +382,11 @@ impl ContextResolver {
         T: AsRef<str> + CheapMetaString,
     {
         // Try and resolve our origin tags from the provided origin information, if any.
-        let origin_tags = self.resolve_origin_tags(maybe_origin);
+        let origin_tags = self
+            .tags_resolver
+            .as_ref()
+            .map(|resolver| resolver.resolve_origin_tags(maybe_origin))
+            .unwrap_or_default();
 
         self.resolve_inner(name, tags, origin_tags)
     }
@@ -464,7 +428,12 @@ impl ContextResolver {
 
         // Fast path to avoid looking up the context in the cache if caching is disabled.
         if !self.caching_enabled {
-            let tag_set = self.create_tag_set(tags)?;
+            let tag_set = self
+                .tags_resolver
+                .as_mut()
+                .and_then(|resolver| resolver.create_tag_set(tags))
+                .unwrap_or_default();
+
             let context = self.create_context(context_key, name, tag_set, origin_tags)?;
 
             debug!(?context_key, ?context, "Resolved new non-cached context.");
@@ -478,15 +447,26 @@ impl ContextResolver {
             }
             None => {
                 // Try seeing if we have the tagset cached already, and create it if not.
-                let tag_set = match self.tagset_cache.get(&tagset_key) {
+                let tag_set = match self
+                    .tags_resolver
+                    .as_mut()
+                    .and_then(|resolver| resolver.get_tag_set(tagset_key))
+                {
                     Some(tag_set) => {
                         self.telemetry.resolved_existing_tagset_total().increment(1);
                         tag_set
                     }
                     None => {
                         // If the tagset is not cached, we need to create it.
-                        let tag_set = self.create_tag_set(tags)?;
-                        self.tagset_cache.insert(tagset_key, tag_set.clone());
+                        let tag_set = self
+                            .tags_resolver
+                            .as_mut()
+                            .and_then(|resolver| resolver.create_tag_set(tags.clone()))
+                            .unwrap_or_default();
+
+                        if let Some(resolver) = self.tags_resolver.as_ref() {
+                            resolver.insert_tag_set(tagset_key, tag_set.clone());
+                        }
 
                         tag_set
                     }
@@ -516,6 +496,7 @@ impl Clone for ContextResolver {
             ),
             origin_tags_resolver: self.origin_tags_resolver.clone(),
             allow_heap_allocations: self.allow_heap_allocations,
+            tags_resolver: self.tags_resolver.clone(),
         }
     }
 }
@@ -529,6 +510,219 @@ async fn drive_telemetry(interner: GenericMapInterner, telemetry: Telemetry) {
             .interner_capacity_bytes()
             .set(interner.capacity_bytes() as f64);
         telemetry.interner_len_bytes().set(interner.len_bytes() as f64);
+    }
+}
+
+/// A builder for a tag resolver.
+pub struct TagsResolverBuilder {
+    name: String,
+    caching_enabled: bool,
+    cached_contexts_limit: Option<NonZeroUsize>,
+    idle_context_expiration: Option<Duration>,
+    interner_capacity_bytes: Option<NonZeroUsize>,
+    allow_heap_allocations: Option<bool>,
+    origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
+    telemetry_enabled: bool,
+}
+
+impl TagsResolverBuilder {
+    /// TODO: Document.
+    pub fn from_name<S: Into<String>>(name: S) -> Result<Self, GenericError> {
+        let name = name.into();
+        if name.is_empty() {
+            return Err(generic_error!("resolver name must not be empty"));
+        }
+
+        Ok(Self {
+            name,
+            caching_enabled: true,
+            cached_contexts_limit: None,
+            idle_context_expiration: None,
+            interner_capacity_bytes: None,
+            allow_heap_allocations: None,
+            origin_tags_resolver: None,
+            telemetry_enabled: true,
+        })
+    }
+
+    /// TODO: Document.
+    pub fn without_caching(mut self) -> Self {
+        self.caching_enabled = false;
+        self.idle_context_expiration = None;
+        self
+    }
+
+    /// TODO: Document.
+    pub fn with_cached_contexts_limit(mut self, limit: usize) -> Self {
+        match NonZeroUsize::new(limit) {
+            Some(limit) => {
+                self.cached_contexts_limit = Some(limit);
+                self
+            }
+            None => self.without_caching(),
+        }
+    }
+
+    /// TODO: Document.
+    pub fn with_idle_context_expiration(mut self, time_to_idle: Duration) -> Self {
+        self.idle_context_expiration = Some(time_to_idle);
+        self
+    }
+
+    /// TODO: Document.
+    pub fn with_interner_capacity_bytes(mut self, capacity: NonZeroUsize) -> Self {
+        self.interner_capacity_bytes = Some(capacity);
+        self
+    }
+
+    /// TODO: Document.
+    pub fn with_heap_allocations(mut self, allow: bool) -> Self {
+        self.allow_heap_allocations = Some(allow);
+        self
+    }
+
+    /// TODO: Document.
+    pub fn with_origin_tags_resolver<R>(mut self, resolver: Option<R>) -> Self
+    where
+        R: OriginTagsResolver + 'static,
+    {
+        self.origin_tags_resolver = match resolver {
+            Some(resolver) => {
+                // We do in fact need this big match statement, instead of a simple `resolver.map(Arc::new)`, in order
+                // to drive the compiler towards coercing our `Arc<R>` into `Arc<dyn OriginTagsResolver>`. ¯\_(ツ)_/¯
+                let resolver = Arc::new(resolver);
+                Some(resolver)
+            }
+            None => None,
+        };
+        self
+    }
+
+    /// TODO: Document.
+    pub fn without_telemetry(mut self) -> Self {
+        self.telemetry_enabled = false;
+        self
+    }
+
+    /// Builds a [`TagsResolver`] from the current configuration.
+    pub fn build(self) -> TagsResolver {
+        let interner_capacity_bytes = self
+            .interner_capacity_bytes
+            .unwrap_or(DEFAULT_CONTEXT_RESOLVER_INTERNER_CAPACITY_BYTES);
+
+        let interner = GenericMapInterner::new(interner_capacity_bytes);
+
+        let cached_context_limit = self
+            .cached_contexts_limit
+            .unwrap_or(DEFAULT_CONTEXT_RESOLVER_CACHED_CONTEXTS_LIMIT);
+
+        let allow_heap_allocations = self.allow_heap_allocations.unwrap_or(true);
+
+        let telemetry = Telemetry::new(self.name.clone());
+        telemetry
+            .interner_capacity_bytes()
+            .set(interner.capacity_bytes() as f64);
+
+        let tagset_cache = CacheBuilder::from_identifier(format!("{}/tagsets", self.name))
+            .expect("cache identifier cannot possibly be empty")
+            .with_capacity(cached_context_limit)
+            .with_time_to_idle(self.idle_context_expiration)
+            .with_hasher::<NoopU64BuildHasher>()
+            .with_telemetry(self.telemetry_enabled)
+            .build();
+
+        TagsResolver {
+            telemetry,
+            interner,
+            caching_enabled: self.caching_enabled,
+            tagset_cache,
+            origin_tags_resolver: self.origin_tags_resolver,
+            allow_heap_allocations,
+        }
+    }
+
+    /// TODO: Document.
+    pub fn for_tests() -> Self {
+        TagsResolverBuilder::from_name("noop")
+            .expect("resolver name not empty")
+            .with_cached_contexts_limit(usize::MAX)
+            .with_interner_capacity_bytes(NonZeroUsize::new(1).expect("not zero"))
+            .with_heap_allocations(true)
+            .without_telemetry()
+    }
+}
+
+/// A resolver for tags.
+pub struct TagsResolver {
+    telemetry: Telemetry,
+    interner: GenericMapInterner,
+    caching_enabled: bool,
+    tagset_cache: TagSetCache,
+    origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
+    allow_heap_allocations: bool,
+}
+
+impl TagsResolver {
+    fn intern<S>(&self, s: S) -> Option<MetaString>
+    where
+        S: AsRef<str> + CheapMetaString,
+    {
+        // Try to cheaply clone the string, and if that fails, try to intern it. If that fails, then we fall back to
+        // allocating it on the heap if we allow it.
+        s.try_cheap_clone()
+            .or_else(|| self.interner.try_intern(s.as_ref()).map(MetaString::from))
+            .or_else(|| {
+                self.allow_heap_allocations.then(|| {
+                    self.telemetry.intern_fallback_total().increment(1);
+                    MetaString::from(s.as_ref())
+                })
+            })
+    }
+
+    /// TODO: Document.
+    pub fn create_tag_set<I, T>(&mut self, tags: I) -> Option<SharedTagSet>
+    where
+        I: IntoIterator<Item = T>,
+        T: AsRef<str> + CheapMetaString,
+    {
+        let mut context_tags = TagSet::default();
+        for tag in tags {
+            let context_tag = self.intern(tag)?;
+            context_tags.insert_tag(context_tag);
+        }
+
+        self.telemetry.resolved_new_tagset_total().increment(1);
+
+        Some(context_tags.into_shared())
+    }
+
+    /// TODO: Document.
+    pub fn resolve_origin_tags(&self, maybe_origin: Option<RawOrigin<'_>>) -> SharedTagSet {
+        self.origin_tags_resolver
+            .as_ref()
+            .and_then(|resolver| maybe_origin.map(|origin| resolver.resolve_origin_tags(origin)))
+            .unwrap_or_default()
+    }
+
+    fn get_tag_set(&self, key: TagSetKey) -> Option<SharedTagSet> {
+        self.tagset_cache.get(&key)
+    }
+
+    fn insert_tag_set(&self, key: TagSetKey, tag_set: SharedTagSet) {
+        self.tagset_cache.insert(key, tag_set);
+    }
+}
+
+impl Clone for TagsResolver {
+    fn clone(&self) -> Self {
+        Self {
+            telemetry: self.telemetry.clone(),
+            interner: self.interner.clone(),
+            caching_enabled: self.caching_enabled,
+            tagset_cache: self.tagset_cache.clone(),
+            origin_tags_resolver: self.origin_tags_resolver.clone(),
+            allow_heap_allocations: self.allow_heap_allocations,
+        }
     }
 }
 
@@ -717,11 +911,14 @@ mod tests {
 
         assert_eq!(context1, context2);
 
+        let tags_resolver = TagsResolverBuilder::for_tests()
+            .with_origin_tags_resolver(Some(DummyOriginTagsResolver))
+            .build();
         // Now build a context resolver with an origin tags resolver that trivially returns the hash of the origin info
         // as a tag, which should result in differeing sets of origin tags between the two origins, thus no longer
         // comparing as equal:
         let mut resolver = ContextResolverBuilder::for_tests()
-            .with_origin_tags_resolver(Some(DummyOriginTagsResolver))
+            .with_tags_resolver(Some(tags_resolver))
             .build();
 
         let context1 = resolver
@@ -736,9 +933,12 @@ mod tests {
 
     #[test]
     fn caching_disabled() {
+        let tags_resolver = TagsResolverBuilder::for_tests()
+            .with_origin_tags_resolver(Some(DummyOriginTagsResolver))
+            .build();
         let mut resolver = ContextResolverBuilder::for_tests()
             .without_caching()
-            .with_origin_tags_resolver(Some(DummyOriginTagsResolver))
+            .with_tags_resolver(Some(tags_resolver))
             .build();
 
         let name = "metric_name";

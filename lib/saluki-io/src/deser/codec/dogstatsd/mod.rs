@@ -395,14 +395,14 @@ fn parse_dogstatsd_event<'a>(
                 message::HOSTNAME_PREFIX => {
                     let (_, hostname) =
                         all_consuming(preceded(tag(message::HOSTNAME_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
-                    maybe_hostname = Some(hostname.into());
+                    maybe_hostname = Some(hostname);
                 }
                 // Aggregation key: key to be used to group this event with others that have the same key.
                 message::AGGREGATION_KEY_PREFIX => {
                     let (_, aggregation_key) =
                         all_consuming(preceded(tag(message::AGGREGATION_KEY_PREFIX), ascii_alphanum_and_seps))
                             .parse(chunk)?;
-                    maybe_aggregation_key = Some(aggregation_key.into());
+                    maybe_aggregation_key = Some(aggregation_key);
                 }
                 // Priority: client-provided priority of the event.
                 message::PRIORITY_PREFIX => {
@@ -415,7 +415,7 @@ fn parse_dogstatsd_event<'a>(
                     let (_, source_type) =
                         all_consuming(preceded(tag(message::SOURCE_TYPE_PREFIX), ascii_alphanum_and_seps))
                             .parse(chunk)?;
-                    maybe_source_type = Some(source_type.into());
+                    maybe_source_type = Some(source_type);
                 }
                 // Alert type: client-provided alert type of the event.
                 message::ALERT_TYPE_PREFIX => {
@@ -428,13 +428,13 @@ fn parse_dogstatsd_event<'a>(
                 message::CONTAINER_ID_PREFIX => {
                     let (_, container_id) =
                         all_consuming(preceded(tag(message::CONTAINER_ID_PREFIX), container_id)).parse(chunk)?;
-                    maybe_container_id = Some(container_id.into());
+                    maybe_container_id = Some(container_id);
                 }
                 // External Data: client-provided data used for resolving the entity ID that this event originated from.
                 message::EXTERNAL_DATA_PREFIX => {
                     let (_, external_data) =
                         all_consuming(preceded(tag(message::EXTERNAL_DATA_PREFIX), external_data)).parse(chunk)?;
-                    maybe_external_data = Some(external_data.into());
+                    maybe_external_data = Some(external_data);
                 }
                 // Tags: additional tags to be added to the event.
                 _ if chunk.starts_with(message::TAGS_PREFIX) => {
@@ -768,7 +768,7 @@ mod tests {
     use nom::IResult;
     use proptest::{collection::vec as arb_vec, prelude::*};
     use saluki_context::{
-        tags::{SharedTagSet, Tag},
+        tags::{SharedTagSet, Tag, TagSet},
         Context,
     };
     use saluki_core::data_model::event::{
@@ -807,7 +807,7 @@ mod tests {
         )))
     }
 
-    fn parse_dsd_eventd<'input>(input: &'input [u8]) -> NomResult<'input, EventD> {
+    fn parse_dsd_eventd(input: &[u8]) -> NomResult<'_, EventD> {
         let default_config = DogstatsdCodecConfiguration::default();
         parse_dsd_eventd_with_conf(input, &default_config)
     }
@@ -818,7 +818,22 @@ mod tests {
         let (remaining, packet) = parse_dsd_eventd_direct(input, config)?;
         assert!(remaining.is_empty());
 
-        Ok(EventD::new(packet.title, packet.text))
+        let mut event_tags = TagSet::default();
+        for tag in packet.tags.into_iter() {
+            event_tags.insert_tag(tag);
+        }
+
+        let eventd = EventD::new(packet.title, packet.text)
+            .with_timestamp(packet.timestamp)
+            .with_hostname(packet.hostname.map(|s| s.into()))
+            .with_aggregation_key(packet.aggregation_key.map(|s| s.into()))
+            .with_alert_type(packet.alert_type)
+            .with_priority(packet.priority)
+            .with_source_type_name(packet.source_type_name.map(|s| s.into()))
+            .with_alert_type(packet.alert_type)
+            .with_tags(event_tags);
+
+        Ok(eventd)
     }
 
     fn parse_dsd_eventd_direct<'input>(
@@ -867,8 +882,7 @@ mod tests {
         assert_eq!(expected.source_type_name(), actual.source_type_name());
         assert_eq!(expected.alert_type(), actual.alert_type());
         assert_eq!(expected.tags(), actual.tags());
-        assert_eq!(expected.container_id(), actual.container_id());
-        assert_eq!(expected.external_data(), actual.external_data());
+        assert_eq!(expected.origin_tags(), actual.origin_tags());
     }
 
     #[track_caller]
@@ -1164,7 +1178,8 @@ mod tests {
     fn eventd_tags() {
         let event_title = "my event";
         let event_text = "text";
-        let tags = vec!["tag1".into(), "tag2".into()];
+        let tags = ["tag1", "tag2"];
+        let shared_tag_set: SharedTagSet = tags.iter().map(|&s| Tag::from(s)).collect::<TagSet>().into_shared();
         let raw = format!(
             "_e{{{},{}}}:{}|{}|#{}",
             event_title.len(),
@@ -1174,7 +1189,7 @@ mod tests {
             tags.join(","),
         );
 
-        let expected = EventD::new(event_title, event_text).with_tags(tags);
+        let expected = EventD::new(event_title, event_text).with_tags(shared_tag_set);
         let actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
         check_basic_eventd_eq(expected, actual);
     }
@@ -1229,7 +1244,8 @@ mod tests {
         let event_timestamp = 1234567890;
         let event_container_id = MetaString::from("abcdef123456");
         let event_external_data = MetaString::from("it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183");
-        let tags = vec!["tag1".into(), "tag2".into()];
+        let tags = ["tags1", "tags2"];
+        let shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|&s| s.into())));
         let raw = format!(
             "_e{{{},{}}}:{}|{}|h:{}|k:{}|p:{}|s:{}|t:{}|d:{}|c:{}|e:{}|#{}",
             event_title.len(),
@@ -1254,9 +1270,7 @@ mod tests {
             .with_source_type_name(event_source_type)
             .with_alert_type(event_alert_type)
             .with_timestamp(event_timestamp)
-            .with_tags(tags)
-            .with_container_id(event_container_id)
-            .with_external_data(event_external_data);
+            .with_tags(shared_tag_set);
         check_basic_eventd_eq(expected, actual);
     }
 

@@ -3,7 +3,7 @@ use std::num::NonZeroUsize;
 use async_trait::async_trait;
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
+use saluki_context::{Context, ContextResolver, ContextResolverBuilder, TagsResolverBuilder};
 use saluki_core::data_model::event::{metric::*, Event, EventType};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
@@ -51,10 +51,16 @@ impl TransformBuilder for AgentTelemetryRemapperConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let context_string_interner_size = NonZeroUsize::new(self.context_string_interner_bytes.as_u64() as usize)
             .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
+
+        let tags_resolver = TagsResolverBuilder::from_name(format!("{}/remapper/tags", context.component_id()))?
+            .with_interner_capacity_bytes(context_string_interner_size)
+            .build();
+
         let context_resolver =
             ContextResolverBuilder::from_name(format!("{}/remapper/primary", context.component_id()))
                 .expect("resolver name is not empty")
                 .with_interner_capacity_bytes(context_string_interner_size)
+                .with_tags_resolver(Some(tags_resolver))
                 .build();
 
         Ok(Box::new(AgentTelemetryRemapper {
