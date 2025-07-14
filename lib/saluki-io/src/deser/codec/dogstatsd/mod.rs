@@ -1294,8 +1294,8 @@ mod tests {
         let event_source_type = MetaString::from("testsource");
         let event_alert_type = AlertType::Success;
         let event_timestamp = 1234567890;
-        let event_container_id = MetaString::from("abcdef123456");
-        let event_external_data = MetaString::from("it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183");
+        let event_container_id = "abcdef123456";
+        let event_external_data = "it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183";
         let tags = ["tags1", "tags2"];
         let shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|&s| s.into())));
         let raw = format!(
@@ -1324,6 +1324,11 @@ mod tests {
             .with_timestamp(event_timestamp)
             .with_tags(shared_tag_set);
         check_basic_eventd_eq(expected, actual);
+
+        let config = DogstatsdCodecConfiguration::default();
+        let (_, packet) = parse_dogstatsd_event(raw.as_bytes(), &config).expect("should not fail to parse");
+        assert_eq!(packet.container_id, Some(event_container_id));
+        assert_eq!(packet.external_data, Some(event_external_data));
     }
 
     #[test]
@@ -1375,11 +1380,15 @@ mod tests {
         let name = "testsvc";
         let sc_status = CheckStatus::Ok;
         let sc_message = MetaString::from("service running properly");
+        let sc_container_id = "ci-1234567890";
+        let sc_external_data = "it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183";
         let raw = format!(
-            "_sc|{}|{}|#tag1,tag2|m:{}|c:ci-1234567890|e:external-data",
+            "_sc|{}|{}|#tag1,tag2|m:{}|c:{}|e:{}",
             name,
             sc_status.as_u8(),
-            sc_message
+            sc_message,
+            sc_container_id,
+            sc_external_data,
         );
         let result = parse_dsd_service_check(raw.as_bytes()).unwrap();
         let tags = ["tag1", "tag2"];
@@ -1388,6 +1397,11 @@ mod tests {
             .with_message(sc_message)
             .with_tags(shared_tag_set);
         check_basic_service_check_eq(expected, result);
+
+        let config = DogstatsdCodecConfiguration::default();
+        let (_, packet) = parse_dogstatsd_service_check(raw.as_bytes(), &config).expect("should not fail to parse");
+        assert_eq!(packet.container_id, Some(sc_container_id));
+        assert_eq!(packet.external_data, Some(sc_external_data));
     }
 
     #[test]
