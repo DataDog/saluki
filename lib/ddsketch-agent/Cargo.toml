@@ -19,8 +19,6 @@ smallvec = { workspace = true, features = ["union"] }
 [dev-dependencies]
 criterion = { workspace = true }
 dhat = { workspace = true }
-ndarray = { workspace = true }
-ndarray-stats = { workspace = true }
 noisy_float = { workspace = true }
 rand = { workspace = true, features = ["small_rng", "thread_rng"] }
 rand_distr = { workspace = true }
