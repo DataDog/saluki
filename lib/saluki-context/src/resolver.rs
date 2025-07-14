@@ -61,8 +61,9 @@ pub struct ContextResolverBuilder {
     idle_context_expiration: Option<Duration>,
     interner_capacity_bytes: Option<NonZeroUsize>,
     allow_heap_allocations: Option<bool>,
-    origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
     tags_resolver: Option<TagsResolver>,
+    interner: Option<GenericMapInterner>,
+    origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
     telemetry_enabled: bool,
 }
 
@@ -89,8 +90,9 @@ impl ContextResolverBuilder {
             idle_context_expiration: None,
             interner_capacity_bytes: None,
             allow_heap_allocations: None,
-            origin_tags_resolver: None,
             tags_resolver: None,
+            interner: None,
+            origin_tags_resolver: None,
             telemetry_enabled: true,
         })
     }
@@ -185,6 +187,34 @@ impl ContextResolverBuilder {
         self
     }
 
+    /// Sets the origin tags resolver to use when building a context.
+    ///
+    /// In some cases, metrics may have enriched tags based on their origin -- the application/host/container/etc that
+    /// emitted the metric -- which has to be considered when build the context itself. As this can be expensive, it is
+    /// useful to split the logic of actually grabbing the enriched tags based on the available origin info into a
+    /// separate phase, and implementation, that can run separately from the initial hash-based approach of checking if
+    /// a context has already been resolved.
+    ///
+    /// When set, any origin information provided will be considered during hashing when looking up a context, and any
+    /// enriched tags attached to the detected origin will be accessible from the context.
+    ///
+    /// Defaults to unset.
+    pub fn with_origin_tags_resolver<R>(mut self, resolver: Option<R>) -> Self
+    where
+        R: OriginTagsResolver + 'static,
+    {
+        self.origin_tags_resolver = match resolver {
+            Some(resolver) => {
+                // We do in fact need this big match statement, instead of a simple `resolver.map(Arc::new)`, in order
+                // to drive the compiler towards coercing our `Arc<R>` into `Arc<dyn OriginTagsResolver>`. ¯\_(ツ)_/¯
+                let resolver = Arc::new(resolver);
+                Some(resolver)
+            }
+            None => None,
+        };
+        self
+    }
+
     /// Sets the tags resolver.
     pub fn with_tags_resolver(mut self, resolver: Option<TagsResolver>) -> Self {
         self.tags_resolver = resolver;
@@ -201,6 +231,12 @@ impl ContextResolverBuilder {
     /// Defaults to telemetry enabled.
     pub fn without_telemetry(mut self) -> Self {
         self.telemetry_enabled = false;
+        self
+    }
+
+    /// TODO: Document this.
+    pub fn with_interner(mut self, interner: GenericMapInterner) -> Self {
+        self.interner = Some(interner);
         self
     }
 
@@ -232,7 +268,10 @@ impl ContextResolverBuilder {
             .interner_capacity_bytes
             .unwrap_or(DEFAULT_CONTEXT_RESOLVER_INTERNER_CAPACITY_BYTES);
 
-        let interner = GenericMapInterner::new(interner_capacity_bytes);
+        let interner = match self.interner {
+            Some(interner) => interner,
+            None => GenericMapInterner::new(interner_capacity_bytes),
+        };
 
         let cached_context_limit = self
             .cached_contexts_limit
@@ -254,6 +293,15 @@ impl ContextResolverBuilder {
             .with_telemetry(self.telemetry_enabled)
             .build();
 
+        // If no tags resolver is provided, we need to create one using the same interner used for the context resolver.
+        let tags_resolver = match self.tags_resolver {
+            Some(tags_resolver) => tags_resolver,
+            None => TagsResolverBuilder::new(format!("{}/tags", self.name), interner.clone())
+                .expect("tags resolver name not empty")
+                .with_origin_tags_resolver(self.origin_tags_resolver.clone())
+                .build(),
+        };
+
         if self.telemetry_enabled {
             tokio::spawn(drive_telemetry(interner.clone(), telemetry.clone()));
         }
@@ -267,9 +315,8 @@ impl ContextResolverBuilder {
                 SEEN_HASHSET_INITIAL_CAPACITY,
                 NoopU64BuildHasher,
             ),
-            origin_tags_resolver: self.origin_tags_resolver,
             allow_heap_allocations,
-            tags_resolver: self.tags_resolver,
+            tags_resolver,
         }
     }
 }
@@ -303,9 +350,8 @@ pub struct ContextResolver {
     caching_enabled: bool,
     context_cache: ContextCache,
     hash_seen_buffer: PrehashedHashSet<u64>,
-    origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
     allow_heap_allocations: bool,
-    tags_resolver: Option<TagsResolver>,
+    tags_resolver: TagsResolver,
 }
 
 impl ContextResolver {
@@ -372,11 +418,7 @@ impl ContextResolver {
         T: AsRef<str> + CheapMetaString,
     {
         // Try and resolve our origin tags from the provided origin information, if any.
-        let origin_tags = self
-            .tags_resolver
-            .as_ref()
-            .map(|resolver| resolver.resolve_origin_tags(maybe_origin))
-            .unwrap_or_default();
+        let origin_tags = self.tags_resolver.resolve_origin_tags(maybe_origin);
 
         self.resolve_inner(name, tags, origin_tags)
     }
@@ -418,11 +460,7 @@ impl ContextResolver {
 
         // Fast path to avoid looking up the context in the cache if caching is disabled.
         if !self.caching_enabled {
-            let tag_set = self
-                .tags_resolver
-                .as_mut()
-                .and_then(|resolver| resolver.create_tag_set(tags))
-                .unwrap_or_default();
+            let tag_set = self.tags_resolver.create_tag_set(tags).unwrap_or_default();
 
             let context = self.create_context(context_key, name, tag_set, origin_tags)?;
 
@@ -437,26 +475,16 @@ impl ContextResolver {
             }
             None => {
                 // Try seeing if we have the tagset cached already, and create it if not.
-                let tag_set = match self
-                    .tags_resolver
-                    .as_mut()
-                    .and_then(|resolver| resolver.get_tag_set(tagset_key))
-                {
+                let tag_set = match self.tags_resolver.get_tag_set(tagset_key) {
                     Some(tag_set) => {
                         self.telemetry.resolved_existing_tagset_total().increment(1);
                         tag_set
                     }
                     None => {
                         // If the tagset is not cached, we need to create it.
-                        let tag_set = self
-                            .tags_resolver
-                            .as_mut()
-                            .and_then(|resolver| resolver.create_tag_set(tags.clone()))
-                            .unwrap_or_default();
+                        let tag_set = self.tags_resolver.create_tag_set(tags.clone()).unwrap_or_default();
 
-                        if let Some(resolver) = self.tags_resolver.as_ref() {
-                            resolver.insert_tag_set(tagset_key, tag_set.clone());
-                        }
+                        self.tags_resolver.insert_tag_set(tagset_key, tag_set.clone());
 
                         tag_set
                     }
@@ -483,7 +511,6 @@ impl Clone for ContextResolver {
                 SEEN_HASHSET_INITIAL_CAPACITY,
                 NoopU64BuildHasher,
             ),
-            origin_tags_resolver: self.origin_tags_resolver.clone(),
             allow_heap_allocations: self.allow_heap_allocations,
             tags_resolver: self.tags_resolver.clone(),
         }
@@ -508,15 +535,15 @@ pub struct TagsResolverBuilder {
     caching_enabled: bool,
     cached_contexts_limit: Option<NonZeroUsize>,
     idle_context_expiration: Option<Duration>,
-    interner_capacity_bytes: Option<NonZeroUsize>,
     allow_heap_allocations: Option<bool>,
     origin_tags_resolver: Option<Arc<dyn OriginTagsResolver>>,
     telemetry_enabled: bool,
+    interner: GenericMapInterner,
 }
 
 impl TagsResolverBuilder {
-    /// TODO: Document.
-    pub fn from_name<S: Into<String>>(name: S) -> Result<Self, GenericError> {
+    /// Creates a new [`TagsResolverBuilder`] with the given name and interner.
+    pub fn new<S: Into<String>>(name: S, interner: GenericMapInterner) -> Result<Self, GenericError> {
         let name = name.into();
         if name.is_empty() {
             return Err(generic_error!("resolver name must not be empty"));
@@ -527,11 +554,17 @@ impl TagsResolverBuilder {
             caching_enabled: true,
             cached_contexts_limit: None,
             idle_context_expiration: None,
-            interner_capacity_bytes: None,
             allow_heap_allocations: None,
             origin_tags_resolver: None,
             telemetry_enabled: true,
+            interner,
         })
+    }
+
+    /// TODO: Document.
+    pub fn with_interner(mut self, interner: GenericMapInterner) -> Self {
+        self.interner = interner;
+        self
     }
 
     /// TODO: Document.
@@ -559,31 +592,14 @@ impl TagsResolverBuilder {
     }
 
     /// TODO: Document.
-    pub fn with_interner_capacity_bytes(mut self, capacity: NonZeroUsize) -> Self {
-        self.interner_capacity_bytes = Some(capacity);
-        self
-    }
-
-    /// TODO: Document.
     pub fn with_heap_allocations(mut self, allow: bool) -> Self {
         self.allow_heap_allocations = Some(allow);
         self
     }
 
     /// TODO: Document.
-    pub fn with_origin_tags_resolver<R>(mut self, resolver: Option<R>) -> Self
-    where
-        R: OriginTagsResolver + 'static,
-    {
-        self.origin_tags_resolver = match resolver {
-            Some(resolver) => {
-                // We do in fact need this big match statement, instead of a simple `resolver.map(Arc::new)`, in order
-                // to drive the compiler towards coercing our `Arc<R>` into `Arc<dyn OriginTagsResolver>`. ¯\_(ツ)_/¯
-                let resolver = Arc::new(resolver);
-                Some(resolver)
-            }
-            None => None,
-        };
+    pub fn with_origin_tags_resolver(mut self, resolver: Option<Arc<dyn OriginTagsResolver>>) -> Self {
+        self.origin_tags_resolver = resolver;
         self
     }
 
@@ -595,12 +611,6 @@ impl TagsResolverBuilder {
 
     /// Builds a [`TagsResolver`] from the current configuration.
     pub fn build(self) -> TagsResolver {
-        let interner_capacity_bytes = self
-            .interner_capacity_bytes
-            .unwrap_or(DEFAULT_CONTEXT_RESOLVER_INTERNER_CAPACITY_BYTES);
-
-        let interner = GenericMapInterner::new(interner_capacity_bytes);
-
         let cached_context_limit = self
             .cached_contexts_limit
             .unwrap_or(DEFAULT_CONTEXT_RESOLVER_CACHED_CONTEXTS_LIMIT);
@@ -610,7 +620,7 @@ impl TagsResolverBuilder {
         let telemetry = Telemetry::new(self.name.clone());
         telemetry
             .interner_capacity_bytes()
-            .set(interner.capacity_bytes() as f64);
+            .set(self.interner.capacity_bytes() as f64);
 
         let tagset_cache = CacheBuilder::from_identifier(format!("{}/tagsets", self.name))
             .expect("cache identifier cannot possibly be empty")
@@ -622,7 +632,7 @@ impl TagsResolverBuilder {
 
         TagsResolver {
             telemetry,
-            interner,
+            interner: self.interner,
             caching_enabled: self.caching_enabled,
             tagset_cache,
             origin_tags_resolver: self.origin_tags_resolver,
@@ -632,10 +642,9 @@ impl TagsResolverBuilder {
 
     /// TODO: Document.
     pub fn for_tests() -> Self {
-        TagsResolverBuilder::from_name("noop")
+        TagsResolverBuilder::new("noop", GenericMapInterner::new(NonZeroUsize::new(1).expect("not zero")))
             .expect("resolver name not empty")
             .with_cached_contexts_limit(usize::MAX)
-            .with_interner_capacity_bytes(NonZeroUsize::new(1).expect("not zero"))
             .with_heap_allocations(true)
             .without_telemetry()
     }
@@ -901,7 +910,7 @@ mod tests {
         assert_eq!(context1, context2);
 
         let tags_resolver = TagsResolverBuilder::for_tests()
-            .with_origin_tags_resolver(Some(DummyOriginTagsResolver))
+            .with_origin_tags_resolver(Some(Arc::new(DummyOriginTagsResolver)))
             .build();
         // Now build a context resolver with an origin tags resolver that trivially returns the hash of the origin info
         // as a tag, which should result in differeing sets of origin tags between the two origins, thus no longer
@@ -923,7 +932,7 @@ mod tests {
     #[test]
     fn caching_disabled() {
         let tags_resolver = TagsResolverBuilder::for_tests()
-            .with_origin_tags_resolver(Some(DummyOriginTagsResolver))
+            .with_origin_tags_resolver(Some(Arc::new(DummyOriginTagsResolver)))
             .build();
         let mut resolver = ContextResolverBuilder::for_tests()
             .without_caching()

@@ -10,7 +10,7 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{
     tags::{SharedTagSet, Tag},
-    ContextResolver, ContextResolverBuilder, TagsResolverBuilder,
+    ContextResolver, ContextResolverBuilder,
 };
 use saluki_core::{components::transforms::*, topology::interconnect::FixedSizeEventBuffer};
 use saluki_core::{components::ComponentContext, data_model::event::metric::Metric};
@@ -69,17 +69,11 @@ impl SynchronousTransformBuilder for HostTagsConfiguration {
             NonZeroUsize::new(self.host_tags_context_string_interner_bytes.as_u64() as usize)
                 .ok_or_else(|| generic_error!("host_tags_context_string_interner_bytes must be greater than 0"))
                 .unwrap();
-        let tags_resolver = TagsResolverBuilder::from_name(format!("{}/host_tags/tags", context.component_id()))
-            .expect("resolver name is not empty")
-            .with_interner_capacity_bytes(context_string_interner_size)
-            .with_idle_context_expiration(Duration::from_secs(30))
-            .build();
         let context_resolver =
             ContextResolverBuilder::from_name(format!("{}/host_tags/primary", context.component_id()))
                 .expect("resolver name is not empty")
                 .with_interner_capacity_bytes(context_string_interner_size)
                 .with_idle_context_expiration(Duration::from_secs(30))
-                .with_tags_resolver(Some(tags_resolver))
                 .build();
         Ok(Box::new(HostTagsEnrichment {
             start: Instant::now(),

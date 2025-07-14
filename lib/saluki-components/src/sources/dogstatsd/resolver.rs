@@ -1,8 +1,9 @@
-use std::{num::NonZeroUsize, time::Duration};
+use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 use saluki_context::{ContextResolver, ContextResolverBuilder, TagsResolver, TagsResolverBuilder};
 use saluki_core::components::ComponentContext;
 use saluki_error::{generic_error, GenericError};
+use stringtheory::interning::GenericMapInterner;
 
 use super::{DogStatsDConfiguration, DogStatsDOriginTagResolver};
 
@@ -30,10 +31,14 @@ impl ContextResolvers {
         let context_string_interner_size = NonZeroUsize::new(config.context_string_interner_bytes.as_u64() as usize)
             .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
 
-        let tags_resolver = TagsResolverBuilder::from_name(format!("{}/dsd/tags", context.component_id()))?
-            .with_interner_capacity_bytes(context_string_interner_size)
+        let interner = GenericMapInterner::new(context_string_interner_size);
+
+        let tags_resolver = TagsResolverBuilder::new(format!("{}/dsd/tags", context.component_id()), interner.clone())?
             .with_heap_allocations(config.allow_context_heap_allocations)
-            .with_origin_tags_resolver(maybe_origin_tags_resolver.clone())
+            .with_origin_tags_resolver(
+                maybe_origin_tags_resolver
+                    .map(|resolver| -> Arc<dyn saluki_context::origin::OriginTagsResolver> { Arc::new(resolver) }),
+            )
             .build();
 
         let primary_resolver = ContextResolverBuilder::from_name(format!("{}/dsd/primary", context.component_id()))?
@@ -41,6 +46,7 @@ impl ContextResolvers {
             .with_idle_context_expiration(Duration::from_secs(30))
             .with_heap_allocations(config.allow_context_heap_allocations)
             .with_tags_resolver(Some(tags_resolver.clone()))
+            .with_interner(interner.clone())
             .build();
 
         let no_agg_resolver = ContextResolverBuilder::from_name(format!("{}/dsd/no_agg", context.component_id()))?
@@ -48,6 +54,7 @@ impl ContextResolvers {
             .without_caching()
             .with_heap_allocations(config.allow_context_heap_allocations)
             .with_tags_resolver(Some(tags_resolver.clone()))
+            .with_interner(interner.clone())
             .build();
 
         Ok(ContextResolvers {

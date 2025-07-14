@@ -14,7 +14,7 @@ use saluki_common::{collections::FastHashMap, task::spawn_traced_named};
 use saluki_context::{
     origin::RawOrigin,
     tags::{Tag, TagSet},
-    Context, ContextResolver, ContextResolverBuilder, TagsResolverBuilder,
+    Context, ContextResolver, ContextResolverBuilder,
 };
 use tokio::sync::broadcast::{self, error::RecvError, Receiver};
 use tokio_util::sync::ReusableBoxFuture;
@@ -216,18 +216,12 @@ struct MetricsContextResolver {
 
 impl MetricsContextResolver {
     fn new(resolver_interner_size_bytes: NonZeroUsize) -> Self {
-        let tags_resolver = TagsResolverBuilder::from_name("core/internal_metrics/tags")
-            .expect("resolver name is not empty")
-            .with_interner_capacity_bytes(resolver_interner_size_bytes)
-            .build();
-
         Self {
             // Set up our context resolver without caching, since we will be caching the contexts ourselves.
             context_resolver: ContextResolverBuilder::from_name("core/internal_metrics")
                 .expect("resolver name is not empty")
                 .with_interner_capacity_bytes(resolver_interner_size_bytes)
                 .without_caching()
-                .with_tags_resolver(Some(tags_resolver))
                 .build(),
             key_context_cache: FastHashMap::default(),
         }
