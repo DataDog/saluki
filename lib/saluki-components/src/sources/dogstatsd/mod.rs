@@ -11,6 +11,7 @@ use saluki_config::GenericConfiguration;
 use saluki_context::TagsResolver;
 use saluki_core::data_model::event::eventd::EventD;
 use saluki_core::data_model::event::metric::{MetricMetadata, MetricOrigin};
+use saluki_core::data_model::event::service_check::ServiceCheck;
 use saluki_core::data_model::event::{metric::Metric, Event, EventType};
 use saluki_core::{
     components::{sources::*, ComponentContext},
@@ -24,7 +25,7 @@ use saluki_core::{
 };
 use saluki_env::WorkloadProvider;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_io::deser::codec::dogstatsd::EventPacket;
+use saluki_io::deser::codec::dogstatsd::{EventPacket, ServiceCheckPacket};
 use saluki_io::{
     buf::{BytesBuffer, FixedSizeVec},
     deser::{
@@ -59,7 +60,8 @@ use self::io_buffer::IoBufferManager;
 
 mod origin;
 use self::origin::{
-    origin_from_event_packet, origin_from_metric_packet, DogStatsDOriginTagResolver, OriginEnrichmentConfiguration,
+    origin_from_event_packet, origin_from_metric_packet, origin_from_service_check_packet, DogStatsDOriginTagResolver,
+    OriginEnrichmentConfiguration,
 };
 
 mod resolver;
@@ -920,13 +922,22 @@ fn handle_frame(
         ParsedPacket::ServiceCheck(service_check) => {
             if !enabled_filter.allow_service_check(&service_check) {
                 trace!(
-                    service_check.name = service_check.name(),
-                    "Skipping service check due to filter configuration."
+                    "Skipping service check {} due to filter configuration.",
+                    service_check.name
                 );
                 return Ok(None);
             }
-            source_metrics.service_checks_received().increment(1);
-            Event::ServiceCheck(service_check)
+            let tags_resolver = context_resolvers.tags();
+            match handle_service_check_packet(service_check, tags_resolver, peer_addr, additional_tags) {
+                Some(service_check) => {
+                    source_metrics.service_checks_received().increment(1);
+                    Event::ServiceCheck(service_check)
+                }
+                None => {
+                    source_metrics.failed_context_resolve_total().increment(1);
+                    return Ok(None);
+                }
+            }
         }
     };
 
@@ -1006,6 +1017,32 @@ fn handle_event_packet(
     Some(eventd)
 }
 
+fn handle_service_check_packet(
+    packet: ServiceCheckPacket, tags_resolver: &mut TagsResolver, peer_addr: &ConnectionAddress,
+    additional_tags: &[String],
+) -> Option<ServiceCheck> {
+    let mut origin = origin_from_service_check_packet(&packet);
+    if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
+        origin.set_process_id(creds.pid as u32);
+    }
+    let origin_tags = tags_resolver.resolve_origin_tags(Some(origin));
+
+    // Chain the existing tags with the additional tags.
+    let tags = packet
+        .tags
+        .clone()
+        .into_iter()
+        .chain(additional_tags.iter().map(|s| s.as_str()))
+        .chain(origin_tags.into_iter().map(|s| s.as_str()));
+
+    let tags = tags_resolver.create_tag_set(tags)?;
+
+    let service_check = ServiceCheck::new(packet.name, packet.status)
+        .with_tags(tags)
+        .with_message(packet.message.map(|s| s.into()));
+
+    Some(service_check)
+}
 async fn dispatch_events(
     mut event_buffer: FixedSizeEventBuffer, source_context: &SourceContext, listen_addr: &ListenAddress,
 ) {

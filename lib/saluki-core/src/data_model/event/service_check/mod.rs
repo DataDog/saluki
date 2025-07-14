@@ -1,5 +1,6 @@
 //! Service checks.
 
+use saluki_context::tags::SharedTagSet;
 use serde::{Serialize, Serializer};
 use stringtheory::MetaString;
 
@@ -23,7 +24,7 @@ pub enum CheckStatus {
 ///
 /// Service checks represent the status of a service at a particular point in time. Checks are simplistic, with a basic
 /// message, status enum (OK vs warning vs critical, etc), timestamp, and tags.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ServiceCheck {
     #[serde(rename = "check")]
     name: MetaString,
@@ -33,9 +34,8 @@ pub struct ServiceCheck {
     hostname: MetaString,
     #[serde(skip_serializing_if = "MetaString::is_empty")]
     message: MetaString,
-    tags: Option<Vec<MetaString>>,
-    container_id: Option<MetaString>,
-    external_data: Option<MetaString>,
+    tags: SharedTagSet,
+    origin_tags: SharedTagSet,
 }
 
 impl ServiceCheck {
@@ -75,31 +75,25 @@ impl ServiceCheck {
     }
 
     /// Returns the tags associated with the check.
-    pub fn tags(&self) -> Option<&[MetaString]> {
-        self.tags.as_deref()
+    pub fn tags(&self) -> &SharedTagSet {
+        &self.tags
     }
 
-    /// Returns the container ID associated with the service check.
-    pub fn container_id(&self) -> Option<&str> {
-        self.container_id.as_deref()
-    }
-
-    /// Returns the external data associated with the service check.
-    pub fn external_data(&self) -> Option<&str> {
-        self.external_data.as_deref()
+    /// Returns the origin tags associated with the check.
+    pub fn origin_tags(&self) -> &SharedTagSet {
+        &self.origin_tags
     }
 
     /// Creates a `ServiceCheck` from the given name and status
-    pub fn new(name: &str, status: CheckStatus) -> Self {
+    pub fn new(name: impl Into<MetaString>, status: CheckStatus) -> Self {
         Self {
             name: name.into(),
             status,
             timestamp: None,
             hostname: MetaString::empty(),
             message: MetaString::empty(),
-            tags: None,
-            container_id: None,
-            external_data: None,
+            tags: SharedTagSet::default(),
+            origin_tags: SharedTagSet::default(),
         }
     }
 
@@ -127,7 +121,7 @@ impl ServiceCheck {
     /// Set the tags of the service check
     ///
     /// This variant is specifically for use in builder-style APIs.
-    pub fn with_tags(mut self, tags: impl Into<Option<Vec<MetaString>>>) -> Self {
+    pub fn with_tags(mut self, tags: impl Into<SharedTagSet>) -> Self {
         self.tags = tags.into();
         self
     }
@@ -143,19 +137,11 @@ impl ServiceCheck {
         self
     }
 
-    /// Set the container ID of the service check.
+    /// Set the origin tags of the service check
     ///
     /// This variant is specifically for use in builder-style APIs.
-    pub fn with_container_id(mut self, container_id: impl Into<Option<MetaString>>) -> Self {
-        self.container_id = container_id.into();
-        self
-    }
-
-    /// Set the external data of the service check.
-    ///
-    /// This variant is specifically for use in builder-style APIs.
-    pub fn with_external_data(mut self, external_data: impl Into<Option<MetaString>>) -> Self {
-        self.external_data = external_data.into();
+    pub fn with_origin_tags(mut self, origin_tags: SharedTagSet) -> Self {
+        self.origin_tags = origin_tags;
         self
     }
 }
