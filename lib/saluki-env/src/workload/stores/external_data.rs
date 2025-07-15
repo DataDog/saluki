@@ -205,7 +205,7 @@ mod tests {
     use super::ExternalDataStore;
     use crate::workload::{aggregator::MetadataStore as _, origin::ResolvedExternalData, EntityId, MetadataOperation};
 
-    const DEFAULT_ENTITY_LIMIT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(10) };
+    const DEFAULT_ENTITY_LIMIT: NonZeroUsize = NonZeroUsize::new(10).unwrap();
 
     fn entity_id_container(id: &str) -> EntityId {
         EntityId::Container(id.into())

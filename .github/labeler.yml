@@ -1,90 +1,146 @@
 # Generic component-level labels and high-level groupings.
 "area/core":
   - changed-files:
-    - any-glob-to-any-file: 
-      - "lib/saluki-core/**/*"
-      - "lib/saluki-context/**/*"
-      - "lib/saluki-event/**/*"
-      - "lib/saluki-error/**/*"
-      - "lib/ddsketch-agent/**/*"
+      - any-glob-to-any-file:
+          - "lib/saluki-api/**/*"
+          - "lib/saluki-common/**/*"
+          - "lib/saluki-core/**/*"
+          - "lib/saluki-context/**/*"
+          - "lib/saluki-error/**/*"
+          - "lib/saluki-health/**/*"
+          - "lib/saluki-metadata/**/*"
+          - "lib/saluki-tls/**/*"
+          - "lib/ddsketch-agent/**/*"
 
 "area/config":
   - changed-files:
-    - any-glob-to-any-file:
-      - "lib/saluki-config/**/*"
-      - "lib/saluki-env/**/*"
+      - any-glob-to-any-file:
+          - "lib/saluki-config/**/*"
+          - "lib/saluki-env/**/*"
 
 "area/ci":
   - changed-files:
-    - any-glob-to-any-file:
-      - ".gitlab/**/*"
-      - ".ci/**/*"
-      - "test/smp/**/*"
-      - ".gitlab-ci.yml"
+      - any-glob-to-any-file:
+          - ".gitlab/**/*"
+          - ".github/**/*"
+          - ".ci/**/*"
+          - ".gitlab-ci.yml"
 
 "area/components":
   - changed-files:
-    - any-glob-to-any-file:
-      - "lib/saluki-components/**/*"
+      - any-glob-to-any-file:
+          - "lib/saluki-components/**/*"
+
+"area/docs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**/*"
 
 "area/io":
   - changed-files:
-    - any-glob-to-any-file:
-      - "lib/saluki-io/**/*"
-      - "lib/datadog-protos/**/*"
+      - any-glob-to-any-file:
+          - "lib/saluki-io/**/*"
+          - "lib/datadog-protos/**/*"
 
 "area/memory":
   - changed-files:
-    - any-glob-to-any-file:
-      - "lib/memory-accounting/**/*"
-      - "lib/stringtheory/**/*"
+      - any-glob-to-any-file:
+          - "lib/memory-accounting/**/*"
+          - "lib/process-memory/**/*"
+          - "lib/stringtheory/**/*"
 
 "area/observability":
   - changed-files:
-    - any-glob-to-any-file:
-      - "lib/saluki-app/**/*"
-      - "lib/saluki-metrics/**/*"
+      - any-glob-to-any-file:
+          - "lib/saluki-app/**/*"
+          - "lib/saluki-metrics/**/*"
+
+"area/test":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "test/**/*"
+
+"source/checks":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/sources/checks/**/*"
 
 "source/dogstatsd":
   - changed-files:
-    - any-glob-to-any-file: ["lib/saluki-components/src/sources/dogstatsd/**/*"]
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/sources/dogstatsd/**/*"
+
+"source/heartbeat":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/sources/heartbeat/**/*"
 
 "source/internal-metrics":
   - changed-files:
-    - any-glob-to-any-file: ["lib/saluki-components/src/sources/internal_metrics/**/*"]
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/sources/internal_metrics/**/*"
 
 "transform/aggregate":
   - changed-files:
-    - any-glob-to-any-file: ["lib/saluki-components/src/transforms/aggregate/**/*"]
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/transforms/aggregate/**/*"
 
 "transform/chained":
   - changed-files:
-    - any-glob-to-any-file: ["lib/saluki-components/src/transforms/chained/**/*"]
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/transforms/chained/**/*"
+
+"transform/dogstatsd-mapper":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/transforms/dogstatsd_mapper/**/*"
+
+"transform/dogstatsd-prefix-filter":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/transforms/dogstatsd_prefix_filter/**/*"
 
 "transform/host-enrichment":
   - changed-files:
-    - any-glob-to-any-file: ["lib/saluki-components/src/transforms/host_enrichment/**/*"]
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/transforms/host_enrichment/**/*"
 
-"transform/origin-enrichment":
+"transform/host-tags":
   - changed-files:
-    - any-glob-to-any-file: ["lib/saluki-components/src/transforms/origin_enrichment/**/*"]
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/transforms/host_tags/**/*"
+
+"transform/preaggregation-filter":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/transforms/preaggregation_filter/**/*"
 
 "destination/blackhole":
   - changed-files:
-    - any-glob-to-any-file: ["lib/saluki-components/src/destinations/blackhole/**/*"]
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/destinations/blackhole/**/*"
 
 "destination/datadog":
   - changed-files:
-    - any-glob-to-any-file: ["lib/saluki-components/src/destinations/datadog/**/*"]
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/destinations/datadog/**/*"
 
-"destination/datadog-events-service-checks":
+"destination/datadog-events":
   - changed-files:
-    - any-glob-to-any-file: ["lib/saluki-components/src/destinations/datadog/events_service_checks/**/*"]
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/destinations/datadog/events/**/*"
+
+"destination/datadog-service-checks":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/destinations/datadog/service_checks/**/*"
 
 "destination/datadog-metrics":
   - changed-files:
-    - any-glob-to-any-file: ["lib/saluki-components/src/destinations/datadog/metrics/**/*"]
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/destinations/datadog/metrics/**/*"
 
 "destination/prometheus":
   - changed-files:
-    - any-glob-to-any-file: ["lib/saluki-components/src/destinations/prometheus/**/*"]
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/destinations/prometheus/**/*"
