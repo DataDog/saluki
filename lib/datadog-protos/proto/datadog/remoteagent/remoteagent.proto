@@ -2,8 +2,10 @@ syntax = "proto3";
 
 package datadog.remoteagent;
 
-option go_package = "pkg/proto/pbgo/core"; // golang
 
+import "google/protobuf/struct.proto";
+
+option go_package = "pkg/proto/pbgo/core"; // golang
 message StatusSection {
   map<string, string> fields = 1;
 }
@@ -82,5 +84,31 @@ message GetTelemetryResponse {
     //
     // https://prometheus.io/docs/instrumenting/exposition_formats/#text-based-format
     string prom_text = 1;
+  }
+}
+
+message ConfigSetting {
+  string source = 1;
+  string key = 2;
+  google.protobuf.Value value = 3;
+}
+
+message ConfigSnapshot {
+  string origin = 1;
+  string source = 2;
+  int32 sequence_id = 3;
+  repeated ConfigSetting settings = 4;
+ }
+
+message ConfigUpdate {
+  string origin = 1;
+  int32 sequence_id = 2;
+  ConfigSetting setting = 3;
+}
+
+message ConfigEvent {
+  oneof event {
+    ConfigSnapshot snapshot = 1;
+    ConfigUpdate update = 2;
   }
 }

@@ -1,12 +1,14 @@
-use std::future::pending;
+use std::{future::pending, sync::Arc};
 
+use arc_swap::ArcSwap;
 use memory_accounting::ComponentRegistry;
-use saluki_app::{api::APIBuilder, prelude::acquire_logging_api_handler};
+use saluki_app::{api::APIBuilder, config::ConfigAPIHandler, prelude::acquire_logging_api_handler};
 use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use saluki_io::net::ListenAddress;
+use serde_json::Value;
 use tracing::{error, info};
 
 use super::remote_agent::RemoteAgentHelperConfiguration;
@@ -26,7 +28,7 @@ const PRIMARY_PRIVILEGED_API_PORT: u16 = 5101;
 /// If the APIs cannot be spawned, or if the health registry cannot be spawned, an error will be returned.
 pub fn spawn_control_plane(
     config: GenericConfiguration, component_registry: &ComponentRegistry, health_registry: HealthRegistry,
-    env_provider: ADPEnvironmentProvider,
+    env_provider: ADPEnvironmentProvider, values: Arc<ArcSwap<Value>>,
 ) -> Result<(), GenericError> {
     // Build our unprivileged and privileged API server.
     //
@@ -39,11 +41,12 @@ pub fn spawn_control_plane(
     let privileged_api = APIBuilder::new()
         .with_self_signed_tls()
         .with_optional_handler(acquire_logging_api_handler())
+        .with_optional_handler(Some(ConfigAPIHandler::from_state(values.clone())))
         .with_optional_handler(env_provider.workload_api_handler());
 
     let init = async move {
         // Handle any final configuration of our API endpoints and spawn them.
-        configure_and_spawn_api_endpoints(&config, unprivileged_api, privileged_api).await?;
+        configure_and_spawn_api_endpoints(&config, unprivileged_api, privileged_api, values).await?;
 
         health_registry.spawn().await?;
 
@@ -55,6 +58,7 @@ pub fn spawn_control_plane(
 
 async fn configure_and_spawn_api_endpoints(
     config: &GenericConfiguration, unprivileged_api: APIBuilder, mut privileged_api: APIBuilder,
+    values: Arc<ArcSwap<Value>>,
 ) -> Result<(), GenericError> {
     let api_listen_address = config
         .try_get_typed("api_listen_address")
@@ -93,6 +97,7 @@ async fn configure_and_spawn_api_endpoints(
             config,
             local_secure_api_listen_addr,
             prometheus_listen_addr,
+            values,
         )
         .await?;
         let remote_agent_service = remote_agent_config.spawn().await;
