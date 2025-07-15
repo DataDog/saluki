@@ -10,7 +10,7 @@ workspace = true
 
 [features]
 default = []
-full = ["api", "logging", "memory", "metrics", "tls"]
+full = ["api", "logging", "memory", "metrics", "tls", "config"]
 api = [
   "dep:axum",
   "dep:saluki-api",
@@ -44,8 +44,10 @@ memory = [
 metrics = ["dep:saluki-common", "dep:saluki-core", "dep:metrics", "dep:tokio"]
 tls = ["dep:saluki-error", "dep:saluki-tls"]
 tls-fips = ["saluki-tls?/fips"]
+config = ["api", "dep:arc-swap", "dep:saluki-config", "dep:serde_json"]
 
 [dependencies]
+arc-swap = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 bytesize = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
@@ -66,6 +68,7 @@ saluki-io = { workspace = true, optional = true }
 saluki-metadata = { workspace = true }
 saluki-tls = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "sync"], optional = true }
 tonic = { workspace = true, features = ["router", "transport"] }
 tower = { workspace = true, features = ["util"], optional = true }

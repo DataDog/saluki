@@ -1,5 +1,9 @@
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
+use arc_swap::ArcSwap;
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
 use saluki_components::{
@@ -46,9 +50,12 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
     let env_provider =
         ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry).await?;
 
+    // Config values populated by the remote agent will be stored here.
+    let values = Arc::new(ArcSwap::from_pointee(serde_json::Value::Null));
+
     // Create our primary data topology and spawn any internal processes, which will ensure all relevant components are
     // registered and accounted for in terms of memory usage.
-    let blueprint = create_topology(&configuration, &env_provider, &component_registry).await?;
+    let blueprint = create_topology(&configuration, &env_provider, &component_registry, values.clone()).await?;
 
     spawn_internal_observability_topology(&configuration, &component_registry, health_registry.clone())
         .error_context("Failed to spawn internal observability topology.")?;
@@ -57,6 +64,7 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         &component_registry,
         health_registry.clone(),
         env_provider,
+        values.clone(),
     )
     .error_context("Failed to spawn control plane.")?;
 
@@ -113,7 +121,8 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
 }
 
 async fn create_topology(
-    configuration: &GenericConfiguration, env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
+    configuration: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
+    component_registry: &ComponentRegistry, shared_config: Arc<ArcSwap<serde_json::Value>>,
 ) -> Result<TopologyBlueprint, GenericError> {
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
@@ -144,7 +153,7 @@ async fn create_topology(
 
     match RefresherConfiguration::from_configuration(configuration) {
         Ok(refresher_configuration) => {
-            let refreshable_configuration = refresher_configuration.build().await?;
+            let refreshable_configuration = refresher_configuration.build(shared_config).await?;
 
             dd_metrics_config.add_refreshable_configuration(refreshable_configuration.clone());
             dd_events_config.add_refreshable_configuration(refreshable_configuration.clone());

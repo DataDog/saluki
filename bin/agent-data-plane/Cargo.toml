@@ -13,6 +13,7 @@ default = []
 fips = ["saluki-app/tls-fips"]
 
 [dependencies]
+arc-swap = { workspace = true }
 async-trait = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
@@ -33,6 +34,7 @@ http-body-util = { workspace = true }
 hyper = { workspace = true }
 memory-accounting = { workspace = true }
 papaya = { workspace = true }
+prost-types = { workspace = true }
 rand = { workspace = true }
 rand_distr = { workspace = true }
 reqwest = { workspace = true, features = [

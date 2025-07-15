@@ -19,6 +19,10 @@ pub enum Action {
     /// Various debugging commands.
     #[command(subcommand)]
     Debug(DebugConfig),
+
+    /// Prints the current configuration.
+    #[command(name = "config")]
+    Config,
 }
 
 /// Run subcommand configuration.
