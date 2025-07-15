@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use reqwest::ClientBuilder;
+use rustls::ClientConfig;
 use saluki_error::GenericError;
 use saluki_io::net::build_datadog_agent_ipc_tls_config;
 use serde::{de::DeserializeOwned, Deserialize};
@@ -74,25 +75,24 @@ impl RefresherConfiguration {
     ///
     /// If the authentication token be read from the configured authentication token file
     /// path, an error will be returned.
-    pub fn build(&self) -> Result<RefreshableConfiguration, GenericError> {
+    pub async fn build(&self) -> Result<RefreshableConfiguration, GenericError> {
+        let tls_config = build_datadog_agent_ipc_tls_config(self.ipc_cert_file_path.clone()).await?;
         let endpoint = format!("https://{}:{}/config/v1", self.agent_ipc_host, self.agent_ipc_port);
         let refreshable_configuration = RefreshableConfiguration {
             endpoint,
             values: Arc::new(ArcSwap::from_pointee(serde_json::Value::Null)),
             refresh_interval_seconds: self.refresh_interval_seconds,
         };
-        refreshable_configuration
-            .clone()
-            .spawn_refresh_task(self.ipc_cert_file_path.clone());
+
+        refreshable_configuration.clone().spawn_refresh_task(tls_config);
 
         Ok(refreshable_configuration)
     }
 }
 impl RefreshableConfiguration {
     /// Start a task that queries the datadog-agent config endpoint every 15 seconds.
-    fn spawn_refresh_task(self, ipc_cert_file_path: String) {
+    fn spawn_refresh_task(self, tls_config: ClientConfig) {
         tokio::spawn(async move {
-            let tls_config = build_datadog_agent_ipc_tls_config(ipc_cert_file_path).await.unwrap();
             let client = ClientBuilder::new()
                 .use_preconfigured_tls(tls_config)
                 .build()

@@ -144,7 +144,7 @@ async fn create_topology(
 
     match RefresherConfiguration::from_configuration(configuration) {
         Ok(refresher_configuration) => {
-            let refreshable_configuration = refresher_configuration.build()?;
+            let refreshable_configuration = refresher_configuration.build().await?;
 
             dd_metrics_config.add_refreshable_configuration(refreshable_configuration.clone());
             dd_events_config.add_refreshable_configuration(refreshable_configuration.clone());

@@ -3541,6 +3541,7 @@ dependencies = [
  "arc-swap",
  "figment",
  "reqwest",
+ "rustls",
  "saluki-error",
  "saluki-io",
  "serde",
