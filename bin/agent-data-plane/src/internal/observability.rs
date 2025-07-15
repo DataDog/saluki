@@ -11,7 +11,7 @@ use tracing::{info, warn};
 use crate::{components::remapper::AgentTelemetryRemapperConfiguration, internal::initialize_and_launch_runtime};
 
 // SAFETY: This value is clearly non-zero.
-const DEFAULT_INTERCONNECT_CAPACITY: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(4) };
+const DEFAULT_INTERCONNECT_CAPACITY: NonZeroUsize = NonZeroUsize::new(4).unwrap();
 
 pub fn spawn_internal_observability_topology(
     config: &GenericConfiguration, component_registry: &ComponentRegistry, health_registry: HealthRegistry,

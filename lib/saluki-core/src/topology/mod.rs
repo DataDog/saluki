@@ -31,7 +31,7 @@ pub(super) mod test_util;
 
 // SAFETY: These are obviously non-zero.
 const DEFAULT_EVENTS_BUFFER_CAPACITY: usize = 1024;
-const DEFAULT_INTERCONNECT_CAPACITY: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(128) };
+const DEFAULT_INTERCONNECT_CAPACITY: NonZeroUsize = NonZeroUsize::new(128).unwrap();
 
 // Topology-wide defaults.
 
