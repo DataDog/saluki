@@ -5,14 +5,28 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[lints]
+workspace = true
+
 [dependencies]
 bollard = { workspace = true, features = ["http", "pipe"] }
-clap = { workspace = true, features = ["std", "color", "derive", "help", "wrap_help", "usage", "error-context", "suggestions"] }
+clap = { workspace = true, features = [
+  "std",
+  "color",
+  "derive",
+  "help",
+  "wrap_help",
+  "usage",
+  "error-context",
+  "suggestions",
+] }
 futures = { workspace = true }
 saluki-app = { workspace = true, features = ["logging"] }
 saluki-error = { workspace = true }
-tokio = { workspace = true, features = ["fs", "macros", "rt", "rt-multi-thread"] }
+tokio = { workspace = true, features = [
+  "fs",
+  "macros",
+  "rt",
+  "rt-multi-thread",
+] }
 tracing = { workspace = true }
-
-[lints]
-workspace = true

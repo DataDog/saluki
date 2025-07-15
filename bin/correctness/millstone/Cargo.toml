@@ -5,6 +5,9 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[lints]
+workspace = true
+
 [dependencies]
 bytes = { workspace = true }
 bytesize = { workspace = true, features = ["serde"] }
@@ -15,6 +18,3 @@ saluki-error = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 tracing = { workspace = true }
-
-[lints]
-workspace = true

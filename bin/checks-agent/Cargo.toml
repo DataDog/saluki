@@ -5,6 +5,9 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[lints]
+workspace = true
+
 [features]
 default = []
 
@@ -34,6 +37,3 @@ tikv-jemallocator = { workspace = true, features = [
   "unprefixed_malloc_on_supported_platforms",
   "stats",
 ] }
-
-[lints]
-workspace = true

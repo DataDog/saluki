@@ -6,17 +6,12 @@ use tokio::runtime::Handle;
 
 use crate::{
     components::ComponentContext,
-    pooling::OnDemandObjectPool,
-    topology::{
-        interconnect::{Dispatcher, FixedSizeEventBuffer},
-        shutdown::ComponentShutdownHandle,
-    },
+    topology::{shutdown::ComponentShutdownHandle, EventsDispatcher},
 };
 
 struct SourceContextInner {
     component_context: ComponentContext,
-    dispatcher: Dispatcher,
-    event_buffer_pool: OnDemandObjectPool<FixedSizeEventBuffer>,
+    dispatcher: EventsDispatcher,
     memory_limiter: MemoryLimiter,
     health_registry: HealthRegistry,
     component_registry: ComponentRegistry,
@@ -34,10 +29,9 @@ impl SourceContext {
     /// Creates a new `SourceContext`.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        component_context: ComponentContext, shutdown_handle: ComponentShutdownHandle, dispatcher: Dispatcher,
-        event_buffer_pool: OnDemandObjectPool<FixedSizeEventBuffer>, memory_limiter: MemoryLimiter,
-        component_registry: ComponentRegistry, health_handle: Health, health_registry: HealthRegistry,
-        thread_pool: Handle,
+        component_context: ComponentContext, shutdown_handle: ComponentShutdownHandle, dispatcher: EventsDispatcher,
+        memory_limiter: MemoryLimiter, component_registry: ComponentRegistry, health_handle: Health,
+        health_registry: HealthRegistry, thread_pool: Handle,
     ) -> Self {
         Self {
             shutdown_handle: Some(shutdown_handle),
@@ -45,7 +39,6 @@ impl SourceContext {
             inner: Arc::new(SourceContextInner {
                 component_context,
                 dispatcher,
-                event_buffer_pool,
                 memory_limiter,
                 health_registry,
                 component_registry,
@@ -77,14 +70,9 @@ impl SourceContext {
         self.inner.component_context.clone()
     }
 
-    /// Gets a reference to the dispatcher.
-    pub fn dispatcher(&self) -> &Dispatcher {
+    /// Gets a reference to the events dispatcher.
+    pub fn dispatcher(&self) -> &EventsDispatcher {
         &self.inner.dispatcher
-    }
-
-    /// Gets a reference to the event buffer pool.
-    pub fn event_buffer_pool(&self) -> &OnDemandObjectPool<FixedSizeEventBuffer> {
-        &self.inner.event_buffer_pool
     }
 
     /// Gets a reference to the memory limiter.

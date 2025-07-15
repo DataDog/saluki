@@ -11,17 +11,16 @@ use saluki_components::{
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration, RefresherConfiguration};
-use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::topology::TopologyBlueprint;
-use saluki_env::{helpers::remote_agent::RemoteAgentClient, EnvironmentProvider as _};
+use saluki_env::EnvironmentProvider as _;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use tokio::select;
 use tracing::{error, info, warn};
 
+use crate::config::RunConfig;
 use crate::env_provider::ADPEnvironmentProvider;
 use crate::internal::{spawn_control_plane, spawn_internal_observability_topology};
-use crate::{config::RunConfig, internal::BasicTopologyConfiguration};
 
 pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
@@ -115,7 +114,7 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
 
 async fn create_topology(
     configuration: &GenericConfiguration, env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
-) -> Result<TopologyBlueprint<BasicTopologyConfiguration>, GenericError> {
+) -> Result<TopologyBlueprint, GenericError> {
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
     let dsd_config = DogStatsDConfiguration::from_configuration(configuration)
@@ -145,7 +144,7 @@ async fn create_topology(
 
     match RefresherConfiguration::from_configuration(configuration) {
         Ok(refresher_configuration) => {
-            let refreshable_configuration = refresher_configuration.build()?;
+            let refreshable_configuration = refresher_configuration.build().await?;
 
             dd_metrics_config.add_refreshable_configuration(refreshable_configuration.clone());
             dd_events_config.add_refreshable_configuration(refreshable_configuration.clone());
@@ -158,8 +157,7 @@ async fn create_topology(
         }
     }
 
-    let primary_config = BasicTopologyConfiguration::primary();
-    let mut blueprint = TopologyBlueprint::new("primary", primary_config, component_registry);
+    let mut blueprint = TopologyBlueprint::new("primary", component_registry);
     blueprint
         .add_source("dsd_in", dsd_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
@@ -191,23 +189,9 @@ async fn create_topology(
         let preaggr_processing = ChainedConfiguration::default()
             .with_transform_builder("preaggr_filter", PreaggregationFilterConfiguration::default());
 
-        let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
+        let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
             .and_then(|config| config.with_endpoint_override(preaggr_dd_url, preaggr_api_key, preaggr_request_path))
             .error_context("Failed to configure pre-aggregation Datadog Metrics destination.")?;
-
-        if !in_standalone_mode {
-            let remote_agent_client = RemoteAgentClient::from_configuration(configuration).await?;
-            let host_tags = remote_agent_client
-                .get_host_tags()
-                .await?
-                .into_inner()
-                .system
-                .into_iter()
-                .map(Tag::from)
-                .collect::<SharedTagSet>();
-
-            dd_metrics_config = dd_metrics_config.with_additional_tags(host_tags);
-        }
 
         blueprint
             .add_transform("preaggr_processing", preaggr_processing)?
