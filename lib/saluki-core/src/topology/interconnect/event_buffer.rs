@@ -192,24 +192,23 @@ impl<const N: usize> EventBufferManager<N> {
     /// If the event buffer is full, it is replaced with a new event buffer before pushing the event, and `Some(buffer)`
     /// is returned containing the old event buffer. Otherwise, `None` is returned.
     pub fn try_push(&mut self, event: Event) -> Option<FixedSizeEventBuffer<N>> {
-        // Consume the event buffer if we have one, or acquire one on demand.
-        let mut buffer = self.current.take().unwrap_or_default();
+        let buffer = self.current.get_or_insert_default();
 
-        // Try writing into the event buffer.
-        //
-        // If we can't, we'll return it which instructs the caller to flush the buffer and then try again to push the event.
-        if let Some(event) = buffer.try_push(event) {
-            let old_buffer = std::mem::take(&mut buffer);
+        match buffer.try_push(event) {
+            Some(event) => {
+                // Our current buffer is full, so replace it with a new buffer before trying to write the event
+                // into it again, and return the old buffer to the caller.
+                let old_buffer = std::mem::take(buffer);
 
-            if buffer.try_push(event).is_some() {
-                panic!("New event buffer is unexpectedly full.")
+                if buffer.try_push(event).is_some() {
+                    panic!("New event buffer is unexpectedly full.")
+                }
+
+                Some(old_buffer)
             }
 
-            Some(old_buffer)
-        } else {
-            // Return the event buffer to the caller to allow it to continue to be used.
-            self.current.replace(buffer);
-            None
+            // We were able to push the event into the current buffer, so we're done.
+            None => None,
         }
     }
 
@@ -223,7 +222,7 @@ impl<const N: usize> EventBufferManager<N> {
 mod tests {
     use std::collections::VecDeque;
 
-    use super::FixedSizeEventBuffer;
+    use super::*;
     use crate::data_model::event::{
         eventd::EventD,
         metric::Metric,
@@ -359,5 +358,64 @@ mod tests {
 
         let remaining_event2 = remaining_events.remove(0);
         assert_eq!(remaining_event2, event4);
+    }
+
+    #[test]
+    fn event_buffer_manager_try_push_not_full() {
+        let mut manager = EventBufferManager::<4>::default();
+
+        let event1 = Event::Metric(Metric::counter("foo", 42.0));
+        let event2 = Event::EventD(EventD::new("foo1", "bar1"));
+        let event3 = Event::EventD(EventD::new("foo2", "bar2"));
+        let event4 = Event::ServiceCheck(ServiceCheck::new("foo5", CheckStatus::Ok));
+
+        // Add the four events.
+        assert!(manager.try_push(event1.clone()).is_none());
+        assert!(manager.try_push(event2.clone()).is_none());
+        assert!(manager.try_push(event3.clone()).is_none());
+        assert!(manager.try_push(event4.clone()).is_none());
+
+        // Consume the current buffer and ensure all of the events match the expected events.
+        let mut buffered_events = manager.consume().expect("manager should have buffer").into_iter();
+
+        assert_eq!(Some(event1), buffered_events.next());
+        assert_eq!(Some(event2), buffered_events.next());
+        assert_eq!(Some(event3), buffered_events.next());
+        assert_eq!(Some(event4), buffered_events.next());
+        assert_eq!(None, buffered_events.next());
+    }
+
+    #[test]
+    fn event_buffer_manager_try_push_full() {
+        let mut manager = EventBufferManager::<3>::default();
+
+        let event1 = Event::Metric(Metric::counter("foo", 42.0));
+        let event2 = Event::EventD(EventD::new("foo1", "bar1"));
+        let event3 = Event::EventD(EventD::new("foo2", "bar2"));
+        let event4 = Event::ServiceCheck(ServiceCheck::new("foo5", CheckStatus::Ok));
+
+        // Add the four events.
+        //
+        // We should only be able to add three events before getting a buffer back, since we have a capacity of three.
+        assert!(manager.try_push(event1.clone()).is_none());
+        assert!(manager.try_push(event2.clone()).is_none());
+        assert!(manager.try_push(event3.clone()).is_none());
+
+        let first_buffer = manager.try_push(event4.clone());
+        assert!(first_buffer.is_some());
+
+        let mut buffered_events1 = first_buffer.unwrap().into_iter();
+        assert_eq!(Some(event1), buffered_events1.next());
+        assert_eq!(Some(event2), buffered_events1.next());
+        assert_eq!(Some(event3), buffered_events1.next());
+        assert_eq!(None, buffered_events1.next());
+
+        // Consume the buffer from the manager, which should have the fourth event.
+        let mut buffered_events2 = manager
+            .consume()
+            .expect("manager should have second buffer")
+            .into_iter();
+        assert_eq!(Some(event4), buffered_events2.next());
+        assert_eq!(None, buffered_events2.next());
     }
 }
