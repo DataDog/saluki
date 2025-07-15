@@ -346,7 +346,7 @@ mod tests {
     use super::*;
     use crate::workload::helpers::OneOrMany;
 
-    const DEFAULT_ENTITY_LIMIT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(10) };
+    const DEFAULT_ENTITY_LIMIT: NonZeroUsize = NonZeroUsize::new(10).unwrap();
 
     macro_rules! low_cardinality {
         ($entity_id:expr, tags => [$($key:literal => $value:literal),+]) => {{

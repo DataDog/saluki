@@ -36,6 +36,7 @@ const DEFAULT_PID_CACHE_CACHED_PIDS_LIMIT: usize = 500_000;
 #[cfg(target_os = "linux")]
 const DEFAULT_PID_CACHE_IDLE_PID_EXPIRATION: Duration = Duration::from_secs(30);
 
+#[allow(clippy::large_enum_variant)]
 enum Inner {
     #[allow(dead_code)]
     Noop,

@@ -23,7 +23,7 @@ use tracing::debug;
 use crate::data_model::event::{metric::*, Event};
 
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
-const INTERNAL_METRICS_INTERNER_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(16_384) };
+const INTERNAL_METRICS_INTERNER_SIZE: NonZeroUsize = NonZeroUsize::new(16_384).unwrap();
 
 static RECEIVER_STATE: OnceLock<Arc<State>> = OnceLock::new();
 

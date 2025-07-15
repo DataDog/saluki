@@ -5,6 +5,9 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[lints]
+workspace = true
+
 [dependencies]
 crossbeam-queue = { workspace = true }
 foldhash = { workspace = true }
@@ -19,6 +22,3 @@ saluki-metrics = { workspace = true }
 sha3 = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
-
-[lints]
-workspace = true
