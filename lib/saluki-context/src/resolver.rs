@@ -19,11 +19,10 @@ use crate::{
 };
 
 // SAFETY: We know, unquestionably, that this value is not zero.
-const DEFAULT_CONTEXT_RESOLVER_CACHED_CONTEXTS_LIMIT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(500_000) };
+const DEFAULT_CONTEXT_RESOLVER_CACHED_CONTEXTS_LIMIT: NonZeroUsize = NonZeroUsize::new(500_000).unwrap();
 
 // SAFETY: We know, unquestionably, that this value is not zero.
-const DEFAULT_CONTEXT_RESOLVER_INTERNER_CAPACITY_BYTES: NonZeroUsize =
-    unsafe { NonZeroUsize::new_unchecked(2 * 1024 * 1024) };
+const DEFAULT_CONTEXT_RESOLVER_INTERNER_CAPACITY_BYTES: NonZeroUsize = NonZeroUsize::new(2 * 1024 * 1024).unwrap();
 
 const SEEN_HASHSET_INITIAL_CAPACITY: usize = 128;
 

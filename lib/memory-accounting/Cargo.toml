@@ -5,6 +5,9 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[lints]
+workspace = true
+
 [dependencies]
 bytesize = { workspace = true }
 metrics = { workspace = true }

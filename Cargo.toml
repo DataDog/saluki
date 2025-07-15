@@ -56,7 +56,7 @@ saluki-tls = { path = "lib/saluki-tls" }
 stele = { path = "bin/correctness/stele" }
 stringtheory = { path = "lib/stringtheory" }
 async-trait = { version = "0.1", default-features = false }
-axum = { version = "0.7", default-features = false }
+axum = { version = "0.8", default-features = false }
 bytes = { version = "1", default-features = false }
 protobuf = { version = "3.7", default-features = false, features = [
   "with-bytes",
@@ -146,12 +146,18 @@ loom = { version = "0.7", default-features = false }
 trybuild = { version = "1", default-features = false }
 tokio-test = { version = "0.4.4", default-features = false }
 simdutf8 = { version = "0.1.5", default-features = false }
-smallvec = { version = "1.13", default-features = false, features = ["const_generics", "drain_filter", "union"] }
+smallvec = { version = "1.13", default-features = false, features = [
+  "const_generics",
+  "drain_filter",
+  "union",
+] }
 windows-sys = { version = "0.59", default-features = false }
 rustls-native-certs = { version = "0.8", default-features = false }
 hashbrown = { version = "0.15", default-features = false }
 quick_cache = { version = "0.6", default-features = false }
-crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
+crossbeam-queue = { version = "0.3", default-features = false, features = [
+  "alloc",
+] }
 float-cmp = { version = "0.10", default-features = false }
 tower-http = { version = "0.6", default-features = false }
 bollard = { version = "0.18", default-features = false }
@@ -171,7 +177,7 @@ uuid = { version = "1.13", default-features = false }
 rcgen = { version = "0.13.1", default-features = false }
 tikv-jemalloc-ctl = "0.6"
 tikv-jemallocator = { version = "0.6", default-features = false }
-axum-extra = { version = "0.9", default-features = false }
+axum-extra = { version = "0.10", default-features = false }
 papaya = { version = "0.2", default-features = false }
 tempfile = { version = "3", default-features = false }
 fs4 = { version = "0.13.1", default-features = false }
@@ -193,3 +199,4 @@ debug = true
 
 [workspace.lints.clippy]
 new_without_default = "allow"
+uninlined_format_args = "allow"

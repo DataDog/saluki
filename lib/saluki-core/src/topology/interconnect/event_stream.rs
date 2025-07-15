@@ -10,7 +10,7 @@ use crate::{components::ComponentContext, observability::ComponentMetricsExt as 
 // Since we're dealing with event _buffers_, this becomes a multiplicative factor, so we might be receiving 128 (or
 // whatever the number is) event buffers of 128 events each. This is good for batching/efficiency but we don't want
 // wildly large batches, so this number is sized conservatively for now.
-const NEXT_READY_RECV_LIMIT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(128) };
+const NEXT_READY_RECV_LIMIT: NonZeroUsize = NonZeroUsize::new(128).unwrap();
 
 /// A stream of events sent to a component.
 ///

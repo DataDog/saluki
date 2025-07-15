@@ -19,7 +19,7 @@ use crate::{
 };
 
 // SAFETY: These are obviously non-zero.
-const DEFAULT_EVENT_BUFFER_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(1024) };
+const DEFAULT_EVENT_BUFFER_SIZE: NonZeroUsize = NonZeroUsize::new(1024).unwrap();
 
 /// A topology blueprint error.
 #[derive(Debug, Snafu)]

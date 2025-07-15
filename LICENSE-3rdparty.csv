@@ -135,6 +135,7 @@ indexmap,https://github.com/bluss/indexmap,Apache-2.0 OR MIT,The indexmap Author
 indexmap,https://github.com/indexmap-rs/indexmap,Apache-2.0 OR MIT,The indexmap Authors
 indoc,https://github.com/dtolnay/indoc,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
 inlinable_string,https://github.com/fitzgen/inlinable_string,Apache-2.0 OR MIT,Nick Fitzgerald <fitzgen@gmail.com>
+io-uring,https://github.com/tokio-rs/io-uring,MIT OR Apache-2.0,quininer <quininer@live.com>
 ipnet,https://github.com/krisprice/ipnet,MIT OR Apache-2.0,Kris Price <kris@krisprice.nz>
 iri-string,https://github.com/lo48576/iri-string,MIT OR Apache-2.0,YOSHIOKA Takuma <nop_thread@nops.red>
 is_terminal_polyfill,https://github.com/polyfill-rs/is_terminal_polyfill,MIT OR Apache-2.0,The is_terminal_polyfill Authors
@@ -155,7 +156,6 @@ log,https://github.com/rust-lang/log,MIT OR Apache-2.0,The Rust Project Develope
 mach2,https://github.com/JohnTitor/mach2,BSD-2-Clause OR MIT OR Apache-2.0,The mach2 Authors
 matchers,https://github.com/hawkw/matchers,MIT,Eliza Weisman <eliza@buoyant.io>
 matchit,https://github.com/ibraheemdev/matchit,MIT AND BSD-3-Clause,Ibraheem Ahmed <ibraheem@ibraheem.ca>
-matrixmultiply,https://github.com/bluss/matrixmultiply,MIT OR Apache-2.0,"bluss, R. Janis Goldschmidt"
 memchr,https://github.com/BurntSushi/memchr,Unlicense OR MIT,"Andrew Gallant <jamslam@gmail.com>, bluss"
 memoffset,https://github.com/Gilnaa/memoffset,MIT,Gilad Naaman <gilad.naaman@gmail.com>
 metrics,https://github.com/metrics-rs/metrics,MIT,Toby Lawrence <toby@nuclearfurnace.com>
@@ -165,14 +165,10 @@ miniz_oxide,https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide,MIT OR
 mintex,https://github.com/garypen/mintex,Apache-2.0,garypen <garypen@gmail.com>
 mio,https://github.com/tokio-rs/mio,MIT,"Carl Lerche <me@carllerche.com>, Thomas de Zeeuw <thomasdezeeuw@gmail.com>, Tokio Contributors <team@tokio.rs>"
 multimap,https://github.com/havarnov/multimap,MIT OR Apache-2.0,Håvar Nøvik <havar.novik@gmail.com>
-ndarray,https://github.com/rust-ndarray/ndarray,MIT OR Apache-2.0,"Ulrik Sverdrup ""bluss"", Jim Turner"
-noisy_float,https://github.com/SergiusIW/noisy_float-rs,Apache-2.0,Matthew Michelotti <matthew@matthewmichelotti.com>
 nom,https://github.com/Geal/nom,MIT,contact@geoffroycouprie.com
 nom,https://github.com/rust-bakery/nom,MIT,contact@geoffroycouprie.com
 nu-ansi-term,https://github.com/nushell/nu-ansi-term,MIT,"ogham@bsago.me, Ryan Scheel (Havvy) <ryan.havvy@gmail.com>, Josh Triplett <josh@joshtriplett.org>, The Nushell Project Developers"
-num-complex,https://github.com/rust-num/num-complex,MIT OR Apache-2.0,The Rust Project Developers
 num-conv,https://github.com/jhpratt/num-conv,MIT OR Apache-2.0,Jacob Pratt <jacob@jhpratt.dev>
-num-integer,https://github.com/rust-num/num-integer,MIT OR Apache-2.0,The Rust Project Developers
 num-traits,https://github.com/rust-num/num-traits,MIT OR Apache-2.0,The Rust Project Developers
 num_threads,https://github.com/jhpratt/num_threads,MIT OR Apache-2.0,Jacob Pratt <open-source@jhpratt.dev>
 object,https://github.com/gimli-rs/object,Apache-2.0 OR MIT,The object Authors
@@ -187,7 +183,6 @@ ordered-float,https://github.com/reem/rust-ordered-float,MIT,"Jonathan Reem <jon
 overload,https://github.com/danaugrs/overload,MIT,Daniel Salvadori <danaugrs@gmail.com>
 papaya,https://github.com/ibraheemdev/papaya,MIT,Ibraheem Ahmed <ibraheem@ibraheem.ca>
 parking_lot,https://github.com/Amanieu/parking_lot,MIT OR Apache-2.0,Amanieu d'Antras <amanieu@gmail.com>
-parse-zoneinfo,https://github.com/chronotope/chrono-tz,MIT,The parse-zoneinfo Authors
 paste,https://github.com/dtolnay/paste,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
 pear,https://github.com/SergioBenitez/Pear,MIT OR Apache-2.0,Sergio Benitez <sb@sergio.bz>
 pear_codegen,https://github.com/SergioBenitez/Pear,MIT OR Apache-2.0,Sergio Benitez <sb@sergio.bz>
@@ -200,7 +195,6 @@ pin-project-lite,https://github.com/taiki-e/pin-project-lite,Apache-2.0 OR MIT,T
 pin-utils,https://github.com/rust-lang-nursery/pin-utils,MIT OR Apache-2.0,Josef Brandl <mail@josefbrandl.de>
 plotters,https://github.com/plotters-rs/plotters,MIT,Hao Hou <haohou302@gmail.com>
 portable-atomic,https://github.com/taiki-e/portable-atomic,Apache-2.0 OR MIT,The portable-atomic Authors
-portable-atomic-util,https://github.com/taiki-e/portable-atomic,Apache-2.0 OR MIT,The portable-atomic-util Authors
 potential_utf,https://github.com/unicode-org/icu4x,Unicode-3.0,The ICU4X Project Developers
 powerfmt,https://github.com/jhpratt/powerfmt,MIT OR Apache-2.0,Jacob Pratt <jacob@jhpratt.dev>
 ppv-lite86,https://github.com/cryptocorrosion/cryptocorrosion,MIT OR Apache-2.0,The CryptoCorrosion Contributors
@@ -223,7 +217,6 @@ rand_chacha,https://github.com/rust-random/rand,MIT OR Apache-2.0,"The Rand Proj
 rand_distr,https://github.com/rust-random/rand_distr,MIT OR Apache-2.0,The Rand Project Developers
 rand_xorshift,https://github.com/rust-random/rngs,MIT OR Apache-2.0,"The Rand Project Developers, The Rust Project Developers"
 raw-cpuid,https://github.com/gz/rust-cpuid,MIT,Gerd Zellweger <mail@gerdzellweger.com>
-rawpointer,https://github.com/bluss/rawpointer,MIT OR Apache-2.0,bluss
 rayon,https://github.com/rayon-rs/rayon,MIT OR Apache-2.0,"Niko Matsakis <niko@alum.mit.edu>, Josh Stone <cuviper@gmail.com>"
 rcgen,https://github.com/rustls/rcgen,MIT OR Apache-2.0,The rcgen Authors
 redox_syscall,https://gitlab.redox-os.org/redox-os/syscall,MIT,Jeremy Soller <jackpot51@gmail.com>
@@ -308,7 +301,8 @@ tokio-rustls,https://github.com/rustls/tokio-rustls,MIT OR Apache-2.0,The tokio-
 toml,https://github.com/toml-rs/toml,MIT OR Apache-2.0,The toml Authors
 toml_datetime,https://github.com/toml-rs/toml,MIT OR Apache-2.0,The toml_datetime Authors
 toml_edit,https://github.com/toml-rs/toml,MIT OR Apache-2.0,The toml_edit Authors
-toml_write,https://github.com/toml-rs/toml,MIT OR Apache-2.0,The toml_write Authors
+toml_parser,https://github.com/toml-rs/toml,MIT OR Apache-2.0,The toml_parser Authors
+toml_writer,https://github.com/toml-rs/toml,MIT OR Apache-2.0,The toml_writer Authors
 tonic,https://github.com/hyperium/tonic,MIT,Lucio Franco <luciofranco14@gmail.com>
 tower,https://github.com/tower-rs/tower,MIT,Tower Maintainers <team@tower-rs.com>
 tower-http,https://github.com/tower-rs/tower-http,MIT,Tower Maintainers <team@tower-rs.com>

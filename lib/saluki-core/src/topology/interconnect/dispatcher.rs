@@ -156,6 +156,7 @@ impl<'a> BufferedSender<'a> {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum SenderBackend<'a> {
     Single(BufferedSender<'a>),
     Multiple(SmallVec<[BufferedSender<'a>; 4]>),
