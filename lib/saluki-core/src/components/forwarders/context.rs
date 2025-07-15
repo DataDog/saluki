@@ -2,12 +2,12 @@ use memory_accounting::{ComponentRegistry, MemoryLimiter};
 use saluki_health::{Health, HealthRegistry};
 use tokio::runtime::Handle;
 
-use crate::{components::ComponentContext, topology::interconnect::EventStream};
+use crate::{components::ComponentContext, topology::PayloadsConsumer};
 
 /// Forwarder context.
 pub struct ForwarderContext {
     component_context: ComponentContext,
-    events: EventStream,
+    consumer: PayloadsConsumer,
     memory_limiter: MemoryLimiter,
     health_handle: Option<Health>,
     health_registry: HealthRegistry,
@@ -18,13 +18,13 @@ pub struct ForwarderContext {
 impl ForwarderContext {
     /// Creates a new `ForwarderContext`.
     pub fn new(
-        component_context: ComponentContext, events: EventStream, memory_limiter: MemoryLimiter,
+        component_context: ComponentContext, consumer: PayloadsConsumer, memory_limiter: MemoryLimiter,
         component_registry: ComponentRegistry, health_handle: Health, health_registry: HealthRegistry,
         thread_pool: Handle,
     ) -> Self {
         Self {
             component_context,
-            events,
+            consumer,
             memory_limiter,
             health_handle: Some(health_handle),
             health_registry,
@@ -47,9 +47,9 @@ impl ForwarderContext {
         self.component_context.clone()
     }
 
-    /// Gets a mutable reference to the event stream.
-    pub fn events(&mut self) -> &mut EventStream {
-        &mut self.events
+    /// Gets a mutable reference to the payloads consumer.
+    pub fn payloads(&mut self) -> &mut PayloadsConsumer {
+        &mut self.consumer
     }
 
     /// Gets a reference to the memory limiter.

@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 use memory_accounting::{ComponentRegistry, MemoryLimiter};
 use saluki_components::{destinations::PrometheusConfiguration, sources::InternalMetricsConfiguration};
 use saluki_config::GenericConfiguration;
@@ -6,10 +8,10 @@ use saluki_error::GenericError;
 use saluki_health::HealthRegistry;
 use tracing::{info, warn};
 
-use crate::{
-    components::remapper::AgentTelemetryRemapperConfiguration,
-    internal::{config::BasicTopologyConfiguration, initialize_and_launch_runtime},
-};
+use crate::{components::remapper::AgentTelemetryRemapperConfiguration, internal::initialize_and_launch_runtime};
+
+// SAFETY: This value is clearly non-zero.
+const DEFAULT_INTERCONNECT_CAPACITY: NonZeroUsize = NonZeroUsize::new(4).unwrap();
 
 pub fn spawn_internal_observability_topology(
     config: &GenericConfiguration, component_registry: &ComponentRegistry, health_registry: HealthRegistry,
@@ -31,8 +33,8 @@ pub fn spawn_internal_observability_topology(
         prometheus_config.listen_address()
     );
 
-    let internal_obs_config = BasicTopologyConfiguration::internal_observability();
-    let mut blueprint = TopologyBlueprint::new("internal", internal_obs_config, component_registry);
+    let mut blueprint = TopologyBlueprint::new("internal", component_registry);
+    blueprint.with_interconnect_capacity(DEFAULT_INTERCONNECT_CAPACITY);
     blueprint
         .add_source("internal_metrics_in", int_metrics_config)?
         .add_transform("internal_metrics_remap", int_metrics_remap_config)?
