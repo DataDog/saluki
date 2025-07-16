@@ -1,4 +1,4 @@
-use std::{collections::HashMap, num::NonZeroUsize};
+use std::{collections::HashMap, future::Future, num::NonZeroUsize};
 
 use memory_accounting::{
     allocator::{AllocationGroupToken, Tracked},
@@ -14,17 +14,19 @@ use tokio::{
 use tracing::{debug, error_span};
 
 use super::{
-    graph::Graph,
-    interconnect::{Consumer, Dispatcher},
-    running::RunningTopology,
-    shutdown::ComponentShutdownCoordinator,
-    ComponentId, EventsBuffer, RegisteredComponent,
+    graph::Graph, running::RunningTopology, shutdown::ComponentShutdownCoordinator, ComponentId, EventsBuffer,
+    EventsConsumer, OutputName, PayloadsConsumer, RegisteredComponent, TypedComponentId,
 };
-use crate::components::{
-    destinations::{Destination, DestinationContext},
-    sources::{Source, SourceContext},
-    transforms::{Transform, TransformContext},
-    ComponentContext,
+use crate::{
+    components::{
+        destinations::{Destination, DestinationContext},
+        encoders::{Encoder, EncoderContext},
+        forwarders::{Forwarder, ForwarderContext},
+        sources::{Source, SourceContext},
+        transforms::{Transform, TransformContext},
+        ComponentContext, ComponentType,
+    },
+    topology::{context::TopologyContext, EventsDispatcher, PayloadsBuffer, PayloadsDispatcher},
 };
 
 /// A built topology.
@@ -39,6 +41,8 @@ pub struct BuiltTopology {
     sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
     transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
     destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
+    encoders: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Encoder + Send>>>>,
+    forwarders: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Forwarder + Send>>>>,
     component_token: AllocationGroupToken,
     interconnect_capacity: NonZeroUsize,
 }
@@ -50,6 +54,8 @@ impl BuiltTopology {
         sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
         transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
         destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
+        encoders: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Encoder + Send>>>>,
+        forwarders: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Forwarder + Send>>>>,
         component_token: AllocationGroupToken, interconnect_capacity: NonZeroUsize,
     ) -> Self {
         Self {
@@ -58,63 +64,11 @@ impl BuiltTopology {
             sources,
             transforms,
             destinations,
+            encoders,
+            forwarders,
             component_token,
             interconnect_capacity,
         }
-    }
-
-    fn create_event_interconnects(
-        &self,
-    ) -> (
-        HashMap<ComponentId, Dispatcher<EventsBuffer>>,
-        HashMap<ComponentId, Consumer<EventsBuffer>>,
-    ) {
-        // Collect all of the outbound edges in our topology graph.
-        //
-        // This gives us a mapping of components which send events to another component, grouped by output name.
-        let outbound_edges = self.graph.get_outbound_directed_edges();
-
-        let mut dispatchers = HashMap::new();
-        let mut event_streams = HashMap::new();
-        let mut event_stream_senders: HashMap<ComponentId, mpsc::Sender<EventsBuffer>> = HashMap::new();
-
-        for (upstream_id, output_map) in outbound_edges {
-            // Get a reference to the dispatcher for the current upstream component
-            let dispatcher = dispatchers.entry(upstream_id.clone()).or_insert_with(|| {
-                // TODO: This is wrong, because an upstream component is simply any component that can dispatch, which is
-                // either a source or transform.
-                let component_context = ComponentContext::source(upstream_id.clone());
-                Dispatcher::new(component_context)
-            });
-
-            for (upstream_output_id, downstream_ids) in output_map {
-                // For each downstream component mapped to this upstream component's output, we need to grab a copy of
-                // the sender we'll use to actually send to them... so we either clone it here or we do the initial
-                // creation.
-                for downstream_id in downstream_ids {
-                    let sender = match event_stream_senders.get(&downstream_id) {
-                        Some(sender) => sender.clone(),
-                        None => {
-                            let (sender, receiver) = build_event_interconnect_channel(self.interconnect_capacity);
-
-                            // TODO: Similarly broken here, since a downstream component is any component that can
-                            // receive events, which is either a transform or destination.
-                            let component_context = ComponentContext::destination(downstream_id.clone());
-                            let event_stream = Consumer::new(component_context, receiver);
-
-                            event_streams.insert(downstream_id.clone(), event_stream);
-                            event_stream_senders.insert(downstream_id.clone(), sender.clone());
-                            sender
-                        }
-                    };
-
-                    debug!(%upstream_id, %upstream_output_id, %downstream_id, "Adding dispatcher output.");
-                    dispatcher.add_output(upstream_output_id.clone(), sender);
-                }
-            }
-        }
-
-        (dispatchers, event_streams)
     }
 
     /// Spawns the topology.
@@ -138,11 +92,13 @@ impl BuiltTopology {
             .error_context("Failed to build asynchronous thread pool runtime.")?;
         let thread_pool_handle = thread_pool.handle().clone();
 
+        let topology_context = TopologyContext::new(memory_limiter, health_registry.clone(), thread_pool_handle);
+
         let mut component_tasks = JoinSet::new();
         let mut component_task_map = HashMap::new();
 
         // Build our interconnects, which we'll grab from piecemeal as we spawn our components.
-        let (mut forwarders, mut event_streams) = self.create_event_interconnects();
+        let mut interconnects = ComponentInterconnects::from_graph(self.interconnect_capacity, &self.graph);
 
         let mut shutdown_coordinator = ComponentShutdownCoordinator::default();
 
@@ -150,9 +106,9 @@ impl BuiltTopology {
         for (component_id, source) in self.sources {
             let (source, component_registry) = source.into_parts();
 
-            let forwarder = forwarders
-                .remove(&component_id)
-                .ok_or_else(|| generic_error!("No forwarder found for component '{}'", component_id))?;
+            let dispatcher = interconnects
+                .take_source_dispatcher(&component_id)
+                .ok_or_else(|| generic_error!("No events dispatcher found for source component '{}'", component_id))?;
 
             let shutdown_handle = shutdown_coordinator.register();
             let health_handle = health_registry
@@ -161,17 +117,21 @@ impl BuiltTopology {
 
             let component_context = ComponentContext::source(component_id.clone());
             let context = SourceContext::new(
-                component_context,
-                shutdown_handle,
-                forwarder,
-                memory_limiter.clone(),
+                &topology_context,
+                &component_context,
                 component_registry,
+                shutdown_handle,
                 health_handle,
-                health_registry.clone(),
-                thread_pool_handle.clone(),
+                dispatcher,
             );
 
-            let task_handle = spawn_source(&mut component_tasks, source, context);
+            let (alloc_group, source) = source.into_parts();
+            let task_handle = spawn_component(
+                &mut component_tasks,
+                component_context,
+                alloc_group,
+                source.run(context),
+            );
             component_task_map.insert(task_handle.id(), component_id);
         }
 
@@ -179,13 +139,13 @@ impl BuiltTopology {
         for (component_id, transform) in self.transforms {
             let (transform, component_registry) = transform.into_parts();
 
-            let forwarder = forwarders
-                .remove(&component_id)
-                .ok_or_else(|| generic_error!("No forwarder found for component '{}'", component_id))?;
+            let dispatcher = interconnects.take_transform_dispatcher(&component_id).ok_or_else(|| {
+                generic_error!("No events dispatcher found for transform component '{}'", component_id)
+            })?;
 
-            let event_stream = event_streams
-                .remove(&component_id)
-                .ok_or_else(|| generic_error!("No event stream found for component '{}'", component_id))?;
+            let consumer = interconnects
+                .take_transform_consumer(&component_id)
+                .ok_or_else(|| generic_error!("No events consumer found for transform component '{}'", component_id))?;
 
             let health_handle = health_registry
                 .register_component(format!("{}.transforms.{}", root_component_name, component_id))
@@ -193,17 +153,21 @@ impl BuiltTopology {
 
             let component_context = ComponentContext::transform(component_id.clone());
             let context = TransformContext::new(
-                component_context,
-                forwarder,
-                event_stream,
-                memory_limiter.clone(),
+                &topology_context,
+                &component_context,
                 component_registry,
                 health_handle,
-                health_registry.clone(),
-                thread_pool_handle.clone(),
+                dispatcher,
+                consumer,
             );
 
-            let task_handle = spawn_transform(&mut component_tasks, transform, context);
+            let (alloc_group, transform) = transform.into_parts();
+            let task_handle = spawn_component(
+                &mut component_tasks,
+                component_context,
+                alloc_group,
+                transform.run(context),
+            );
             component_task_map.insert(task_handle.id(), component_id);
         }
 
@@ -211,9 +175,9 @@ impl BuiltTopology {
         for (component_id, destination) in self.destinations {
             let (destination, component_registry) = destination.into_parts();
 
-            let event_stream = event_streams
-                .remove(&component_id)
-                .ok_or_else(|| generic_error!("No event stream found for component '{}'", component_id))?;
+            let consumer = interconnects.take_destination_consumer(&component_id).ok_or_else(|| {
+                generic_error!("No events consumer found for destination component '{}'", component_id)
+            })?;
 
             let health_handle = health_registry
                 .register_component(format!("{}.destinations.{}", root_component_name, component_id))
@@ -221,16 +185,87 @@ impl BuiltTopology {
 
             let component_context = ComponentContext::destination(component_id.clone());
             let context = DestinationContext::new(
-                component_context,
-                event_stream,
-                memory_limiter.clone(),
+                &topology_context,
+                &component_context,
                 component_registry,
                 health_handle,
-                health_registry.clone(),
-                thread_pool_handle.clone(),
+                consumer,
             );
 
-            let task_handle = spawn_destination(&mut component_tasks, destination, context);
+            let (alloc_group, destination) = destination.into_parts();
+            let task_handle = spawn_component(
+                &mut component_tasks,
+                component_context,
+                alloc_group,
+                destination.run(context),
+            );
+            component_task_map.insert(task_handle.id(), component_id);
+        }
+
+        // Spawn our encoders.
+        for (component_id, encoder) in self.encoders {
+            let (encoder, component_registry) = encoder.into_parts();
+
+            let dispatcher = interconnects.take_encoder_dispatcher(&component_id).ok_or_else(|| {
+                generic_error!("No payloads dispatcher found for encoder component '{}'", component_id)
+            })?;
+
+            let consumer = interconnects
+                .take_encoder_consumer(&component_id)
+                .ok_or_else(|| generic_error!("No events consumer found for encoder component '{}'", component_id))?;
+
+            let health_handle = health_registry
+                .register_component(format!("{}.encoders.{}", root_component_name, component_id))
+                .expect("duplicate encoder component ID in health registry");
+
+            let component_context = ComponentContext::encoder(component_id.clone());
+            let context = EncoderContext::new(
+                &topology_context,
+                &component_context,
+                component_registry,
+                health_handle,
+                dispatcher,
+                consumer,
+            );
+
+            let (alloc_group, encoder) = encoder.into_parts();
+            let task_handle = spawn_component(
+                &mut component_tasks,
+                component_context,
+                alloc_group,
+                encoder.run(context),
+            );
+            component_task_map.insert(task_handle.id(), component_id);
+        }
+
+        // Spawn our forwarders.
+        for (component_id, forwarder) in self.forwarders {
+            let (forwarder, component_registry) = forwarder.into_parts();
+
+            let consumer = interconnects.take_forwarder_consumer(&component_id).ok_or_else(|| {
+                generic_error!("No payloads consumer found for forwarder component '{}'", component_id)
+            })?;
+
+            let health_handle = health_registry
+                .register_component(format!("{}.forwarders.{}", root_component_name, component_id))
+                .expect("duplicate forwarder component ID in health registry");
+
+            let component_context = ComponentContext::forwarder(component_id.clone());
+            let context = ForwarderContext::new(
+                &topology_context,
+                &component_context,
+                component_registry,
+                health_handle,
+                consumer,
+            );
+
+            let (alloc_group, forwarder) = forwarder.into_parts();
+            let task_handle = spawn_component(
+                &mut component_tasks,
+                component_context,
+                alloc_group,
+                forwarder.run(context),
+            );
             component_task_map.insert(task_handle.id(), component_id);
         }
 
@@ -243,64 +278,228 @@ impl BuiltTopology {
     }
 }
 
-fn spawn_source(
-    join_set: &mut JoinSet<Result<(), GenericError>>, source: Tracked<Box<dyn Source + Send>>, context: SourceContext,
-) -> AbortHandle {
-    let component_span = error_span!(
-        "component",
-        "type" = context.component_context().component_type().as_str(),
-        id = %context.component_context().component_id(),
-    );
-
-    let (component_token, source) = source.into_parts();
-
-    let _span = component_span.enter();
-    let _guard = component_token.enter();
-
-    let component_task_name = format!("topology-source-{}", context.component_context().component_id());
-    join_set.spawn_traced_named(component_task_name, async move { source.run(context).await })
+struct ComponentInterconnects {
+    interconnect_capacity: NonZeroUsize,
+    source_dispatchers: HashMap<ComponentId, EventsDispatcher>,
+    transform_consumers: HashMap<ComponentId, (mpsc::Sender<EventsBuffer>, EventsConsumer)>,
+    transform_dispatchers: HashMap<ComponentId, EventsDispatcher>,
+    destination_consumers: HashMap<ComponentId, (mpsc::Sender<EventsBuffer>, EventsConsumer)>,
+    encoder_consumers: HashMap<ComponentId, (mpsc::Sender<EventsBuffer>, EventsConsumer)>,
+    encoder_dispatchers: HashMap<ComponentId, PayloadsDispatcher>,
+    forwarder_consumers: HashMap<ComponentId, (mpsc::Sender<PayloadsBuffer>, PayloadsConsumer)>,
 }
 
-fn spawn_transform(
-    join_set: &mut JoinSet<Result<(), GenericError>>, transform: Tracked<Box<dyn Transform + Send>>,
-    context: TransformContext,
-) -> AbortHandle {
-    let component_span = error_span!(
-        "component",
-        "type" = context.component_context().component_type().as_str(),
-        id = %context.component_context().component_id(),
-    );
+impl ComponentInterconnects {
+    fn from_graph(interconnect_capacity: NonZeroUsize, graph: &Graph) -> Self {
+        let mut interconnects = Self {
+            interconnect_capacity,
+            source_dispatchers: HashMap::new(),
+            transform_consumers: HashMap::new(),
+            transform_dispatchers: HashMap::new(),
+            destination_consumers: HashMap::new(),
+            encoder_consumers: HashMap::new(),
+            encoder_dispatchers: HashMap::new(),
+            forwarder_consumers: HashMap::new(),
+        };
 
-    let (component_token, transform) = transform.into_parts();
+        interconnects.generate_interconnects(graph);
+        interconnects
+    }
 
-    let _span = component_span.enter();
-    let _guard = component_token.enter();
+    fn take_source_dispatcher(&mut self, component_id: &ComponentId) -> Option<EventsDispatcher> {
+        self.source_dispatchers.remove(component_id)
+    }
 
-    let component_task_name = format!("topology-transform-{}", context.component_context().component_id());
-    join_set.spawn_traced_named(component_task_name, async move { transform.run(context).await })
+    fn take_transform_dispatcher(&mut self, component_id: &ComponentId) -> Option<EventsDispatcher> {
+        self.transform_dispatchers.remove(component_id)
+    }
+
+    fn take_encoder_dispatcher(&mut self, component_id: &ComponentId) -> Option<PayloadsDispatcher> {
+        self.encoder_dispatchers.remove(component_id)
+    }
+
+    fn take_transform_consumer(&mut self, component_id: &ComponentId) -> Option<EventsConsumer> {
+        self.transform_consumers
+            .remove(component_id)
+            .map(|(_, consumer)| consumer)
+    }
+
+    fn take_destination_consumer(&mut self, component_id: &ComponentId) -> Option<EventsConsumer> {
+        self.destination_consumers
+            .remove(component_id)
+            .map(|(_, consumer)| consumer)
+    }
+
+    fn take_encoder_consumer(&mut self, component_id: &ComponentId) -> Option<EventsConsumer> {
+        self.encoder_consumers
+            .remove(component_id)
+            .map(|(_, consumer)| consumer)
+    }
+
+    fn take_forwarder_consumer(&mut self, component_id: &ComponentId) -> Option<PayloadsConsumer> {
+        self.forwarder_consumers
+            .remove(component_id)
+            .map(|(_, consumer)| consumer)
+    }
+
+    fn generate_interconnects(&mut self, graph: &Graph) {
+        // Collect and iterate over each outbound edge in the topology graph.
+        //
+        // For each upstream component ("from" side of the edge), we attach each downstream component ("to" side of the edge) to it,
+        // creating the relevant dispatcher or consumer if necessary.
+        let outbound_edges = graph.get_outbound_directed_edges();
+        for (upstream_id, output_map) in outbound_edges {
+            match upstream_id.component_type() {
+                ComponentType::Source | ComponentType::Transform => {
+                    self.generate_event_interconnect(upstream_id, output_map)
+                }
+                ComponentType::Encoder => self.generate_payload_interconnect(upstream_id, output_map),
+                _ => panic!(
+                    "Only sources, transforms, and encoders can dispatch events/payloads to downstream components."
+                ),
+            }
+        }
+    }
+
+    fn generate_event_interconnect(
+        &mut self, upstream_id: TypedComponentId, output_map: HashMap<OutputName, Vec<TypedComponentId>>,
+    ) {
+        // Iterate over each output of the upstream component, taking the downstream components attached to that output,
+        // and attaching the downstream component's events consumer to the upstream component's events dispatcher.
+        for (upstream_output_id, downstream_ids) in output_map {
+            for downstream_id in downstream_ids {
+                debug!(upstream_id = %upstream_id.component_id(), %upstream_output_id, downstream_id = %downstream_id.component_id(), "Adding dispatcher output.");
+
+                let sender = self.get_or_create_events_sender(downstream_id);
+                let dispatcher = self.get_or_create_events_dispatcher(upstream_id.clone());
+                dispatcher.add_output(upstream_output_id.clone(), sender);
+            }
+        }
+    }
+
+    fn generate_payload_interconnect(
+        &mut self, upstream_id: TypedComponentId, output_map: HashMap<OutputName, Vec<TypedComponentId>>,
+    ) {
+        // Iterate over each output of the upstream component, taking the downstream components attached to that output,
+        // and attaching the downstream component's payloads consumer to the upstream component's payloads dispatcher.
+        for (upstream_output_id, downstream_ids) in output_map {
+            for downstream_id in downstream_ids {
+                debug!(upstream_id = %upstream_id.component_id(), %upstream_output_id, downstream_id = %downstream_id.component_id(), "Adding dispatcher output.");
+
+                let sender = self.get_or_create_payloads_sender(downstream_id);
+                let dispatcher = self.get_or_create_payloads_dispatcher(upstream_id.clone());
+                dispatcher.add_output(upstream_output_id.clone(), sender);
+            }
+        }
+    }
+
+    fn get_or_create_events_dispatcher(&mut self, component_id: TypedComponentId) -> &mut EventsDispatcher {
+        let (component_id, component_type, component_context) = component_id.into_parts();
+
+        match component_type {
+            ComponentType::Source => self
+                .source_dispatchers
+                .entry(component_id)
+                .or_insert_with(|| EventsDispatcher::new(component_context)),
+            ComponentType::Transform => self
+                .transform_dispatchers
+                .entry(component_id)
+                .or_insert_with(|| EventsDispatcher::new(component_context)),
+            _ => {
+                panic!("Only sources and transforms can dispatch events to downstream components.")
+            }
+        }
+    }
+
+    fn get_or_create_events_sender(&mut self, component_id: TypedComponentId) -> mpsc::Sender<EventsBuffer> {
+        let (component_id, component_type, component_context) = component_id.into_parts();
+        let interconnect_capacity = self.interconnect_capacity;
+
+        let (sender, _) = match component_type {
+            ComponentType::Transform => self
+                .transform_consumers
+                .entry(component_id)
+                .or_insert_with(|| build_events_consumer_pair(component_context, interconnect_capacity)),
+            ComponentType::Destination => self
+                .destination_consumers
+                .entry(component_id)
+                .or_insert_with(|| build_events_consumer_pair(component_context, interconnect_capacity)),
+            ComponentType::Encoder => self
+                .encoder_consumers
+                .entry(component_id)
+                .or_insert_with(|| build_events_consumer_pair(component_context, interconnect_capacity)),
+            _ => panic!("Only transforms, destinations, and encoders can consume events."),
+        };
+
+        sender.clone()
+    }
+
+    fn get_or_create_payloads_dispatcher(&mut self, component_id: TypedComponentId) -> &mut PayloadsDispatcher {
+        let (component_id, component_type, component_context) = component_id.into_parts();
+
+        match component_type {
+            ComponentType::Encoder => self
+                .encoder_dispatchers
+                .entry(component_id)
+                .or_insert_with(|| PayloadsDispatcher::new(component_context)),
+            _ => {
+                panic!("Only encoders can dispatch payloads to downstream components.")
+            }
+        }
+    }
+
+    fn get_or_create_payloads_sender(&mut self, component_id: TypedComponentId) -> mpsc::Sender<PayloadsBuffer> {
+        let (component_id, component_type, component_context) = component_id.into_parts();
+        let interconnect_capacity = self.interconnect_capacity;
+
+        let (sender, _) = match component_type {
+            ComponentType::Forwarder => self
+                .forwarder_consumers
+                .entry(component_id)
+                .or_insert_with(|| build_payloads_consumer_pair(component_context, interconnect_capacity)),
+            _ => panic!("Only forwarders can consume payloads."),
+        };
+
+        sender.clone()
+    }
 }
 
-fn spawn_destination(
-    join_set: &mut JoinSet<Result<(), GenericError>>, destination: Tracked<Box<dyn Destination + Send>>,
-    context: DestinationContext,
-) -> AbortHandle {
-    let component_span = error_span!(
-        "component",
-        "type" = context.component_context().component_type().as_str(),
-        id = %context.component_context().component_id(),
-    );
-
-    let (component_token, destination) = destination.into_parts();
-
-    let _span = component_span.enter();
-    let _guard = component_token.enter();
-
-    let component_task_name = format!("topology-destination-{}", context.component_context().component_id());
-    join_set.spawn_traced_named(component_task_name, async move { destination.run(context).await })
+fn build_events_consumer_pair(
+    component_context: ComponentContext, interconnect_capacity: NonZeroUsize,
+) -> (mpsc::Sender<EventsBuffer>, EventsConsumer) {
+    let (sender, receiver) = mpsc::channel(interconnect_capacity.get());
+    let consumer = EventsConsumer::new(component_context, receiver);
+    (sender, consumer)
 }
 
-fn build_event_interconnect_channel(
-    capacity: NonZeroUsize,
-) -> (mpsc::Sender<EventsBuffer>, mpsc::Receiver<EventsBuffer>) {
-    mpsc::channel(capacity.get())
+fn build_payloads_consumer_pair(
+    component_context: ComponentContext, interconnect_capacity: NonZeroUsize,
+) -> (mpsc::Sender<PayloadsBuffer>, PayloadsConsumer) {
+    let (sender, receiver) = mpsc::channel(interconnect_capacity.get());
+    let consumer = PayloadsConsumer::new(component_context, receiver);
+    (sender, consumer)
+}
+
+fn spawn_component<F>(
+    join_set: &mut JoinSet<Result<(), GenericError>>, context: ComponentContext,
+    allocation_group_token: AllocationGroupToken, component_future: F,
+) -> AbortHandle
+where
+    F: Future<Output = Result<(), GenericError>> + Send + 'static,
+{
+    let component_span = error_span!(
+        "component",
+        "type" = context.component_type().as_str(),
+        id = %context.component_id(),
+    );
+
+    let _span = component_span.enter();
+    let _guard = allocation_group_token.enter();
+
+    let component_task_name = format!(
+        "topology-{}-{}",
+        context.component_type().as_str(),
+        context.component_id()
+    );
+    join_set.spawn_traced_named(component_task_name, component_future)
 }
