@@ -186,18 +186,6 @@ impl ContextResolverBuilder {
         self
     }
 
-    /// Sets the origin tags resolver to use when building a context.
-    ///
-    /// In some cases, metrics may have enriched tags based on their origin -- the application/host/container/etc that
-    /// emitted the metric -- which has to be considered when build the context itself. As this can be expensive, it is
-    /// useful to split the logic of actually grabbing the enriched tags based on the available origin info into a
-    /// separate phase, and implementation, that can run separately from the initial hash-based approach of checking if
-    /// a context has already been resolved.
-    ///
-    /// When set, any origin information provided will be considered during hashing when looking up a context, and any
-    /// enriched tags attached to the detected origin will be accessible from the context.
-    ///
-    /// Defaults to unset.
     pub fn with_origin_tags_resolver<R>(mut self, resolver: Option<R>) -> Self
     where
         R: OriginTagsResolver + 'static,
@@ -215,6 +203,8 @@ impl ContextResolverBuilder {
     }
 
     /// Sets the tags resolver.
+    ///
+    /// Defaults to unset.
     pub fn with_tags_resolver(mut self, resolver: Option<TagsResolver>) -> Self {
         self.tags_resolver = resolver;
         self
@@ -596,7 +586,18 @@ impl TagsResolverBuilder {
         self
     }
 
-    /// TODO: Document.
+    /// Sets the origin tags resolver to use when building a context.
+    ///
+    /// In some cases, metrics, events, and service checks may have enriched tags based on their origin -- the
+    /// application/host/container/etc that emitted the metric -- which has to be considered when building the context
+    /// itself. As this can be expensive, it is useful to split the logic of actually grabbing the enriched tags based
+    /// on the available origin info into a separate phase, and implementation, that can run separately from the
+    /// initial hash-based approach of checking if a context has already been resolved.
+    ///
+    /// When set, any origin information provided will be considered during hashing when looking up a context, and any
+    /// enriched tags attached to the detected origin will be accessible from the context.
+    ///
+    /// Defaults to unset.
     pub fn with_origin_tags_resolver(mut self, resolver: Option<Arc<dyn OriginTagsResolver>>) -> Self {
         self.origin_tags_resolver = resolver;
         self

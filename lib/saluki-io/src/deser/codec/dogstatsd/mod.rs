@@ -265,26 +265,7 @@ fn parse_dogstatsd_metric<'a>(
 
     let tags = maybe_tags.unwrap_or_else(RawTags::empty);
 
-    let mut pod_uid = None;
-    let mut cardinality = None;
-    let mut jmx_check_name = None;
-    for tag in tags.clone() {
-        let tag = BorrowedTag::from(tag);
-        match tag.name_and_value() {
-            (ENTITY_ID_TAG_KEY, Some(entity_id)) if entity_id != ENTITY_ID_IGNORE_VALUE => {
-                pod_uid = Some(entity_id);
-            }
-            (JMX_CHECK_NAME_TAG_KEY, Some(name)) => {
-                jmx_check_name = Some(name);
-            }
-            (CARDINALITY_TAG_KEY, Some(value)) => {
-                if let Ok(card) = OriginTagCardinality::try_from(value) {
-                    cardinality = Some(card);
-                }
-            }
-            _ => {}
-        }
-    }
+    let (pod_uid, jmx_check_name, cardinality) = parse_extra_tags(tags.clone());
 
     Ok((
         remaining,
@@ -469,22 +450,7 @@ fn parse_dogstatsd_event<'a>(
 
     let tags = maybe_tags.unwrap_or_else(RawTags::empty);
 
-    let mut pod_uid = None;
-    let mut cardinality = None;
-    for tag in tags.clone() {
-        let tag = BorrowedTag::from(tag);
-        match tag.name_and_value() {
-            (ENTITY_ID_TAG_KEY, Some(entity_id)) if entity_id != ENTITY_ID_IGNORE_VALUE => {
-                pod_uid = Some(entity_id);
-            }
-            (CARDINALITY_TAG_KEY, Some(value)) => {
-                if let Ok(card) = OriginTagCardinality::try_from(value) {
-                    cardinality = Some(card);
-                }
-            }
-            _ => {}
-        }
-    }
+    let (pod_uid, _, cardinality) = parse_extra_tags(tags.clone());
 
     let eventd = EventPacket {
         title: title.into(),
@@ -582,22 +548,7 @@ fn parse_dogstatsd_service_check<'a>(
 
     let tags = maybe_tags.unwrap_or_else(RawTags::empty);
 
-    let mut pod_uid = None;
-    let mut cardinality = None;
-    for tag in tags.clone() {
-        let tag = BorrowedTag::from(tag);
-        match tag.name_and_value() {
-            (ENTITY_ID_TAG_KEY, Some(entity_id)) if entity_id != ENTITY_ID_IGNORE_VALUE => {
-                pod_uid = Some(entity_id);
-            }
-            (CARDINALITY_TAG_KEY, Some(value)) => {
-                if let Ok(card) = OriginTagCardinality::try_from(value) {
-                    cardinality = Some(card);
-                }
-            }
-            _ => {}
-        }
-    }
+    let (pod_uid, _, cardinality) = parse_extra_tags(tags.clone());
 
     let service_check_packet = ServiceCheckPacket {
         name: name.into(),
@@ -799,6 +750,33 @@ impl<'a> Iterator for FloatIter<'a> {
             Err(_) => Some(Err(nom::Err::Error(Error::new(raw_value, ErrorKind::Float)))),
         }
     }
+}
+
+/// Extracts the pod UID, JMX check name, and cardinality from the given tags if present.
+///
+/// Defaults to `None` for all values.
+fn parse_extra_tags<'a>(tags: RawTags<'a>) -> (Option<&'a str>, Option<&'a str>, Option<OriginTagCardinality>) {
+    let mut pod_uid = None;
+    let mut cardinality = None;
+    let mut jmx_check_name = None;
+    for tag in tags {
+        let tag = BorrowedTag::from(tag);
+        match tag.name_and_value() {
+            (ENTITY_ID_TAG_KEY, Some(entity_id)) if entity_id != ENTITY_ID_IGNORE_VALUE => {
+                pod_uid = Some(entity_id);
+            }
+            (JMX_CHECK_NAME_TAG_KEY, Some(name)) => {
+                jmx_check_name = Some(name);
+            }
+            (CARDINALITY_TAG_KEY, Some(value)) => {
+                if let Ok(card) = OriginTagCardinality::try_from(value) {
+                    cardinality = Some(card);
+                }
+            }
+            _ => {}
+        }
+    }
+    (pod_uid, jmx_check_name, cardinality)
 }
 
 #[cfg(test)]
