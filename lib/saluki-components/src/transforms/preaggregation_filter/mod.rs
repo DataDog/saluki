@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
-    topology::interconnect::FixedSizeEventBuffer,
+    topology::EventsBuffer,
 };
 use saluki_error::GenericError;
 
@@ -31,7 +31,7 @@ impl SynchronousTransformBuilder for PreaggregationFilterConfiguration {
 pub struct PreaggregationFilter {}
 
 impl SynchronousTransform for PreaggregationFilter {
-    fn transform_buffer(&mut self, event_buffer: &mut FixedSizeEventBuffer) {
+    fn transform_buffer(&mut self, event_buffer: &mut EventsBuffer) {
         // Discard any sketch metrics.
         event_buffer.remove_if(|event| event.try_as_metric().is_some_and(|metric| metric.values().is_sketch()));
     }
@@ -45,23 +45,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_filter_sketches() {
+    fn filter_sketches() {
         let mut filter = PreaggregationFilter::default();
-        let mut buffer = FixedSizeEventBuffer::for_test(10);
+        let mut buffer = EventsBuffer::default();
 
-        // Add a non-sketch metric
+        // Add a non-sketch metric and a sketch metric:
         let non_sketch_metric = Metric::gauge(Context::from_static_parts("test", &[]), 1.0);
-        buffer.try_push(Event::Metric(non_sketch_metric));
+        assert!(buffer.try_push(Event::Metric(non_sketch_metric)).is_none());
 
-        // Add a sketch metric
         let sketch_metric = Metric::distribution(Context::from_static_parts("test", &[]), &[1.0, 2.0, 3.0][..]);
-        buffer.try_push(Event::Metric(sketch_metric));
+        assert!(buffer.try_push(Event::Metric(sketch_metric)).is_none());
 
-        // Apply the filter
+        // Apply the filter and ensure only non-sketch metrics remain:
         filter.transform_buffer(&mut buffer);
 
-        // Verify only the non-sketch metric remains
         assert_eq!(buffer.len(), 1);
+
         let remaining_event = buffer.into_iter().next().unwrap();
         let remaining_metric = remaining_event.try_as_metric().unwrap();
         assert!(!remaining_metric.values().is_sketch());

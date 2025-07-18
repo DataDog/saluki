@@ -13,12 +13,13 @@ use saluki_core::data_model::event::eventd::EventD;
 use saluki_core::data_model::event::metric::{MetricMetadata, MetricOrigin};
 use saluki_core::data_model::event::service_check::ServiceCheck;
 use saluki_core::data_model::event::{metric::Metric, Event, EventType};
+use saluki_core::topology::EventsBuffer;
 use saluki_core::{
     components::{sources::*, ComponentContext},
     observability::ComponentMetricsExt as _,
     pooling::FixedSizeObjectPool,
     topology::{
-        interconnect::{EventBufferManager, FixedSizeEventBuffer},
+        interconnect::EventBufferManager,
         shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
         OutputDefinition,
     },
@@ -729,7 +730,7 @@ async fn drive_stream(
     let mut buffer_flush = interval(Duration::from_millis(100));
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-    let mut event_buffer_manager = EventBufferManager::new(source_context.event_buffer_pool());
+    let mut event_buffer_manager = EventBufferManager::default();
     let mut io_buffer_manager = IoBufferManager::new(&io_buffer_pool, &stream);
 
     'read: loop {
@@ -784,14 +785,9 @@ async fn drive_stream(
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
                                 match handle_frame(&frame[..], &codec, &mut context_resolvers, &metrics, &peer_addr, enabled_filter, &additional_tags) {
                                     Ok(Some(event)) => {
-                                        if let Some((event, event_buffer)) = event_buffer_manager.try_push(event).await {
+                                        if let Some(event_buffer) = event_buffer_manager.try_push(event) {
                                             debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
                                             dispatch_events(event_buffer, &source_context, &listen_addr).await;
-
-                                            // Try to push the event again now that we have a new event buffer.
-                                            if event_buffer_manager.try_push(event).await.is_some() {
-                                                error!(%listen_addr, %peer_addr, "Event buffer is full even after forwarding events. Dropping event.");
-                                            }
                                         }
                                     },
                                     Ok(None) => {
@@ -1043,9 +1039,8 @@ fn handle_service_check_packet(
 
     Some(service_check)
 }
-async fn dispatch_events(
-    mut event_buffer: FixedSizeEventBuffer, source_context: &SourceContext, listen_addr: &ListenAddress,
-) {
+
+async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &SourceContext, listen_addr: &ListenAddress) {
     debug!(%listen_addr, events_len = event_buffer.len(), "Forwarding events.");
 
     // TODO: This is maybe a little dicey because if we fail to dispatch the events, we may not have iterated over all of
@@ -1061,7 +1056,9 @@ async fn dispatch_events(
         let eventd_events = event_buffer.extract(Event::is_eventd);
         if let Err(e) = source_context
             .dispatcher()
-            .dispatch_named("events", eventd_events)
+            .buffered_named("events")
+            .expect("events output should always exist")
+            .send_all(eventd_events)
             .await
         {
             error!(%listen_addr, error = %e, "Failed to dispatch eventd events.");
@@ -1073,7 +1070,9 @@ async fn dispatch_events(
         let service_check_events = event_buffer.extract(Event::is_service_check);
         if let Err(e) = source_context
             .dispatcher()
-            .dispatch_named("service_checks", service_check_events)
+            .buffered_named("service_checks")
+            .expect("service checks output should always exist")
+            .send_all(service_check_events)
             .await
         {
             error!(%listen_addr, error = %e, "Failed to dispatch service check events.");
@@ -1084,7 +1083,7 @@ async fn dispatch_events(
     if !event_buffer.is_empty() {
         if let Err(e) = source_context
             .dispatcher()
-            .dispatch_buffer_named("metrics", event_buffer)
+            .dispatch_named("metrics", event_buffer)
             .await
         {
             error!(%listen_addr, error = %e, "Failed to dispatch metric events.");

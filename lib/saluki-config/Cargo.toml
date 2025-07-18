@@ -5,11 +5,19 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[lints]
+workspace = true
+
 [dependencies]
 arc-swap = { workspace = true }
 figment = { workspace = true, features = ["env"] }
-reqwest = { workspace = true, features = ["rustls-tls-native-roots-no-provider", "json"] }
+reqwest = { workspace = true, features = [
+  "rustls-tls-native-roots-no-provider",
+  "json",
+] }
+rustls = { workspace = true }
 saluki-error = { workspace = true }
+saluki-io = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

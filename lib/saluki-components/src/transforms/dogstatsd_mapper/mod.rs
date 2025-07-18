@@ -15,7 +15,7 @@ use saluki_core::{
         transforms::{SynchronousTransform, SynchronousTransformBuilder},
         ComponentContext,
     },
-    topology::interconnect::FixedSizeEventBuffer,
+    topology::EventsBuffer,
 };
 use saluki_error::{generic_error, ErrorContext, GenericError};
 use serde::{Deserialize, Serialize};
@@ -274,7 +274,7 @@ pub struct DogstatsDMapper {
 }
 
 impl SynchronousTransform for DogstatsDMapper {
-    fn transform_buffer(&mut self, event_buffer: &mut FixedSizeEventBuffer) {
+    fn transform_buffer(&mut self, event_buffer: &mut EventsBuffer) {
         for event in event_buffer {
             if let Some(metric) = event.try_as_metric_mut() {
                 if let Some(new_context) = self.metric_mapper.try_map(metric.context()) {

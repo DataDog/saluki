@@ -9,11 +9,11 @@ use saluki_common::task::HandleExt as _;
 use saluki_config::{GenericConfiguration, RefreshableConfiguration};
 use saluki_context::tags::SharedTagSet;
 use saluki_core::data_model::event::{eventd::EventD, EventType};
+use saluki_core::topology::EventsBuffer;
 use saluki_core::{
     components::{destinations::*, ComponentContext},
     observability::ComponentMetricsExt as _,
     pooling::ElasticObjectPool,
-    topology::interconnect::FixedSizeEventBuffer,
 };
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::{
@@ -267,7 +267,7 @@ impl Destination for DatadogEvents {
 
 async fn run_request_builder(
     mut request_builder: RequestBuilder<EventsEndpointEncoder, ElasticObjectPool<BytesBuffer>>,
-    telemetry: ComponentTelemetry, mut request_builder_rx: mpsc::Receiver<FixedSizeEventBuffer>,
+    telemetry: ComponentTelemetry, mut request_builder_rx: mpsc::Receiver<EventsBuffer>,
     forwarder_handle: Handle<FrozenChunkedBytesBuffer>, flush_timeout: Duration,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;

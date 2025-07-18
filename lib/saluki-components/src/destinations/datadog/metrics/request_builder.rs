@@ -209,11 +209,7 @@ fn get_message_size(raw_msg_size: usize) -> Result<u32, protobuf::Error> {
 
     // Individual messages cannot be larger than `i32::MAX`, so check that here before proceeding.
     if raw_msg_size as u64 > MAX_MESSAGE_SIZE {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "message size exceeds limit (2147483648 bytes)",
-        )
-        .into());
+        return Err(std::io::Error::other("message size exceeds limit (2147483648 bytes)").into());
     }
 
     Ok(raw_msg_size as u32)
