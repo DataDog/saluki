@@ -7,7 +7,6 @@ use http::{HeaderValue, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::task::HandleExt as _;
 use saluki_config::{GenericConfiguration, RefreshableConfiguration};
-use saluki_context::tags::SharedTagSet;
 use saluki_core::data_model::event::{eventd::EventD, EventType};
 use saluki_core::topology::EventsBuffer;
 use saluki_core::{
@@ -101,10 +100,6 @@ pub struct DatadogEventsConfiguration {
         default = "default_zstd_compressor_level"
     )]
     zstd_compressor_level: i32,
-
-    /// Additional tags to apply to all forwarded events.
-    #[serde(default, skip)]
-    additional_tags: Option<SharedTagSet>,
 }
 
 impl DatadogEventsConfiguration {
@@ -143,12 +138,8 @@ impl DestinationBuilder for DatadogEventsConfiguration {
         let rb_buffer_pool =
             create_request_builder_buffer_pool("events", &self.forwarder_config, COMPRESSED_SIZE_LIMIT).await;
 
-        let mut events_encoder = EventsEndpointEncoder::default();
-        if let Some(additional_tags) = self.additional_tags.as_ref() {
-            events_encoder = events_encoder.with_additional_tags(additional_tags.clone());
-        }
-
-        let mut request_builder = RequestBuilder::new(events_encoder, rb_buffer_pool, compression_scheme).await?;
+        let mut request_builder =
+            RequestBuilder::new(EventsEndpointEncoder, rb_buffer_pool, compression_scheme).await?;
         request_builder.with_max_inputs_per_payload(MAX_EVENTS_PER_PAYLOAD);
 
         let flush_timeout = match self.flush_timeout_secs {

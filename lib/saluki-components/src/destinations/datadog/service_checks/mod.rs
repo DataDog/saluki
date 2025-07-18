@@ -5,7 +5,6 @@ use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::task::HandleExt as _;
 use saluki_config::{GenericConfiguration, RefreshableConfiguration};
-use saluki_context::tags::SharedTagSet;
 use saluki_core::data_model::event::{service_check::ServiceCheck, EventType};
 use saluki_core::topology::EventsBuffer;
 use saluki_core::{
@@ -95,10 +94,6 @@ pub struct DatadogServiceChecksConfiguration {
         default = "default_zstd_compressor_level"
     )]
     zstd_compressor_level: i32,
-
-    /// Additional tags to apply to all forwarded service checks.
-    #[serde(default, skip)]
-    additional_tags: Option<SharedTagSet>,
 }
 
 impl DatadogServiceChecksConfiguration {
@@ -136,12 +131,8 @@ impl DestinationBuilder for DatadogServiceChecksConfiguration {
         let rb_buffer_pool =
             create_request_builder_buffer_pool("service_checks", &self.forwarder_config, COMPRESSED_SIZE_LIMIT).await;
 
-        let mut service_checks_encoder = ServiceChecksEndpointEncoder::default();
-        if let Some(additional_tags) = self.additional_tags.as_ref() {
-            service_checks_encoder = service_checks_encoder.with_additional_tags(additional_tags.clone());
-        }
         let mut request_builder =
-            RequestBuilder::new(service_checks_encoder, rb_buffer_pool, compression_scheme).await?;
+            RequestBuilder::new(ServiceChecksEndpointEncoder, rb_buffer_pool, compression_scheme).await?;
         request_builder.with_max_inputs_per_payload(MAX_SERVICE_CHECKS_PER_PAYLOAD);
 
         let flush_timeout = match self.flush_timeout_secs {
@@ -379,19 +370,7 @@ fn get_service_checks_endpoint_name(uri: &Uri) -> Option<MetaString> {
 }
 
 #[derive(Debug, Default)]
-struct ServiceChecksEndpointEncoder {
-    additional_tags: SharedTagSet,
-}
-
-impl ServiceChecksEndpointEncoder {
-    /// Sets the additional tags to be included with every service check encoded by this encoder.
-    ///
-    /// These tags are added in a deduplicated fashion, the same as instrumented tags and origin tags.
-    pub fn with_additional_tags(mut self, additional_tags: SharedTagSet) -> Self {
-        self.additional_tags = additional_tags;
-        self
-    }
-}
+struct ServiceChecksEndpointEncoder;
 
 impl EndpointEncoder for ServiceChecksEndpointEncoder {
     type Input = ServiceCheck;

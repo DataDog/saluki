@@ -1,7 +1,7 @@
 use datadog_protos::events as proto;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use protobuf::{rt::WireType, CodedOutputStream};
-use saluki_context::tags::{SharedTagSet, Tag, TagsExt};
+use saluki_context::tags::{Tag, TagsExt};
 use saluki_core::data_model::event::eventd::EventD;
 
 use super::{COMPRESSED_SIZE_LIMIT, EVENTS_BATCH_V1_API_PATH, UNCOMPRESSED_SIZE_LIMIT};
@@ -13,19 +13,7 @@ static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("applicatio
 
 /// An `EndpointEncoder` for sending events to Datadog.
 #[derive(Debug, Default)]
-pub struct EventsEndpointEncoder {
-    additional_tags: SharedTagSet,
-}
-
-impl EventsEndpointEncoder {
-    /// Sets the additional tags to be included with every event encoded by this encoder.
-    ///
-    /// These tags are added in a deduplicated fashion, the same as instrumented tags and origin tags.
-    pub fn with_additional_tags(mut self, additional_tags: SharedTagSet) -> Self {
-        self.additional_tags = additional_tags;
-        self
-    }
-}
+pub struct EventsEndpointEncoder;
 
 impl EndpointEncoder for EventsEndpointEncoder {
     type Input = EventD;
@@ -44,7 +32,7 @@ impl EndpointEncoder for EventsEndpointEncoder {
     }
 
     fn encode(&mut self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
-        encode_and_write_eventd(input, &self.additional_tags, buffer)
+        encode_and_write_eventd(input, buffer)
     }
 
     fn endpoint_uri(&self) -> Uri {
@@ -60,20 +48,18 @@ impl EndpointEncoder for EventsEndpointEncoder {
     }
 }
 
-fn encode_and_write_eventd(
-    eventd: &EventD, additional_tags: &SharedTagSet, buf: &mut Vec<u8>,
-) -> Result<(), protobuf::Error> {
+fn encode_and_write_eventd(eventd: &EventD, buf: &mut Vec<u8>) -> Result<(), protobuf::Error> {
     let mut output_stream = CodedOutputStream::vec(buf);
 
     // Write the field tag.
     output_stream.write_tag(EVENTS_FIELD_NUMBER, WireType::LengthDelimited)?;
 
     // Write the message.
-    let encoded_eventd = encode_eventd(eventd, additional_tags);
+    let encoded_eventd = encode_eventd(eventd);
     output_stream.write_message_no_tag(&encoded_eventd)
 }
 
-fn encode_eventd(eventd: &EventD, additional_tags: &SharedTagSet) -> proto::Event {
+fn encode_eventd(eventd: &EventD) -> proto::Event {
     let mut event = proto::Event::new();
     event.set_title(eventd.title().into());
     event.set_text(eventd.text().into());
@@ -102,18 +88,13 @@ fn encode_eventd(eventd: &EventD, additional_tags: &SharedTagSet) -> proto::Even
         event.set_source_type_name(source_type_name.into());
     }
 
-    let deduplicated_tags = get_deduplicated_tags(eventd, additional_tags);
+    let deduplicated_tags = get_deduplicated_tags(eventd);
 
     event.set_tags(deduplicated_tags.map(|tag| tag.as_str().into()).collect());
 
     event
 }
 
-fn get_deduplicated_tags<'a>(eventd: &'a EventD, additional_tags: &'a SharedTagSet) -> impl Iterator<Item = &'a Tag> {
-    eventd
-        .tags()
-        .into_iter()
-        .chain(additional_tags)
-        .chain(eventd.origin_tags())
-        .deduplicated()
+fn get_deduplicated_tags(eventd: &EventD) -> impl Iterator<Item = &Tag> {
+    eventd.tags().into_iter().chain(eventd.origin_tags()).deduplicated()
 }

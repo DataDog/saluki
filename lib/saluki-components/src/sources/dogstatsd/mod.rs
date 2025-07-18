@@ -1034,6 +1034,8 @@ fn handle_service_check_packet(
     let tags = tags_resolver.create_tag_set(tags)?;
 
     let service_check = ServiceCheck::new(packet.name, packet.status)
+        .with_timestamp(packet.timestamp)
+        .with_hostname(packet.hostname.map(|s| s.into()))
         .with_tags(tags)
         .with_message(packet.message.map(|s| s.into()));
 
