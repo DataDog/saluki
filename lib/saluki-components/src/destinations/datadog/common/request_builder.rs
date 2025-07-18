@@ -3,11 +3,8 @@
 use std::io;
 
 use http::{uri::PathAndQuery, HeaderValue, Method, Request, Uri};
-use saluki_core::pooling::ObjectPool;
-use saluki_io::{
-    buf::{BytesBuffer, ChunkedBytesBuffer, ChunkedBytesBufferObjectPool, FrozenChunkedBytesBuffer},
-    compression::*,
-};
+use saluki_common::buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer};
+use saluki_io::compression::*;
 use snafu::{ResultExt, Snafu};
 use tokio::io::AsyncWriteExt as _;
 use tracing::{debug, error, trace};
@@ -137,17 +134,16 @@ where
 }
 
 /// Generic builder for creating HTTP requests with payloads consisting of encoded and compressed input events.
-pub struct RequestBuilder<E, O>
+pub struct RequestBuilder<E>
 where
     E: EndpointEncoder,
-    O: ObjectPool<Item = BytesBuffer> + 'static,
 {
     encoder: E,
     endpoint_uri: Uri,
-    buffer_pool: ChunkedBytesBufferObjectPool<O>,
     scratch_buf: Vec<u8>,
+    buffer_chunk_size: usize,
     compression_scheme: CompressionScheme,
-    compressor: Compressor<ChunkedBytesBuffer<O>>,
+    compressor: Compressor<ChunkedBytesBuffer>,
     compression_estimator: CompressionEstimator,
     uncompressed_len: usize,
     uncompressed_len_prefix_suffix: usize,
@@ -157,18 +153,15 @@ where
     encoded_inputs: Vec<E::Input>,
 }
 
-impl<E, O> RequestBuilder<E, O>
+impl<E> RequestBuilder<E>
 where
     E: EndpointEncoder,
-    O: ObjectPool<Item = BytesBuffer> + 'static,
 {
-    /// Creates a new `RequestBuilder` with the given buffer pool, encoder, and compression scheme.
+    /// Creates a new `RequestBuilder` with the given encoder and compression scheme.
     ///
-    /// The buffer pool will be drawn upon for holding the compressed payload, which will be compressed using the given
-    /// compression scheme. The encoder will be used to encode input events as well as help construct the resulting HTTP
-    /// requests.
+    /// The encoder will be used to encode input events as well as help construct the resulting HTTP requests.
     pub async fn new(
-        encoder: E, buffer_pool: O, compression_scheme: CompressionScheme,
+        encoder: E, compression_scheme: CompressionScheme, buffer_chunk_size: usize,
     ) -> Result<Self, RequestBuilderError<E>> {
         let endpoint_uri = encoder.endpoint_uri();
         let compressed_len_limit = encoder.compressed_size_limit();
@@ -188,13 +181,12 @@ where
             });
         }
 
-        let chunked_buffer_pool = ChunkedBytesBufferObjectPool::new(buffer_pool);
-        let compressor = create_compressor(&chunked_buffer_pool, compression_scheme).await;
+        let compressor = create_compressor(compression_scheme, buffer_chunk_size);
         Ok(Self {
             encoder,
             endpoint_uri,
-            buffer_pool: chunked_buffer_pool,
             scratch_buf: Vec::with_capacity(SCRATCH_BUF_CAPACITY),
+            buffer_chunk_size,
             compression_scheme,
             compressor,
             compression_estimator: CompressionEstimator::default(),
@@ -435,7 +427,7 @@ where
 
         self.compression_estimator.reset();
 
-        let new_compressor = create_compressor(&self.buffer_pool, self.compression_scheme).await;
+        let new_compressor = create_compressor(self.compression_scheme, self.buffer_chunk_size);
         let mut compressor = std::mem::replace(&mut self.compressor, new_compressor);
         if let Err(e) = compressor.flush().await.context(Io) {
             let inputs_dropped = self.clear_encoded_inputs();
@@ -595,14 +587,10 @@ where
     }
 }
 
-async fn create_compressor<O>(
-    buffer_pool: &ChunkedBytesBufferObjectPool<O>, compression_scheme: CompressionScheme,
-) -> Compressor<ChunkedBytesBuffer<O>>
-where
-    O: ObjectPool<Item = BytesBuffer> + 'static,
-{
-    let write_buffer = buffer_pool.acquire().await;
-    Compressor::from_scheme(compression_scheme, write_buffer)
+fn create_compressor(
+    compression_scheme: CompressionScheme, buffer_chunk_size: usize,
+) -> Compressor<ChunkedBytesBuffer> {
+    Compressor::from_scheme(compression_scheme, ChunkedBytesBuffer::new(buffer_chunk_size))
 }
 
 #[cfg(test)]
@@ -618,6 +606,7 @@ mod tests {
     };
 
     use super::{EndpointEncoder, RequestBuilder, RequestBuilderError};
+    use crate::destinations::datadog::common::io::RB_BUFFER_CHUNK_SIZE;
 
     fn create_request_builder_buffer_pool() -> FixedSizeObjectPool<BytesBuffer> {
         FixedSizeObjectPool::with_builder("test_pool", 8, || FixedSizeVec::with_capacity(64))
@@ -625,28 +614,22 @@ mod tests {
 
     async fn create_request_builder(
         encoder: TestEncoder, compression_scheme: CompressionScheme,
-    ) -> RequestBuilder<TestEncoder, FixedSizeObjectPool<BytesBuffer>> {
-        let buffer_pool = create_request_builder_buffer_pool();
-        RequestBuilder::new(encoder, buffer_pool, compression_scheme)
+    ) -> RequestBuilder<TestEncoder> {
+        RequestBuilder::new(encoder, compression_scheme, RB_BUFFER_CHUNK_SIZE)
             .await
             .expect("should not fail to create request builder")
     }
 
-    async fn create_no_compression_request_builder(
-        encoder: TestEncoder,
-    ) -> RequestBuilder<TestEncoder, FixedSizeObjectPool<BytesBuffer>> {
+    async fn create_no_compression_request_builder(encoder: TestEncoder) -> RequestBuilder<TestEncoder> {
         create_request_builder(encoder, CompressionScheme::noop()).await
     }
 
-    async fn create_zstd_compression_request_builder(
-        encoder: TestEncoder,
-    ) -> RequestBuilder<TestEncoder, FixedSizeObjectPool<BytesBuffer>> {
+    async fn create_zstd_compression_request_builder(encoder: TestEncoder) -> RequestBuilder<TestEncoder> {
         create_request_builder(encoder, CompressionScheme::zstd_default()).await
     }
 
     async fn flush_and_validate_requests(
-        mut request_builder: RequestBuilder<TestEncoder, FixedSizeObjectPool<BytesBuffer>>,
-        expected_request_bodies: Vec<String>,
+        mut request_builder: RequestBuilder<TestEncoder>, expected_request_bodies: Vec<String>,
     ) {
         let requests = request_builder.flush().await;
         assert_eq!(
@@ -974,11 +957,11 @@ mod tests {
         let prefix = b"[";
         let suffix = b"]";
 
-        let buffer_pool = create_request_builder_buffer_pool();
         let encoder =
             TestEncoder::new(usize::MAX, prefix.len() + suffix.len(), "/submit").with_delimiters(prefix, suffix, b"");
 
-        let maybe_request_builder = RequestBuilder::new(encoder, buffer_pool, CompressionScheme::zstd_default()).await;
+        let maybe_request_builder =
+            RequestBuilder::new(encoder, CompressionScheme::zstd_default(), RB_BUFFER_CHUNK_SIZE).await;
         match maybe_request_builder {
             Ok(_) => panic!("building request builder should not succeed"),
             Err(e) => match e {

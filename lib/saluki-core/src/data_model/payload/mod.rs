@@ -1,11 +1,14 @@
 //! Output payloads.
 
-mod http;
 use std::fmt;
 
 use bitmask_enum::bitmask;
 
+mod http;
 pub use self::http::HttpPayload;
+
+mod metadata;
+pub use self::metadata::PayloadMetadata;
 
 /// Output payload type.
 ///
@@ -45,14 +48,15 @@ impl fmt::Display for PayloadType {
 
 /// An output payload.
 #[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum Payload {
     /// A raw payload.
     ///
     /// The payload is an opaque collection of bytes.
-    Raw(Vec<u8>),
+    Raw(PayloadMetadata, Vec<u8>),
 
     /// An HTTP payload.
     ///
     /// Includes the relevant HTTP parameters (host, path, method, headers) and the payload body.
-    Http(HttpPayload),
+    Http(PayloadMetadata, HttpPayload),
 }

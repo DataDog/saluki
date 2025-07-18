@@ -1,8 +1,8 @@
 //! Basic HTTP client.
 
-use crate::buf::FrozenChunkedBytesBuffer;
-
 mod client;
+use saluki_common::buf::FrozenChunkedBytesBuffer;
+
 pub use self::client::HttpClient;
 
 mod conn;

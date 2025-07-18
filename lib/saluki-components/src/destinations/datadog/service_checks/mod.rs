@@ -3,6 +3,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
+use saluki_common::buf::FrozenChunkedBytesBuffer;
 use saluki_common::task::HandleExt as _;
 use saluki_config::{GenericConfiguration, RefreshableConfiguration};
 use saluki_core::data_model::event::{service_check::ServiceCheck, EventType};
@@ -10,13 +11,9 @@ use saluki_core::topology::EventsBuffer;
 use saluki_core::{
     components::{destinations::*, ComponentContext},
     observability::ComponentMetricsExt as _,
-    pooling::ElasticObjectPool,
 };
 use saluki_error::{ErrorContext as _, GenericError};
-use saluki_io::{
-    buf::{BytesBuffer, FrozenChunkedBytesBuffer},
-    compression::CompressionScheme,
-};
+use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use stringtheory::MetaString;
@@ -25,11 +22,12 @@ use tracing::{debug, error};
 
 use super::common::{
     config::ForwarderConfiguration,
-    io::{create_request_builder_buffer_pool, get_buffer_pool_min_max_size_bytes, Handle, TransactionForwarder},
+    io::{Handle, TransactionForwarder},
     request_builder::{EndpointEncoder, RequestBuilder},
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
 };
+use crate::destinations::datadog::common::io::RB_BUFFER_CHUNK_SIZE;
 
 const CHECK_RUN_V1_API_PATH: &str = "/api/v1/check_run";
 const COMPRESSED_SIZE_LIMIT: usize = 3_200_000; // 3 MB
@@ -128,11 +126,8 @@ impl DestinationBuilder for DatadogServiceChecksConfiguration {
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
 
         // Create our request builder.
-        let rb_buffer_pool =
-            create_request_builder_buffer_pool("service_checks", &self.forwarder_config, COMPRESSED_SIZE_LIMIT).await;
-
         let mut request_builder =
-            RequestBuilder::new(ServiceChecksEndpointEncoder, rb_buffer_pool, compression_scheme).await?;
+            RequestBuilder::new(ServiceChecksEndpointEncoder, compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
         request_builder.with_max_inputs_per_payload(MAX_SERVICE_CHECKS_PER_PAYLOAD);
 
         let flush_timeout = match self.flush_timeout_secs {
@@ -153,21 +148,17 @@ impl DestinationBuilder for DatadogServiceChecksConfiguration {
 
 impl MemoryBounds for DatadogServiceChecksConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        let (pool_size_min_bytes, _) =
-            get_buffer_pool_min_max_size_bytes(&self.forwarder_config, COMPRESSED_SIZE_LIMIT);
-
         builder
             .minimum()
             .with_single_value::<DatadogServiceChecks>("component struct")
-            .with_fixed_amount("buffer pool", pool_size_min_bytes)
             .with_array::<Transaction<FrozenChunkedBytesBuffer>>("requests channel", 32);
 
         builder
             .firm()
-            // This represents the potential growth of the buffer pool to allow for requests to continue to be built
-            // while we're retrying the current request, and having to enqueue pending requests in memory.
+            // This represents the potential growth of all outstanding requests that we build and have in-flight, in terms of what
+            // we allow to stick around in the high-priority and low-priority queues.
             .with_expr(UsageExpr::sum(
-                "buffer pool",
+                "in-flight requests",
                 UsageExpr::config(
                     "forwarder_retry_queue_payloads_max_size",
                     self.forwarder_config.retry().queue_max_size_bytes() as usize,
@@ -188,7 +179,7 @@ impl MemoryBounds for DatadogServiceChecksConfiguration {
 }
 
 pub struct DatadogServiceChecks {
-    request_builder: RequestBuilder<ServiceChecksEndpointEncoder, ElasticObjectPool<BytesBuffer>>,
+    request_builder: RequestBuilder<ServiceChecksEndpointEncoder>,
     forwarder: TransactionForwarder<FrozenChunkedBytesBuffer>,
     telemetry: ComponentTelemetry,
     flush_timeout: Duration,
@@ -251,9 +242,9 @@ impl Destination for DatadogServiceChecks {
 }
 
 async fn run_request_builder(
-    mut request_builder: RequestBuilder<ServiceChecksEndpointEncoder, ElasticObjectPool<BytesBuffer>>,
-    telemetry: ComponentTelemetry, mut request_builder_rx: mpsc::Receiver<EventsBuffer>,
-    forwarder_handle: Handle<FrozenChunkedBytesBuffer>, flush_timeout: Duration,
+    mut request_builder: RequestBuilder<ServiceChecksEndpointEncoder>, telemetry: ComponentTelemetry,
+    mut request_builder_rx: mpsc::Receiver<EventsBuffer>, forwarder_handle: Handle<FrozenChunkedBytesBuffer>,
+    flush_timeout: Duration,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
