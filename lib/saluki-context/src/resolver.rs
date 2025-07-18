@@ -207,7 +207,9 @@ impl ContextResolverBuilder {
         self
     }
 
-    /// TODO: Document this.
+    /// Sets the interner to use for this resolver.
+    ///
+    /// If an interner is not provided, an interner will be created in [`ContextResolverBuilder::build`]
     pub fn with_interner(mut self, interner: GenericMapInterner) -> Self {
         self.interner = Some(interner);
         self
@@ -649,7 +651,7 @@ impl TagsResolverBuilder {
 
     /// Builds a [`TagsResolver`] from the current configuration.
     pub fn build(self) -> TagsResolver {
-        let cached_context_limit = self
+        let cached_tagsets_limit = self
             .cached_tagset_limit
             .unwrap_or(DEFAULT_CONTEXT_RESOLVER_CACHED_CONTEXTS_LIMIT);
 
@@ -662,7 +664,7 @@ impl TagsResolverBuilder {
 
         let tagset_cache = CacheBuilder::from_identifier(format!("{}/tagsets", self.name))
             .expect("cache identifier cannot possibly be empty")
-            .with_capacity(cached_context_limit)
+            .with_capacity(cached_tagsets_limit)
             .with_time_to_idle(self.idle_tagset_expiration)
             .with_hasher::<NoopU64BuildHasher>()
             .with_telemetry(self.telemetry_enabled)
@@ -726,24 +728,31 @@ impl TagsResolver {
             })
     }
 
-    /// TODO: Document.
+    /// Creates a new tag set from the given tags.
+    ///
+    /// This will intern the tags, and then return a shared tag set. If the interner is full, and heap allocations are
+    /// not allowed, then this will return `None`.
+    ///
+    /// If heap allocations are allowed, then this will return a shared tag set, and the tag set will be cached.
     pub fn create_tag_set<I, T>(&mut self, tags: I) -> Option<SharedTagSet>
     where
         I: IntoIterator<Item = T>,
         T: AsRef<str> + CheapMetaString,
     {
-        let mut context_tags = TagSet::default();
+        let mut tag_set = TagSet::default();
         for tag in tags {
-            let context_tag = self.intern(tag)?;
-            context_tags.insert_tag(context_tag);
+            let tag = self.intern(tag)?;
+            tag_set.insert_tag(tag);
         }
 
         self.telemetry.resolved_new_tagset_total().increment(1);
 
-        Some(context_tags.into_shared())
+        Some(tag_set.into_shared())
     }
 
-    /// TODO: Document.
+    /// Resolves the origin tags for the given origin.
+    ///
+    /// This will return the origin tags for the given origin, or an empty tag set if no origin tags resolver is set.
     pub fn resolve_origin_tags(&self, maybe_origin: Option<RawOrigin<'_>>) -> SharedTagSet {
         self.origin_tags_resolver
             .as_ref()
