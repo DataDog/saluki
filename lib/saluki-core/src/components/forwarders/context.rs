@@ -1,65 +1,52 @@
-use memory_accounting::{ComponentRegistry, MemoryLimiter};
-use saluki_health::{Health, HealthRegistry};
-use tokio::runtime::Handle;
+use memory_accounting::ComponentRegistry;
+use saluki_health::Health;
 
-use crate::{components::ComponentContext, topology::PayloadsConsumer};
+use crate::{
+    components::ComponentContext,
+    topology::{PayloadsConsumer, TopologyContext},
+};
 
 /// Forwarder context.
 pub struct ForwarderContext {
+    topology_context: TopologyContext,
     component_context: ComponentContext,
-    consumer: PayloadsConsumer,
-    memory_limiter: MemoryLimiter,
-    health_handle: Option<Health>,
-    health_registry: HealthRegistry,
     component_registry: ComponentRegistry,
-    thread_pool: Handle,
+    health_handle: Option<Health>,
+    consumer: PayloadsConsumer,
 }
 
 impl ForwarderContext {
     /// Creates a new `ForwarderContext`.
     pub fn new(
-        component_context: ComponentContext, consumer: PayloadsConsumer, memory_limiter: MemoryLimiter,
-        component_registry: ComponentRegistry, health_handle: Health, health_registry: HealthRegistry,
-        thread_pool: Handle,
+        topology_context: &TopologyContext, component_context: &ComponentContext,
+        component_registry: ComponentRegistry, health_handle: Health, consumer: PayloadsConsumer,
     ) -> Self {
         Self {
-            component_context,
-            consumer,
-            memory_limiter,
-            health_handle: Some(health_handle),
-            health_registry,
+            topology_context: topology_context.clone(),
+            component_context: component_context.clone(),
             component_registry,
-            thread_pool,
+            health_handle: Some(health_handle),
+            consumer,
         }
     }
 
     /// Consumes the health handle of this forwarder context.
     ///
-    /// ## Panics
+    /// # Panics
     ///
     /// Panics if the health handle has already been taken.
     pub fn take_health_handle(&mut self) -> Health {
         self.health_handle.take().expect("health handle already taken")
     }
 
-    /// Returns the component context.
-    pub fn component_context(&self) -> ComponentContext {
-        self.component_context.clone()
+    /// Gets a reference to the topology context.
+    pub fn topology_context(&self) -> &TopologyContext {
+        &self.topology_context
     }
 
-    /// Gets a mutable reference to the payloads consumer.
-    pub fn payloads(&mut self) -> &mut PayloadsConsumer {
-        &mut self.consumer
-    }
-
-    /// Gets a reference to the memory limiter.
-    pub fn memory_limiter(&self) -> &MemoryLimiter {
-        &self.memory_limiter
-    }
-
-    /// Gets a reference to the health registry.
-    pub fn health_registry(&mut self) -> &HealthRegistry {
-        &self.health_registry
+    /// Gets a reference to the component context.
+    pub fn component_context(&self) -> &ComponentContext {
+        &self.component_context
     }
 
     /// Gets a reference to the component registry.
@@ -67,8 +54,8 @@ impl ForwarderContext {
         &self.component_registry
     }
 
-    /// Gets a reference to the global thread pool.
-    pub fn global_thread_pool(&self) -> &Handle {
-        &self.thread_pool
+    /// Gets a mutable reference to the payloads consumer.
+    pub fn payloads(&mut self) -> &mut PayloadsConsumer {
+        &mut self.consumer
     }
 }

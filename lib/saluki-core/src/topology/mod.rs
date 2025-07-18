@@ -13,6 +13,9 @@ pub use self::blueprint::{BlueprintError, TopologyBlueprint};
 mod built;
 pub use self::built::BuiltTopology;
 
+mod context;
+pub use self::context::TopologyContext;
+
 mod graph;
 
 mod ids;

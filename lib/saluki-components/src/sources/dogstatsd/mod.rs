@@ -508,8 +508,8 @@ impl Metrics {
     }
 }
 
-fn build_metrics(listen_addr: &ListenAddress, context: ComponentContext) -> Metrics {
-    let builder = MetricsBuilder::from_component_context(&context);
+fn build_metrics(listen_addr: &ListenAddress, component_context: &ComponentContext) -> Metrics {
+    let builder = MetricsBuilder::from_component_context(component_context);
 
     let listener_type = match listen_addr {
         ListenAddress::Tcp(_) => unreachable!("TCP is not supported for DogStatsD"),
@@ -732,13 +732,14 @@ async fn drive_stream(
 
     let mut event_buffer_manager = EventBufferManager::default();
     let mut io_buffer_manager = IoBufferManager::new(&io_buffer_pool, &stream);
+    let memory_limiter = source_context.topology_context().memory_limiter();
 
     'read: loop {
         let mut eof = false;
 
         let mut io_buffer = io_buffer_manager.get_buffer_mut().await;
 
-        source_context.memory_limiter().wait_for_capacity().await;
+        memory_limiter.wait_for_capacity().await;
 
         select! {
             // We read from the stream.

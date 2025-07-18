@@ -319,6 +319,7 @@ where
             flush_timeout,
         );
         let request_builder_handle = context
+            .topology_context()
             .global_thread_pool()
             .spawn_traced_named("dd-metrics-request-builder", request_builder_fut);
 
