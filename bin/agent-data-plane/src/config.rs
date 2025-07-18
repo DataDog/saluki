@@ -19,6 +19,10 @@ pub enum Action {
     /// Various debugging commands.
     #[command(subcommand)]
     Debug(DebugConfig),
+
+    /// Prints the version of the agent data plane.
+    #[command(name = "dogstatsd-stats")]
+    DogstatsdStats,
 }
 
 /// Run subcommand configuration.
