@@ -369,7 +369,7 @@ fn get_service_checks_endpoint_name(uri: &Uri) -> Option<MetaString> {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ServiceChecksEndpointEncoder;
 
 impl EndpointEncoder for ServiceChecksEndpointEncoder {

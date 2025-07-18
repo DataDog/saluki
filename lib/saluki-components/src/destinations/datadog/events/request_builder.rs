@@ -12,7 +12,7 @@ const EVENTS_FIELD_NUMBER: u32 = 1;
 static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("application/x-protobuf");
 
 /// An `EndpointEncoder` for sending events to Datadog.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct EventsEndpointEncoder;
 
 impl EndpointEncoder for EventsEndpointEncoder {
