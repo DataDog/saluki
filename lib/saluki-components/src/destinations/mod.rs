@@ -3,7 +3,7 @@
 mod blackhole;
 pub use self::blackhole::BlackholeConfiguration;
 
-mod datadog;
+pub mod datadog;
 pub use self::datadog::{DatadogEventsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration};
 
 mod prometheus;
