@@ -80,6 +80,7 @@ where
     }
 }
 
+/// Transaction forwarder for Datadog endpoints.
 pub struct TransactionForwarder<B> {
     context: ComponentContext,
     config: ForwarderConfiguration,

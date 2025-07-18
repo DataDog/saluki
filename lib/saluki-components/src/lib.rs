@@ -7,5 +7,6 @@
 
 pub mod destinations;
 pub mod encoders;
+pub mod forwarders;
 pub mod sources;
 pub mod transforms;
