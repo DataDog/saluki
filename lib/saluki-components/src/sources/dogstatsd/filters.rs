@@ -1,5 +1,4 @@
-use saluki_core::data_model::event::{eventd::EventD, service_check::ServiceCheck};
-use saluki_io::deser::codec::dogstatsd::MetricPacket;
+use saluki_io::deser::codec::dogstatsd::{EventPacket, MetricPacket, ServiceCheckPacket};
 
 /// Filters payloads based on whether or not they are enabled.
 ///
@@ -56,11 +55,11 @@ impl EnablePayloadsFilter {
         true
     }
 
-    pub fn allow_event(&self, _event: &EventD) -> bool {
+    pub fn allow_event(&self, _event: &EventPacket) -> bool {
         self.allow_events
     }
 
-    pub fn allow_service_check(&self, _service_check: &ServiceCheck) -> bool {
+    pub fn allow_service_check(&self, _service_check: &ServiceCheckPacket) -> bool {
         self.allow_service_checks
     }
 }
@@ -90,6 +89,39 @@ mod tests {
         }
     }
 
+    fn event_packet() -> EventPacket<'static> {
+        EventPacket {
+            title: "event".into(),
+            text: "text".into(),
+            timestamp: None,
+            hostname: None,
+            aggregation_key: None,
+            priority: None,
+            alert_type: None,
+            source_type_name: None,
+            tags: RawTags::empty(),
+            container_id: None,
+            external_data: None,
+            pod_uid: None,
+            cardinality: None,
+        }
+    }
+
+    fn service_check_packet() -> ServiceCheckPacket<'static> {
+        ServiceCheckPacket {
+            name: "service check".into(),
+            status: CheckStatus::Critical,
+            message: "message".into(),
+            tags: RawTags::empty(),
+            hostname: None,
+            container_id: None,
+            external_data: None,
+            pod_uid: None,
+            cardinality: None,
+            timestamp: None,
+        }
+    }
+
     #[test]
     fn test_enable_payloads_filter_metrics() {
         let serie_metric = metric_packet(Counter(1.0.into()));
@@ -105,7 +137,7 @@ mod tests {
 
     #[test]
     fn test_enable_payloads_filter_events() {
-        let event = EventD::new("event", "text");
+        let event = event_packet();
         let mut filter = EnablePayloadsFilter::default();
         assert!(filter.allow_event(&event));
 
@@ -115,7 +147,7 @@ mod tests {
 
     #[test]
     fn test_enable_payloads_filter_service_checks() {
-        let service_check = ServiceCheck::new("service check", CheckStatus::Critical);
+        let service_check = service_check_packet();
         let mut filter = EnablePayloadsFilter::default();
         assert!(filter.allow_service_check(&service_check));
 

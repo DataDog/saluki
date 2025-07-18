@@ -1,6 +1,7 @@
 use datadog_protos::events as proto;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
-use protobuf::{rt::WireType, Chars, CodedOutputStream};
+use protobuf::{rt::WireType, CodedOutputStream};
+use saluki_context::tags::{Tag, TagsExt};
 use saluki_core::data_model::event::eventd::EventD;
 
 use super::{COMPRESSED_SIZE_LIMIT, EVENTS_BATCH_V1_API_PATH, UNCOMPRESSED_SIZE_LIMIT};
@@ -87,10 +88,13 @@ fn encode_eventd(eventd: &EventD) -> proto::Event {
         event.set_source_type_name(source_type_name.into());
     }
 
-    if let Some(tags) = eventd.tags() {
-        let tags = tags.iter().map(Chars::from).collect();
-        event.set_tags(tags);
-    }
+    let deduplicated_tags = get_deduplicated_tags(eventd);
+
+    event.set_tags(deduplicated_tags.map(|tag| tag.as_str().into()).collect());
 
     event
+}
+
+fn get_deduplicated_tags(eventd: &EventD) -> impl Iterator<Item = &Tag> {
+    eventd.tags().into_iter().chain(eventd.origin_tags()).deduplicated()
 }

@@ -17,6 +17,7 @@ use saluki_core::{
     data_model::event::{eventd::*, metric::*, service_check::*},
 };
 use snafu::Snafu;
+use stringtheory::MetaString;
 
 mod message;
 pub use self::message::{parse_message_type, MessageType};
@@ -139,12 +140,12 @@ impl DogstatsdCodec {
         Ok(parsed_packet)
     }
 
-    fn decode_event(&self, data: &[u8]) -> Result<EventD, ParseError> {
+    fn decode_event<'a>(&self, data: &'a [u8]) -> Result<EventPacket<'a>, ParseError> {
         let (_remaining, event) = parse_dogstatsd_event(data, &self.config)?;
         Ok(event)
     }
 
-    fn decode_service_check(&self, data: &[u8]) -> Result<ServiceCheck, ParseError> {
+    fn decode_service_check<'a>(&self, data: &'a [u8]) -> Result<ServiceCheckPacket<'a>, ParseError> {
         let (_remaining, service_check) = parse_dogstatsd_service_check(data, &self.config)?;
         Ok(service_check)
     }
@@ -152,8 +153,8 @@ impl DogstatsdCodec {
 
 pub enum ParsedPacket<'a> {
     Metric(MetricPacket<'a>),
-    Event(EventD),
-    ServiceCheck(ServiceCheck),
+    Event(EventPacket<'a>),
+    ServiceCheck(ServiceCheckPacket<'a>),
 }
 
 #[derive(Debug, Snafu)]
@@ -264,26 +265,7 @@ fn parse_dogstatsd_metric<'a>(
 
     let tags = maybe_tags.unwrap_or_else(RawTags::empty);
 
-    let mut pod_uid = None;
-    let mut cardinality = None;
-    let mut jmx_check_name = None;
-    for tag in tags.clone() {
-        let tag = BorrowedTag::from(tag);
-        match tag.name_and_value() {
-            (ENTITY_ID_TAG_KEY, Some(entity_id)) if entity_id != ENTITY_ID_IGNORE_VALUE => {
-                pod_uid = Some(entity_id);
-            }
-            (JMX_CHECK_NAME_TAG_KEY, Some(name)) => {
-                jmx_check_name = Some(name);
-            }
-            (CARDINALITY_TAG_KEY, Some(value)) => {
-                if let Ok(card) = OriginTagCardinality::try_from(value) {
-                    cardinality = Some(card);
-                }
-            }
-            _ => {}
-        }
-    }
+    let (pod_uid, jmx_check_name, cardinality) = parse_extra_tags(tags.clone());
 
     Ok((
         remaining,
@@ -315,7 +297,38 @@ pub struct MetricPacket<'a> {
     pub jmx_check_name: Option<&'a str>,
 }
 
-fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfiguration) -> IResult<&'a [u8], EventD> {
+pub struct EventPacket<'a> {
+    pub title: MetaString,
+    pub text: MetaString,
+    pub timestamp: Option<u64>,
+    pub hostname: Option<&'a str>,
+    pub aggregation_key: Option<&'a str>,
+    pub priority: Option<Priority>,
+    pub alert_type: Option<AlertType>,
+    pub source_type_name: Option<&'a str>,
+    pub tags: RawTags<'a>,
+    pub container_id: Option<&'a str>,
+    pub external_data: Option<&'a str>,
+    pub pod_uid: Option<&'a str>,
+    pub cardinality: Option<OriginTagCardinality>,
+}
+
+pub struct ServiceCheckPacket<'a> {
+    pub name: MetaString,
+    pub status: CheckStatus,
+    pub timestamp: Option<u64>,
+    pub hostname: Option<&'a str>,
+    pub message: Option<&'a str>,
+    pub tags: RawTags<'a>,
+    pub container_id: Option<&'a str>,
+    pub external_data: Option<&'a str>,
+    pub pod_uid: Option<&'a str>,
+    pub cardinality: Option<OriginTagCardinality>,
+}
+
+fn parse_dogstatsd_event<'a>(
+    input: &'a [u8], config: &DogstatsdCodecConfiguration,
+) -> IResult<&'a [u8], EventPacket<'a>> {
     // We parse the title length and text length from `_e{<TITLE_UTF8_LENGTH>,<TEXT_UTF8_LENGTH>}:`
     let (remaining, (title_len, text_len)) = delimited(
         tag(message::EVENT_PREFIX),
@@ -356,6 +369,8 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
     let mut maybe_aggregation_key = None;
     let mut maybe_source_type = None;
     let mut maybe_tags = None;
+    let mut maybe_container_id = None;
+    let mut maybe_external_data = None;
 
     let remaining = if !remaining.is_empty() {
         let (mut remaining, _) = tag("|")(remaining)?;
@@ -374,14 +389,14 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
                 message::HOSTNAME_PREFIX => {
                     let (_, hostname) =
                         all_consuming(preceded(tag(message::HOSTNAME_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
-                    maybe_hostname = Some(hostname.into());
+                    maybe_hostname = Some(hostname);
                 }
                 // Aggregation key: key to be used to group this event with others that have the same key.
                 message::AGGREGATION_KEY_PREFIX => {
                     let (_, aggregation_key) =
                         all_consuming(preceded(tag(message::AGGREGATION_KEY_PREFIX), ascii_alphanum_and_seps))
                             .parse(chunk)?;
-                    maybe_aggregation_key = Some(aggregation_key.into());
+                    maybe_aggregation_key = Some(aggregation_key);
                 }
                 // Priority: client-provided priority of the event.
                 message::PRIORITY_PREFIX => {
@@ -394,7 +409,7 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
                     let (_, source_type) =
                         all_consuming(preceded(tag(message::SOURCE_TYPE_PREFIX), ascii_alphanum_and_seps))
                             .parse(chunk)?;
-                    maybe_source_type = Some(source_type.into());
+                    maybe_source_type = Some(source_type);
                 }
                 // Alert type: client-provided alert type of the event.
                 message::ALERT_TYPE_PREFIX => {
@@ -403,11 +418,22 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
                             .parse(chunk)?;
                     maybe_alert_type = AlertType::try_from_string(alert_type);
                 }
+                // Container ID: client-provided container ID for the container that this event originated from.
+                message::CONTAINER_ID_PREFIX => {
+                    let (_, container_id) =
+                        all_consuming(preceded(tag(message::CONTAINER_ID_PREFIX), container_id)).parse(chunk)?;
+                    maybe_container_id = Some(container_id);
+                }
+                // External Data: client-provided data used for resolving the entity ID that this event originated from.
+                message::EXTERNAL_DATA_PREFIX => {
+                    let (_, external_data) =
+                        all_consuming(preceded(tag(message::EXTERNAL_DATA_PREFIX), external_data)).parse(chunk)?;
+                    maybe_external_data = Some(external_data);
+                }
                 // Tags: additional tags to be added to the event.
                 _ if chunk.starts_with(message::TAGS_PREFIX) => {
-                    let (_, tags) =
-                        all_consuming(preceded(tag(message::TAGS_PREFIX), metric_tags(config))).parse(chunk)?;
-                    maybe_tags = Some(tags.into_iter().map(|tag| tag.into()).collect());
+                    let (_, tags) = all_consuming(preceded(tag("#"), metric_tags(config))).parse(chunk)?;
+                    maybe_tags = Some(tags);
                 }
                 _ => {
                     // We don't know what this is, so we just skip it.
@@ -422,21 +448,31 @@ fn parse_dogstatsd_event<'a>(input: &'a [u8], config: &DogstatsdCodecConfigurati
         remaining
     };
 
-    let eventd = EventD::new(&title, &text)
-        .with_timestamp(maybe_timestamp)
-        .with_hostname(maybe_hostname)
-        .with_aggregation_key(maybe_aggregation_key)
-        .with_priority(maybe_priority)
-        .with_source_type_name(maybe_source_type)
-        .with_alert_type(maybe_alert_type)
-        .with_tags(maybe_tags);
+    let tags = maybe_tags.unwrap_or_else(RawTags::empty);
 
+    let (pod_uid, _, cardinality) = parse_extra_tags(tags.clone());
+
+    let eventd = EventPacket {
+        title: title.into(),
+        text: text.into(),
+        tags,
+        timestamp: maybe_timestamp,
+        hostname: maybe_hostname,
+        aggregation_key: maybe_aggregation_key,
+        priority: maybe_priority,
+        alert_type: maybe_alert_type,
+        source_type_name: maybe_source_type,
+        container_id: maybe_container_id,
+        external_data: maybe_external_data,
+        pod_uid,
+        cardinality,
+    };
     Ok((remaining, eventd))
 }
 
 fn parse_dogstatsd_service_check<'a>(
     input: &'a [u8], config: &DogstatsdCodecConfiguration,
-) -> IResult<&'a [u8], ServiceCheck> {
+) -> IResult<&'a [u8], ServiceCheckPacket<'a>> {
     let (remaining, (name, raw_check_status)) = preceded(
         tag(message::SERVICE_CHECK_PREFIX),
         separated_pair(ascii_alphanum_and_seps, tag("|"), parse_u8),
@@ -450,7 +486,8 @@ fn parse_dogstatsd_service_check<'a>(
     let mut maybe_hostname = None;
     let mut maybe_tags = None;
     let mut maybe_message = None;
-    let mut seen_message = false;
+    let mut maybe_container_id = None;
+    let mut maybe_external_data = None;
 
     let remaining = if !remaining.is_empty() {
         let (mut remaining, _) = tag("|")(remaining)?;
@@ -459,10 +496,6 @@ fn parse_dogstatsd_service_check<'a>(
                 break;
             }
 
-            // Message field must be positioned last among the metadata fields but it was already seen
-            if seen_message {
-                return Err(nom::Err::Error(Error::new(input, ErrorKind::Verify)));
-            }
             match &chunk[..2] {
                 // Timestamp: client-provided timestamp for the event, relative to the Unix epoch, in seconds.
                 message::TIMESTAMP_PREFIX => {
@@ -474,22 +507,31 @@ fn parse_dogstatsd_service_check<'a>(
                 message::HOSTNAME_PREFIX => {
                     let (_, hostname) =
                         all_consuming(preceded(tag(message::HOSTNAME_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
-                    maybe_hostname = Some(hostname.into());
+                    maybe_hostname = Some(hostname);
+                }
+                // Container ID: client-provided container ID for the container that this service check originated from.
+                message::CONTAINER_ID_PREFIX => {
+                    let (_, container_id) =
+                        all_consuming(preceded(tag(message::CONTAINER_ID_PREFIX), container_id)).parse(chunk)?;
+                    maybe_container_id = Some(container_id);
+                }
+                // External Data: client-provided data used for resolving the entity ID that this service check originated from.
+                message::EXTERNAL_DATA_PREFIX => {
+                    let (_, external_data) =
+                        all_consuming(preceded(tag(message::EXTERNAL_DATA_PREFIX), external_data)).parse(chunk)?;
+                    maybe_external_data = Some(external_data);
                 }
                 // Tags: additional tags to be added to the service check.
                 _ if chunk.starts_with(message::TAGS_PREFIX) => {
                     let (_, tags) =
                         all_consuming(preceded(tag(message::TAGS_PREFIX), metric_tags(config))).parse(chunk)?;
-                    maybe_tags = Some(tags.into_iter().map(|tag| tag.into()).collect());
+                    maybe_tags = Some(tags);
                 }
                 // Message: A message describing the current state of the service check.
                 message::SERVICE_CHECK_MESSAGE_PREFIX => {
                     let (_, message) =
                         all_consuming(preceded(tag(message::SERVICE_CHECK_MESSAGE_PREFIX), utf8)).parse(chunk)?;
-                    maybe_message = Some(message.into());
-
-                    // This field must be positioned last among the metadata fields
-                    seen_message = true;
+                    maybe_message = Some(message);
                 }
                 _ => {
                     // We don't know what this is, so we just skip it.
@@ -503,12 +545,24 @@ fn parse_dogstatsd_service_check<'a>(
     } else {
         remaining
     };
-    let service_check = ServiceCheck::new(name, check_status)
-        .with_timestamp(maybe_timestamp)
-        .with_hostname(maybe_hostname)
-        .with_tags(maybe_tags)
-        .with_message(maybe_message);
-    Ok((remaining, service_check))
+
+    let tags = maybe_tags.unwrap_or_else(RawTags::empty);
+
+    let (pod_uid, _, cardinality) = parse_extra_tags(tags.clone());
+
+    let service_check_packet = ServiceCheckPacket {
+        name: name.into(),
+        status: check_status,
+        tags,
+        timestamp: maybe_timestamp,
+        hostname: maybe_hostname,
+        message: maybe_message,
+        container_id: maybe_container_id,
+        external_data: maybe_external_data,
+        pod_uid,
+        cardinality,
+    };
+    Ok((remaining, service_check_packet))
 }
 
 #[inline]
@@ -698,12 +752,39 @@ impl<'a> Iterator for FloatIter<'a> {
     }
 }
 
+/// Extracts the pod UID, JMX check name, and cardinality from the given tags if present.
+///
+/// Defaults to `None` for all values.
+fn parse_extra_tags<'a>(tags: RawTags<'a>) -> (Option<&'a str>, Option<&'a str>, Option<OriginTagCardinality>) {
+    let mut pod_uid = None;
+    let mut cardinality = None;
+    let mut jmx_check_name = None;
+    for tag in tags {
+        let tag = BorrowedTag::from(tag);
+        match tag.name_and_value() {
+            (ENTITY_ID_TAG_KEY, Some(entity_id)) if entity_id != ENTITY_ID_IGNORE_VALUE => {
+                pod_uid = Some(entity_id);
+            }
+            (JMX_CHECK_NAME_TAG_KEY, Some(name)) => {
+                jmx_check_name = Some(name);
+            }
+            (CARDINALITY_TAG_KEY, Some(value)) => {
+                if let Ok(card) = OriginTagCardinality::try_from(value) {
+                    cardinality = Some(card);
+                }
+            }
+            _ => {}
+        }
+    }
+    (pod_uid, jmx_check_name, cardinality)
+}
+
 #[cfg(test)]
 mod tests {
     use nom::IResult;
     use proptest::{collection::vec as arb_vec, prelude::*};
     use saluki_context::{
-        tags::{SharedTagSet, Tag},
+        tags::{SharedTagSet, Tag, TagSet},
         Context,
     };
     use saluki_core::data_model::event::{
@@ -751,14 +832,31 @@ mod tests {
     ) -> NomResult<'input, EventD> {
         let (remaining, eventd) = parse_dsd_eventd_direct(input, config)?;
         assert!(remaining.is_empty());
-
         Ok(eventd)
     }
 
     fn parse_dsd_eventd_direct<'input>(
         input: &'input [u8], config: &DogstatsdCodecConfiguration,
     ) -> IResult<&'input [u8], EventD> {
-        parse_dogstatsd_event(input, config)
+        let (remaining, packet) = parse_dogstatsd_event(input, config)?;
+        assert!(remaining.is_empty());
+
+        let mut event_tags = TagSet::default();
+        for tag in packet.tags.into_iter() {
+            event_tags.insert_tag(tag);
+        }
+
+        let eventd = EventD::new(packet.title, packet.text)
+            .with_timestamp(packet.timestamp)
+            .with_hostname(packet.hostname.map(|s| s.into()))
+            .with_aggregation_key(packet.aggregation_key.map(|s| s.into()))
+            .with_alert_type(packet.alert_type)
+            .with_priority(packet.priority)
+            .with_source_type_name(packet.source_type_name.map(|s| s.into()))
+            .with_alert_type(packet.alert_type)
+            .with_tags(event_tags);
+
+        Ok((remaining, eventd))
     }
 
     fn parse_dsd_service_check(input: &[u8]) -> NomResult<'_, ServiceCheck> {
@@ -778,7 +876,21 @@ mod tests {
     fn parse_dsd_service_check_direct<'input>(
         input: &'input [u8], config: &DogstatsdCodecConfiguration,
     ) -> IResult<&'input [u8], ServiceCheck> {
-        parse_dogstatsd_service_check(input, config)
+        let (remaining, packet) = parse_dogstatsd_service_check(input, config)?;
+        assert!(remaining.is_empty());
+
+        let mut service_check_tags = TagSet::default();
+        for tag in packet.tags.into_iter() {
+            service_check_tags.insert_tag(tag);
+        }
+
+        let service_check = ServiceCheck::new(packet.name, packet.status)
+            .with_timestamp(packet.timestamp)
+            .with_hostname(packet.hostname.map(|s| s.into()))
+            .with_tags(service_check_tags)
+            .with_message(packet.message.map(|s| s.into()));
+
+        Ok((remaining, service_check))
     }
 
     #[track_caller]
@@ -801,6 +913,7 @@ mod tests {
         assert_eq!(expected.source_type_name(), actual.source_type_name());
         assert_eq!(expected.alert_type(), actual.alert_type());
         assert_eq!(expected.tags(), actual.tags());
+        assert_eq!(expected.origin_tags(), actual.origin_tags());
     }
 
     #[track_caller]
@@ -810,6 +923,8 @@ mod tests {
         assert_eq!(expected.timestamp(), actual.timestamp());
         assert_eq!(expected.hostname(), actual.hostname());
         assert_eq!(expected.tags(), actual.tags());
+        assert_eq!(expected.message(), actual.message());
+        assert_eq!(expected.origin_tags(), actual.origin_tags());
     }
 
     #[test]
@@ -1093,7 +1208,8 @@ mod tests {
     fn eventd_tags() {
         let event_title = "my event";
         let event_text = "text";
-        let tags = vec!["tag1".into(), "tag2".into()];
+        let tags = ["tag1", "tag2"];
+        let shared_tag_set: SharedTagSet = tags.iter().map(|&s| Tag::from(s)).collect::<TagSet>().into_shared();
         let raw = format!(
             "_e{{{},{}}}:{}|{}|#{}",
             event_title.len(),
@@ -1103,7 +1219,7 @@ mod tests {
             tags.join(","),
         );
 
-        let expected = EventD::new(event_title, event_text).with_tags(tags);
+        let expected = EventD::new(event_title, event_text).with_tags(shared_tag_set);
         let actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
         check_basic_eventd_eq(expected, actual);
     }
@@ -1156,9 +1272,12 @@ mod tests {
         let event_source_type = MetaString::from("testsource");
         let event_alert_type = AlertType::Success;
         let event_timestamp = 1234567890;
-        let tags = vec!["tag1".into(), "tag2".into()];
+        let event_container_id = "abcdef123456";
+        let event_external_data = "it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183";
+        let tags = ["tags1", "tags2"];
+        let shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|&s| s.into())));
         let raw = format!(
-            "_e{{{},{}}}:{}|{}|h:{}|k:{}|p:{}|s:{}|t:{}|d:{}|#{}",
+            "_e{{{},{}}}:{}|{}|h:{}|k:{}|p:{}|s:{}|t:{}|d:{}|c:{}|e:{}|#{}",
             event_title.len(),
             event_text.len(),
             event_title,
@@ -1169,6 +1288,8 @@ mod tests {
             event_source_type,
             event_alert_type,
             event_timestamp,
+            event_container_id,
+            event_external_data,
             tags.join(","),
         );
         let actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
@@ -1179,8 +1300,13 @@ mod tests {
             .with_source_type_name(event_source_type)
             .with_alert_type(event_alert_type)
             .with_timestamp(event_timestamp)
-            .with_tags(tags);
+            .with_tags(shared_tag_set);
         check_basic_eventd_eq(expected, actual);
+
+        let config = DogstatsdCodecConfiguration::default();
+        let (_, packet) = parse_dogstatsd_event(raw.as_bytes(), &config).expect("should not fail to parse");
+        assert_eq!(packet.container_id, Some(event_container_id));
+        assert_eq!(packet.external_data, Some(event_external_data));
     }
 
     #[test]
@@ -1208,10 +1334,11 @@ mod tests {
     fn service_check_tags() {
         let name = "testsvc";
         let sc_status = CheckStatus::Warning;
-        let tags = vec!["tag1".into(), "tag2".into()];
+        let tags = ["tag1", "tag2"];
         let raw = format!("_sc|{}|{}|#{}", name, sc_status.as_u8(), tags.join(","));
         let actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
-        let expected = ServiceCheck::new(name, sc_status).with_tags(tags);
+        let shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|&s| s.into())));
+        let expected = ServiceCheck::new(name, sc_status).with_tags(shared_tag_set);
         check_basic_service_check_eq(expected, actual);
     }
 
@@ -1227,27 +1354,61 @@ mod tests {
     }
 
     #[test]
+    fn service_check_fields_after_message() {
+        let name = "testsvc";
+        let sc_status = CheckStatus::Ok;
+        let sc_message = MetaString::from("service running properly");
+        let sc_container_id = "ci-1234567890";
+        let sc_external_data = "it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183";
+        let raw = format!(
+            "_sc|{}|{}|#tag1,tag2|m:{}|c:{}|e:{}",
+            name,
+            sc_status.as_u8(),
+            sc_message,
+            sc_container_id,
+            sc_external_data,
+        );
+        let result = parse_dsd_service_check(raw.as_bytes()).unwrap();
+        let tags = ["tag1", "tag2"];
+        let shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|&s| s.into())));
+        let expected = ServiceCheck::new(name, sc_status)
+            .with_message(sc_message)
+            .with_tags(shared_tag_set);
+        check_basic_service_check_eq(expected, result);
+
+        let config = DogstatsdCodecConfiguration::default();
+        let (_, packet) = parse_dogstatsd_service_check(raw.as_bytes(), &config).expect("should not fail to parse");
+        assert_eq!(packet.container_id, Some(sc_container_id));
+        assert_eq!(packet.external_data, Some(sc_external_data));
+    }
+
+    #[test]
     fn service_check_multiple_extensions() {
         let name = "testsvc";
         let sc_status = CheckStatus::Unknown;
         let sc_timestamp = 1234567890;
         let sc_hostname = MetaString::from("myhost");
-        let tags = vec!["tag1".into(), "tag2".into()];
+        let sc_container_id = MetaString::from("abcdef123456");
+        let sc_external_data = MetaString::from("it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183");
+        let tags = ["tag1", "tag2"];
         let sc_message = MetaString::from("service status unknown");
         let raw = format!(
-            "_sc|{}|{}|d:{}|h:{}|#{}|m:{}",
+            "_sc|{}|{}|d:{}|h:{}|c:{}|e:{}|#{}|m:{}",
             name,
             sc_status.as_u8(),
             sc_timestamp,
             sc_hostname,
+            sc_container_id,
+            sc_external_data,
             tags.join(","),
             sc_message
         );
+        let shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|&s| s.into())));
         let actual = parse_dsd_service_check(raw.as_bytes()).unwrap();
         let expected = ServiceCheck::new(name, sc_status)
             .with_timestamp(sc_timestamp)
             .with_hostname(sc_hostname)
-            .with_tags(tags)
+            .with_tags(shared_tag_set)
             .with_message(sc_message);
         check_basic_service_check_eq(expected, actual);
     }
