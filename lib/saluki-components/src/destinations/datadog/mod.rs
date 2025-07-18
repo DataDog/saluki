@@ -1,6 +1,6 @@
 pub mod common;
 
-mod events;
+pub mod events;
 pub use self::events::DatadogEventsConfiguration;
 
 mod metrics;
