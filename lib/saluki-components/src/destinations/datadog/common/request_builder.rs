@@ -295,6 +295,7 @@ where
 
         // Make sure we haven't hit the maximum number of inputs per payload.
         if self.encoded_inputs.len() >= self.max_inputs_per_payload {
+            warn!("Maximum number of inputs per payload reached.");
             return Ok(Some(input));
         }
 
@@ -345,7 +346,7 @@ where
             .compression_estimator
             .would_write_exceed_threshold(encoded_len, self.compressed_len_limit);
         if would_exceed_uncompressed_limit || likely_exceeds_compressed_limit {
-            trace!(
+            warn!(
                 encoder = E::encoder_name(),
                 endpoint = ?self.endpoint_uri,
                 encoded_len,
