@@ -199,6 +199,7 @@ fn parse_dogstatsd_metric<'a>(
     let mut maybe_container_id = None;
     let mut maybe_timestamp = None;
     let mut maybe_external_data = None;
+    let mut maybe_cardinality = None;
 
     let remaining = if !remaining.is_empty() {
         let (mut remaining, _) = tag("|")(remaining)?;
@@ -238,6 +239,18 @@ fn parse_dogstatsd_metric<'a>(
                     let (_, external_data) = all_consuming(preceded(tag("e:"), external_data)).parse(chunk)?;
                     maybe_external_data = Some(external_data);
                 }
+                // Cardinality: client-provided cardinality for the metric.
+                b'c' if chunk.starts_with(message::CARDINALITY_PREFIX) => {
+                    let (_, cardinality) = all_consuming(preceded(
+                        tag(message::CARDINALITY_PREFIX),
+                        alt((tag("none"), tag("low"), tag("orchestrator"), tag("high"))),
+                    ))
+                    .parse(chunk)?;
+                    maybe_cardinality = Some(
+                        OriginTagCardinality::try_from(cardinality)
+                            .map_err(|_| nom::Err::Error(Error::new(input, ErrorKind::Verify)))?,
+                    );
+                }
                 _ => {
                     // We don't know what this is, so we just skip it.
                     //
@@ -266,6 +279,8 @@ fn parse_dogstatsd_metric<'a>(
     let tags = maybe_tags.unwrap_or_else(RawTags::empty);
 
     let (pod_uid, jmx_check_name, cardinality) = parse_extra_tags(tags.clone());
+
+    let cardinality = maybe_cardinality.or(cardinality);
 
     Ok((
         remaining,
@@ -371,6 +386,7 @@ fn parse_dogstatsd_event<'a>(
     let mut maybe_tags = None;
     let mut maybe_container_id = None;
     let mut maybe_external_data = None;
+    let mut maybe_cardinality = None;
 
     let remaining = if !remaining.is_empty() {
         let (mut remaining, _) = tag("|")(remaining)?;
@@ -430,6 +446,18 @@ fn parse_dogstatsd_event<'a>(
                         all_consuming(preceded(tag(message::EXTERNAL_DATA_PREFIX), external_data)).parse(chunk)?;
                     maybe_external_data = Some(external_data);
                 }
+                // Cardinality: client-provided cardinality for the event.
+                _ if chunk.starts_with(message::CARDINALITY_PREFIX) => {
+                    let (_, cardinality) = all_consuming(preceded(
+                        tag(message::CARDINALITY_PREFIX),
+                        alt((tag("none"), tag("low"), tag("orchestrator"), tag("high"))),
+                    ))
+                    .parse(chunk)?;
+                    maybe_cardinality = Some(
+                        OriginTagCardinality::try_from(cardinality)
+                            .map_err(|_| nom::Err::Error(Error::new(input, ErrorKind::Verify)))?,
+                    );
+                }
                 // Tags: additional tags to be added to the event.
                 _ if chunk.starts_with(message::TAGS_PREFIX) => {
                     let (_, tags) = all_consuming(preceded(tag("#"), metric_tags(config))).parse(chunk)?;
@@ -451,6 +479,7 @@ fn parse_dogstatsd_event<'a>(
     let tags = maybe_tags.unwrap_or_else(RawTags::empty);
 
     let (pod_uid, _, cardinality) = parse_extra_tags(tags.clone());
+    let cardinality = maybe_cardinality.or(cardinality);
 
     let eventd = EventPacket {
         title: title.into(),
@@ -488,6 +517,7 @@ fn parse_dogstatsd_service_check<'a>(
     let mut maybe_message = None;
     let mut maybe_container_id = None;
     let mut maybe_external_data = None;
+    let mut maybe_cardinality = None;
 
     let remaining = if !remaining.is_empty() {
         let (mut remaining, _) = tag("|")(remaining)?;
@@ -533,6 +563,18 @@ fn parse_dogstatsd_service_check<'a>(
                         all_consuming(preceded(tag(message::SERVICE_CHECK_MESSAGE_PREFIX), utf8)).parse(chunk)?;
                     maybe_message = Some(message);
                 }
+                // Cardinality: client-provided cardinality for the service check.
+                _ if chunk.starts_with(message::CARDINALITY_PREFIX) => {
+                    let (_, cardinality) = all_consuming(preceded(
+                        tag(message::CARDINALITY_PREFIX),
+                        alt((tag("none"), tag("low"), tag("orchestrator"), tag("high"))),
+                    ))
+                    .parse(chunk)?;
+                    maybe_cardinality = Some(
+                        OriginTagCardinality::try_from(cardinality)
+                            .map_err(|_| nom::Err::Error(Error::new(input, ErrorKind::Verify)))?,
+                    );
+                }
                 _ => {
                     // We don't know what this is, so we just skip it.
                     //
@@ -549,6 +591,7 @@ fn parse_dogstatsd_service_check<'a>(
     let tags = maybe_tags.unwrap_or_else(RawTags::empty);
 
     let (pod_uid, _, cardinality) = parse_extra_tags(tags.clone());
+    let cardinality = maybe_cardinality.or(cardinality);
 
     let service_check_packet = ServiceCheckPacket {
         name: name.into(),
@@ -784,6 +827,7 @@ mod tests {
     use nom::IResult;
     use proptest::{collection::vec as arb_vec, prelude::*};
     use saluki_context::{
+        origin::OriginTagCardinality,
         tags::{SharedTagSet, Tag, TagSet},
         Context,
     };
@@ -1051,6 +1095,22 @@ mod tests {
     }
 
     #[test]
+    fn metric_cardinality() {
+        let name = "my.counter";
+        let value = 1.0;
+        let cardinality = "high";
+        let raw = format!("{}:{}|c|card:{}", name, value, cardinality);
+        let expected = Metric::counter(name, value);
+
+        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
+        check_basic_metric_eq(expected, actual);
+
+        let config = DogstatsdCodecConfiguration::default();
+        let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
+        assert_eq!(packet.cardinality, Some(OriginTagCardinality::High));
+    }
+
+    #[test]
     fn metric_multiple_extensions() {
         let name = "my.counter";
         let value = 1.0;
@@ -1058,15 +1118,17 @@ mod tests {
         let tags = ["tag1", "tag2"];
         let container_id = "abcdef123456";
         let external_data = "it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183";
+        let cardinality = "orchestrator";
         let timestamp = 1234567890;
         let raw = format!(
-            "{}:{}|c|#{}|@{}|c:{}|e:{}|T{}",
+            "{}:{}|c|#{}|@{}|c:{}|e:{}|card:{}|T{}",
             name,
             value,
             tags.join(","),
             sample_rate,
             container_id,
             external_data,
+            cardinality,
             timestamp
         );
 
@@ -1091,6 +1153,7 @@ mod tests {
         let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
         assert_eq!(packet.container_id, Some(container_id));
         assert_eq!(packet.external_data, Some(external_data));
+        assert_eq!(packet.cardinality, Some(OriginTagCardinality::Orchestrator));
     }
 
     #[test]
@@ -1274,10 +1337,11 @@ mod tests {
         let event_timestamp = 1234567890;
         let event_container_id = "abcdef123456";
         let event_external_data = "it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183";
+        let event_cardinality = "low";
         let tags = ["tags1", "tags2"];
         let shared_tag_set = SharedTagSet::from(TagSet::from_iter(tags.iter().map(|&s| s.into())));
         let raw = format!(
-            "_e{{{},{}}}:{}|{}|h:{}|k:{}|p:{}|s:{}|t:{}|d:{}|c:{}|e:{}|#{}",
+            "_e{{{},{}}}:{}|{}|h:{}|k:{}|p:{}|s:{}|t:{}|d:{}|c:{}|e:{}|card:{}|#{}",
             event_title.len(),
             event_text.len(),
             event_title,
@@ -1290,6 +1354,7 @@ mod tests {
             event_timestamp,
             event_container_id,
             event_external_data,
+            event_cardinality,
             tags.join(","),
         );
         let actual = parse_dsd_eventd(raw.as_bytes()).unwrap();
@@ -1307,6 +1372,7 @@ mod tests {
         let (_, packet) = parse_dogstatsd_event(raw.as_bytes(), &config).expect("should not fail to parse");
         assert_eq!(packet.container_id, Some(event_container_id));
         assert_eq!(packet.external_data, Some(event_external_data));
+        assert_eq!(packet.cardinality, Some(OriginTagCardinality::Low));
     }
 
     #[test]
@@ -1388,18 +1454,20 @@ mod tests {
         let sc_status = CheckStatus::Unknown;
         let sc_timestamp = 1234567890;
         let sc_hostname = MetaString::from("myhost");
-        let sc_container_id = MetaString::from("abcdef123456");
-        let sc_external_data = MetaString::from("it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183");
+        let sc_container_id = "abcdef123456";
+        let sc_external_data = "it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183";
         let tags = ["tag1", "tag2"];
         let sc_message = MetaString::from("service status unknown");
+        let sc_cardinality = "none";
         let raw = format!(
-            "_sc|{}|{}|d:{}|h:{}|c:{}|e:{}|#{}|m:{}",
+            "_sc|{}|{}|d:{}|h:{}|c:{}|e:{}|card:{}|#{}|m:{}",
             name,
             sc_status.as_u8(),
             sc_timestamp,
             sc_hostname,
             sc_container_id,
             sc_external_data,
+            sc_cardinality,
             tags.join(","),
             sc_message
         );
@@ -1411,6 +1479,12 @@ mod tests {
             .with_tags(shared_tag_set)
             .with_message(sc_message);
         check_basic_service_check_eq(expected, actual);
+
+        let config = DogstatsdCodecConfiguration::default();
+        let (_, packet) = parse_dogstatsd_service_check(raw.as_bytes(), &config).expect("should not fail to parse");
+        assert_eq!(packet.container_id, Some(sc_container_id));
+        assert_eq!(packet.external_data, Some(sc_external_data));
+        assert_eq!(packet.cardinality, Some(OriginTagCardinality::None));
     }
 
     #[test]

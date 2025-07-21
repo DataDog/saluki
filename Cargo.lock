@@ -3404,6 +3404,7 @@ dependencies = [
  "saluki-error",
  "saluki-metrics",
  "serde",
+ "simdutf8",
  "smallvec",
  "stringtheory",
  "tokio",

@@ -18,6 +18,7 @@ pub const TAGS_PREFIX: &[u8] = b"#";
 pub const SERVICE_CHECK_MESSAGE_PREFIX: &[u8] = b"m:";
 pub const CONTAINER_ID_PREFIX: &[u8] = b"c:";
 pub const EXTERNAL_DATA_PREFIX: &[u8] = b"e:";
+pub const CARDINALITY_PREFIX: &[u8] = b"card:";
 
 pub fn clean_data(s: &str) -> String {
     s.replace("\\n", "\n")
