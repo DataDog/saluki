@@ -10,7 +10,7 @@ use saluki_io::{
 };
 use snafu::{ResultExt, Snafu};
 use tokio::io::AsyncWriteExt as _;
-use tracing::{debug, error, trace};
+use tracing::{debug, error, trace, warn};
 
 const SCRATCH_BUF_CAPACITY: usize = 8192;
 
@@ -383,6 +383,7 @@ where
     /// If an error occurs while finalizing the compressor or creating the request, an error will be returned.
     pub async fn flush(&mut self) -> Vec<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         if self.encoded_inputs.is_empty() {
+            warn!("Flush requested with no encoded inputs present.");
             return vec![];
         }
 
@@ -512,6 +513,10 @@ where
         // Restore our original "encoded inputs" buffer before finishing up, but also clear it.
         encoded_inputs.clear();
         self.encoded_inputs = encoded_inputs;
+
+        if requests.is_empty() {
+            warn!("Tried to split oversized request but failed to split both parts.");
+        }
 
         requests
     }
