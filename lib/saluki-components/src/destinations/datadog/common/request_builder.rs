@@ -526,9 +526,13 @@ where
         encoded_inputs.clear();
         self.encoded_inputs = encoded_inputs;
 
-        if requests.is_empty() {
-            warn!("Tried to split oversized request but failed to split both parts.");
-        }
+        info!(
+            "Finished splitting oversized request. Generated {} subrequest(s). uncompressed_len={} estimated_compressed_len={} encoded_inputs={}",
+            requests.len(),
+            self.uncompressed_len(),
+            self.compression_estimator.estimated_len(),
+            self.encoded_inputs.len()
+        );
 
         requests
     }
@@ -552,6 +556,10 @@ where
                 Ok(true) => {}
                 Ok(false) => {
                     // If we can't encode the input, we need to stop here and return the input to the caller.
+                    warn!(
+                        "Failed during request split suboperation to encode input. Input: {:?}",
+                        input
+                    );
                     return None;
                 }
                 Err(e) => {
