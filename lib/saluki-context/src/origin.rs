@@ -73,14 +73,6 @@ impl TryFrom<String> for OriginTagCardinality {
     }
 }
 
-impl TryFrom<&[u8]> for OriginTagCardinality {
-    type Error = String;
-
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        Self::try_from(simdutf8::basic::from_utf8(value).map_err(|_| "invalid utf8")?)
-    }
-}
-
 impl fmt::Display for OriginTagCardinality {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

@@ -241,15 +241,8 @@ fn parse_dogstatsd_metric<'a>(
                 }
                 // Cardinality: client-provided cardinality for the metric.
                 b'c' if chunk.starts_with(message::CARDINALITY_PREFIX) => {
-                    let (_, cardinality) = all_consuming(preceded(
-                        tag(message::CARDINALITY_PREFIX),
-                        alt((tag("none"), tag("low"), tag("orchestrator"), tag("high"))),
-                    ))
-                    .parse(chunk)?;
-                    maybe_cardinality = Some(
-                        OriginTagCardinality::try_from(cardinality)
-                            .map_err(|_| nom::Err::Error(Error::new(input, ErrorKind::Verify)))?,
-                    );
+                    let (_, cardinality) = cardinality(chunk)?;
+                    maybe_cardinality = cardinality;
                 }
                 _ => {
                     // We don't know what this is, so we just skip it.
@@ -448,15 +441,8 @@ fn parse_dogstatsd_event<'a>(
                 }
                 // Cardinality: client-provided cardinality for the event.
                 _ if chunk.starts_with(message::CARDINALITY_PREFIX) => {
-                    let (_, cardinality) = all_consuming(preceded(
-                        tag(message::CARDINALITY_PREFIX),
-                        alt((tag("none"), tag("low"), tag("orchestrator"), tag("high"))),
-                    ))
-                    .parse(chunk)?;
-                    maybe_cardinality = Some(
-                        OriginTagCardinality::try_from(cardinality)
-                            .map_err(|_| nom::Err::Error(Error::new(input, ErrorKind::Verify)))?,
-                    );
+                    let (_, cardinality) = cardinality(chunk)?;
+                    maybe_cardinality = cardinality;
                 }
                 // Tags: additional tags to be added to the event.
                 _ if chunk.starts_with(message::TAGS_PREFIX) => {
@@ -565,15 +551,8 @@ fn parse_dogstatsd_service_check<'a>(
                 }
                 // Cardinality: client-provided cardinality for the service check.
                 _ if chunk.starts_with(message::CARDINALITY_PREFIX) => {
-                    let (_, cardinality) = all_consuming(preceded(
-                        tag(message::CARDINALITY_PREFIX),
-                        alt((tag("none"), tag("low"), tag("orchestrator"), tag("high"))),
-                    ))
-                    .parse(chunk)?;
-                    maybe_cardinality = Some(
-                        OriginTagCardinality::try_from(cardinality)
-                            .map_err(|_| nom::Err::Error(Error::new(input, ErrorKind::Verify)))?,
-                    );
+                    let (_, cardinality) = cardinality(chunk)?;
+                    maybe_cardinality = cardinality;
                 }
                 _ => {
                     // We don't know what this is, so we just skip it.
@@ -762,6 +741,26 @@ fn external_data(input: &[u8]) -> IResult<&[u8], &str> {
         unsafe { std::str::from_utf8_unchecked(b) }
     })
     .parse(input)
+}
+
+#[inline]
+fn cardinality(input: &[u8]) -> IResult<&[u8], Option<OriginTagCardinality>> {
+    // Cardinality is a string that can be one of the following values:
+    // - "none"
+    // - "low"
+    // - "orchestrator"
+    // - "high"
+    let (remaining, cardinality) = all_consuming(preceded(
+        tag(message::CARDINALITY_PREFIX),
+        alt((tag("none"), tag("low"), tag("orchestrator"), tag("high"))),
+    ))
+    .parse(input)?;
+    let (_, cardinality) = utf8(cardinality)?;
+    let maybe_cardinality = Some(
+        OriginTagCardinality::try_from(cardinality)
+            .map_err(|_| nom::Err::Error(Error::new(input, ErrorKind::Verify)))?,
+    );
+    Ok((remaining, maybe_cardinality))
 }
 
 struct FloatIter<'a> {
