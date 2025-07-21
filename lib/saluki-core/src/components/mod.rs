@@ -11,7 +11,7 @@ pub mod sources;
 pub mod transforms;
 
 /// Component type.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ComponentType {
     /// Source.
     Source,

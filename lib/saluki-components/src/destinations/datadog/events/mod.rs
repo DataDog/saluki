@@ -221,6 +221,7 @@ impl Destination for DatadogEvents {
         let request_builder_fut =
             run_request_builder(request_builder, telemetry, builder_rx, forwarder_handle, flush_timeout);
         let request_builder_handle = context
+            .topology_context()
             .global_thread_pool()
             .spawn_traced_named("dd-events-request-builder", request_builder_fut);
 

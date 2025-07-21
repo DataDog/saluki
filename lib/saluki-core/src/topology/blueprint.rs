@@ -11,7 +11,8 @@ use super::{
 };
 use crate::{
     components::{
-        destinations::DestinationBuilder, sources::SourceBuilder, transforms::TransformBuilder, ComponentContext,
+        destinations::DestinationBuilder, encoders::EncoderBuilder, forwarders::ForwarderBuilder,
+        sources::SourceBuilder, transforms::TransformBuilder, ComponentContext,
     },
     data_model::event::Event,
     topology::{EventsBuffer, DEFAULT_EVENTS_BUFFER_CAPACITY},
@@ -46,6 +47,8 @@ pub struct TopologyBlueprint {
     sources: HashMap<ComponentId, RegisteredComponent<Box<dyn SourceBuilder + Send>>>,
     transforms: HashMap<ComponentId, RegisteredComponent<Box<dyn TransformBuilder + Send>>>,
     destinations: HashMap<ComponentId, RegisteredComponent<Box<dyn DestinationBuilder + Send>>>,
+    encoders: HashMap<ComponentId, RegisteredComponent<Box<dyn EncoderBuilder + Send>>>,
+    forwarders: HashMap<ComponentId, RegisteredComponent<Box<dyn ForwarderBuilder + Send>>>,
     component_registry: ComponentRegistry,
     interconnect_capacity: NonZeroUsize,
 }
@@ -62,6 +65,8 @@ impl TopologyBlueprint {
             sources: HashMap::new(),
             transforms: HashMap::new(),
             destinations: HashMap::new(),
+            encoders: HashMap::new(),
+            forwarders: HashMap::new(),
             component_registry,
             interconnect_capacity: super::DEFAULT_INTERCONNECT_CAPACITY,
         }
@@ -221,6 +226,68 @@ impl TopologyBlueprint {
         Ok(self)
     }
 
+    /// Adds an encoder component to the blueprint.
+    ///
+    /// # Errors
+    ///
+    /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
+    pub fn add_encoder<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, GenericError>
+    where
+        I: AsRef<str>,
+        B: EncoderBuilder + Send + 'static,
+    {
+        let component_id = self
+            .graph
+            .add_encoder(component_id, &builder)
+            .error_context("Failed to add encoder to topology graph.")?;
+
+        let mut encoder_registry = self
+            .component_registry
+            .get_or_create(format!("components.encoders.{}", component_id));
+        let mut bounds_builder = encoder_registry.bounds_builder();
+        builder.specify_bounds(&mut bounds_builder);
+
+        self.recalculate_bounds();
+
+        let _ = self.encoders.insert(
+            component_id,
+            RegisteredComponent::new(Box::new(builder), encoder_registry),
+        );
+
+        Ok(self)
+    }
+
+    /// Adds a forwarder component to the blueprint.
+    ///
+    /// # Errors
+    ///
+    /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
+    pub fn add_forwarder<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, GenericError>
+    where
+        I: AsRef<str>,
+        B: ForwarderBuilder + Send + 'static,
+    {
+        let component_id = self
+            .graph
+            .add_forwarder(component_id, &builder)
+            .error_context("Failed to add forwarder to topology graph.")?;
+
+        let mut forwarder_registry = self
+            .component_registry
+            .get_or_create(format!("components.forwarders.{}", component_id));
+        let mut bounds_builder = forwarder_registry.bounds_builder();
+        builder.specify_bounds(&mut bounds_builder);
+
+        self.recalculate_bounds();
+
+        let _ = self.forwarders.insert(
+            component_id,
+            RegisteredComponent::new(Box::new(builder), forwarder_registry),
+        );
+
+        Ok(self)
+    }
+
     /// Connects one or more source component outputs to a destination component.
     ///
     /// # Errors
@@ -306,12 +373,50 @@ impl TopologyBlueprint {
             );
         }
 
+        let mut encoders = HashMap::new();
+        for (id, builder) in self.encoders {
+            let (builder, mut component_registry) = builder.into_parts();
+            let allocation_token = component_registry.token();
+
+            let component_context = ComponentContext::encoder(id.clone());
+            let encoder = builder
+                .build(component_context)
+                .track_allocations(allocation_token)
+                .await
+                .with_error_context(|| format!("Failed to build encoder '{}'.", id))?;
+
+            encoders.insert(
+                id,
+                RegisteredComponent::new(encoder.track_allocations(allocation_token), component_registry),
+            );
+        }
+
+        let mut forwarders = HashMap::new();
+        for (id, builder) in self.forwarders {
+            let (builder, mut component_registry) = builder.into_parts();
+            let allocation_token = component_registry.token();
+
+            let component_context = ComponentContext::forwarder(id.clone());
+            let forwarder = builder
+                .build(component_context)
+                .track_allocations(allocation_token)
+                .await
+                .with_error_context(|| format!("Failed to build forwarder '{}'.", id))?;
+
+            forwarders.insert(
+                id,
+                RegisteredComponent::new(forwarder.track_allocations(allocation_token), component_registry),
+            );
+        }
+
         Ok(BuiltTopology::from_parts(
             self.name,
             self.graph,
             sources,
             transforms,
             destinations,
+            encoders,
+            forwarders,
             self.component_registry.token(),
             self.interconnect_capacity,
         ))
