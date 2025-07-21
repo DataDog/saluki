@@ -384,7 +384,10 @@ where
     /// If an error occurs while finalizing the compressor or creating the request, an error will be returned.
     pub async fn flush(&mut self) -> Vec<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         if self.encoded_inputs.is_empty() {
-            warn!("Flush requested with no encoded inputs present.");
+            warn!(
+                "Flush requested with no encoded inputs present. endpoint_uri={}, uncompressed_len={}, max_inputs_per_request={}, compression_estimator={:?}, compressed_len_limit={}, scratch_buf.len()={}",
+                self.endpoint_uri, self.uncompressed_len, self.max_inputs_per_payload, self.compression_estimator, self.compressed_len_limit, self.scratch_buf.len()
+            );
             return vec![];
         }
 
