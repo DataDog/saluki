@@ -3,45 +3,32 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use http::{HeaderValue, Uri};
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
-use saluki_common::buf::FrozenChunkedBytesBuffer;
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::task::HandleExt as _;
-use saluki_config::{GenericConfiguration, RefreshableConfiguration};
-use saluki_core::data_model::event::{eventd::EventD, EventType};
-use saluki_core::topology::EventsBuffer;
+use saluki_config::GenericConfiguration;
 use saluki_core::{
-    components::{destinations::*, ComponentContext},
+    components::{encoders::*, ComponentContext},
+    data_model::{
+        event::{eventd::EventD, EventType},
+        payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
+    },
     observability::ComponentMetricsExt as _,
+    topology::{EventsBuffer, PayloadsBuffer},
 };
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
-use stringtheory::MetaString;
 use tokio::{select, sync::mpsc, time::sleep};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
-use super::common::{
-    config::ForwarderConfiguration,
-    io::{Handle, TransactionForwarder},
-    request_builder::RequestBuilder,
-    telemetry::ComponentTelemetry,
-    transaction::{Metadata, Transaction},
-};
-use crate::destinations::datadog::common::io::RB_BUFFER_CHUNK_SIZE;
+use crate::destinations::datadog::{ComponentTelemetry, EventsEndpointEncoder, RequestBuilder, RB_BUFFER_CHUNK_SIZE};
 
-mod request_builder;
-pub use self::request_builder::EventsEndpointEncoder;
-
-const EVENTS_BATCH_V1_API_PATH: &str = "/api/v1/events_batch";
 const COMPRESSED_SIZE_LIMIT: usize = 3_200_000; // 3 MB
 const UNCOMPRESSED_SIZE_LIMIT: usize = 62_914_560; // 60 MB
 
 const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
 const MAX_EVENTS_PER_PAYLOAD: usize = 100;
-
-static CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/json");
 
 const fn default_flush_timeout_secs() -> u64 {
     2
@@ -55,27 +42,18 @@ const fn default_zstd_compressor_level() -> i32 {
     3
 }
 
-/// Datadog Events destination.
+/// Datadog Events encoder.
 ///
-/// Forwards events to the Datadog platform.
+/// Generates Datadog Events payloads for the Datadog platform.
 #[derive(Deserialize)]
 pub struct DatadogEventsConfiguration {
-    /// Forwarder configuration settings.
-    ///
-    /// See [`ForwarderConfiguration`] for more information about the available settings.
-    #[serde(flatten)]
-    forwarder_config: ForwarderConfiguration,
-
-    #[serde(skip)]
-    config_refresher: Option<RefreshableConfiguration>,
-
     /// Flush timeout for pending requests, in seconds.
     ///
-    /// When the destination has written events/service checks to the in-flight request payload, but it has not yet
-    /// reached the payload size limits that would force the payload to be flushed, the destination will wait for a
-    /// period of time before flushing the in-flight request payload. This allows for the possibility of other events to
-    /// be processed and written into the request payload, thereby maximizing the payload size and reducing the number
-    /// of requests generated and sent overall.
+    /// When the encoder has written events to the in-flight request payload, but it has not yet reached the payload
+    /// size limits that would force the payload to be flushed, the encoder will wait for a period of time before
+    /// flushing the in-flight request payload. This allows for the possibility of other events to be processed and
+    /// written into the request payload, thereby maximizing the payload size and reducing the number of requests
+    /// generated and sent overall.
     ///
     /// Defaults to 2 seconds.
     #[serde(default = "default_flush_timeout_secs")]
@@ -105,32 +83,22 @@ impl DatadogEventsConfiguration {
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
     }
-
-    /// Add option to retrieve configuration values from a `RefreshableConfiguration`.
-    pub fn add_refreshable_configuration(&mut self, refresher: RefreshableConfiguration) {
-        self.config_refresher = Some(refresher);
-    }
 }
 
 #[async_trait]
-impl DestinationBuilder for DatadogEventsConfiguration {
+impl EncoderBuilder for DatadogEventsConfiguration {
     fn input_event_type(&self) -> EventType {
         EventType::EventD
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+    fn output_payload_type(&self) -> PayloadType {
+        PayloadType::Http
+    }
+
+    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
-        let forwarder = TransactionForwarder::from_config(
-            context,
-            self.forwarder_config.clone(),
-            self.config_refresher.clone(),
-            get_events_endpoint_name,
-            telemetry.clone(),
-            metrics_builder,
-        )?;
-        //let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
-        let compression_scheme = CompressionScheme::noop();
+        let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
 
         // Create our request builder.
         let mut request_builder =
@@ -146,7 +114,6 @@ impl DestinationBuilder for DatadogEventsConfiguration {
 
         Ok(Box::new(DatadogEvents {
             request_builder,
-            forwarder,
             telemetry,
             flush_timeout,
         }))
@@ -155,30 +122,21 @@ impl DestinationBuilder for DatadogEventsConfiguration {
 
 impl MemoryBounds for DatadogEventsConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // TODO: How do we properly represent the requests we can generate that may be sitting around in-flight?
+        //
+        // Theoretically, we'll end up being limited by the size of the downstream forwarder's interconnect, and however
+        // many payloads it will buffer internally... so realistically the firm limit boils down to the forwarder itself
+        // but we'll have a hard time in the forwarder knowing the maximum size of any given payload being sent in, which
+        // then makes it hard to calculate a proper firm bound even though we know the rest of the values required to
+        // calculate the firm bound.
         builder
             .minimum()
             .with_single_value::<DatadogEvents>("component struct")
-            .with_array::<Transaction<FrozenChunkedBytesBuffer>>("requests channel", 32);
+            .with_array::<EventsBuffer>("request builder events channel", 8)
+            .with_array::<PayloadsBuffer>("request builder payloads channel", 8);
 
         builder
             .firm()
-            // This represents the potential growth of all outstanding requests that we build and have in-flight, in terms of what
-            // we allow to stick around in the high-priority and low-priority queues.
-            .with_expr(UsageExpr::sum(
-                "in-flight requests",
-                UsageExpr::config(
-                    "forwarder_retry_queue_payloads_max_size",
-                    self.forwarder_config.retry().queue_max_size_bytes() as usize,
-                ),
-                UsageExpr::product(
-                    "high priority queue",
-                    UsageExpr::config(
-                        "forwarder_high_prio_buffer_size",
-                        self.forwarder_config.endpoint_buffer_size(),
-                    ),
-                    UsageExpr::constant("maximum compressed payload size", COMPRESSED_SIZE_LIMIT),
-                ),
-            ))
             // Capture the size of the "split re-encode" buffer in the request builder, which is where we keep owned
             // versions of events that we encode in case we need to actually re-encode them during a split operation.
             .with_array::<EventD>("events split re-encode buffer", MAX_EVENTS_PER_PAYLOAD);
@@ -187,62 +145,66 @@ impl MemoryBounds for DatadogEventsConfiguration {
 
 pub struct DatadogEvents {
     request_builder: RequestBuilder<EventsEndpointEncoder>,
-    forwarder: TransactionForwarder<FrozenChunkedBytesBuffer>,
     telemetry: ComponentTelemetry,
     flush_timeout: Duration,
 }
 
 #[async_trait]
-impl Destination for DatadogEvents {
-    async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
+impl Encoder for DatadogEvents {
+    async fn run(mut self: Box<Self>, mut context: EncoderContext) -> Result<(), GenericError> {
         let Self {
             request_builder,
-            forwarder,
             telemetry,
             flush_timeout,
         } = *self;
 
         let mut health = context.take_health_handle();
 
-        // Spawn our forwarder task to handle sending requests.
-        let forwarder_handle = forwarder.spawn().await;
-
         // Spawn our request builder task.
-        let (builder_tx, builder_rx) = mpsc::channel(8);
+        let (events_tx, events_rx) = mpsc::channel(8);
+        let (payloads_tx, mut payloads_rx) = mpsc::channel(8);
         let request_builder_fut =
-            run_request_builder(request_builder, telemetry, builder_rx, forwarder_handle, flush_timeout);
+            run_request_builder(request_builder, telemetry, events_rx, payloads_tx, flush_timeout);
         let request_builder_handle = context
             .topology_context()
             .global_thread_pool()
             .spawn_traced_named("dd-events-request-builder", request_builder_fut);
 
         health.mark_ready();
-        debug!("Datadog Events destination started.");
+        debug!("Datadog Events encoder started.");
 
         loop {
             select! {
                 _ = health.live() => continue,
                 maybe_event_buffer = context.events().next() => match maybe_event_buffer {
-                    Some(event_buffer) => builder_tx.send(event_buffer).await
+                    Some(event_buffer) => events_tx.send(event_buffer).await
                         .error_context("Failed to send event buffer to request builder task.")?,
                     None => break,
+                },
+                maybe_payload = payloads_rx.recv() => match maybe_payload {
+                    Some(payload) => {
+                        if let Err(e) = context.dispatcher().dispatch(payload).await {
+                            error!("Failed to dispatch payload: {}", e);
+                        }
+                    }
+                    None => {
+                        warn!("Payload channel closed. Request builder task likely stopped due to error.");
+                        break
+                    },
                 },
             }
         }
 
-        // Drop the request builder channel, which allows the request builder task to naturally shut down once it has
-        // received and built all requests. This includes also triggering the forwarder to shutdown, and waiting for it
-        // to do so.
-        //
-        // We wait for the request builder task to signal back to us that it has stopped before letting ourselves return.
-        drop(builder_tx);
+        // Drop the request builder events channel, which allows the request builder task to naturally shut down once it has
+        // received and built all requests. We wait for its task handle to complete before letting ourselves return.
+        drop(events_tx);
         match request_builder_handle.await {
             Ok(Ok(())) => debug!("Request builder task stopped."),
             Ok(Err(e)) => error!(error = %e, "Request builder task failed."),
             Err(e) => error!(error = %e, "Request builder task panicked."),
         }
 
-        debug!("Datadog Events destination stopped.");
+        debug!("Datadog Events encoder stopped.");
 
         Ok(())
     }
@@ -250,8 +212,7 @@ impl Destination for DatadogEvents {
 
 async fn run_request_builder(
     mut request_builder: RequestBuilder<EventsEndpointEncoder>, telemetry: ComponentTelemetry,
-    mut request_builder_rx: mpsc::Receiver<EventsBuffer>, forwarder_handle: Handle<FrozenChunkedBytesBuffer>,
-    flush_timeout: Duration,
+    mut events_rx: mpsc::Receiver<EventsBuffer>, payloads_tx: mpsc::Sender<PayloadsBuffer>, flush_timeout: Duration,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
@@ -259,7 +220,7 @@ async fn run_request_builder(
 
     loop {
         select! {
-            Some(event_buffer) = request_builder_rx.recv() => {
+            Some(event_buffer) = events_rx.recv() => {
                 for event in event_buffer {
                     let eventd = match event.try_into_eventd() {
                         Some(eventd) => eventd,
@@ -288,8 +249,12 @@ async fn run_request_builder(
                     for maybe_request in maybe_requests {
                         match maybe_request {
                             Ok((events, request)) => {
-                                let transaction = Transaction::from_original(Metadata::from_event_count(events), request);
-                                forwarder_handle.send_transaction(transaction).await?
+                                let payload_meta = PayloadMetadata::from_event_count(events);
+                                let http_payload = HttpPayload::new(request);
+                                let payload = Payload::Http(payload_meta, http_payload);
+
+                                payloads_tx.send(payload).await
+                                    .map_err(|_| generic_error!("Failed to send payload to encoder."))?;
                             },
 
                             // TODO: Increment a counter here that events were dropped due to a flush failure.
@@ -297,6 +262,7 @@ async fn run_request_builder(
                                 // If the error is recoverable, we'll hold on to the event to retry it later.
                                 continue;
                             } else {
+
                                 return Err(GenericError::from(e).context("Failed to flush request."));
                             }
                         }
@@ -330,9 +296,14 @@ async fn run_request_builder(
                 for maybe_request in maybe_requests {
                     match maybe_request {
                         Ok((events, request)) => {
-                            debug!("Flushed request from series request builder. Sending to I/O task...");
-                            let transaction = Transaction::from_original(Metadata::from_event_count(events), request);
-                            forwarder_handle.send_transaction(transaction).await?
+                            debug!("Flushed request from events request builder.");
+
+                            let payload_meta = PayloadMetadata::from_event_count(events);
+                            let http_payload = HttpPayload::new(request);
+                            let payload = Payload::Http(payload_meta, http_payload);
+
+                            payloads_tx.send(payload).await
+                                .map_err(|_| generic_error!("Failed to send payload to encoder."))?;
                         },
 
                         // TODO: Increment a counter here that events were dropped due to a flush failure.
@@ -345,7 +316,7 @@ async fn run_request_builder(
                     }
                 }
 
-                debug!("All flushed requests sent to I/O task. Waiting for next event buffer...");
+                debug!("All flushed requests sent. Waiting for next event buffer...");
             },
 
             // Event buffers channel has been closed, and we have no pending flushing, so we're all done.
@@ -353,17 +324,5 @@ async fn run_request_builder(
         }
     }
 
-    debug!("Waiting for forwarder to shutdown...");
-
-    // Signal the forwarder to shutdown, and wait for it to do so.
-    forwarder_handle.shutdown().await;
-
     Ok(())
-}
-
-fn get_events_endpoint_name(uri: &Uri) -> Option<MetaString> {
-    match uri.path() {
-        EVENTS_BATCH_V1_API_PATH => Some(MetaString::from_static("events_batch_v1")),
-        _ => None,
-    }
 }
