@@ -1,3 +1,3 @@
 pub mod debug;
-pub mod dogstatsdstats;
+pub mod dogstatsd;
 pub mod run;
