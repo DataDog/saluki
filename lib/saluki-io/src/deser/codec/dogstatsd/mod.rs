@@ -1111,6 +1111,24 @@ mod tests {
     }
 
     #[test]
+    fn metric_cardinality_precedence() {
+        // Tests that the cardinality specificed in the card field takes precedence over `dd.internal.card`
+        let name = "my.counter";
+        let value = 1.0;
+        let tags = ["dd.internal.card:low"];
+        let cardinality = "high";
+        let raw = format!("{}:{}|c|#{}|card:{}", name, value, tags.join(","), cardinality);
+        let expected = Metric::counter((name, &tags[..]), value);
+
+        let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
+        check_basic_metric_eq(expected, actual);
+
+        let config = DogstatsdCodecConfiguration::default();
+        let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
+        assert_eq!(packet.cardinality, Some(OriginTagCardinality::High));
+    }
+
+    #[test]
     fn metric_multiple_extensions() {
         let name = "my.counter";
         let value = 1.0;
