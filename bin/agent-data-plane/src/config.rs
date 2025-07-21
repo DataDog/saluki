@@ -20,6 +20,7 @@ pub enum Action {
     #[command(subcommand)]
     Debug(DebugConfig),
 
+    /// Various dogstatsd commands.
     #[command(subcommand)]
     Dogstatsd(DogstatsdConfig),
 }

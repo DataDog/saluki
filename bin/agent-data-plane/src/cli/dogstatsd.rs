@@ -1,4 +1,5 @@
 use tracing::info;
+
 use crate::config::DogstatsdConfig;
 
 pub async fn handle_dogstatsd(config: DogstatsdConfig) {
