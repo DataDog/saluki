@@ -10,7 +10,7 @@ use saluki_io::{
 };
 use snafu::{ResultExt, Snafu};
 use tokio::io::AsyncWriteExt as _;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 const SCRATCH_BUF_CAPACITY: usize = 8192;
 
@@ -485,8 +485,16 @@ where
         // Nothing to do if we have no encoded inputs.
         let mut requests = Vec::new();
         if self.encoded_inputs.is_empty() {
+            warn!("Tried to split request with no encoded inputs.");
             return requests;
         }
+
+        info!(
+            "Starting request split operation for {} input events. uncompressed_len={} estimated_compressed_len={}",
+            self.encoded_inputs.len(),
+            self.uncompressed_len(),
+            self.compression_estimator.estimated_len()
+        );
 
         // We're going to attempt to split all of the previously-encoded inputs between two _new_ compressed payloads,
         // with the goal that each payload will be under the compressed size limit.
@@ -528,6 +536,13 @@ where
     async fn try_split_request(
         &mut self, inputs: &[E::Input],
     ) -> Option<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
+        info!(
+            "Starting request split suboperation for {} input events. uncompressed_len={} estimated_compressed_len={}",
+            inputs.len(),
+            self.uncompressed_len(),
+            self.compression_estimator.estimated_len()
+        );
+
         for input in inputs {
             // Encode each input and write it to our compressor.
             //
