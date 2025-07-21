@@ -21,7 +21,11 @@ impl Default for DogStatsDInternalStatisticsConfiguration {
 
 impl DogStatsDInternalStatisticsConfiguration {
     /// Returns an API handler for DogStatsD internal statistics.
-    pub fn api_handler() -> Option<()> {
-        None
+    pub fn api_handler(&self) -> Option<()> {
+        if self.enabled {
+            Some(())
+        } else {
+            None
+        }
     }
 }
