@@ -20,8 +20,14 @@ pub mod metrics;
 #[cfg(feature = "tls")]
 pub mod tls;
 
+/// DogStatsD API handler module.
+#[cfg(feature = "api")] // brianna: need to edit
+pub mod dogstatsd;
+
 /// Common imports.
 pub mod prelude {
+    #[cfg(feature = "api")] // brianna: need to edit
+    pub use super::dogstatsd::acquire_dogstatsd_api_handler;
     #[cfg(feature = "logging")]
     pub use super::logging::{
         acquire_logging_api_handler, fatal_and_exit, initialize_dynamic_logging, initialize_logging,

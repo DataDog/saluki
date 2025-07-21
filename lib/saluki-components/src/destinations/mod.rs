@@ -8,3 +8,6 @@ pub use self::datadog::{DatadogEventsConfiguration, DatadogMetricsConfiguration,
 
 mod prometheus;
 pub use self::prometheus::PrometheusConfiguration;
+
+mod dsd_stats;
+pub use self::dsd_stats::DogStatsDInternalStatisticsConfiguration;

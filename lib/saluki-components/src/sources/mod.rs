@@ -1,6 +1,7 @@
 //! Source implementations.
 
-mod dogstatsd;
+/// DogStatsD source implementation.
+pub mod dogstatsd;
 pub use self::dogstatsd::DogStatsDConfiguration;
 
 mod internal_metrics;
