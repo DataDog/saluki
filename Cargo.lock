@@ -3305,9 +3305,12 @@ dependencies = [
 name = "saluki-common"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "crossbeam-queue",
  "foldhash",
  "hashbrown 0.15.4",
+ "http-body",
+ "http-body-util",
  "indexmap 2.10.0",
  "memory-accounting",
  "papaya",
@@ -3317,6 +3320,7 @@ dependencies = [
  "saluki-metrics",
  "sha3",
  "tokio",
+ "tokio-test",
  "tracing",
 ]
 
