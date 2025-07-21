@@ -3,6 +3,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use http::{uri::PathAndQuery, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
+use saluki_common::buf::FrozenChunkedBytesBuffer;
 use saluki_common::task::HandleExt as _;
 use saluki_config::{GenericConfiguration, RefreshableConfiguration};
 use saluki_context::tags::SharedTagSet;
@@ -11,13 +12,9 @@ use saluki_core::topology::EventsBuffer;
 use saluki_core::{
     components::{destinations::*, ComponentContext},
     observability::ComponentMetricsExt as _,
-    pooling::{ElasticObjectPool, ObjectPool},
 };
 use saluki_error::{ErrorContext as _, GenericError};
-use saluki_io::{
-    buf::{BytesBuffer, FrozenChunkedBytesBuffer},
-    compression::CompressionScheme,
-};
+use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use stringtheory::MetaString;
@@ -26,16 +23,16 @@ use tracing::{debug, error};
 
 use super::common::{
     config::ForwarderConfiguration,
-    io::{create_request_builder_buffer_pool, get_buffer_pool_min_max_size_bytes, Handle, TransactionForwarder},
+    io::{Handle, TransactionForwarder},
     request_builder::RequestBuilder,
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
 };
+use crate::destinations::datadog::common::io::RB_BUFFER_CHUNK_SIZE;
 
 mod request_builder;
 use self::request_builder::{MetricsEndpoint, MetricsEndpointEncoder};
 
-const RB_BUFFER_POOL_BUF_SIZE: usize = 32_768;
 const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
 
 const fn default_max_metrics_per_payload() -> usize {
@@ -195,13 +192,6 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
 
         // Create our request builders.
-        let rb_buffer_pool = create_request_builder_buffer_pool(
-            "metrics",
-            &self.forwarder_config,
-            get_maximum_compressed_payload_size(),
-        )
-        .await;
-
         let mut series_encoder = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Series);
         let mut sketches_encoder = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Sketches);
 
@@ -210,10 +200,10 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
             sketches_encoder = sketches_encoder.with_additional_tags(additional_tags.clone());
         }
 
-        let mut series_rb = RequestBuilder::new(series_encoder, rb_buffer_pool.clone(), compression_scheme).await?;
+        let mut series_rb = RequestBuilder::new(series_encoder, compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
         series_rb.with_max_inputs_per_payload(self.max_metrics_per_payload);
 
-        let mut sketches_rb = RequestBuilder::new(sketches_encoder, rb_buffer_pool.clone(), compression_scheme).await?;
+        let mut sketches_rb = RequestBuilder::new(sketches_encoder, compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
         sketches_rb.with_max_inputs_per_payload(self.max_metrics_per_payload);
 
         if let Some(override_path) = self.endpoint_path_override.as_ref() {
@@ -240,23 +230,17 @@ impl DestinationBuilder for DatadogMetricsConfiguration {
 
 impl MemoryBounds for DatadogMetricsConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        // The request builder buffer pool is shared between both the series and the sketches request builder, so we
-        // only count it once.
-        let (pool_size_min_bytes, _) =
-            get_buffer_pool_min_max_size_bytes(&self.forwarder_config, get_maximum_compressed_payload_size());
-
         builder
             .minimum()
-            .with_single_value::<DatadogMetrics<ElasticObjectPool<BytesBuffer>>>("component struct")
-            .with_fixed_amount("buffer pool", pool_size_min_bytes)
+            .with_single_value::<DatadogMetrics>("component struct")
             .with_array::<Transaction<FrozenChunkedBytesBuffer>>("requests channel", 32);
 
         builder
             .firm()
-            // This represents the potential growth of the buffer pool to allow for requests to continue to be built
-            // while we're retrying the current request, and having to enqueue pending requests in memory.
+            // This represents the potential growth of all outstanding requests that we build and have in-flight, in terms of what
+            // we allow to stick around in the high-priority and low-priority queues.
             .with_expr(UsageExpr::sum(
-                "buffer pool",
+                "in-flight requests",
                 UsageExpr::config(
                     "forwarder_retry_queue_payloads_max_size",
                     self.forwarder_config.retry().queue_max_size_bytes() as usize,
@@ -277,22 +261,16 @@ impl MemoryBounds for DatadogMetricsConfiguration {
     }
 }
 
-pub struct DatadogMetrics<O>
-where
-    O: ObjectPool<Item = BytesBuffer> + 'static,
-{
-    series_rb: RequestBuilder<MetricsEndpointEncoder, O>,
-    sketches_rb: RequestBuilder<MetricsEndpointEncoder, O>,
+pub struct DatadogMetrics {
+    series_rb: RequestBuilder<MetricsEndpointEncoder>,
+    sketches_rb: RequestBuilder<MetricsEndpointEncoder>,
     forwarder: TransactionForwarder<FrozenChunkedBytesBuffer>,
     telemetry: ComponentTelemetry,
     flush_timeout: Duration,
 }
 
 #[async_trait]
-impl<O> Destination for DatadogMetrics<O>
-where
-    O: ObjectPool<Item = BytesBuffer> + 'static,
-{
+impl Destination for DatadogMetrics {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
         let Self {
             series_rb,
@@ -319,6 +297,7 @@ where
             flush_timeout,
         );
         let request_builder_handle = context
+            .topology_context()
             .global_thread_pool()
             .spawn_traced_named("dd-metrics-request-builder", request_builder_fut);
 
@@ -354,15 +333,12 @@ where
     }
 }
 
-async fn run_request_builder<O>(
-    mut series_request_builder: RequestBuilder<MetricsEndpointEncoder, O>,
-    mut sketches_request_builder: RequestBuilder<MetricsEndpointEncoder, O>, telemetry: ComponentTelemetry,
+async fn run_request_builder(
+    mut series_request_builder: RequestBuilder<MetricsEndpointEncoder>,
+    mut sketches_request_builder: RequestBuilder<MetricsEndpointEncoder>, telemetry: ComponentTelemetry,
     mut request_builder_rx: mpsc::Receiver<EventsBuffer>, forwarder_handle: Handle<FrozenChunkedBytesBuffer>,
     flush_timeout: Duration,
-) -> Result<(), GenericError>
-where
-    O: ObjectPool<Item = BytesBuffer> + 'static,
-{
+) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
     tokio::pin!(pending_flush_timeout);
@@ -513,5 +489,5 @@ const fn get_maximum_compressed_payload_size() -> usize {
     } else {
         sketches_max_size
     };
-    max_request_size.next_multiple_of(RB_BUFFER_POOL_BUF_SIZE)
+    max_request_size.next_multiple_of(RB_BUFFER_CHUNK_SIZE)
 }

@@ -42,24 +42,29 @@ impl ComponentTelemetry {
         }
     }
 
+    /// Returns a reference to the "bytes sent" counter.
     pub fn bytes_sent(&self) -> &Counter {
         &self.bytes_sent
     }
 
+    /// Returns a reference to the "events dropped (encoder)" counter.
     pub fn events_dropped_encoder(&self) -> &Counter {
         &self.events_dropped_encoder
     }
 
+    /// Tracks a successful transaction.
     pub fn track_successful_transaction(&self, metadata: &Metadata) {
         self.events_sent.increment(metadata.event_count as u64);
         self.events_sent_batch_size.record(metadata.event_count as f64);
     }
 
+    /// Tracks a failed transaction.
     pub fn track_failed_transaction(&self, metadata: &Metadata) {
         self.http_failed_send.increment(1);
         self.events_dropped_http.increment(metadata.event_count as u64);
     }
 
+    /// Tracks dropped events.
     pub fn track_dropped_events(&self, event_count: u64) {
         self.events_dropped_queue.increment(event_count);
     }

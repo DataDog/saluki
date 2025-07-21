@@ -15,6 +15,7 @@ use crate::{
 /// Encoder builders are responsible for creating instances of [`Encoder`]s, as well as describing high-level
 /// aspects of the built encoder, such as the data types allowed for input events and the outputs exposed by the
 /// encoder.
+#[async_trait]
 pub trait EncoderBuilder: MemoryBounds {
     /// Data types allowed as input payloads to this encoder.
     fn input_event_type(&self) -> EventType;
@@ -27,7 +28,7 @@ pub trait EncoderBuilder: MemoryBounds {
     /// # Errors
     ///
     /// If the encoder cannot be built for any reason, an error is returned.
-    fn build(&self, context: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError>;
+    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError>;
 }
 
 /// An incremental encoder builder.
@@ -51,5 +52,5 @@ pub trait IncrementalEncoderBuilder: MemoryBounds {
     /// # Errors
     ///
     /// If the incremental encoder cannot be built for any reason, an error is returned.
-    fn build(&self, context: ComponentContext) -> Result<Self::Output, GenericError>;
+    async fn build(&self, context: ComponentContext) -> Result<Self::Output, GenericError>;
 }

@@ -8,7 +8,10 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use metrics::{Counter, Gauge, Histogram};
 use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
+use saluki_context::TagsResolver;
+use saluki_core::data_model::event::eventd::EventD;
 use saluki_core::data_model::event::metric::{MetricMetadata, MetricOrigin};
+use saluki_core::data_model::event::service_check::ServiceCheck;
 use saluki_core::data_model::event::{metric::Metric, Event, EventType};
 use saluki_core::topology::EventsBuffer;
 use saluki_core::{
@@ -23,6 +26,7 @@ use saluki_core::{
 };
 use saluki_env::WorkloadProvider;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_io::deser::codec::dogstatsd::{EventPacket, ServiceCheckPacket};
 use saluki_io::{
     buf::{BytesBuffer, FixedSizeVec},
     deser::{
@@ -56,7 +60,10 @@ mod io_buffer;
 use self::io_buffer::IoBufferManager;
 
 mod origin;
-use self::origin::{origin_from_metric_packet, DogStatsDOriginTagResolver, OriginEnrichmentConfiguration};
+use self::origin::{
+    origin_from_event_packet, origin_from_metric_packet, origin_from_service_check_packet, DogStatsDOriginTagResolver,
+    OriginEnrichmentConfiguration,
+};
 
 mod resolver;
 use self::resolver::ContextResolvers;
@@ -501,8 +508,8 @@ impl Metrics {
     }
 }
 
-fn build_metrics(listen_addr: &ListenAddress, context: ComponentContext) -> Metrics {
-    let builder = MetricsBuilder::from_component_context(&context);
+fn build_metrics(listen_addr: &ListenAddress, component_context: &ComponentContext) -> Metrics {
+    let builder = MetricsBuilder::from_component_context(component_context);
 
     let listener_type = match listen_addr {
         ListenAddress::Tcp(_) => unreachable!("TCP is not supported for DogStatsD"),
@@ -725,13 +732,14 @@ async fn drive_stream(
 
     let mut event_buffer_manager = EventBufferManager::default();
     let mut io_buffer_manager = IoBufferManager::new(&io_buffer_pool, &stream);
+    let memory_limiter = source_context.topology_context().memory_limiter();
 
     'read: loop {
         let mut eof = false;
 
         let mut io_buffer = io_buffer_manager.get_buffer_mut().await;
 
-        source_context.memory_limiter().wait_for_capacity().await;
+        memory_limiter.wait_for_capacity().await;
 
         select! {
             // We read from the stream.
@@ -893,25 +901,40 @@ fn handle_frame(
         }
         ParsedPacket::Event(event) => {
             if !enabled_filter.allow_event(&event) {
-                trace!(
-                    event.title = event.title(),
-                    "Skipping event due to filter configuration."
-                );
+                trace!("Skipping event {} due to filter configuration.", event.title);
                 return Ok(None);
             }
-            source_metrics.events_received().increment(1);
-            Event::EventD(event)
+            let tags_resolver = context_resolvers.tags();
+            match handle_event_packet(event, tags_resolver, peer_addr, additional_tags) {
+                Some(event) => {
+                    source_metrics.events_received().increment(1);
+                    Event::EventD(event)
+                }
+                None => {
+                    source_metrics.failed_context_resolve_total().increment(1);
+                    return Ok(None);
+                }
+            }
         }
         ParsedPacket::ServiceCheck(service_check) => {
             if !enabled_filter.allow_service_check(&service_check) {
                 trace!(
-                    service_check.name = service_check.name(),
-                    "Skipping service check due to filter configuration."
+                    "Skipping service check {} due to filter configuration.",
+                    service_check.name
                 );
                 return Ok(None);
             }
-            source_metrics.service_checks_received().increment(1);
-            Event::ServiceCheck(service_check)
+            let tags_resolver = context_resolvers.tags();
+            match handle_service_check_packet(service_check, tags_resolver, peer_addr, additional_tags) {
+                Some(service_check) => {
+                    source_metrics.service_checks_received().increment(1);
+                    Event::ServiceCheck(service_check)
+                }
+                None => {
+                    source_metrics.failed_context_resolve_total().increment(1);
+                    return Ok(None);
+                }
+            }
         }
     };
 
@@ -956,6 +979,68 @@ fn handle_metric_packet(
         // We failed to resolve the context, likely due to not having enough interner capacity.
         None => None,
     }
+}
+
+fn handle_event_packet(
+    packet: EventPacket, tags_resolver: &mut TagsResolver, peer_addr: &ConnectionAddress, additional_tags: &[String],
+) -> Option<EventD> {
+    // Capture the origin from the packet, including any process ID information if we have it.
+    let mut origin = origin_from_event_packet(&packet);
+    if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
+        origin.set_process_id(creds.pid as u32);
+    }
+    let origin_tags = tags_resolver.resolve_origin_tags(Some(origin));
+
+    // Chain the existing tags with the additional tags.
+    let tags = packet
+        .tags
+        .clone()
+        .into_iter()
+        .chain(additional_tags.iter().map(|s| s.as_str()));
+
+    let tags = tags_resolver.create_tag_set(tags)?;
+
+    let eventd = EventD::new(packet.title, packet.text)
+        .with_timestamp(packet.timestamp)
+        .with_hostname(packet.hostname.map(|s| s.into()))
+        .with_aggregation_key(packet.aggregation_key.map(|s| s.into()))
+        .with_alert_type(packet.alert_type)
+        .with_priority(packet.priority)
+        .with_source_type_name(packet.source_type_name.map(|s| s.into()))
+        .with_alert_type(packet.alert_type)
+        .with_tags(tags)
+        .with_origin_tags(origin_tags);
+
+    Some(eventd)
+}
+
+fn handle_service_check_packet(
+    packet: ServiceCheckPacket, tags_resolver: &mut TagsResolver, peer_addr: &ConnectionAddress,
+    additional_tags: &[String],
+) -> Option<ServiceCheck> {
+    let mut origin = origin_from_service_check_packet(&packet);
+    if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
+        origin.set_process_id(creds.pid as u32);
+    }
+    let origin_tags = tags_resolver.resolve_origin_tags(Some(origin));
+
+    // Chain the existing tags with the additional tags.
+    let tags = packet
+        .tags
+        .clone()
+        .into_iter()
+        .chain(additional_tags.iter().map(|s| s.as_str()))
+        .chain(origin_tags.into_iter().map(|s| s.as_str()));
+
+    let tags = tags_resolver.create_tag_set(tags)?;
+
+    let service_check = ServiceCheck::new(packet.name, packet.status)
+        .with_timestamp(packet.timestamp)
+        .with_hostname(packet.hostname.map(|s| s.into()))
+        .with_tags(tags)
+        .with_message(packet.message.map(|s| s.into()));
+
+    Some(service_check)
 }
 
 async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &SourceContext, listen_addr: &ListenAddress) {
@@ -1031,7 +1116,7 @@ const fn get_adjusted_buffer_size(buffer_size: usize) -> usize {
 mod tests {
     use std::net::SocketAddr;
 
-    use saluki_context::ContextResolverBuilder;
+    use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
     use saluki_io::{
         deser::codec::{dogstatsd::ParsedPacket, DogstatsdCodec, DogstatsdCodecConfiguration},
         net::ConnectionAddress,
@@ -1049,8 +1134,12 @@ mod tests {
         // We set our metric name to be longer than 31 bytes (the inlining limit) to ensure this.
 
         let codec = DogstatsdCodec::from_configuration(DogstatsdCodecConfiguration::default());
-        let context_resolver = ContextResolverBuilder::for_tests().with_heap_allocations(false).build();
-        let mut context_resolvers = ContextResolvers::manual(context_resolver.clone(), context_resolver);
+        let tags_resolver = TagsResolverBuilder::for_tests().build();
+        let context_resolver = ContextResolverBuilder::for_tests()
+            .with_heap_allocations(false)
+            .with_tags_resolver(Some(tags_resolver.clone()))
+            .build();
+        let mut context_resolvers = ContextResolvers::manual(context_resolver.clone(), context_resolver, tags_resolver);
         let peer_addr = ConnectionAddress::from("1.1.1.1:1234".parse::<SocketAddr>().unwrap());
 
         let input = "big_metric_name_that_cant_possibly_be_inlined:1|c|#tag1:value1,tag2:value2,tag3:value3";
@@ -1066,8 +1155,12 @@ mod tests {
     #[test]
     fn metric_with_additional_tags() {
         let codec = DogstatsdCodec::from_configuration(DogstatsdCodecConfiguration::default());
-        let context_resolver = ContextResolverBuilder::for_tests().with_heap_allocations(false).build();
-        let mut context_resolvers = ContextResolvers::manual(context_resolver.clone(), context_resolver);
+        let tags_resolver = TagsResolverBuilder::for_tests().build();
+        let context_resolver = ContextResolverBuilder::for_tests()
+            .with_heap_allocations(false)
+            .with_tags_resolver(Some(tags_resolver.clone()))
+            .build();
+        let mut context_resolvers = ContextResolvers::manual(context_resolver.clone(), context_resolver, tags_resolver);
         let peer_addr = ConnectionAddress::from("1.1.1.1:1234".parse::<SocketAddr>().unwrap());
 
         let existing_tags = ["tag1:value1", "tag2:value2", "tag3:value3"];
