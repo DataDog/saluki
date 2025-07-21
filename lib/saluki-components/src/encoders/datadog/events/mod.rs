@@ -250,8 +250,8 @@ async fn run_request_builder(
                         match maybe_request {
                             Ok((events, request)) => {
                                 let payload_meta = PayloadMetadata::from_event_count(events);
-                                let http_payload = HttpPayload::new(request);
-                                let payload = Payload::Http(payload_meta, http_payload);
+                                let http_payload = HttpPayload::new(payload_meta,request);
+                                let payload = Payload::Http(http_payload);
 
                                 payloads_tx.send(payload).await
                                     .map_err(|_| generic_error!("Failed to send payload to encoder."))?;
@@ -299,8 +299,8 @@ async fn run_request_builder(
                             debug!("Flushed request from events request builder.");
 
                             let payload_meta = PayloadMetadata::from_event_count(events);
-                            let http_payload = HttpPayload::new(request);
-                            let payload = Payload::Http(payload_meta, http_payload);
+                            let http_payload = HttpPayload::new(payload_meta,request);
+                            let payload = Payload::Http(http_payload);
 
                             payloads_tx.send(payload).await
                                 .map_err(|_| generic_error!("Failed to send payload to encoder."))?;
