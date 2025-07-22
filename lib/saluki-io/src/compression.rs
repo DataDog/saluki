@@ -12,7 +12,7 @@ use average::{Estimate as _, Variance};
 use http::HeaderValue;
 use pin_project::pin_project;
 use tokio::io::AsyncWrite;
-use tracing::trace;
+use tracing::info;
 
 static CONTENT_ENCODING_DEFLATE: HeaderValue = HeaderValue::from_static("deflate");
 static CONTENT_ENCODING_ZSTD: HeaderValue = HeaderValue::from_static("zstd");
@@ -238,7 +238,7 @@ impl CompressionEstimator {
             self.known_compressed_len = compressed_len;
             self.in_flight_uncompressed_len = 0;
 
-            trace!(
+            info!(
                 block_size = compressed_len_delta,
                 block_compression_ratio,
                 compressed_len = self.known_compressed_len,
