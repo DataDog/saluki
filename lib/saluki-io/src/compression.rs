@@ -8,11 +8,15 @@ use async_compression::{
     tokio::write::{ZlibEncoder, ZstdEncoder},
     Level,
 };
-use average::{Estimate as _, Variance};
 use http::HeaderValue;
 use pin_project::pin_project;
 use tokio::io::AsyncWrite;
 use tracing::info;
+
+// "Red zone" threshold factor.
+//
+// See `CompressionEstimator::would_write_exceed_threshold` for details.
+const THRESHOLD_RED_ZONE: f64 = 0.99;
 
 static CONTENT_ENCODING_DEFLATE: HeaderValue = HeaderValue::from_static("deflate");
 static CONTENT_ENCODING_ZSTD: HeaderValue = HeaderValue::from_static("zstd");
@@ -82,6 +86,12 @@ impl<W> CountingWriter<W> {
     }
 }
 
+/// Statistics for a writer.
+pub trait WriteStatistics {
+    /// Returns the total number of bytes written.
+    fn total_written(&self) -> u64;
+}
+
 impl<W: AsyncWrite> AsyncWrite for CountingWriter<W> {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
         let mut this = self.project();
@@ -124,17 +134,6 @@ impl<W: AsyncWrite> Compressor<W> {
             CompressionScheme::Noop => Self::Noop(CountingWriter::new(writer)),
             CompressionScheme::Zlib(level) => Self::Zlib(ZlibEncoder::with_quality(writer, level)),
             CompressionScheme::Zstd(level) => Self::Zstd(ZstdEncoder::with_quality(CountingWriter::new(writer), level)),
-        }
-    }
-
-    /// Returns the total number of bytes written by the compressor.
-    ///
-    /// This does not account for any buffered data that has not yet been written to the output stream.
-    pub fn total_out(&self) -> u64 {
-        match self {
-            Self::Noop(encoder) => encoder.total_written(),
-            Self::Zlib(encoder) => encoder.total_out(),
-            Self::Zstd(encoder) => encoder.get_ref().total_written(),
         }
     }
 
@@ -183,6 +182,16 @@ impl<W: AsyncWrite> AsyncWrite for Compressor<W> {
     }
 }
 
+impl<W: AsyncWrite> WriteStatistics for Compressor<W> {
+    fn total_written(&self) -> u64 {
+        match self {
+            Compressor::Noop(encoder) => encoder.total_written(),
+            Compressor::Zlib(encoder) => encoder.total_out(),
+            Compressor::Zstd(encoder) => encoder.get_ref().total_written(),
+        }
+    }
+}
+
 /// A streaming estimator for the size of compressed data.
 ///
 /// For many compression algorithms, there is a large amount of buffering and state during compression. This allows
@@ -209,39 +218,34 @@ impl<W: AsyncWrite> AsyncWrite for Compressor<W> {
 /// cleaner and let us avoid any footguns around forgetting to update the necessary estimator state, etc.
 #[derive(Debug, Default)]
 pub struct CompressionEstimator {
-    known_compressed_len: u64,
     in_flight_uncompressed_len: usize,
-    block_compression_ratio_variance: Variance,
+    total_uncompressed_len: usize,
+    total_compressed_len: u64,
+    current_compression_ratio: f64,
 }
 
 impl CompressionEstimator {
     /// Tracks a write to the compressor.
-    pub fn track_write<W>(&mut self, compressor: &Compressor<W>, uncompressed_len: usize)
+    pub fn track_write<W>(&mut self, compressor: &W, uncompressed_len: usize)
     where
-        W: AsyncWrite,
+        W: WriteStatistics,
     {
         self.in_flight_uncompressed_len += uncompressed_len;
+        self.total_uncompressed_len += uncompressed_len;
 
-        let compressed_len = compressor.total_out();
-        let compressed_len_delta = (compressed_len - self.known_compressed_len) as usize;
+        let compressed_len = compressor.total_written();
+        let compressed_len_delta = (compressed_len - self.total_compressed_len) as usize;
         if compressed_len_delta > 0 {
-            // Calculate the compression ratio for the block we just observed being flushed based on how many in-flight
-            // uncompressed bytes we were tracking. We don't try and compensate for the fact that only a few bytes of
-            // the last write may have actually been compressed, which could erroneously drive up the estimated
-            // compression ratio for that block.
-            //
-            // This does mean that some blocks may be under or over their actual compression ratio, but it should
-            // generally even out over the course of a full payload.
-            let block_compression_ratio = compressed_len_delta as f64 / self.in_flight_uncompressed_len as f64;
-            self.block_compression_ratio_variance.add(block_compression_ratio);
-
-            self.known_compressed_len = compressed_len;
+            // We just observed the compressor flushing data, so we need to recalculate our compression ratio.
+            self.current_compression_ratio = compressed_len as f64 / self.total_uncompressed_len as f64;
+            self.total_compressed_len = compressed_len;
             self.in_flight_uncompressed_len = 0;
 
             info!(
                 block_size = compressed_len_delta,
-                block_compression_ratio,
-                compressed_len = self.known_compressed_len,
+                uncompressed_len = self.total_uncompressed_len,
+                compressed_len = self.total_compressed_len,
+                compression_ratio = self.current_compression_ratio,
                 "Compressor wrote block to output stream."
             );
         }
@@ -249,43 +253,36 @@ impl CompressionEstimator {
 
     /// Resets the estimator.
     pub fn reset(&mut self) {
-        self.known_compressed_len = 0;
         self.in_flight_uncompressed_len = 0;
-        self.block_compression_ratio_variance = Variance::default();
+        self.total_uncompressed_len = 0;
+        self.total_compressed_len = 0;
+        self.current_compression_ratio = 0.0;
     }
 
     /// Returns the estimated length of the compressor.
     ///
     /// This figure is the sum of the total bytes written by the compressor to the output stream and the number of
-    /// uncompressed bytes written to the compressor since the last time the compressor wrote to the output stream.
-    /// Effectively, we emit the upper bound -- input was incompressible -- in size for the input, while integrating
-    /// what we know the compressor _has_ compressed.
+    /// uncompressed bytes written to the compressor since the last time the compressor wrote to the output stream
+    /// when factoring in the estimated compression ratio over the overall output stream.
     pub fn estimated_len(&self) -> usize {
-        // Get our estimated block compression ratio, which is taken across all observed compressed blocks.
-        //
-        // We adjust that compression ratio upwards by the standard error of the block compression ratios we've
-        // observed, simply as a safety net against the having blocks with wildly differing compression ratios.
-        let mut estimated_compression_ratio = self.block_compression_ratio_variance.mean();
-        if estimated_compression_ratio.is_nan() {
-            // Not enough data yet to estimate compression ratio, so we just assume no compression.
-            estimated_compression_ratio = 1.0;
-        } else {
-            estimated_compression_ratio *= 1.0 + self.block_compression_ratio_variance.error();
-        }
-
         let estimated_in_flight_compressed_len =
-            (self.in_flight_uncompressed_len as f64 * estimated_compression_ratio) as usize;
+            (self.in_flight_uncompressed_len as f64 * self.current_compression_ratio) as usize;
 
-        self.known_compressed_len as usize + estimated_in_flight_compressed_len
+        self.total_compressed_len as usize + estimated_in_flight_compressed_len
     }
 
     /// Estimates if writing `len` bytes to the compressor would cause the final compressed size to exceed `threshold`
     /// bytes.
     pub fn would_write_exceed_threshold(&self, len: usize, threshold: usize) -> bool {
+        // If the length of the data to be written exceeds the threshold, then it obviously would exceed the threshold.
+        if len > threshold {
+            return true;
+        }
+
         // If we have yet to see any compressed data, we can't make a meaningful estimate, and this likely means that
         // the compressor is still actively able to compress more data into the first block, which when eventually
         // written, should never exceed the compressed size limit... so we choose to not block writes in this case.
-        if self.known_compressed_len == 0 {
+        if self.total_compressed_len == 0 {
             return false;
         }
 
@@ -295,12 +292,133 @@ impl CompressionEstimator {
         // estimate that writing `len` more bytes would put our compressed length into the "red zone", then it's too
         // risky to write those bytes.
         //
-        // This is a bit of a fudge factor, but we arrived at 1% through empirical testing with the regression
+        // This is a bit of a fudge factor, but we arrived at the value through empirical testing with the regression
         // detector benchmarks. Small enough to not have a major impact on payload size efficiency, but large enough to
         // entirely get rid of compressed payload size limit violations.
-        const THRESHOLD_RED_ZONE: f64 = 0.99;
-
         let adjusted_threshold = (threshold as f64 * THRESHOLD_RED_ZONE) as usize;
         self.estimated_len() + len > adjusted_threshold
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockCompressor {
+        current_uncompressed_len: u64,
+        total_uncompressed_len: usize,
+        compressed_len: u64,
+    }
+
+    impl MockCompressor {
+        fn new() -> Self {
+            MockCompressor {
+                current_uncompressed_len: 0,
+                total_uncompressed_len: 0,
+                compressed_len: 0,
+            }
+        }
+
+        fn write(&mut self, n: usize) {
+            self.current_uncompressed_len += n as u64;
+            self.total_uncompressed_len += n;
+        }
+
+        fn flush(&mut self, compression_ratio: f64) {
+            self.compressed_len += (self.current_uncompressed_len as f64 * compression_ratio) as u64;
+            self.current_uncompressed_len = 0;
+        }
+
+        fn total_uncompressed_len(&self) -> usize {
+            self.total_uncompressed_len
+        }
+    }
+
+    impl WriteStatistics for MockCompressor {
+        fn total_written(&self) -> u64 {
+            self.compressed_len
+        }
+    }
+
+    #[test]
+    fn compression_estimator_no_output() {
+        let estimator = CompressionEstimator::default();
+
+        assert!(!estimator.would_write_exceed_threshold(10, 100));
+        assert!(estimator.would_write_exceed_threshold(100, 90));
+    }
+
+    #[test]
+    fn compression_estimator_single_flush() {
+        const MAX_COMPRESSED_LEN: usize = 100;
+        const COMPRESSION_RATIO: f64 = 0.7;
+        const WRITE_LEN: usize = 50;
+
+        let mut estimator = CompressionEstimator::default();
+
+        // Create our mock compressor and do a basic write, and then flush, so that our estimator can get some data.
+        let mut compressor = MockCompressor::new();
+        assert!(!estimator.would_write_exceed_threshold(WRITE_LEN, MAX_COMPRESSED_LEN));
+
+        // Write 50 bytes with a compression ratio of 0.7, giving us 35 bytes compressed.
+        compressor.write(WRITE_LEN);
+        compressor.flush(COMPRESSION_RATIO);
+        assert_eq!(compressor.total_written(), 35);
+
+        estimator.track_write(&compressor, WRITE_LEN);
+
+        // We should be able to write 65 more bytes compressed, so 100 bytes uncompressed, given the compression ratio we have (0.7),
+        // would give us 70 bytes estimated.. which is over the threshold.
+        assert!(estimator.would_write_exceed_threshold(100, MAX_COMPRESSED_LEN));
+
+        // However, another 50 byte write would theoretically just be another 35 bytes compressed, so 85 bytes compressed total,
+        // which is under our threshold and should be allowed.
+        assert!(!estimator.would_write_exceed_threshold(WRITE_LEN, MAX_COMPRESSED_LEN));
+    }
+
+    #[test]
+    fn compression_estimator_multiple_flush_partial() {
+        const MAX_COMPRESSED_LEN: usize = 5000;
+        const FIRST_COMPRESSION_RATIO: f64 = 0.7;
+        const FIRST_WRITE_LEN: usize = 5000;
+        const SECOND_COMPRESSION_RATIO: f64 = 2.1;
+        const SECOND_WRITE_LEN: usize = 300;
+        const THIRD_WRITE_LEN: usize = 820;
+
+        let mut estimator = CompressionEstimator::default();
+
+        // Create our mock compressor and assert we can do our first write.
+        let mut compressor = MockCompressor::new();
+        assert!(!estimator.would_write_exceed_threshold(FIRST_WRITE_LEN, MAX_COMPRESSED_LEN));
+
+        // Write 5,000 bytes with a compression ratio of 0.7, giving us 3,500 bytes compressed.
+        compressor.write(FIRST_WRITE_LEN);
+        compressor.flush(FIRST_COMPRESSION_RATIO);
+        assert_eq!(compressor.total_uncompressed_len(), FIRST_WRITE_LEN);
+        assert_eq!(compressor.total_written(), 3500);
+
+        estimator.track_write(&compressor, FIRST_WRITE_LEN);
+
+        // We now do second write that simulates a "short" flush on the compressor: this might just be the compressor writing a partial block.
+        //
+        // What we want to test here is the estimator's ability to focus on the overall compression ratio rather than getting "lost" due to
+        // a single block being flushed which, when viewed naively, appears to be vastly bigger than the actual in-flight uncompressed data
+        // that it represents.
+        //
+        // We end up writing 300 bytes uncompressed with a compression ratio of 2.1, giving us 630 bytes compressed. We now have a total of
+        // 5,300 bytes uncompressed and 4,130 bytes compressed. Our overall compression ratio is now 0.77.
+        compressor.write(SECOND_WRITE_LEN);
+        compressor.flush(SECOND_COMPRESSION_RATIO);
+        assert_eq!(compressor.total_uncompressed_len(), FIRST_WRITE_LEN + SECOND_WRITE_LEN);
+        assert_eq!(compressor.total_written(), 4130);
+
+        estimator.track_write(&compressor, SECOND_WRITE_LEN);
+
+        // At this point, with our compressed limit of 5,000 bytes, we should be able to fit in another 870 bytes compressed. We do have to
+        // compensate for the "red zone" threshold, though, which should put us at a threshold of 4,950 bytes so 820 bytes compressed.
+        //
+        // We use the compressed length when calling `would_write_exceed_threshold` because it uses the uncompressed length as the worst-case
+        // scenario, which is that the write would not be compressed at all.
+        assert!(!estimator.would_write_exceed_threshold(THIRD_WRITE_LEN, MAX_COMPRESSED_LEN));
     }
 }
