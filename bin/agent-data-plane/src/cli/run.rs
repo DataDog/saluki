@@ -7,7 +7,9 @@ use arc_swap::ArcSwap;
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
 use saluki_components::{
-    destinations::{DatadogEventsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration},
+    destinations::{DatadogMetricsConfiguration, DatadogServiceChecksConfiguration},
+    encoders::DatadogEventsConfiguration,
+    forwarders::DatadogConfiguration,
     sources::DogStatsDConfiguration,
     transforms::{
         AggregateConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration, DogstatsDPrefixFilterConfiguration,
@@ -146,18 +148,20 @@ async fn create_topology(
 
     let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Metrics destination.")?;
-    let mut dd_events_config = DatadogEventsConfiguration::from_configuration(configuration)
-        .error_context("Failed to configure Datadog Events destination.")?;
+    let dd_events_config = DatadogEventsConfiguration::from_configuration(configuration)
+        .error_context("Failed to configure Datadog Events encoder.")?;
     let mut dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Service Checks destination.")?;
+    let mut dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
+        .error_context("Failed to configure Datadog forwarder.")?;
 
     match RefresherConfiguration::from_configuration(configuration) {
         Ok(refresher_configuration) => {
             let refreshable_configuration = refresher_configuration.build(shared_config).await?;
 
             dd_metrics_config.add_refreshable_configuration(refreshable_configuration.clone());
-            dd_events_config.add_refreshable_configuration(refreshable_configuration.clone());
-            dd_service_checks_config.add_refreshable_configuration(refreshable_configuration);
+            dd_service_checks_config.add_refreshable_configuration(refreshable_configuration.clone());
+            dd_forwarder_config.add_refreshable_configuration(refreshable_configuration);
         }
         Err(_) => {
             info!(
@@ -172,15 +176,17 @@ async fn create_topology(
         .add_transform("dsd_agg", dsd_agg_config)?
         .add_transform("enrich", enrich_config)?
         .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
+        .add_encoder("dd_events_encode", dd_events_config)?
         .add_destination("dd_metrics_out", dd_metrics_config)?
-        .add_destination("dd_events_out", dd_events_config)?
         .add_destination("dd_service_checks_out", dd_service_checks_config)?
+        .add_forwarder("dd_out", dd_forwarder_config)?
         .connect_component("dsd_agg", ["dsd_in.metrics"])?
         .connect_component("dsd_prefix_filter", ["dsd_agg"])?
         .connect_component("enrich", ["dsd_prefix_filter"])?
         .connect_component("dd_metrics_out", ["enrich"])?
-        .connect_component("dd_events_out", ["dsd_in.events"])?
-        .connect_component("dd_service_checks_out", ["dsd_in.service_checks"])?;
+        .connect_component("dd_events_encode", ["dsd_in.events"])?
+        .connect_component("dd_service_checks_out", ["dsd_in.service_checks"])?
+        .connect_component("dd_out", ["dd_events_encode"])?;
 
     if configuration.get_typed_or_default::<bool>("enable_preaggr_pipeline") {
         let preaggr_dd_url = configuration
