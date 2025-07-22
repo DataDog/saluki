@@ -9,9 +9,10 @@ use saluki_api::{
     APIHandler,
 };
 use saluki_config::GenericConfiguration;
-use saluki_core::{components::destinations::DestinationBuilder, data_model::event::EventType};
+use saluki_core::{components::destinations::{Destination, DestinationBuilder}, data_model::event::EventType};
 use saluki_error::GenericError;
 use serde::Deserialize;
+use memory_accounting::UsageExpr;
 use tracing::info;
 
 /// Configuration for DogStatsD internal statistics API.
@@ -34,6 +35,27 @@ pub struct DogStatsDAPIHandler {
     state: DogStatsDHandlerState,
 }
 
+/// DogStatsD destination that collects internal statistics.
+pub struct DogStatsDDestination;
+
+impl DogStatsDDestination {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait::async_trait]
+impl Destination for DogStatsDDestination {
+    async fn run(
+        self: Box<Self>,
+        _context: saluki_core::components::destinations::DestinationContext,
+    ) -> Result<(), saluki_error::GenericError> {
+        // Collect statistics from incoming metrics and store them in the API handler state
+        // TODO: actual implementation would process statistics
+        Ok(())
+    }
+}
+
 impl DogStatsDAPIHandler {
     pub fn from_state(state: Arc<Mutex<DogStatsDHandlerState>>) -> Self {
         Self {
@@ -43,7 +65,7 @@ impl DogStatsDAPIHandler {
 
     async fn stats_handler(State(_state): State<DogStatsDHandlerState>) -> impl IntoResponse {
         info!("DogStatsD stats requested");
-        "DogStatsD stats endpoint - TODO: implement actual statistics"
+        // TODO: This is where the stats will be processed and returned
     }
 }
 
@@ -80,13 +102,18 @@ impl DestinationBuilder for DogStatsDStatisticsConfiguration {
     async fn build(
         &self, _context: saluki_core::components::ComponentContext,
     ) -> Result<Box<dyn saluki_core::components::destinations::Destination + Send>, saluki_error::GenericError> {
-        // This is just a placeholder - the actual API handler is used in the control plane
-        unimplemented!("DogStatsDStatisticsConfiguration is used for API handler, not as a destination")
+        Ok(Box::new(DogStatsDDestination::new()))
     }
 }
 
 impl MemoryBounds for DogStatsDStatisticsConfiguration {
-    fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {
-        // No memory bounds needed for API handler configuration
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        builder
+            .minimum()
+            .with_single_value::<DogStatsDStatisticsConfiguration>("configuration struct");
+        
+        builder
+            .firm()
+            .with_expr(UsageExpr::constant("api handler state", 64)); // 64 bytes as a placeholder until state is implemented
     }
 }
