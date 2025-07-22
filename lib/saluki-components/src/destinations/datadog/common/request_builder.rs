@@ -351,8 +351,8 @@ where
                 endpoint = ?self.endpoint_uri,
                 encoded_len,
                 uncompressed_len = self.uncompressed_len(),
-                estimated_compressed_len = self.compression_estimator.estimated_len(),
-                "Input would exceed endpoint size limits."
+                "Input would exceed endpoint size limits. compression_estimator: {:?}",
+                self.compression_estimator
             );
             return Ok(false);
         }
@@ -385,8 +385,8 @@ where
     pub async fn flush(&mut self) -> Vec<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         if self.encoded_inputs.is_empty() {
             warn!(
-                "Flush requested with no encoded inputs present. endpoint_uri={}, uncompressed_len={}, max_inputs_per_request={}, compression_estimator={:?}, compressed_len_limit={}, scratch_buf.len()={}",
-                self.endpoint_uri, self.uncompressed_len, self.max_inputs_per_payload, self.compression_estimator, self.compressed_len_limit, self.scratch_buf.len()
+                "Flush requested with no encoded inputs present. endpoint_uri={} uncompressed_len={} compression_estimator={:?}",
+                self.endpoint_uri, self.uncompressed_len, self.compression_estimator
             );
             return vec![];
         }
@@ -490,10 +490,10 @@ where
         }
 
         info!(
-            "Starting request split operation for {} input events. uncompressed_len={} estimated_compressed_len={}",
+            "Starting request split operation for {} input events. uncompressed_len={} compression_estimator: {:?}",
             self.encoded_inputs.len(),
             self.uncompressed_len(),
-            self.compression_estimator.estimated_len()
+            self.compression_estimator
         );
 
         // We're going to attempt to split all of the previously-encoded inputs between two _new_ compressed payloads,
@@ -509,7 +509,8 @@ where
         //
         // We can do this by swapping it out with a new `Vec<E::Input>` since empty vectors don't allocate at all.
         let mut encoded_inputs = std::mem::take(&mut self.encoded_inputs);
-        let encoded_inputs_pivot = encoded_inputs.len() / 2;
+        let encoded_inputs_len = encoded_inputs.len();
+        let encoded_inputs_pivot = encoded_inputs_len / 2;
 
         let first_half_encoded_inputs = &encoded_inputs[0..encoded_inputs_pivot];
         let second_half_encoded_inputs = &encoded_inputs[encoded_inputs_pivot..];
@@ -527,11 +528,11 @@ where
         self.encoded_inputs = encoded_inputs;
 
         info!(
-            "Finished splitting oversized request. Generated {} subrequest(s). uncompressed_len={} estimated_compressed_len={} encoded_inputs={}",
+            "Finished splitting oversized request. Generated {} subrequest(s). uncompressed_len={} encoded_inputs={} compression_estimator={:?}",
             requests.len(),
             self.uncompressed_len(),
             self.compression_estimator.estimated_len(),
-            self.encoded_inputs.len()
+            self.compression_estimator
         );
 
         requests
@@ -541,24 +542,34 @@ where
         &mut self, inputs: &[E::Input],
     ) -> Option<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         info!(
-            "Starting request split suboperation for {} input events. uncompressed_len={} estimated_compressed_len={}",
+            "Starting request split suboperation for {} input events. uncompressed_len={} compression_estimator={:?}",
             inputs.len(),
             self.uncompressed_len(),
-            self.compression_estimator.estimated_len()
+            self.compression_estimator
         );
 
-        for input in inputs {
+        for (idx, input) in inputs.iter().enumerate() {
             // Encode each input and write it to our compressor.
             //
             // We skip any of the typical payload size checks here, because we already know we at least fit these
             // inputs into the previous attempted payload, so there's no reason to redo all of that here.
             match self.encode_inner(input).await {
-                Ok(true) => {}
+                Ok(true) => {
+                    info!(
+                        "Successfully encoded input {}/{}. uncompressed_len={} compression_estimator={:?}",
+                        idx + 1,
+                        inputs.len(),
+                        self.uncompressed_len(),
+                        self.compression_estimator
+                    );
+                }
                 Ok(false) => {
                     // If we can't encode the input, we need to stop here and return the input to the caller.
                     warn!(
-                        "Failed during request split suboperation to encode input. Input: {:?}",
-                        input
+                        "Failed during request split suboperation to encode input {}/{}. compression_estimator={:?}",
+                        idx + 1,
+                        inputs.len(),
+                        self.compression_estimator
                     );
                     return None;
                 }
@@ -639,10 +650,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
+    use std::{collections::VecDeque, convert::Infallible};
 
+    //use std::io::Read as _;
+
+    //use bytes::Buf as _;
     use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
     use http_body_util::BodyExt as _;
+    use proptest::{collection::vec_deque as arb_vecdeque, prelude::*};
     use saluki_core::pooling::FixedSizeObjectPool;
     use saluki_io::{
         buf::{BytesBuffer, FixedSizeVec},
@@ -730,6 +745,11 @@ mod tests {
                 actual_request_body
             );
         }
+    }
+
+    fn arb_payload() -> impl Strategy<Value = String> {
+        // Very crude approximation of a random binary/hexadecimal-y payload.
+        "[a-zA-Z0-9]{384,1024}"
     }
 
     #[derive(Clone, Debug)]
@@ -1026,5 +1046,90 @@ mod tests {
                 _ => panic!("expected UncompressedSizeLimitTooLow error, got: {:?}", e),
             },
         }
+    }
+
+    #[test_strategy::proptest(async = "tokio")]
+    #[cfg_attr(miri, ignore)]
+    async fn property_test_gauntlet(#[strategy(arb_vecdeque(arb_payload(), 16..=512))] mut inputs: VecDeque<String>) {
+        let original_inputs_len = inputs.len();
+
+        // Calculate the size of our buffer pool based on the maximum size of an item and the maximum number of items
+        // we expect to try compressing, such that we should be able to hold 4x the maximum size of the uncompressed
+        // data, which should always be sufficient, and allows for scenarios where buffers end up with small,
+        // partial fills.
+        let buffer_capacity = 16_384;
+        let buffer_pool_size = ((1024 * 512) / buffer_capacity) * 4;
+        let buffer_pool = FixedSizeObjectPool::with_builder("test", buffer_pool_size, || {
+            FixedSizeVec::with_capacity(buffer_capacity)
+        });
+
+        // Create our request builder with lowered limits just so the test can actually exercise them.
+        let encoder = TestEncoder::new(524_288, 8_192, "/fake/endpoint");
+        let mut request_builder = RequestBuilder::new(encoder, buffer_pool, CompressionScheme::zstd_default())
+            .await
+            .expect("should not fail to create request builder");
+        request_builder.with_max_inputs_per_payload(32);
+
+        // Go through for each input, and encode it. We also capture a copy of the input for later verification.
+        //
+        // If we're given back the item during encoding and a flush is indicated, we do trigger a flush... but we
+        // take the requests and just dump out their contents for later verification.
+        //let mut raw_inputs_concatenated = Vec::new();
+        //let mut flushed_requests_concatenated = Vec::new();
+        let mut flushed_inputs_len = 0;
+
+        while let Some(input) = inputs.pop_front() {
+            //raw_inputs_concatenated.extend_from_slice(input.as_str().as_bytes());
+
+            let original_input = match request_builder.encode(input).await {
+                Ok(None) => continue,
+                Ok(Some(original_input)) => original_input,
+                Err(_) => panic!("should not fail to encode input in general"),
+            };
+
+            // We were instructed to flush, so we do so.
+            let requests = request_builder.flush().await;
+            for request in requests {
+                match request {
+                    Ok((events, _request)) => {
+                        flushed_inputs_len += events;
+
+                        /*let request_body = request.into_body();
+                        let mut request_body_reader = request_body.reader();
+                        request_body_reader
+                            .read_to_end(&mut flushed_requests_concatenated)
+                            .expect("should not fail to read request body");*/
+                    }
+                    Err(_) => panic!("should not fail to flush requests"),
+                }
+            }
+
+            // Try again to encode our input after flushing.
+            match request_builder.encode(original_input).await {
+                Ok(None) => continue,
+                Ok(Some(_)) => panic!("should not fail to encode an input after flushing"),
+                Err(_) => panic!("should not fail to encode input in general"),
+            };
+        }
+
+        // One final flush to capture anything still in the request builder.
+        let requests = request_builder.flush().await;
+        for request in requests {
+            match request {
+                Ok((events, _request)) => {
+                    flushed_inputs_len += events;
+
+                    /*let request_body = request.into_body();
+                    let mut request_body_reader = request_body.reader();
+                    request_body_reader
+                        .read_to_end(&mut flushed_requests_concatenated)
+                        .expect("should not fail to read request body");*/
+                }
+                Err(_) => panic!("should not fail to flush requests"),
+            }
+        }
+
+        //prop_assert_eq!(raw_inputs_concatenated, flushed_requests_concatenated);
+        prop_assert_eq!(original_inputs_len, flushed_inputs_len);
     }
 }
