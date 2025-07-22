@@ -3,9 +3,7 @@ use std::time::{Duration, Instant};
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
 use saluki_components::{
-    destinations::{
-        DatadogMetricsConfiguration, DatadogServiceChecksConfiguration, DogStatsDInternalStatisticsConfiguration,
-    },
+    destinations::{DatadogMetricsConfiguration, DatadogServiceChecksConfiguration, DogStatsDStatisticsConfiguration},
     encoders::DatadogEventsConfiguration,
     forwarders::DatadogConfiguration,
     sources::DogStatsDConfiguration,
@@ -147,8 +145,8 @@ async fn create_topology(
         .error_context("Failed to configure Datadog Service Checks destination.")?;
     let mut dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog forwarder.")?;
-    let mut dsd_stats_config = DogStatsDInternalStatisticsConfiguration::api_handler()
-        .error_context("Failed to configure DogStatsD Internal Statistics destination.")?;
+    let dsd_stats_config = DogStatsDStatisticsConfiguration::from_configuration(configuration)
+        .error_context("Failed to configure DogStatsD Statistics destination.")?;
 
     match RefresherConfiguration::from_configuration(configuration) {
         Ok(refresher_configuration) => {
