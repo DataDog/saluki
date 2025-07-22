@@ -7,10 +7,7 @@ use bytes::{Buf, Bytes};
 use http::Request;
 use http_body::{Body, Frame};
 use pin_project::pin_project;
-use saluki_io::{
-    buf::ReadIoBuffer,
-    net::util::retry::{EventContainer, Retryable},
-};
+use saluki_io::net::util::retry::{EventContainer, Retryable};
 use serde::{ser::SerializeSeq as _, Deserialize, Serialize, Serializer};
 
 /// Data type for the body of `TransactionBody<B>`.
@@ -131,7 +128,7 @@ where
 
 impl<B> Serialize for TransactionBody<B>
 where
-    B: ReadIoBuffer + Clone,
+    B: Buf + Clone,
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -200,7 +197,7 @@ impl Metadata {
 #[serde(bound = "")]
 pub struct Transaction<B>
 where
-    B: ReadIoBuffer + Clone,
+    B: Buf + Clone,
 {
     metadata: Metadata,
 
@@ -210,7 +207,7 @@ where
 
 impl<B> Transaction<B>
 where
-    B: ReadIoBuffer + Clone,
+    B: Buf + Clone,
 {
     /// Create a new `Transaction` from an original request.
     pub fn from_original(metadata: Metadata, request: Request<B>) -> Self {
@@ -233,7 +230,7 @@ where
 
 impl<B> EventContainer for Transaction<B>
 where
-    B: ReadIoBuffer + Clone,
+    B: Buf + Clone,
 {
     fn event_count(&self) -> u64 {
         self.metadata.event_count as u64
@@ -242,7 +239,7 @@ where
 
 impl<B> Retryable for Transaction<B>
 where
-    B: ReadIoBuffer + Clone,
+    B: Buf + Clone,
 {
     fn size_bytes(&self) -> u64 {
         self.request.body().remaining() as u64
