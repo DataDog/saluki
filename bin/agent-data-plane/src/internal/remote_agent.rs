@@ -94,14 +94,14 @@ pub struct RemoteAgentHelperConfiguration {
     client: RemoteAgentClient,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
     prometheus_listen_addr: Option<SocketAddr>,
-    values: Arc<ArcSwap<Value>>,
+    values: Option<Arc<ArcSwap<Value>>>,
 }
 
 impl RemoteAgentHelperConfiguration {
     /// Creates a new `RemoteAgentHelperConfiguration` from the given configuration.
     pub async fn from_configuration(
         config: &GenericConfiguration, local_api_listen_addr: SocketAddr, prometheus_listen_addr: Option<SocketAddr>,
-        shared_config: Arc<ArcSwap<Value>>,
+        shared_config: Option<Arc<ArcSwap<Value>>>,
     ) -> Result<Self, GenericError> {
         let app_details = saluki_metadata::get_app_details();
         let formatted_full_name = app_details
@@ -178,7 +178,7 @@ pub struct RemoteAgentImpl {
     started: DateTime<Utc>,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
     prometheus_listen_addr: Option<SocketAddr>,
-    shared_config: Arc<ArcSwap<Value>>,
+    shared_config: Option<Arc<ArcSwap<Value>>>,
 }
 
 impl RemoteAgentImpl {
@@ -304,17 +304,21 @@ impl RemoteAgent for RemoteAgentImpl {
                     Some(config_event::Event::Snapshot(snapshot)) => {
                         debug!("received config snapshot: {:#?}", snapshot);
                         let map = snapshot_to_map(&snapshot);
-                        self.shared_config.store(map.into());
+                        if let Some(c) = self.shared_config.as_ref() {
+                            c.store(map.into());
+                        }
                     }
                     Some(config_event::Event::Update(update)) => {
                         debug!("received config update: {:#?}", update);
                         let v = proto_value_to_serde_value(update.setting.as_ref().map(|s| &s.value).unwrap_or(&None));
-                        let mut config = (**self.shared_config.load()).clone();
+                        let mut config = (**self.shared_config.as_ref().map(|c| c.load()).unwrap()).clone();
                         config
                             .as_object_mut()
                             .unwrap()
                             .insert(update.setting.as_ref().unwrap().key.clone(), v);
-                        self.shared_config.store(Arc::new(config));
+                        if let Some(c) = self.shared_config.as_ref() {
+                            c.store(Arc::new(config));
+                        }
                     }
                     None => {
                         warn!("Received a ConfigEvent with no event data");
