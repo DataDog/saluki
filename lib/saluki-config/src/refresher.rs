@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::{ConfigurationError, GenericConfiguration};
 
 /// Configuration for setting up `RefreshableConfiguration`.
-#[derive(Default, Deserialize)]
+#[derive(Default, Deserialize, Debug)]
 pub struct RefresherConfiguration {}
 
 /// A configuration whose values are refreshed from a remote source at runtime.

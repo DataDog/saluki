@@ -1,9 +1,5 @@
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
-use arc_swap::ArcSwap;
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
 use saluki_components::{
@@ -16,7 +12,7 @@ use saluki_components::{
         HostEnrichmentConfiguration, HostTagsConfiguration, PreaggregationFilterConfiguration,
     },
 };
-use saluki_config::{ConfigurationLoader, GenericConfiguration, RefresherConfiguration};
+use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{ErrorContext as _, GenericError};
@@ -44,7 +40,8 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         .from_environment("DD")?
         .with_default_secrets_resolution()
         .await?
-        .into_generic()?;
+        .into_generic()
+        .await?;
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
@@ -52,12 +49,9 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
     let env_provider =
         ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry).await?;
 
-    // Config values populated by the remote agent will be stored here.
-    let values = Arc::new(ArcSwap::from_pointee(serde_json::Value::Null));
-
     // Create our primary data topology and spawn any internal processes, which will ensure all relevant components are
     // registered and accounted for in terms of memory usage.
-    let blueprint = create_topology(&configuration, &env_provider, &component_registry, values.clone()).await?;
+    let blueprint = create_topology(&configuration, &env_provider, &component_registry).await?;
 
     spawn_internal_observability_topology(&configuration, &component_registry, health_registry.clone())
         .error_context("Failed to spawn internal observability topology.")?;
@@ -66,7 +60,6 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         &component_registry,
         health_registry.clone(),
         env_provider,
-        values.clone(),
     )
     .error_context("Failed to spawn control plane.")?;
 
@@ -123,8 +116,7 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
 }
 
 async fn create_topology(
-    configuration: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
-    component_registry: &ComponentRegistry, shared_config: Arc<ArcSwap<serde_json::Value>>,
+    configuration: &GenericConfiguration, env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
 ) -> Result<TopologyBlueprint, GenericError> {
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
@@ -155,19 +147,10 @@ async fn create_topology(
     let mut dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog forwarder.")?;
 
-    match RefresherConfiguration::from_configuration(configuration) {
-        Ok(refresher_configuration) => {
-            let refreshable_configuration = refresher_configuration.build(shared_config).await?;
-
-            dd_metrics_config.add_refreshable_configuration(refreshable_configuration.clone());
-            dd_service_checks_config.add_refreshable_configuration(refreshable_configuration.clone());
-            dd_forwarder_config.add_refreshable_configuration(refreshable_configuration);
-        }
-        Err(_) => {
-            info!(
-               "Dynamic configuration refreshing will be unavailable due to failure to configure refresher configuration."
-           )
-        }
+    if let Some(refreshable_config) = configuration.get_refreshable_config() {
+        dd_metrics_config.add_refreshable_configuration(refreshable_config.clone());
+        dd_service_checks_config.add_refreshable_configuration(refreshable_config.clone());
+        dd_forwarder_config.add_refreshable_configuration(refreshable_config.clone());
     }
 
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
