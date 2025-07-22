@@ -20,10 +20,13 @@ use serde::Deserialize;
 use tokio::{select, sync::mpsc, time::sleep};
 use tracing::{debug, error, warn};
 
-use crate::destinations::datadog::{ComponentTelemetry, EventsEndpointEncoder, RequestBuilder, RB_BUFFER_CHUNK_SIZE};
+use crate::destinations::datadog::{
+    ComponentTelemetry, RequestBuilder, ServiceChecksEndpointEncoder, RB_BUFFER_CHUNK_SIZE,
+};
+
+const MAX_SERVICE_CHECKS_PER_PAYLOAD: usize = 100;
 
 const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
-const MAX_EVENTS_PER_PAYLOAD: usize = 100;
 
 const fn default_flush_timeout_secs() -> u64 {
     2
@@ -37,17 +40,17 @@ const fn default_zstd_compressor_level() -> i32 {
     3
 }
 
-/// Datadog Events encoder.
+/// Datadog Service Checks encoder.
 ///
-/// Generates Datadog Events payloads for the Datadog platform.
+/// Generates Datadog Service Checks payloads for the Datadog platform.
 #[derive(Deserialize)]
-pub struct DatadogEventsConfiguration {
+pub struct DatadogServiceChecksConfiguration {
     /// Flush timeout for pending requests, in seconds.
     ///
-    /// When the encoder has written events to the in-flight request payload, but it has not yet reached the payload
-    /// size limits that would force the payload to be flushed, the encoder will wait for a period of time before
-    /// flushing the in-flight request payload. This allows for the possibility of other events to be processed and
-    /// written into the request payload, thereby maximizing the payload size and reducing the number of requests
+    /// When the encoder has written service checks to the in-flight request payload, but it has not yet reached the
+    /// payload size limits that would force the payload to be flushed, the encoder will wait for a period of time
+    /// before flushing the in-flight request payload. This allows for the possibility of other events to be processed
+    /// and written into the request payload, thereby maximizing the payload size and reducing the number of requests
     /// generated and sent overall.
     ///
     /// Defaults to 2 seconds.
@@ -73,17 +76,17 @@ pub struct DatadogEventsConfiguration {
     zstd_compressor_level: i32,
 }
 
-impl DatadogEventsConfiguration {
-    /// Creates a new `DatadogEventsConfiguration` from the given configuration.
+impl DatadogServiceChecksConfiguration {
+    /// Creates a new `DatadogServiceChecksConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
     }
 }
 
 #[async_trait]
-impl EncoderBuilder for DatadogEventsConfiguration {
+impl EncoderBuilder for DatadogServiceChecksConfiguration {
     fn input_event_type(&self) -> EventType {
-        EventType::EventD
+        EventType::ServiceCheck
     }
 
     fn output_payload_type(&self) -> PayloadType {
@@ -97,8 +100,8 @@ impl EncoderBuilder for DatadogEventsConfiguration {
 
         // Create our request builder.
         let mut request_builder =
-            RequestBuilder::new(EventsEndpointEncoder, compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
-        request_builder.with_max_inputs_per_payload(MAX_EVENTS_PER_PAYLOAD);
+            RequestBuilder::new(ServiceChecksEndpointEncoder, compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
+        request_builder.with_max_inputs_per_payload(MAX_SERVICE_CHECKS_PER_PAYLOAD);
 
         let flush_timeout = match self.flush_timeout_secs {
             // We always give ourselves a minimum flush timeout of 10ms to allow for some very minimal amount of
@@ -107,7 +110,7 @@ impl EncoderBuilder for DatadogEventsConfiguration {
             secs => Duration::from_secs(secs),
         };
 
-        Ok(Box::new(DatadogEvents {
+        Ok(Box::new(DatadogServiceChecks {
             request_builder,
             telemetry,
             flush_timeout,
@@ -115,7 +118,7 @@ impl EncoderBuilder for DatadogEventsConfiguration {
     }
 }
 
-impl MemoryBounds for DatadogEventsConfiguration {
+impl MemoryBounds for DatadogServiceChecksConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         // TODO: How do we properly represent the requests we can generate that may be sitting around in-flight?
         //
@@ -126,7 +129,7 @@ impl MemoryBounds for DatadogEventsConfiguration {
         // calculate the firm bound.
         builder
             .minimum()
-            .with_single_value::<DatadogEvents>("component struct")
+            .with_single_value::<DatadogServiceChecks>("component struct")
             .with_array::<EventsBuffer>("request builder events channel", 8)
             .with_array::<PayloadsBuffer>("request builder payloads channel", 8);
 
@@ -134,18 +137,18 @@ impl MemoryBounds for DatadogEventsConfiguration {
             .firm()
             // Capture the size of the "split re-encode" buffer in the request builder, which is where we keep owned
             // versions of events that we encode in case we need to actually re-encode them during a split operation.
-            .with_array::<EventD>("events split re-encode buffer", MAX_EVENTS_PER_PAYLOAD);
+            .with_array::<EventD>("events split re-encode buffer", MAX_SERVICE_CHECKS_PER_PAYLOAD);
     }
 }
 
-pub struct DatadogEvents {
-    request_builder: RequestBuilder<EventsEndpointEncoder>,
+pub struct DatadogServiceChecks {
+    request_builder: RequestBuilder<ServiceChecksEndpointEncoder>,
     telemetry: ComponentTelemetry,
     flush_timeout: Duration,
 }
 
 #[async_trait]
-impl Encoder for DatadogEvents {
+impl Encoder for DatadogServiceChecks {
     async fn run(mut self: Box<Self>, mut context: EncoderContext) -> Result<(), GenericError> {
         let Self {
             request_builder,
@@ -163,10 +166,10 @@ impl Encoder for DatadogEvents {
         let request_builder_handle = context
             .topology_context()
             .global_thread_pool()
-            .spawn_traced_named("dd-events-request-builder", request_builder_fut);
+            .spawn_traced_named("dd-service-checks-request-builder", request_builder_fut);
 
         health.mark_ready();
-        debug!("Datadog Events encoder started.");
+        debug!("Datadog Service Checks encoder started.");
 
         loop {
             select! {
@@ -199,14 +202,14 @@ impl Encoder for DatadogEvents {
             Err(e) => error!(error = %e, "Request builder task panicked."),
         }
 
-        debug!("Datadog Events encoder stopped.");
+        debug!("Datadog Service Checks encoder stopped.");
 
         Ok(())
     }
 }
 
 async fn run_request_builder(
-    mut request_builder: RequestBuilder<EventsEndpointEncoder>, telemetry: ComponentTelemetry,
+    mut request_builder: RequestBuilder<ServiceChecksEndpointEncoder>, telemetry: ComponentTelemetry,
     mut events_rx: mpsc::Receiver<EventsBuffer>, payloads_tx: mpsc::Sender<PayloadsBuffer>, flush_timeout: Duration,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
@@ -217,19 +220,19 @@ async fn run_request_builder(
         select! {
             Some(event_buffer) = events_rx.recv() => {
                 for event in event_buffer {
-                    let eventd = match event.try_into_eventd() {
-                        Some(eventd) => eventd,
+                    let service_check = match event.try_into_service_check() {
+                        Some(service_check) => service_check,
                         None => continue,
                     };
 
                     // Encode the event. If we get it back, that means the current request is full, and we need to
                     // flush it before we can try to encode the event again... so we'll hold on to it in that case
                     // before flushing and trying to encode it again.
-                    let eventd_to_retry = match request_builder.encode(eventd).await {
+                    let service_check_to_retry = match request_builder.encode(service_check).await {
                         Ok(None) => continue,
-                        Ok(Some(eventd)) => eventd,
+                        Ok(Some(service_check)) => service_check,
                         Err(e) => {
-                            error!(error = %e, "Failed to encode event.");
+                            error!(error = %e, "Failed to encode service check.");
                             telemetry.events_dropped_encoder().increment(1);
                             continue;
                         }
@@ -245,7 +248,7 @@ async fn run_request_builder(
                         match maybe_request {
                             Ok((events, request)) => {
                                 let payload_meta = PayloadMetadata::from_event_count(events);
-                                let http_payload = HttpPayload::new(payload_meta,request);
+                                let http_payload = HttpPayload::new(payload_meta, request);
                                 let payload = Payload::Http(http_payload);
 
                                 payloads_tx.send(payload).await
@@ -263,11 +266,11 @@ async fn run_request_builder(
                         }
                     }
 
-                    // Now try to encode the event again. If it fails again, we'll just log it because it shouldn't
-                    // be possible to fail at this point, otherwise we would have already caught that the first
-                    // time.
-                    if let Err(e) = request_builder.encode(eventd_to_retry).await {
-                        error!(error = %e, "Failed to encode event.");
+                    // Now try to encode the service check again. If it fails again, we'll just log it because it
+                    // shouldn't be possible to fail at this point, otherwise we would have already caught that the
+                    // first time.
+                    if let Err(e) = request_builder.encode(service_check_to_retry).await {
+                        error!(error = %e, "Failed to encode service check.");
                         telemetry.events_dropped_encoder().increment(1);
                     }
                 }
@@ -291,7 +294,7 @@ async fn run_request_builder(
                 for maybe_request in maybe_requests {
                     match maybe_request {
                         Ok((events, request)) => {
-                            debug!("Flushed request from events request builder.");
+                            debug!("Flushed request from service checks request builder.");
 
                             let payload_meta = PayloadMetadata::from_event_count(events);
                             let http_payload = HttpPayload::new(payload_meta,request);

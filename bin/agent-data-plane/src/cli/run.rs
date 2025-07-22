@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
 use saluki_components::{
-    destinations::{DatadogMetricsConfiguration, DatadogServiceChecksConfiguration},
-    encoders::DatadogEventsConfiguration,
+    destinations::DatadogMetricsConfiguration,
+    encoders::{DatadogEventsConfiguration, DatadogServiceChecksConfiguration},
     forwarders::DatadogConfiguration,
     sources::DogStatsDConfiguration,
     transforms::{
@@ -141,8 +141,8 @@ async fn create_topology(
         .error_context("Failed to configure Datadog Metrics destination.")?;
     let dd_events_config = DatadogEventsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Events encoder.")?;
-    let mut dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(configuration)
-        .error_context("Failed to configure Datadog Service Checks destination.")?;
+    let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(configuration)
+        .error_context("Failed to configure Datadog Service Checks encoder.")?;
     let mut dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog forwarder.")?;
 
@@ -151,7 +151,6 @@ async fn create_topology(
             let refreshable_configuration = refresher_configuration.build().await?;
 
             dd_metrics_config.add_refreshable_configuration(refreshable_configuration.clone());
-            dd_service_checks_config.add_refreshable_configuration(refreshable_configuration.clone());
             dd_forwarder_config.add_refreshable_configuration(refreshable_configuration);
         }
         Err(_) => {
@@ -163,21 +162,26 @@ async fn create_topology(
 
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
     blueprint
+        // Components.
         .add_source("dsd_in", dsd_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
         .add_transform("enrich", enrich_config)?
         .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
         .add_encoder("dd_events_encode", dd_events_config)?
+        .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
         .add_destination("dd_metrics_out", dd_metrics_config)?
-        .add_destination("dd_service_checks_out", dd_service_checks_config)?
         .add_forwarder("dd_out", dd_forwarder_config)?
+        // Metrics.
         .connect_component("dsd_agg", ["dsd_in.metrics"])?
         .connect_component("dsd_prefix_filter", ["dsd_agg"])?
-        .connect_component("enrich", ["dsd_prefix_filter"])?
-        .connect_component("dd_metrics_out", ["enrich"])?
+        .connect_component("dsd_enrich", ["dsd_prefix_filter"])?
+        // Events.
         .connect_component("dd_events_encode", ["dsd_in.events"])?
-        .connect_component("dd_service_checks_out", ["dsd_in.service_checks"])?
-        .connect_component("dd_out", ["dd_events_encode"])?;
+        // Service checks.
+        .connect_component("dd_service_checks_encode", ["dsd_in.service_checks"])?
+        // Forwarding.
+        .connect_component("dd_out", ["dd_events_encode", "dd_service_checks_encode"])?
+        .connect_component("dd_metrics_out", ["dsd_enrich"])?;
 
     if configuration.get_typed_or_default::<bool>("enable_preaggr_pipeline") {
         let preaggr_dd_url = configuration

@@ -361,8 +361,9 @@ fn get_service_checks_endpoint_name(uri: &Uri) -> Option<MetaString> {
     }
 }
 
+/// An `EndpointEncoder` for sending service checks to Datadog.
 #[derive(Debug)]
-struct ServiceChecksEndpointEncoder;
+pub struct ServiceChecksEndpointEncoder;
 
 impl EndpointEncoder for ServiceChecksEndpointEncoder {
     type Input = ServiceCheck;
