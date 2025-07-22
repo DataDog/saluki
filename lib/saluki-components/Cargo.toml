@@ -37,6 +37,7 @@ protobuf = { workspace = true }
 pyo3 = { workspace = true, features = ["macros"], optional = true }
 rand = { workspace = true, features = ["std", "std_rng"] }
 regex = { workspace = true }
+saluki-api = { workspace = true }
 saluki-common = { workspace = true }
 saluki-config = { workspace = true }
 saluki-context = { workspace = true }

@@ -28,6 +28,12 @@ pub struct DogStatsDAPIHandler {
 }
 
 impl DogStatsDAPIHandler {
+    pub(crate) fn from_state(inner: Arc<Mutex<DogStatsDHandlerState>>) -> Self {
+        Self {
+            state: DogStatsDHandlerState { inner },
+        }
+    }
+
     async fn stats_handler(State(_state): State<DogStatsDHandlerState>) -> impl IntoResponse {
         // TODO: Implement actual statistics collection from DogStatsD source
         info!("DogStatsD stats requested");

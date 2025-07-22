@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
 use saluki_components::{
-    destinations::{DatadogMetricsConfiguration, DatadogServiceChecksConfiguration, DogStatsDInternalStatisticsConfiguration},
+    destinations::{
+        DatadogMetricsConfiguration, DatadogServiceChecksConfiguration, DogStatsDInternalStatisticsConfiguration,
+    },
     encoders::DatadogEventsConfiguration,
     forwarders::DatadogConfiguration,
     sources::DogStatsDConfiguration,
@@ -145,7 +147,7 @@ async fn create_topology(
         .error_context("Failed to configure Datadog Service Checks destination.")?;
     let mut dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog forwarder.")?;
-    let mut dogstatsd_stats_config = DogStatsDInternalStatisticsConfiguration::api_handler()
+    let mut dsd_stats_config = DogStatsDInternalStatisticsConfiguration::api_handler()
         .error_context("Failed to configure DogStatsD Internal Statistics destination.")?;
 
     match RefresherConfiguration::from_configuration(configuration) {
@@ -173,14 +175,15 @@ async fn create_topology(
         .add_destination("dd_metrics_out", dd_metrics_config)?
         .add_destination("dd_service_checks_out", dd_service_checks_config)?
         .add_forwarder("dd_out", dd_forwarder_config)?
-        .add_destination("dogstatsd_stats_out", dogstatsd_stats_config)?
+        .add_destination("dsd_stats_out", dsd_stats_config)?
         .connect_component("dsd_agg", ["dsd_in.metrics"])?
         .connect_component("dsd_prefix_filter", ["dsd_agg"])?
         .connect_component("enrich", ["dsd_prefix_filter"])?
         .connect_component("dd_metrics_out", ["enrich"])?
         .connect_component("dd_events_encode", ["dsd_in.events"])?
         .connect_component("dd_service_checks_out", ["dsd_in.service_checks"])?
-        .connect_component("dd_out", ["dd_events_encode"])?;
+        .connect_component("dd_out", ["dd_events_encode"])?
+        .connect_component("dsd_stats_out", ["enrich"])?;
 
     if configuration.get_typed_or_default::<bool>("enable_preaggr_pipeline") {
         let preaggr_dd_url = configuration

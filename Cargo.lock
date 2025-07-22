@@ -3352,6 +3352,7 @@ dependencies = [
  "pyo3",
  "rand 0.9.1",
  "regex",
+ "saluki-api",
  "saluki-common",
  "saluki-config",
  "saluki-context",
