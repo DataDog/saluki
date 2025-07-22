@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use memory_accounting::UsageExpr;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_api::{
     extract::State,
@@ -9,10 +10,12 @@ use saluki_api::{
     APIHandler,
 };
 use saluki_config::GenericConfiguration;
-use saluki_core::{components::destinations::{Destination, DestinationBuilder}, data_model::event::EventType};
+use saluki_core::{
+    components::destinations::{Destination, DestinationBuilder},
+    data_model::event::EventType,
+};
 use saluki_error::GenericError;
 use serde::Deserialize;
-use memory_accounting::UsageExpr;
 use tracing::info;
 
 /// Configuration for DogStatsD internal statistics API.
@@ -47,8 +50,7 @@ impl DogStatsDDestination {
 #[async_trait::async_trait]
 impl Destination for DogStatsDDestination {
     async fn run(
-        self: Box<Self>,
-        _context: saluki_core::components::destinations::DestinationContext,
+        self: Box<Self>, _context: saluki_core::components::destinations::DestinationContext,
     ) -> Result<(), saluki_error::GenericError> {
         // Collect statistics from incoming metrics and store them in the API handler state
         // TODO: actual implementation would process statistics
@@ -111,9 +113,7 @@ impl MemoryBounds for DogStatsDStatisticsConfiguration {
         builder
             .minimum()
             .with_single_value::<DogStatsDStatisticsConfiguration>("configuration struct");
-        
-        builder
-            .firm()
-            .with_expr(UsageExpr::constant("api handler state", 64)); // 64 bytes as a placeholder until state is implemented
+
+        builder.firm().with_expr(UsageExpr::constant("api handler state", 64)); // 64 bytes as a placeholder until state is implemented
     }
 }
