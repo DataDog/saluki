@@ -19,7 +19,7 @@ use saluki_core::{
 };
 use saluki_error::GenericError;
 use serde::Deserialize;
-use tracing::{info, debug};
+use tracing::{debug, info};
 
 /// Configuration for DogStatsD internal statistics API.
 #[derive(Deserialize)]
@@ -54,26 +54,19 @@ impl DogStatsDStats {
 
 #[async_trait::async_trait]
 impl Destination for DogStatsDStats {
-    async fn run(
-        mut self: Box<Self>, mut context: DestinationContext,
-    ) -> Result<(), GenericError> {
+    async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
         // Process incoming metrics and update statistics
-        loop {
-            match context.events().next().await {
-                Some(events) => {
-                    // TODO: Process metrics and update state
-                    // For now, just log that we received events and update state
-                    debug!("DogStatsD stats destination received {} events", events.len());
-                    
-                    // Update the shared state (placeholder for actual statistics collection)
-                    if let Ok(_state) = self.state.lock() {
-                        // TODO: Process events and update statistics in state
-                    }
-                }
-                None => break,
+        while let Some(events) = context.events().next().await {
+            // TODO: Process metrics and update state
+            // For now, just log that we received events and update state
+            debug!("DogStatsD stats destination received {} events", events.len());
+
+            // Update the shared state (placeholder for actual statistics collection)
+            if let Ok(_state) = self.state.lock() {
+                // TODO: Process events and update statistics in state
             }
         }
-        
+
         Ok(())
     }
 }
@@ -123,9 +116,7 @@ impl DestinationBuilder for DogStatsDStatisticsConfiguration {
         EventType::Metric
     }
 
-    async fn build(
-        &self, _context: ComponentContext,
-    ) -> Result<Box<dyn Destination + Send>, GenericError> {
+    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         // Create shared state that will be used by both the destination and API handler
         let shared_state = Arc::new(Mutex::new(DogStatsDHandlerState::default()));
         Ok(Box::new(DogStatsDStats::new(shared_state)))
