@@ -10,7 +10,6 @@ workspace = true
 
 [dependencies]
 async-compression = { workspace = true, features = ["tokio", "zlib"] }
-average = { workspace = true, features = ["std"] }
 axum = { workspace = true, features = ["tokio"] }
 bytes = { workspace = true }
 chrono = { workspace = true }

@@ -11,7 +11,7 @@ use async_compression::{
 use http::HeaderValue;
 use pin_project::pin_project;
 use tokio::io::AsyncWrite;
-use tracing::info;
+use tracing::trace;
 
 // "Red zone" threshold factor.
 //
@@ -241,7 +241,7 @@ impl CompressionEstimator {
             self.total_compressed_len = compressed_len;
             self.in_flight_uncompressed_len = 0;
 
-            info!(
+            trace!(
                 block_size = compressed_len_delta,
                 uncompressed_len = self.total_uncompressed_len,
                 compressed_len = self.total_compressed_len,
