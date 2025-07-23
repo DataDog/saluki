@@ -2,7 +2,7 @@ use std::{collections::VecDeque, fmt};
 
 use crate::{
     data_model::event::{Event, EventType},
-    topology::interconnect::dispatcher::DispatchBuffer,
+    topology::interconnect::{dispatcher::DispatchBuffer, Dispatchable},
 };
 
 /// A fixed-size event buffer.
@@ -117,6 +117,12 @@ impl<const N: usize> Default for FixedSizeEventBuffer<N> {
             events: VecDeque::with_capacity(N),
             seen_event_types: EventType::none(),
         }
+    }
+}
+
+impl<const N: usize> Dispatchable for FixedSizeEventBuffer<N> {
+    fn item_count(&self) -> usize {
+        self.len()
     }
 }
 
