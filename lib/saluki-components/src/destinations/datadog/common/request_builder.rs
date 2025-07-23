@@ -514,8 +514,7 @@ where
         //
         // We can do this by swapping it out with a new `Vec<E::Input>` since empty vectors don't allocate at all.
         let mut encoded_inputs = std::mem::take(&mut self.encoded_inputs);
-        let encoded_inputs_len = encoded_inputs.len();
-        let encoded_inputs_pivot = encoded_inputs_len / 2;
+        let encoded_inputs_pivot = encoded_inputs.len() / 2;
 
         let first_half_encoded_inputs = &encoded_inputs[0..encoded_inputs_pivot];
         let second_half_encoded_inputs = &encoded_inputs[encoded_inputs_pivot..];
@@ -559,8 +558,14 @@ where
             // inputs into the previous attempted payload, so there's no reason to redo all of that here.
             match self.encode_inner(input).await {
                 Ok(true) => {}
-                Ok(false) => return None,
-                Err(e) => return Some(Err(e)),
+                Ok(false) => {
+                    // If we can't encode the input, we need to stop here and return the input to the caller.
+                    return None;
+                }
+                Err(e) => {
+                    // If we get an error, we need to stop here and return the error to the caller.
+                    return Some(Err(e));
+                }
             }
         }
 
@@ -1052,7 +1057,7 @@ mod tests {
 
     #[test_strategy::proptest(async = "tokio")]
     #[cfg_attr(miri, ignore)]
-    async fn property_test_gauntlet(#[strategy(arb_payloads())] mut inputs: VecDeque<String>) {
+    async fn property_test_encode_and_flush(#[strategy(arb_payloads())] mut inputs: VecDeque<String>) {
         let original_inputs_len = inputs.len();
 
         // We're arbitrarily using a buffer capacity of 2KB just to ensure that the chunked aspect of writing out the
