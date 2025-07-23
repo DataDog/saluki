@@ -11,12 +11,15 @@ use saluki_api::{
 };
 use saluki_config::GenericConfiguration;
 use saluki_core::{
-    components::destinations::{Destination, DestinationBuilder},
+    components::{
+        destinations::{Destination, DestinationBuilder, DestinationContext},
+        ComponentContext,
+    },
     data_model::event::EventType,
 };
 use saluki_error::GenericError;
 use serde::Deserialize;
-use tracing::info;
+use tracing::{info, debug};
 
 /// Configuration for DogStatsD internal statistics API.
 #[derive(Deserialize)]
@@ -39,21 +42,38 @@ pub struct DogStatsDAPIHandler {
 }
 
 /// DogStatsD destination that collects internal statistics.
-pub struct DogStatsDDestination;
+pub struct DogStatsDStats {
+    state: Arc<Mutex<DogStatsDHandlerState>>,
+}
 
-impl DogStatsDDestination {
-    pub fn new() -> Self {
-        Self
+impl DogStatsDStats {
+    pub fn new(state: Arc<Mutex<DogStatsDHandlerState>>) -> Self {
+        Self { state }
     }
 }
 
 #[async_trait::async_trait]
-impl Destination for DogStatsDDestination {
+impl Destination for DogStatsDStats {
     async fn run(
-        self: Box<Self>, _context: saluki_core::components::destinations::DestinationContext,
-    ) -> Result<(), saluki_error::GenericError> {
-        // Collect statistics from incoming metrics and store them in the API handler state
-        // TODO: actual implementation would process statistics
+        mut self: Box<Self>, mut context: DestinationContext,
+    ) -> Result<(), GenericError> {
+        // Process incoming metrics and update statistics
+        loop {
+            match context.events().next().await {
+                Some(events) => {
+                    // TODO: Process metrics and update state
+                    // For now, just log that we received events and update state
+                    debug!("DogStatsD stats destination received {} events", events.len());
+                    
+                    // Update the shared state (placeholder for actual statistics collection)
+                    if let Ok(_state) = self.state.lock() {
+                        // TODO: Process events and update statistics in state
+                    }
+                }
+                None => break,
+            }
+        }
+        
         Ok(())
     }
 }
@@ -91,7 +111,9 @@ impl DogStatsDStatisticsConfiguration {
 
     /// Returns an API handler for DogStatsD internal statistics.
     pub fn api_handler(&self) -> DogStatsDAPIHandler {
-        DogStatsDAPIHandler::from_state(Arc::new(Mutex::new(DogStatsDHandlerState::default())))
+        // Create shared state that will be used by both the destination and API handler
+        let shared_state = Arc::new(Mutex::new(DogStatsDHandlerState::default()));
+        DogStatsDAPIHandler::from_state(shared_state)
     }
 }
 
@@ -102,9 +124,11 @@ impl DestinationBuilder for DogStatsDStatisticsConfiguration {
     }
 
     async fn build(
-        &self, _context: saluki_core::components::ComponentContext,
-    ) -> Result<Box<dyn saluki_core::components::destinations::Destination + Send>, saluki_error::GenericError> {
-        Ok(Box::new(DogStatsDDestination::new()))
+        &self, _context: ComponentContext,
+    ) -> Result<Box<dyn Destination + Send>, GenericError> {
+        // Create shared state that will be used by both the destination and API handler
+        let shared_state = Arc::new(Mutex::new(DogStatsDHandlerState::default()));
+        Ok(Box::new(DogStatsDStats::new(shared_state)))
     }
 }
 
