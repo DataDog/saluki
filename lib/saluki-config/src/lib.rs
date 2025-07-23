@@ -6,7 +6,7 @@ use std::{borrow::Cow, collections::HashSet, sync::Arc};
 
 use arc_swap::ArcSwap;
 pub use figment::value;
-use figment::{error::Kind, providers::Env, value::Value, Figment};
+use figment::{error::Kind, providers::Env, Figment};
 use saluki_error::GenericError;
 use serde::Deserialize;
 use snafu::{ResultExt as _, Snafu};
@@ -339,7 +339,6 @@ impl ConfigurationLoader {
 
     /// Consumes the configuration loader and wraps it in a generic wrapper.
     pub async fn into_generic(self) -> Result<GenericConfiguration, ConfigurationError> {
-        let value = self.inner.extract()?;
         let (refreshable_config, refreshable_values) = if self.dynamic_configuration_enabled {
             let refresher_settings = self.inner.extract::<RefresherConfiguration>()?;
             debug!("Dynamic configuration enabled.");
@@ -356,7 +355,6 @@ impl ConfigurationLoader {
 
         Ok(GenericConfiguration {
             inner: Arc::new(Inner {
-                value,
                 figment: self.inner,
                 lookup_sources: self.lookup_sources,
                 refreshable_config,
@@ -369,7 +367,6 @@ impl ConfigurationLoader {
 #[derive(Debug)]
 #[allow(dead_code)]
 struct Inner {
-    value: Value,
     figment: Figment,
     lookup_sources: HashSet<LookupSource>,
     refreshable_config: Option<RefreshableConfiguration>,
@@ -468,8 +465,8 @@ impl GenericConfiguration {
         T: Deserialize<'a>,
     {
         self.inner
-            .value
-            .deserialize()
+            .figment
+            .extract()
             .map_err(|e| from_figment_error(&self.inner.lookup_sources, e))
     }
 
