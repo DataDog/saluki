@@ -1,13 +1,12 @@
-use std::sync::{Arc, Mutex, RwLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use memory_accounting::UsageExpr;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_api::{
     extract::State,
-    response::IntoResponse,
     routing::{get, Router},
-    APIHandler,
+    APIHandler, StatusCode,
 };
 use saluki_config::GenericConfiguration;
 use saluki_core::{
@@ -18,58 +17,56 @@ use saluki_core::{
     data_model::event::EventType,
 };
 use saluki_error::GenericError;
-use serde::Deserialize;
-use tracing::{debug, info};
+use tokio::sync::mpsc;
+use tracing::debug;
 
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct Stats {
+    metrics_received: HashMap<String, u64>,
+    // TODO: add more stats here
+}
 /// Configuration for DogStatsD internal statistics API.
-#[derive(Deserialize)]
-#[allow(dead_code)] // brianna: remove this later on
+#[allow(dead_code)]
 pub struct DogStatsDStatisticsConfiguration {
-    /// Whether to enable the internal statistics API.
-    #[serde(rename = "dogstatsd_internal_statistics_enabled", default)]
-    enabled: bool,
+    api_handler: DogStatsDAPIHandler,
 
-    /// Shared state for statistics (created lazily)
-    #[serde(skip)]
-    shared_state: Arc<RwLock<Option<Arc<Mutex<DogStatsDAPIHandlerState>>>>>,
+    rx: Arc<Mutex<mpsc::Receiver<tokio::sync::oneshot::Sender<Stats>>>>,
 }
 /// API handler for dogstatsd stats endpoint.
 #[derive(Clone)]
 pub struct DogStatsDAPIHandler {
-    state: DogStatsDAPIHandlerState,
+    tx: mpsc::Sender<tokio::sync::oneshot::Sender<Stats>>,
 }
-/// State for the DogStatsD API handler.
-#[derive(Clone, Default)]
-pub struct DogStatsDAPIHandlerState {
-    // TODO: Add actual state fields for DogStatsD statistics
-    metrics_received: u64,
-}
-
 /// DogStatsD destination that collects internal statistics.
+#[allow(dead_code)]
 pub struct DogStatsDStats {
-    state: Arc<Mutex<DogStatsDAPIHandlerState>>,
+    rx: Arc<Mutex<mpsc::Receiver<tokio::sync::oneshot::Sender<Stats>>>>,
+    stats: Stats,
 }
 
-impl DogStatsDStats {
-    pub fn new(state: Arc<Mutex<DogStatsDAPIHandlerState>>) -> Self {
-        Self { state }
-    }
-}
+impl DogStatsDStats {}
 
 #[async_trait::async_trait]
 impl Destination for DogStatsDStats {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
-        // Process incoming metrics and update statistics
-        while let Some(events) = context.events().next().await {
-            // TODO: use switch statement so either receives events or request from API handler
-            // TODO: Process metrics and update state
-            // For now, just log that we received events and update state
-            debug!("DogStatsD stats destination received {} events", events.len());
+        loop {
+            // Handle events
+            if let Some(events) = context.events().next().await {
+                // TODO: Process metrics and update state
+                debug!("DogStatsD stats destination received {} events", events.len());
+            } else {
+                break;
+            }
 
-            // Update the shared state (placeholder for actual statistics collection)
-            if let Ok(mut state) = self.state.lock() {
-                state.metrics_received += events.len() as u64;
-                // TODO: Process events and update statistics in state
+            // Handle API requests
+            if let Ok(mut rx) = self.rx.try_lock() {
+                if let Ok(tx) = rx.try_recv() {
+                    // TODO: handle request from API handler
+                    let _ = tx.send(Stats {
+                        metrics_received: HashMap::new(),
+                    });
+                }
             }
         }
 
@@ -78,23 +75,34 @@ impl Destination for DogStatsDStats {
 }
 
 impl DogStatsDAPIHandler {
-    pub fn from_state(state: Arc<Mutex<DogStatsDAPIHandlerState>>) -> Self {
-        Self {
-            state: state.lock().unwrap().clone(),
-        }
-    }
+    async fn stats_handler(State(handler): State<DogStatsDAPIHandler>) -> (StatusCode, String) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
 
-    async fn stats_handler(State(state): State<DogStatsDAPIHandlerState>) -> impl IntoResponse {
-        info!("DogStatsD stats requested");
-        format!("{{\"metrics_received\": {}}}", state.metrics_received)
+        if let Err(e) = handler.tx.try_send(tx) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to request stats: {}", e),
+            );
+        }
+
+        match rx.await {
+            Ok(stats) => {
+                println!("stats received back: {:?}", stats);
+                (StatusCode::OK, format!("{:?}", stats))
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to receive stats: {}", e),
+            ),
+        }
     }
 }
 
 impl APIHandler for DogStatsDAPIHandler {
-    type State = DogStatsDAPIHandlerState;
+    type State = DogStatsDAPIHandler;
 
     fn generate_initial_state(&self) -> Self::State {
-        self.state.clone()
+        self.clone()
     }
 
     fn generate_routes(&self) -> Router<Self::State> {
@@ -104,33 +112,19 @@ impl APIHandler for DogStatsDAPIHandler {
 
 impl DogStatsDStatisticsConfiguration {
     /// Creates a new 'DogStatsDStatisticsConfiguration' from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut typed_config: Self = config.as_typed()?;
-        typed_config.shared_state = Arc::new(RwLock::new(None));
-        Ok(typed_config)
+    pub fn from_configuration(_: &GenericConfiguration) -> Result<Self, GenericError> {
+        let (tx, rx) = mpsc::channel(100);
+        let handler = DogStatsDAPIHandler { tx };
+
+        Ok(Self {
+            api_handler: handler,
+            rx: Arc::new(Mutex::new(rx)),
+        })
     }
 
     /// Returns an API handler for DogStatsD statistics.
     pub fn api_handler(&self) -> DogStatsDAPIHandler {
-        let shared_state = self.get_or_create_shared_state();
-        DogStatsDAPIHandler::from_state(shared_state)
-    }
-
-    /// Gets the shared state if it exists.
-    fn get_shared_state(&self) -> Option<Arc<Mutex<DogStatsDAPIHandlerState>>> {
-        self.shared_state.read().unwrap().clone()
-    }
-
-    /// Creates a new shared state and stores it in the configuration.
-    fn create_shared_state(&self) -> Arc<Mutex<DogStatsDAPIHandlerState>> {
-        let state = Arc::new(Mutex::new(DogStatsDAPIHandlerState::default()));
-        *self.shared_state.write().unwrap() = Some(state.clone());
-        state
-    }
-
-    /// Gets existing shared state or creates and stores a new one.
-    fn get_or_create_shared_state(&self) -> Arc<Mutex<DogStatsDAPIHandlerState>> {
-        self.get_shared_state().unwrap_or_else(|| self.create_shared_state())
+        self.api_handler.clone()
     }
 }
 
@@ -141,8 +135,14 @@ impl DestinationBuilder for DogStatsDStatisticsConfiguration {
     }
 
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
-        let shared_state = self.get_or_create_shared_state();
-        Ok(Box::new(DogStatsDStats::new(shared_state)))
+        // Share the receiver via Arc<Mutex<>>
+        let rx = Arc::clone(&self.rx);
+        Ok(Box::new(DogStatsDStats {
+            rx,
+            stats: Stats {
+                metrics_received: HashMap::new(),
+            },
+        }))
     }
 }
 
