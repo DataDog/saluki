@@ -17,11 +17,7 @@ http = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
 memory-accounting = { workspace = true }
 metrics = { workspace = true }
-metrics-util = { workspace = true, features = [
-  "handles",
-  "recency",
-  "registry",
-] }
+metrics-util = { workspace = true, features = ["recency", "registry"] }
 ordered-float = { workspace = true }
 paste = { workspace = true }
 pin-project = { workspace = true }
@@ -46,6 +42,7 @@ tokio-util = { workspace = true, features = ["time"] }
 tracing = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
+metrics-util = { workspace = true, features = ["debugging"] }
 proptest = { workspace = true }
 similar-asserts = { workspace = true, features = ["unicode"] }
 tokio-test = { workspace = true }

@@ -896,11 +896,11 @@ mod tests {
         let active_contexts = get_gauge_value(&metrics_before, Telemetry::active_contexts_name());
         assert_eq!(active_contexts, 1.0);
 
-        // Now drop the context, and observe the active context count drop to zero:
+        // Now drop the context, and observe the active context count is negative one, representing the context we dropped:
         drop(context);
         let metrics_after = snapshotter.snapshot().into_vec();
         let active_contexts = get_gauge_value(&metrics_after, Telemetry::active_contexts_name());
-        assert_eq!(active_contexts, 0.0);
+        assert_eq!(active_contexts, -1.0);
     }
 
     #[test]

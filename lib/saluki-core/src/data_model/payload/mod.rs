@@ -6,6 +6,7 @@ use bitmask_enum::bitmask;
 
 mod http;
 pub use self::http::HttpPayload;
+use crate::topology::interconnect::Dispatchable;
 
 mod metadata;
 pub use self::metadata::PayloadMetadata;
@@ -91,5 +92,11 @@ impl Payload {
             Payload::Http(payload) => Some(payload),
             _ => None,
         }
+    }
+}
+
+impl Dispatchable for Payload {
+    fn item_count(&self) -> usize {
+        1
     }
 }

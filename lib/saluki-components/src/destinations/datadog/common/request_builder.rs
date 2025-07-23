@@ -632,18 +632,10 @@ mod tests {
     use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
     use http_body_util::BodyExt as _;
     use proptest::{collection::vec_deque as arb_vecdeque, prelude::*, string::string_regex};
-    use saluki_core::pooling::{FixedSizeObjectPool, OnDemandObjectPool};
-    use saluki_io::{
-        buf::{BytesBuffer, FixedSizeVec},
-        compression::CompressionScheme,
-    };
+    use saluki_io::compression::CompressionScheme;
 
     use super::{EndpointEncoder, RequestBuilder, RequestBuilderError};
     use crate::destinations::datadog::common::io::RB_BUFFER_CHUNK_SIZE;
-
-    fn create_request_builder_buffer_pool() -> FixedSizeObjectPool<BytesBuffer> {
-        FixedSizeObjectPool::with_builder("test_pool", 8, || FixedSizeVec::with_capacity(64))
-    }
 
     async fn create_request_builder(
         encoder: TestEncoder, compression_scheme: CompressionScheme,
@@ -1043,10 +1035,6 @@ mod tests {
     async fn property_test_encode_and_flush(#[strategy(arb_payloads())] mut inputs: VecDeque<String>) {
         let original_inputs_len = inputs.len();
 
-        // We're arbitrarily using a buffer capacity of 2KB just to ensure that the chunked aspect of writing out the
-        // compressed output is exercised.
-        let buffer_pool = OnDemandObjectPool::with_builder("test", || FixedSizeVec::with_capacity(2048));
-
         // Create our request builder with lowered limits just so the test can actually exercise them.
         //
         // We calculate these limits based on the input sizing to try and ensure that we have a strong chance of
@@ -1058,7 +1046,7 @@ mod tests {
         let compressed_limit = ((PROP_TEST_ARB_PAYLOAD_AVG_LEN * original_inputs_len) as f64 * 0.4) as usize;
 
         let encoder = TestEncoder::new(compressed_limit, uncompressed_limit, "/fake/endpoint");
-        let mut request_builder = RequestBuilder::new(encoder, buffer_pool, CompressionScheme::zstd_default())
+        let mut request_builder = RequestBuilder::new(encoder, CompressionScheme::zstd_default(), 2048)
             .await
             .expect("should not fail to create request builder");
 
