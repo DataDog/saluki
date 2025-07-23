@@ -352,7 +352,7 @@ where
                 encoded_len,
                 uncompressed_len = self.uncompressed_len(),
                 estimated_compressed_len = self.compression_estimator.estimated_len(),
-                "Input would exceed endpoint size limits.",
+                "Input would exceed endpoint size limits."
             );
             return Ok(false);
         }
