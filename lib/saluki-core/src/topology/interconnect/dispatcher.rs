@@ -9,6 +9,9 @@ use tokio::sync::mpsc;
 use super::Dispatchable;
 use crate::{components::ComponentContext, observability::ComponentMetricsExt as _, topology::OutputName};
 
+const METRIC_NAME_COMPONENT_EVENTS_SENT_TOTAL: &str = "component_events_sent_total";
+const METRIC_NAME_COMPONENT_SEND_LATENCY_SECONDS: &str = "component_send_latency_seconds";
+
 struct DispatcherMetrics {
     events_sent: Counter,
     send_latency: Histogram,
@@ -30,8 +33,8 @@ impl DispatcherMetrics {
         let metrics_builder = MetricsBuilder::from_component_context(&context).add_default_tag(("output", output_name));
 
         Self {
-            events_sent: metrics_builder.register_debug_counter("component_events_sent_total"),
-            send_latency: metrics_builder.register_debug_histogram("component_send_latency_seconds"),
+            events_sent: metrics_builder.register_debug_counter(METRIC_NAME_COMPONENT_EVENTS_SENT_TOTAL),
+            send_latency: metrics_builder.register_debug_histogram(METRIC_NAME_COMPONENT_SEND_LATENCY_SECONDS),
         }
     }
 }
@@ -346,9 +349,31 @@ mod tests {
 
     use std::ops::Deref;
 
+    use metrics::{Key, Label};
+    use metrics_util::{
+        debugging::{DebugValue, DebuggingRecorder, Snapshotter},
+        CompositeKey, MetricKind,
+    };
+    use ordered_float::OrderedFloat;
+
     use super::*;
 
-    #[derive(Clone)]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct SingleEvent<T>(T);
+
+    impl<T: Clone + Copy> Dispatchable for SingleEvent<T> {
+        fn item_count(&self) -> usize {
+            1
+        }
+    }
+
+    impl<T: Clone + Copy> From<T> for SingleEvent<T> {
+        fn from(value: T) -> Self {
+            Self(value)
+        }
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
     struct FixedUsizeVec<const N: usize> {
         data: [usize; N],
         len: usize,
@@ -365,6 +390,12 @@ mod tests {
 
         fn deref(&self) -> &Self::Target {
             &self.data
+        }
+    }
+
+    impl<const N: usize> Dispatchable for FixedUsizeVec<N> {
+        fn item_count(&self) -> usize {
+            self.len
         }
     }
 
@@ -390,7 +421,7 @@ mod tests {
         }
     }
 
-    fn unbuffered_dispatcher<T: Clone>() -> Dispatcher<T> {
+    fn unbuffered_dispatcher<T: Dispatchable>() -> Dispatcher<T> {
         let component_context = ComponentContext::test_source("dispatcher_test");
         Dispatcher::new(component_context)
     }
@@ -399,16 +430,63 @@ mod tests {
         unbuffered_dispatcher()
     }
 
+    fn get_dispatcher_metric_composite_key(
+        kind: MetricKind, name: &'static str, output_name: &'static str,
+    ) -> CompositeKey {
+        // We build the labels according to what we'll generate when calling `create_consumer`:
+        let labels = vec![
+            Label::from_static_parts("component_id", "dispatcher_test"),
+            Label::from_static_parts("component_type", "source"),
+            Label::from_static_parts("output", output_name),
+        ];
+        let key = Key::from_parts(name, labels);
+        CompositeKey::new(kind, key)
+    }
+
+    fn get_output_metrics(snapshotter: &Snapshotter, output_name: &'static str) -> (u64, Vec<OrderedFloat<f64>>) {
+        let events_sent_key = get_dispatcher_metric_composite_key(
+            MetricKind::Counter,
+            METRIC_NAME_COMPONENT_EVENTS_SENT_TOTAL,
+            output_name,
+        );
+        let send_latency_key = get_dispatcher_metric_composite_key(
+            MetricKind::Histogram,
+            METRIC_NAME_COMPONENT_SEND_LATENCY_SECONDS,
+            output_name,
+        );
+
+        // TODO: This API for querying the metrics really sucks... and we need something better.
+        let current_metrics = snapshotter.snapshot().into_hashmap();
+        let (_, _, events_sent) = current_metrics
+            .get(&events_sent_key)
+            .expect("should have events sent metric");
+        let (_, _, send_latency) = current_metrics
+            .get(&send_latency_key)
+            .expect("should have send latency metric");
+
+        let events_sent = match events_sent {
+            DebugValue::Counter(value) => *value,
+            _ => panic!("unexpected metric type for events sent"),
+        };
+
+        let send_latency = match send_latency {
+            DebugValue::Histogram(value) => value.clone(),
+            _ => panic!("unexpected metric type for send latency"),
+        };
+
+        (events_sent, send_latency)
+    }
+
     #[tokio::test]
     async fn default_output() {
         // Create the dispatcher and wire up a sender to the default output.
-        let mut dispatcher = unbuffered_dispatcher::<usize>();
+        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<usize>>();
 
         let (tx, mut rx) = mpsc::channel(1);
         dispatcher.add_output(OutputName::Default, tx);
 
         // Create an item and roundtrip it through the dispatcher.
-        let input_item = 42;
+        let input_item = 42.into();
 
         dispatcher.dispatch(input_item).await.unwrap();
 
@@ -419,14 +497,14 @@ mod tests {
     #[tokio::test]
     async fn named_output() {
         // Create the dispatcher and wire up a sender to a named output.
-        let mut dispatcher = unbuffered_dispatcher::<usize>();
+        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<usize>>();
 
         let output_name = "special";
         let (tx, mut rx) = mpsc::channel(1);
         dispatcher.add_output(OutputName::Given(output_name.into()), tx);
 
         // Create an item and roundtrip it through the dispatcher.
-        let input_item = 42;
+        let input_item = 42.into();
 
         dispatcher.dispatch_named(output_name, input_item).await.unwrap();
 
@@ -437,7 +515,7 @@ mod tests {
     #[tokio::test]
     async fn default_output_multiple_senders() {
         // Create the dispatcher and wire up two senders to the default output.
-        let mut dispatcher = unbuffered_dispatcher::<usize>();
+        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<usize>>();
 
         let (tx1, mut rx1) = mpsc::channel(1);
         let (tx2, mut rx2) = mpsc::channel(1);
@@ -445,7 +523,7 @@ mod tests {
         dispatcher.add_output(OutputName::Default, tx2);
 
         // Create an item and roundtrip it through the dispatcher.
-        let input_item = 42;
+        let input_item = 42.into();
 
         dispatcher.dispatch(input_item).await.unwrap();
 
@@ -458,7 +536,7 @@ mod tests {
     #[tokio::test]
     async fn named_output_multiple_senders() {
         // Create the dispatcher and wire up two senders to a named output.
-        let mut dispatcher = unbuffered_dispatcher::<usize>();
+        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<usize>>();
 
         let output_name = "special";
         let (tx1, mut rx1) = mpsc::channel(1);
@@ -467,7 +545,7 @@ mod tests {
         dispatcher.add_output(OutputName::Given(output_name.into()), tx2);
 
         // Create an item and roundtrip it through the dispatcher.
-        let input_item = 42;
+        let input_item = 42.into();
 
         dispatcher.dispatch_named(output_name, input_item).await.unwrap();
 
@@ -480,18 +558,18 @@ mod tests {
     #[tokio::test]
     async fn default_output_not_set() {
         // Create the dispatcher and try to dispatch an item without setting up a default output.
-        let dispatcher = unbuffered_dispatcher::<()>();
+        let dispatcher = unbuffered_dispatcher::<SingleEvent<()>>();
 
-        let result = dispatcher.dispatch(()).await;
+        let result = dispatcher.dispatch(().into()).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn named_output_not_set() {
         // Create the dispatcher and try to dispatch an event without setting up a named output.
-        let dispatcher = unbuffered_dispatcher::<()>();
+        let dispatcher = unbuffered_dispatcher::<SingleEvent<()>>();
 
-        let result = dispatcher.dispatch_named("non_existent", ()).await;
+        let result = dispatcher.dispatch_named("non_existent", ().into()).await;
         assert!(result.is_err());
     }
 
@@ -660,5 +738,95 @@ mod tests {
         let output_item2 = rx2.try_recv().expect("input item should have been dispatched");
         assert_eq!(output_item2.len(), 1);
         assert_eq!(output_item2[0], input_item);
+    }
+
+    #[tokio::test]
+    async fn metrics_default_output() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let (dispatcher, _rx) = metrics::with_local_recorder(&recorder, || {
+            let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
+
+            let (tx, rx) = mpsc::channel(2);
+            dispatcher.add_output(OutputName::Default, tx);
+
+            (dispatcher, rx)
+        });
+
+        // Send an item with an item count of 1, and make sure we can receive it, and that we update our metrics accordingly:
+        let mut single_item = FixedUsizeVec::<4>::default();
+        assert_eq!(None, single_item.try_push(42));
+        let single_item_item_count = single_item.item_count() as u64;
+
+        dispatcher
+            .dispatch(single_item.clone())
+            .await
+            .expect("should not fail to dispatch");
+
+        let (events_sent, send_latencies) = get_output_metrics(&snapshotter, "_default");
+        assert_eq!(events_sent, single_item_item_count);
+        assert!(!send_latencies.is_empty());
+
+        // Now send an item with an item count of 42, and make sure we can receive it, and that we update our metrics accordingly:
+        let mut multiple_items = FixedUsizeVec::<4>::default();
+        assert_eq!(None, multiple_items.try_push(42));
+        assert_eq!(None, multiple_items.try_push(12345));
+        assert_eq!(None, multiple_items.try_push(1337));
+        let multiple_items_item_count = multiple_items.item_count() as u64;
+
+        dispatcher
+            .dispatch(multiple_items.clone())
+            .await
+            .expect("should not fail to dispatch");
+
+        let (events_sent, send_latencies) = get_output_metrics(&snapshotter, "_default");
+        assert_eq!(events_sent, multiple_items_item_count);
+        assert!(!send_latencies.is_empty());
+    }
+
+    #[tokio::test]
+    async fn metrics_named_output() {
+        let output_name = "some_output";
+
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let (dispatcher, _rx) = metrics::with_local_recorder(&recorder, || {
+            let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
+
+            let (tx, rx) = mpsc::channel(2);
+            dispatcher.add_output(OutputName::Given(output_name.into()), tx);
+
+            (dispatcher, rx)
+        });
+
+        // Send an item with an item count of 1, and make sure we can receive it, and that we update our metrics accordingly:
+        let mut single_item = FixedUsizeVec::<4>::default();
+        assert_eq!(None, single_item.try_push(42));
+        let single_item_item_count = single_item.item_count() as u64;
+
+        dispatcher
+            .dispatch_named(output_name, single_item.clone())
+            .await
+            .expect("should not fail to dispatch");
+
+        let (events_sent, send_latencies) = get_output_metrics(&snapshotter, output_name);
+        assert_eq!(events_sent, single_item_item_count);
+        assert!(!send_latencies.is_empty());
+
+        // Now send an item with an item count of 42, and make sure we can receive it, and that we update our metrics accordingly:
+        let mut multiple_items = FixedUsizeVec::<4>::default();
+        assert_eq!(None, multiple_items.try_push(42));
+        assert_eq!(None, multiple_items.try_push(12345));
+        assert_eq!(None, multiple_items.try_push(1337));
+        let multiple_items_item_count = multiple_items.item_count() as u64;
+
+        dispatcher
+            .dispatch_named(output_name, multiple_items.clone())
+            .await
+            .expect("should not fail to dispatch");
+
+        let (events_sent, send_latencies) = get_output_metrics(&snapshotter, output_name);
+        assert_eq!(events_sent, multiple_items_item_count);
+        assert!(!send_latencies.is_empty());
     }
 }
