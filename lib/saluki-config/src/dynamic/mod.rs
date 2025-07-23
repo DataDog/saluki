@@ -33,11 +33,7 @@ impl FigmentProvider for Provider {
         let figment_value: Value =
             serde_json::from_value((*value).as_ref().clone()).map_err(|e| Error::from(e.to_string()))?;
 
-        let dictionary = figment_value.clone().into_dict().ok_or_else(|| {
-            Error::from(figment::error::Kind::Message(
-                "dynamic provider data must be a dictionary".to_string(),
-            ))
-        })?;
+        let dictionary = figment_value.into_dict().unwrap_or_default();
 
         let mut map = Map::new();
         map.insert(Profile::default(), dictionary);
