@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
@@ -14,17 +15,26 @@ use saluki_core::{
         destinations::{Destination, DestinationBuilder, DestinationContext},
         ComponentContext,
     },
-    data_model::event::EventType,
+    data_model::event::{Event::Metric, EventType},
 };
 use saluki_error::GenericError;
+use serde_json;
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, info};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize)]
 #[allow(dead_code)]
 pub struct Stats {
-    metrics_received: HashMap<String, u64>,
+    metrics_received: HashMap<String, MetricSample>,
     // TODO: add more stats here
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MetricSample {
+    count: u64,
+    last_seen: SystemTime,
+    name: String,
+    tags: String,
 }
 /// Configuration for DogStatsD internal statistics API.
 #[allow(dead_code)]
@@ -33,10 +43,16 @@ pub struct DogStatsDStatisticsConfiguration {
 
     rx: Arc<Mutex<mpsc::Receiver<tokio::sync::oneshot::Sender<Stats>>>>,
 }
+/// State for the DogStatsD API handler.
+#[derive(Clone)]
+pub struct DogStatsDAPIState {
+    tx: mpsc::Sender<tokio::sync::oneshot::Sender<Stats>>,
+}
+
 /// API handler for dogstatsd stats endpoint.
 #[derive(Clone)]
 pub struct DogStatsDAPIHandler {
-    tx: mpsc::Sender<tokio::sync::oneshot::Sender<Stats>>,
+    state: DogStatsDAPIState,
 }
 /// DogStatsD destination that collects internal statistics.
 #[allow(dead_code)]
@@ -51,21 +67,52 @@ impl DogStatsDStats {}
 impl Destination for DogStatsDStats {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
         loop {
-            // Handle events
+            // Handle received events.
             if let Some(events) = context.events().next().await {
-                // TODO: Process metrics and update state
                 debug!("DogStatsD stats destination received {} events", events.len());
+
+                for event in events {
+                    if let Metric(metric) = event {
+                        let context = metric.context();
+                        let metric_name = context.name().to_string();
+                        let tags: Vec<String> =
+                            context.tags().into_iter().map(|tag| tag.as_str().to_string()).collect();
+                        let tags_formatted = tags.join(",");
+                        let key = if tags.is_empty() {
+                            metric_name
+                        } else {
+                            format!("{}|{}", metric_name, tags_formatted)
+                        };
+
+                        let sample = self
+                            .stats
+                            .metrics_received
+                            .entry(key.clone())
+                            .or_insert_with(|| MetricSample {
+                                count: 0,
+                                last_seen: SystemTime::now(),
+                                name: String::new(),
+                                tags: String::new(),
+                            });
+                        sample.name = context.name().to_string();
+                        sample.tags = tags_formatted;
+                        sample.count += 1;
+                        sample.last_seen = SystemTime::now();
+
+                        debug!(
+                            "Metric Name: {:?} | Tags: {:?} | Count: {:?} | Last Seen: {:?}",
+                            sample.name, sample.tags, sample.count, sample.last_seen
+                        );
+                    }
+                }
             } else {
                 break;
             }
 
-            // Handle API requests
+            // Handle API request.
             if let Ok(mut rx) = self.rx.try_lock() {
                 if let Ok(tx) = rx.try_recv() {
-                    // TODO: handle request from API handler
-                    let _ = tx.send(Stats {
-                        metrics_received: HashMap::new(),
-                    });
+                    let _ = tx.send(self.stats.clone());
                 }
             }
         }
@@ -75,20 +122,20 @@ impl Destination for DogStatsDStats {
 }
 
 impl DogStatsDAPIHandler {
-    async fn stats_handler(State(handler): State<DogStatsDAPIHandler>) -> (StatusCode, String) {
+    async fn stats_handler(State(state): State<DogStatsDAPIState>) -> (StatusCode, String) {
         let (tx, rx) = tokio::sync::oneshot::channel();
 
-        if let Err(e) = handler.tx.try_send(tx) {
+        if let Err(e) = state.tx.try_send(tx) {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to request stats: {}", e),
+                format!("Failed to send stats: {}", e),
             );
         }
 
         match rx.await {
             Ok(stats) => {
-                println!("stats received back: {:?}", stats);
-                (StatusCode::OK, format!("{:?}", stats))
+                info!("stats received back: {:?}", stats);
+                (StatusCode::OK, serde_json::to_string(&stats).unwrap())
             }
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -99,10 +146,10 @@ impl DogStatsDAPIHandler {
 }
 
 impl APIHandler for DogStatsDAPIHandler {
-    type State = DogStatsDAPIHandler;
+    type State = DogStatsDAPIState;
 
     fn generate_initial_state(&self) -> Self::State {
-        self.clone()
+        self.state.clone()
     }
 
     fn generate_routes(&self) -> Router<Self::State> {
@@ -114,7 +161,8 @@ impl DogStatsDStatisticsConfiguration {
     /// Creates a new 'DogStatsDStatisticsConfiguration' from the given configuration.
     pub fn from_configuration(_: &GenericConfiguration) -> Result<Self, GenericError> {
         let (tx, rx) = mpsc::channel(100);
-        let handler = DogStatsDAPIHandler { tx };
+        let state = DogStatsDAPIState { tx };
+        let handler = DogStatsDAPIHandler { state };
 
         Ok(Self {
             api_handler: handler,
