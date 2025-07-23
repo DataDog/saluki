@@ -12,9 +12,11 @@ use serde::Deserialize;
 use snafu::{ResultExt as _, Snafu};
 use tracing::debug;
 
+mod dynamic;
 mod provider;
 mod refresher;
 mod secrets;
+use self::dynamic::Provider;
 use self::provider::ResolvedProvider;
 pub use self::refresher::{RefreshableConfiguration, RefresherConfiguration};
 
@@ -118,11 +120,22 @@ impl LookupSource {
 /// - YAML file
 /// - JSON file
 /// - environment variables (must be prefixed; see [`from_environment`][Self::from_environment])
-#[derive(Default)]
 pub struct ConfigurationLoader {
     inner: Figment,
     lookup_sources: HashSet<LookupSource>,
     dynamic_configuration_enabled: bool,
+    dynamic_values: Option<Arc<ArcSwap<serde_json::Value>>>,
+}
+
+impl Default for ConfigurationLoader {
+    fn default() -> Self {
+        Self {
+            inner: Figment::new(),
+            lookup_sources: HashSet::new(),
+            dynamic_configuration_enabled: false,
+            dynamic_values: None,
+        }
+    }
 }
 
 impl ConfigurationLoader {
@@ -302,10 +315,14 @@ impl ConfigurationLoader {
 
     /// Enables dynamic configuration.
     ///
-    /// This will enable the dynamic configuration feature, which allows the configuration to be sourced from the core agent.
-    pub fn with_dynamic_configuration(mut self) -> Self {
+    /// This will enable the dynamic configuration feature, which allows the configuration to be sourced from a dynamic provider. The dynamic provider is updated at runtime, and `figment` will re-read from it when configuration values are requested.
+    pub fn with_dynamic_configuration(mut self) -> Result<Self, ConfigurationError> {
         self.dynamic_configuration_enabled = true;
-        self
+        let values = Arc::new(ArcSwap::from_pointee(serde_json::Value::Null));
+        let provider = Provider::new(values.clone());
+        self.inner = self.inner.admerge(provider);
+        self.dynamic_values = Some(values);
+        Ok(self)
     }
 
     /// Consumes the configuration loader, deserializing it as `T`.
@@ -322,13 +339,14 @@ impl ConfigurationLoader {
 
     /// Consumes the configuration loader and wraps it in a generic wrapper.
     pub async fn into_generic(self) -> Result<GenericConfiguration, ConfigurationError> {
-        let inner: Value = self.inner.extract()?;
-
+        let value = self.inner.extract()?;
         let (refreshable_config, refreshable_values) = if self.dynamic_configuration_enabled {
-            let refresher_settings = inner.deserialize::<RefresherConfiguration>()?;
+            let refresher_settings = self.inner.extract::<RefresherConfiguration>()?;
             debug!("Dynamic configuration enabled.");
 
-            let values = Arc::new(ArcSwap::from_pointee(serde_json::Value::Null));
+            let values = self
+                .dynamic_values
+                .expect("dynamic_values should be present if dynamic_configuration_enabled is true");
             let refreshable = refresher_settings.build(values.clone()).await.context(Generic)?;
             (Some(refreshable), Some(values))
         } else {
@@ -338,7 +356,8 @@ impl ConfigurationLoader {
 
         Ok(GenericConfiguration {
             inner: Arc::new(Inner {
-                value: inner,
+                value,
+                figment: self.inner,
                 lookup_sources: self.lookup_sources,
                 refreshable_config,
                 refreshable_values,
@@ -348,8 +367,10 @@ impl ConfigurationLoader {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct Inner {
     value: Value,
+    figment: Figment,
     lookup_sources: HashSet<LookupSource>,
     refreshable_config: Option<RefreshableConfiguration>,
     refreshable_values: Option<Arc<ArcSwap<serde_json::Value>>>,
@@ -382,20 +403,6 @@ pub struct GenericConfiguration {
 }
 
 impl GenericConfiguration {
-    fn get(&self, key: &str) -> Option<&Value> {
-        match self.inner.value.find_ref(key) {
-            Some(value) => Some(value),
-            None => {
-                // We might have been given a key that uses nested notation -- `foo.bar` -- but is only present in the
-                // environment variables. We specifically don't want to use a different separator in environment
-                // variables to map to nested key separators, so we simply try again here but with all nested key
-                // separators (`.`) replaced with `_`, to match environment variables.
-                let key = key.replace('.', "_");
-                self.inner.value.find_ref(&key)
-            }
-        }
-    }
-
     /// Gets a configuration value by key.
     ///
     /// The key must be in the form of `a.b.c`, where periods (`.`) are used to indicate a nested lookup.
@@ -408,16 +415,13 @@ impl GenericConfiguration {
     where
         T: Deserialize<'a>,
     {
-        match self.get(key) {
-            Some(value) => {
-                let deserialized = value.deserialize().map_err(|e| e.with_path(key))?;
-                Ok(deserialized)
+        self.inner.figment.extract_inner(key).map_err(|e| {
+            if matches!(e.kind, Kind::MissingField(_)) {
+                from_figment_error(&self.inner.lookup_sources, e)
+            } else {
+                e.into()
             }
-            None => Err(from_figment_error(
-                &self.inner.lookup_sources,
-                Kind::MissingField(key.to_string().into()).into(),
-            )),
-        }
+        })
     }
 
     /// Gets a configuration value by key, or the default value if a key does not exist or could not be deserialized.
@@ -430,10 +434,7 @@ impl GenericConfiguration {
     where
         T: Default + Deserialize<'a>,
     {
-        match self.get(key) {
-            Some(value) => value.deserialize().unwrap_or_default(),
-            None => T::default(),
-        }
+        self.inner.figment.extract_inner(key).unwrap_or_default()
     }
 
     /// Gets a configuration value by key, if it exists.
@@ -450,15 +451,10 @@ impl GenericConfiguration {
     where
         T: Deserialize<'a>,
     {
-        match self.get(key) {
-            Some(value) => {
-                let deserialized = value
-                    .deserialize()
-                    .map_err(|e| e.with_path(key))
-                    .map_err(|e| from_figment_error(&self.inner.lookup_sources, e))?;
-                Ok(Some(deserialized))
-            }
-            None => Ok(None),
+        match self.inner.figment.extract_inner(key) {
+            Ok(value) => Ok(Some(value)),
+            Err(e) if matches!(e.kind, Kind::MissingField(_)) => Ok(None),
+            Err(e) => Err(e.into()),
         }
     }
 

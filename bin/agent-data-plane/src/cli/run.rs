@@ -38,6 +38,7 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
     let configuration = ConfigurationLoader::default()
         .try_from_yaml(&run_config.config)
         .from_environment("DD")?
+        .with_dynamic_configuration()?
         .with_default_secrets_resolution()
         .await?
         .into_generic()
