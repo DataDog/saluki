@@ -3,6 +3,7 @@ use std::sync::OnceLock;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use saluki_config::GenericConfiguration;
+use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::{service_check::ServiceCheck, Event};
 use saluki_error::{generic_error, GenericError};
 use tokio::sync::mpsc::Sender;
@@ -120,8 +121,13 @@ pub mod aggregator {
         );
 
         if let Ok(service_check_status) = status.try_into() {
-            let service_check = ServiceCheck::new(&name, service_check_status)
-                .with_tags(Some(tags.into_iter().map(|tag| tag.into()).collect()))
+            let mut tag_set = TagSet::default();
+            for tag in tags {
+                tag_set.insert_tag(tag);
+            }
+
+            let service_check = ServiceCheck::new(name.clone(), service_check_status)
+                .with_tags(tag_set.into_shared())
                 .with_hostname(if hostname.is_empty() {
                     None
                 } else {
