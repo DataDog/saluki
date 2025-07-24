@@ -7,7 +7,7 @@ use http_body::Body;
 use http_body_util::BodyExt as _;
 use hyper::{body::Incoming, Response};
 use saluki_common::{hash::hash_single_stable, task::spawn_traced_named};
-use saluki_config::RefreshableConfiguration;
+use saluki_config::GenericConfiguration;
 use saluki_core::components::ComponentContext;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{
@@ -99,7 +99,7 @@ where
     /// Creates a new `TransactionForwarder` instance from the given configuration.
     pub fn from_config<F>(
         context: ComponentContext, config: ForwarderConfiguration,
-        maybe_refreshable_config: Option<RefreshableConfiguration>, endpoint_name: F, telemetry: ComponentTelemetry,
+        maybe_refreshable_config: Option<GenericConfiguration>, endpoint_name: F, telemetry: ComponentTelemetry,
         metrics_builder: MetricsBuilder,
     ) -> Result<Self, GenericError>
     where

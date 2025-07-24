@@ -5,7 +5,7 @@ use http::{uri::PathAndQuery, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::buf::FrozenChunkedBytesBuffer;
 use saluki_common::task::HandleExt as _;
-use saluki_config::{GenericConfiguration, RefreshableConfiguration};
+use saluki_config::GenericConfiguration;
 use saluki_context::tags::SharedTagSet;
 use saluki_core::data_model::event::{metric::Metric, EventType};
 use saluki_core::topology::EventsBuffer;
@@ -71,7 +71,7 @@ pub struct DatadogMetricsConfiguration {
     forwarder_config: ForwarderConfiguration,
 
     #[serde(skip)]
-    config_refresher: Option<RefreshableConfiguration>,
+    config_refresher: Option<GenericConfiguration>,
 
     /// Maximum number of input metrics to encode into a single request payload.
     ///
@@ -129,8 +129,8 @@ impl DatadogMetricsConfiguration {
         Ok(config.as_typed()?)
     }
 
-    /// Add option to retrieve configuration values from a `RefreshableConfiguration`.
-    pub fn add_refreshable_configuration(&mut self, refresher: RefreshableConfiguration) {
+    /// Add option to retrieve configuration values from a `GenericConfiguration`.
+    pub fn add_refreshable_configuration(&mut self, refresher: GenericConfiguration) {
         self.config_refresher = Some(refresher);
     }
 
