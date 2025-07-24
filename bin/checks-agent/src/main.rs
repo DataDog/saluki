@@ -9,6 +9,7 @@ use saluki_components::{
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::topology::TopologyBlueprint;
+use saluki_env::EnvironmentProvider;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use saluki_io::net::ListenAddress;
@@ -149,7 +150,7 @@ async fn create_topology(
     // Create a ChecksConfiguration source
     let checks_config = ChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure checks source.")?
-        .with_autodiscovery_provider(env_provider.autodiscovery_provider().clone());
+        .with_autodiscovery_provider(env_provider.autodiscovery().clone());
     // Add a destination component to receive data from the source
     let metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure metrics destination.")?;
