@@ -13,7 +13,7 @@ mod events;
 pub use self::events::{DatadogEventsConfiguration, EventsEndpointEncoder};
 
 mod metrics;
-pub use self::metrics::DatadogMetricsConfiguration;
+pub use self::metrics::{DatadogMetricsConfiguration, MetricsEndpoint, MetricsEndpointEncoder};
 
 mod service_checks;
 pub use self::service_checks::{DatadogServiceChecksConfiguration, ServiceChecksEndpointEncoder};
