@@ -139,7 +139,7 @@ impl Destination for DogStatsDStats {
                 },
             }
         }
-        
+
         Ok(())
     }
 }
@@ -201,7 +201,7 @@ impl DogStatsDStatisticsConfiguration {
         println!("tx_arc created: {:?}", tx_arc);
         let state = DogStatsDAPIState { tx: tx_arc };
         let handler = DogStatsDAPIHandler { state };
-       
+
         Ok(Self {
             api_handler: handler,
             rx: Arc::new(Mutex::new(rx)),
