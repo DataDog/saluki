@@ -16,12 +16,10 @@ pub async fn handle_dogstatsd_subcommand(config: DogstatsdConfig) {
 }
 
 async fn handle_dogstatsd_stats(client: reqwest::Client) {
-    info!("DogStatsD stats");
     let response = client.get("https://localhost:5101/dogstatsd/stats").send().await;
 
     match response {
         Ok(response) => {
-            info!("Status: {:?}", response.status());
             match response.text().await {
                 Ok(body) => {
                     output_formatted_stats(&body).await;

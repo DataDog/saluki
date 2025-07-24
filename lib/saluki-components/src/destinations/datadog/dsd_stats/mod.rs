@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
+use chrono;
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
@@ -32,7 +33,7 @@ pub struct Stats {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MetricSample {
     count: u64,
-    last_seen: SystemTime,
+    last_seen: String,
     name: String,
     tags: String,
 }
@@ -84,7 +85,7 @@ impl Destination for DogStatsDStats {
                 _ = health.live() => continue,
                 maybe_events = context.events().next() => match maybe_events {
                     Some(events) => {
-                        debug!("DogStatsD stats destination received {} events", events.len());
+                        println!("DogStatsD stats destination received {} events", events.len());
 
                         for event in events {
                             if let Metric(metric) = event {
@@ -99,16 +100,18 @@ impl Destination for DogStatsDStats {
                                     format!("{}|{}", metric_name.clone(), tags_formatted)
                                 };
 
+                                let now = SystemTime::now();
+                                let datetime = chrono::DateTime::<chrono::Utc>::from(now);
                                 let sample = self.stats.metrics_received.entry(key).or_insert_with(|| MetricSample {
                                     count: 0,
-                                    last_seen: SystemTime::now(),
+                                    last_seen: datetime.format("%Y-%m-%d %H:%M:%S").to_string(),
                                     name: metric_name.clone(),
                                     tags: tags_formatted.clone(),
                                 });
                                 sample.count += 1;
-                                sample.last_seen = SystemTime::now();
+                                sample.last_seen = datetime.format("%Y-%m-%d %H:%M:%S").to_string();
 
-                                debug!(
+                                println!(
                                     "Metric Name: {:?} | Tags: {:?} | Count: {:?} | Last Seen: {:?}",
                                     sample.name, sample.tags, sample.count, sample.last_seen
                                 );

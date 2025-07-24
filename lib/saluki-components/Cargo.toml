@@ -15,6 +15,7 @@ python-checks = ["dep:pyo3"]
 [dependencies]
 async-trait = { workspace = true }
 bytes = { workspace = true }
+chrono = { workspace = true }
 bytesize = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
