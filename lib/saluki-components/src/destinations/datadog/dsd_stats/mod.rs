@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
-use chrono;
 
 use async_trait::async_trait;
+use chrono;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_api::{
     extract::State,
@@ -21,7 +21,7 @@ use saluki_core::{
 use saluki_error::GenericError;
 use serde_json;
 use tokio::{select, sync::mpsc};
-use tracing::{debug, info};
+use tracing::info;
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[allow(dead_code)]
@@ -71,7 +71,7 @@ impl Destination for DogStatsDStats {
         let mut health = context.take_health_handle();
 
         health.mark_ready();
-        debug!("DogStatsD stats destination started.");
+        println!("DogStatsD stats destination started.");
 
         loop {
             // Handle API request first

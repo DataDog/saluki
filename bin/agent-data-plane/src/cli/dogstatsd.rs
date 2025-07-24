@@ -19,16 +19,14 @@ async fn handle_dogstatsd_stats(client: reqwest::Client) {
     let response = client.get("https://localhost:5101/dogstatsd/stats").send().await;
 
     match response {
-        Ok(response) => {
-            match response.text().await {
-                Ok(body) => {
-                    output_formatted_stats(&body).await;
-                }
-                Err(e) => {
-                    info!("Failed to read response body: {}", e);
-                }
+        Ok(response) => match response.text().await {
+            Ok(body) => {
+                output_formatted_stats(&body).await;
             }
-        }
+            Err(e) => {
+                info!("Failed to read response body: {}", e);
+            }
+        },
         Err(e) => {
             info!("Request failed: {}", e);
         }
