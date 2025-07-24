@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
+//use std::time::SystemTime;
 use async_trait::async_trait;
-use chrono;
+//use chrono;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_api::{
     extract::State,
@@ -88,6 +88,8 @@ impl Destination for DogStatsDStats {
                 for event in events {
                     if let Metric(metric) = event {
                         let context = metric.context();
+                        println!("metric_name: {:?}", context.name().to_string());
+                        /*
                         let metric_name = context.name().to_string();
                         let tags: Vec<String> =
                             context.tags().into_iter().map(|tag| tag.as_str().to_string()).collect();
@@ -113,6 +115,7 @@ impl Destination for DogStatsDStats {
                             "Metric Name: {:?} | Tags: {:?} | Count: {:?} | Last Seen: {:?}",
                             sample.name, sample.tags, sample.count, sample.last_seen
                         );
+                        */
                     }
                 }
             } else {
