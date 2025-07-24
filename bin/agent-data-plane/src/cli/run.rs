@@ -148,10 +148,10 @@ async fn create_topology(
     let mut dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog forwarder.")?;
 
-    if let Some(refreshable_config) = configuration.get_refreshable_config() {
-        dd_metrics_config.add_refreshable_configuration(refreshable_config.clone());
-        dd_service_checks_config.add_refreshable_configuration(refreshable_config.clone());
-        dd_forwarder_config.add_refreshable_configuration(refreshable_config.clone());
+    if configuration.get_refreshable_config().is_some() {
+        dd_metrics_config.add_refreshable_configuration(configuration.clone());
+        dd_service_checks_config.add_refreshable_configuration(configuration.clone());
+        dd_forwarder_config.add_refreshable_configuration(configuration.clone());
     }
 
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);

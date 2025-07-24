@@ -5,7 +5,7 @@ use std::{
 };
 
 use regex::Regex;
-use saluki_config::RefreshableConfiguration;
+use saluki_config::GenericConfiguration;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_metadata;
 use serde::Deserialize;
@@ -158,7 +158,7 @@ impl EndpointConfiguration {
     /// If any of the additional endpoints are not valid URLs, or a valid URL could not be constructed after applying
     /// the necessary normalization / modifications to a particular endpoint, an error will be returned.
     pub fn build_resolved_endpoints(
-        &self, maybe_refreshable_config: Option<RefreshableConfiguration>,
+        &self, maybe_refreshable_config: Option<GenericConfiguration>,
     ) -> Result<Vec<ResolvedEndpoint>, GenericError> {
         let primary_endpoint = calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, &self.api_key)
             .error_context("Failed parsing/resolving the primary destination endpoint.")?
@@ -184,7 +184,7 @@ impl EndpointConfiguration {
 pub struct ResolvedEndpoint {
     endpoint: Url,
     api_key: String,
-    config: Option<RefreshableConfiguration>,
+    config: Option<GenericConfiguration>,
 }
 
 impl ResolvedEndpoint {
@@ -205,7 +205,7 @@ impl ResolvedEndpoint {
     }
 
     /// Creates a new  `ResolvedEndpoint` instance from an existing `ResolvedEndpoint`, adding an optional `RefreshableConfiguration`.
-    pub fn with_refreshable_configuration(self, config: Option<RefreshableConfiguration>) -> Self {
+    pub fn with_refreshable_configuration(self, config: Option<GenericConfiguration>) -> Self {
         Self {
             endpoint: self.endpoint,
             api_key: self.api_key,
@@ -224,6 +224,9 @@ impl ResolvedEndpoint {
     /// stored if it has been updated since the last time `api_key` was called.
     pub fn api_key(&mut self) -> &str {
         if let Some(config) = &self.config {
+            // TODO: remove, just testing config updates
+            let dogstatsd_stats_enable = config.get_typed_or_default::<bool>("dogstatsd_metrics_stats_enable");
+            println!("rz6300 dogstatsd_stats: {}", dogstatsd_stats_enable);
             match config.try_get_typed::<String>("api_key") {
                 Ok(Some(api_key)) => {
                     if !api_key.is_empty() && self.api_key != api_key {
