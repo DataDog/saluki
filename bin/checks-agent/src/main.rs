@@ -74,7 +74,8 @@ async fn run(started: Instant) -> Result<(), Box<dyn std::error::Error>> {
         .from_environment("DD")?
         .with_default_secrets_resolution()
         .await?
-        .into_generic()?;
+        .into_generic()
+        .await?;
 
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();

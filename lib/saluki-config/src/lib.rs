@@ -4,6 +4,7 @@
 
 use std::{borrow::Cow, collections::HashSet, sync::Arc};
 
+use arc_swap::ArcSwap;
 pub use figment::value;
 use figment::{error::Kind, providers::Env, value::Value, Figment};
 use saluki_error::GenericError;
@@ -121,6 +122,7 @@ impl LookupSource {
 pub struct ConfigurationLoader {
     inner: Figment,
     lookup_sources: HashSet<LookupSource>,
+    dynamic_configuration_enabled: bool,
 }
 
 impl ConfigurationLoader {
@@ -298,6 +300,14 @@ impl ConfigurationLoader {
         Ok(self)
     }
 
+    /// Enables dynamic configuration.
+    ///
+    /// This will enable the dynamic configuration feature, which allows the configuration to be sourced from the core agent.
+    pub fn with_dynamic_configuration(mut self) -> Self {
+        self.dynamic_configuration_enabled = true;
+        self
+    }
+
     /// Consumes the configuration loader, deserializing it as `T`.
     ///
     /// ## Errors
@@ -311,12 +321,27 @@ impl ConfigurationLoader {
     }
 
     /// Consumes the configuration loader and wraps it in a generic wrapper.
-    pub fn into_generic(self) -> Result<GenericConfiguration, ConfigurationError> {
+    pub async fn into_generic(self) -> Result<GenericConfiguration, ConfigurationError> {
         let inner: Value = self.inner.extract()?;
+
+        let (refreshable_config, refreshable_values) = if self.dynamic_configuration_enabled {
+            let refresher_settings = inner.deserialize::<RefresherConfiguration>()?;
+            debug!("Dynamic configuration enabled.");
+
+            let values = Arc::new(ArcSwap::from_pointee(serde_json::Value::Null));
+            let refreshable = refresher_settings.build(values.clone()).await.context(Generic)?;
+            (Some(refreshable), Some(values))
+        } else {
+            debug!("Dynamic configuration not enabled.");
+            (None, None)
+        };
+
         Ok(GenericConfiguration {
             inner: Arc::new(Inner {
                 value: inner,
                 lookup_sources: self.lookup_sources,
+                refreshable_config,
+                refreshable_values,
             }),
         })
     }
@@ -326,6 +351,8 @@ impl ConfigurationLoader {
 struct Inner {
     value: Value,
     lookup_sources: HashSet<LookupSource>,
+    refreshable_config: Option<RefreshableConfiguration>,
+    refreshable_values: Option<Arc<ArcSwap<serde_json::Value>>>,
 }
 
 /// A generic configuration object.
@@ -448,6 +475,16 @@ impl GenericConfiguration {
             .value
             .deserialize()
             .map_err(|e| from_figment_error(&self.inner.lookup_sources, e))
+    }
+
+    /// Gets the refreshable configuration.
+    pub fn get_refreshable_config(&self) -> Option<&RefreshableConfiguration> {
+        self.inner.refreshable_config.as_ref()
+    }
+
+    /// Gets the refreshable handle.
+    pub fn get_refreshable_handle(&self) -> Option<Arc<ArcSwap<serde_json::Value>>> {
+        self.inner.refreshable_values.as_ref().cloned()
     }
 }
 
