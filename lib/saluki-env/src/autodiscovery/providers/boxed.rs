@@ -24,7 +24,7 @@ impl BoxedAutodiscoveryProvider {
 
 #[async_trait]
 impl AutodiscoveryProvider for BoxedAutodiscoveryProvider {
-    async fn subscribe(&self) -> Receiver<AutodiscoveryEvent> {
+    async fn subscribe(&self) -> Option<Receiver<AutodiscoveryEvent>> {
         self.inner.subscribe().await
     }
 }

@@ -135,87 +135,89 @@ impl ChecksSource {
 #[async_trait]
 impl Source for ChecksSource {
     async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
-        let mut global_shutdown: ComponentShutdownHandle = context.take_shutdown_handle();
-        let mut health = context.take_health_handle();
-        health.mark_ready();
+        if let Some(mut receiver) = self.autodiscovery.subscribe().await {
+            let mut global_shutdown: ComponentShutdownHandle = context.take_shutdown_handle();
+            let mut health = context.take_health_handle();
+            health.mark_ready();
 
-        info!("Checks source started.");
+            info!("Checks source started.");
 
-        let (check_metrics_tx, check_metrics_rx) = mpsc::channel(128);
+            let (check_metrics_tx, check_metrics_rx) = mpsc::channel(128);
+            let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> = self.builders(check_metrics_tx);
+            let mut check_ids = HashSet::new();
+            let scheduler = Scheduler::new(self.check_runners);
 
-        let mut event_rx = self.autodiscovery.subscribe().await;
-        let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> = self.builders(check_metrics_tx);
-        let mut check_ids = HashSet::new();
-        let scheduler = Scheduler::new(self.check_runners);
+            let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
-        let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
+            spawn_traced_named(
+                "checks-events-listener",
+                drain_and_dispatch_check_metrics(listener_shutdown_coordinator.register(), context, check_metrics_rx),
+            );
 
-        spawn_traced_named(
-            "checks-events-listener",
-            drain_and_dispatch_check_metrics(listener_shutdown_coordinator.register(), context, check_metrics_rx),
-        );
+            loop {
+                select! {
+                    _ = &mut global_shutdown => {
+                        debug!("Checks source received shutdown signal.");
+                        scheduler.shutdown().await;
+                        break
+                    },
 
-        loop {
-            select! {
-                _ = &mut global_shutdown => {
-                    debug!("Checks source received shutdown signal.");
-                    scheduler.shutdown().await;
-                    break
-                },
+                    _ = health.live() => continue,
 
-                _ = health.live() => continue,
+                    event = receiver.recv() => match event {
+                            Ok(event) => {
+                                match event {
+                                    AutodiscoveryEvent::CheckSchedule { config } => {
+                                        let mut runnable_checks: Vec<Arc<dyn Check + Send + Sync>> = vec![];
+                                        for instance in &config.instances {
+                                            let check_id = instance.id();
+                                            if check_ids.contains(check_id) {
+                                                continue;
+                                            }
 
-                event = event_rx.recv() => match event {
-                        Ok(event) => {
-                            match event {
-                                AutodiscoveryEvent::CheckSchedule { config } => {
-                                    let mut runnable_checks: Vec<Arc<dyn Check + Send + Sync>> = vec![];
-                                    for instance in &config.instances {
-                                        let check_id = instance.id();
-                                        if check_ids.contains(check_id) {
-                                            continue;
-                                        }
-
-                                        for builder in check_builders.iter_mut() {
-                                            if let Some(check) = builder.build_check(&config.name, instance, &config.init_config, &config.source) {
-                                                runnable_checks.push(check);
-                                                check_ids.insert(check_id.clone());
-                                                break;
+                                            for builder in check_builders.iter_mut() {
+                                                if let Some(check) = builder.build_check(&config.name, instance, &config.init_config, &config.source) {
+                                                    runnable_checks.push(check);
+                                                    check_ids.insert(check_id.clone());
+                                                    break;
+                                                }
                                             }
                                         }
-                                    }
 
-                                    for check in runnable_checks {
-                                        scheduler.schedule(check);
-                                    }
-                                }
-                                AutodiscoveryEvent::CheckUnscheduled { config } => {
-                                    for instance in &config.instances {
-                                        let check_id = instance.id();
-                                        if !check_ids.contains(check_id) {
-                                            warn!("Unscheduling check {} not found, skipping.", check_id);
-                                            continue;
+                                        for check in runnable_checks {
+                                            scheduler.schedule(check);
                                         }
-
-                                        scheduler.unschedule(check_id);
                                     }
+                                    AutodiscoveryEvent::CheckUnscheduled { config } => {
+                                        for instance in &config.instances {
+                                            let check_id = instance.id();
+                                            if !check_ids.contains(check_id) {
+                                                warn!("Unscheduling check {} not found, skipping.", check_id);
+                                                continue;
+                                            }
+
+                                            scheduler.unschedule(check_id);
+                                        }
+                                    }
+                                    // We only care about CheckSchedule and CheckUnscheduled events
+                                    _ => {}
                                 }
-                                // We only care about CheckSchedule and CheckUnscheduled events
-                                _ => {}
                             }
-                        }
-                        Err(e) => {
-                            error!("Error receiving event: {:?}", e);
-                        }
+                            Err(e) => {
+                                error!("Error receiving event: {:?}", e);
+                            }
+                    }
                 }
             }
+
+            listener_shutdown_coordinator.shutdown().await;
+
+            info!("Checks source stopped.");
+
+            Ok(())
+        } else {
+            Err(generic_error!("No autodiscovery receiver configured."))
         }
-
-        listener_shutdown_coordinator.shutdown().await;
-
-        info!("Checks source stopped.");
-
-        Ok(())
     }
 }
 

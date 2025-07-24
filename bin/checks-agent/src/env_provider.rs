@@ -75,15 +75,12 @@ impl ChecksAgentEnvProvider {
             autodiscovery_provider,
         })
     }
-
-    pub fn autodiscovery_provider(&self) -> &BoxedAutodiscoveryProvider {
-        &self.autodiscovery_provider
-    }
 }
 
 impl EnvironmentProvider for ChecksAgentEnvProvider {
     type Host = BoxedHostProvider;
     type Workload = Option<RemoteAgentWorkloadProvider>;
+    type AutodiscoveryProvider = BoxedAutodiscoveryProvider;
 
     fn host(&self) -> &Self::Host {
         &self.host_provider
@@ -91,5 +88,9 @@ impl EnvironmentProvider for ChecksAgentEnvProvider {
 
     fn workload(&self) -> &Self::Workload {
         &None
+    }
+
+    fn autodiscovery(&self) -> &Self::AutodiscoveryProvider {
+        &self.autodiscovery_provider
     }
 }

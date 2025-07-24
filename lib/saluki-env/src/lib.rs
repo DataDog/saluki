@@ -28,11 +28,17 @@ pub trait EnvironmentProvider {
     /// Type of the workload provider.
     type Workload: self::workload::WorkloadProvider;
 
+    /// Type of the autodiscovery provider.
+    type AutodiscoveryProvider: self::autodiscovery::AutodiscoveryProvider;
+
     /// Gets a reference to the host provider for this environment.
     fn host(&self) -> &Self::Host;
 
     /// Gets a reference to workload provider for this environment.
     fn workload(&self) -> &Self::Workload;
+
+    /// Gets a reference to autodiscovery provider for this environment.
+    fn autodiscovery(&self) -> &Self::AutodiscoveryProvider;
 }
 
 impl<E> EnvironmentProvider for Arc<E>
@@ -41,6 +47,7 @@ where
 {
     type Host = E::Host;
     type Workload = E::Workload;
+    type AutodiscoveryProvider = E::AutodiscoveryProvider;
 
     fn host(&self) -> &Self::Host {
         (**self).host()
@@ -48,5 +55,9 @@ where
 
     fn workload(&self) -> &Self::Workload {
         (**self).workload()
+    }
+
+    fn autodiscovery(&self) -> &Self::AutodiscoveryProvider {
+        (**self).autodiscovery()
     }
 }
