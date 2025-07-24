@@ -48,9 +48,13 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
     let env_provider =
         ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry).await?;
 
+    // Create the DogStatsD stats configuration once to share between topology and API
+    let dsd_stats_config = DogStatsDStatisticsConfiguration::from_configuration(&configuration)
+        .error_context("Failed to configure DogStatsD Statistics destination.")?;
+
     // Create our primary data topology and spawn any internal processes, which will ensure all relevant components are
     // registered and accounted for in terms of memory usage.
-    let blueprint = create_topology(&configuration, &env_provider, &component_registry).await?;
+    let blueprint = create_topology(&configuration, &env_provider, &component_registry, dsd_stats_config.clone()).await?;
 
     spawn_internal_observability_topology(&configuration, &component_registry, health_registry.clone())
         .error_context("Failed to spawn internal observability topology.")?;
@@ -59,6 +63,7 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         &component_registry,
         health_registry.clone(),
         env_provider,
+        dsd_stats_config,
     )
     .error_context("Failed to spawn control plane.")?;
 
@@ -116,6 +121,7 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
 
 async fn create_topology(
     configuration: &GenericConfiguration, env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
+    dsd_stats_config: DogStatsDStatisticsConfiguration,
 ) -> Result<TopologyBlueprint, GenericError> {
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
@@ -145,8 +151,7 @@ async fn create_topology(
         .error_context("Failed to configure Datadog Service Checks destination.")?;
     let mut dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog forwarder.")?;
-    let dsd_stats_config = DogStatsDStatisticsConfiguration::from_configuration(configuration)
-        .error_context("Failed to configure DogStatsD Statistics destination.")?;
+
 
     match RefresherConfiguration::from_configuration(configuration) {
         Ok(refresher_configuration) => {
@@ -173,7 +178,7 @@ async fn create_topology(
         .add_destination("dd_metrics_out", dd_metrics_config)?
         .add_destination("dd_service_checks_out", dd_service_checks_config)?
         .add_forwarder("dd_out", dd_forwarder_config)?
-        .add_destination("dsd_stats_out", dsd_stats_config)?
+        .add_destination("dsd_stats_out", dsd_stats_config.clone())?
         .connect_component("dsd_agg", ["dsd_in.metrics"])?
         .connect_component("dsd_prefix_filter", ["dsd_agg"])?
         .connect_component("enrich", ["dsd_prefix_filter"])?

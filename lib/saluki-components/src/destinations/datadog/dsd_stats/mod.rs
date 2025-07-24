@@ -19,7 +19,7 @@ use saluki_core::{
 };
 use saluki_error::GenericError;
 use serde_json;
-use tokio::sync::mpsc;
+use tokio::{select, sync::mpsc};
 use tracing::{debug, info};
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -37,6 +37,7 @@ pub struct MetricSample {
     tags: String,
 }
 /// Configuration for DogStatsD internal statistics API.
+#[derive(Clone)]
 #[allow(dead_code)]
 pub struct DogStatsDStatisticsConfiguration {
     api_handler: DogStatsDAPIHandler,
@@ -46,7 +47,7 @@ pub struct DogStatsDStatisticsConfiguration {
 /// State for the DogStatsD API handler.
 #[derive(Clone)]
 pub struct DogStatsDAPIState {
-    tx: mpsc::Sender<tokio::sync::oneshot::Sender<Stats>>,
+    tx: Arc<Mutex<mpsc::Sender<tokio::sync::oneshot::Sender<Stats>>>>,
 }
 
 /// API handler for dogstatsd stats endpoint.
@@ -66,73 +67,105 @@ impl DogStatsDStats {}
 #[async_trait::async_trait]
 impl Destination for DogStatsDStats {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
+        println!("inside run for DogStatsDStats");
+        let mut health = context.take_health_handle();
+
+        health.mark_ready();
+        debug!("DogStatsD stats destination started.");
+
         loop {
-            // Handle received events.
-            if let Some(events) = context.events().next().await {
-                debug!("DogStatsD stats destination received {} events", events.len());
-
-                for event in events {
-                    if let Metric(metric) = event {
-                        let context = metric.context();
-                        let metric_name = context.name().to_string();
-                        let tags: Vec<String> =
-                            context.tags().into_iter().map(|tag| tag.as_str().to_string()).collect();
-                        let tags_formatted = tags.join(",");
-                        let key = if tags.is_empty() {
-                            metric_name
-                        } else {
-                            format!("{}|{}", metric_name, tags_formatted)
-                        };
-
-                        let sample = self
-                            .stats
-                            .metrics_received
-                            .entry(key.clone())
-                            .or_insert_with(|| MetricSample {
-                                count: 0,
-                                last_seen: SystemTime::now(),
-                                name: String::new(),
-                                tags: String::new(),
-                            });
-                        sample.name = context.name().to_string();
-                        sample.tags = tags_formatted;
-                        sample.count += 1;
-                        sample.last_seen = SystemTime::now();
-
-                        debug!(
-                            "Metric Name: {:?} | Tags: {:?} | Count: {:?} | Last Seen: {:?}",
-                            sample.name, sample.tags, sample.count, sample.last_seen
-                        );
+            // Handle API request first
+            println!("in loop and trying to unlock rx");
+            match self.rx.try_lock() {
+                Ok(mut rx) => {
+                    println!("rx is open: {:?}", rx);
+                    match rx.try_recv() {
+                        Ok(oneshot_tx) => {
+                            println!("Received oneshot_tx, sending stats");
+                            let _ = oneshot_tx.send(self.stats.clone());
+                        }
+                        Err(e) => {
+                            println!("try_recv error: {:?}", e);
+                        }
                     }
                 }
-            } else {
-                break;
-            }
-
-            // Handle API request.
-            if let Ok(mut rx) = self.rx.try_lock() {
-                if let Ok(tx) = rx.try_recv() {
-                    let _ = tx.send(self.stats.clone());
+                Err(e) => {
+                    println!("Failed to lock rx: {:?}", e);
                 }
             }
-        }
 
+            select! {
+                _ = health.live() => continue,
+                maybe_events = context.events().next() => match maybe_events {
+                    Some(events) => {
+                        debug!("DogStatsD stats destination received {} events", events.len());
+
+                        for event in events {
+                            if let Metric(metric) = event {
+                                let context = metric.context();
+                                let metric_name = context.name().to_string();
+                                let tags: Vec<String> =
+                                    context.tags().into_iter().map(|tag| tag.as_str().to_string()).collect();
+                                let tags_formatted = tags.join(",");
+                                let key = if tags.is_empty() {
+                                    metric_name
+                                } else {
+                                    format!("{}|{}", metric_name, tags_formatted)
+                                };
+
+                                let sample = self
+                                    .stats
+                                    .metrics_received
+                                    .entry(key.clone())
+                                    .or_insert_with(|| MetricSample {
+                                        count: 0,
+                                        last_seen: SystemTime::now(),
+                                        name: String::new(),
+                                        tags: String::new(),
+                                    });
+                                sample.name = context.name().to_string();
+                                sample.tags = tags_formatted;
+                                sample.count += 1;
+                                sample.last_seen = SystemTime::now();
+
+                                debug!(
+                                    "Metric Name: {:?} | Tags: {:?} | Count: {:?} | Last Seen: {:?}",
+                                    sample.name, sample.tags, sample.count, sample.last_seen
+                                );
+                            }
+                        }
+                    }
+                    None => break,
+                },
+            }
+        }
+        
         Ok(())
     }
 }
 
 impl DogStatsDAPIHandler {
     async fn stats_handler(State(state): State<DogStatsDAPIState>) -> (StatusCode, String) {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        println!("inside stats_handler");
+        let (oneshot_tx, oneshot_rx) = tokio::sync::oneshot::channel();
 
-        if let Err(e) = state.tx.try_send(tx) {
+        println!("state.tx: {:?}", state.tx);
+        if let Ok(tx) = state.tx.try_lock() {
+            println!("acquired tx lock: {:?}", tx);
+            if let Err(e) = tx.try_send(oneshot_tx) {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to send stats: {}", e),
+                );
+            }
+        } else {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to send stats: {}", e),
+                "Failed to acquire sender lock".to_string(),
             );
         }
 
-        match rx.await {
+        match oneshot_rx.await {
             Ok(stats) => {
                 info!("stats received back: {:?}", stats);
                 (StatusCode::OK, serde_json::to_string(&stats).unwrap())
@@ -160,10 +193,15 @@ impl APIHandler for DogStatsDAPIHandler {
 impl DogStatsDStatisticsConfiguration {
     /// Creates a new 'DogStatsDStatisticsConfiguration' from the given configuration.
     pub fn from_configuration(_: &GenericConfiguration) -> Result<Self, GenericError> {
+        println!("inside from_configuration for DogStatsDStatisticsConfiguration");
         let (tx, rx) = mpsc::channel(100);
-        let state = DogStatsDAPIState { tx };
+        println!("tx: {:?}", tx);
+        println!("rx: {:?}", rx);
+        let tx_arc = Arc::new(Mutex::new(tx));
+        println!("tx_arc created: {:?}", tx_arc);
+        let state = DogStatsDAPIState { tx: tx_arc };
         let handler = DogStatsDAPIHandler { state };
-
+       
         Ok(Self {
             api_handler: handler,
             rx: Arc::new(Mutex::new(rx)),
@@ -184,6 +222,7 @@ impl DestinationBuilder for DogStatsDStatisticsConfiguration {
 
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         // Share the receiver via Arc<Mutex<>>
+        println!("inside build for DestinationBuilder");
         let rx = Arc::clone(&self.rx);
         Ok(Box::new(DogStatsDStats {
             rx,

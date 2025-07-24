@@ -27,7 +27,7 @@ const PRIMARY_PRIVILEGED_API_PORT: u16 = 5101;
 /// If the APIs cannot be spawned, or if the health registry cannot be spawned, an error will be returned.
 pub fn spawn_control_plane(
     config: GenericConfiguration, component_registry: &ComponentRegistry, health_registry: HealthRegistry,
-    env_provider: ADPEnvironmentProvider,
+    env_provider: ADPEnvironmentProvider, dsd_stats_config: DogStatsDStatisticsConfiguration,
 ) -> Result<(), GenericError> {
     // Build our unprivileged and privileged API server.
     //
@@ -40,7 +40,7 @@ pub fn spawn_control_plane(
     let privileged_api = APIBuilder::new()
         .with_self_signed_tls()
         .with_optional_handler(acquire_logging_api_handler())
-        .with_handler(DogStatsDStatisticsConfiguration::from_configuration(&config)?.api_handler())
+        .with_handler(dsd_stats_config.api_handler())
         .with_optional_handler(env_provider.workload_api_handler());
 
     let init = async move {
