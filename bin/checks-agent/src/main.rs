@@ -9,6 +9,7 @@ use saluki_components::{
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::topology::TopologyBlueprint;
+use saluki_env::EnvironmentProvider;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use saluki_io::net::ListenAddress;

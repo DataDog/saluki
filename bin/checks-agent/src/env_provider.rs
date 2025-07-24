@@ -79,10 +79,6 @@ impl ChecksAgentEnvProvider {
     pub fn autodiscovery_provider(&self) -> &BoxedAutodiscoveryProvider {
         &self.autodiscovery_provider
     }
-
-    pub fn host(&self) -> &BoxedHostProvider {
-        &self.host_provider
-    }
 }
 
 impl EnvironmentProvider for ChecksAgentEnvProvider {
