@@ -15,11 +15,13 @@ use stringtheory::MetaString;
 use tokio::select;
 use tracing::debug;
 
-use crate::destinations::datadog::{
-    ComponentTelemetry, ForwarderConfiguration, Metadata, Transaction, TransactionForwarder,
+use crate::common::datadog::{
+    config::ForwarderConfiguration,
+    io::TransactionForwarder,
+    telemetry::ComponentTelemetry,
+    transaction::{Metadata, Transaction},
+    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
 };
-
-const MAX_COMPRESSED_PAYLOAD_SIZE: usize = 3_200_000; // 3 MB
 
 /// Datadog forwarder.
 ///
@@ -122,7 +124,9 @@ impl MemoryBounds for DatadogConfiguration {
                         "forwarder_high_prio_buffer_size",
                         self.forwarder_config.endpoint_buffer_size(),
                     ),
-                    UsageExpr::constant("maximum compressed payload size", MAX_COMPRESSED_PAYLOAD_SIZE),
+                    // TODO: The default compressed size limit just so happens to be the biggest one we currently default with on our side,
+                    // but it's not clear that this will always be the case.
+                    UsageExpr::constant("maximum compressed payload size", DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT),
                 ),
             ));
     }

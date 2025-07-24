@@ -635,7 +635,7 @@ mod tests {
     use saluki_io::compression::CompressionScheme;
 
     use super::{EndpointEncoder, RequestBuilder, RequestBuilderError};
-    use crate::destinations::datadog::common::io::RB_BUFFER_CHUNK_SIZE;
+    use crate::common::datadog::io::RB_BUFFER_CHUNK_SIZE;
 
     async fn create_request_builder(
         encoder: TestEncoder, compression_scheme: CompressionScheme,
