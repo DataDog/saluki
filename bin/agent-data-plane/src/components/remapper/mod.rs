@@ -51,6 +51,7 @@ impl TransformBuilder for AgentTelemetryRemapperConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let context_string_interner_size = NonZeroUsize::new(self.context_string_interner_bytes.as_u64() as usize)
             .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
+
         let context_resolver =
             ContextResolverBuilder::from_name(format!("{}/remapper/primary", context.component_id()))
                 .expect("resolver name is not empty")
@@ -109,7 +110,7 @@ impl Transform for AgentTelemetryRemapper {
         loop {
             select! {
                 _ = health.live() => continue,
-                maybe_events = context.event_stream().next() => match maybe_events {
+                maybe_events = context.events().next() => match maybe_events {
                     Some(events) => {
                         let mut buffered_dispatcher = context.dispatcher().buffered().expect("default output must always exist");
                         for event in &events {
@@ -124,7 +125,7 @@ impl Transform for AgentTelemetryRemapper {
                             error!(error = %e, "Failed to dispatch events.");
                         }
 
-                        if let Err(e) = context.dispatcher().dispatch_buffer(events).await {
+                        if let Err(e) = context.dispatcher().dispatch(events).await {
                             error!(error = %e, "Failed to dispatch events.");
                         }
                     },

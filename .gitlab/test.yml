@@ -4,6 +4,12 @@ unit-tests-linux-amd64:
   script:
     - make test
 
+property-tests-linux-amd64:
+  extends: .linux-amd64-test-job-heavy
+  stage: test
+  script:
+    - make test-property
+
 unit-tests-miri-linux-amd64:
   extends: .linux-amd64-test-job-heavy
   stage: test
@@ -21,6 +27,12 @@ unit-tests-linux-arm64:
   stage: test
   script:
     - make test
+
+property-tests-linux-arm64:
+  extends: .linux-arm64-test-job-heavy
+  stage: test
+  script:
+    - make test-property
 
 unit-tests-miri-linux-arm64:
   extends: .linux-arm64-test-job-heavy
@@ -40,6 +52,12 @@ unit-tests-macos-amd64:
   script:
     - make test
 
+property-tests-macos-amd64:
+  extends: .macos-amd64-test-job
+  stage: test
+  script:
+    - make test-property
+
 unit-tests-miri-macos-amd64:
   extends: .macos-amd64-test-job
   stage: test
@@ -57,6 +75,12 @@ unit-tests-macos-arm64:
   stage: test
   script:
     - make test
+
+property-tests-macos-arm64:
+  extends: .macos-arm64-test-job
+  stage: test
+  script:
+    - make test-property
 
 unit-tests-miri-macos-arm64:
   extends: .macos-arm64-test-job

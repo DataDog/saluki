@@ -164,6 +164,7 @@ impl TestEncoderBuilder {
     }
 }
 
+#[async_trait]
 impl EncoderBuilder for TestEncoderBuilder {
     fn input_event_type(&self) -> EventType {
         self.input_event_ty
@@ -173,7 +174,7 @@ impl EncoderBuilder for TestEncoderBuilder {
         self.output_payload_ty
     }
 
-    fn build(&self, _: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
+    async fn build(&self, _: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
         Ok(Box::new(TestEncoder))
     }
 }

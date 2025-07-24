@@ -45,7 +45,7 @@ static NON_TIME_HISTOGRAM_BUCKETS: LazyLock<[(f64, &'static str); NON_TIME_HISTO
     LazyLock::new(|| histogram_buckets::<NON_TIME_HISTOGRAM_BUCKET_COUNT>(1.0, 2.0));
 
 // SAFETY: This is obviously not zero.
-const METRIC_NAME_STRING_INTERNER_BYTES: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(65536) };
+const METRIC_NAME_STRING_INTERNER_BYTES: NonZeroUsize = NonZeroUsize::new(65536).unwrap();
 
 /// Prometheus destination.
 ///
@@ -287,6 +287,9 @@ fn get_help_text(metric_name: &str) -> Option<&'static str> {
         "aggregator__dogstatsd_contexts" => Some("Count the number of dogstatsd contexts in the aggregator"),
         "aggregator__processed" => Some("Amount of metrics/services_checks/events processed by the aggregator"),
         "dogstatsd__processed" => Some("Count of service checks/events/metrics processed by dogstatsd"),
+        "dogstatsd__packet_pool_get" => Some("Count of get done in the packet pool"),
+        "dogstatsd__packet_pool_put" => Some("Count of put done in the packet pool"),
+        "dogstatsd__packet_pool" => Some("Usage of the packet pool in dogstatsd"),
         _ => None,
     }
 }

@@ -17,6 +17,7 @@ use futures::Stream;
 use pin_project_lite::pin_project;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_io::net::build_datadog_agent_ipc_https_connector;
 use serde::Deserialize;
 use tonic::{
     service::interceptor::InterceptedService,
@@ -25,7 +26,7 @@ use tonic::{
 };
 use tracing::warn;
 
-use crate::helpers::tonic::{build_datadog_agent_ipc_https_connector, BearerAuthInterceptor};
+use crate::helpers::tonic::BearerAuthInterceptor;
 
 const DEFAULT_DATADOG_AGENT_CONFIG_DIR: &str = "/etc/datadog-agent";
 const DEFAULT_IPC_CERT_FILE_NAME: &str = "ipc_cert.pem";

@@ -15,7 +15,7 @@ use saluki_core::{
         transforms::{SynchronousTransform, SynchronousTransformBuilder},
         ComponentContext,
     },
-    topology::interconnect::FixedSizeEventBuffer,
+    topology::EventsBuffer,
 };
 use saluki_error::{generic_error, ErrorContext, GenericError};
 use serde::{Deserialize, Serialize};
@@ -129,6 +129,7 @@ impl MapperProfileConfigs {
         let context_string_interner_size = NonZeroUsize::new(context_string_interner_bytes.as_u64() as usize)
             .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))
             .unwrap();
+
         let context_resolver =
             ContextResolverBuilder::from_name(format!("{}/dsd_mapper/primary", context.component_id()))
                 .expect("resolver name is not empty")
@@ -273,7 +274,7 @@ pub struct DogstatsDMapper {
 }
 
 impl SynchronousTransform for DogstatsDMapper {
-    fn transform_buffer(&mut self, event_buffer: &mut FixedSizeEventBuffer) {
+    fn transform_buffer(&mut self, event_buffer: &mut EventsBuffer) {
         for event in event_buffer {
             if let Some(metric) = event.try_as_metric_mut() {
                 if let Some(new_context) = self.metric_mapper.try_map(metric.context()) {

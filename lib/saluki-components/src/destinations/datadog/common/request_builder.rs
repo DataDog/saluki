@@ -3,14 +3,11 @@
 use std::io;
 
 use http::{uri::PathAndQuery, HeaderValue, Method, Request, Uri};
-use saluki_core::pooling::ObjectPool;
-use saluki_io::{
-    buf::{BytesBuffer, ChunkedBytesBuffer, ChunkedBytesBufferObjectPool, FrozenChunkedBytesBuffer},
-    compression::*,
-};
+use saluki_common::buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer};
+use saluki_io::compression::*;
 use snafu::{ResultExt, Snafu};
 use tokio::io::AsyncWriteExt as _;
-use tracing::{debug, error, trace};
+use tracing::{debug, error, trace, warn};
 
 const SCRATCH_BUF_CAPACITY: usize = 8192;
 
@@ -137,17 +134,16 @@ where
 }
 
 /// Generic builder for creating HTTP requests with payloads consisting of encoded and compressed input events.
-pub struct RequestBuilder<E, O>
+pub struct RequestBuilder<E>
 where
     E: EndpointEncoder,
-    O: ObjectPool<Item = BytesBuffer> + 'static,
 {
     encoder: E,
     endpoint_uri: Uri,
-    buffer_pool: ChunkedBytesBufferObjectPool<O>,
     scratch_buf: Vec<u8>,
+    buffer_chunk_size: usize,
     compression_scheme: CompressionScheme,
-    compressor: Compressor<ChunkedBytesBuffer<O>>,
+    compressor: Compressor<ChunkedBytesBuffer>,
     compression_estimator: CompressionEstimator,
     uncompressed_len: usize,
     uncompressed_len_prefix_suffix: usize,
@@ -157,18 +153,15 @@ where
     encoded_inputs: Vec<E::Input>,
 }
 
-impl<E, O> RequestBuilder<E, O>
+impl<E> RequestBuilder<E>
 where
     E: EndpointEncoder,
-    O: ObjectPool<Item = BytesBuffer> + 'static,
 {
-    /// Creates a new `RequestBuilder` with the given buffer pool, encoder, and compression scheme.
+    /// Creates a new `RequestBuilder` with the given encoder and compression scheme.
     ///
-    /// The buffer pool will be drawn upon for holding the compressed payload, which will be compressed using the given
-    /// compression scheme. The encoder will be used to encode input events as well as help construct the resulting HTTP
-    /// requests.
+    /// The encoder will be used to encode input events as well as help construct the resulting HTTP requests.
     pub async fn new(
-        encoder: E, buffer_pool: O, compression_scheme: CompressionScheme,
+        encoder: E, compression_scheme: CompressionScheme, buffer_chunk_size: usize,
     ) -> Result<Self, RequestBuilderError<E>> {
         let endpoint_uri = encoder.endpoint_uri();
         let compressed_len_limit = encoder.compressed_size_limit();
@@ -188,13 +181,12 @@ where
             });
         }
 
-        let chunked_buffer_pool = ChunkedBytesBufferObjectPool::new(buffer_pool);
-        let compressor = create_compressor(&chunked_buffer_pool, compression_scheme).await;
+        let compressor = create_compressor(compression_scheme, buffer_chunk_size);
         Ok(Self {
             encoder,
             endpoint_uri,
-            buffer_pool: chunked_buffer_pool,
             scratch_buf: Vec::with_capacity(SCRATCH_BUF_CAPACITY),
+            buffer_chunk_size,
             compression_scheme,
             compressor,
             compression_estimator: CompressionEstimator::default(),
@@ -295,6 +287,7 @@ where
 
         // Make sure we haven't hit the maximum number of inputs per payload.
         if self.encoded_inputs.len() >= self.max_inputs_per_payload {
+            trace!("Maximum number of inputs per payload reached.");
             return Ok(Some(input));
         }
 
@@ -383,6 +376,11 @@ where
     /// If an error occurs while finalizing the compressor or creating the request, an error will be returned.
     pub async fn flush(&mut self) -> Vec<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         if self.encoded_inputs.is_empty() {
+            warn!(
+                encoder = E::encoder_name(),
+                endpoint = ?self.endpoint_uri,
+                "Flush requested with no encoded inputs present."
+            );
             return vec![];
         }
 
@@ -435,7 +433,7 @@ where
 
         self.compression_estimator.reset();
 
-        let new_compressor = create_compressor(&self.buffer_pool, self.compression_scheme).await;
+        let new_compressor = create_compressor(self.compression_scheme, self.buffer_chunk_size);
         let mut compressor = std::mem::replace(&mut self.compressor, new_compressor);
         if let Err(e) = compressor.flush().await.context(Io) {
             let inputs_dropped = self.clear_encoded_inputs();
@@ -480,8 +478,20 @@ where
         // Nothing to do if we have no encoded inputs.
         let mut requests = Vec::new();
         if self.encoded_inputs.is_empty() {
+            warn!(
+                encoder = E::encoder_name(),
+                endpoint = ?self.endpoint_uri,
+                "Tried to split request with no encoded inputs."
+            );
             return requests;
         }
+
+        trace!(
+            encoder = E::encoder_name(),
+            endpoint = ?self.endpoint_uri,
+            encoded_inputs = self.encoded_inputs.len(),
+            "Starting request split operation.",
+        );
 
         // We're going to attempt to split all of the previously-encoded inputs between two _new_ compressed payloads,
         // with the goal that each payload will be under the compressed size limit.
@@ -513,12 +523,26 @@ where
         encoded_inputs.clear();
         self.encoded_inputs = encoded_inputs;
 
+        trace!(
+            encoder = E::encoder_name(),
+            endpoint = ?self.endpoint_uri,
+            "Finished splitting oversized request. Generated {} subrequest(s).",
+            requests.len(),
+        );
+
         requests
     }
 
     async fn try_split_request(
         &mut self, inputs: &[E::Input],
     ) -> Option<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
+        trace!(
+            encoder = E::encoder_name(),
+            endpoint = ?self.endpoint_uri,
+            encoded_inputs = inputs.len(),
+            "Starting request split suboperation.",
+        );
+
         for input in inputs {
             // Encode each input and write it to our compressor.
             //
@@ -595,58 +619,42 @@ where
     }
 }
 
-async fn create_compressor<O>(
-    buffer_pool: &ChunkedBytesBufferObjectPool<O>, compression_scheme: CompressionScheme,
-) -> Compressor<ChunkedBytesBuffer<O>>
-where
-    O: ObjectPool<Item = BytesBuffer> + 'static,
-{
-    let write_buffer = buffer_pool.acquire().await;
-    Compressor::from_scheme(compression_scheme, write_buffer)
+fn create_compressor(
+    compression_scheme: CompressionScheme, buffer_chunk_size: usize,
+) -> Compressor<ChunkedBytesBuffer> {
+    Compressor::from_scheme(compression_scheme, ChunkedBytesBuffer::new(buffer_chunk_size))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
+    use std::{collections::VecDeque, convert::Infallible};
 
     use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
     use http_body_util::BodyExt as _;
-    use saluki_core::pooling::FixedSizeObjectPool;
-    use saluki_io::{
-        buf::{BytesBuffer, FixedSizeVec},
-        compression::CompressionScheme,
-    };
+    use proptest::{collection::vec_deque as arb_vecdeque, prelude::*, string::string_regex};
+    use saluki_io::compression::CompressionScheme;
 
     use super::{EndpointEncoder, RequestBuilder, RequestBuilderError};
-
-    fn create_request_builder_buffer_pool() -> FixedSizeObjectPool<BytesBuffer> {
-        FixedSizeObjectPool::with_builder("test_pool", 8, || FixedSizeVec::with_capacity(64))
-    }
+    use crate::destinations::datadog::common::io::RB_BUFFER_CHUNK_SIZE;
 
     async fn create_request_builder(
         encoder: TestEncoder, compression_scheme: CompressionScheme,
-    ) -> RequestBuilder<TestEncoder, FixedSizeObjectPool<BytesBuffer>> {
-        let buffer_pool = create_request_builder_buffer_pool();
-        RequestBuilder::new(encoder, buffer_pool, compression_scheme)
+    ) -> RequestBuilder<TestEncoder> {
+        RequestBuilder::new(encoder, compression_scheme, RB_BUFFER_CHUNK_SIZE)
             .await
             .expect("should not fail to create request builder")
     }
 
-    async fn create_no_compression_request_builder(
-        encoder: TestEncoder,
-    ) -> RequestBuilder<TestEncoder, FixedSizeObjectPool<BytesBuffer>> {
+    async fn create_no_compression_request_builder(encoder: TestEncoder) -> RequestBuilder<TestEncoder> {
         create_request_builder(encoder, CompressionScheme::noop()).await
     }
 
-    async fn create_zstd_compression_request_builder(
-        encoder: TestEncoder,
-    ) -> RequestBuilder<TestEncoder, FixedSizeObjectPool<BytesBuffer>> {
+    async fn create_zstd_compression_request_builder(encoder: TestEncoder) -> RequestBuilder<TestEncoder> {
         create_request_builder(encoder, CompressionScheme::zstd_default()).await
     }
 
     async fn flush_and_validate_requests(
-        mut request_builder: RequestBuilder<TestEncoder, FixedSizeObjectPool<BytesBuffer>>,
-        expected_request_bodies: Vec<String>,
+        mut request_builder: RequestBuilder<TestEncoder>, expected_request_bodies: Vec<String>,
     ) {
         let requests = request_builder.flush().await;
         assert_eq!(
@@ -974,11 +982,11 @@ mod tests {
         let prefix = b"[";
         let suffix = b"]";
 
-        let buffer_pool = create_request_builder_buffer_pool();
         let encoder =
             TestEncoder::new(usize::MAX, prefix.len() + suffix.len(), "/submit").with_delimiters(prefix, suffix, b"");
 
-        let maybe_request_builder = RequestBuilder::new(encoder, buffer_pool, CompressionScheme::zstd_default()).await;
+        let maybe_request_builder =
+            RequestBuilder::new(encoder, CompressionScheme::zstd_default(), RB_BUFFER_CHUNK_SIZE).await;
         match maybe_request_builder {
             Ok(_) => panic!("building request builder should not succeed"),
             Err(e) => match e {
@@ -994,5 +1002,141 @@ mod tests {
                 _ => panic!("expected UncompressedSizeLimitTooLow error, got: {:?}", e),
             },
         }
+    }
+
+    // Property test min/max size constants used for both generating inputs but also calculating derived sizes.
+    //
+    // These constants are set in a way where we generate big enough inputs to actually cause the compressor to flush output
+    // data to the underlying writer before request payloads are flushed, so that we properly exercise the compression
+    // estimator.
+    const PROP_TEST_ARB_PAYLOAD_MIN_LEN: usize = 512;
+    const PROP_TEST_ARB_PAYLOAD_MAX_LEN: usize = 2048;
+    const PROP_TEST_ARB_PAYLOAD_AVG_LEN: usize =
+        PROP_TEST_ARB_PAYLOAD_MIN_LEN + ((PROP_TEST_ARB_PAYLOAD_MAX_LEN - PROP_TEST_ARB_PAYLOAD_MIN_LEN) / 2);
+
+    const PROP_TEST_MIN_PAYLOADS: usize = 64;
+    const PROP_TEST_MAX_PAYLOADS: usize = 192;
+    const PROP_TEST_AVG_PAYLOADS: usize =
+        PROP_TEST_MIN_PAYLOADS + ((PROP_TEST_MAX_PAYLOADS - PROP_TEST_MIN_PAYLOADS) / 2);
+
+    fn arb_payloads() -> impl Strategy<Value = VecDeque<String>> {
+        // Very crude approximation of a random binary/hexadecimal-y payload.
+        let payload_regex = format!(
+            "[a-zA-Z0-9]{{{},{}}}",
+            PROP_TEST_ARB_PAYLOAD_MIN_LEN, PROP_TEST_ARB_PAYLOAD_MAX_LEN
+        );
+        let payload_strategy = string_regex(&payload_regex).expect("should not fail to create arb_payload regex");
+
+        arb_vecdeque(payload_strategy, PROP_TEST_MIN_PAYLOADS..=PROP_TEST_MAX_PAYLOADS)
+    }
+
+    #[test_strategy::proptest(async = "tokio")]
+    #[cfg_attr(miri, ignore)]
+    async fn property_test_encode_and_flush(#[strategy(arb_payloads())] mut inputs: VecDeque<String>) {
+        let original_inputs_len = inputs.len();
+
+        // Create our request builder with lowered limits just so the test can actually exercise them.
+        //
+        // We calculate these limits based on the input sizing to try and ensure that we have a strong chance of
+        // having to actually split the payload into subpayloads due to exceeding the compressed length limit. We do
+        // this by setting the compressed limit to 40% of the average payload length multiplied by the number of inputs.
+        //
+        // Given the randomness of the inputs, and thus their lack of compressibility, this should yield many splits.
+        let uncompressed_limit = (PROP_TEST_ARB_PAYLOAD_MAX_LEN * original_inputs_len) * 2;
+        let compressed_limit = ((PROP_TEST_ARB_PAYLOAD_AVG_LEN * original_inputs_len) as f64 * 0.4) as usize;
+
+        let encoder = TestEncoder::new(compressed_limit, uncompressed_limit, "/fake/endpoint");
+        let mut request_builder = RequestBuilder::new(encoder, CompressionScheme::zstd_default(), 2048)
+            .await
+            .expect("should not fail to create request builder");
+
+        // Set our "maximum inputs per payload" limit to the average number of inputs to also ensure we have a good
+        // chance of exercising that logic as well.
+        request_builder.with_max_inputs_per_payload(PROP_TEST_AVG_PAYLOADS);
+
+        // Go through for each input, and encode it. We also capture a copy of the input for later verification.
+        //
+        // If we're given back the item during encoding and a flush is indicated, we do trigger a flush... but we
+        // take the requests and just dump out their contents for later verification.
+        let mut flushed_inputs_len = 0;
+
+        while let Some(input) = inputs.pop_front() {
+            let original_input = match request_builder.encode(input).await {
+                Ok(None) => continue,
+                Ok(Some(original_input)) => original_input,
+                Err(_) => panic!("should not fail to encode input in general"),
+            };
+
+            // We were instructed to flush, so we do so.
+            let had_prior_flushes = flushed_inputs_len > 0;
+            let mut total_oversized_subrequests = 0;
+            let requests = request_builder.flush().await;
+            for request in requests {
+                match request {
+                    Ok((events, _request)) => {
+                        flushed_inputs_len += events;
+                    }
+                    Err(e) => match e {
+                        RequestBuilderError::PayloadTooLarge { .. } => total_oversized_subrequests += 1,
+                        _ => panic!("should not fail to flush requests (intermediate): {:?}", e),
+                    },
+                }
+            }
+
+            // TODO: Currently, we only support splitting a request into two subrequests.
+            //
+            // If our test here encodes a bunch of metrics that don't require flushing until the very end, we have
+            // no idea how much compressed data we'll end up with. If we do the compression and we've exceeded the limit,
+            // that's fine, and we should try splitting... but if we, for example, have 2-3x more compressed output than
+            // the limit, then we're almost certainly going to be unable to actually split it in half without again
+            // exceeding the limit for the subrequests.
+            //
+            // If we hadn't yet flushed anything prior to getting here, and we failed due to an oversized split payload,
+            // then we simply reject this test because we know that we can't split it in half without exceeding the limit.
+            // Once we remove the limitation of only being able to split a request in half, we'll remove this escape hatch.
+            if !had_prior_flushes {
+                prop_assume!(total_oversized_subrequests == 0);
+            }
+
+            // Try again to encode our input after flushing.
+            match request_builder.encode(original_input).await {
+                Ok(None) => continue,
+                Ok(Some(_)) => panic!("should not fail to encode an input after flushing"),
+                Err(_) => panic!("should not fail to encode input in general"),
+            };
+        }
+
+        // One final flush to capture anything still in the request builder.
+        let had_prior_flushes = flushed_inputs_len > 0;
+        let mut total_oversized_subrequests = 0;
+        let requests = request_builder.flush().await;
+        for request in requests {
+            match request {
+                Ok((events, _request)) => {
+                    flushed_inputs_len += events;
+                }
+                Err(e) => match e {
+                    RequestBuilderError::PayloadTooLarge { .. } => total_oversized_subrequests += 1,
+                    _ => panic!("should not fail to flush requests (final)"),
+                },
+            }
+        }
+
+        // TODO: Currently, we only support splitting a request into two subrequests.
+        //
+        // If our test here encodes a bunch of metrics that don't require flushing until the very end, we have
+        // no idea how much compressed data we'll end up with. If we do the compression and we've exceeded the limit,
+        // that's fine, and we should try splitting... but if we, for example, have 2-3x more compressed output than
+        // the limit, then we're almost certainly going to be unable to actually split it in half without again
+        // exceeding the limit for the subrequests.
+        //
+        // If we hadn't yet flushed anything prior to getting here, and we failed due to an oversized split payload,
+        // then we simply reject this test because we know that we can't split it in half without exceeding the limit.
+        // Once we remove the limitation of only being able to split a request in half, we'll remove this escape hatch.
+        if !had_prior_flushes {
+            prop_assume!(total_oversized_subrequests == 0);
+        }
+
+        prop_assert_eq!(original_inputs_len, flushed_inputs_len);
     }
 }

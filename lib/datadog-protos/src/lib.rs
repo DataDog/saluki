@@ -4,6 +4,7 @@
 //! communicate with the Datadog Platform, specifically for shipping metrics and traces.
 #![deny(warnings)]
 #![allow(clippy::enum_variant_names)]
+#![allow(clippy::doc_overindented_list_items)]
 mod include {
     include!(concat!(env!("OUT_DIR"), "/protos/mod.rs"));
 }

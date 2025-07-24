@@ -445,7 +445,13 @@ check-features: ## Checks that all packages with feature flags can be built with
 test: check-rust-build-tools cargo-install-cargo-nextest
 test: ## Runs all unit tests
 	@echo "[*] Running unit tests..."
-	cargo nextest run
+	cargo nextest run --lib -E 'not test(/property_test_*/)'
+
+.PHONY: test-property
+test-property: check-rust-build-tools cargo-install-cargo-nextest
+test-property: ## Runs all property tests
+	@echo "[*] Running property tests..."
+	cargo nextest run --lib --release -E 'test(/property_test_*/)'
 
 .PHONY: test-docs
 test-docs: check-rust-build-tools
@@ -467,7 +473,7 @@ test-loom: ## Runs all Loom-specific unit tests
 
 .PHONY: test-all
 test-all: ## Test everything
-test-all: test test-docs test-miri test-loom
+test-all: test test-property test-docs test-miri test-loom
 
 .PHONY: test-correctness
 test-correctness: build-ground-truth
@@ -479,7 +485,7 @@ test-correctness: ## Runs the metrics correctness (ground-truth) suite
 		--millstone-config-path $(shell pwd)/test/correctness/millstone.yaml \
 		--metrics-intake-image saluki-images/metrics-intake:latest \
 		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
-		--dsd-image docker.io/datadog/dogstatsd:7.66.1 \
+		--dsd-image docker.io/datadog/dogstatsd:7.67.1 \
 		--dsd-config-path $(shell pwd)/test/correctness/datadog-no-origin-detection.yaml \
 		--adp-image saluki-images/agent-data-plane:latest \
 		--adp-config-path $(shell pwd)/test/correctness/datadog-no-origin-detection.yaml

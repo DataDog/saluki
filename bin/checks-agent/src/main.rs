@@ -164,7 +164,7 @@ async fn create_topology(
     let enrich_config =
         ChainedConfiguration::default().with_transform_builder("host_enrichment", host_enrichment_config);
 
-    // Create a simplified topology with minimal components for now
+    // Create a simplified topology with minimal components for now.
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
 
     blueprint

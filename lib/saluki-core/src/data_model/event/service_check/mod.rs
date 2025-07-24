@@ -1,5 +1,6 @@
 //! Service checks.
 
+use saluki_context::tags::SharedTagSet;
 use serde::{Serialize, Serializer};
 use stringtheory::MetaString;
 
@@ -23,7 +24,7 @@ pub enum CheckStatus {
 ///
 /// Service checks represent the status of a service at a particular point in time. Checks are simplistic, with a basic
 /// message, status enum (OK vs warning vs critical, etc), timestamp, and tags.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ServiceCheck {
     #[serde(rename = "check")]
     name: MetaString,
@@ -33,7 +34,8 @@ pub struct ServiceCheck {
     hostname: MetaString,
     #[serde(skip_serializing_if = "MetaString::is_empty")]
     message: MetaString,
-    tags: Option<Vec<MetaString>>,
+    tags: SharedTagSet,
+    origin_tags: SharedTagSet,
 }
 
 impl ServiceCheck {
@@ -73,19 +75,25 @@ impl ServiceCheck {
     }
 
     /// Returns the tags associated with the check.
-    pub fn tags(&self) -> Option<&[MetaString]> {
-        self.tags.as_deref()
+    pub fn tags(&self) -> &SharedTagSet {
+        &self.tags
+    }
+
+    /// Returns the origin tags associated with the check.
+    pub fn origin_tags(&self) -> &SharedTagSet {
+        &self.origin_tags
     }
 
     /// Creates a `ServiceCheck` from the given name and status
-    pub fn new(name: &str, status: CheckStatus) -> Self {
+    pub fn new(name: impl Into<MetaString>, status: CheckStatus) -> Self {
         Self {
             name: name.into(),
             status,
             timestamp: None,
             hostname: MetaString::empty(),
             message: MetaString::empty(),
-            tags: None,
+            tags: SharedTagSet::default(),
+            origin_tags: SharedTagSet::default(),
         }
     }
 
@@ -113,7 +121,7 @@ impl ServiceCheck {
     /// Set the tags of the service check
     ///
     /// This variant is specifically for use in builder-style APIs.
-    pub fn with_tags(mut self, tags: impl Into<Option<Vec<MetaString>>>) -> Self {
+    pub fn with_tags(mut self, tags: impl Into<SharedTagSet>) -> Self {
         self.tags = tags.into();
         self
     }
@@ -126,6 +134,14 @@ impl ServiceCheck {
             Some(message) => message,
             None => MetaString::empty(),
         };
+        self
+    }
+
+    /// Set the origin tags of the service check
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_origin_tags(mut self, origin_tags: SharedTagSet) -> Self {
+        self.origin_tags = origin_tags;
         self
     }
 }

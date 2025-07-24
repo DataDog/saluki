@@ -1,9 +1,12 @@
 [package]
 name = "agent-data-plane"
-version = "0.1.15"
+version = "0.1.17"
 edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
+
+[lints]
+workspace = true
 
 [features]
 default = []
@@ -13,7 +16,16 @@ fips = ["saluki-app/tls-fips"]
 async-trait = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
-clap = { workspace = true, features = ["std", "color", "derive", "help", "wrap_help", "usage", "error-context", "suggestions"] }
+clap = { workspace = true, features = [
+  "std",
+  "color",
+  "derive",
+  "help",
+  "wrap_help",
+  "usage",
+  "error-context",
+  "suggestions",
+] }
 datadog-protos = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
@@ -22,8 +34,11 @@ hyper = { workspace = true }
 memory-accounting = { workspace = true }
 papaya = { workspace = true }
 rand = { workspace = true }
-rand_distr = { workspace = true } 
-reqwest = { workspace = true, features = ["rustls-tls-native-roots-no-provider", "json"] }
+rand_distr = { workspace = true }
+reqwest = { workspace = true, features = [
+  "rustls-tls-native-roots-no-provider",
+  "json",
+] }
 saluki-app = { workspace = true, features = ["full"] }
 saluki-common = { workspace = true }
 saluki-components = { workspace = true }

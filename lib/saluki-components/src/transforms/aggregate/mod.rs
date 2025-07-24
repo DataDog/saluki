@@ -7,19 +7,15 @@ use async_trait::async_trait;
 use ddsketch_agent::DDSketch;
 use hashbrown::{hash_map::Entry, HashMap};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
-use saluki_common::task::spawn_traced_named;
 use saluki_common::time::get_unix_timestamp;
 use saluki_config::GenericConfiguration;
 use saluki_context::Context;
-use saluki_core::data_model::event::{metric::*, Event, EventType};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
+    data_model::event::{metric::*, Event, EventType},
     observability::ComponentMetricsExt as _,
-    pooling::{ElasticObjectPool, ObjectPool},
-    topology::{
-        interconnect::{BufferedDispatcher, Dispatcher, FixedSizeEventBuffer, FixedSizeEventBufferInner},
-        OutputDefinition,
-    },
+    topology::{interconnect::BufferedDispatcher, OutputDefinition},
+    topology::{EventsBuffer, EventsDispatcher},
 };
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
@@ -38,7 +34,6 @@ mod config;
 use self::config::HistogramConfiguration;
 
 const PASSTHROUGH_IDLE_FLUSH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
-const PASSTHROUGH_EVENT_BUFFERS_MAX: usize = 16;
 
 const fn default_window_duration() -> Duration {
     Duration::from_secs(10)
@@ -62,10 +57,6 @@ const fn default_passthrough_timestamped_metrics() -> bool {
 
 const fn default_passthrough_idle_flush_timeout() -> Duration {
     Duration::from_secs(1)
-}
-
-const fn default_passthrough_event_buffer_len() -> usize {
-    2048
 }
 
 /// Aggregate transform.
@@ -177,19 +168,6 @@ pub struct AggregateConfiguration {
     )]
     passthrough_idle_flush_timeout: Duration,
 
-    /// Length of event buffers used exclusive for passthrough metrics.
-    ///
-    /// While passthrough metrics are not re-aggregated by the transform, they will still be temporarily buffered in
-    /// order to optimize the efficiency of processing them in the next component. This setting controls the maximum
-    /// number of passthrough metrics that can be buffered in a single batch before being forwarded.
-    ///
-    /// Defaults to 2048.
-    #[serde(
-        rename = "dogstatsd_no_aggregation_pipeline_batch_size",
-        default = "default_passthrough_event_buffer_len"
-    )]
-    passthrough_event_buffer_len: usize,
-
     /// Histogram aggregation configuration.
     ///
     /// Controls the aggregates/percentiles that are generated for distributions in "histogram" mode (client-side
@@ -214,7 +192,6 @@ impl AggregateConfiguration {
             counter_expiry_seconds: default_counter_expiry_seconds(),
             passthrough_timestamped_metrics: default_passthrough_timestamped_metrics(),
             passthrough_idle_flush_timeout: default_passthrough_idle_flush_timeout(),
-            passthrough_event_buffer_len: default_passthrough_event_buffer_len(),
             hist_config: HistogramConfiguration::default(),
         }
     }
@@ -235,7 +212,6 @@ impl TransformBuilder for AggregateConfiguration {
         );
 
         let passthrough_batcher = PassthroughBatcher::new(
-            self.passthrough_event_buffer_len,
             self.passthrough_idle_flush_timeout,
             self.window_duration,
             telemetry.clone(),
@@ -273,18 +249,10 @@ impl MemoryBounds for AggregateConfiguration {
         //
         // However, there could be many more values in a single metric, and we don't account for that.
 
-        let passthrough_event_buffer_min_elements = self.passthrough_event_buffer_len;
-        let passthrough_event_buffer_max_elements =
-            self.passthrough_event_buffer_len * (PASSTHROUGH_EVENT_BUFFERS_MAX - 1);
-
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
-            .with_single_value::<Aggregate>("component struct")
-            .with_array::<Event>(
-                "passthrough event buffer pool (minimum)",
-                passthrough_event_buffer_min_elements,
-            );
+            .with_single_value::<Aggregate>("component struct");
         builder
             .firm()
             // Account for the aggregation state map, where we map contexts to the merged metric.
@@ -296,9 +264,7 @@ impl MemoryBounds for AggregateConfiguration {
                     UsageExpr::struct_size::<AggregatedMetric>("aggregated metric"),
                 ),
                 UsageExpr::config("aggregate_context_limit", self.context_limit),
-            ))
-            // Upper bound of our passthrough event buffer object pool.
-            .with_array::<Event>("passthrough event buffer pool", passthrough_event_buffer_max_elements);
+            ));
     }
 }
 
@@ -361,7 +327,7 @@ impl Transform for Aggregate {
                     }
                 },
                 _ = passthrough_flush.tick() => self.passthrough_batcher.try_flush(context.dispatcher()).await,
-                maybe_events = context.event_stream().next(), if !final_primary_flush => match maybe_events {
+                maybe_events = context.events().next(), if !final_primary_flush => match maybe_events {
                     Some(events) => {
                         trace!(events_len = events.len(), "Received events.");
 
@@ -441,8 +407,7 @@ fn try_split_timestamped_values(mut metric: Metric) -> (Option<Metric>, Option<M
 }
 
 struct PassthroughBatcher {
-    buffer_pool: ElasticObjectPool<FixedSizeEventBuffer>,
-    active_buffer: FixedSizeEventBuffer,
+    active_buffer: EventsBuffer,
     active_buffer_start: Instant,
     last_processed_at: Instant,
     idle_flush_timeout: Duration,
@@ -451,21 +416,10 @@ struct PassthroughBatcher {
 }
 
 impl PassthroughBatcher {
-    async fn new(
-        event_buffer_len: usize, idle_flush_timeout: Duration, bucket_width: Duration, telemetry: Telemetry,
-    ) -> Self {
-        let (buffer_pool, pool_shrinker) = ElasticObjectPool::<FixedSizeEventBuffer>::with_builder(
-            "agg_passthrough_event_buffers",
-            1,
-            PASSTHROUGH_EVENT_BUFFERS_MAX,
-            move || FixedSizeEventBufferInner::with_capacity(event_buffer_len),
-        );
-        spawn_traced_named("agg-passthrough-buffer-pool-shrinker", pool_shrinker);
-
-        let active_buffer = buffer_pool.acquire().await;
+    async fn new(idle_flush_timeout: Duration, bucket_width: Duration, telemetry: Telemetry) -> Self {
+        let active_buffer = EventsBuffer::default();
 
         Self {
-            buffer_pool,
             active_buffer,
             active_buffer_start: Instant::now(),
             last_processed_at: Instant::now(),
@@ -475,7 +429,7 @@ impl PassthroughBatcher {
         }
     }
 
-    async fn push_metric(&mut self, metric: Metric, dispatcher: &Dispatcher) {
+    async fn push_metric(&mut self, metric: Metric, dispatcher: &EventsDispatcher) {
         // Convert counters to rates before we batch them up.
         //
         // This involves specifying the rate interval as the bucket width of the aggregate transform itself, which when
@@ -514,7 +468,7 @@ impl PassthroughBatcher {
         self.last_processed_at = Instant::now();
     }
 
-    async fn try_flush(&mut self, dispatcher: &Dispatcher) {
+    async fn try_flush(&mut self, dispatcher: &EventsDispatcher) {
         // If our active buffer isn't empty, and we've exceeded our idle flush timeout, then flush the buffer.
         if !self.active_buffer.is_empty() && self.last_processed_at.elapsed() >= self.idle_flush_timeout {
             debug!("Passthrough processing exceeded idle flush timeout. Flushing...");
@@ -523,7 +477,7 @@ impl PassthroughBatcher {
         }
     }
 
-    async fn dispatch_events(&mut self, dispatcher: &Dispatcher) {
+    async fn dispatch_events(&mut self, dispatcher: &EventsDispatcher) {
         if !self.active_buffer.is_empty() {
             let unaggregated_events = self.active_buffer.len();
 
@@ -534,10 +488,10 @@ impl PassthroughBatcher {
             self.telemetry.increment_passthrough_flushes();
 
             // Swap our active buffer with a new, empty one, and then forward the old one.
-            let new_active_buffer = self.buffer_pool.acquire().await;
+            let new_active_buffer = EventsBuffer::default();
             let old_active_buffer = std::mem::replace(&mut self.active_buffer, new_active_buffer);
 
-            match dispatcher.dispatch_buffer(old_active_buffer).await {
+            match dispatcher.dispatch(old_active_buffer).await {
                 Ok(()) => debug!(unaggregated_events, "Dispatched events."),
                 Err(e) => error!(error = %e, "Failed to flush unaggregated events."),
             }
@@ -632,7 +586,7 @@ impl AggregationState {
     }
 
     async fn flush(
-        &mut self, current_time: u64, flush_open_buckets: bool, dispatcher: &mut BufferedDispatcher<'_>,
+        &mut self, current_time: u64, flush_open_buckets: bool, dispatcher: &mut BufferedDispatcher<'_, EventsBuffer>,
     ) -> Result<(), GenericError> {
         self.contexts_remove_buf.clear();
 
@@ -737,7 +691,7 @@ impl AggregationState {
 
 async fn transform_and_push_metric(
     context: Context, mut values: MetricValues, metadata: MetricMetadata, bucket_width_secs: u64,
-    hist_config: &HistogramConfiguration, dispatcher: &mut BufferedDispatcher<'_>,
+    hist_config: &HistogramConfiguration, dispatcher: &mut BufferedDispatcher<'_, EventsBuffer>,
 ) -> Result<(), GenericError> {
     let bucket_width = Duration::from_secs(bucket_width_secs);
 
@@ -853,11 +807,7 @@ mod tests {
     use float_cmp::ApproxEqRatio as _;
     use saluki_core::{
         components::ComponentContext,
-        pooling::ElasticObjectPool,
-        topology::{
-            interconnect::{Dispatcher, FixedSizeEventBufferInner},
-            ComponentId, OutputName,
-        },
+        topology::{interconnect::Dispatcher, ComponentId, OutputName},
     };
     use saluki_metrics::test::TestRecorder;
     use tokio::sync::mpsc;
@@ -886,7 +836,7 @@ mod tests {
     }
 
     struct DispatcherReceiver {
-        receiver: mpsc::Receiver<FixedSizeEventBuffer>,
+        receiver: mpsc::Receiver<EventsBuffer>,
     }
 
     impl DispatcherReceiver {
@@ -907,11 +857,9 @@ mod tests {
     }
 
     /// Constructs a basic `Dispatcher` with a fixed-size event buffer.
-    fn build_basic_dispatcher() -> (Dispatcher, DispatcherReceiver) {
-        let (event_buffer_pool, _) =
-            ElasticObjectPool::with_builder("test", 1, 1, || FixedSizeEventBufferInner::with_capacity(8));
+    fn build_basic_dispatcher() -> (EventsDispatcher, DispatcherReceiver) {
         let component_id = ComponentId::try_from("test").expect("should not fail to create component ID");
-        let mut dispatcher = Dispatcher::new(ComponentContext::transform(component_id), event_buffer_pool);
+        let mut dispatcher = Dispatcher::new(ComponentContext::transform(component_id));
 
         let (buffer_tx, buffer_rx) = mpsc::channel(1);
         dispatcher.add_output(OutputName::Default, buffer_tx);
@@ -1364,7 +1312,7 @@ mod tests {
         let bucket_width = BUCKET_WIDTH;
 
         // Create a basic passthrough batcher and forwarder.
-        let mut batcher = PassthroughBatcher::new(1, Duration::from_nanos(1), bucket_width, Telemetry::noop()).await;
+        let mut batcher = PassthroughBatcher::new(Duration::from_nanos(1), bucket_width, Telemetry::noop()).await;
         let (dispatcher, mut dispatcher_receiver) = build_basic_dispatcher();
 
         // Create a simple pre-aggregated counter, and batch it.

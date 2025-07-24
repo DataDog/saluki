@@ -3,9 +3,13 @@
 use async_trait::async_trait;
 use saluki_error::GenericError;
 
+use crate::{
+    data_model::{event::Event, payload::Payload},
+    topology::interconnect::BufferedDispatcher,
+};
+
 mod builder;
 pub use self::builder::EncoderBuilder;
-use crate::{data_model::event::Event, topology::interconnect::BufferedDispatcher};
 
 mod context;
 pub use self::context::EncoderContext;
@@ -18,7 +22,7 @@ pub enum ProcessResult {
     /// The encoder cannot process the event without flushing first.
     ///
     /// The caller should flush the encoder and try again to process the event.
-    FlushRequired(Event),
+    FlushRequired(Box<Event>),
 }
 
 /// A encoder.
@@ -73,5 +77,5 @@ pub trait IncrementalEncoder {
     /// # Errors
     ///
     /// If the encoder cannot flush the payloads, an error is returned.
-    async fn flush(&mut self, forwarder: BufferedDispatcher<'_>) -> Result<(), GenericError>;
+    async fn flush(&mut self, forwarder: BufferedDispatcher<'_, Payload>) -> Result<(), GenericError>;
 }

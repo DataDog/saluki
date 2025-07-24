@@ -349,7 +349,7 @@ mod tests {
 
         {
             let checks = scheduler.checks.lock().unwrap();
-            assert!(checks.len() == 0, "No checks handle should exist for one-time checks");
+            assert!(checks.is_empty(), "No checks handle should exist for one-time checks");
         }
 
         time::sleep(Duration::from_secs(1)).await;
