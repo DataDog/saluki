@@ -20,7 +20,7 @@ use saluki_core::{
 };
 use saluki_error::GenericError;
 use serde_json;
-use tokio::{select, sync::mpsc};
+use tokio::sync::mpsc;
 use tracing::info;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -81,45 +81,42 @@ impl Destination for DogStatsDStats {
                 }
             }
 
-            select! {
-                _ = health.live() => continue,
-                maybe_events = context.events().next() => match maybe_events {
-                    Some(events) => {
-                        println!("DogStatsD stats destination received {} events", events.len());
+            // Process events immediately
+            if let Some(events) = context.events().next().await {
+                println!("DogStatsD stats destination received {} events", events.len());
 
-                        for event in events {
-                            if let Metric(metric) = event {
-                                let context = metric.context();
-                                let metric_name = context.name().to_string();
-                                let tags: Vec<String> =
-                                    context.tags().into_iter().map(|tag| tag.as_str().to_string()).collect();
-                                let tags_formatted = tags.join(",");
-                                let key = if tags.is_empty() {
-                                    metric_name.clone()
-                                } else {
-                                    format!("{}|{}", metric_name.clone(), tags_formatted)
-                                };
+                for event in events {
+                    if let Metric(metric) = event {
+                        let context = metric.context();
+                        let metric_name = context.name().to_string();
+                        let tags: Vec<String> =
+                            context.tags().into_iter().map(|tag| tag.as_str().to_string()).collect();
+                        let tags_formatted = tags.join(",");
+                        let key = if tags.is_empty() {
+                            metric_name.clone()
+                        } else {
+                            format!("{}|{}", metric_name.clone(), tags_formatted)
+                        };
 
-                                let now = SystemTime::now();
-                                let datetime = chrono::DateTime::<chrono::Utc>::from(now);
-                                let sample = self.stats.metrics_received.entry(key).or_insert_with(|| MetricSample {
-                                    count: 0,
-                                    last_seen: datetime.format("%Y-%m-%d %H:%M:%S").to_string(),
-                                    name: metric_name.clone(),
-                                    tags: tags_formatted.clone(),
-                                });
-                                sample.count += 1;
-                                sample.last_seen = datetime.format("%Y-%m-%d %H:%M:%S").to_string();
+                        let now = SystemTime::now();
+                        let datetime = chrono::DateTime::<chrono::Utc>::from(now);
+                        let sample = self.stats.metrics_received.entry(key).or_insert_with(|| MetricSample {
+                            count: 0,
+                            last_seen: datetime.format("%Y-%m-%d %H:%M:%S").to_string(),
+                            name: metric_name.clone(),
+                            tags: tags_formatted.clone(),
+                        });
+                        sample.count += 1;
+                        sample.last_seen = datetime.format("%Y-%m-%d %H:%M:%S").to_string();
 
-                                println!(
-                                    "Metric Name: {:?} | Tags: {:?} | Count: {:?} | Last Seen: {:?}",
-                                    sample.name, sample.tags, sample.count, sample.last_seen
-                                );
-                            }
-                        }
+                        println!(
+                            "Metric Name: {:?} | Tags: {:?} | Count: {:?} | Last Seen: {:?}",
+                            sample.name, sample.tags, sample.count, sample.last_seen
+                        );
                     }
-                    None => break,
-                },
+                }
+            } else {
+                break;
             }
         }
 
