@@ -132,7 +132,7 @@ impl Destination for DogStatsDStats {
                 },
             }
         }
-        
+
         Ok(())
     }
 }
