@@ -48,7 +48,6 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
     let env_provider =
         ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry).await?;
 
-    // Create the DogStatsD stats configuration once to share between topology and API
     let dsd_stats_config = DogStatsDStatisticsConfiguration::from_configuration(&configuration)
         .error_context("Failed to configure DogStatsD Statistics destination.")?;
 

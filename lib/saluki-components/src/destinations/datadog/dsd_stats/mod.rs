@@ -16,18 +16,16 @@ use saluki_core::{
         destinations::{Destination, DestinationBuilder, DestinationContext},
         ComponentContext,
     },
+    data_model::event::metric::Metric as MetricType,
     data_model::event::{Event::Metric, EventType},
 };
 use saluki_error::GenericError;
 use serde_json;
 use tokio::{select, sync::mpsc};
 use tracing::info;
-
 #[derive(Debug, Clone, serde::Serialize)]
-#[allow(dead_code)]
 pub struct Stats {
     metrics_received: HashMap<String, MetricSample>,
-    // TODO: add more stats here
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -37,33 +35,36 @@ pub struct MetricSample {
     name: String,
     tags: String,
 }
-/// Configuration for DogStatsD internal statistics API.
+/// Configuration for DogStatsD statistics destination and API handler.
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct DogStatsDStatisticsConfiguration {
     api_handler: DogStatsDAPIHandler,
-
     rx: Arc<Mutex<mpsc::Receiver<tokio::sync::oneshot::Sender<Stats>>>>,
+
+    /// Maximum number of input metrics to encode into a single request payload.
+    ///
+    /// This applies both to the series and sketches endpoints.
+    ///
+    /// Defaults to 10,000.
+    max_metrics_per_payload: usize,
 }
 /// State for the DogStatsD API handler.
 #[derive(Clone)]
-pub struct DogStatsDAPIState {
+pub struct DogStatsDAPIHandlerState {
     tx: Arc<mpsc::Sender<tokio::sync::oneshot::Sender<Stats>>>,
 }
 
 /// API handler for dogstatsd stats endpoint.
 #[derive(Clone)]
 pub struct DogStatsDAPIHandler {
-    state: DogStatsDAPIState,
+    state: DogStatsDAPIHandlerState,
 }
-/// DogStatsD destination that collects internal statistics.
-#[allow(dead_code)]
+
+/// DogStatsD destination that collects metrics and processes statistics.
 pub struct DogStatsDStats {
     rx: Arc<Mutex<mpsc::Receiver<tokio::sync::oneshot::Sender<Stats>>>>,
     stats: Stats,
 }
-
-impl DogStatsDStats {}
 
 #[async_trait::async_trait]
 impl Destination for DogStatsDStats {
@@ -125,7 +126,7 @@ impl Destination for DogStatsDStats {
 }
 
 impl DogStatsDAPIHandler {
-    async fn stats_handler(State(state): State<DogStatsDAPIState>) -> (StatusCode, String) {
+    async fn stats_handler(State(state): State<DogStatsDAPIHandlerState>) -> (StatusCode, String) {
         let (oneshot_tx, oneshot_rx) = tokio::sync::oneshot::channel();
 
         if let Err(e) = state.tx.try_send(oneshot_tx) {
@@ -149,7 +150,7 @@ impl DogStatsDAPIHandler {
 }
 
 impl APIHandler for DogStatsDAPIHandler {
-    type State = DogStatsDAPIState;
+    type State = DogStatsDAPIHandlerState;
 
     fn generate_initial_state(&self) -> Self::State {
         self.state.clone()
@@ -164,16 +165,17 @@ impl DogStatsDStatisticsConfiguration {
     /// Creates a new 'DogStatsDStatisticsConfiguration' from the given configuration.
     pub fn from_configuration(_: &GenericConfiguration) -> Result<Self, GenericError> {
         let (tx, rx) = mpsc::channel(100);
-        let state = DogStatsDAPIState { tx: Arc::new(tx) };
+        let state = DogStatsDAPIHandlerState { tx: Arc::new(tx) };
         let handler = DogStatsDAPIHandler { state };
 
         Ok(Self {
             api_handler: handler,
             rx: Arc::new(Mutex::new(rx)),
+            max_metrics_per_payload: default_max_metrics_per_payload(),
         })
     }
 
-    /// Returns an API handler for DogStatsD statistics.
+    /// Returns an API handler for DogStatsD API.
     pub fn api_handler(&self) -> DogStatsDAPIHandler {
         self.api_handler.clone()
     }
@@ -202,6 +204,17 @@ impl MemoryBounds for DogStatsDStatisticsConfiguration {
             .minimum()
             .with_single_value::<DogStatsDStatisticsConfiguration>("configuration struct");
 
-        builder.firm().with_expr(UsageExpr::constant("api handler state", 64)); // 64 bytes as a placeholder until state is implemented
+        builder.firm().with_expr(UsageExpr::constant("api handler state", 48));
+        builder.firm().with_expr(UsageExpr::constant("destination state", 24));
+        builder
+            .firm()
+            // Capture the size of the "split re-encode" buffers in the request builders, which is where we keep owned
+            // versions of metrics that we encode in case we need to actually re-encode them during a split operation.
+            .with_array::<MetricType>("series metrics split re-encode buffer", self.max_metrics_per_payload)
+            .with_array::<MetricType>("sketch metrics split re-encode buffer", self.max_metrics_per_payload);
     }
+}
+
+const fn default_max_metrics_per_payload() -> usize {
+    10_000
 }
