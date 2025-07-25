@@ -1,5 +1,6 @@
 use serde_json::{self, from_str};
-use tracing::info;
+use tokio::io::{self, AsyncWriteExt};
+use tracing::error;
 
 use crate::config::DogstatsdConfig;
 
@@ -21,26 +22,30 @@ async fn handle_dogstatsd_stats(client: reqwest::Client) {
     match response {
         Ok(response) => match response.text().await {
             Ok(body) => {
-                output_formatted_stats(&body).await;
+                if let Err(e) = output_stats(&format_stats(&body).await).await {
+                    error!("Failed to output stats: {}", e);
+                }
             }
             Err(e) => {
-                info!("Failed to read response body: {}", e);
+                error!("Failed to read response body: {}", e);
             }
         },
         Err(e) => {
-            info!("Request failed: {}", e);
+            error!("Request failed: {}", e);
         }
     }
 }
 
-async fn output_formatted_stats(body: &str) {
+async fn format_stats(body: &str) -> String {
     match from_str::<serde_json::Value>(body) {
         Ok(json) => {
-            println!(
-                "{:<40} | {:<20} | {:<10} | {:<20}",
+            let mut output = String::new();
+
+            output.push_str(&format!(
+                "{:<40} | {:<20} | {:<10} | {:<20}\n",
                 "Metric", "Tags", "Count", "Last Seen"
-            );
-            println!("{:-<40}-|-{:-<20}-|-{:-<10}-|-{:-<20}", "", "", "", "");
+            ));
+            output.push_str(&format!("{:-<40}-|-{:-<20}-|-{:-<10}-|-{:-<20}\n", "", "", "", ""));
 
             if let Some(metrics_received) = json.get("metrics_received") {
                 if let Some(metrics_obj) = metrics_received.as_object() {
@@ -51,15 +56,26 @@ async fn output_formatted_stats(body: &str) {
                             let count = metric_obj.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
                             let last_seen = metric_obj.get("last_seen").and_then(|v| v.as_str()).unwrap_or("N/A");
 
-                            println!("{:<40} | {:<20} | {:<10} | {:<20}", name, tags, count, last_seen);
+                            output.push_str(&format!(
+                                "{:<40} | {:<20} | {:<10} | {:<20}\n",
+                                name, tags, count, last_seen
+                            ));
                         }
                     }
                 }
             }
+
+            output
         }
         Err(e) => {
-            println!("Error parsing JSON response: {}", e);
-            println!("Raw response: {}", body);
+            format!("Error parsing JSON response: {}", e)
         }
     }
+}
+
+async fn output_stats(body: &str) -> io::Result<()> {
+    let mut stdout = io::stdout();
+    stdout.write_all(body.as_bytes()).await?;
+    stdout.flush().await?;
+    Ok(())
 }

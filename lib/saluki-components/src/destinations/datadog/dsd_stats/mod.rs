@@ -71,29 +71,23 @@ impl Destination for DogStatsDStats {
         let mut health = context.take_health_handle();
 
         health.mark_ready();
-        println!("DogStatsD stats destination started.");
 
         loop {
             select! {
                 _ = health.live() => {
-                    println!("DEBUG: Health check triggered");
                     continue
                 },
                 api_request = async {
                     if let Ok(mut rx) = self.rx.try_lock() {
                         if let Ok(oneshot_tx) = rx.try_recv() {
-                            println!("DEBUG: API request received and processed");
                             let _ = oneshot_tx.send(self.stats.clone());
                         }
                     }
                 } => {
-                    //println!("DEBUG: API request branch completed");
                     api_request
                 },
                 maybe_events = context.events().next() => match maybe_events {
                     Some(events) => {
-                        println!("DogStatsD stats destination received {} events", events.len());
-
                         for event in events {
                             if let Metric(metric) = event {
                                 let context = metric.context();
@@ -108,7 +102,7 @@ impl Destination for DogStatsDStats {
                                 };
 
                                 let now = SystemTime::now();
-                                let datetime = chrono::DateTime::<chrono::Utc>::from(now);
+                                let datetime = chrono::DateTime::<chrono::Local>::from(now);
                                 let sample = self.stats.metrics_received.entry(key).or_insert_with(|| MetricSample {
                                     count: 0,
                                     last_seen: datetime.format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -118,17 +112,10 @@ impl Destination for DogStatsDStats {
                                 sample.count += 1;
                                 sample.last_seen = datetime.format("%Y-%m-%d %H:%M:%S").to_string();
 
-                                println!(
-                                    "Metric Name: {:?} | Tags: {:?} | Count: {:?} | Last Seen: {:?}",
-                                    sample.name, sample.tags, sample.count, sample.last_seen
-                                );
                             }
                         }
                     }
-                    None => {
-                        println!("DEBUG: No more events - breaking loop");
-                        break
-                    },
+                    None => break,
                 },
             }
         }
@@ -150,7 +137,7 @@ impl DogStatsDAPIHandler {
 
         match oneshot_rx.await {
             Ok(stats) => {
-                info!("stats received back: {:?}", stats);
+                info!("Stats on received events: {:?}", stats);
                 (StatusCode::OK, serde_json::to_string(&stats).unwrap())
             }
             Err(e) => (
