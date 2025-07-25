@@ -3,7 +3,10 @@ use std::time::{Duration, Instant};
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
 use saluki_components::{
-    encoders::{DatadogEventsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration},
+    encoders::{
+        BufferedIncrementalConfiguration, DatadogEventsConfiguration, DatadogMetricsConfiguration,
+        DatadogServiceChecksConfiguration,
+    },
     forwarders::DatadogConfiguration,
     sources::DogStatsDConfiguration,
     transforms::{
@@ -139,6 +142,7 @@ async fn create_topology(
     let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Metrics encoder.")?;
     let dd_events_config = DatadogEventsConfiguration::from_configuration(configuration)
+        .map(BufferedIncrementalConfiguration::from_encoder_builder)
         .error_context("Failed to configure Datadog Events encoder.")?;
     let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Service Checks encoder.")?;
