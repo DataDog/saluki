@@ -20,7 +20,7 @@ use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use tokio::{select, sync::mpsc, time::sleep};
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 use crate::destinations::datadog::{
     ComponentTelemetry, MetricsEndpoint, MetricsEndpointEncoder, RequestBuilder, RB_BUFFER_CHUNK_SIZE,
@@ -250,17 +250,22 @@ impl Encoder for DatadogMetrics {
                             error!("Failed to dispatch payload: {}", e);
                         }
                     }
-                    None => {
-                        warn!("Payload channel closed. Request builder task likely stopped due to error.");
-                        break
-                    },
+                    None => break,
                 },
             }
         }
 
-        // Drop the request builder events channel, which allows the request builder task to naturally shut down once it has
-        // received and built all requests. We wait for its task handle to complete before letting ourselves return.
+        // Drop the events sender, which signals the request builder task to stop.
         drop(events_tx);
+
+        // Continue draining the payloads receiver until it is closed.
+        while let Some(payload) = payloads_rx.recv().await {
+            if let Err(e) = context.dispatcher().dispatch(payload).await {
+                error!("Failed to dispatch payload: {}", e);
+            }
+        }
+
+        // Request build task should now be stopped.
         match request_builder_handle.await {
             Ok(Ok(())) => debug!("Request builder task stopped."),
             Ok(Err(e)) => error!(error = %e, "Request builder task failed."),
