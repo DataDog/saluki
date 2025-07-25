@@ -26,7 +26,7 @@ use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use tokio::{select, sync::mpsc, time::sleep};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
