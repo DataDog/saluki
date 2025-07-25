@@ -165,7 +165,7 @@ async fn create_topology(
         // Components.
         .add_source("dsd_in", dsd_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
-        .add_transform("enrich", enrich_config)?
+        .add_transform("dsd_enrich", enrich_config)?
         .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
         .add_encoder("dd_events_encode", dd_events_config)?
         .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
