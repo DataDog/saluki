@@ -238,18 +238,20 @@ impl Encoder for DatadogMetrics {
 
         loop {
             select! {
+                biased;
+
                 _ = health.live() => continue,
-                maybe_event_buffer = context.events().next() => match maybe_event_buffer {
-                    Some(event_buffer) => events_tx.send(event_buffer).await
-                        .error_context("Failed to send event buffer to request builder task.")?,
-                    None => break,
-                },
                 maybe_payload = payloads_rx.recv() => match maybe_payload {
                     Some(payload) => {
                         if let Err(e) = context.dispatcher().dispatch(payload).await {
                             error!("Failed to dispatch payload: {}", e);
                         }
                     }
+                    None => break,
+                },
+                maybe_event_buffer = context.events().next() => match maybe_event_buffer {
+                    Some(event_buffer) => events_tx.send(event_buffer).await
+                        .error_context("Failed to send event buffer to request builder task.")?,
                     None => break,
                 },
             }
