@@ -1,13 +1,14 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{encoders::*, ComponentContext},
     data_model::{
-        event::{eventd::EventD, EventType},
+        event::{eventd::EventD, service_check::ServiceCheck, EventType},
         payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
     },
     observability::ComponentMetricsExt as _,
@@ -20,13 +21,17 @@ use serde::Deserialize;
 use tokio::{select, sync::mpsc, time::sleep};
 use tracing::{debug, error, warn};
 
-use crate::destinations::datadog::{
-    ComponentTelemetry, RequestBuilder, ServiceChecksEndpointEncoder, RB_BUFFER_CHUNK_SIZE,
+use crate::common::datadog::{
+    io::RB_BUFFER_CHUNK_SIZE,
+    request_builder::{EndpointEncoder, RequestBuilder},
+    telemetry::ComponentTelemetry,
+    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
 };
 
+const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
 const MAX_SERVICE_CHECKS_PER_PAYLOAD: usize = 100;
 
-const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
+static CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/json");
 
 const fn default_flush_timeout_secs() -> u64 {
     2
@@ -323,4 +328,52 @@ async fn run_request_builder(
     }
 
     Ok(())
+}
+
+#[derive(Debug)]
+struct ServiceChecksEndpointEncoder;
+
+impl EndpointEncoder for ServiceChecksEndpointEncoder {
+    type Input = ServiceCheck;
+    type EncodeError = serde_json::Error;
+
+    fn encoder_name() -> &'static str {
+        "service_check"
+    }
+
+    fn compressed_size_limit(&self) -> usize {
+        DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT
+    }
+
+    fn uncompressed_size_limit(&self) -> usize {
+        DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT
+    }
+
+    fn encode(&mut self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
+        serde_json::to_writer(buffer, input)
+    }
+
+    fn get_payload_prefix(&self) -> Option<&'static [u8]> {
+        Some(b"[")
+    }
+
+    fn get_payload_suffix(&self) -> Option<&'static [u8]> {
+        Some(b"]")
+    }
+
+    fn get_input_separator(&self) -> Option<&'static [u8]> {
+        Some(b",")
+    }
+
+    fn endpoint_uri(&self) -> Uri {
+        PathAndQuery::from_static("/api/v1/check_run").into()
+    }
+
+    fn endpoint_method(&self) -> Method {
+        Method::POST
+    }
+
+    fn content_type(&self) -> HeaderValue {
+        CONTENT_TYPE_JSON.clone()
+    }
 }
