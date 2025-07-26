@@ -13,6 +13,9 @@ use self::eventd::EventD;
 pub mod service_check;
 use self::service_check::ServiceCheck;
 
+pub mod trace;
+use self::trace::Trace;
+
 /// Telemetry event type.
 ///
 /// This type is a bitmask, which means different event types can be combined together. This makes `EventType` mainly
@@ -28,6 +31,9 @@ pub enum EventType {
 
     /// Service checks.
     ServiceCheck,
+
+    /// Traces.
+    Trace,
 }
 
 impl Default for EventType {
@@ -52,6 +58,10 @@ impl fmt::Display for EventType {
             types.push("ServiceCheck");
         }
 
+        if self.contains(Self::Trace) {
+            types.push("Trace");
+        }
+
         write!(f, "{}", types.join("|"))
     }
 }
@@ -67,6 +77,9 @@ pub enum Event {
 
     /// A service check.
     ServiceCheck(ServiceCheck),
+
+    /// A trace.
+    Trace(Trace),
 }
 
 impl Event {
@@ -76,6 +89,7 @@ impl Event {
             Event::Metric(_) => EventType::Metric,
             Event::EventD(_) => EventType::EventD,
             Event::ServiceCheck(_) => EventType::ServiceCheck,
+            Event::Trace(_) => EventType::Trace,
         }
     }
 
@@ -143,6 +157,11 @@ impl Event {
     /// Returns `true` if the event is a service check.
     pub fn is_service_check(&self) -> bool {
         matches!(self, Event::ServiceCheck(_))
+    }
+
+    /// Returns `true` if the event is a trace.
+    pub fn is_trace(&self) -> bool {
+        matches!(self, Event::Trace(_))
     }
 }
 
