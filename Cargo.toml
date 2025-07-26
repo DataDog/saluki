@@ -196,6 +196,9 @@ lto = "fat"
 codegen-units = 1
 debug = true
 
+[profile.bench]
+inherits = "optimized-release"
+
 [workspace.lints.clippy]
 new_without_default = "allow"
 uninlined_format_args = "allow"
