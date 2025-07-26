@@ -48,6 +48,29 @@ impl DatadogConfiguration {
     pub fn add_refreshable_configuration(&mut self, refresher: RefreshableConfiguration) {
         self.config_refresher = Some(refresher);
     }
+
+    /// Overrides the default endpoint that payloads are sent to.
+    ///
+    /// This overrides any existing endpoint configuration, and manually sets the base endpoint (e.g.,
+    /// `https://api.datad0g.com`) to be used for all payloads.
+    ///
+    /// This can be used to preserve other configuration settings (forwarder settings, retry, etc) while still allowing
+    /// for overriding _where_ payloads are sent to.
+    ///
+    /// # Errors
+    ///
+    /// If the given request path is not valid, an error is returned.
+    pub fn with_endpoint_override(mut self, dd_url: String, api_key: String) -> Self {
+        // Clear any existing additional endpoints, and set the new DD URL and API key.
+        //
+        // This ensures that the only endpoint we'll send to is this one.
+        let endpoint = self.forwarder_config.endpoint_mut();
+        endpoint.clear_additional_endpoints();
+        endpoint.set_dd_url(dd_url);
+        endpoint.set_api_key(api_key);
+
+        self
+    }
 }
 
 #[async_trait]

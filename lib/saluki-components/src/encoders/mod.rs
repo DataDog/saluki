@@ -1,4 +1,4 @@
 //! Encoder implementations.
 
 mod datadog;
-pub use self::datadog::{DatadogEventsConfiguration, DatadogServiceChecksConfiguration};
+pub use self::datadog::{DatadogEventsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration};
