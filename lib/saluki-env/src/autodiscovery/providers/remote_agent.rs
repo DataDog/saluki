@@ -67,13 +67,13 @@ impl RemoteAgentAutodiscoveryProvider {
 
 #[async_trait]
 impl AutodiscoveryProvider for RemoteAgentAutodiscoveryProvider {
-    async fn subscribe(&self) -> Receiver<AutodiscoveryEvent> {
+    async fn subscribe(&self) -> Option<Receiver<AutodiscoveryEvent>> {
         self.listener_init
             .get_or_init(|| async {
                 self.start_background_listener().await;
             })
             .await;
 
-        self.sender.subscribe()
+        Some(self.sender.subscribe())
     }
 }
