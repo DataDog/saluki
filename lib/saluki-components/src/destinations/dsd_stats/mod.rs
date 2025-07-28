@@ -88,19 +88,20 @@ impl Destination for DogStatsDStats {
                                 let key = if tags.is_empty() {
                                     metric_name.clone()
                                 } else {
-                                    format!("{}|{}", metric_name.clone(), tags_formatted)
+                                    format!("{}|{}", metric_name, tags_formatted)
                                 };
 
                                 let now = SystemTime::now();
                                 let datetime = chrono::DateTime::<chrono::Local>::from(now);
+                                let datetime_str = datetime.format("%Y-%m-%d %H:%M:%S").to_string();
                                 let sample = self.stats.metrics_received.entry(key).or_insert_with(|| MetricSample {
                                     count: 0,
-                                    last_seen: datetime.format("%Y-%m-%d %H:%M:%S").to_string(),
-                                    name: metric_name.clone(),
-                                    tags: tags_formatted.clone(),
+                                    last_seen: String::new(),
+                                    name: metric_name,
+                                    tags: tags_formatted,
                                 });
                                 sample.count += 1;
-                                sample.last_seen = datetime.format("%Y-%m-%d %H:%M:%S").to_string();
+                                sample.last_seen = datetime_str;
 
                             }
                         }
