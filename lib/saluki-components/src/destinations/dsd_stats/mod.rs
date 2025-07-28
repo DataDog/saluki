@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use chrono;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_api::{
     extract::State,
     routing::{get, Router},
@@ -16,7 +16,6 @@ use saluki_core::{
         destinations::{Destination, DestinationBuilder, DestinationContext},
         ComponentContext,
     },
-    data_model::event::metric::Metric as MetricType,
     data_model::event::{Event::Metric, EventType},
 };
 use saluki_error::GenericError;
@@ -40,13 +39,6 @@ pub struct MetricSample {
 pub struct DogStatsDStatisticsConfiguration {
     api_handler: DogStatsDAPIHandler,
     rx: Arc<Mutex<mpsc::Receiver<tokio::sync::oneshot::Sender<Stats>>>>,
-
-    /// Maximum number of input metrics to encode into a single request payload.
-    ///
-    /// This applies both to the series and sketches endpoints.
-    ///
-    /// Defaults to 10,000.
-    max_metrics_per_payload: usize,
 }
 /// State for the DogStatsD API handler.
 #[derive(Clone)]
@@ -171,7 +163,6 @@ impl DogStatsDStatisticsConfiguration {
         Ok(Self {
             api_handler: handler,
             rx: Arc::new(Mutex::new(rx)),
-            max_metrics_per_payload: default_max_metrics_per_payload(),
         })
     }
 
@@ -203,18 +194,5 @@ impl MemoryBounds for DogStatsDStatisticsConfiguration {
         builder
             .minimum()
             .with_single_value::<DogStatsDStats>("component struct");
-
-        builder.firm().with_expr(UsageExpr::constant("api handler state", 48));
-        builder.firm().with_expr(UsageExpr::constant("destination state", 24));
-        builder
-            .firm()
-            // Capture the size of the "split re-encode" buffers in the request builders, which is where we keep owned
-            // versions of metrics that we encode in case we need to actually re-encode them during a split operation.
-            .with_array::<MetricType>("series metrics split re-encode buffer", self.max_metrics_per_payload)
-            .with_array::<MetricType>("sketch metrics split re-encode buffer", self.max_metrics_per_payload);
     }
-}
-
-const fn default_max_metrics_per_payload() -> usize {
-    10_000
 }
