@@ -51,8 +51,18 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
     let env_provider =
         ADPEnvironmentProvider::from_configuration(&configuration, &component_registry, &health_registry).await?;
 
-    let dsd_stats_config = DogStatsDStatisticsConfiguration::from_configuration(&configuration)
-        .error_context("Failed to configure DogStatsD Statistics destination.")?;
+    let dsd_stats_config = if let Ok(val) = std::env::var("DD_DOGSTATSD_METRICS_STATS_ENABLE") {
+        if val == "true" {
+            Some(
+                DogStatsDStatisticsConfiguration::from_configuration(&configuration)
+                    .error_context("Failed to configure DogStatsD Statistics destination.")?,
+            )
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // Create our primary data topology and spawn any internal processes, which will ensure all relevant components are
     // registered and accounted for in terms of memory usage.
@@ -129,7 +139,7 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
 
 async fn create_topology(
     configuration: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
-    component_registry: &ComponentRegistry, dsd_stats_config: DogStatsDStatisticsConfiguration,
+    component_registry: &ComponentRegistry, dsd_stats_config: Option<DogStatsDStatisticsConfiguration>,
 ) -> Result<TopologyBlueprint, GenericError> {
     // Create a simple pipeline that runs a DogStatsD source, an aggregation transform to bucket into 10 second windows,
     // and a Datadog Metrics destination that forwards aggregated buckets to the Datadog Platform.
@@ -185,7 +195,6 @@ async fn create_topology(
         .add_encoder("dd_events_encode", dd_events_config)?
         .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
         .add_forwarder("dd_out", dd_forwarder_config)?
-        .add_destination("dsd_stats_out", dsd_stats_config.clone())?
         // Metrics.
         .connect_component("dsd_agg", ["dsd_in.metrics"])?
         .connect_component("dsd_prefix_filter", ["dsd_agg"])?
@@ -199,8 +208,13 @@ async fn create_topology(
         .connect_component(
             "dd_out",
             ["dd_metrics_encode", "dd_events_encode", "dd_service_checks_encode"],
-        )?
-        .connect_component("dsd_stats_out", ["dsd_enrich"])?;
+        )?;
+
+    if let Some(dsd_stats_config) = dsd_stats_config {
+        blueprint
+            .add_destination("dsd_stats_out", dsd_stats_config.clone())?
+            .connect_component("dsd_stats_out", ["dsd_enrich"])?;
+    }
 
     if configuration.get_typed_or_default::<bool>("enable_preaggr_pipeline") {
         let preaggr_dd_url = configuration
