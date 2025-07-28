@@ -202,7 +202,7 @@ impl MemoryBounds for DogStatsDStatisticsConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder
             .minimum()
-            .with_single_value::<DogStatsDStatisticsConfiguration>("configuration struct");
+            .with_single_value::<DogStatsDStats>("component struct");
 
         builder.firm().with_expr(UsageExpr::constant("api handler state", 48));
         builder.firm().with_expr(UsageExpr::constant("destination state", 24));
