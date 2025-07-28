@@ -311,6 +311,7 @@ impl RemoteAgent for RemoteAgentImpl {
                     Some(config_event::Event::Update(update)) => {
                         debug!("received config update: {:#?}", update);
                         let v = proto_value_to_serde_value(update.setting.as_ref().map(|s| &s.value).unwrap_or(&None));
+
                         let mut config = (**self.shared_config.as_ref().map(|c| c.load()).unwrap()).clone();
                         config
                             .as_object_mut()

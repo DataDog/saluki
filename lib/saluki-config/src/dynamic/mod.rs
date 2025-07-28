@@ -11,7 +11,7 @@ use serde_json::Value as JsonValue;
 /// A `figment` provider that can be updated dynamically at runtime.
 ///
 /// This provider holds a shared reference to a `serde_json::Value` that is updated by the RemoteAgentService.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Provider {
     values: Arc<ArcSwap<JsonValue>>,
 }

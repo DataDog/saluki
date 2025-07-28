@@ -2,7 +2,8 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-use std::{borrow::Cow, collections::HashSet, sync::Arc};
+use std::sync::RwLock;
+use std::{borrow::Cow, collections::HashSet, sync::Arc, time::Duration};
 
 use arc_swap::ArcSwap;
 pub use figment::value;
@@ -10,15 +11,13 @@ use figment::{error::Kind, providers::Env, Figment};
 use saluki_error::GenericError;
 use serde::Deserialize;
 use snafu::{ResultExt as _, Snafu};
-use tracing::debug;
+use tokio::time;
+use tracing::{debug, error};
 
 mod dynamic;
 mod provider;
-mod refresher;
 mod secrets;
-use self::dynamic::Provider;
 use self::provider::ResolvedProvider;
-pub use self::refresher::{RefreshableConfiguration, RefresherConfiguration};
 
 /// A configuration error.
 #[derive(Debug, Snafu)]
@@ -125,6 +124,7 @@ pub struct ConfigurationLoader {
     lookup_sources: HashSet<LookupSource>,
     dynamic_configuration_enabled: bool,
     dynamic_values: Option<Arc<ArcSwap<serde_json::Value>>>,
+    dynamic_provider: Option<dynamic::Provider>,
 }
 
 impl Default for ConfigurationLoader {
@@ -134,6 +134,7 @@ impl Default for ConfigurationLoader {
             lookup_sources: HashSet::new(),
             dynamic_configuration_enabled: false,
             dynamic_values: None,
+            dynamic_provider: None,
         }
     }
 }
@@ -319,9 +320,10 @@ impl ConfigurationLoader {
     pub fn with_dynamic_configuration(mut self) -> Result<Self, ConfigurationError> {
         self.dynamic_configuration_enabled = true;
         let values = Arc::new(ArcSwap::from_pointee(serde_json::Value::Null));
-        let provider = Provider::new(values.clone());
-        self.inner = self.inner.admerge(provider);
+        let provider = dynamic::Provider::new(values.clone());
+        self.inner = self.inner.admerge(&provider);
         self.dynamic_values = Some(values);
+        self.dynamic_provider = Some(provider);
         Ok(self)
     }
 
@@ -339,38 +341,59 @@ impl ConfigurationLoader {
 
     /// Consumes the configuration loader and wraps it in a generic wrapper.
     pub async fn into_generic(self) -> Result<GenericConfiguration, ConfigurationError> {
-        let (refreshable_config, refreshable_values) = if self.dynamic_configuration_enabled {
-            let refresher_settings = self.inner.extract::<RefresherConfiguration>()?;
-            debug!("Dynamic configuration enabled.");
-
+        let refreshable_values = if self.dynamic_configuration_enabled {
             let values = self
                 .dynamic_values
                 .expect("dynamic_values should be present if dynamic_configuration_enabled is true");
-            let refreshable = refresher_settings.build(values.clone()).await.context(Generic)?;
-            (Some(refreshable), Some(values))
+            Some(values)
         } else {
-            debug!("Dynamic configuration not enabled.");
-            (None, None)
+            None
         };
 
-        Ok(GenericConfiguration {
+        let generic_config = GenericConfiguration {
             inner: Arc::new(Inner {
-                figment: self.inner,
+                figment: RwLock::new(self.inner),
                 lookup_sources: self.lookup_sources,
-                refreshable_config,
                 refreshable_values,
+                dynamic_provider: self.dynamic_provider,
             }),
-        })
+        };
+
+        // If dynamic configuration is enabled, spawn a background task to update it.
+        if generic_config.inner.dynamic_provider.is_some() {
+            tokio::spawn(run_dynamic_config_updater(generic_config.inner.clone()));
+        }
+
+        Ok(generic_config)
+    }
+}
+
+async fn run_dynamic_config_updater(inner: Arc<Inner>) {
+    let mut interval = time::interval(Duration::from_secs(5));
+    loop {
+        interval.tick().await;
+
+        let dynamic_provider = inner
+            .dynamic_provider
+            .as_ref()
+            .expect("dynamic_provider must exist if updater task is running");
+
+        debug!("Updating dynamic configuration in background task...");
+        let mut figment_guard = inner.figment.write().unwrap_or_else(|e| {
+            error!("Failed to acquire write lock for dynamic configuration: {}", e);
+            e.into_inner()
+        });
+        *figment_guard = (*figment_guard).clone().admerge(dynamic_provider);
     }
 }
 
 #[derive(Debug)]
 #[allow(dead_code)]
 struct Inner {
-    figment: Figment,
+    figment: RwLock<Figment>,
     lookup_sources: HashSet<LookupSource>,
-    refreshable_config: Option<RefreshableConfiguration>,
     refreshable_values: Option<Arc<ArcSwap<serde_json::Value>>>,
+    dynamic_provider: Option<dynamic::Provider>,
 }
 
 /// A generic configuration object.
@@ -412,7 +435,7 @@ impl GenericConfiguration {
     where
         T: Deserialize<'a>,
     {
-        self.inner.figment.extract_inner(key).map_err(|e| {
+        self.inner.figment.read().unwrap().extract_inner(key).map_err(|e| {
             if matches!(e.kind, Kind::MissingField(_)) {
                 from_figment_error(&self.inner.lookup_sources, e)
             } else {
@@ -431,7 +454,12 @@ impl GenericConfiguration {
     where
         T: Default + Deserialize<'a>,
     {
-        self.inner.figment.extract_inner(key).unwrap_or_default()
+        self.inner
+            .figment
+            .read()
+            .unwrap()
+            .extract_inner(key)
+            .unwrap_or_default()
     }
 
     /// Gets a configuration value by key, if it exists.
@@ -448,7 +476,8 @@ impl GenericConfiguration {
     where
         T: Deserialize<'a>,
     {
-        match self.inner.figment.extract_inner(key) {
+        let figment_guard = self.inner.figment.read().unwrap();
+        match figment_guard.extract_inner(key) {
             Ok(value) => Ok(Some(value)),
             Err(e) if matches!(e.kind, Kind::MissingField(_)) => Ok(None),
             Err(e) => Err(e.into()),
@@ -466,13 +495,10 @@ impl GenericConfiguration {
     {
         self.inner
             .figment
+            .read()
+            .unwrap()
             .extract()
             .map_err(|e| from_figment_error(&self.inner.lookup_sources, e))
-    }
-
-    /// Gets the refreshable configuration.
-    pub fn get_refreshable_config(&self) -> Option<&RefreshableConfiguration> {
-        self.inner.refreshable_config.as_ref()
     }
 
     /// Gets the refreshable handle.
