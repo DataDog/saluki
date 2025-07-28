@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 use memory_accounting::ComponentRegistry;
 use saluki_app::{api::APIBuilder, metrics::emit_startup_metrics, prelude::*};
 use saluki_components::{
-    destinations::{DatadogMetricsConfiguration, PrometheusConfiguration},
+    destinations::PrometheusConfiguration,
+    encoders::DatadogMetricsConfiguration,
+    forwarders::DatadogConfiguration,
     sources::{ChecksConfiguration, InternalMetricsConfiguration},
     transforms::{AggregateConfiguration, ChainedConfiguration, HostEnrichmentConfiguration},
 };
@@ -147,13 +149,9 @@ async fn run(started: Instant) -> Result<(), Box<dyn std::error::Error>> {
 async fn create_topology(
     configuration: &GenericConfiguration, env_provider: &ChecksAgentEnvProvider, component_registry: &ComponentRegistry,
 ) -> Result<TopologyBlueprint, GenericError> {
-    // Create a ChecksConfiguration source
     let checks_config = ChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure checks source.")?
         .with_autodiscovery_provider(env_provider.autodiscovery().clone());
-    // Add a destination component to receive data from the source
-    let metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
-        .error_context("Failed to configure metrics destination.")?;
 
     let dsd_agg_config = AggregateConfiguration::from_configuration(configuration)
         .error_context("Failed to configure aggregate transform.")?;
@@ -161,17 +159,25 @@ async fn create_topology(
     let enrich_config =
         ChainedConfiguration::default().with_transform_builder("host_enrichment", host_enrichment_config);
 
+    let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
+        .error_context("Failed to configure Datadog Metrics encoder.")?;
+
+    let dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
+        .error_context("Failed to configure Datadog forwarder.")?;
+
     // Create a simplified topology with minimal components for now.
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
 
     blueprint
         .add_source("checks_in", checks_config)?
-        .add_destination("metrics_out", metrics_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
         .add_transform("enrich", enrich_config)?
+        .add_encoder("dd_metrics_encode", dd_metrics_config)?
+        .add_forwarder("dd_out", dd_forwarder_config)?
         .connect_component("dsd_agg", ["checks_in"])?
         .connect_component("enrich", ["dsd_agg"])?
-        .connect_component("metrics_out", ["enrich"])?;
+        .connect_component("dd_metrics_encode", ["enrich"])?
+        .connect_component("dd_out", ["dd_metrics_encode"])?;
 
     // When telemetry is enabled, we need to collect internal metrics, so add those components and route them here.
     let telemetry_enabled = configuration.get_typed_or_default::<bool>("telemetry_enabled");
