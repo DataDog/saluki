@@ -5,6 +5,9 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[lints]
+workspace = true
+
 [dependencies]
 async-trait = { workspace = true }
 bitmask-enum = { workspace = true }
@@ -14,7 +17,7 @@ http = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
 memory-accounting = { workspace = true }
 metrics = { workspace = true }
-metrics-util = { workspace = true, features = ["handles", "recency", "registry"] }
+metrics-util = { workspace = true, features = ["recency", "registry"] }
 ordered-float = { workspace = true }
 paste = { workspace = true }
 pin-project = { workspace = true }
@@ -28,11 +31,18 @@ slab = { workspace = true }
 smallvec = { workspace = true }
 snafu = { workspace = true }
 stringtheory = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = [
+  "macros",
+  "rt",
+  "rt-multi-thread",
+  "sync",
+  "time",
+] }
 tokio-util = { workspace = true, features = ["time"] }
 tracing = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
+metrics-util = { workspace = true, features = ["debugging"] }
 proptest = { workspace = true }
 similar-asserts = { workspace = true, features = ["unicode"] }
 tokio-test = { workspace = true }

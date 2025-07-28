@@ -5,17 +5,26 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[lints]
+workspace = true
+
 [dependencies]
+bytes = { workspace = true }
+crossbeam-queue = { workspace = true }
 foldhash = { workspace = true }
 hashbrown = { workspace = true }
+http-body = { workspace = true }
 indexmap = { workspace = true }
 memory-accounting = { workspace = true }
 papaya = { workspace = true }
 pin-project = { workspace = true }
+quick_cache = { workspace = true }
+saluki-error = { workspace = true }
 saluki-metrics = { workspace = true }
 sha3 = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
 
-[lints]
-workspace = true
+[dev-dependencies]
+http-body-util = { workspace = true }
+tokio-test = { workspace = true }

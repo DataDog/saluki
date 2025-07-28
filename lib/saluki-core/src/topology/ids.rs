@@ -1,7 +1,10 @@
 use core::fmt;
 use std::{borrow::Cow, ops::Deref};
 
-use crate::data_model::event::EventType;
+use crate::{
+    components::{ComponentContext, ComponentType},
+    data_model::event::EventType,
+};
 
 const INVALID_COMPONENT_ID: &str =
     "component IDs may only contain alphanumeric characters (a-z, A-Z, or 0-9), underscores, and hyphens";
@@ -211,6 +214,47 @@ impl OutputDefinition {
     /// Returns the event type.
     pub fn event_ty(&self) -> EventType {
         self.event_ty
+    }
+}
+
+/// A component identifier that specifies the component type.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct TypedComponentId {
+    id: ComponentId,
+    ty: ComponentType,
+}
+
+impl TypedComponentId {
+    /// Creates a new `TypedComponentId` from the given component ID and component type.
+    pub fn new(id: ComponentId, ty: ComponentType) -> Self {
+        Self { id, ty }
+    }
+
+    /// Returns a reference to the component ID.
+    pub fn component_id(&self) -> &ComponentId {
+        &self.id
+    }
+
+    /// Returns the component type.
+    pub fn component_type(&self) -> ComponentType {
+        self.ty
+    }
+
+    /// Returns the component context.
+    pub fn component_context(&self) -> ComponentContext {
+        match self.ty {
+            ComponentType::Source => ComponentContext::source(self.id.clone()),
+            ComponentType::Transform => ComponentContext::transform(self.id.clone()),
+            ComponentType::Destination => ComponentContext::destination(self.id.clone()),
+            ComponentType::Encoder => ComponentContext::encoder(self.id.clone()),
+            ComponentType::Forwarder => ComponentContext::forwarder(self.id.clone()),
+        }
+    }
+
+    /// Consumes the `TypedComponentId` and returns its component ID, component type, and component context.
+    pub fn into_parts(self) -> (ComponentId, ComponentType, ComponentContext) {
+        let component_context = self.component_context();
+        (self.id, self.ty, component_context)
     }
 }
 

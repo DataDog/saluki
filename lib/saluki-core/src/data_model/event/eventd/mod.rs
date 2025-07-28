@@ -2,6 +2,7 @@
 
 use std::{fmt, num::NonZeroU64};
 
+use saluki_context::tags::SharedTagSet;
 use serde::{Serialize, Serializer};
 use stringtheory::MetaString;
 
@@ -118,7 +119,7 @@ impl Priority {
 }
 
 /// EventD is an object that can be posted to the DataDog event stream.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct EventD {
     title: MetaString,
     text: MetaString,
@@ -131,7 +132,8 @@ pub struct EventD {
     #[serde(skip_serializing_if = "MetaString::is_empty")]
     source_type_name: MetaString,
     alert_type: Option<AlertType>,
-    tags: Option<Vec<MetaString>>,
+    tags: SharedTagSet,
+    origin_tags: SharedTagSet,
 }
 
 impl EventD {
@@ -190,8 +192,13 @@ impl EventD {
     }
 
     /// Returns the tags associated with the event.
-    pub fn tags(&self) -> Option<&[MetaString]> {
-        self.tags.as_deref()
+    pub fn tags(&self) -> &SharedTagSet {
+        &self.tags
+    }
+
+    /// Returns the origin tags associated with the event.
+    pub fn origin_tags(&self) -> &SharedTagSet {
+        &self.origin_tags
     }
 
     /// Set the timestamp.
@@ -298,23 +305,31 @@ impl EventD {
         self.alert_type = alert_type.into();
     }
 
-    /// Set the tags of the event
+    /// Set the tags of the event.
     ///
     /// This variant is specifically for use in builder-style APIs.
-    pub fn with_tags(mut self, tags: impl Into<Option<Vec<MetaString>>>) -> Self {
+    pub fn with_tags(mut self, tags: impl Into<SharedTagSet>) -> Self {
         self.tags = tags.into();
         self
     }
 
     /// Set the tags of the event.
-    pub fn set_tags(&mut self, tags: impl Into<Option<Vec<MetaString>>>) {
-        self.tags = tags.into();
+    pub fn set_tags(&mut self, tags: impl Into<Option<SharedTagSet>>) {
+        self.tags = tags.into().unwrap_or_default();
+    }
+
+    /// Set the origin tags of the event.
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_origin_tags(mut self, origin_tags: SharedTagSet) -> Self {
+        self.origin_tags = origin_tags;
+        self
     }
 
     /// Creates an `EventD` from the given title and text.
     ///
     /// Defaults to an informational alert with normal priority.
-    pub fn new(title: &str, text: &str) -> Self {
+    pub fn new(title: impl Into<MetaString>, text: impl Into<MetaString>) -> Self {
         Self {
             title: title.into(),
             text: text.into(),
@@ -324,7 +339,8 @@ impl EventD {
             priority: Some(Priority::Normal),
             source_type_name: MetaString::empty(),
             alert_type: Some(AlertType::Info),
-            tags: None,
+            tags: SharedTagSet::default(),
+            origin_tags: SharedTagSet::default(),
         }
     }
 }

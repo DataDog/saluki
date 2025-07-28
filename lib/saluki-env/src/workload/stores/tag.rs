@@ -4,8 +4,9 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::collections::{FastConcurrentHashMap, FastConcurrentHashSet};
 use saluki_context::{
     origin::OriginTagCardinality,
-    tags::{SharedTagSet, TagSet, TagVisitor},
+    tags::{SharedTagSet, TagSet},
 };
+use saluki_metrics::static_metrics;
 use tracing::{debug, trace};
 
 use crate::workload::{
@@ -13,6 +14,20 @@ use crate::workload::{
     entity::EntityId,
     metadata::{MetadataAction, MetadataOperation},
 };
+
+static_metrics!(
+    name => Telemetry,
+    prefix => tag_store,
+    metrics => [
+        gauge(entity_limit),
+        gauge(active_entities),
+        gauge(entity_aliases),
+        counter(ops_delete_total),
+        counter(ops_set_tags_total),
+        counter(ops_add_alias_total),
+        counter(ops_remove_alias_total),
+   ],
+);
 
 #[derive(Clone, Default)]
 struct TagStorage {
@@ -60,6 +75,7 @@ pub struct TagStore {
     active_entities: Arc<FastConcurrentHashSet<EntityId>>,
     entity_aliases: Arc<FastConcurrentHashMap<EntityId, EntityId>>,
     entity_tags: TagStorage,
+    telemetry: Telemetry,
 }
 
 impl TagStore {
@@ -68,11 +84,15 @@ impl TagStore {
     /// The entity limit is the maximum number of unique entities that can be stored. Once the limit is reached, new
     /// entities will not be added to the store.
     pub fn with_entity_limit(entity_limit: NonZeroUsize) -> Self {
+        let telemetry = Telemetry::new();
+        telemetry.entity_limit().set(entity_limit.get() as f64);
+
         Self {
             entity_limit,
             active_entities: Arc::new(FastConcurrentHashSet::default()),
             entity_aliases: Arc::new(FastConcurrentHashMap::default()),
             entity_tags: TagStorage::default(),
+            telemetry,
         }
     }
 
@@ -92,16 +112,19 @@ impl TagStore {
             return false;
         }
 
+        self.telemetry.active_entities().increment(1);
         let _ = self.active_entities.insert(entity_id.clone(), &guard);
         true
     }
 
     fn delete_entity(&mut self, entity_id: &EntityId) {
-        self.active_entities.pin().remove(entity_id);
+        if self.active_entities.pin().remove(entity_id) {
+            self.telemetry.active_entities().decrement(1);
+        }
 
         // Delete all of the tags for the entity, and any alias mapping that may exist.
         self.entity_tags.delete_entity(entity_id);
-        self.entity_aliases.pin().remove(entity_id);
+        self.remove_entity_alias(entity_id);
     }
 
     fn set_entity_tags(&mut self, entity_id: EntityId, tags: TagSet, cardinality: OriginTagCardinality) {
@@ -118,7 +141,20 @@ impl TagStore {
     }
 
     fn add_entity_alias(&mut self, source_entity_id: EntityId, target_entity_id: EntityId) {
-        let _ = self.entity_aliases.pin().insert(source_entity_id, target_entity_id);
+        if self
+            .entity_aliases
+            .pin()
+            .insert(source_entity_id, target_entity_id)
+            .is_none()
+        {
+            self.telemetry.entity_aliases().increment(1);
+        }
+    }
+
+    fn remove_entity_alias(&mut self, source_entity_id: &EntityId) {
+        if self.entity_aliases.pin().remove(source_entity_id).is_some() {
+            self.telemetry.entity_aliases().decrement(1);
+        }
     }
 
     /// Returns a `TagStoreQuerier` that can be used to concurrently query the tag store.
@@ -144,11 +180,20 @@ impl MetadataStore for TagStore {
         let entity_id = operation.entity_id;
         for action in operation.actions {
             match action {
-                MetadataAction::Delete => self.delete_entity(&entity_id.clone()),
+                MetadataAction::Delete => {
+                    self.telemetry.ops_delete_total().increment(1);
+                    self.delete_entity(&entity_id)
+                }
                 MetadataAction::AddAlias { target_entity_id } => {
+                    self.telemetry.ops_add_alias_total().increment(1);
                     self.add_entity_alias(entity_id.clone(), target_entity_id)
                 }
+                MetadataAction::RemoveAlias { .. } => {
+                    self.telemetry.ops_remove_alias_total().increment(1);
+                    self.remove_entity_alias(&entity_id);
+                }
                 MetadataAction::SetTags { cardinality, tags } => {
+                    self.telemetry.ops_set_tags_total().increment(1);
                     self.set_entity_tags(entity_id.clone(), tags, cardinality)
                 }
                 // We don't care about External Data.
@@ -199,7 +244,7 @@ pub struct TagStoreQuerier {
 }
 
 impl TagStoreQuerier {
-    /// Visits all tags for an entity at the requested cardinality and below.
+    /// Gets all tags for an entity at the requested cardinality and below.
     ///
     /// This means that tags from the requested cardinality, and all lower precedence cardinality levels, will be
     /// visited. The cardinality levels, in order of precedence (lowest to highest), are:
@@ -210,26 +255,22 @@ impl TagStoreQuerier {
     ///
     /// When an entity is aliased, the tags for the aliased entity will be visited instead of any tags for the entity itself.
     ///
-    /// Returns `false` if the entity does not exist at all (no alias, no tags), `true` otherwise.
-    pub fn visit_entity_tags(
-        &self, entity_id: &EntityId, cardinality: OriginTagCardinality, tag_visitor: &mut dyn TagVisitor,
-    ) -> bool {
+    /// Returns `Some(SharedTagSet)` with all tags for the entity at the requested cardinality level, or `None` if the
+    /// entity has no tags at the requested cardinality level or if the entity does not exist.
+    pub fn get_entity_tags(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
         const CARDINALITY_LEVELS: [OriginTagCardinality; 3] = [
             OriginTagCardinality::Low,
             OriginTagCardinality::Orchestrator,
             OriginTagCardinality::High,
         ];
 
-        let mut entity_exists = false;
+        let mut maybe_entity_tags: Option<SharedTagSet> = None;
 
         // If an entity is aliased, use that entity's tags instead of the entity's tags.
         let aliases = self.aliases.pin();
         let entity_id = match aliases.get(entity_id) {
             Some(alias) => {
-                // If an alias exists, then the original entity also "exists".
-                entity_exists = true;
                 trace!(?alias, ?entity_id, "Entity is aliased.");
-
                 alias
             }
             None => entity_id,
@@ -243,10 +284,10 @@ impl TagStoreQuerier {
                     cardinality = current_cardinality.as_str(),
                     "Visiting tags for entity."
                 );
-                entity_exists = true;
 
-                for tag in &tags {
-                    tag_visitor.visit_tag(tag);
+                match maybe_entity_tags.as_mut() {
+                    Some(existing) => existing.extend_from_shared(&tags),
+                    None => maybe_entity_tags = Some(tags),
                 }
             }
 
@@ -256,12 +297,7 @@ impl TagStoreQuerier {
             }
         }
 
-        entity_exists
-    }
-
-    /// Gets the alias for the given entity, if one exists.
-    pub fn get_entity_alias(&self, entity_id: &EntityId) -> Option<EntityId> {
-        self.aliases.pin().get(entity_id).cloned()
+        maybe_entity_tags
     }
 
     /// Gets the exact tags for an entity at the specific cardinality.
@@ -304,13 +340,13 @@ impl TagStoreQuerier {
 mod tests {
     use std::num::NonZeroUsize;
 
-    use saluki_context::tags::{Tag, TagSet};
+    use saluki_context::tags::TagSet;
     use stringtheory::MetaString;
 
     use super::*;
     use crate::workload::helpers::OneOrMany;
 
-    const DEFAULT_ENTITY_LIMIT: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(10) };
+    const DEFAULT_ENTITY_LIMIT: NonZeroUsize = NonZeroUsize::new(10).unwrap();
 
     macro_rules! low_cardinality {
         ($entity_id:expr, tags => [$($key:literal => $value:literal),+]) => {{
@@ -356,11 +392,10 @@ mod tests {
     }
 
     fn visit_tags(querier: &TagStoreQuerier, entity_id: &EntityId, cardinality: OriginTagCardinality) -> TagSet {
-        let mut tags = TagSet::default();
-        querier.visit_entity_tags(entity_id, cardinality, &mut |tag: &Tag| {
-            tags.insert_tag(tag.clone());
-        });
-        tags
+        match querier.get_entity_tags(entity_id, cardinality) {
+            Some(tags) => TagSet::from_iter((&tags).into_iter().cloned()),
+            None => TagSet::default(),
+        }
     }
 
     fn sorted_ts(tags: TagSet) -> Vec<MetaString> {

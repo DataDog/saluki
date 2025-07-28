@@ -5,7 +5,7 @@ pub use http::StatusCode;
 
 pub mod extract {
     pub use axum::extract::*;
-    pub use axum_extra::extract::*;
+    pub use axum_extra::extract::Query;
 }
 
 // An API handler.

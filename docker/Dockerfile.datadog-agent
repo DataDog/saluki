@@ -1,4 +1,4 @@
-ARG DD_AGENT_VERSION=7.64.0-rc.13-jmx
+ARG DD_AGENT_VERSION=7.67.1
 ARG DD_AGENT_IMAGE=datadog/agent:${DD_AGENT_VERSION}
 ARG ADP_IMAGE=saluki-images/agent-data-plane:latest
 
@@ -17,5 +17,10 @@ COPY --from=adp /opt/datadog/agent-data-plane /opt/datadog/agent-data-plane
 # ADP will only run when the `DD_ADP_ENABLED` environment variable is set to `true`.
 COPY docker/cont-init.d /etc/cont-init.d/
 COPY docker/s6-services /etc/services.d/
+
+COPY --chmod=755 docker/entrypoint.sh /entrypoint.sh
+
+# Remove default check configuration to ensure no checks end up running by default.
+RUN rm -rf /etc/datadog-agent/conf.d/*
 
 # Everything else we'll leave at the defaults of the Datadog Agent image.

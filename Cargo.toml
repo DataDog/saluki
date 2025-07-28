@@ -56,7 +56,7 @@ saluki-tls = { path = "lib/saluki-tls" }
 stele = { path = "bin/correctness/stele" }
 stringtheory = { path = "lib/stringtheory" }
 async-trait = { version = "0.1", default-features = false }
-axum = { version = "0.7", default-features = false }
+axum = { version = "0.8", default-features = false }
 bytes = { version = "1", default-features = false }
 protobuf = { version = "3.7", default-features = false, features = [
   "with-bytes",
@@ -93,17 +93,17 @@ hyper-util = { version = "0.1.10", default-features = false }
 indexmap = { version = "2", default-features = false }
 memchr = { version = "2.7", default-features = false }
 metrics = { version = "0.24", default-features = false }
-metrics-util = { version = "0.18", default-features = false }
+metrics-util = { version = "0.20", default-features = false }
 nom = { version = "8", default-features = false }
-ordered-float = { version = "5", default-features = false }
+ordered-float = { version = "4", default-features = false }
 paste = { version = "1", default-features = false }
 pin-project = { version = "1.1", default-features = false }
 pin-project-lite = { version = "0.2", default-features = false }
-proptest = { version = "1.6", default-features = false, features = ["std"] }
+proptest = { version = "1.7", default-features = false, features = ["std"] }
 prost = { version = "0.13", default-features = false }
 quanta = { version = "0.12", default-features = false }
-rand = { version = "0.8", default-features = false }
-rand_distr = { version = "0.4", default-features = false }
+rand = { version = "0.9", default-features = false }
+rand_distr = { version = "0.5", default-features = false }
 regex = { version = "1.11", default-features = false }
 rustls = { version = "0.23", default-features = false, features = [
   "aws_lc_rs",
@@ -122,9 +122,9 @@ ndarray-stats = { version = "0.6", default-features = false }
 noisy_float = { version = "0.2", default-features = false }
 libc = { version = "0.2.169", default-features = false }
 socket2 = { version = "0.5.7", default-features = false }
-containerd-client = { version = "0.8", default-features = false }
-tonic-build = { version = "0.12", default-features = false }
-tonic = { version = "0.12", default-features = false }
+containerd-client = { git = "https://github.com/containerd/rust-extensions", rev = "c0b92c4e96e54cf60156865a6c2e0a6fe044556f", default-features = false }
+tonic-build = { version = "0.13", default-features = false }
+tonic = { version = "0.13", default-features = false }
 arc-swap = { version = "1.7.1", default-features = false }
 async-stream = { version = "0.3.5", default-features = false }
 futures = { version = "0.3.30", default-features = false }
@@ -146,18 +146,24 @@ loom = { version = "0.7", default-features = false }
 trybuild = { version = "1", default-features = false }
 tokio-test = { version = "0.4.4", default-features = false }
 simdutf8 = { version = "0.1.5", default-features = false }
-smallvec = { version = "1.13", default-features = false, features = ["const_generics", "drain_filter", "union"] }
+smallvec = { version = "1.13", default-features = false, features = [
+  "const_generics",
+  "drain_filter",
+  "union",
+] }
 windows-sys = { version = "0.59", default-features = false }
 rustls-native-certs = { version = "0.8", default-features = false }
 hashbrown = { version = "0.15", default-features = false }
 quick_cache = { version = "0.6", default-features = false }
-crossbeam-queue = { version = "0.3", default-features = false }
+crossbeam-queue = { version = "0.3", default-features = false, features = [
+  "alloc",
+] }
 float-cmp = { version = "0.10", default-features = false }
 tower-http = { version = "0.6", default-features = false }
 bollard = { version = "0.18", default-features = false }
 clap = { version = "4.5.26", default-features = false }
 reqwest = { version = "0.12.12", default-features = false }
-lading-payload = { git = "https://github.com/DataDog/lading", rev = "47294f8909ffe6236345474107b3ed5e73d1bbf5" }
+lading-payload = { git = "https://github.com/DataDog/lading", rev = "1e5bc2b135e0316b51a1db84373de29cf76ce242" }
 serde_yaml = { version = "0.9", default-features = false }
 serde_with = { version = "3.12.0", default-features = false, features = [
   "macros",
@@ -171,7 +177,7 @@ uuid = { version = "1.13", default-features = false }
 rcgen = { version = "0.13.1", default-features = false }
 tikv-jemalloc-ctl = "0.6"
 tikv-jemallocator = { version = "0.6", default-features = false }
-axum-extra = { version = "0.9", default-features = false }
+axum-extra = { version = "0.10", default-features = false }
 papaya = { version = "0.2", default-features = false }
 tempfile = { version = "3", default-features = false }
 fs4 = { version = "0.13.1", default-features = false }
@@ -179,10 +185,9 @@ fnv = { version = "1", default-features = false }
 twox-hash = { version = "2", features = ["xxhash64"] }
 sha3 = { version = "0.10", default-features = false }
 pyo3 = { version = "0.25", default-features = false }
+test-strategy = { version = "0.4", default-features = false }
 
 [profile.release]
-lto = "thin"
-codegen-units = 4
 debug = true
 
 [profile.optimized-release]
@@ -193,3 +198,4 @@ debug = true
 
 [workspace.lints.clippy]
 new_without_default = "allow"
+uninlined_format_args = "allow"

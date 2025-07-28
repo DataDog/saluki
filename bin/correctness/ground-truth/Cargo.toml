@@ -5,10 +5,23 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[lints]
+workspace = true
+
 [dependencies]
 airlock = { path = "../airlock" }
-clap = { workspace = true, features = ["std", "color", "derive", "help", "wrap_help", "usage", "error-context", "suggestions"] }
+clap = { workspace = true, features = [
+  "std",
+  "color",
+  "derive",
+  "help",
+  "wrap_help",
+  "usage",
+  "error-context",
+  "suggestions",
+] }
 rand = { workspace = true, features = ["std", "std_rng"] }
+rand_distr = { workspace = true }
 reqwest = { workspace = true, features = ["json", "zstd"] }
 saluki-app = { workspace = true, features = ["logging"] }
 saluki-error = { workspace = true }
@@ -16,6 +29,3 @@ stele = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
-
-[lints]
-workspace = true

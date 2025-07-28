@@ -3,14 +3,16 @@
 use async_trait::async_trait;
 use saluki_error::GenericError;
 
+use crate::{data_model::event::Event, topology::PayloadsDispatcher};
+
 mod builder;
-pub use self::builder::EncoderBuilder;
-use crate::{data_model::event::Event, topology::interconnect::BufferedDispatcher};
+pub use self::builder::{EncoderBuilder, IncrementalEncoderBuilder};
 
 mod context;
 pub use self::context::EncoderContext;
 
 /// Encoder process result.
+#[allow(clippy::large_enum_variant)]
 pub enum ProcessResult {
     /// The encoder processed the event successfully and is ready to process more events.
     Continue,
@@ -68,10 +70,10 @@ pub trait IncrementalEncoder {
     /// If the encoder cannot process the event due to an unrecoverable error, an error is returned.
     async fn process_event(&mut self, event: Event) -> Result<ProcessResult, GenericError>;
 
-    /// Flush the encoder, finalizing all current payloads and sending them to the forwarder.
+    /// Flush the encoder, finalizing all current payloads and sending them to the dispatcher.
     ///
     /// # Errors
     ///
     /// If the encoder cannot flush the payloads, an error is returned.
-    async fn flush(&mut self, forwarder: BufferedDispatcher<'_>) -> Result<(), GenericError>;
+    async fn flush(&mut self, dispatcher: &PayloadsDispatcher) -> Result<(), GenericError>;
 }

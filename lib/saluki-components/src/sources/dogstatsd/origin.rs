@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use saluki_context::{
-    origin::{OriginKey, OriginTagCardinality, OriginTagsResolver, RawOrigin},
-    tags::TagVisitor,
+    origin::{OriginTagCardinality, OriginTagsResolver, RawOrigin},
+    tags::SharedTagSet,
 };
 use saluki_env::{workload::origin::ResolvedOrigin, WorkloadProvider};
-use saluki_io::deser::codec::dogstatsd::MetricPacket;
+use saluki_io::deser::codec::dogstatsd::{EventPacket, MetricPacket, ServiceCheckPacket};
 use serde::Deserialize;
 use tracing::trace;
 
@@ -92,13 +92,16 @@ impl DogStatsDOriginTagResolver {
         }
     }
 
-    fn visit_origin_tags(&self, origin: ResolvedOrigin, visitor: &mut dyn TagVisitor) {
+    fn collect_origin_tags(&self, origin: ResolvedOrigin) -> SharedTagSet {
+        let mut collected_tags = SharedTagSet::default();
+
         // Examine the various possible entity ID values, and based on their state, use one or more of them to grab any
         // enriched tags attached to the entities. Below is a description of each entity ID we may have extracted:
         //
         // - entity ID (extracted from `dd.internal.entity_id` tag; non-prefixed pod UID)
         // - container ID (extracted from special "container ID" extension in DogStatsD protocol; non-prefixed container ID)
         // - container ID via origin PID (extracted via UDS socket credentials)
+        let maybe_process_id = origin.process_id();
         let maybe_entity_id = origin.pod_uid();
         let maybe_container_id = origin.container_id();
 
@@ -107,29 +110,32 @@ impl DogStatsDOriginTagResolver {
         if !self.config.origin_detection_unified {
             if self.config.origin_detection_optout && tag_cardinality == OriginTagCardinality::None {
                 trace!("Skipping origin enrichment for DogStatsD metric with cardinality 'none'.");
-                return;
+                return collected_tags;
             }
 
             // If we discovered an entity ID via origin detection, and no client-provided entity ID was provided (or it was,
             // but entity ID precedence is disabled), then try to get tags for the detected entity ID.
-            if let Some(origin_cid) = maybe_container_id {
-                let should_query = maybe_entity_id.is_none() || !self.config.entity_id_precedence;
-                if should_query
-                    && !self
-                        .workload_provider
-                        .visit_tags_for_entity(origin_cid, tag_cardinality, visitor)
-                {
-                    trace!(entity_id = ?origin_cid, cardinality = tag_cardinality.as_str(), "No tags found for entity.");
+            if let Some(entity_id) = maybe_process_id {
+                if maybe_entity_id.is_none() || !self.config.entity_id_precedence {
+                    if let Some(tags) = self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
+                        collected_tags.extend_from_shared(&tags);
+                    } else {
+                        trace!(
+                            ?entity_id,
+                            cardinality = tag_cardinality.as_str(),
+                            "No tags found for entity."
+                        );
+                    }
                 }
             }
 
             // If we have a client-provided entity ID, try to get tags for the entity based on those. A
             // client-provided entity ID takes precedence over the container ID.
-            if let Some(entity_id) = maybe_entity_id {
-                if !self
-                    .workload_provider
-                    .visit_tags_for_entity(entity_id, tag_cardinality, visitor)
-                {
+            let maybe_client_entity_id = maybe_entity_id.or(maybe_container_id);
+            if let Some(entity_id) = maybe_client_entity_id {
+                if let Some(tags) = self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
+                    collected_tags.extend_from_shared(&tags);
+                } else {
                     trace!(
                         ?entity_id,
                         cardinality = tag_cardinality.as_str(),
@@ -140,24 +146,25 @@ impl DogStatsDOriginTagResolver {
         } else {
             if tag_cardinality == OriginTagCardinality::None {
                 trace!("Skipping origin enrichment for metric with cardinality 'none'.");
-                return;
+                return collected_tags;
             }
 
-            // Try all possible detected entity IDs, enriching in the following order of precedence: local container ID,
-            // client-provided entity ID, External Data-based pod ID, and External Data-based container ID.
+            // Try all possible detected entity IDs, enriching in the following order of precedence: local process ID,
+            // local container ID, client-provided entity ID, External Data-based pod ID, and External Data-based
+            // container ID.
             let maybe_external_data_pod_uid = origin.resolved_external_data().map(|red| red.pod_entity_id());
             let maybe_external_data_container_id = origin.resolved_external_data().map(|red| red.container_entity_id());
             let maybe_entity_ids = &[
+                maybe_process_id,
                 maybe_container_id,
                 maybe_entity_id,
                 maybe_external_data_pod_uid,
                 maybe_external_data_container_id,
             ];
             for entity_id in maybe_entity_ids.iter().flatten() {
-                if !self
-                    .workload_provider
-                    .visit_tags_for_entity(entity_id, tag_cardinality, visitor)
-                {
+                if let Some(tags) = self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
+                    collected_tags.extend_from_shared(&tags);
+                } else {
                     trace!(
                         ?entity_id,
                         cardinality = tag_cardinality.as_str(),
@@ -166,23 +173,45 @@ impl DogStatsDOriginTagResolver {
                 }
             }
         }
+
+        collected_tags
     }
 }
 
 impl OriginTagsResolver for DogStatsDOriginTagResolver {
-    fn resolve_origin_key(&self, origin: RawOrigin<'_>) -> Option<OriginKey> {
-        self.workload_provider.resolve_origin(origin)
-    }
-
-    fn visit_origin_tags(&self, origin_key: OriginKey, visitor: &mut dyn TagVisitor) {
-        if let Some(origin) = self.workload_provider.get_resolved_origin_by_key(&origin_key) {
-            self.visit_origin_tags(origin, visitor);
+    fn resolve_origin_tags(&self, origin: RawOrigin<'_>) -> SharedTagSet {
+        match self.workload_provider.get_resolved_origin(origin.clone()) {
+            Some(resolved_origin) => self.collect_origin_tags(resolved_origin),
+            None => {
+                trace!(?origin, "No resolved origin found for origin.");
+                SharedTagSet::default()
+            }
         }
     }
 }
 
 /// Builds an `RawOrigin` object from the given metric packet.
 pub fn origin_from_metric_packet<'packet>(packet: &MetricPacket<'packet>) -> RawOrigin<'packet> {
+    let mut origin = RawOrigin::default();
+    origin.set_pod_uid(packet.pod_uid);
+    origin.set_container_id(packet.container_id);
+    origin.set_external_data(packet.external_data);
+    origin.set_cardinality(packet.cardinality);
+    origin
+}
+
+/// Builds an `RawOrigin` object from the given event packet.
+pub fn origin_from_event_packet<'packet>(packet: &EventPacket<'packet>) -> RawOrigin<'packet> {
+    let mut origin = RawOrigin::default();
+    origin.set_pod_uid(packet.pod_uid);
+    origin.set_container_id(packet.container_id);
+    origin.set_external_data(packet.external_data);
+    origin.set_cardinality(packet.cardinality);
+    origin
+}
+
+/// Builds an `RawOrigin` object from the given service check packet.
+pub fn origin_from_service_check_packet<'packet>(packet: &ServiceCheckPacket<'packet>) -> RawOrigin<'packet> {
     let mut origin = RawOrigin::default();
     origin.set_pod_uid(packet.pod_uid);
     origin.set_container_id(packet.container_id);

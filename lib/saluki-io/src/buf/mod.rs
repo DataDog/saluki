@@ -2,9 +2,6 @@ use std::collections::VecDeque;
 
 use bytes::{Buf, BufMut, Bytes};
 
-mod chunked;
-pub use self::chunked::{ChunkedBytesBuffer, ChunkedBytesBufferObjectPool, FrozenChunkedBytesBuffer};
-
 mod vec;
 pub use self::vec::{BytesBuffer, FixedSizeVec};
 

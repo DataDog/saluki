@@ -5,6 +5,9 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[lints]
+workspace = true
+
 [features]
 ddsketch_extended = []
 serde = ["dep:serde", "smallvec/serde"]
@@ -19,10 +22,8 @@ smallvec = { workspace = true, features = ["union"] }
 [dev-dependencies]
 criterion = { workspace = true }
 dhat = { workspace = true }
-ndarray = { workspace = true }
-ndarray-stats = { workspace = true }
 noisy_float = { workspace = true }
-rand = { workspace = true, features = ["small_rng"] }
+rand = { workspace = true, features = ["small_rng", "thread_rng"] }
 rand_distr = { workspace = true }
 
 [[bench]]

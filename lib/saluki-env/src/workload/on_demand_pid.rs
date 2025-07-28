@@ -1,10 +1,17 @@
+#[cfg(target_os = "linux")]
+use std::num::NonZeroUsize;
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 #[cfg(target_os = "linux")]
-use saluki_common::collections::FastConcurrentHashMap;
+use saluki_common::cache::{Cache, CacheBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
+use saluki_metrics::static_metrics;
 use stringtheory::interning::GenericMapInterner;
+#[cfg(target_os = "linux")]
+use tokio::time::sleep;
 #[cfg(target_os = "linux")]
 use tracing::{debug, trace};
 
@@ -12,6 +19,24 @@ use tracing::{debug, trace};
 use super::helpers::cgroups::{CgroupsConfiguration, CgroupsReader};
 use crate::{features::FeatureDetector, workload::EntityId};
 
+static_metrics! {
+    name => Telemetry,
+    prefix => pid_resolver,
+    metrics => [
+        gauge(interner_capacity_bytes),
+        gauge(interner_len_bytes),
+        gauge(interner_entries),
+    ],
+}
+
+#[cfg(target_os = "linux")]
+type PIDCache = Cache<u32, EntityId>;
+#[cfg(target_os = "linux")]
+const DEFAULT_PID_CACHE_CACHED_PIDS_LIMIT: usize = 500_000;
+#[cfg(target_os = "linux")]
+const DEFAULT_PID_CACHE_IDLE_PID_EXPIRATION: Duration = Duration::from_secs(30);
+
+#[allow(clippy::large_enum_variant)]
 enum Inner {
     #[allow(dead_code)]
     Noop,
@@ -19,7 +44,7 @@ enum Inner {
     #[cfg(target_os = "linux")]
     Linux {
         cgroups_reader: CgroupsReader,
-        pid_mappings_cache: FastConcurrentHashMap<u32, EntityId>,
+        pid_mappings_cache: PIDCache,
     },
 }
 
@@ -51,13 +76,6 @@ pub struct OnDemandPIDResolver {
 }
 
 impl OnDemandPIDResolver {
-    #[cfg(test)]
-    pub fn noop() -> Self {
-        Self {
-            inner: Arc::new(Inner::Noop),
-        }
-    }
-
     /// Creates a new `OnDemandPIDResolver` from the given configuration.
     #[cfg(not(target_os = "linux"))]
     pub fn from_configuration(
@@ -73,20 +91,31 @@ impl OnDemandPIDResolver {
     pub fn from_configuration(
         config: &GenericConfiguration, feature_detector: FeatureDetector, interner: GenericMapInterner,
     ) -> Result<Self, GenericError> {
+        let telemetry = Telemetry::new();
+        telemetry
+            .interner_capacity_bytes()
+            .set(interner.capacity_bytes() as f64);
+
         let cgroups_config = CgroupsConfiguration::from_configuration(config, feature_detector)?;
-        let cgroups_reader = match CgroupsReader::try_from_config(&cgroups_config, interner)? {
+        let cgroups_reader = match CgroupsReader::try_from_config(&cgroups_config, interner.clone())? {
             Some(reader) => reader,
             None => {
                 return Err(GenericError::msg("Failed to detect any cgroups v1/v2 hierarchy."));
             }
         };
 
-        Ok(Self {
-            inner: Arc::new(Inner::Linux {
-                cgroups_reader,
-                pid_mappings_cache: FastConcurrentHashMap::default(),
-            }),
-        })
+        let cache_builder = CacheBuilder::from_identifier("on_demand_pid_resolver")?
+            .with_capacity(NonZeroUsize::new(DEFAULT_PID_CACHE_CACHED_PIDS_LIMIT).unwrap())
+            .with_time_to_idle(Some(DEFAULT_PID_CACHE_IDLE_PID_EXPIRATION));
+
+        let inner = Arc::new(Inner::Linux {
+            cgroups_reader,
+            pid_mappings_cache: cache_builder.build(),
+        });
+
+        tokio::spawn(drive_telemetry(interner.clone(), telemetry.clone()));
+
+        Ok(Self { inner })
     }
 
     /// Resolves a process ID to the container ID of the container is part of.
@@ -97,6 +126,19 @@ impl OnDemandPIDResolver {
     }
 }
 
+#[cfg(target_os = "linux")]
+async fn drive_telemetry(interner: GenericMapInterner, telemetry: Telemetry) {
+    loop {
+        sleep(Duration::from_secs(1)).await;
+
+        telemetry.interner_entries().set(interner.len() as f64);
+        telemetry
+            .interner_capacity_bytes()
+            .set(interner.capacity_bytes() as f64);
+        telemetry.interner_len_bytes().set(interner.len_bytes() as f64);
+    }
+}
+
 fn resolve_noop_pid(_process_id: u32) -> Option<EntityId> {
     // No-op resolver, always returns None.
     None
@@ -104,7 +146,7 @@ fn resolve_noop_pid(_process_id: u32) -> Option<EntityId> {
 
 #[cfg(target_os = "linux")]
 fn resolve_linux_pid(
-    process_id: u32, pid_mappings_cache: &FastConcurrentHashMap<u32, EntityId>, cgroups_reader: &CgroupsReader,
+    process_id: u32, pid_mappings_cache: &PIDCache, cgroups_reader: &CgroupsReader,
 ) -> Option<EntityId> {
     // First, check our PID mapping cache.
     //
@@ -113,7 +155,7 @@ fn resolve_linux_pid(
     //
     // This is simply a stopgap to make sure this functionality, overall, works for the purposes of origin
     // detection.
-    if let Some(container_id) = pid_mappings_cache.pin().get(&process_id).cloned() {
+    if let Some(container_id) = pid_mappings_cache.get(&process_id) {
         trace!(
             "Resolved PID {} to container ID {} from cache.",
             process_id,
@@ -129,7 +171,7 @@ fn resolve_linux_pid(
 
             debug!("Resolved PID {} to container ID {}.", process_id, container_eid);
 
-            pid_mappings_cache.pin().insert(process_id, container_eid.clone());
+            pid_mappings_cache.insert(process_id, container_eid.clone());
             Some(container_eid)
         }
         None => {

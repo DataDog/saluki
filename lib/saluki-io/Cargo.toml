@@ -5,9 +5,11 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[lints]
+workspace = true
+
 [dependencies]
 async-compression = { workspace = true, features = ["tokio", "zlib"] }
-average = { workspace = true, features = ["std"] }
 axum = { workspace = true, features = ["tokio"] }
 bytes = { workspace = true }
 chrono = { workspace = true }
@@ -18,15 +20,24 @@ http-body = { workspace = true }
 hyper = { workspace = true, features = ["client", "server"] }
 hyper-http-proxy = { workspace = true }
 hyper-rustls = { workspace = true }
-hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "http2", "server", "tokio"] }
+hyper-util = { workspace = true, features = [
+  "client",
+  "client-legacy",
+  "http1",
+  "http2",
+  "server",
+  "tokio",
+] }
 libc = { workspace = true }
 memchr = { workspace = true, features = ["std"] }
 metrics = { workspace = true }
 nom = { workspace = true, features = ["alloc"] }
 pin-project = { workspace = true }
 pin-project-lite = { workspace = true }
-rand = { workspace = true, features = ["std", "std_rng"] }
+rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
+rand_distr = { workspace = true }
 rustls = { workspace = true }
+rustls-pemfile = { workspace = true, features = ["std"] }
 saluki-common = { workspace = true }
 saluki-context = { workspace = true }
 saluki-core = { workspace = true }
@@ -39,7 +50,16 @@ simdutf8 = { workspace = true, features = ["std"] }
 snafu = { workspace = true }
 socket2 = { workspace = true }
 stringtheory = { workspace = true }
-tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync"] }
+tokio = { workspace = true, features = [
+  "fs",
+  "io-util",
+  "macros",
+  "net",
+  "rt",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+] }
 tokio-rustls = { workspace = true }
 tokio-util = { workspace = true }
 tower = { workspace = true, features = ["retry", "timeout", "util"] }

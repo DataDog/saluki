@@ -11,10 +11,8 @@ use airlock::{
     config::{ADPConfig, DSDConfig, MetricsIntakeConfig, MillstoneConfig},
     driver::{Driver, DriverConfig, DriverDetails, ExitStatus},
 };
-use rand::{
-    distributions::{Alphanumeric, DistString as _},
-    thread_rng,
-};
+use rand::{distr::SampleString as _, rng};
+use rand_distr::Alphanumeric;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stele::Metric;
 use tokio::{select, task::JoinHandle, time::sleep};
@@ -86,11 +84,7 @@ impl TestRunner {
 
         let adp_config = DriverConfig::agent_data_plane(self.adp_config.clone())
             .await?
-            .with_env_var("DD_API_KEY", "dummy-api-key-correctness-testing")
-            .with_env_var("DD_ADP_STANDALONE_MODE", "true")
-            .with_env_var("DD_TELEMETRY_ENABLED", "true")
-            .with_env_var("DD_PROMETHEUS_LISTEN_ADDR", "tcp://0.0.0.0:5102")
-            .with_exposed_port("tcp", 6000);
+            .with_env_var("DD_API_KEY", "dummy-api-key-correctness-testing");
 
         group_runner
             .with_driver(DriverConfig::metrics_intake(self.metrics_intake_config.clone()).await?)?
@@ -518,5 +512,5 @@ async fn spawn_driver_with_details(
 
 /// Generates a random 16-character alphanumeric string suitable for use as an isolation group ID.
 fn generate_isolation_group_id() -> String {
-    Alphanumeric.sample_string(&mut thread_rng(), 8)
+    Alphanumeric.sample_string(&mut rng(), 8)
 }

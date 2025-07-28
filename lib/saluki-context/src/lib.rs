@@ -5,13 +5,11 @@
 mod context;
 pub use self::context::Context;
 
-mod expiry;
-
 mod hash;
 
 pub mod origin;
 
 mod resolver;
-pub use self::resolver::{ContextResolver, ContextResolverBuilder};
+pub use self::resolver::{ContextResolver, ContextResolverBuilder, TagsResolver, TagsResolverBuilder};
 
 pub mod tags;

@@ -9,8 +9,11 @@ export TARGET_TRIPLE ?= $(shell command -v rustc 1>/dev/null && rustc -vV | sed 
 
 # High-level settings that ultimately get passed down to build-specific targets.
 export APP_FULL_NAME ?= Agent Data Plane
+export CHECKS_FULL_NAME ?= Checks Agent
 export APP_SHORT_NAME ?= data-plane
 export APP_IDENTIFIER ?= adp
+export CHECKS_SHORT_NAME ?= checks-agent
+export CHECKS_IDENTIFIER ?= checks-agent
 export APP_GIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
 export APP_VERSION ?= $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
 
@@ -39,9 +42,9 @@ export GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-
 
 # Specific versions of various tools we use.
 export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.3
-export CARGO_TOOL_VERSION_cargo-deny ?= 0.15.0
+export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.3
 export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
-export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.72
+export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.99
 export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
 export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
 export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
@@ -118,6 +121,22 @@ build-adp-image: ## Builds the ADP container image in release mode ('latest' tag
 		--build-arg "APP_VERSION=$(APP_VERSION)" \
 		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
 		--file ./docker/Dockerfile.agent-data-plane \
+		.
+
+.PHONY: build-checks-agent-image
+build-checks-agent-image: ## Builds the ADP container image in release mode ('latest' tag)
+	@echo "[*] Building Check Agent image..."
+	@$(CONTAINER_TOOL) build \
+		--tag saluki-images/check-agent:latest \
+		--tag local.dev/saluki-images/check-agent:testing \
+		--build-arg "BUILD_IMAGE=$(ADP_BUILD_IMAGE)" \
+		--build-arg "APP_IMAGE=$(ADP_APP_IMAGE)" \
+		--build-arg "APP_FULL_NAME=$(CHECKS_FULL_NAME)" \
+		--build-arg "APP_SHORT_NAME=$(CHECKS_SHORT_NAME)" \
+		--build-arg "APP_IDENTIFIER=$(CHECKS_IDENTIFIER)" \
+		--build-arg "APP_VERSION=$(APP_VERSION)" \
+		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
+		--file ./docker/Dockerfile.checks-agent \
 		.
 
 .PHONY: build-datadog-agent-image
@@ -443,7 +462,13 @@ check-features: ## Checks that all packages with feature flags can be built with
 test: check-rust-build-tools cargo-install-cargo-nextest
 test: ## Runs all unit tests
 	@echo "[*] Running unit tests..."
-	cargo nextest run
+	cargo nextest run --lib -E 'not test(/property_test_*/)'
+
+.PHONY: test-property
+test-property: check-rust-build-tools cargo-install-cargo-nextest
+test-property: ## Runs all property tests
+	@echo "[*] Running property tests..."
+	cargo nextest run --lib --release -E 'test(/property_test_*/)'
 
 .PHONY: test-docs
 test-docs: check-rust-build-tools
@@ -455,7 +480,7 @@ test-docs: ## Runs all doctests
 test-miri: check-rust-build-tools ensure-rust-miri
 test-miri: ## Runs all Miri-specific unit tests
 	@echo "[*] Running Miri-specific unit tests..."
-	cargo +nightly-2024-06-29 miri test -p stringtheory
+	cargo +nightly-2025-06-16 miri test -p stringtheory
 
 .PHONY: test-loom
 test-loom: check-rust-build-tools
@@ -465,31 +490,52 @@ test-loom: ## Runs all Loom-specific unit tests
 
 .PHONY: test-all
 test-all: ## Test everything
-test-all: test test-docs test-miri test-loom
+test-all: test test-property test-docs test-miri test-loom
 
 .PHONY: test-correctness
 test-correctness: build-ground-truth
 test-correctness: ## Runs the metrics correctness (ground-truth) suite
 	@echo "[*] Running correctness suite..."
+	@echo "[*] Running 'no-origin-detection' test case..."
 	@target/debug/ground-truth \
 		--millstone-image saluki-images/millstone:latest \
 		--millstone-config-path $(shell pwd)/test/correctness/millstone.yaml \
 		--metrics-intake-image saluki-images/metrics-intake:latest \
 		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
-		--dsd-image docker.io/datadog/dogstatsd:7.59.1 \
-		--dsd-config-path $(shell pwd)/test/correctness/datadog.yaml \
+		--dsd-image docker.io/datadog/dogstatsd:7.67.1 \
+		--dsd-config-path $(shell pwd)/test/correctness/datadog-no-origin-detection.yaml \
 		--adp-image saluki-images/agent-data-plane:latest \
-		--adp-config-path $(shell pwd)/test/correctness/datadog.yaml
+		--adp-config-path $(shell pwd)/test/correctness/datadog-no-origin-detection.yaml
+
+.PHONY: test-correctness-origin-detection
+test-correctness-origin-detection: build-ground-truth
+test-correctness-origin-detection: ## Runs the metrics correctness (ground-truth) suite (origin detection)
+	@echo "[*] Running correctness suite..."
+	@echo "[*] Running 'origin-detection' test case..."
+	@target/debug/ground-truth \
+		--millstone-image saluki-images/millstone:latest \
+		--millstone-config-path $(shell pwd)/test/correctness/millstone.yaml \
+		--metrics-intake-image saluki-images/metrics-intake:latest \
+		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
+		--dsd-image saluki-images/datadog-agent:latest \
+		--dsd-entrypoint /bin/entrypoint.sh \
+		--dsd-command /init \
+		--dsd-config-path $(shell pwd)/test/correctness/datadog-origin-detection.yaml \
+		--adp-image saluki-images/datadog-agent:latest \
+		--adp-command /init \
+		--adp-config-path $(shell pwd)/test/correctness/datadog-origin-detection.yaml \
+		--adp-env-arg DD_ADP_ENABLED=true \
+		--adp-env-arg DD_AGGREGATE_CONTEXT_LIMIT=500000
 
 .PHONY: ensure-rust-miri
 ensure-rust-miri:
 ifeq ($(shell command -v rustup >/dev/null || echo not-found), not-found)
 	$(error "Rustup must be present to install nightly toolchain/Miri component: https://www.rust-lang.org/tools/install")
 endif
-	@echo "[*] Installing/updating nightly Rust (2024-06-29) and Miri component..."
-	@rustup toolchain install nightly-2024-06-29 --component miri
+	@echo "[*] Installing/updating nightly Rust (2025-06-16) and Miri component..."
+	@rustup toolchain install nightly-2025-06-16 --component miri
 	@echo "[*] Ensuring Miri is setup..."
-	@cargo +nightly-2024-06-29 miri setup
+	@cargo +nightly-2025-06-16 miri setup
 
 ##@ Profiling
 
@@ -561,6 +607,9 @@ emit-build-metadata: ## Emits build metadata shell variables suitable for use du
 	@echo "APP_GIT_HASH=${APP_GIT_HASH}"
 	@echo "APP_VERSION=${APP_VERSION}"
 	@echo "APP_BUILD_TIME=${APP_BUILD_TIME}"
+	@echo "CHECKS_FULL_NAME=${CHECKS_FULL_NAME}"
+	@echo "CHECKS_SHORT_NAME=${CHECKS_SHORT_NAME}"
+	@echo "CHECKS_IDENTIFIER=${CHECKS_IDENTIFIER}"
 
 ##@ Docs
 

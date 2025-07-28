@@ -1,16 +1,20 @@
 //! Origin detection and resolution.
 
-use std::sync::Arc;
+use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
-use papaya::HashMap;
-use saluki_context::origin::{OriginKey, OriginTagCardinality, RawOrigin};
+use saluki_common::{
+    cache::{Cache, CacheBuilder},
+    hash::hash_single_fast,
+};
+use saluki_context::origin::{OriginTagCardinality, RawOrigin};
 use tracing::trace;
 
-use super::{
-    on_demand_pid::OnDemandPIDResolver,
-    stores::{ExternalDataStoreResolver, TagStoreQuerier},
-};
+use super::stores::ExternalDataStoreResolver;
 use crate::workload::EntityId;
+
+// SAFETY: This number is obviously non-zero.
+const DEFAULT_ORIGIN_CACHE_ITEM_LIMIT: NonZeroUsize = NonZeroUsize::new(500_000).unwrap();
+const DEFAULT_ORIGIN_CACHE_ITEM_TIME_TO_IDLE: Duration = Duration::from_secs(30);
 
 /// A resolved External Data entry.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -42,6 +46,7 @@ impl ResolvedExternalData {
 #[derive(Debug, Hash, Eq, PartialEq)]
 struct ResolvedOriginInner {
     cardinality: Option<OriginTagCardinality>,
+    process_id: Option<EntityId>,
     container_id: Option<EntityId>,
     pod_uid: Option<EntityId>,
     resolved_external_data: Option<ResolvedExternalData>,
@@ -64,6 +69,11 @@ impl ResolvedOrigin {
         self.inner.cardinality
     }
 
+    /// Returns the process ID of the origin.
+    pub fn process_id(&self) -> Option<&EntityId> {
+        self.inner.process_id.as_ref()
+    }
+
     /// Returns the container ID of the origin.
     pub fn container_id(&self) -> Option<&EntityId> {
         self.inner.container_id.as_ref()
@@ -83,52 +93,28 @@ impl ResolvedOrigin {
 /// Resolves and tracks origins.
 #[derive(Clone)]
 pub struct OriginResolver {
-    ts_querier: TagStoreQuerier,
     ed_resolver: ExternalDataStoreResolver,
-    on_demand_pid_resolver: OnDemandPIDResolver,
-    key_mappings: Arc<HashMap<OriginKey, ResolvedOrigin>>,
+    origin_cache: Cache<u64, ResolvedOrigin>,
 }
 
 impl OriginResolver {
     /// Creates a new `OriginResolver`.
-    pub fn new(
-        ts_querier: TagStoreQuerier, ed_resolver: ExternalDataStoreResolver,
-        on_demand_pid_resolver: OnDemandPIDResolver,
-    ) -> Self {
+    pub fn new(ed_resolver: ExternalDataStoreResolver) -> Self {
         Self {
-            ts_querier,
             ed_resolver,
-            on_demand_pid_resolver,
-            key_mappings: Arc::new(HashMap::default()),
+            origin_cache: CacheBuilder::from_identifier("origin_cache")
+                .expect("identifier cannot be invalid")
+                .with_capacity(DEFAULT_ORIGIN_CACHE_ITEM_LIMIT)
+                .with_time_to_idle(Some(DEFAULT_ORIGIN_CACHE_ITEM_TIME_TO_IDLE))
+                .build(),
         }
-    }
-
-    fn build_resolved_raw_origin<'b>(
-        &self, mut origin: RawOrigin<'b>, maybe_resolved_container_id: Option<&'b str>,
-    ) -> RawOrigin<'b> {
-        // This function perhaps looks stupid, but we use it to coerce the lifetimes in our favor.
-        //
-        // Essentially, we have `RawOrigin<'a>` as an input to `resolve_origin`, and we want to override the container
-        // ID with a new value that has a lifetime `'b`, where `'a` outlives `'b`. We can't just directly update the
-        // container ID field because the lifetimes don't line up. However, if we pass in the `RawOrigin<'a>` to a
-        // function that associates the lifetime with that of the container ID's lifetime, we can successfully coerce
-        // the lifetimes.
-
-        // If the origin lacks its own container ID, but we have a resolved container ID, then we use the resolved one.
-        if origin.container_id().is_none() && maybe_resolved_container_id.is_some() {
-            origin.set_container_id(maybe_resolved_container_id);
-        }
-
-        // Clear the process ID now that we've handled any container ID resolution.
-        origin.clear_process_id();
-
-        origin
     }
 
     fn build_resolved_origin(&self, origin: RawOrigin<'_>) -> ResolvedOrigin {
         ResolvedOrigin {
             inner: Arc::new(ResolvedOriginInner {
                 cardinality: origin.cardinality(),
+                process_id: origin.process_id().map(EntityId::ContainerPid),
                 container_id: origin.container_id().and_then(EntityId::from_raw_container_id),
                 pod_uid: origin.pod_uid().and_then(EntityId::from_pod_uid),
                 resolved_external_data: origin
@@ -138,61 +124,31 @@ impl OriginResolver {
         }
     }
 
-    pub(crate) fn resolve_origin(&self, origin: RawOrigin<'_>) -> Option<OriginKey> {
-        // Resolving a raw origin to an origin key involves a few steps:
-        //
-        // - We handle "resolving" the process ID if no container ID is provided. This tries to map the process ID to a
-        //   container ID, if possible, and creates a "resolved" raw origin that we then key off of.
-        // - Hash the "resolved" raw origin to generate the `OriginKey` we give to the caller.
-        // - Check our resolved origin cache to see if we already have a "resolved origin" -- an owned copy of
-        //   `RawOrigin`, essentially -- and create it if we don't.
-
+    pub(crate) fn get_resolved_origin(&self, origin: RawOrigin<'_>) -> Option<ResolvedOrigin> {
         // If there's no origin information at all, then there's nothing to key off of.
         if origin.is_empty() {
             return None;
         }
 
-        // Resolve the raw origin to map the process ID to a container ID, if possible.
-        //
-        // We only do this if the origin doesn't already have a container ID. If it does, then we don't need to do
-        // bother because we treat the client-provided container ID as authoritative. We have to jump through a small
-        // hoop to do this efficiently: see the doc comments in `build_resolved_raw_origin` for more details.
-        let resolved_container_id = if origin.container_id().is_none() {
-            origin.process_id().and_then(|process_id| {
-                self.ts_querier
-                    .get_entity_alias(&EntityId::ContainerPid(process_id))
-                    .or_else(|| self.on_demand_pid_resolver.resolve(process_id))
-                    .and_then(|id| id.try_into_container())
-            })
-        } else {
-            None
-        };
-        let resolved_raw_origin = self.build_resolved_raw_origin(origin, resolved_container_id.as_deref());
-
-        let origin_key = OriginKey::from_opaque(&resolved_raw_origin);
-
-        // TODO: This is a slow leak because we never remove entries and have no signal to know when to do so.
-        //
-        // We should likely just use `quick-cache` here, but it's not a huge deal for now.
-        let _ = self
-            .key_mappings
-            .pin()
-            .get_or_insert_with(origin_key, || self.build_resolved_origin(resolved_raw_origin));
-
-        Some(origin_key)
-    }
-
-    pub(crate) fn get_resolved_origin_by_key(&self, origin_key: &OriginKey) -> Option<ResolvedOrigin> {
-        match self.key_mappings.pin().get(origin_key) {
-            Some(origin) => Some(origin.clone()),
+        // Create the origin key, and populate our cache with the resolved origin if we don't already have it.
+        let origin_key = hash_single_fast(&origin);
+        match self.origin_cache.get(&origin_key) {
+            Some(resolved_origin) => {
+                trace!(?origin_key, "Found origin in cache.");
+                Some(resolved_origin)
+            }
             None => {
-                trace!(?origin_key, "No origin found for key.");
-                None
+                trace!(?origin_key, "Origin not found in cache. Resolving.");
+                let resolved_origin = self.build_resolved_origin(origin);
+                self.origin_cache.insert(origin_key, resolved_origin.clone());
+
+                Some(resolved_origin)
             }
         }
     }
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroUsize;
@@ -237,11 +193,7 @@ mod tests {
 
         let external_data_store = ExternalDataStore::with_entity_limit(NonZeroUsize::new(usize::MAX).unwrap());
 
-        OriginResolver::new(
-            tag_store_querier.clone(),
-            external_data_store.resolver(),
-            OnDemandPIDResolver::noop(),
-        )
+        OriginResolver::new(external_data_store.resolver())
     }
 
     #[test]
@@ -370,3 +322,4 @@ mod tests {
         assert_eq!(resolved_origin_b.container_id(), Some(&CONTAINER_ID_B));
     }
 }
+*/

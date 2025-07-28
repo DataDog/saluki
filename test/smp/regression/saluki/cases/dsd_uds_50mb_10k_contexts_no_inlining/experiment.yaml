@@ -17,7 +17,7 @@ target:
     # We specifically _don't_ disallow heap allocations here so we do expect the memory usage to grow over the course of
     # the experiment, although based on empirical testing, this should be sufficient to avoid hitting the global memory
     # limiter, at least until the very end of the experiment run.
-    DD_MEMORY_LIMIT: "400MiB"
+    DD_MEMORY_LIMIT: "460MiB"
 
     # Sets the context resolver's string interner size to 2MiB.
     DD_DOGSTATSD_STRING_INTERNER_SIZE: "2MiB"

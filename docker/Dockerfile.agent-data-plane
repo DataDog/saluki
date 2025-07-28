@@ -99,5 +99,6 @@ RUN test -d /usr/share/ca-certificates || (apt-get update && \
 COPY --from=final /adp/target/bin/agent-data-plane /usr/local/bin/agent-data-plane
 COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
 COPY --from=license-builder /licenses /opt/datadog/agent-data-plane/LICENSES
+COPY --chmod=755 docker/entrypoint.sh /entrypoint.sh
 
 ENTRYPOINT [ "/usr/local/bin/agent-data-plane" ]

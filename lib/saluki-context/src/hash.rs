@@ -5,14 +5,12 @@ use saluki_common::{
     hash::{get_fast_hasher, hash_single_fast},
 };
 
-use crate::origin::OriginKey;
-
 /// Hashes a metric context.
 ///
-/// Takes a metric name, an iterator of tags, and an optional origin key, and returns a tuple containing a unique hash
-/// key for the overall context, and a unique hash key for the tags by themselves.
+/// Takes a metric name, an iterator of tags, and an iterator of origin tags, and returns a tuple containing a unique
+/// hash key for the overall context, and a unique hash key for the non-origin tags by themselves.
 ///
-/// Tags are hashed in an order-oblivious (XOR) manner, which allows tags to be hashed in any order while still
+/// All tags are hashed in an order-oblivious (XOR) manner, which allows tags to be hashed in any order while still
 /// resulting in the same overall hash. This function is _not_ oblivious to the actual tag values themselves, though, so
 /// differences such as case (lower vs upper) or leading/trailing whitespace will influence the resulting hash.
 ///
@@ -22,21 +20,23 @@ use crate::origin::OriginKey;
 /// set.
 ///
 /// Returns a hash that uniquely identifies the combination of name, tags, and origin of the value.
-pub fn hash_context<I, T>(name: &str, tags: I, origin_key: Option<OriginKey>) -> (ContextKey, TagSetKey)
+pub fn hash_context<I, I2, T, T2>(name: &str, tags: I, origin_tags: I2) -> (ContextKey, TagSetKey)
 where
     I: IntoIterator<Item = T>,
     T: AsRef<str>,
+    I2: IntoIterator<Item = T2>,
+    T2: AsRef<str>,
 {
     let mut seen = PrehashedHashSet::default();
-    hash_context_with_seen(name, tags, origin_key, &mut seen)
+    hash_context_with_seen(name, tags, origin_tags, &mut seen)
 }
 
 /// Hashes a metric context, using a provided set to track which tags have already been hashed.
 ///
-/// Takes a metric name, an iterator of tags, and an optional origin key, and returns a tuple containing a unique hash
-/// key for the overall context, and a unique hash key for the tags by themselves.
+/// Takes a metric name, an iterator of tags, and an iterator of origin tags, and returns a tuple containing a unique
+/// hash key for the overall context, and a unique hash key for the non-origin tags by themselves.
 ///
-/// Tags are hashed in an order-oblivious (XOR) manner, which allows tags to be hashed in any order while still
+/// All tags are hashed in an order-oblivious (XOR) manner, which allows tags to be hashed in any order while still
 /// resulting in the same overall hash. This function is _not_ oblivious to the actual tag values themselves, though, so
 /// differences such as case (lower vs upper) or leading/trailing whitespace will influence the resulting hash.
 ///
@@ -45,12 +45,14 @@ where
 /// allocates a new hash set each time.
 ///
 /// Returns a hash that uniquely identifies the combination of name, tags, and origin of the value.
-pub(super) fn hash_context_with_seen<I, T>(
-    name: &str, tags: I, origin_key: Option<OriginKey>, seen: &mut PrehashedHashSet<u64>,
+pub(super) fn hash_context_with_seen<I, I2, T, T2>(
+    name: &str, tags: I, origin_tags: I2, seen: &mut PrehashedHashSet<u64>,
 ) -> (ContextKey, TagSetKey)
 where
     I: IntoIterator<Item = T>,
     T: AsRef<str>,
+    I2: IntoIterator<Item = T2>,
+    T2: AsRef<str>,
 {
     seen.clear();
 
@@ -75,10 +77,24 @@ where
 
     hasher.write_u64(combined_tags_hash);
 
-    // Finally, hash the origin key.
-    if let Some(origin_key) = origin_key {
-        origin_key.hash(&mut hasher);
+    // Finally, hash the origin tags.
+    //
+    // We also hash these in an order-oblivious manner.
+    seen.clear();
+    let mut combined_origin_tags_hash = 0;
+
+    for tag in origin_tags {
+        let tag_hash = hash_single_fast(tag.as_ref());
+
+        // If we've already seen this tag before, skip combining it again.
+        if !seen.insert(tag_hash) {
+            continue;
+        }
+
+        combined_origin_tags_hash ^= tag_hash;
     }
+
+    hasher.write_u64(combined_origin_tags_hash);
 
     let context_key = ContextKey { hash: hasher.finish() };
     let tagset_key = TagSetKey {

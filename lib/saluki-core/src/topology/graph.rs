@@ -7,11 +7,11 @@ use std::{
 use indexmap::IndexSet;
 use snafu::Snafu;
 
-use super::{ComponentId, ComponentOutputId, OutputDefinition, OutputName, TypedComponentOutputId};
+use super::{ComponentId, ComponentOutputId, OutputDefinition, OutputName, TypedComponentId, TypedComponentOutputId};
 use crate::{
     components::{
         destinations::DestinationBuilder, encoders::EncoderBuilder, forwarders::ForwarderBuilder,
-        sources::SourceBuilder, transforms::TransformBuilder,
+        sources::SourceBuilder, transforms::TransformBuilder, ComponentType,
     },
     data_model::{event::EventType, payload::PayloadType},
 };
@@ -459,14 +459,36 @@ impl Graph {
         }
     }
 
+    fn get_component_type(&self, id: &ComponentId) -> Option<ComponentType> {
+        match self.nodes.get(id) {
+            Some(node) => match node {
+                Node::Source { .. } => Some(ComponentType::Source),
+                Node::Transform { .. } => Some(ComponentType::Transform),
+                Node::Destination { .. } => Some(ComponentType::Destination),
+                Node::Encoder { .. } => Some(ComponentType::Encoder),
+                Node::Forwarder { .. } => Some(ComponentType::Forwarder),
+            },
+            None => None,
+        }
+    }
+
     /// Returns a mapping of component IDs to their outputs and the component IDs that are connected to them.
-    pub fn get_outbound_directed_edges(&self) -> HashMap<ComponentId, HashMap<OutputName, Vec<ComponentId>>> {
-        let mut mappings: HashMap<ComponentId, HashMap<OutputName, Vec<ComponentId>>> = HashMap::new();
+    pub fn get_outbound_directed_edges(&self) -> HashMap<TypedComponentId, HashMap<OutputName, Vec<TypedComponentId>>> {
+        let mut mappings: HashMap<TypedComponentId, HashMap<OutputName, Vec<TypedComponentId>>> = HashMap::new();
 
         for edge in &self.edges {
-            let per_component = mappings.entry(edge.from.component_id()).or_default();
+            let raw_from_id = edge.from.component_id();
+            let from_type = self.get_component_type(&raw_from_id).expect("component ID not found");
+            let from_id = TypedComponentId::new(raw_from_id, from_type);
+
+            let per_component = mappings.entry(from_id).or_default();
             let per_output = per_component.entry(edge.from.output()).or_default();
-            per_output.push(edge.to.clone());
+
+            let raw_to_id = edge.to.clone();
+            let to_type = self.get_component_type(&raw_to_id).expect("component ID not found");
+            let to_id = TypedComponentId::new(raw_to_id, to_type);
+
+            per_output.push(to_id);
         }
 
         mappings

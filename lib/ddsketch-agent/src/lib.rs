@@ -110,7 +110,7 @@ impl Config {
 /// A sketch bin.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-pub(crate) struct Bin {
+pub struct Bin {
     /// The bin index.
     k: i16,
 
@@ -119,6 +119,16 @@ pub(crate) struct Bin {
 }
 
 impl Bin {
+    /// Returns the key of the bin.
+    pub fn key(&self) -> i32 {
+        self.k as i32
+    }
+
+    /// Returns the number of observations within the bin.
+    pub fn count(&self) -> u32 {
+        self.n as u32
+    }
+
     #[allow(clippy::cast_possible_truncation)]
     fn increment(&mut self, n: u32) -> u32 {
         let next = n + u32::from(self.n);
@@ -202,11 +212,6 @@ impl DDSketch {
         self.bins.len()
     }
 
-    #[cfg(test)]
-    fn bins(&self) -> &[Bin] {
-        &self.bins
-    }
-
     /// Whether or not this sketch is empty.
     pub fn is_empty(&self) -> bool {
         self.count == 0
@@ -259,6 +264,11 @@ impl DDSketch {
         } else {
             Some(self.avg)
         }
+    }
+
+    /// Returns the current bins of this sketch.
+    pub fn bins(&self) -> &[Bin] {
+        &self.bins
     }
 
     /// Clears the sketch, removing all bins and resetting all statistics.
@@ -842,33 +852,9 @@ fn generate_bins(bins: &mut SmallVec<[Bin; 4]>, k: i16, n: u32) {
 
 #[cfg(test)]
 mod tests {
-    use ordered_float::OrderedFloat;
-    use rand::thread_rng;
-    use rand_distr::{Distribution, Pareto};
-
     use super::{config::AGENT_DEFAULT_EPS, Bucket, Config, DDSketch, MAX_KEY, SKETCH_CONFIG};
 
     const FLOATING_POINT_ACCEPTABLE_ERROR: f64 = 1.0e-10;
-
-    fn generate_pareto_distribution() -> Vec<OrderedFloat<f64>> {
-        // Generate a set of samples that roughly correspond to the latency of a typical web service, in microseconds,
-        // with a gamma distribution: big hump at the beginning with a long tail.  We limit this so the samples
-        // represent latencies that bottom out at 15 milliseconds and tail off all the way up to 10 seconds.
-        let distribution = Pareto::new(1.0, 1.0).expect("pareto distribution should be valid");
-        let mut samples = distribution
-            .sample_iter(thread_rng())
-            // Scale by 10,000 to get microseconds.
-            .map(|n| n * 10_000.0)
-            .filter(|n| *n > 15_000.0 && *n < 10_000_000.0)
-            .map(OrderedFloat)
-            .take(1000)
-            .collect::<Vec<_>>();
-
-        // Sort smallest to largest.
-        samples.sort();
-
-        samples
-    }
 
     #[test]
     fn test_ddsketch_config_key_lower_bound_identity() {
@@ -1028,57 +1014,6 @@ mod tests {
             }
 
             assert_eq!(target_bin_count, sketch.bin_count());
-        }
-    }
-
-    #[test]
-    #[ignore = "currently debugging why this seems to be off; likely based on our 'actual' values"]
-    fn test_ddsketch_pareto_distribution() {
-        use ndarray::{Array1, Axis};
-        use ndarray_stats::{interpolate, QuantileExt};
-        use noisy_float::prelude::N64;
-
-        // Generate a straightforward Pareto distribution to simulate web request latencies.
-        let samples = generate_pareto_distribution();
-
-        // Prepare our data for querying.
-        let mut sketch = DDSketch::default();
-
-        let relative_accuracy = AGENT_DEFAULT_EPS;
-        for sample in &samples {
-            sketch.insert(sample.into_inner());
-        }
-
-        let mut array = Array1::from_iter(samples);
-
-        // Now check the estimated quantile via `DDSketch` vs the true quantile via `ndarray`.
-        for p in 1..=100 {
-            let q = p as f64 / 100.0;
-            let estimated = sketch.quantile(q).expect("quantile should always be present");
-
-            let actual = array
-                .quantile_axis_mut(Axis(0), N64::unchecked_new(q), &interpolate::Linear)
-                .expect("quantile should be in range")
-                .get(())
-                .expect("quantile value should be present")
-                .into_inner();
-
-            let err = if actual > estimated {
-                (actual - estimated) / actual
-            } else {
-                (estimated - actual) / estimated
-            };
-
-            assert!(
-                err <= relative_accuracy,
-                "relative accuracy out of bounds: q={}, estimate={}, actual={}, target-rel-acc={}, actual-rel-acc={}, bin-count={}",
-                q,
-                estimated,
-                actual,
-                relative_accuracy,
-                err,
-                sketch.bin_count()
-            );
         }
     }
 
