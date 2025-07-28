@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
@@ -20,6 +20,7 @@ use saluki_core::{
 };
 use saluki_error::GenericError;
 use serde_json;
+use tokio::sync::Mutex;
 use tokio::{select, sync::mpsc};
 use tracing::info;
 #[derive(Debug, Clone, serde::Serialize)]
@@ -70,15 +71,11 @@ impl Destination for DogStatsDStats {
                 _ = health.live() => {
                     continue
                 },
-                api_request = async {
-                    if let Ok(mut rx) = self.rx.try_lock() {
-                        if let Ok(oneshot_tx) = rx.try_recv() {
-                            let _ = oneshot_tx.send(self.stats.clone());
-                        }
+                maybe_request = async { (self.rx.lock().await).recv().await } => {
+                    if let Some(oneshot_tx) = maybe_request {
+                        let _ = oneshot_tx.send(self.stats.clone());
                     }
-                } => {
-                    api_request
-                },
+                }
                 maybe_events = context.events().next() => match maybe_events {
                     Some(events) => {
                         for event in events {

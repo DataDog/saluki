@@ -200,7 +200,7 @@ async fn create_topology(
             "dd_out",
             ["dd_metrics_encode", "dd_events_encode", "dd_service_checks_encode"],
         )?
-        .connect_component("dsd_stats_out", ["enrich"])?;
+        .connect_component("dsd_stats_out", ["dsd_enrich"])?;
 
     if configuration.get_typed_or_default::<bool>("enable_preaggr_pipeline") {
         let preaggr_dd_url = configuration
