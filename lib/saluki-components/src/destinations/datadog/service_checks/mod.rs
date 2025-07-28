@@ -97,12 +97,9 @@ pub struct DatadogServiceChecksConfiguration {
 impl DatadogServiceChecksConfiguration {
     /// Creates a new `DatadogServiceChecksConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
-    }
-
-    /// Add option to retrieve configuration values from a `GenericConfiguration`.
-    pub fn add_refreshable_configuration(&mut self, refresher: GenericConfiguration) {
-        self.config_refresher = Some(refresher);
+        let mut service_checks_config: DatadogServiceChecksConfiguration = config.as_typed()?;
+        service_checks_config.config_refresher = Some(config.clone());
+        Ok(service_checks_config)
     }
 }
 

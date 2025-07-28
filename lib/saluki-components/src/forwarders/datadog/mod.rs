@@ -41,12 +41,9 @@ pub struct DatadogConfiguration {
 impl DatadogConfiguration {
     /// Creates a new `DatadogConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
-    }
-
-    /// Add option to retrieve configuration values from a `RefreshableConfiguration`.
-    pub fn add_refreshable_configuration(&mut self, refresher: GenericConfiguration) {
-        self.config_refresher = Some(refresher);
+        let mut forwarder_config: DatadogConfiguration = config.as_typed()?;
+        forwarder_config.config_refresher = Some(config.clone());
+        Ok(forwarder_config)
     }
 }
 

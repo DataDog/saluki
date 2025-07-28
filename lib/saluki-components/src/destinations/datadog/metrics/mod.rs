@@ -126,12 +126,9 @@ pub struct DatadogMetricsConfiguration {
 impl DatadogMetricsConfiguration {
     /// Creates a new `DatadogMetricsConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
-    }
-
-    /// Add option to retrieve configuration values from a `GenericConfiguration`.
-    pub fn add_refreshable_configuration(&mut self, refresher: GenericConfiguration) {
-        self.config_refresher = Some(refresher);
+        let mut metrics_config: DatadogMetricsConfiguration = config.as_typed()?;
+        metrics_config.config_refresher = Some(config.clone());
+        Ok(metrics_config)
     }
 
     /// Overrides the default endpoint that metrics are sent to.

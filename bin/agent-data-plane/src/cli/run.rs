@@ -139,19 +139,14 @@ async fn create_topology(
         enrich_config = enrich_config.with_transform_builder("host_tags", host_tags_config);
     }
 
-    let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
+    let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Metrics destination.")?;
     let dd_events_config = DatadogEventsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Events encoder.")?;
-    let mut dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(configuration)
+    let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Service Checks destination.")?;
-    let mut dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
+    let dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog forwarder.")?;
-
-    // Pass in a `GenericConfiguration` to allow the Datadog destinations to refresh their configuration.
-    dd_metrics_config.add_refreshable_configuration(configuration.clone());
-    dd_service_checks_config.add_refreshable_configuration(configuration.clone());
-    dd_forwarder_config.add_refreshable_configuration(configuration.clone());
 
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
     blueprint
