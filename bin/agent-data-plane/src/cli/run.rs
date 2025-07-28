@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
 #[cfg(feature = "python-checks")]
-use saluki_components::{destinations::BlackholeConfiguration, sources::ChecksConfiguration};
+use saluki_components::sources::ChecksConfiguration;
 use saluki_components::{
     encoders::{
         BufferedIncrementalConfiguration, DatadogEventsConfiguration, DatadogMetricsConfiguration,

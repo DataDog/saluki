@@ -1,13 +1,15 @@
 use memory_accounting::ComponentRegistry;
 use saluki_config::GenericConfiguration;
 use saluki_env::{
-    autodiscovery::providers::{
-        BoxedAutodiscoveryProvider, LocalAutodiscoveryProvider, RemoteAgentAutodiscoveryProvider,
-    },
-    helpers::remote_agent::RemoteAgentClient,
+    autodiscovery::providers::BoxedAutodiscoveryProvider,
     host::providers::{BoxedHostProvider, FixedHostProvider, RemoteAgentHostProvider},
     workload::providers::{RemoteAgentWorkloadAPIHandler, RemoteAgentWorkloadProvider},
     EnvironmentProvider,
+};
+#[cfg(feature = "python-checks")]
+use saluki_env::{
+    autodiscovery::providers::{LocalAutodiscoveryProvider, RemoteAgentAutodiscoveryProvider},
+    helpers::remote_agent::RemoteAgentClient,
 };
 use saluki_error::GenericError;
 use saluki_health::HealthRegistry;
@@ -31,7 +33,7 @@ use tracing::{debug, warn};
 pub struct ADPEnvironmentProvider {
     host_provider: BoxedHostProvider,
     workload_provider: Option<RemoteAgentWorkloadProvider>,
-    autodiscovery_provider: BoxedAutodiscoveryProvider,
+    autodiscovery_provider: Option<BoxedAutodiscoveryProvider>,
 }
 
 impl ADPEnvironmentProvider {
@@ -67,19 +69,7 @@ impl ADPEnvironmentProvider {
             Some(provider)
         };
 
-        let autodiscovery_provider = if in_standalone_mode {
-            debug!("Using local autodiscovery provider due to standalone mode.");
-            let config_dir = config.get_typed_or_default::<String>("checks_config_dir");
-            let paths = if config_dir.is_empty() {
-                vec!["/etc/datadog-agent/conf.d"]
-            } else {
-                config_dir.split(",").collect::<Vec<&str>>()
-            };
-            BoxedAutodiscoveryProvider::from_provider(LocalAutodiscoveryProvider::new(paths))
-        } else {
-            let client = RemoteAgentClient::from_configuration(config).await?;
-            BoxedAutodiscoveryProvider::from_provider(RemoteAgentAutodiscoveryProvider::new(client))
-        };
+        let autodiscovery_provider = configure_autodiscovery_provider(in_standalone_mode);
 
         Ok(Self {
             host_provider,
@@ -95,10 +85,33 @@ impl ADPEnvironmentProvider {
     pub fn workload_api_handler(&self) -> Option<RemoteAgentWorkloadAPIHandler> {
         self.workload_provider.as_ref().map(|provider| provider.api_handler())
     }
+}
 
-    #[allow(dead_code)]
-    pub fn autodiscovery_provider(&self) -> &BoxedAutodiscoveryProvider {
-        &self.autodiscovery_provider
+fn configure_autodiscovery_provider(in_standalone_mode: bool) -> Option<BoxedAutodiscoveryProvider> {
+    #[cfg(feature = "python-checks")]
+    {
+        if in_standalone_mode {
+            debug!("Using local autodiscovery provider due to standalone mode.");
+            let config_dir = config.get_typed_or_default::<String>("checks_config_dir");
+            let paths = if config_dir.is_empty() {
+                vec!["/etc/datadog-agent/conf.d"]
+            } else {
+                config_dir.split(",").collect::<Vec<&str>>()
+            };
+            Some(BoxedAutodiscoveryProvider::from_provider(
+                LocalAutodiscoveryProvider::new(paths),
+            ))
+        } else {
+            let client = RemoteAgentClient::from_configuration(config).await?;
+            Some(BoxedAutodiscoveryProvider::from_provider(
+                RemoteAgentAutodiscoveryProvider::new(client),
+            ))
+        };
+    }
+    #[cfg(not(feature = "python-checks"))]
+    {
+        let _ = in_standalone_mode; // Suppress unused variable warning
+        None
     }
 }
 
