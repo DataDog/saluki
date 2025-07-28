@@ -91,8 +91,8 @@ build-adp: ## Builds the ADP binary in debug mode
 	
 .PHONY: build-adp-and-checks
 build-adp-and-checks: check-rust-build-tools
-build-adp-and-checks: ## Builds the ADP binary in debug mode
-	@echo "[*] Building ADP & Checks locally..."
+build-adp-and-checks: ## Builds the ADP binary with python in debug mode
+	@echo "[*] Building ADP with Checks locally..."
 	@cargo build --profile dev --package agent-data-plane --features python-checks
 
 .PHONY: build-checks-agent
@@ -269,7 +269,7 @@ run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 .PHONY: run-adp-standalone-with-checks
 run-adp-standalone-with-checks: build-adp-and-checks
 run-adp-standalone-with-checks: ## Runs ADP locally in standalone mode (debug)
-	@echo "[*] Running ADP..."
+	@echo "[*] Running ADP and checks..."
 	@DD_ADP_STANDALONE_MODE=true \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
