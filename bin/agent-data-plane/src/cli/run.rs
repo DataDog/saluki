@@ -239,7 +239,7 @@ fn add_checks_to_blueprint(
 
     blueprint
         .add_source("checks_in", checks_config)?
-        .connect_component("dd_out", ["checks_in"])?;
+        .connect_component("dd_metrics_encode", ["checks_in"])?;
 
     Ok(())
 }

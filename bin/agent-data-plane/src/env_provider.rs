@@ -69,7 +69,7 @@ impl ADPEnvironmentProvider {
             Some(provider)
         };
 
-        let autodiscovery_provider = configure_autodiscovery_provider(in_standalone_mode);
+        let autodiscovery_provider = configure_autodiscovery_provider(in_standalone_mode, config).await?;
 
         Ok(Self {
             host_provider,
@@ -87,7 +87,9 @@ impl ADPEnvironmentProvider {
     }
 }
 
-fn configure_autodiscovery_provider(in_standalone_mode: bool) -> Option<BoxedAutodiscoveryProvider> {
+async fn configure_autodiscovery_provider(
+    in_standalone_mode: bool, config: &GenericConfiguration,
+) -> Result<Option<BoxedAutodiscoveryProvider>, GenericError> {
     #[cfg(feature = "python-checks")]
     {
         if in_standalone_mode {
@@ -98,20 +100,22 @@ fn configure_autodiscovery_provider(in_standalone_mode: bool) -> Option<BoxedAut
             } else {
                 config_dir.split(",").collect::<Vec<&str>>()
             };
-            Some(BoxedAutodiscoveryProvider::from_provider(
+            Ok(Some(BoxedAutodiscoveryProvider::from_provider(
                 LocalAutodiscoveryProvider::new(paths),
-            ))
+            )))
         } else {
             let client = RemoteAgentClient::from_configuration(config).await?;
-            Some(BoxedAutodiscoveryProvider::from_provider(
+            Ok(Some(BoxedAutodiscoveryProvider::from_provider(
                 RemoteAgentAutodiscoveryProvider::new(client),
-            ))
-        };
+            )))
+        }
     }
     #[cfg(not(feature = "python-checks"))]
     {
-        let _ = in_standalone_mode; // Suppress unused variable warning
-        None
+        // Suppress unused variable warning
+        let _ = in_standalone_mode;
+        let _ = config;
+        Ok(None)
     }
 }
 
