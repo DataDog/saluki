@@ -128,7 +128,13 @@ impl DogStatsDAPIHandler {
         match oneshot_rx.await {
             Ok(stats) => {
                 info!("Stats on received events: {:?}", stats);
-                (StatusCode::OK, serde_json::to_string(&stats).unwrap())
+                match serde_json::to_string(&stats) {
+                    Ok(json) => (StatusCode::OK, json),
+                    Err(e) => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to serialize stats: {}", e),
+                    ),
+                }
             }
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
