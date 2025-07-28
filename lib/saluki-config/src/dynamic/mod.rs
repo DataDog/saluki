@@ -8,16 +8,13 @@ use figment::{
 };
 use serde_json::Value as JsonValue;
 
-/// A `figment` provider that can be updated dynamically at runtime.
-///
-/// This provider holds a shared reference to a `serde_json::Value` that is updated by the RemoteAgentService.
+/// A `figment` provider that holds a shared reference to a `serde_json::Value` that is updated by the `RemoteAgentImpl`.
 #[derive(Debug, Clone)]
 pub struct Provider {
     values: Arc<ArcSwap<JsonValue>>,
 }
 
 impl Provider {
-    /// Creates a new `Provider` instance.
     pub fn new(values: Arc<ArcSwap<JsonValue>>) -> Self {
         Self { values }
     }

@@ -224,9 +224,6 @@ impl ResolvedEndpoint {
     /// stored if it has been updated since the last time `api_key` was called.
     pub fn api_key(&mut self) -> &str {
         if let Some(config) = &self.config {
-            // TODO: remove, just testing config updates
-            let dogstatsd_stats_enable = config.get_typed_or_default::<bool>("dogstatsd_metrics_stats_enable");
-            println!("rz6300 dogstatsd_stats: {}", dogstatsd_stats_enable);
             match config.try_get_typed::<String>("api_key") {
                 Ok(Some(api_key)) => {
                     if !api_key.is_empty() && self.api_key != api_key {
