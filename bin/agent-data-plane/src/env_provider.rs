@@ -105,6 +105,7 @@ impl ADPEnvironmentProvider {
 impl EnvironmentProvider for ADPEnvironmentProvider {
     type Host = BoxedHostProvider;
     type Workload = Option<RemoteAgentWorkloadProvider>;
+    type AutodiscoveryProvider = Option<BoxedAutodiscoveryProvider>;
 
     fn host(&self) -> &Self::Host {
         &self.host_provider
@@ -112,5 +113,9 @@ impl EnvironmentProvider for ADPEnvironmentProvider {
 
     fn workload(&self) -> &Self::Workload {
         &self.workload_provider
+    }
+
+    fn autodiscovery(&self) -> &Self::AutodiscoveryProvider {
+        &self.autodiscovery_provider
     }
 }

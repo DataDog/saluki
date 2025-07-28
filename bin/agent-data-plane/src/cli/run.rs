@@ -237,12 +237,9 @@ fn add_checks_to_blueprint(
         .error_context("Failed to configure Python checks source.")?
         .with_autodiscovery_provider(env_provider.autodiscovery().clone());
 
-    let blackhole_config = BlackholeConfiguration;
-
     blueprint
         .add_source("checks_in", checks_config)?
-        .add_destination("checks_out", blackhole_config)?
-        .connect_component("checks_out", ["checks_in"])?;
+        .connect_component("dd_out", ["checks_in"])?;
 
     Ok(())
 }

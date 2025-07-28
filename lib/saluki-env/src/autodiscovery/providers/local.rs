@@ -214,14 +214,14 @@ async fn scan_and_emit_events(
 
 #[async_trait]
 impl AutodiscoveryProvider for LocalAutodiscoveryProvider {
-    async fn subscribe(&self) -> Receiver<AutodiscoveryEvent> {
+    async fn subscribe(&self) -> Option<Receiver<AutodiscoveryEvent>> {
         self.listener_init
             .get_or_init(|| async {
                 self.start_background_monitor(BG_MONITOR_INTERVAL).await;
             })
             .await;
 
-        self.sender.subscribe()
+        Some(self.sender.subscribe())
     }
 }
 
