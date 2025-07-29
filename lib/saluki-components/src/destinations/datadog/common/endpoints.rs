@@ -5,7 +5,7 @@ use std::{
 };
 
 use regex::Regex;
-use saluki_config::RefreshableConfiguration;
+use saluki_config::GenericConfiguration;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_metadata;
 use serde::Deserialize;
@@ -158,7 +158,7 @@ impl EndpointConfiguration {
     /// If any of the additional endpoints are not valid URLs, or a valid URL could not be constructed after applying
     /// the necessary normalization / modifications to a particular endpoint, an error will be returned.
     pub fn build_resolved_endpoints(
-        &self, maybe_refreshable_config: Option<RefreshableConfiguration>,
+        &self, maybe_refreshable_config: Option<GenericConfiguration>,
     ) -> Result<Vec<ResolvedEndpoint>, GenericError> {
         let primary_endpoint = calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, &self.api_key)
             .error_context("Failed parsing/resolving the primary destination endpoint.")?
@@ -184,7 +184,7 @@ impl EndpointConfiguration {
 pub struct ResolvedEndpoint {
     endpoint: Url,
     api_key: String,
-    config: Option<RefreshableConfiguration>,
+    config: Option<GenericConfiguration>,
 }
 
 impl ResolvedEndpoint {
@@ -205,7 +205,7 @@ impl ResolvedEndpoint {
     }
 
     /// Creates a new  `ResolvedEndpoint` instance from an existing `ResolvedEndpoint`, adding an optional `RefreshableConfiguration`.
-    pub fn with_refreshable_configuration(self, config: Option<RefreshableConfiguration>) -> Self {
+    pub fn with_refreshable_configuration(self, config: Option<GenericConfiguration>) -> Self {
         Self {
             endpoint: self.endpoint,
             api_key: self.api_key,

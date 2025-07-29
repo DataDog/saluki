@@ -38,6 +38,7 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
     let configuration = ConfigurationLoader::default()
         .try_from_yaml(&run_config.config)
         .from_environment("DD")?
+        .with_dynamic_configuration()?
         .with_default_secrets_resolution()
         .await?
         .into_generic()
@@ -138,20 +139,14 @@ async fn create_topology(
         enrich_config = enrich_config.with_transform_builder("host_tags", host_tags_config);
     }
 
-    let mut dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
+    let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Metrics destination.")?;
     let dd_events_config = DatadogEventsConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Events encoder.")?;
-    let mut dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(configuration)
+    let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog Service Checks destination.")?;
-    let mut dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
+    let dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog forwarder.")?;
-
-    if let Some(refreshable_config) = configuration.get_refreshable_config() {
-        dd_metrics_config.add_refreshable_configuration(refreshable_config.clone());
-        dd_service_checks_config.add_refreshable_configuration(refreshable_config.clone());
-        dd_forwarder_config.add_refreshable_configuration(refreshable_config.clone());
-    }
 
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
     blueprint

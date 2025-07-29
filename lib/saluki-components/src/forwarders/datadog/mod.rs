@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use http::Uri;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::buf::FrozenChunkedBytesBuffer;
-use saluki_config::{GenericConfiguration, RefreshableConfiguration};
+use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{forwarders::*, ComponentContext},
     data_model::payload::PayloadType,
@@ -35,18 +35,15 @@ pub struct DatadogConfiguration {
     forwarder_config: ForwarderConfiguration,
 
     #[serde(skip)]
-    config_refresher: Option<RefreshableConfiguration>,
+    config_refresher: Option<GenericConfiguration>,
 }
 
 impl DatadogConfiguration {
     /// Creates a new `DatadogConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
-    }
-
-    /// Add option to retrieve configuration values from a `RefreshableConfiguration`.
-    pub fn add_refreshable_configuration(&mut self, refresher: RefreshableConfiguration) {
-        self.config_refresher = Some(refresher);
+        let mut forwarder_config: DatadogConfiguration = config.as_typed()?;
+        forwarder_config.config_refresher = Some(config.clone());
+        Ok(forwarder_config)
     }
 }
 

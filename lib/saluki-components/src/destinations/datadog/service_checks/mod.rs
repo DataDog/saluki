@@ -5,7 +5,7 @@ use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::buf::FrozenChunkedBytesBuffer;
 use saluki_common::task::HandleExt as _;
-use saluki_config::{GenericConfiguration, RefreshableConfiguration};
+use saluki_config::GenericConfiguration;
 use saluki_core::data_model::event::{service_check::ServiceCheck, EventType};
 use saluki_core::topology::EventsBuffer;
 use saluki_core::{
@@ -61,7 +61,7 @@ pub struct DatadogServiceChecksConfiguration {
     forwarder_config: ForwarderConfiguration,
 
     #[serde(skip)]
-    config_refresher: Option<RefreshableConfiguration>,
+    config_refresher: Option<GenericConfiguration>,
 
     /// Flush timeout for pending requests, in seconds.
     ///
@@ -97,12 +97,9 @@ pub struct DatadogServiceChecksConfiguration {
 impl DatadogServiceChecksConfiguration {
     /// Creates a new `DatadogServiceChecksConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
-    }
-
-    /// Add option to retrieve configuration values from a `RefreshableConfiguration`.
-    pub fn add_refreshable_configuration(&mut self, refresher: RefreshableConfiguration) {
-        self.config_refresher = Some(refresher);
+        let mut service_checks_config: DatadogServiceChecksConfiguration = config.as_typed()?;
+        service_checks_config.config_refresher = Some(config.clone());
+        Ok(service_checks_config)
     }
 }
 
