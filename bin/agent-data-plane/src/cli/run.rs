@@ -236,7 +236,7 @@ async fn create_topology(
     if let Some(dsd_stats_config) = dsd_stats_config {
         blueprint
             .add_destination("dsd_stats_out", dsd_stats_config.clone())?
-            .connect_component("dsd_stats_out", ["dsd_enrich"])?;
+            .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;
     }
 
     if configuration.get_typed_or_default::<bool>("enable_preaggr_pipeline") {
