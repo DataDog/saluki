@@ -69,21 +69,6 @@ impl HealthRegistryState {
     }
 }
 
-/*impl Serialize for HealthRegistryState {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let inner = self.inner.lock().unwrap();
-
-        let mut map = serializer.serialize_map(Some(inner.component_state.len()))?;
-        for (name, state) in inner.component_state.iter() {
-            map.serialize_entry(name, state)?;
-        }
-        map.end()
-    }
-}*/
-
 /// An API handler for reporting the health of all components.
 ///
 /// This handler exposes two main routes -- `/health/ready` and `/health/live` -- which return the overall readiness and
