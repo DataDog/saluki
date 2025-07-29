@@ -5,6 +5,7 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
+mod common;
 pub mod destinations;
 pub mod encoders;
 pub mod forwarders;

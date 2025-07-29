@@ -17,12 +17,3 @@ pub trait Dispatchable: Clone {
     /// generally be one. For container types, this will be the number of items contained within the container.
     fn item_count(&self) -> usize;
 }
-
-impl<T> Dispatchable for T
-where
-    T: Clone,
-{
-    fn item_count(&self) -> usize {
-        1
-    }
-}

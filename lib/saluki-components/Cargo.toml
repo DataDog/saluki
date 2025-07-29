@@ -68,4 +68,6 @@ tracing = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
 saluki-metrics = { workspace = true, features = ["test"] }
+test-strategy = { workspace = true }

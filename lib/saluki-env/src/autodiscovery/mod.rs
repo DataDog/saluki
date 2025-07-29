@@ -362,7 +362,20 @@ pub enum AutodiscoveryEvent {
 #[async_trait]
 pub trait AutodiscoveryProvider {
     /// Subscribe to autodiscovery events.
-    async fn subscribe(&self) -> Receiver<AutodiscoveryEvent>;
+    async fn subscribe(&self) -> Option<Receiver<AutodiscoveryEvent>>;
+}
+
+#[async_trait]
+impl<T> AutodiscoveryProvider for Option<T>
+where
+    T: AutodiscoveryProvider + Sync,
+{
+    async fn subscribe(&self) -> Option<Receiver<AutodiscoveryEvent>> {
+        match self.as_ref() {
+            Some(provider) => provider.subscribe().await,
+            None => None,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -341,6 +341,19 @@ impl HealthRegistry {
         HealthAPIHandler::from_state(Arc::clone(&self.inner))
     }
 
+    /// Returns `true` if all components are ready.
+    pub fn all_ready(&self) -> bool {
+        let inner = self.inner.lock().unwrap();
+
+        for component in &inner.component_state {
+            if !component.is_ready() {
+                return false;
+            }
+        }
+
+        true
+    }
+
     /// Spawns the health registry runner, which manages the scheduling and collection of liveness probes.
     ///
     /// ## Errors

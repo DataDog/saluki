@@ -1,14 +1,11 @@
 use async_trait::async_trait;
-use datadog_protos::events as proto;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use protobuf::{rt::WireType, CodedOutputStream};
 use saluki_config::GenericConfiguration;
-use saluki_context::tags::{Tag, TagsExt as _};
 use saluki_core::{
     components::{encoders::*, ComponentContext},
     data_model::{
-        event::{eventd::EventD, Event, EventType},
+        event::{service_check::ServiceCheck, Event, EventType},
         payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
     },
     observability::ComponentMetricsExt as _,
@@ -28,10 +25,9 @@ use crate::common::datadog::{
 };
 
 const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
-const MAX_EVENTS_PER_PAYLOAD: usize = 100;
-const EVENTS_FIELD_NUMBER: u32 = 1;
+const MAX_SERVICE_CHECKS_PER_PAYLOAD: usize = 100;
 
-static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("application/x-protobuf");
+static CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/json");
 
 fn default_serializer_compressor_kind() -> String {
     DEFAULT_SERIALIZER_COMPRESSOR_KIND.to_owned()
@@ -41,11 +37,11 @@ const fn default_zstd_compressor_level() -> i32 {
     3
 }
 
-/// Datadog Events incremental encoder.
+/// Datadog Service Checks incremental encoder.
 ///
-/// Generates Datadog Events payloads for the Datadog platform.
+/// Generates Datadog Service Checks payloads for the Datadog platform.
 #[derive(Deserialize)]
-pub struct DatadogEventsConfiguration {
+pub struct DatadogServiceChecksConfiguration {
     /// Compression kind to use for the request payloads.
     ///
     /// Defaults to `zstd`.
@@ -65,19 +61,19 @@ pub struct DatadogEventsConfiguration {
     zstd_compressor_level: i32,
 }
 
-impl DatadogEventsConfiguration {
-    /// Creates a new `DatadogEventsConfiguration` from the given configuration.
+impl DatadogServiceChecksConfiguration {
+    /// Creates a new `DatadogServiceChecksConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
     }
 }
 
 #[async_trait]
-impl IncrementalEncoderBuilder for DatadogEventsConfiguration {
-    type Output = DatadogEvents;
+impl IncrementalEncoderBuilder for DatadogServiceChecksConfiguration {
+    type Output = DatadogServiceChecks;
 
     fn input_event_type(&self) -> EventType {
-        EventType::EventD
+        EventType::ServiceCheck
     }
 
     fn output_payload_type(&self) -> PayloadType {
@@ -91,17 +87,17 @@ impl IncrementalEncoderBuilder for DatadogEventsConfiguration {
 
         // Create our request builder.
         let mut request_builder =
-            RequestBuilder::new(EventsEndpointEncoder, compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
-        request_builder.with_max_inputs_per_payload(MAX_EVENTS_PER_PAYLOAD);
+            RequestBuilder::new(ServiceChecksEndpointEncoder, compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
+        request_builder.with_max_inputs_per_payload(MAX_SERVICE_CHECKS_PER_PAYLOAD);
 
-        Ok(DatadogEvents {
+        Ok(DatadogServiceChecks {
             request_builder,
             telemetry,
         })
     }
 }
 
-impl MemoryBounds for DatadogEventsConfiguration {
+impl MemoryBounds for DatadogServiceChecksConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         // TODO: How do we properly represent the requests we can generate that may be sitting around in-flight?
         //
@@ -110,42 +106,44 @@ impl MemoryBounds for DatadogEventsConfiguration {
         // but we'll have a hard time in the forwarder knowing the maximum size of any given payload being sent in, which
         // then makes it hard to calculate a proper firm bound even though we know the rest of the values required to
         // calculate the firm bound.
-        builder.minimum().with_single_value::<DatadogEvents>("component struct");
+        builder
+            .minimum()
+            .with_single_value::<DatadogServiceChecks>("component struct");
 
         builder
             .firm()
             // Capture the size of the "split re-encode" buffer in the request builder, which is where we keep owned
             // versions of events that we encode in case we need to actually re-encode them during a split operation.
-            .with_array::<EventD>("events split re-encode buffer", MAX_EVENTS_PER_PAYLOAD);
+            .with_array::<ServiceCheck>("service checks split re-encode buffer", MAX_SERVICE_CHECKS_PER_PAYLOAD);
     }
 }
 
-pub struct DatadogEvents {
-    request_builder: RequestBuilder<EventsEndpointEncoder>,
+pub struct DatadogServiceChecks {
+    request_builder: RequestBuilder<ServiceChecksEndpointEncoder>,
     telemetry: ComponentTelemetry,
 }
 
 #[async_trait]
-impl IncrementalEncoder for DatadogEvents {
+impl IncrementalEncoder for DatadogServiceChecks {
     async fn process_event(&mut self, event: Event) -> Result<ProcessResult, GenericError> {
-        let eventd = match event.try_into_eventd() {
+        let service_check = match event.try_into_service_check() {
             Some(eventd) => eventd,
             None => return Ok(ProcessResult::Continue),
         };
 
-        match self.request_builder.encode(eventd).await {
+        match self.request_builder.encode(service_check).await {
             Ok(None) => Ok(ProcessResult::Continue),
-            Ok(Some(eventd)) => Ok(ProcessResult::FlushRequired(Event::EventD(eventd))),
+            Ok(Some(service_check)) => Ok(ProcessResult::FlushRequired(Event::ServiceCheck(service_check))),
             Err(e) => {
                 if e.is_recoverable() {
-                    warn!(error = %e, "Failed to encode Datadog event due to recoverable error. Continuing...");
+                    warn!(error = %e, "Failed to encode Datadog service check due to recoverable error. Continuing...");
 
                     // TODO: Get the actual number of events dropped from the error itself.
                     self.telemetry.events_dropped_encoder().increment(1);
 
                     Ok(ProcessResult::Continue)
                 } else {
-                    Err(e).error_context("Failed to encode Datadog event due to unrecoverable error.")
+                    Err(e).error_context("Failed to encode Datadog service check due to unrecoverable error.")
                 }
             }
         }
@@ -162,7 +160,7 @@ impl IncrementalEncoder for DatadogEvents {
 
                     dispatcher.dispatch(payload).await?;
                 }
-                Err(e) => error!(error = %e, "Failed to build Datadog events payload. Continuing..."),
+                Err(e) => error!(error = %e, "Failed to build Datadog service checks payload. Continuing..."),
             }
         }
 
@@ -171,14 +169,14 @@ impl IncrementalEncoder for DatadogEvents {
 }
 
 #[derive(Debug)]
-struct EventsEndpointEncoder;
+struct ServiceChecksEndpointEncoder;
 
-impl EndpointEncoder for EventsEndpointEncoder {
-    type Input = EventD;
-    type EncodeError = protobuf::Error;
+impl EndpointEncoder for ServiceChecksEndpointEncoder {
+    type Input = ServiceCheck;
+    type EncodeError = serde_json::Error;
 
     fn encoder_name() -> &'static str {
-        "events"
+        "service_check"
     }
 
     fn compressed_size_limit(&self) -> usize {
@@ -190,11 +188,23 @@ impl EndpointEncoder for EventsEndpointEncoder {
     }
 
     fn encode(&mut self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
-        encode_and_write_eventd(input, buffer)
+        serde_json::to_writer(buffer, input)
+    }
+
+    fn get_payload_prefix(&self) -> Option<&'static [u8]> {
+        Some(b"[")
+    }
+
+    fn get_payload_suffix(&self) -> Option<&'static [u8]> {
+        Some(b"]")
+    }
+
+    fn get_input_separator(&self) -> Option<&'static [u8]> {
+        Some(b",")
     }
 
     fn endpoint_uri(&self) -> Uri {
-        PathAndQuery::from_static("/api/v1/events_batch").into()
+        PathAndQuery::from_static("/api/v1/check_run").into()
     }
 
     fn endpoint_method(&self) -> Method {
@@ -202,57 +212,6 @@ impl EndpointEncoder for EventsEndpointEncoder {
     }
 
     fn content_type(&self) -> HeaderValue {
-        CONTENT_TYPE_PROTOBUF.clone()
+        CONTENT_TYPE_JSON.clone()
     }
-}
-
-fn encode_and_write_eventd(eventd: &EventD, buf: &mut Vec<u8>) -> Result<(), protobuf::Error> {
-    let mut output_stream = CodedOutputStream::vec(buf);
-
-    // Write the field tag.
-    output_stream.write_tag(EVENTS_FIELD_NUMBER, WireType::LengthDelimited)?;
-
-    // Write the message.
-    let encoded_eventd = encode_eventd(eventd);
-    output_stream.write_message_no_tag(&encoded_eventd)
-}
-
-fn encode_eventd(eventd: &EventD) -> proto::Event {
-    let mut event = proto::Event::new();
-    event.set_title(eventd.title().into());
-    event.set_text(eventd.text().into());
-
-    if let Some(timestamp) = eventd.timestamp() {
-        event.set_ts(timestamp as i64);
-    }
-
-    if let Some(priority) = eventd.priority() {
-        event.set_priority(priority.as_str().into());
-    }
-
-    if let Some(alert_type) = eventd.alert_type() {
-        event.set_alert_type(alert_type.as_str().into());
-    }
-
-    if let Some(hostname) = eventd.hostname() {
-        event.set_host(hostname.into());
-    }
-
-    if let Some(aggregation_key) = eventd.aggregation_key() {
-        event.set_aggregation_key(aggregation_key.into());
-    }
-
-    if let Some(source_type_name) = eventd.source_type_name() {
-        event.set_source_type_name(source_type_name.into());
-    }
-
-    let deduplicated_tags = get_deduplicated_tags(eventd);
-
-    event.set_tags(deduplicated_tags.map(|tag| tag.as_str().into()).collect());
-
-    event
-}
-
-fn get_deduplicated_tags(eventd: &EventD) -> impl Iterator<Item = &Tag> {
-    eventd.tags().into_iter().chain(eventd.origin_tags()).deduplicated()
 }

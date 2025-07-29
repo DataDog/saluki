@@ -15,11 +15,13 @@ use stringtheory::MetaString;
 use tokio::select;
 use tracing::debug;
 
-use crate::destinations::datadog::{
-    ComponentTelemetry, ForwarderConfiguration, Metadata, Transaction, TransactionForwarder,
+use crate::common::datadog::{
+    config::ForwarderConfiguration,
+    io::TransactionForwarder,
+    telemetry::ComponentTelemetry,
+    transaction::{Metadata, Transaction},
+    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
 };
-
-const MAX_COMPRESSED_PAYLOAD_SIZE: usize = 3_200_000; // 3 MB
 
 /// Datadog forwarder.
 ///
@@ -44,6 +46,29 @@ impl DatadogConfiguration {
         let mut forwarder_config: DatadogConfiguration = config.as_typed()?;
         forwarder_config.config_refresher = Some(config.clone());
         Ok(forwarder_config)
+    }
+
+    /// Overrides the default endpoint that payloads are sent to.
+    ///
+    /// This overrides any existing endpoint configuration, and manually sets the base endpoint (e.g.,
+    /// `https://api.datad0g.com`) to be used for all payloads.
+    ///
+    /// This can be used to preserve other configuration settings (forwarder settings, retry, etc) while still allowing
+    /// for overriding _where_ payloads are sent to.
+    ///
+    /// # Errors
+    ///
+    /// If the given request path is not valid, an error is returned.
+    pub fn with_endpoint_override(mut self, dd_url: String, api_key: String) -> Self {
+        // Clear any existing additional endpoints, and set the new DD URL and API key.
+        //
+        // This ensures that the only endpoint we'll send to is this one.
+        let endpoint = self.forwarder_config.endpoint_mut();
+        endpoint.clear_additional_endpoints();
+        endpoint.set_dd_url(dd_url);
+        endpoint.set_api_key(api_key);
+
+        self
     }
 }
 
@@ -96,7 +121,9 @@ impl MemoryBounds for DatadogConfiguration {
                         "forwarder_high_prio_buffer_size",
                         self.forwarder_config.endpoint_buffer_size(),
                     ),
-                    UsageExpr::constant("maximum compressed payload size", MAX_COMPRESSED_PAYLOAD_SIZE),
+                    // TODO: The default compressed size limit just so happens to be the biggest one we currently default with on our side,
+                    // but it's not clear that this will always be the case.
+                    UsageExpr::constant("maximum compressed payload size", DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT),
                 ),
             ));
     }

@@ -3,8 +3,10 @@ use std::time::{Duration, Instant};
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
 use saluki_components::{
-    destinations::{DatadogMetricsConfiguration, DatadogServiceChecksConfiguration},
-    encoders::DatadogEventsConfiguration,
+    encoders::{
+        BufferedIncrementalConfiguration, DatadogEventsConfiguration, DatadogMetricsConfiguration,
+        DatadogServiceChecksConfiguration,
+    },
     forwarders::DatadogConfiguration,
     sources::DogStatsDConfiguration,
     transforms::{
@@ -17,7 +19,7 @@ use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
-use tokio::select;
+use tokio::{select, time::interval};
 use tracing::{error, info, warn};
 
 use crate::config::RunConfig;
@@ -89,8 +91,31 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
 
     info!(
         init_time_ms = startup_time.as_millis(),
-        "Topology running, waiting for interrupt..."
+        "Topology running. Waiting for interrupt..."
     );
+
+    // Wait for all components to become ready.
+    tokio::spawn(async move {
+        let mut check_interval = interval(Duration::from_millis(100));
+
+        let mut report_interval = interval(Duration::from_millis(1000));
+        report_interval.tick().await;
+
+        loop {
+            select! {
+                _ = check_interval.tick() => {
+                    if health_registry.all_ready() {
+                        break;
+                    }
+                },
+                _ = report_interval.tick() => {
+                    info!("Topology still not healthy...");
+                }
+            }
+        }
+
+        info!(ready_time_ms = started.elapsed().as_millis(), "Topology healthy.");
+    });
 
     let mut finished_with_error = false;
     select! {
@@ -140,31 +165,41 @@ async fn create_topology(
     }
 
     let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
-        .error_context("Failed to configure Datadog Metrics destination.")?;
+        .error_context("Failed to configure Datadog Metrics encoder.")?;
     let dd_events_config = DatadogEventsConfiguration::from_configuration(configuration)
+        .map(BufferedIncrementalConfiguration::from_encoder_builder)
         .error_context("Failed to configure Datadog Events encoder.")?;
     let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(configuration)
-        .error_context("Failed to configure Datadog Service Checks destination.")?;
-    let dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
+        .map(BufferedIncrementalConfiguration::from_encoder_builder)
+        .error_context("Failed to configure Datadog Service Checks encoder.")?;
+    let mut dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog forwarder.")?;
 
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
     blueprint
+        // Components.
         .add_source("dsd_in", dsd_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
-        .add_transform("enrich", enrich_config)?
+        .add_transform("dsd_enrich", enrich_config)?
         .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
+        .add_encoder("dd_metrics_encode", dd_metrics_config)?
         .add_encoder("dd_events_encode", dd_events_config)?
-        .add_destination("dd_metrics_out", dd_metrics_config)?
-        .add_destination("dd_service_checks_out", dd_service_checks_config)?
+        .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
         .add_forwarder("dd_out", dd_forwarder_config)?
+        // Metrics.
         .connect_component("dsd_agg", ["dsd_in.metrics"])?
         .connect_component("dsd_prefix_filter", ["dsd_agg"])?
-        .connect_component("enrich", ["dsd_prefix_filter"])?
-        .connect_component("dd_metrics_out", ["enrich"])?
+        .connect_component("dsd_enrich", ["dsd_prefix_filter"])?
+        .connect_component("dd_metrics_encode", ["dsd_enrich"])?
+        // Events.
         .connect_component("dd_events_encode", ["dsd_in.events"])?
-        .connect_component("dd_service_checks_out", ["dsd_in.service_checks"])?
-        .connect_component("dd_out", ["dd_events_encode"])?;
+        // Service checks.
+        .connect_component("dd_service_checks_encode", ["dsd_in.service_checks"])?
+        // Forwarding.
+        .connect_component(
+            "dd_out",
+            ["dd_metrics_encode", "dd_events_encode", "dd_service_checks_encode"],
+        )?;
 
     if configuration.get_typed_or_default::<bool>("enable_preaggr_pipeline") {
         let preaggr_dd_url = configuration
@@ -182,15 +217,21 @@ async fn create_topology(
         let preaggr_processing = ChainedConfiguration::default()
             .with_transform_builder("preaggr_filter", PreaggregationFilterConfiguration::default());
 
-        let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
-            .and_then(|config| config.with_endpoint_override(preaggr_dd_url, preaggr_api_key, preaggr_request_path))
-            .error_context("Failed to configure pre-aggregation Datadog Metrics destination.")?;
+        let preaggr_dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
+            .and_then(|config| config.with_endpoint_path_override(preaggr_request_path))
+            .error_context("Failed to configure pre-aggregation Datadog Metrics encoder.")?;
+
+        let preaggr_dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
+            .map(|config| config.with_endpoint_override(preaggr_dd_url, preaggr_api_key))
+            .error_context("Failed to configure pre-aggregation Datadog forwarder.")?;
 
         blueprint
             .add_transform("preaggr_processing", preaggr_processing)?
-            .add_destination("preaggr_dd_metrics_out", dd_metrics_config)?
+            .add_encoder("preaggr_dd_metrics_encode", preaggr_dd_metrics_config)?
+            .add_forwarder("preaggr_dd_out", preaggr_dd_forwarder_config)?
             .connect_component("preaggr_processing", ["enrich"])?
-            .connect_component("preaggr_dd_metrics_out", ["preaggr_processing"])?;
+            .connect_component("preaggr_dd_metrics_encode", ["preaggr_processing"])?
+            .connect_component("preaggr_dd_out", ["preaggr_dd_metrics_encode"])?;
     }
 
     Ok(blueprint)

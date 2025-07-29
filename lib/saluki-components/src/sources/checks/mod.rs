@@ -21,6 +21,7 @@ use saluki_env::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider};
 use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use tokio::select;
+use tokio::sync::broadcast::Receiver;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
@@ -80,17 +81,22 @@ impl ChecksConfiguration {
 #[async_trait]
 impl SourceBuilder for ChecksConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
-        match &self.autodiscovery_provider {
-            Some(autodiscovery) => Ok(Box::new(ChecksSource {
-                autodiscovery: Arc::clone(autodiscovery),
-                check_runners: self.check_runners,
-                custom_checks_dirs: if !self.additional_checksd.is_empty() {
-                    Some(self.additional_checksd.split(",").map(|s| s.to_string()).collect())
-                } else {
-                    None
-                },
-            })),
-            None => Err(generic_error!("No autodiscovery provider configured.")),
+        if let Some(autodiscovery) = &self.autodiscovery_provider {
+            if let Some(receiver) = autodiscovery.subscribe().await {
+                Ok(Box::new(ChecksSource {
+                    autodiscovery_rx: receiver,
+                    check_runners: self.check_runners,
+                    custom_checks_dirs: if !self.additional_checksd.is_empty() {
+                        Some(self.additional_checksd.split(",").map(|s| s.to_string()).collect())
+                    } else {
+                        None
+                    },
+                }))
+            } else {
+                Err(generic_error!("No autodiscovery stream configured."))
+            }
+        } else {
+            Err(generic_error!("No autodiscovery provider configured."))
         }
     }
 
@@ -108,7 +114,7 @@ impl MemoryBounds for ChecksConfiguration {
 }
 
 struct ChecksSource {
-    autodiscovery: Arc<dyn AutodiscoveryProvider + Send + Sync>,
+    autodiscovery_rx: Receiver<AutodiscoveryEvent>,
     check_runners: usize,
     custom_checks_dirs: Option<Vec<String>>,
 }
@@ -142,8 +148,6 @@ impl Source for ChecksSource {
         info!("Checks source started.");
 
         let (check_metrics_tx, check_metrics_rx) = mpsc::channel(128);
-
-        let mut event_rx = self.autodiscovery.subscribe().await;
         let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> = self.builders(check_metrics_tx);
         let mut check_ids = HashSet::new();
         let scheduler = Scheduler::new(self.check_runners);
@@ -155,6 +159,8 @@ impl Source for ChecksSource {
             drain_and_dispatch_check_metrics(listener_shutdown_coordinator.register(), context, check_metrics_rx),
         );
 
+        let mut autodiscovery_rx = self.autodiscovery_rx;
+
         loop {
             select! {
                 _ = &mut global_shutdown => {
@@ -165,7 +171,7 @@ impl Source for ChecksSource {
 
                 _ = health.live() => continue,
 
-                event = event_rx.recv() => match event {
+                event = autodiscovery_rx.recv() => match event {
                         Ok(event) => {
                             match event {
                                 AutodiscoveryEvent::CheckSchedule { config } => {
