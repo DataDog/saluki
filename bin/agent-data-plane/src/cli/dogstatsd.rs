@@ -37,6 +37,7 @@ async fn handle_dogstatsd_stats(client: reqwest::Client) {
 }
 
 async fn format_stats(body: &str) -> String {
+    println!("{}", body);
     match from_str::<serde_json::Value>(body) {
         Ok(json) => {
             let mut output = String::new();
@@ -49,16 +50,30 @@ async fn format_stats(body: &str) -> String {
 
             if let Some(metrics_received) = json.get("metrics_received") {
                 if let Some(metrics_obj) = metrics_received.as_object() {
-                    for (_key, metric) in metrics_obj {
+                    for (key, metric) in metrics_obj {
+                        let (parsed_name, parsed_tags) = if let Some(parts) = key.split_once('{') {
+                            let name = parts.0;
+                            if let Some(tags) = parts.1.strip_suffix('}') {
+                                (name, tags)
+                            } else {
+                                (name, "")
+                            }
+                        } else {
+                            (key.as_str(), "")
+                        };
+
                         if let Some(metric_obj) = metric.as_object() {
-                            let name = metric_obj.get("name").and_then(|v| v.as_str()).unwrap_or("N/A");
-                            let tags = metric_obj.get("tags").and_then(|v| v.as_str()).unwrap_or("N/A");
                             let count = metric_obj.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
-                            let last_seen = metric_obj.get("last_seen").and_then(|v| v.as_str()).unwrap_or("N/A");
+                            let last_seen_timestamp = metric_obj.get("last_seen").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let last_seen = chrono::DateTime::from_timestamp(last_seen_timestamp as i64, 0)
+                                .unwrap()
+                                .with_timezone(&chrono::Local)
+                                .format("%Y-%m-%d %H:%M:%S")
+                                .to_string();
 
                             output.push_str(&format!(
                                 "{:<40} | {:<20} | {:<10} | {:<20}\n",
-                                name, tags, count, last_seen
+                                parsed_name, parsed_tags, count, last_seen
                             ));
                         }
                     }

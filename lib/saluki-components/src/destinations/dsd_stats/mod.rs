@@ -1,15 +1,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use async_trait::async_trait;
-use chrono;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_api::{
     extract::State,
     routing::{get, Router},
     APIHandler, StatusCode,
 };
+use saluki_common::time::get_coarse_unix_timestamp;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{
@@ -31,9 +30,7 @@ pub struct Stats {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MetricSample {
     count: u64,
-    last_seen: String,
-    name: String,
-    tags: String,
+    last_seen: u64,
 }
 /// Configuration for DogStatsD statistics destination and API handler.
 #[derive(Clone)]
@@ -80,28 +77,15 @@ impl Destination for DogStatsDStats {
                     Some(events) => {
                         for event in events {
                             if let Metric(metric) = event {
-                                let context = metric.context();
-                                let metric_name = context.name().to_string();
-                                let tags: Vec<String> =
-                                    context.tags().into_iter().map(|tag| tag.as_str().to_string()).collect();
-                                let tags_formatted = tags.join(",");
-                                let key = if tags.is_empty() {
-                                    metric_name.clone()
-                                } else {
-                                    format!("{}|{}", metric_name, tags_formatted)
-                                };
+                                let key = metric.context().to_string();
 
-                                let now = SystemTime::now();
-                                let datetime = chrono::DateTime::<chrono::Local>::from(now);
-                                let datetime_str = datetime.format("%Y-%m-%d %H:%M:%S").to_string();
+                                let timestamp = get_coarse_unix_timestamp();
                                 let sample = self.stats.metrics_received.entry(key).or_insert_with(|| MetricSample {
                                     count: 0,
-                                    last_seen: String::new(),
-                                    name: metric_name,
-                                    tags: tags_formatted,
+                                    last_seen: 0,
                                 });
                                 sample.count += 1;
-                                sample.last_seen = datetime_str;
+                                sample.last_seen = timestamp;
 
                             }
                         }
