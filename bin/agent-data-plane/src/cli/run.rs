@@ -19,7 +19,7 @@ use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
-use tokio::select;
+use tokio::{select, time::interval};
 use tracing::{error, info, warn};
 
 use crate::config::RunConfig;
@@ -89,8 +89,31 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
 
     info!(
         init_time_ms = startup_time.as_millis(),
-        "Topology running, waiting for interrupt..."
+        "Topology running. Waiting for interrupt..."
     );
+
+    // Wait for all components to become ready.
+    tokio::spawn(async move {
+        let mut check_interval = interval(Duration::from_millis(100));
+
+        let mut report_interval = interval(Duration::from_millis(1000));
+        report_interval.tick().await;
+
+        loop {
+            select! {
+                _ = check_interval.tick() => {
+                    if health_registry.all_ready() {
+                        break;
+                    }
+                },
+                _ = report_interval.tick() => {
+                    info!("Topology still not healthy...");
+                }
+            }
+        }
+
+        info!(ready_time_ms = started.elapsed().as_millis(), "Topology healthy.");
+    });
 
     let mut finished_with_error = false;
     select! {
