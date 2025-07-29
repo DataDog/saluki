@@ -6,9 +6,16 @@ use saluki_api::{
     routing::{get, Router},
     APIHandler, StatusCode,
 };
-use serde::{ser::SerializeMap as _, Serialize};
+use saluki_common::collections::FastHashMap;
+use serde::Serialize;
 
 use crate::Inner;
+
+#[derive(Serialize)]
+struct SimpleComponentState {
+    live: bool,
+    ready: bool,
+}
 
 /// State used for the healthy registry API handler.
 #[derive(Clone)]
@@ -22,10 +29,24 @@ impl HealthRegistryState {
         // ready/live state is passing/failing, as well as serializing that same state data to JSON, to avoid
         // inconsistencies between the two.
 
-        let inner = self.inner.lock().unwrap();
+        let health_state = {
+            let inner = self.inner.lock().unwrap();
+            let mut health_state = FastHashMap::default();
 
-        let passing = inner
-            .component_health
+            for component_state in &inner.component_state {
+                let simple_state = SimpleComponentState {
+                    live: component_state.is_live(),
+                    ready: component_state.is_ready(),
+                };
+                health_state.insert(component_state.name.clone(), simple_state);
+            }
+
+            health_state
+        };
+
+        // Run through the collected component health states to determine our overall passing/failing status
+        // depending on what endpoint this is being called for.
+        let passing = health_state
             .values()
             .all(|health| if check_ready { health.ready } else { health.live });
         let status = if passing {
@@ -34,7 +55,7 @@ impl HealthRegistryState {
             StatusCode::SERVICE_UNAVAILABLE
         };
 
-        let rendered = serde_json::to_string(&inner.component_health).unwrap();
+        let rendered = serde_json::to_string(&health_state).unwrap();
 
         (status, rendered)
     }
@@ -48,20 +69,20 @@ impl HealthRegistryState {
     }
 }
 
-impl Serialize for HealthRegistryState {
+/*impl Serialize for HealthRegistryState {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         let inner = self.inner.lock().unwrap();
 
-        let mut map = serializer.serialize_map(Some(inner.component_health.len()))?;
-        for (name, health) in inner.component_health.iter() {
-            map.serialize_entry(name, health)?;
+        let mut map = serializer.serialize_map(Some(inner.component_state.len()))?;
+        for (name, state) in inner.component_state.iter() {
+            map.serialize_entry(name, state)?;
         }
         map.end()
     }
-}
+}*/
 
 /// An API handler for reporting the health of all components.
 ///
