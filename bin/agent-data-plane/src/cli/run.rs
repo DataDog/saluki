@@ -172,7 +172,7 @@ async fn create_topology(
     let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(configuration)
         .map(BufferedIncrementalConfiguration::from_encoder_builder)
         .error_context("Failed to configure Datadog Service Checks encoder.")?;
-    let mut dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
+    let dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog forwarder.")?;
 
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
