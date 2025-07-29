@@ -1,5 +1,0 @@
-init_config:
-
-instances:
-  - argument: value
-    min_collection_interval: 15
