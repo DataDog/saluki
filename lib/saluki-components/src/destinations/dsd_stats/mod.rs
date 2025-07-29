@@ -103,12 +103,7 @@ impl DogStatsDAPIHandler {
     async fn stats_handler(State(state): State<DogStatsDAPIHandlerState>) -> (StatusCode, String) {
         let (oneshot_tx, oneshot_rx) = tokio::sync::oneshot::channel();
 
-        if let Err(e) = state.tx.try_send(oneshot_tx) {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to send stats: {}", e),
-            );
-        }
+        state.tx.send(oneshot_tx).await.unwrap();
 
         match oneshot_rx.await {
             Ok(stats) => {
