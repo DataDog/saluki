@@ -4,11 +4,6 @@ build-metrics-intake-image:
   needs: []
   retry: 2
   timeout: 10m
-  variables:
-    # Compiling Rust is intensive. ¯\_(ツ)_/¯
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_MEMORY_REQUEST: "8Gi"
-    KUBERNETES_MEMORY_LIMIT: "12Gi"
   script:
     - docker buildx build
       --platform linux/amd64
@@ -31,11 +26,6 @@ build-millstone-image:
   needs: []
   retry: 2
   timeout: 10m
-  variables:
-    # Compiling Rust is intensive. ¯\_(ツ)_/¯
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_MEMORY_REQUEST: "8Gi"
-    KUBERNETES_MEMORY_LIMIT: "12Gi"
   script:
     - docker buildx build
       --platform linux/amd64
@@ -59,11 +49,6 @@ build-bundled-agent-adp-image:
     - build-adp-image
   retry: 2
   timeout: 10m
-  variables:
-    # Compiling Rust is intensive. ¯\_(ツ)_/¯
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_MEMORY_REQUEST: "8Gi"
-    KUBERNETES_MEMORY_LIMIT: "12Gi"
   script:
     - docker buildx build
       --platform linux/amd64
@@ -94,7 +79,7 @@ run-ground-truth:
   artifacts:
     expire_in: 1 weeks
     paths:
-      - /tmp/ground-truth/  # for debugging
+      - /tmp/ground-truth/ # for debugging
     when: always
   variables:
     DD_LOG_LEVEL: "ground_truth=debug,info"
@@ -126,7 +111,7 @@ run-ground-truth-origin-detection:
   artifacts:
     expire_in: 1 weeks
     paths:
-      - /tmp/ground-truth/  # for debugging
+      - /tmp/ground-truth/ # for debugging
     when: always
   variables:
     DD_LOG_LEVEL: "ground_truth=debug,info"

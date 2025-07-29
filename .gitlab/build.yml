@@ -4,12 +4,8 @@
   needs:
     - calculate-build-metadata
   retry: 2
-  timeout: 20m
+  timeout: 12m
   variables:
-    # Compiling Rust is intensive. ¯\_(ツ)_/¯
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_MEMORY_REQUEST: "8Gi"
-    KUBERNETES_MEMORY_LIMIT: "12Gi"
     APP_BUILD_TIME: "${CI_PIPELINE_CREATED_AT}"
     DDCI_CONFIGURE_OTEL_EXPORTER: true
   script:
@@ -41,19 +37,15 @@
       --label "org.opencontainers.image.version=${ADP_IMAGE_VERSION}"
       --push
       .
-      
+
 .build-checks-agent-definition:
   stage: build
   image: ${DOCKER_BUILD_IMAGE}
   needs:
     - calculate-build-metadata
   retry: 2
-  timeout: 20m
+  timeout: 12m
   variables:
-    # Compiling Rust is intensive. ¯\_(ツ)_/¯
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_MEMORY_REQUEST: "8Gi"
-    KUBERNETES_MEMORY_LIMIT: "12Gi"
     APP_BUILD_TIME: "${CI_PIPELINE_CREATED_AT}"
     DDCI_CONFIGURE_OTEL_EXPORTER: true
   script:
@@ -107,7 +99,7 @@ build-adp-image-fips:
     IMAGE_TAG: ${ADP_FULL_IMAGE_TAG_FIPS}
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
-    
+
 build-checks-agent-image:
   extends: [.build-common-variables, .build-checks-agent-definition]
   variables:
@@ -177,7 +169,7 @@ display-image-tags:
       ## Internal (baked with necessary tools for internal deployments)
       Non-FIPS: ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG}
       FIPS:     ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG_FIPS}
-      
+
       # checks-agent Image Tags
       ## Internal (baked with necessary tools for internal deployments)
       Non-FIPS: ${CHECKS_AGENT_FULL_IMAGE_TAG}
