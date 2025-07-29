@@ -25,14 +25,10 @@ build-adp-baseline-image:
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
-  timeout: 20m
+  timeout: 10m
   before_script:
     - *setup-smp-env
   variables:
-    # Compiling Rust is intensive. ¯\_(ツ)_/¯
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_MEMORY_REQUEST: "8Gi"
-    KUBERNETES_MEMORY_LIMIT: "12Gi"
     AWS_NAMED_PROFILE: single-machine-performance
   script:
     # Initialize our AWS credentials.
@@ -47,7 +43,7 @@ build-adp-baseline-image:
     # Actually build.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx build
-      --platform linux/amd64,linux/arm64
+      --platform linux/amd64
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${BASELINE_SALUKI_IMG}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
@@ -68,14 +64,10 @@ build-adp-comparison-image:
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
-  timeout: 20m
+  timeout: 10m
   before_script:
     - *setup-smp-env
   variables:
-    # Compiling Rust is intensive. ¯\_(ツ)_/¯
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_MEMORY_REQUEST: "8Gi"
-    KUBERNETES_MEMORY_LIMIT: "12Gi"
     AWS_NAMED_PROFILE: single-machine-performance
   script:
     # Initialize our AWS credentials.
@@ -84,7 +76,7 @@ build-adp-comparison-image:
     # Actually build.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx build
-      --platform linux/amd64,linux/arm64
+      --platform linux/amd64
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${COMPARISON_SALUKI_IMG}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
@@ -105,14 +97,10 @@ build-checks-agent-baseline-image:
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
-  timeout: 20m
+  timeout: 10m
   before_script:
     - *setup-smp-env
   variables:
-    # Compiling Rust is intensive. ¯\_(ツ)_/¯
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_MEMORY_REQUEST: "8Gi"
-    KUBERNETES_MEMORY_LIMIT: "12Gi"
     AWS_NAMED_PROFILE: single-machine-performance
   script:
     # Initialize our AWS credentials.
@@ -127,7 +115,7 @@ build-checks-agent-baseline-image:
     # Actually build.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx build
-      --platform linux/amd64,linux/arm64
+      --platform linux/amd64
       --file ./docker/Dockerfile.checks-agent-standalone
       --tag ${BASELINE_CHECKS_AGENT_IMG}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
@@ -148,23 +136,19 @@ build-checks-agent-comparison-image:
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
-  timeout: 20m
+  timeout: 10m
   before_script:
     - *setup-smp-env
   variables:
-    # Compiling Rust is intensive. ¯\_(ツ)_/¯
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_MEMORY_REQUEST: "8Gi"
-    KUBERNETES_MEMORY_LIMIT: "12Gi"
     AWS_NAMED_PROFILE: single-machine-performance
   script:
-     # Initialize our AWS credentials.
+    # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
 
     # Actually build.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx build
-      --platform linux/amd64,linux/arm64
+      --platform linux/amd64
       --file ./docker/Dockerfile.checks-agent-standalone
       --tag ${COMPARISON_CHECKS_AGENT_IMG}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
@@ -226,12 +210,12 @@ run-benchmarks-adp:
   artifacts:
     expire_in: 1 weeks
     paths:
-      - submission_metadata  # for provenance, debugging
-      - adp_job_start_time   # for generating PR comments
-      - adp_job_end_time     # for generating PR comments
-      - adp_run_id           # for generating PR comments
-      - outputs/report.md    # for debugging, also on S3
-      - outputs/report.html  # for debugging, also on S3
+      - submission_metadata # for provenance, debugging
+      - adp_job_start_time # for generating PR comments
+      - adp_job_end_time # for generating PR comments
+      - adp_run_id # for generating PR comments
+      - outputs/report.md # for debugging, also on S3
+      - outputs/report.html # for debugging, also on S3
     when: always
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
@@ -246,30 +230,30 @@ run-benchmarks-adp:
     - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
     # Run SMP against our converged Agent image.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
-            job submit
-            --warmup-seconds 0
-            --baseline-image ${BASELINE_SALUKI_IMG}
-            --comparison-image ${COMPARISON_SALUKI_IMG}
-            --baseline-sha ${BASELINE_SALUKI_SHA}
-            --comparison-sha ${COMPARISON_SALUKI_SHA}
-            --target-config-dir ./test/smp/regression/saluki/
-            --submission-metadata submission_metadata
+      job submit
+      --warmup-seconds 0
+      --baseline-image ${BASELINE_SALUKI_IMG}
+      --comparison-image ${COMPARISON_SALUKI_IMG}
+      --baseline-sha ${BASELINE_SALUKI_SHA}
+      --comparison-sha ${COMPARISON_SALUKI_SHA}
+      --target-config-dir ./test/smp/regression/saluki/
+      --submission-metadata submission_metadata
     # Populate some data that we'll need later for generating links to experiment dashboards.
     - date +%s > adp_job_start_time
     - cat submission_metadata | jq -r '.jobId' > adp_run_id
     # Wait for job to complete.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
-            job status
-            --wait
-            --wait-delay-seconds 60
-            --submission-metadata submission_metadata
+      job status
+      --wait
+      --wait-delay-seconds 60
+      --submission-metadata submission_metadata
     # And populate some more data that we'll need later for generating links to experiment dashboards.
     - date +%s > adp_job_end_time
     # Pull the analysis report and output it to stdout.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
-            job sync
-            --submission-metadata submission_metadata
-            --output-path outputs
+      job sync
+      --submission-metadata submission_metadata
+      --output-path outputs
     # Replace empty lines in the output with lines containing various unicode space characters.
     #
     # This avoids  https://gitlab.com/gitlab-org/gitlab/-/issues/217231.
@@ -278,8 +262,8 @@ run-benchmarks-adp:
     - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Saluki)"
     # Finally, exit 1 if the job signals a regression else 0.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
-            job result
-            --submission-metadata submission_metadata
+      job result
+      --submission-metadata submission_metadata
 
 run-benchmarks-dsd:
   stage: benchmark
@@ -293,12 +277,12 @@ run-benchmarks-dsd:
   artifacts:
     expire_in: 1 weeks
     paths:
-      - submission_metadata  # for provenance, debugging
-      - dsd_job_start_time   # for generating PR comments
-      - dsd_job_end_time     # for generating PR comments
-      - dsd_run_id           # for generating PR comments
-      - outputs/report.md    # for debugging, also on S3
-      - outputs/report.html  # for debugging, also on S3
+      - submission_metadata # for provenance, debugging
+      - dsd_job_start_time # for generating PR comments
+      - dsd_job_end_time # for generating PR comments
+      - dsd_run_id # for generating PR comments
+      - outputs/report.md # for debugging, also on S3
+      - outputs/report.html # for debugging, also on S3
     when: always
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
@@ -313,29 +297,29 @@ run-benchmarks-dsd:
     - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
     # Run SMP against our converged Agent image.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
-            job submit
-            --baseline-image ${BASELINE_DSD_IMG}
-            --comparison-image ${COMPARISON_DSD_IMG}
-            --baseline-sha ${BASELINE_DSD_VERSION}
-            --comparison-sha ${COMPARISON_DSD_VERSION}
-            --target-config-dir ./test/smp/regression/dogstatsd/
-            --submission-metadata submission_metadata
+      job submit
+      --baseline-image ${BASELINE_DSD_IMG}
+      --comparison-image ${COMPARISON_DSD_IMG}
+      --baseline-sha ${BASELINE_DSD_VERSION}
+      --comparison-sha ${COMPARISON_DSD_VERSION}
+      --target-config-dir ./test/smp/regression/dogstatsd/
+      --submission-metadata submission_metadata
     # Populate some data that we'll need later for generating links to experiment dashboards.
     - date +%s > dsd_job_start_time
     - cat submission_metadata | jq -r '.jobId' > dsd_run_id
     # Wait for job to complete.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
-            job status
-            --wait
-            --wait-delay-seconds 60
-            --submission-metadata submission_metadata
+      job status
+      --wait
+      --wait-delay-seconds 60
+      --submission-metadata submission_metadata
     # And populate some more data that we'll need later for generating links to experiment dashboards.
     - date +%s > dsd_job_end_time
     # Pull the analysis report and output it to stdout.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
-            job sync
-            --submission-metadata submission_metadata
-            --output-path outputs
+      job sync
+      --submission-metadata submission_metadata
+      --output-path outputs
     # Replace empty lines in the output with lines containing various unicode space characters.
     #
     # This avoids  https://gitlab.com/gitlab-org/gitlab/-/issues/217231.
@@ -344,8 +328,8 @@ run-benchmarks-dsd:
     - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (DogStatsD)"
     # Finally, exit 1 if the job signals a regression else 0.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
-            job result
-            --submission-metadata submission_metadata
+      job result
+      --submission-metadata submission_metadata
 
 run-benchmarks-checks-agent:
   stage: benchmark
@@ -360,12 +344,12 @@ run-benchmarks-checks-agent:
   artifacts:
     expire_in: 1 weeks
     paths:
-      - submission_metadata  # for provenance, debugging
-      - checks_job_start_time   # for generating PR comments
-      - checks_job_end_time     # for generating PR comments
-      - checks_run_id           # for generating PR comments
-      - outputs/report.md    # for debugging, also on S3
-      - outputs/report.html  # for debugging, also on S3
+      - submission_metadata # for provenance, debugging
+      - checks_job_start_time # for generating PR comments
+      - checks_job_end_time # for generating PR comments
+      - checks_run_id # for generating PR comments
+      - outputs/report.md # for debugging, also on S3
+      - outputs/report.html # for debugging, also on S3
     when: always
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
@@ -380,29 +364,29 @@ run-benchmarks-checks-agent:
     - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
     # Run SMP against our converged Agent image.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
-            job submit
-            --baseline-image ${BASELINE_CHECKS_AGENT_IMG}
-            --comparison-image ${COMPARISON_CHECKS_AGENT_IMG}
-            --baseline-sha ${BASELINE_SALUKI_SHA}
-            --comparison-sha ${COMPARISON_SALUKI_SHA}
-            --target-config-dir ./test/smp/regression/checks-agent/
-            --submission-metadata submission_metadata
+      job submit
+      --baseline-image ${BASELINE_CHECKS_AGENT_IMG}
+      --comparison-image ${COMPARISON_CHECKS_AGENT_IMG}
+      --baseline-sha ${BASELINE_SALUKI_SHA}
+      --comparison-sha ${COMPARISON_SALUKI_SHA}
+      --target-config-dir ./test/smp/regression/checks-agent/
+      --submission-metadata submission_metadata
     # Populate some data that we'll need later for generating links to experiment dashboards.
     - date +%s > checks_job_start_time
     - cat submission_metadata | jq -r '.jobId' > checks_run_id
     # Wait for job to complete.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
-            job status
-            --wait
-            --wait-delay-seconds 60
-            --submission-metadata submission_metadata
+      job status
+      --wait
+      --wait-delay-seconds 60
+      --submission-metadata submission_metadata
     # And populate some more data that we'll need later for generating links to experiment dashboards.
     - date +%s > checks_job_end_time
     # Pull the analysis report and output it to stdout.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
-            job sync
-            --submission-metadata submission_metadata
-            --output-path outputs
+      job sync
+      --submission-metadata submission_metadata
+      --output-path outputs
     # Replace empty lines in the output with lines containing various unicode space characters.
     #
     # This avoids  https://gitlab.com/gitlab-org/gitlab/-/issues/217231.
@@ -411,8 +395,8 @@ run-benchmarks-checks-agent:
     - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Checks Agent)"
     # Finally, exit 1 if the job signals a regression else 0.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
-            job result
-            --submission-metadata submission_metadata
+      job result
+      --submission-metadata submission_metadata
 
 run-benchmarks-checks-agent-go:
   stage: benchmark
@@ -426,12 +410,12 @@ run-benchmarks-checks-agent-go:
   artifacts:
     expire_in: 1 weeks
     paths:
-      - submission_metadata  # for provenance, debugging
-      - checks_go_job_start_time   # for generating PR comments
-      - checks_go_job_end_time     # for generating PR comments
-      - checks_go_run_id           # for generating PR comments
-      - outputs/report.md    # for debugging, also on S3
-      - outputs/report.html  # for debugging, also on S3
+      - submission_metadata # for provenance, debugging
+      - checks_go_job_start_time # for generating PR comments
+      - checks_go_job_end_time # for generating PR comments
+      - checks_go_run_id # for generating PR comments
+      - outputs/report.md # for debugging, also on S3
+      - outputs/report.html # for debugging, also on S3
     when: always
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
@@ -446,29 +430,29 @@ run-benchmarks-checks-agent-go:
     - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
     # Run SMP against our converged Agent image.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
-            job submit
-            --baseline-image ${BASELINE_CHECK_AGENT_GO_IMG}
-            --comparison-image ${BASELINE_CHECK_AGENT_GO_IMG}
-            --baseline-sha ${SOURCE_CHECK_AGENT_GO_SHA}
-            --comparison-sha ${SOURCE_CHECK_AGENT_GO_SHA}
-            --target-config-dir ./test/smp/regression/checks-agent-go/
-            --submission-metadata submission_metadata
+      job submit
+      --baseline-image ${BASELINE_CHECK_AGENT_GO_IMG}
+      --comparison-image ${BASELINE_CHECK_AGENT_GO_IMG}
+      --baseline-sha ${SOURCE_CHECK_AGENT_GO_SHA}
+      --comparison-sha ${SOURCE_CHECK_AGENT_GO_SHA}
+      --target-config-dir ./test/smp/regression/checks-agent-go/
+      --submission-metadata submission_metadata
     # Populate some data that we'll need later for generating links to experiment dashboards.
     - date +%s > checks_go_job_start_time
     - cat submission_metadata | jq -r '.jobId' > checks_go_run_id
     # Wait for job to complete.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
-            job status
-            --wait
-            --wait-delay-seconds 60
-            --submission-metadata submission_metadata
+      job status
+      --wait
+      --wait-delay-seconds 60
+      --submission-metadata submission_metadata
     # And populate some more data that we'll need later for generating links to experiment dashboards.
     - date +%s > checks_go_job_end_time
     # Pull the analysis report and output it to stdout.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
-            job sync
-            --submission-metadata submission_metadata
-            --output-path outputs
+      job sync
+      --submission-metadata submission_metadata
+      --output-path outputs
     # Replace empty lines in the output with lines containing various unicode space characters.
     #
     # This avoids  https://gitlab.com/gitlab-org/gitlab/-/issues/217231.
@@ -477,9 +461,8 @@ run-benchmarks-checks-agent-go:
     - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Checks Agent Go)"
     # Finally, exit 1 if the job signals a regression else 0.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
-            job result
-            --submission-metadata submission_metadata
-
+      job result
+      --submission-metadata submission_metadata
 
 comment-smp-result-links:
   stage: benchmark
