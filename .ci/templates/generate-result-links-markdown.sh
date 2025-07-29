@@ -52,12 +52,6 @@ ensure_file_exists "adp_job_end_time"
 ensure_file_exists "dsd_run_id"
 ensure_file_exists "dsd_job_start_time"
 ensure_file_exists "dsd_job_end_time"
-ensure_file_exists "checks_go_run_id"
-ensure_file_exists "checks_go_job_start_time"
-ensure_file_exists "checks_go_job_end_time"
-ensure_file_exists "checks_run_id"
-ensure_file_exists "checks_job_start_time"
-ensure_file_exists "checks_job_end_time"
 ensure_file_exists "adp_checks_run_id"
 ensure_file_exists "adp_checks_job_start_time"
 ensure_file_exists "adp_checks_job_end_time"
@@ -68,12 +62,6 @@ adp_end_time=$(cat adp_job_end_time)
 dsd_run_id=$(cat dsd_run_id)
 dsd_start_time=$(cat dsd_job_start_time)
 dsd_end_time=$(cat dsd_job_end_time)
-checks_run_id=$(cat checks_run_id)
-checks_start_time=$(cat checks_job_start_time)
-checks_end_time=$(cat checks_job_end_time)
-checks_go_run_id=$(cat checks_go_run_id)
-checks_go_start_time=$(cat checks_go_job_start_time)
-checks_go_end_time=$(cat checks_go_job_end_time)
 adp_checks_run_id=$(cat adp_checks_run_id)
 adp_checks_start_time=$(cat adp_checks_job_start_time)
 adp_checks_end_time=$(cat adp_checks_job_end_time)
@@ -96,19 +84,11 @@ else
     common_end_time=$(echo "${adp_end_time} - ${smp_negative_time_offset_secs} + ${experiment_duration_secs}" | bc)
 fi
 
-if [ "$checks_end_time" -lt "$checks_go_end_time" ]; then
-    common_checks_start_time=$(echo "${checks_end_time} - ${smp_negative_time_offset_secs}" | bc)
-    common_checks_end_time=$(echo "${checks_go_end_time} - ${smp_negative_time_offset_secs} + ${experiment_duration_secs}" | bc)
-else
-    common_checks_start_time=$(echo "${checks_go_end_time} - ${smp_negative_time_offset_secs}" | bc)
-    common_checks_end_time=$(echo "${checks_end_time} - ${smp_negative_time_offset_secs} + ${experiment_duration_secs}" | bc)
-fi
-
-if [ "$adp_checks_end_time" -lt "$checks_end_time" ]; then
+if [ "$adp_checks_end_time" -lt "$adp_end_time" ]; then
     common_adp_checks_start_time=$(echo "${adp_checks_end_time} - ${smp_negative_time_offset_secs}" | bc)
-    common_adp_checks_end_time=$(echo "${checks_end_time} - ${smp_negative_time_offset_secs} + ${experiment_duration_secs}" | bc)
+    common_adp_checks_end_time=$(echo "${adp_end_time} - ${smp_negative_time_offset_secs} + ${experiment_duration_secs}" | bc)
 else
-    common_adp_checks_start_time=$(echo "${checks_end_time} - ${smp_negative_time_offset_secs}" | bc)
+    common_adp_checks_start_time=$(echo "${adp_end_time} - ${smp_negative_time_offset_secs}" | bc)
     common_adp_checks_end_time=$(echo "${adp_checks_end_time} - ${smp_negative_time_offset_secs} + ${experiment_duration_secs}" | bc)
 fi
 
@@ -119,7 +99,6 @@ find test/smp/regression/dogstatsd/cases -mindepth 1 -maxdepth 1 -type d | sed s
 adp_only_experiments=$(comm -23 adp-experiments dsd-experiments)
 dsd_only_experiments=$(comm -13 adp-experiments dsd-experiments)
 common_experiments=$(comm -12 adp-experiments dsd-experiments)
-checks_agent_experiments=$(find test/smp/regression/checks-agent/cases -mindepth 1 -maxdepth 1 -type d | sed s#test/smp/regression/checks-agent/cases/##g | sort | uniq)
 adp_checks_agent_experiments=$(find test/smp/regression/adp-checks-agent/cases -mindepth 1 -maxdepth 1 -type d | sed s#test/smp/regression/adp-checks-agent/cases/##g | sort | uniq)
 
 # Write out our table of links, doing common experiments first, then ADP-only, then DSD-only.
@@ -149,19 +128,6 @@ for experiment in $dsd_only_experiments; do
 
     echo "| $experiment (DSD only) | \\[[Profiling (DSD)]($dsd_continuous_profiler_url)\\] \\[[SMP Dashboard]($adp_smp_dashboard_url)\\] |"
 done
-
-echo "## Checks Agent Experiment Result Links"
-echo ""
-echo "| experiment | link(s) |"
-echo "|------------|---------|"
-
-for experiment in $checks_agent_experiments; do
-    checks_continuous_profiler_url=$(get_continuous_profiler_url "$checks_run_id" "$checks_start_time" "$checks_end_time" "$experiment")
-    checks_smp_dashboard_url=$(get_checks_smp_dashboard_url "$checks_run_id" "$checks_go_run_id" "$common_checks_start_time" "$common_checks_end_time" "$experiment")
-
-    echo "| $experiment | \\[[Profiling]($checks_continuous_profiler_url)\\] \\[[SMP Dashboard]($checks_smp_dashboard_url)\\] |"
-done
-
 
 echo "## ADP && Checks Experiment Result Links"
 echo ""
