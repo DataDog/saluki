@@ -49,6 +49,7 @@ dependencies = [
  "saluki-io",
  "saluki-metadata",
  "serde_json",
+ "serde_yaml",
  "stringtheory",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",

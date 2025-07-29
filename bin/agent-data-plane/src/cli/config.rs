@@ -21,12 +21,10 @@ async fn get_config(client: reqwest::Client) {
     };
 
     if response.status().is_success() {
-        let text = response.text().await.unwrap();
-        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
-        info!(
-            "Config retrieved successfully:\n{}",
-            serde_json::to_string_pretty(&json).unwrap()
-        );
+        let text = response.text().await.unwrap_or_default();
+        let yaml_value: serde_yaml::Value = serde_yaml::from_str(&text).unwrap_or_default();
+        let yaml = serde_yaml::to_string(&yaml_value).unwrap_or_default();
+        info!("{}", yaml);
     } else {
         error!("Failed to retrieve config: {}.", response.status());
     }
