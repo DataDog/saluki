@@ -1,5 +1,5 @@
 ARG DD_AGENT_VERSION=latest-jmx
-ARG DD_AGENT_IMAGE=datadog/agent:${DD_AGENT_VERSION}
+ARG DD_AGENT_IMAGE=registry.ddbuild.io/datadog/agent:${DD_AGENT_VERSION}
 
 ARG BUILD_IMAGE
 ARG APP_IMAGE
