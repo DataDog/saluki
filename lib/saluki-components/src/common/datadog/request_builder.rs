@@ -121,14 +121,14 @@ where
     /// Returns `true` if the error is recoverable, allowing the request builder to continue to be used.
     pub fn is_recoverable(&self) -> bool {
         match self {
-            // If the wrong input type is being sent to the wrong endpoint's request builder, that's just a flat out
-            // bug, so we can't possibly recover.
-            Self::InvalidInput { .. } => false,
-            // I/O errors should only be getting created for compressor-related operations, and the scenarios in which
-            // there are I/O errors should generally be very narrowly scoped to "the system is in a very bad state", so
-            // we can't really recover from those... or perhaps _shouldn't_ try to recover from those.
-            Self::Io { .. } => false,
-            _ => true,
+            // Payloads that are oversized can be recovered from, because all we do is discard the payload without
+            // leaving the builder/encoder in an inconsistent state.
+            Self::PayloadTooLarge { .. } => true,
+
+            // Encoder _failures_, or I/O errors, or misconfigurations, are either static (trying again won't help)
+            // or they are related to ending up in an inconsistent state that we cannot reason about and automatically
+            // recover from.
+            _ => false,
         }
     }
 }
@@ -376,11 +376,6 @@ where
     /// If an error occurs while finalizing the compressor or creating the request, an error will be returned.
     pub async fn flush(&mut self) -> Vec<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         if self.encoded_inputs.is_empty() {
-            warn!(
-                encoder = E::encoder_name(),
-                endpoint = ?self.endpoint_uri,
-                "Flush requested with no encoded inputs present."
-            );
             return vec![];
         }
 
@@ -635,7 +630,7 @@ mod tests {
     use saluki_io::compression::CompressionScheme;
 
     use super::{EndpointEncoder, RequestBuilder, RequestBuilderError};
-    use crate::destinations::datadog::common::io::RB_BUFFER_CHUNK_SIZE;
+    use crate::common::datadog::io::RB_BUFFER_CHUNK_SIZE;
 
     async fn create_request_builder(
         encoder: TestEncoder, compression_scheme: CompressionScheme,

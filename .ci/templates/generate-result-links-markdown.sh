@@ -52,9 +52,15 @@ ensure_file_exists "adp_job_end_time"
 ensure_file_exists "dsd_run_id"
 ensure_file_exists "dsd_job_start_time"
 ensure_file_exists "dsd_job_end_time"
+ensure_file_exists "checks_go_run_id"
+ensure_file_exists "checks_go_job_start_time"
+ensure_file_exists "checks_go_job_end_time"
 ensure_file_exists "checks_run_id"
 ensure_file_exists "checks_job_start_time"
 ensure_file_exists "checks_job_end_time"
+ensure_file_exists "adp_checks_run_id"
+ensure_file_exists "adp_checks_job_start_time"
+ensure_file_exists "adp_checks_job_end_time"
 
 adp_run_id=$(cat adp_run_id)
 adp_start_time=$(cat adp_job_start_time)
@@ -68,6 +74,9 @@ checks_end_time=$(cat checks_job_end_time)
 checks_go_run_id=$(cat checks_go_run_id)
 checks_go_start_time=$(cat checks_go_job_start_time)
 checks_go_end_time=$(cat checks_go_job_end_time)
+adp_checks_run_id=$(cat adp_checks_run_id)
+adp_checks_start_time=$(cat adp_checks_job_start_time)
+adp_checks_end_time=$(cat adp_checks_job_end_time)
 
 # Load the job start/end times and figure out which job started first and which job ended last, which we'll use as the
 # start/end time for our dashboard, which shows both sides -- ADP and DSD -- in the same pane of glass.
@@ -95,6 +104,14 @@ else
     common_checks_end_time=$(echo "${checks_end_time} - ${smp_negative_time_offset_secs} + ${experiment_duration_secs}" | bc)
 fi
 
+if [ "$adp_checks_end_time" -lt "$checks_end_time" ]; then
+    common_adp_checks_start_time=$(echo "${adp_checks_end_time} - ${smp_negative_time_offset_secs}" | bc)
+    common_adp_checks_end_time=$(echo "${checks_end_time} - ${smp_negative_time_offset_secs} + ${experiment_duration_secs}" | bc)
+else
+    common_adp_checks_start_time=$(echo "${checks_end_time} - ${smp_negative_time_offset_secs}" | bc)
+    common_adp_checks_end_time=$(echo "${adp_checks_end_time} - ${smp_negative_time_offset_secs} + ${experiment_duration_secs}" | bc)
+fi
+
 # Grab the experiments for both DSD and ADP, which may or may not overlap.
 find test/smp/regression/saluki/cases -mindepth 1 -maxdepth 1 -type d | sed s#test/smp/regression/saluki/cases/##g | sort | uniq > adp-experiments
 find test/smp/regression/dogstatsd/cases -mindepth 1 -maxdepth 1 -type d | sed s#test/smp/regression/dogstatsd/cases/##g | sort | uniq > dsd-experiments
@@ -103,6 +120,7 @@ adp_only_experiments=$(comm -23 adp-experiments dsd-experiments)
 dsd_only_experiments=$(comm -13 adp-experiments dsd-experiments)
 common_experiments=$(comm -12 adp-experiments dsd-experiments)
 checks_agent_experiments=$(find test/smp/regression/checks-agent/cases -mindepth 1 -maxdepth 1 -type d | sed s#test/smp/regression/checks-agent/cases/##g | sort | uniq)
+adp_checks_agent_experiments=$(find test/smp/regression/adp-checks-agent/cases -mindepth 1 -maxdepth 1 -type d | sed s#test/smp/regression/adp-checks-agent/cases/##g | sort | uniq)
 
 # Write out our table of links, doing common experiments first, then ADP-only, then DSD-only.
 echo "## ADP Experiment Result Links"
@@ -140,6 +158,19 @@ echo "|------------|---------|"
 for experiment in $checks_agent_experiments; do
     checks_continuous_profiler_url=$(get_continuous_profiler_url "$checks_run_id" "$checks_start_time" "$checks_end_time" "$experiment")
     checks_smp_dashboard_url=$(get_checks_smp_dashboard_url "$checks_run_id" "$checks_go_run_id" "$common_checks_start_time" "$common_checks_end_time" "$experiment")
+
+    echo "| $experiment | \\[[Profiling]($checks_continuous_profiler_url)\\] \\[[SMP Dashboard]($checks_smp_dashboard_url)\\] |"
+done
+
+
+echo "## ADP && Checks Experiment Result Links"
+echo ""
+echo "| experiment | link(s) |"
+echo "|------------|---------|"
+
+for experiment in $adp_checks_agent_experiments; do
+    checks_continuous_profiler_url=$(get_continuous_profiler_url "$checks_run_id" "$adp_checks_start_time" "$adp_checks_end_time" "$experiment")
+    checks_smp_dashboard_url=$(get_checks_smp_dashboard_url "$checks_run_id" "$adp_checks_run_id" "$common_adp_checks_start_time" "$common_adp_checks_end_time" "$experiment")
 
     echo "| $experiment | \\[[Profiling]($checks_continuous_profiler_url)\\] \\[[SMP Dashboard]($checks_smp_dashboard_url)\\] |"
 done

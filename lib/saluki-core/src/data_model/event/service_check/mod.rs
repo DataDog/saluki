@@ -1,7 +1,7 @@
 //! Service checks.
 
-use saluki_context::tags::SharedTagSet;
-use serde::{Serialize, Serializer};
+use saluki_context::tags::{SharedTagSet, TagsExt};
+use serde::{ser::SerializeMap as _, Serialize, Serializer};
 use stringtheory::MetaString;
 
 /// Service status.
@@ -24,15 +24,12 @@ pub enum CheckStatus {
 ///
 /// Service checks represent the status of a service at a particular point in time. Checks are simplistic, with a basic
 /// message, status enum (OK vs warning vs critical, etc), timestamp, and tags.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ServiceCheck {
-    #[serde(rename = "check")]
     name: MetaString,
     status: CheckStatus,
     timestamp: Option<u64>,
-    #[serde(skip_serializing_if = "MetaString::is_empty")]
     hostname: MetaString,
-    #[serde(skip_serializing_if = "MetaString::is_empty")]
     message: MetaString,
     tags: SharedTagSet,
     origin_tags: SharedTagSet,
@@ -146,9 +143,37 @@ impl ServiceCheck {
     }
 }
 
+impl Serialize for ServiceCheck {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("check", &self.name)?;
+        if !self.hostname.is_empty() {
+            map.serialize_entry("host_name", &self.hostname)?;
+        }
+        if !self.message.is_empty() {
+            map.serialize_entry("message", &self.message)?;
+        }
+        map.serialize_entry("status", &self.status)?;
+
+        let tags = DeduplicatedTagsSerializable {
+            tags: &self.tags,
+            origin_tags: &self.origin_tags,
+        };
+        map.serialize_entry("tags", &tags)?;
+
+        if let Some(timestamp) = self.timestamp.as_ref() {
+            map.serialize_entry("timestamp", timestamp)?;
+        }
+        map.end()
+    }
+}
+
 impl CheckStatus {
-    /// Convert Check Status to u8 representation.
-    pub fn as_u8(&self) -> u8 {
+    /// Returns the integer representation of this status.
+    pub const fn as_u8(&self) -> u8 {
         match self {
             Self::Ok => 0,
             Self::Warning => 1,
@@ -166,6 +191,7 @@ impl Serialize for CheckStatus {
         serializer.serialize_u8(self.as_u8())
     }
 }
+
 /// Error type for parsing CheckStatus.
 #[derive(Debug, Clone)]
 pub struct ParseCheckStatusError;
@@ -177,6 +203,7 @@ impl std::fmt::Display for ParseCheckStatusError {
 }
 
 impl std::error::Error for ParseCheckStatusError {}
+
 impl TryFrom<u8> for CheckStatus {
     type Error = ParseCheckStatusError;
 
@@ -193,6 +220,7 @@ impl TryFrom<u8> for CheckStatus {
 
 impl TryFrom<i32> for CheckStatus {
     type Error = ParseCheckStatusError;
+
     fn try_from(value: i32) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(Self::Ok),
@@ -201,5 +229,21 @@ impl TryFrom<i32> for CheckStatus {
             3 => Ok(Self::Unknown),
             _ => Err(ParseCheckStatusError),
         }
+    }
+}
+
+// Helper type to let us serialize deduplicated tags.
+struct DeduplicatedTagsSerializable<'a> {
+    tags: &'a SharedTagSet,
+    origin_tags: &'a SharedTagSet,
+}
+
+impl<'a> Serialize for DeduplicatedTagsSerializable<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let deduplicated_tags = self.tags.into_iter().chain(self.origin_tags).deduplicated();
+        serializer.collect_seq(deduplicated_tags)
     }
 }

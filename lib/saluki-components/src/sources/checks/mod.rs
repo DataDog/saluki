@@ -21,6 +21,7 @@ use saluki_env::HostProvider;
 use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use tokio::select;
+use tokio::sync::broadcast::Receiver;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
@@ -97,24 +98,30 @@ impl ChecksConfiguration {
 #[async_trait]
 impl SourceBuilder for ChecksConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
-        match &self.autodiscovery_provider {
-            Some(autodiscovery) => match &self.hostname_provider {
-                Some(host) => Ok(Box::new(ChecksSource {
-                    autodiscovery: Arc::clone(autodiscovery),
-                    check_runners: self.check_runners,
-                    custom_checks_dirs: if !self.additional_checksd.is_empty() {
-                        Some(self.additional_checksd.split(",").map(|s| s.to_string()).collect())
-                    } else {
-                        None
-                    },
-                    configuration: self.full_configuration.clone(),
-                    host: Arc::clone(host),
-                })),
-                None => {
-                    return Err(generic_error!("No hostname provider configured."));
+        if let Some(autodiscovery) = &self.autodiscovery_provider {
+            if let Some(host) = &self.hostname_provider {
+                if let Some(receiver) = autodiscovery.subscribe().await {
+                    Ok(Box::new(ChecksSource {
+                        autodiscovery_rx: receiver,
+
+                        check_runners: self.check_runners,
+                        custom_checks_dirs: if !self.additional_checksd.is_empty() {
+                            Some(self.additional_checksd.split(",").map(|s| s.to_string()).collect())
+                        } else {
+                            None
+                        },
+
+                        configuration: self.full_configuration.clone(),
+                        host: Arc::clone(host),
+                    }))
+                } else {
+                    Err(generic_error!("No autodiscovery stream configured."))
                 }
-            },
-            None => Err(generic_error!("No autodiscovery provider configured.")),
+            } else {
+                Err(generic_error!("No hostname provider configured."))
+            }
+        } else {
+            Err(generic_error!("No autodiscovery provider configured."))
         }
     }
 
@@ -137,8 +144,8 @@ impl MemoryBounds for ChecksConfiguration {
 }
 
 struct ChecksSource {
-    autodiscovery: Arc<dyn AutodiscoveryProvider + Send + Sync>,
     host: Arc<dyn HostProvider<Error = GenericError> + Send + Sync>,
+    autodiscovery_rx: Receiver<AutodiscoveryEvent>,
     check_runners: usize,
     custom_checks_dirs: Option<Vec<String>>,
     configuration: Option<GenericConfiguration>,
@@ -180,7 +187,6 @@ impl Source for ChecksSource {
 
         let (check_events_tx, check_event_rx) = mpsc::channel(128);
 
-        let mut event_rx = self.autodiscovery.subscribe().await;
         let hostanme = self
             .host
             .get_hostname()
@@ -188,6 +194,7 @@ impl Source for ChecksSource {
             .unwrap_or_else(|_| "unknown-host".to_string());
         let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> =
             self.builders(check_events_tx, self.configuration.clone(), hostanme);
+
         let mut check_ids = HashSet::new();
         let scheduler = Scheduler::new(self.check_runners);
 
@@ -197,6 +204,8 @@ impl Source for ChecksSource {
             "checks-events-listener",
             drain_and_dispatch_check_events(listener_shutdown_coordinator.register(), context, check_event_rx),
         );
+
+        let mut autodiscovery_rx = self.autodiscovery_rx;
 
         loop {
             select! {
@@ -208,7 +217,7 @@ impl Source for ChecksSource {
 
                 _ = health.live() => continue,
 
-                event = event_rx.recv() => match event {
+                event = autodiscovery_rx.recv() => match event {
                         Ok(event) => {
                             match event {
                                 AutodiscoveryEvent::CheckSchedule { config } => {

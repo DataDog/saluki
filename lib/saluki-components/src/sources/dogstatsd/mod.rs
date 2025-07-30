@@ -611,7 +611,7 @@ impl Source for DogStatsD {
         }
 
         health.mark_ready();
-        info!("DogStatsD source started.");
+        debug!("DogStatsD source started.");
 
         // Wait for the global shutdown signal, then notify listeners to shutdown.
         //
@@ -627,11 +627,11 @@ impl Source for DogStatsD {
             }
         }
 
-        info!("Stopping DogStatsD source...");
+        debug!("Stopping DogStatsD source...");
 
         listener_shutdown_coordinator.shutdown().await;
 
-        info!("DogStatsD source stopped.");
+        debug!("DogStatsD source stopped.");
 
         Ok(())
     }
