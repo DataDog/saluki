@@ -20,15 +20,13 @@ use saluki_core::{
     data_model::event::{Event::Metric, EventType},
 };
 use saluki_error::GenericError;
-use serde_json;
 use serde::{Deserialize, Serialize};
+use serde_json;
 use stringtheory::MetaString;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio::time::{Duration, Instant};
 use tokio::{select, sync::mpsc, sync::oneshot};
 use tracing::info;
-
-
 
 type StatsRequestReceiver = mpsc::Receiver<(oneshot::Sender<StatsResponse>, u64)>;
 
@@ -212,7 +210,9 @@ struct StatsQueryParams {
 }
 
 impl DogStatsDAPIHandler {
-    async fn stats_handler(State(state): State<DogStatsDAPIHandlerState>, Query(query): Query<StatsQueryParams>) -> (StatusCode, String) {
+    async fn stats_handler(
+        State(state): State<DogStatsDAPIHandlerState>, Query(query): Query<StatsQueryParams>,
+    ) -> (StatusCode, String) {
         if !state
             .config
             .get_typed_or_default::<bool>("dogstatsd_metrics_stats_enable")
@@ -221,7 +221,13 @@ impl DogStatsDAPIHandler {
         }
         const MAXIMUM_COLLECTION_DURATION_SECS: u64 = 600;
         if query.collection_duration_secs > MAXIMUM_COLLECTION_DURATION_SECS {
-            return (StatusCode::BAD_REQUEST, format!("Collection duration cannot be greater than {} seconds.", MAXIMUM_COLLECTION_DURATION_SECS));
+            return (
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "Collection duration cannot be greater than {} seconds.",
+                    MAXIMUM_COLLECTION_DURATION_SECS
+                ),
+            );
         }
 
         // Parse the collection duration.

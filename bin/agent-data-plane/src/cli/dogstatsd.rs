@@ -17,7 +17,11 @@ pub async fn handle_dogstatsd_subcommand(config: DogstatsdConfig) {
 }
 
 async fn handle_dogstatsd_stats(client: reqwest::Client, collection_duration_secs: u64) {
-    let response = client.get("https://localhost:5101/dogstatsd/stats").query(&[("duration_secs", collection_duration_secs)]).send().await;
+    let response = client
+        .get("https://localhost:5101/dogstatsd/stats")
+        .query(&[("duration_secs", collection_duration_secs)])
+        .send()
+        .await;
 
     match response {
         Ok(response) => match response.text().await {
