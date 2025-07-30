@@ -175,8 +175,7 @@ backon = { version = "1", default-features = false }
 http-serde-ext = { version = "1", default-features = false }
 uuid = { version = "1.13", default-features = false }
 rcgen = { version = "0.13.1", default-features = false }
-tikv-jemalloc-ctl = "0.6"
-tikv-jemallocator = { version = "0.6", default-features = false }
+mimalloc = { version = "0.1.47", default-features = false }
 axum-extra = { version = "0.10", default-features = false }
 papaya = { version = "0.2", default-features = false }
 tempfile = { version = "3", default-features = false }

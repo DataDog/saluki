@@ -13,6 +13,7 @@ default = []
 
 [dependencies]
 memory-accounting = { workspace = true }
+mimalloc = { workspace = true, features = ["no_thp"] }
 saluki-app = { workspace = true, features = ["full"] }
 saluki-components = { workspace = true, features = ["python-checks"] }
 saluki-config = { workspace = true }
@@ -29,11 +30,3 @@ tokio = { workspace = true, features = [
 ] }
 tokio-rustls = { workspace = true }
 tracing = { workspace = true }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-tikv-jemalloc-ctl = { workspace = true, features = ["use_std"] }
-tikv-jemallocator = { workspace = true, features = [
-  "background_threads",
-  "unprefixed_malloc_on_supported_platforms",
-  "stats",
-] }

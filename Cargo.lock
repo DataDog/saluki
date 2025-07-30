@@ -31,6 +31,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "memory-accounting",
+ "mimalloc",
  "papaya",
  "rand 0.9.1",
  "rand_distr",
@@ -48,8 +49,6 @@ dependencies = [
  "saluki-metadata",
  "serde_json",
  "stringtheory",
- "tikv-jemalloc-ctl",
- "tikv-jemallocator",
  "tokio",
  "tonic",
  "tracing",
@@ -650,6 +649,7 @@ name = "checks-agent"
 version = "0.1.0"
 dependencies = [
  "memory-accounting",
+ "mimalloc",
  "saluki-app",
  "saluki-components",
  "saluki-config",
@@ -658,8 +658,6 @@ dependencies = [
  "saluki-error",
  "saluki-health",
  "saluki-io",
- "tikv-jemalloc-ctl",
- "tikv-jemallocator",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -1939,6 +1937,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9fbbcab51052fe104eb5e5d351cf728d30a5be1fe14d9be8a3b097481fb97de"
 
 [[package]]
+name = "libmimalloc-sys"
+version = "0.1.43"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf88cd67e9de251c1781dbe2f641a1a3ad66eaae831b8a2c38fbdc5ddae16d4d"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2098,6 +2106,15 @@ dependencies = [
  "serde",
  "serde_yaml",
  "tracing",
+]
+
+[[package]]
+name = "mimalloc"
+version = "0.1.47"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1791cbe101e95af5764f06f20f6760521f7158f69dbf9d6baf941ee1bf6bc40"
+dependencies = [
+ "libmimalloc-sys",
 ]
 
 [[package]]
@@ -4197,37 +4214,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
 dependencies = [
  "cfg-if",
-]
-
-[[package]]
-name = "tikv-jemalloc-ctl"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f21f216790c8df74ce3ab25b534e0718da5a1916719771d3fec23315c99e468b"
-dependencies = [
- "libc",
- "paste",
- "tikv-jemalloc-sys",
-]
-
-[[package]]
-name = "tikv-jemalloc-sys"
-version = "0.6.0+5.3.0-1-ge13ca993e8ccb9ba9847cc330696e02839f328f7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd3c60906412afa9c2b5b5a48ca6a5abe5736aec9eb48ad05037a677e52e4e2d"
-dependencies = [
- "cc",
- "libc",
-]
-
-[[package]]
-name = "tikv-jemallocator"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cec5ff18518d81584f477e9bfdf957f5bb0979b0bac3af4ca30b5b3ae2d2865"
-dependencies = [
- "libc",
- "tikv-jemalloc-sys",
 ]
 
 [[package]]
