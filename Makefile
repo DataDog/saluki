@@ -9,11 +9,8 @@ export TARGET_TRIPLE ?= $(shell command -v rustc 1>/dev/null && rustc -vV | sed 
 
 # High-level settings that ultimately get passed down to build-specific targets.
 export APP_FULL_NAME ?= Agent Data Plane
-export CHECKS_FULL_NAME ?= Checks Agent
 export APP_SHORT_NAME ?= data-plane
 export APP_IDENTIFIER ?= adp
-export CHECKS_SHORT_NAME ?= checks-agent
-export CHECKS_IDENTIFIER ?= checks-agent
 export APP_GIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
 export APP_VERSION ?= $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
 
@@ -89,23 +86,23 @@ build-adp: ## Builds the ADP binary in debug mode
 	@echo "[*] Building ADP locally..."
 	@cargo build --profile dev --package agent-data-plane
 	
-.PHONY: build-adp-and-checks
-build-adp-and-checks: check-rust-build-tools
-build-adp-and-checks: ## Builds the ADP binary with python in debug mode
-	@echo "[*] Building ADP with Checks locally..."
-	@cargo build --profile dev --package agent-data-plane --features python-checks
-
-.PHONY: build-checks-agent
-build-checks-agent: check-rust-build-tools
-build-checks-agent: ## Builds the Checks Agent binary in debug mode
-	@echo "[*] Building Checks Agent locally..."
-	@cargo build --profile dev --package checks-agent
-
 .PHONY: build-adp-release
 build-adp-release: check-rust-build-tools
 build-adp-release: ## Builds the ADP binary in release mode
 	@echo "[*] Building ADP locally..."
 	@cargo build --profile release --package agent-data-plane
+	
+.PHONY: build-adp-and-checks
+build-adp-and-checks: check-rust-build-tools
+build-adp-and-checks: ## Builds the ADP binary with python in debug mode
+	@echo "[*] Building ADP with Checks locally..."
+	@cargo build --profile dev --package agent-data-plane --features python-checks
+	
+.PHONY: build-adp-and-checks-release
+build-adp-and-checks-release: check-rust-build-tools
+build-adp-and-checks-release: ## Builds the ADP binary with python in release mode
+	@echo "[*] Building ADP with Checks locally..."
+	@cargo build --profile release --package agent-data-plane --features python-checks
 
 .PHONY: build-adp-image
 build-adp-image: ## Builds the ADP container image in release mode ('latest' tag)
@@ -122,21 +119,23 @@ build-adp-image: ## Builds the ADP container image in release mode ('latest' tag
 		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
-
-.PHONY: build-checks-agent-image
-build-checks-agent-image: ## Builds the ADP container image in release mode ('latest' tag)
-	@echo "[*] Building Check Agent image..."
+		
+.PHONY: build-adp-checks-image
+build-adp-checks-image: ## Builds the ADP + Checks container image in release mode ('latest' tag)
+	@echo "[*] Building ADP image..."
 	@$(CONTAINER_TOOL) build \
-		--tag saluki-images/check-agent:latest \
-		--tag local.dev/saluki-images/check-agent:testing \
+		--tag saluki-images/agent-data-plane:latest \
+		--tag local.dev/saluki-images/agent-data-plane-checks:testing \
 		--build-arg "BUILD_IMAGE=$(ADP_BUILD_IMAGE)" \
 		--build-arg "APP_IMAGE=$(ADP_APP_IMAGE)" \
-		--build-arg "APP_FULL_NAME=$(CHECKS_FULL_NAME)" \
-		--build-arg "APP_SHORT_NAME=$(CHECKS_SHORT_NAME)" \
-		--build-arg "APP_IDENTIFIER=$(CHECKS_IDENTIFIER)" \
+		--build-arg "APP_FULL_NAME=$(APP_FULL_NAME)" \
+		--build-arg "APP_SHORT_NAME=$(APP_SHORT_NAME)" \
+		--build-arg "APP_IDENTIFIER=$(APP_IDENTIFIER)" \
 		--build-arg "APP_VERSION=$(APP_VERSION)" \
 		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
-		--file ./docker/Dockerfile.checks-agent \
+		--build-arg BUILD_FEATURES=python-checks \
+    --build-arg BUILDER_BASE=builder-python \
+		--file ./docker/Dockerfile.agent-data-plane \
 		.
 
 .PHONY: build-datadog-agent-image
@@ -266,36 +265,28 @@ run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/debug/agent-data-plane
 	
-.PHONY: run-adp-standalone-with-checks
-run-adp-standalone-with-checks: build-adp-and-checks
-run-adp-standalone-with-checks: ## Runs ADP locally in standalone mode (debug)
+.PHONY: run-adp-with-checks-standalone
+run-adp-with-checks-standalone: build-adp-and-checks
+run-adp-with-checks-standalone: ## Runs ADP + Checks locally in standalone mode (debug)
 	@echo "[*] Running ADP and checks..."
 	@DD_ADP_STANDALONE_MODE=true \
+	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=check-agent-standalone \
+	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
+	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
+	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	target/debug/agent-data-plane
+	
+.PHONY: run-adp-with-checks
+run-adp-with-checks: build-adp-and-checks
+run-adp-with-checks: ## Runs ADP + Checks locally (debug)
+	@echo "[*] Running ADP and checks..."
+	@DD_ADP_STANDALONE_MODE=false \
+	DD_AUTH_TOKEN_FILE_PATH=../datadog-agent/bin/agent/dist/auth_token \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/debug/agent-data-plane
-
-.PHONY: run-checks-agent-standalone
-run-checks-agent-standalone: build-checks-agent
-run-checks-agent-standalone: ## Runs Checks Agent locally in standalone mode (debug)
-	@echo "[*] Running Checks Agent..."
-	@DD_ADP_STANDALONE_MODE=true \
-	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=check-agent-standalone \
-	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
-	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/checks-agent
-
-.PHONY: run-checks-agent
-run-checks-agent: build-checks-agent
-run-checks-agent: ## Runs Checks Agent alongside the core Agent (debug)
-	@echo "[*] Running Checks Agent..."
-	@DD_ADP_STANDALONE_MODE=false \
-	DD_AUTH_TOKEN_FILE_PATH=../datadog-agent/bin/agent/dist/auth_token \
-	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=check-agent-standalone \
-	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/checks-agent
 
 .PHONY: run-adp-standalone-release
 run-adp-standalone-release: build-adp-release
@@ -607,9 +598,6 @@ emit-build-metadata: ## Emits build metadata shell variables suitable for use du
 	@echo "APP_GIT_HASH=${APP_GIT_HASH}"
 	@echo "APP_VERSION=${APP_VERSION}"
 	@echo "APP_BUILD_TIME=${APP_BUILD_TIME}"
-	@echo "CHECKS_FULL_NAME=${CHECKS_FULL_NAME}"
-	@echo "CHECKS_SHORT_NAME=${CHECKS_SHORT_NAME}"
-	@echo "CHECKS_IDENTIFIER=${CHECKS_IDENTIFIER}"
 
 ##@ Docs
 
