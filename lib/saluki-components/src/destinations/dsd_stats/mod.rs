@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -10,6 +11,7 @@ use saluki_api::{
 };
 use saluki_common::time::get_coarse_unix_timestamp;
 use saluki_config::GenericConfiguration;
+use saluki_context::tags::SharedTagSet;
 use saluki_core::{
     components::{
         destinations::{Destination, DestinationBuilder, DestinationContext},
@@ -19,29 +21,51 @@ use saluki_core::{
 };
 use saluki_error::GenericError;
 use serde_json;
-use tokio::sync::Mutex;
-use tokio::{select, sync::mpsc};
+use stringtheory::MetaString;
+use tokio::sync::{Mutex, OwnedMutexGuard};
+use tokio::time::{Duration, Instant};
+use tokio::{select, sync::mpsc, sync::oneshot};
 use tracing::info;
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct Stats {
-    metrics_received: HashMap<String, MetricSample>,
-}
+
+type StatsRequestReceiver = mpsc::Receiver<(oneshot::Sender<StatsResponse>, u64)>;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MetricSample {
     count: u64,
     last_seen: u64,
 }
+
+#[allow(dead_code)]
+pub enum StatsResponse {
+    /// An existing statistics collection request is running.
+    AlreadyRunning {
+        /// Number of seconds to wait before trying again.
+        try_after: u64,
+    },
+
+    Statistics {
+        /// Start time of the collected metrics, as a Unix timestamp.
+        start_time_unix: u64,
+
+        /// End time of the collected metrics, as a Unix timestamp.
+        end_time_unix: u64,
+
+        /// Collected statistics.
+        stats: HashMap<String, MetricSample>,
+    },
+}
+
 /// Configuration for DogStatsD statistics destination and API handler.
 #[derive(Clone)]
 pub struct DogStatsDStatisticsConfiguration {
     api_handler: DogStatsDAPIHandler,
-    rx: Arc<Mutex<mpsc::Receiver<tokio::sync::oneshot::Sender<Stats>>>>,
+    rx: Arc<Mutex<StatsRequestReceiver>>,
 }
 /// State for the DogStatsD API handler.
 #[derive(Clone)]
 pub struct DogStatsDAPIHandlerState {
-    tx: Arc<mpsc::Sender<tokio::sync::oneshot::Sender<Stats>>>,
+    tx: Arc<mpsc::Sender<(oneshot::Sender<StatsResponse>, u64)>>,
+    config: GenericConfiguration,
 }
 
 /// API handler for dogstatsd stats endpoint.
@@ -52,14 +76,20 @@ pub struct DogStatsDAPIHandler {
 
 /// DogStatsD destination that collects metrics and processes statistics.
 pub struct DogStatsDStats {
-    rx: Arc<Mutex<mpsc::Receiver<tokio::sync::oneshot::Sender<Stats>>>>,
-    stats: Stats,
+    rx: OwnedMutexGuard<StatsRequestReceiver>,
 }
 
 #[async_trait::async_trait]
 impl Destination for DogStatsDStats {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
+        let mut collection_active = false;
+        let mut stats_response_tx: Option<tokio::sync::oneshot::Sender<StatsResponse>> = None;
+        let mut current_stats: Option<HashMap<String, MetricSample>> = None;
+        let mut stats_collection_start_time = 0;
+        let mut stats_collection_end_time = 0;
+        let collection_done = tokio::time::sleep(std::time::Duration::ZERO);
+        tokio::pin!(collection_done);
 
         health.mark_ready();
 
@@ -68,31 +98,105 @@ impl Destination for DogStatsDStats {
                 _ = health.live() => {
                     continue
                 },
-                maybe_request = async { (self.rx.lock().await).recv().await } => {
-                    if let Some(oneshot_tx) = maybe_request {
-                        let _ = oneshot_tx.send(self.stats.clone());
+                Some((response_tx, collection_period_secs)) = self.rx.recv() => {
+                    if collection_active {
+                        // We're already collecting statistics for another stats request
+                        // so inform the caller they need to try again later.
+                        let try_after = stats_collection_end_time - get_coarse_unix_timestamp();
+
+                        // We don't care if we can successfully send back a response or not.
+                        let _ = response_tx.send(StatsResponse::AlreadyRunning { try_after });
+                    } else {
+                        // Start collection.
+                        collection_active = true;
+                        stats_collection_start_time = get_coarse_unix_timestamp();
+                        stats_collection_end_time = stats_collection_start_time + collection_period_secs;
+                        stats_response_tx = Some(response_tx);
+                        current_stats = Some(HashMap::new());
+                        collection_done.as_mut().reset(Instant::now() + Duration::from_secs(collection_period_secs));
                     }
                 }
                 maybe_events = context.events().next() => match maybe_events {
                     Some(events) => {
-                        for event in events {
-                            if let Metric(metric) = event {
-                                let key = metric.context().to_string();
+                        if let Some(stats) = current_stats.as_mut() {
+                            // We're actively collecting, so process the metrics.
+                            for event in events {
+                                if let Metric(metric) = event {
 
-                                let timestamp = get_coarse_unix_timestamp();
-                                let sample = self.stats.metrics_received.entry(key).or_insert_with(|| MetricSample {
-                                    count: 0,
-                                    last_seen: 0,
-                                });
-                                sample.count += 1;
-                                sample.last_seen = timestamp;
+                                    let context = metric.context();
+                                    let new_context = ContextNoOrigin {
+                                        name: context.name().clone(),
+                                        tags: context.tags().clone(),
+                                    };
+                                    let key = new_context.to_string();
+
+
+                                    let timestamp = get_coarse_unix_timestamp();
+                                    let sample = stats.entry(key).or_insert_with(|| MetricSample {
+                                        count: 0,
+                                        last_seen: 0,
+                                    });
+                                    sample.count += 1;
+                                    sample.last_seen = timestamp;
 
                             }
                         }
-                    }
-                    None => break,
+                     }},
+                     None => break,
                 },
+                _ = &mut collection_done, if collection_active => {
+                    collection_active = false;
+
+                    // Build the response.
+                    let stats = match current_stats.take() {
+                        Some(stats) => stats,
+                        None => continue,
+                    };
+
+                    let response = StatsResponse::Statistics {
+                        start_time_unix: stats_collection_start_time,
+                        end_time_unix: stats_collection_end_time,
+                        stats,
+                    };
+
+                    let response_tx = match stats_response_tx.take() {
+                        Some(tx) => tx,
+                        None => continue,
+                    };
+
+                    // We don't care if we can successfully send back a response or not.
+                    let _ = response_tx.send(response);
+                }
+
             }
+        }
+        Ok(())
+    }
+}
+
+struct ContextNoOrigin {
+    name: MetaString,
+    tags: SharedTagSet,
+}
+
+impl fmt::Display for ContextNoOrigin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name)?;
+        if !self.tags.is_empty() {
+            write!(f, "{{")?;
+
+            let mut needs_separator = false;
+            for tag in &self.tags {
+                if needs_separator {
+                    write!(f, ", ")?;
+                } else {
+                    needs_separator = true;
+                }
+
+                write!(f, "{}", tag)?;
+            }
+
+            write!(f, "}}")?;
         }
 
         Ok(())
@@ -101,21 +205,37 @@ impl Destination for DogStatsDStats {
 
 impl DogStatsDAPIHandler {
     async fn stats_handler(State(state): State<DogStatsDAPIHandlerState>) -> (StatusCode, String) {
-        let (oneshot_tx, oneshot_rx) = tokio::sync::oneshot::channel();
+        if !state
+            .config
+            .get_typed_or_default::<bool>("dogstatsd_metrics_stats_enable")
+        {
+            return (StatusCode::NOT_IMPLEMENTED, "DogStatsD metrics stats are not enabled. Please set dogstatsd_metrics_stats_enable to true in the configuration.".to_string());
+        }
 
-        state.tx.send(oneshot_tx).await.unwrap();
+        let (oneshot_tx, oneshot_rx) = oneshot::channel();
+
+        state.tx.send((oneshot_tx, 600)).await.unwrap(); // TODO: use config to set collection period
 
         match oneshot_rx.await {
-            Ok(stats) => {
-                info!("Stats on received events: {:?}", stats);
-                match serde_json::to_string(&stats) {
-                    Ok(json) => (StatusCode::OK, json),
-                    Err(e) => (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Failed to serialize stats: {}", e),
-                    ),
+            Ok(stats) => match stats {
+                StatsResponse::Statistics {
+                    start_time_unix: _,
+                    end_time_unix: _,
+                    stats,
+                } => {
+                    info!("Stats on received events: {:?}", stats);
+                    match serde_json::to_string(&stats) {
+                        Ok(json) => (StatusCode::OK, json),
+                        Err(e) => (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("Failed to serialize stats: {}", e),
+                        ),
+                    }
                 }
-            }
+                StatsResponse::AlreadyRunning { try_after } => {
+                    (StatusCode::TOO_MANY_REQUESTS, format!("Too many requests. Please try again in {} seconds.", try_after))
+                }
+            },
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to receive stats: {}", e),
@@ -138,9 +258,12 @@ impl APIHandler for DogStatsDAPIHandler {
 
 impl DogStatsDStatisticsConfiguration {
     /// Creates a new 'DogStatsDStatisticsConfiguration' from the given configuration.
-    pub fn from_configuration(_: &GenericConfiguration) -> Result<Self, GenericError> {
+    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let (tx, rx) = mpsc::channel(100);
-        let state = DogStatsDAPIHandlerState { tx: Arc::new(tx) };
+        let state = DogStatsDAPIHandlerState {
+            tx: Arc::new(tx),
+            config: config.clone(),
+        };
         let handler = DogStatsDAPIHandler { state };
 
         Ok(Self {
@@ -162,13 +285,8 @@ impl DestinationBuilder for DogStatsDStatisticsConfiguration {
     }
 
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
-        let rx = Arc::clone(&self.rx);
-        Ok(Box::new(DogStatsDStats {
-            rx,
-            stats: Stats {
-                metrics_received: HashMap::new(),
-            },
-        }))
+        let rx = self.rx.clone().try_lock_owned()?;
+        Ok(Box::new(DogStatsDStats { rx }))
     }
 }
 
