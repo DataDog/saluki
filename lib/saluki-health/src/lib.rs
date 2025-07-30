@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     sync::{
         atomic::{AtomicBool, Ordering::Relaxed},
         Arc, Mutex,
@@ -10,11 +10,13 @@ use std::{
 use futures::StreamExt as _;
 use metrics::{gauge, histogram, Gauge, Histogram};
 use saluki_error::{generic_error, GenericError};
-use serde::Serialize;
 use stringtheory::MetaString;
 use tokio::{
     select,
-    sync::mpsc::{self, error::TrySendError},
+    sync::{
+        mpsc::{self, error::TrySendError},
+        Notify,
+    },
     task::JoinHandle,
 };
 use tokio_util::time::{delay_queue::Key, DelayQueue};
@@ -26,12 +28,6 @@ mod api;
 
 const DEFAULT_PROBE_TIMEOUT_DUR: Duration = Duration::from_secs(5);
 const DEFAULT_PROBE_BACKOFF_DUR: Duration = Duration::from_secs(1);
-
-#[derive(Default, Serialize)]
-struct ComponentHealth {
-    ready: bool,
-    live: bool,
-}
 
 /// A handle for updating the health of a component.
 pub struct Health {
@@ -239,10 +235,10 @@ impl HealthUpdate {
 struct Inner {
     registered_components: HashSet<MetaString>,
     component_state: Vec<ComponentState>,
-    component_health: HashMap<MetaString, ComponentHealth>,
     responses_tx: mpsc::Sender<LivenessResponse>,
     responses_rx: Option<mpsc::Receiver<LivenessResponse>>,
-    waiting_new_components: Option<mpsc::Sender<usize>>,
+    pending_components: Vec<usize>,
+    pending_components_notify: Arc<Notify>,
 }
 
 impl Inner {
@@ -252,10 +248,10 @@ impl Inner {
         Self {
             registered_components: HashSet::new(),
             component_state: Vec::new(),
-            component_health: HashMap::new(),
             responses_tx,
             responses_rx: Some(responses_rx),
-            waiting_new_components: None,
+            pending_components: Vec::new(),
+            pending_components_notify: Arc::new(Notify::new()),
         }
     }
 }
@@ -299,36 +295,20 @@ impl HealthRegistry {
 
         // Make sure we don't already have this component registered.
         let name = name.into();
-        if inner.registered_components.contains(&name) {
+        if !inner.registered_components.insert(name.clone()) {
             return None;
         }
 
-        inner.registered_components.insert(name.clone());
-
-        // Create and store the component.
+        // Add the component state.
+        let (state, handle) = ComponentState::new(name.clone(), inner.responses_tx.clone());
         let component_id = inner.component_state.len();
-
-        let (state, handle) = ComponentState::new(name, inner.responses_tx.clone());
         inner.component_state.push(state);
 
-        // Figure out if we need to notify the health runner about the new component.
-        //
-        // We do this because a component could be registered after the health runner has already started, and we need
-        // to be able to wake up the runner to schedule a liveness probe as soon as possible. If the runner hasn't
-        // started, we don't have to do anything, since it will schedule a liveness probe immediately at startup for all
-        // components that are registered.
-        if let Some(sender) = inner.waiting_new_components.as_mut() {
-            // We're in a synchronous call here, but if the runner is, well... running, it should be responding very
-            // quickly, so we do a semi-gross thing and do a fallible synchronous send in a loop until it succeeds.
-            //
-            // Practically, this should always work the very first time unless there's some utter flood of components
-            // being registered at the very same moment... in which case, we're probably in a bad place anyway.
-            loop {
-                if sender.is_closed() || sender.try_send(component_id).is_ok() {
-                    break;
-                }
-            }
-        }
+        debug!(component_id, "Registered component '{}'.", name);
+
+        // Mark ourselves as having a pending component that needs to be scheduled.
+        inner.pending_components.push(component_id);
+        inner.pending_components_notify.notify_one();
 
         Some(handle)
     }
@@ -356,41 +336,29 @@ impl HealthRegistry {
 
     /// Spawns the health registry runner, which manages the scheduling and collection of liveness probes.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the health registry has already been spawned, an error will be returned.
     pub async fn spawn(self) -> Result<JoinHandle<()>, GenericError> {
-        let mut inner = self.inner.lock().unwrap();
-
         // Make sure the runner hasn't already been spawned.
-        if inner.waiting_new_components.is_some() {
-            return Err(generic_error!("health registry already spawned"));
-        }
+        let (responses_rx, pending_components_notify) = {
+            let mut inner = self.inner.lock().unwrap();
+            let responses_rx = match inner.responses_rx.take() {
+                Some(rx) => rx,
+                None => return Err(generic_error!("health registry already spawned")),
+            };
 
-        let responses_rx = match inner.responses_rx.take() {
-            Some(rx) => rx,
-            None => return Err(generic_error!("health registry already spawned")),
+            let pending_components_notify = Arc::clone(&inner.pending_components_notify);
+            (responses_rx, pending_components_notify)
         };
 
-        // Install the channel for sending new components to the runner, and prime the runner to fire off liveness
-        // probes for all components registered at this point.
-        let (new_components_tx, new_components_rx) = mpsc::channel(1);
-        inner.waiting_new_components = Some(new_components_tx);
-
-        let mut pending_probes = DelayQueue::new();
-        for id in 0..inner.component_state.len() {
-            pending_probes.insert(id, Duration::from_nanos(1));
-        }
-
-        drop(inner);
-
-        // Create the runner which we'll then spawn.
+        // Create and spawn the runner.
         let runner = Runner {
             inner: self.inner,
-            pending_probes,
+            pending_probes: DelayQueue::new(),
             pending_timeouts: DelayQueue::new(),
             responses_rx,
-            new_components_rx,
+            pending_components_notify,
         };
 
         Ok(tokio::spawn(runner.run()))
@@ -402,10 +370,16 @@ struct Runner {
     pending_probes: DelayQueue<usize>,
     pending_timeouts: DelayQueue<usize>,
     responses_rx: mpsc::Receiver<LivenessResponse>,
-    new_components_rx: mpsc::Receiver<usize>,
+    pending_components_notify: Arc<Notify>,
 }
 
 impl Runner {
+    fn drain_pending_components(&mut self) -> Vec<usize> {
+        // Drain all pending components.
+        let mut inner = self.inner.lock().unwrap();
+        inner.pending_components.drain(..).collect()
+    }
+
     fn send_component_probe_request(&mut self, component_id: usize) -> Option<HealthUpdate> {
         let mut inner = self.inner.lock().unwrap();
         let component_state = &mut inner.component_state[component_id];
@@ -441,6 +415,10 @@ impl Runner {
         None
     }
 
+    fn schedule_probe_for_component(&mut self, component_id: usize, duration: Duration) {
+        self.pending_probes.insert(component_id, duration);
+    }
+
     fn handle_component_probe_response(&mut self, response: LivenessResponse) {
         let component_id = response.request.component_id;
         let timeout_key = response.request.timeout_key;
@@ -464,7 +442,7 @@ impl Runner {
         self.process_component_health_update(component_id, update);
 
         // Schedule the next probe for this component.
-        self.pending_probes.insert(component_id, DEFAULT_PROBE_BACKOFF_DUR);
+        self.schedule_probe_for_component(component_id, DEFAULT_PROBE_BACKOFF_DUR);
     }
 
     fn handle_component_timeout(&mut self, component_id: usize) {
@@ -472,49 +450,27 @@ impl Runner {
         self.process_component_health_update(component_id, HealthUpdate::Unknown);
 
         // Schedule the next probe for this component.
-        self.pending_probes.insert(component_id, DEFAULT_PROBE_BACKOFF_DUR);
+        self.schedule_probe_for_component(component_id, DEFAULT_PROBE_BACKOFF_DUR);
     }
 
     fn process_component_health_update(&mut self, component_id: usize, update: HealthUpdate) {
         // Update the component's health state based on the given update.
         let mut inner = self.inner.lock().unwrap();
-        {
-            let component_state = &mut inner.component_state[component_id];
-            trace!(component_name = %component_state.name, status = update.as_str(), "Updating component health status.");
+        let component_state = &mut inner.component_state[component_id];
+        trace!(component_name = %component_state.name, status = update.as_str(), "Updating component health status.");
 
-            match update {
-                HealthUpdate::Alive {
-                    last_response,
-                    last_response_latency,
-                } => component_state.mark_live(last_response, last_response_latency),
-                HealthUpdate::Unknown => component_state.mark_not_live(),
-                HealthUpdate::Dead => component_state.mark_dead(),
-            }
+        match update {
+            HealthUpdate::Alive {
+                last_response,
+                last_response_latency,
+            } => component_state.mark_live(last_response, last_response_latency),
+            HealthUpdate::Unknown => component_state.mark_not_live(),
+            HealthUpdate::Dead => component_state.mark_dead(),
         }
-
-        // Update the shared health map with our component's new health status.
-        let (component_name, component_ready, component_live) = {
-            let component_state = &inner.component_state[component_id];
-            (
-                component_state.name.clone(),
-                component_state.is_ready(),
-                component_state.is_live(),
-            )
-        };
-
-        let component_health = inner.component_health.entry(component_name).or_default();
-        component_health.ready = component_ready;
-        component_health.live = component_live;
     }
 
     async fn run(mut self) {
         info!("Health checker running.");
-
-        // Do an initial component health update for each component to ensure the shared health map is populated.
-        let components_len = self.inner.lock().unwrap().component_state.len();
-        for component_id in 0..components_len {
-            self.process_component_health_update(component_id, HealthUpdate::Unknown);
-        }
 
         loop {
             select! {
@@ -539,9 +495,14 @@ impl Runner {
                     self.handle_component_probe_response(response);
                 },
 
-                // A new component has been registered.
-                Some(component_id) = self.new_components_rx.recv() => {
-                    self.pending_probes.insert(component_id, Duration::from_nanos(1));
+                // A component is pending finalization of their registration.
+                _ = self.pending_components_notify.notified() => {
+                    // Drain all pending components, give them a clean initial state of "unknown", and immediately schedule a probe for them.
+                    let pending_component_ids = self.drain_pending_components();
+                    for pending_component_id in pending_component_ids {
+                        self.process_component_health_update(pending_component_id, HealthUpdate::Unknown);
+                        self.schedule_probe_for_component(pending_component_id, Duration::from_nanos(1));
+                    }
                 },
             }
         }
