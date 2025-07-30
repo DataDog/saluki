@@ -243,7 +243,7 @@ async fn create_topology(
             .add_transform("preaggr_processing", preaggr_processing)?
             .add_encoder("preaggr_dd_metrics_encode", preaggr_dd_metrics_config)?
             .add_forwarder("preaggr_dd_out", preaggr_dd_forwarder_config)?
-            .connect_component("preaggr_processing", ["enrich"])?
+            .connect_component("preaggr_processing", ["dsd_enrich"])?
             .connect_component("preaggr_dd_metrics_encode", ["preaggr_processing"])?
             .connect_component("preaggr_dd_out", ["preaggr_dd_metrics_encode"])?;
     }

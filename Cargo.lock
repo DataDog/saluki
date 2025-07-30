@@ -3300,7 +3300,6 @@ dependencies = [
  "bytes",
  "crossbeam-queue",
  "foldhash",
- "hashbrown 0.15.4",
  "http-body",
  "http-body-util",
  "indexmap 2.10.0",
@@ -3392,7 +3391,6 @@ name = "saluki-context"
 version = "0.1.0"
 dependencies = [
  "crossbeam-queue",
- "hashbrown 0.15.4",
  "indexmap 2.10.0",
  "memchr",
  "metrics",
@@ -3506,6 +3504,7 @@ dependencies = [
  "futures",
  "metrics",
  "saluki-api",
+ "saluki-common",
  "saluki-error",
  "serde",
  "serde_json",
