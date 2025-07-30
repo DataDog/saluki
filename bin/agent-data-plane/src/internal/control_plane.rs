@@ -1,7 +1,7 @@
 use std::future::pending;
 
 use memory_accounting::ComponentRegistry;
-use saluki_app::{api::APIBuilder, prelude::acquire_logging_api_handler};
+use saluki_app::{api::APIBuilder, config::ConfigAPIHandler, prelude::acquire_logging_api_handler};
 use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -39,6 +39,7 @@ pub fn spawn_control_plane(
     let privileged_api = APIBuilder::new()
         .with_self_signed_tls()
         .with_optional_handler(acquire_logging_api_handler())
+        .with_optional_handler(config.get_refreshable_handle().map(ConfigAPIHandler::from_state))
         .with_optional_handler(env_provider.workload_api_handler());
 
     let init = async move {
@@ -93,6 +94,7 @@ async fn configure_and_spawn_api_endpoints(
             config,
             local_secure_api_listen_addr,
             prometheus_listen_addr,
+            config.get_refreshable_handle(),
         )
         .await?;
         let remote_agent_service = remote_agent_config.spawn().await;
