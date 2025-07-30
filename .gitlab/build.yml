@@ -19,6 +19,7 @@
       --build-arg APP_IMAGE=${ADP_APP_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg BUILD_FEATURES=${BUILD_FEATURES}
+      --build-arg BUILDER_BASE=${BUILDER_BASE}
       --build-arg APP_FULL_NAME="${APP_FULL_NAME}"
       --build-arg APP_SHORT_NAME=${APP_SHORT_NAME}
       --build-arg APP_IDENTIFIER=${APP_IDENTIFIER}
@@ -59,6 +60,13 @@ build-adp-image-fips:
     IMAGE_TAG: ${ADP_FULL_IMAGE_TAG_FIPS}
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
+    
+build-adp-checks-image:
+  extends: [.build-common-variables, .build-adp-definition]
+  variables:
+    IMAGE_TAG: ${ADP_CHECKS_FULL_IMAGE_TAG}
+    BUILD_FEATURES: "python-checks"
+    BUILDER_BASE: "builder-python"
     
 # Finally, we publish our internal images after running through a small build process to add some necessary tooling
 # required for the images to be deployed/used internally.
@@ -113,6 +121,7 @@ display-image-tags:
   needs:
     - build-adp-image
     - build-adp-image-fips
+    - build-adp-checks-image
     - publish-adp-image-internal
     - publish-adp-image-internal-fips
   script:
@@ -123,4 +132,7 @@ display-image-tags:
       ## Internal (baked with necessary tools for internal deployments)
       Non-FIPS: ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG}
       FIPS:     ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG_FIPS}
+      
+      # ADP + Checks
+      Non-FIPS: ${IMAGE_REGISTRY}/${ADP_CHECKS_TAG}
       EOF

@@ -8,6 +8,7 @@
   - export COMPARISON_SALUKI_SHA="${CI_COMMIT_SHA}"
   - export BASELINE_SALUKI_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-${CI_PIPELINE_ID}-${BASELINE_SALUKI_SHA}"
   - export BASELINE_SALUKI_AND_CHECK_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-checks-${CI_PIPELINE_ID}-${BASELINE_SALUKI_SHA}"
+  - export COMPARISON_SALUKI_AND_CHECK_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-checks-${CI_PIPELINE_ID}-${COMPARISON_SALUKI_SHA}"
   - export COMPARISON_SALUKI_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-${CI_PIPELINE_ID}-${COMPARISON_SALUKI_SHA}"
   - export BASELINE_DSD_VERSION="${PUBLIC_DSD_VERSION}"
   - export COMPARISON_DSD_VERSION="${PUBLIC_DSD_VERSION}"
@@ -76,6 +77,41 @@ build-adp-check-image:
       --platform linux/amd64
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${BASELINE_SALUKI_AND_CHECK_IMG}
+      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
+      --build-arg BUILD_PROFILE=${BUILD_PROFILE}
+      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
+      --build-arg APP_GIT_HASH=${COMPARISON_SALUKI_SHA}
+      --build-arg BUILD_FEATURES=python-checks
+      --build-arg BUILDER_BASE=builder-python
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --push
+      .
+      
+build-adp-check-comparison-image:
+  extends: .build-common-variables
+  stage: benchmark
+  image: "${SALUKI_SMP_CI_IMAGE}"
+  needs: []
+  retry: 2
+  timeout: 12m
+  before_script:
+    - *setup-smp-env
+  variables:
+    AWS_NAMED_PROFILE: single-machine-performance
+  script:
+    # Initialize our AWS credentials.
+    - ./test/smp/configure-smp-aws-credentials.sh
+
+    # Actually build.
+    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
+    - docker buildx build
+      --platform linux/amd64
+      --file ./docker/Dockerfile.agent-data-plane
+      --tag ${COMPARISON_SALUKI_AND_CHECK_IMG}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
@@ -279,8 +315,8 @@ run-benchmarks-adp-and-checks:
   timeout: 1h
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs:
-    - build-adp-baseline-image
     - build-adp-check-image
+    - build-adp-check-comparison-image
   allow_failure: true
   before_script:
     - *setup-smp-env
@@ -308,8 +344,8 @@ run-benchmarks-adp-and-checks:
     # Run SMP against our converged Agent image.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job submit
-      --baseline-image ${BASELINE_SALUKI_IMG}
-      --comparison-image ${BASELINE_SALUKI_AND_CHECK_IMG}
+      --baseline-image ${BASELINE_SALUKI_AND_CHECK_IMG}
+      --comparison-image ${COMPARISON_SALUKI_AND_CHECK_IMG}
       --baseline-sha ${BASELINE_SALUKI_SHA}
       --comparison-sha ${COMPARISON_SALUKI_SHA}
       --target-config-dir ./test/smp/regression/adp-checks-agent/
@@ -412,9 +448,7 @@ comment-smp-result-links:
   needs:
     - run-benchmarks-adp
     - run-benchmarks-dsd
-    - run-benchmarks-checks-agent
     - run-benchmarks-adp-and-checks
-    - run-benchmarks-checks-agent-go
   image: "${SALUKI_SMP_CI_IMAGE}"
   before_script:
     - *setup-smp-env
