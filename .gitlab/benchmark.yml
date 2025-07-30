@@ -75,14 +75,13 @@ build-adp-check-image:
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx build
       --platform linux/amd64
-      --file ./docker/Dockerfile.agent-data-plane
+      --file ./docker/Dockerfile.adp-checks-smp
       --tag ${BASELINE_SALUKI_AND_CHECK_IMG}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${COMPARISON_SALUKI_SHA}
       --build-arg BUILD_FEATURES=python-checks
-      --build-arg BUILDER_BASE=builder-python
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
@@ -110,14 +109,13 @@ build-adp-check-comparison-image:
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx build
       --platform linux/amd64
-      --file ./docker/Dockerfile.agent-data-plane
+      --file ./docker/Dockerfile.adp-checks-smp
       --tag ${COMPARISON_SALUKI_AND_CHECK_IMG}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${COMPARISON_SALUKI_SHA}
       --build-arg BUILD_FEATURES=python-checks
-      --build-arg BUILDER_BASE=builder-python
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
