@@ -6,18 +6,18 @@ use crate::config::DogstatsdConfig;
 
 pub async fn handle_dogstatsd_subcommand(config: DogstatsdConfig) {
     match config {
-        DogstatsdConfig::Stats => {
+        DogstatsdConfig::Stats(config) => {
             let client = reqwest::Client::builder()
                 .danger_accept_invalid_certs(true)
                 .build()
                 .unwrap();
-            handle_dogstatsd_stats(client).await;
+            handle_dogstatsd_stats(client, config.collection_duration_secs).await;
         }
     }
 }
 
-async fn handle_dogstatsd_stats(client: reqwest::Client) {
-    let response = client.get("https://localhost:5101/dogstatsd/stats").send().await;
+async fn handle_dogstatsd_stats(client: reqwest::Client, collection_duration_secs: u64) {
+    let response = client.get("https://localhost:5101/dogstatsd/stats").query(&[("duration_secs", collection_duration_secs)]).send().await;
 
     match response {
         Ok(response) => match response.text().await {

@@ -62,5 +62,12 @@ pub struct SetLogLevelConfig {
 pub enum DogstatsdConfig {
     /// Prints basic statistics about the metrics received by the data plane.
     #[command(name = "stats")]
-    Stats,
+    Stats(DogstatsdStatsConfig),
+}
+
+#[derive(Args, Debug)]
+pub struct DogstatsdStatsConfig {
+    /// Amount of time to collect statistics for, in seconds.
+    #[arg(required = true)]
+    pub collection_duration_secs: u64,
 }

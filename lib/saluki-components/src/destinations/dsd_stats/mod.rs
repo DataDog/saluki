@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_api::{
-    extract::State,
+    extract::{Query, State},
     routing::{get, Router},
     APIHandler, StatusCode,
 };
@@ -21,15 +21,18 @@ use saluki_core::{
 };
 use saluki_error::GenericError;
 use serde_json;
+use serde::{Deserialize, Serialize};
 use stringtheory::MetaString;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio::time::{Duration, Instant};
 use tokio::{select, sync::mpsc, sync::oneshot};
 use tracing::info;
 
+
+
 type StatsRequestReceiver = mpsc::Receiver<(oneshot::Sender<StatsResponse>, u64)>;
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct MetricSample {
     count: u64,
     last_seen: u64,
@@ -203,18 +206,30 @@ impl fmt::Display for ContextNoOrigin {
     }
 }
 
+#[derive(Deserialize)]
+struct StatsQueryParams {
+    collection_duration_secs: u64,
+}
+
 impl DogStatsDAPIHandler {
-    async fn stats_handler(State(state): State<DogStatsDAPIHandlerState>) -> (StatusCode, String) {
+    async fn stats_handler(State(state): State<DogStatsDAPIHandlerState>, Query(query): Query<StatsQueryParams>) -> (StatusCode, String) {
         if !state
             .config
             .get_typed_or_default::<bool>("dogstatsd_metrics_stats_enable")
         {
             return (StatusCode::NOT_IMPLEMENTED, "DogStatsD metrics stats are not enabled. Please set dogstatsd_metrics_stats_enable to true in the configuration.".to_string());
         }
+        const MAXIMUM_COLLECTION_DURATION_SECS: u64 = 600;
+        if query.collection_duration_secs > MAXIMUM_COLLECTION_DURATION_SECS {
+            return (StatusCode::BAD_REQUEST, format!("Collection duration cannot be greater than {} seconds.", MAXIMUM_COLLECTION_DURATION_SECS));
+        }
+
+        // Parse the collection duration.
+        let collection_duration = query.collection_duration_secs;
 
         let (oneshot_tx, oneshot_rx) = oneshot::channel();
 
-        state.tx.send((oneshot_tx, 600)).await.unwrap(); // TODO: use config to set collection period
+        state.tx.send((oneshot_tx, collection_duration)).await.unwrap(); // TODO: use config to set collection period
 
         match oneshot_rx.await {
             Ok(stats) => match stats {
