@@ -13,7 +13,6 @@
   - export BASELINE_DSD_VERSION="${PUBLIC_DSD_VERSION}"
   - export COMPARISON_DSD_VERSION="${PUBLIC_DSD_VERSION}"
   - export SOURCE_DSD_IMG="public.ecr.aws/datadog/dogstatsd:${PUBLIC_DSD_VERSION}"
-  - export SOURCE_CHECK_AGENT_GO_SHA="f61d1f4e054b884cb1894254ab2714b84b4684cb"
   - export BASELINE_DSD_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:dogstatsd-${PUBLIC_DSD_VERSION}"
   - export COMPARISON_DSD_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:dogstatsd-${PUBLIC_DSD_VERSION}"
 
