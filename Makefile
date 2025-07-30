@@ -86,17 +86,23 @@ build-adp: ## Builds the ADP binary in debug mode
 	@echo "[*] Building ADP locally..."
 	@cargo build --profile dev --package agent-data-plane
 	
-.PHONY: build-adp-and-checks
-build-adp-and-checks: check-rust-build-tools
-build-adp-and-checks: ## Builds the ADP binary with python in debug mode
-	@echo "[*] Building ADP with Checks locally..."
-	@cargo build --profile dev --package agent-data-plane --features python-checks
-
 .PHONY: build-adp-release
 build-adp-release: check-rust-build-tools
 build-adp-release: ## Builds the ADP binary in release mode
 	@echo "[*] Building ADP locally..."
 	@cargo build --profile release --package agent-data-plane
+	
+.PHONY: build-adp-and-checks
+build-adp-and-checks: check-rust-build-tools
+build-adp-and-checks: ## Builds the ADP binary with python in debug mode
+	@echo "[*] Building ADP with Checks locally..."
+	@cargo build --profile dev --package agent-data-plane --features python-checks
+	
+.PHONY: build-adp-and-checks-release
+build-adp-and-checks-release: check-rust-build-tools
+build-adp-and-checks-release: ## Builds the ADP binary with python in release mode
+	@echo "[*] Building ADP with Checks locally..."
+	@cargo build --profile release --package agent-data-plane --features python-checks
 
 .PHONY: build-adp-image
 build-adp-image: ## Builds the ADP container image in release mode ('latest' tag)
@@ -111,6 +117,24 @@ build-adp-image: ## Builds the ADP container image in release mode ('latest' tag
 		--build-arg "APP_IDENTIFIER=$(APP_IDENTIFIER)" \
 		--build-arg "APP_VERSION=$(APP_VERSION)" \
 		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
+		--file ./docker/Dockerfile.agent-data-plane \
+		.
+		
+.PHONY: build-adp-checks-image
+build-adp-checks-image: ## Builds the ADP + Checks container image in release mode ('latest' tag)
+	@echo "[*] Building ADP image..."
+	@$(CONTAINER_TOOL) build \
+		--tag saluki-images/agent-data-plane:latest \
+		--tag local.dev/saluki-images/agent-data-plane-checks:testing \
+		--build-arg "BUILD_IMAGE=$(ADP_BUILD_IMAGE)" \
+		--build-arg "APP_IMAGE=$(ADP_APP_IMAGE)" \
+		--build-arg "APP_FULL_NAME=$(APP_FULL_NAME)" \
+		--build-arg "APP_SHORT_NAME=$(APP_SHORT_NAME)" \
+		--build-arg "APP_IDENTIFIER=$(APP_IDENTIFIER)" \
+		--build-arg "APP_VERSION=$(APP_VERSION)" \
+		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
+		--build-arg BUILD_FEATURES=python-checks \
+    --build-arg BUILDER_BASE=builder-python \
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
 
@@ -241,11 +265,23 @@ run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/debug/agent-data-plane
 	
-.PHONY: run-adp-standalone-with-checks
-run-adp-standalone-with-checks: build-adp-and-checks
-run-adp-standalone-with-checks: ## Runs ADP locally in standalone mode (debug)
+.PHONY: run-adp-with-checks-standalone
+run-adp-with-checks-standalone: build-adp-and-checks
+run-adp-with-checks-standalone: ## Runs ADP + Checks locally in standalone mode (debug)
 	@echo "[*] Running ADP and checks..."
 	@DD_ADP_STANDALONE_MODE=true \
+	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=check-agent-standalone \
+	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
+	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
+	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	target/debug/agent-data-plane
+	
+.PHONY: run-adp-with-checks
+run-adp-with-checks: build-adp-and-checks
+run-adp-with-checks: ## Runs ADP + Checks locally (debug)
+	@echo "[*] Running ADP and checks..."
+	@DD_ADP_STANDALONE_MODE=false \
+	DD_AUTH_TOKEN_FILE_PATH=../datadog-agent/bin/agent/dist/auth_token \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
