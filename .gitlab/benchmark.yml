@@ -65,14 +65,10 @@ build-adp-check-image:
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
-  timeout: 20m
+  timeout: 12m
   before_script:
     - *setup-smp-env
   variables:
-    # Compiling Rust is intensive. ¯\_(ツ)_/¯
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_MEMORY_REQUEST: "8Gi"
-    KUBERNETES_MEMORY_LIMIT: "12Gi"
     AWS_NAMED_PROFILE: single-machine-performance
   script:
     # Initialize our AWS credentials.
@@ -81,7 +77,7 @@ build-adp-check-image:
     # Actually build.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx build
-      --platform linux/amd64,linux/arm64
+      --platform linux/amd64
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${BASELINE_SALUKI_AND_CHECK_IMG}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
