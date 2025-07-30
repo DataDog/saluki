@@ -123,11 +123,4 @@ display-image-tags:
       ## Internal (baked with necessary tools for internal deployments)
       Non-FIPS: ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG}
       FIPS:     ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG_FIPS}
-<<<<<<< HEAD
-
-      # checks-agent Image Tags
-      ## Internal (baked with necessary tools for internal deployments)
-      Non-FIPS: ${CHECKS_AGENT_FULL_IMAGE_TAG}
-=======
->>>>>>> 6ecc328f (remove all related code to bin/checks-agent and all CI jobs)
       EOF
