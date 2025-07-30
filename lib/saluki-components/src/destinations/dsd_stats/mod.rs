@@ -232,9 +232,10 @@ impl DogStatsDAPIHandler {
                         ),
                     }
                 }
-                StatsResponse::AlreadyRunning { try_after } => {
-                    (StatusCode::TOO_MANY_REQUESTS, format!("Too many requests. Please try again in {} seconds.", try_after))
-                }
+                StatsResponse::AlreadyRunning { try_after } => (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    format!("Too many requests. Please try again in {} seconds.", try_after),
+                ),
             },
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
