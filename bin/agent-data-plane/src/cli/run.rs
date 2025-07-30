@@ -2,6 +2,8 @@ use std::time::{Duration, Instant};
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
+#[cfg(feature = "python-checks")]
+use saluki_components::sources::ChecksConfiguration;
 use saluki_components::{
     encoders::{
         BufferedIncrementalConfiguration, DatadogEventsConfiguration, DatadogMetricsConfiguration,
@@ -211,6 +213,8 @@ async fn create_topology(
             ["dd_metrics_encode", "dd_events_encode", "dd_service_checks_encode"],
         )?;
 
+    add_checks_to_blueprint(&mut blueprint, configuration, env_provider)?;
+
     if configuration.get_typed_or_default::<bool>("enable_preaggr_pipeline") {
         let preaggr_dd_url = configuration
             .try_get_typed::<String>("preaggr_dd_url")
@@ -245,6 +249,32 @@ async fn create_topology(
     }
 
     Ok(blueprint)
+}
+
+fn add_checks_to_blueprint(
+    blueprint: &mut TopologyBlueprint, configuration: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
+) -> Result<(), GenericError> {
+    #[cfg(feature = "python-checks")]
+    {
+        let checks_config = ChecksConfiguration::from_configuration(configuration)
+            .error_context("Failed to configure Python checks source.")?
+            .with_autodiscovery_provider(env_provider.autodiscovery().clone());
+
+        blueprint
+            .add_source("checks_in", checks_config)?
+            .connect_component("dd_metrics_encode", ["checks_in"])?;
+
+        Ok(())
+    }
+
+    #[cfg(not(feature = "python-checks"))]
+    {
+        // Suppress unused variable warning
+        let _ = blueprint;
+        let _ = configuration;
+        let _ = env_provider;
+        Ok(())
+    }
 }
 
 fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {

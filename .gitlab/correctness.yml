@@ -91,7 +91,7 @@ run-ground-truth:
       --millstone-config-path $(pwd)/test/correctness/millstone.yaml
       --metrics-intake-image ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
       --metrics-intake-config-path $(pwd)/test/correctness/metrics-intake.yaml
-      --dsd-image gcr.io/datadoghq/dogstatsd:${PUBLIC_DD_AGENT_VERSION}
+      --dsd-image gcr.io/datadoghq/dogstatsd:${PUBLIC_DSD_VERSION}
       --dsd-config-path $(pwd)/test/correctness/datadog-no-origin-detection.yaml
       --adp-image ${ADP_FULL_IMAGE_TAG}
       --adp-config-path $(pwd)/test/correctness/datadog-no-origin-detection.yaml
