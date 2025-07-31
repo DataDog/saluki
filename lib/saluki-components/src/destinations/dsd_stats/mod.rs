@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -34,8 +33,7 @@ pub struct MetricSample {
     count: u64,
     last_seen: u64,
 }
-
-#[allow(dead_code)]
+#[derive(Serialize)]
 pub enum StatsResponse {
     /// An existing statistics collection request is running.
     AlreadyRunning {
@@ -51,7 +49,7 @@ pub enum StatsResponse {
         end_time_unix: u64,
 
         /// Collected statistics.
-        stats: HashMap<String, MetricSample>,
+        stats: HashMap<ContextNoOrigin, MetricSample>,
     },
 }
 
@@ -84,7 +82,7 @@ impl Destination for DogStatsDStats {
         let mut health = context.take_health_handle();
         let mut collection_active = false;
         let mut stats_response_tx: Option<tokio::sync::oneshot::Sender<StatsResponse>> = None;
-        let mut current_stats: Option<HashMap<String, MetricSample>> = None;
+        let mut current_stats: Option<HashMap<ContextNoOrigin, MetricSample>> = None;
         let mut stats_collection_start_time = 0;
         let mut stats_collection_end_time = 0;
         let collection_done = tokio::time::sleep(std::time::Duration::ZERO);
@@ -127,10 +125,9 @@ impl Destination for DogStatsDStats {
                                         name: context.name().clone(),
                                         tags: context.tags().clone(),
                                     };
-                                    let key = new_context.to_string();
 
                                     let timestamp = get_coarse_unix_timestamp();
-                                    let sample = stats.entry(key).or_default();
+                                    let sample = stats.entry(new_context).or_default();
                                     sample.count += 1;
                                     sample.last_seen = timestamp;
 
@@ -169,35 +166,11 @@ impl Destination for DogStatsDStats {
     }
 }
 
-struct ContextNoOrigin {
+#[derive(Eq, Hash, PartialEq, Serialize)]
+pub struct ContextNoOrigin {
     name: MetaString,
     tags: SharedTagSet,
 }
-
-impl fmt::Display for ContextNoOrigin {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.name)?;
-        if !self.tags.is_empty() {
-            write!(f, "{{")?;
-
-            let mut needs_separator = false;
-            for tag in &self.tags {
-                if needs_separator {
-                    write!(f, ", ")?;
-                } else {
-                    needs_separator = true;
-                }
-
-                write!(f, "{}", tag)?;
-            }
-
-            write!(f, "}}")?;
-        }
-
-        Ok(())
-    }
-}
-
 #[derive(Deserialize)]
 struct StatsQueryParams {
     collection_duration_secs: u64,

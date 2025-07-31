@@ -41,6 +41,7 @@ async fn handle_dogstatsd_stats(client: reqwest::Client, collection_duration_sec
 }
 
 async fn format_stats(body: &str) -> String {
+    println!("body: {}", body);
     match from_str::<serde_json::Value>(body) {
         Ok(json) => {
             let mut output = String::new();
@@ -52,6 +53,7 @@ async fn format_stats(body: &str) -> String {
             output.push_str(&format!("{:-<40}-|-{:-<20}-|-{:-<10}-|-{:-<20}\n", "", "", "", ""));
 
             if let Some(stats_obj) = json.as_object() {
+                println!("stats_obj: {:?}", stats_obj);
                 for (key, metric) in stats_obj {
                     let (parsed_name, parsed_tags) = if let Some(parts) = key.split_once('{') {
                         let name = parts.0;
