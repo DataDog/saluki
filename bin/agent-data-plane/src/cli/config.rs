@@ -1,3 +1,4 @@
+use saluki_common::scrubber;
 use tracing::{error, info};
 
 /// Handles the config subcommand.
@@ -21,10 +22,15 @@ async fn get_config(client: reqwest::Client) {
     };
 
     if response.status().is_success() {
-        let text = response.text().await.unwrap_or_default();
-        let yaml_value: serde_yaml::Value = serde_yaml::from_str(&text).unwrap_or_default();
+        let bytes = response.bytes().await.unwrap_or_default();
+
+        let scrubber = scrubber::default_scrubber();
+        let scrubbed_bytes = scrubber.scrub_bytes(&bytes).await;
+
+        let yaml_value: serde_yaml::Value = serde_yaml::from_slice(&scrubbed_bytes).unwrap();
         let yaml = serde_yaml::to_string(&yaml_value).unwrap_or_default();
-        info!("{}", yaml);
+
+        info!("\n{}", yaml);
     } else {
         error!("Failed to retrieve config: {}.", response.status());
     }

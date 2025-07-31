@@ -19,10 +19,12 @@ memory-accounting = { workspace = true }
 papaya = { workspace = true }
 pin-project = { workspace = true }
 quick_cache = { workspace = true }
+regex = { workspace = true, features = ["unicode-perl", "unicode-case"] }
 saluki-error = { workspace = true }
 saluki-metrics = { workspace = true }
+serde_yaml = { workspace = true }
 sha3 = { workspace = true }
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["rt", "io-util", "macros", "rt-multi-thread"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
