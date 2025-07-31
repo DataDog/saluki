@@ -22,7 +22,7 @@ The release process for ADP roughly looks like this:
 - Fill in the appropriate Git tag (see ["Determining the version"](#determining-the-version) below) and click
   `Create new tag ... on publish`.
 - Leave `Previous tag` at `auto`, and change `Release title` to `Agent Data Plane <version>`, where `<version>` is the
-  Git tag being created. (i.e., `Agent Data Plane v0.2.0`)
+  Git tag being created. (e.g., `Agent Data Plane 0.2.0`)
 - Click the `Generate release notes` to automatically populate the relevant changes since the last release.
 - If there are any additional notes that should be included, add a new section, called `Additional Notes`, at the top of
   the release notes. (above the auto-generated `What's Changed` section)
@@ -38,19 +38,19 @@ The release process for ADP roughly looks like this:
 - Once triggered, they should run to completion.
 - Once complete, you should be able to navigate to a public container image registry that we use, such as
   [Docker Hub](https://hub.docker.com/r/datadog/agent-data-plane/tags), and find the resulting images: if the tag was
-  `v0.2.0`, you should be able to see a recently-published image with a tag that looks like `0.2.0` and `0.2.0-fips`.
+  `0.2.0`, you should be able to see a recently-published image with a tag that looks like `0.2.0` and `0.2.0-fips`.
 - Finally, create a PR that bumps the version of ADP to the next development version. Again, see
   ["Determining the version"](#determining-the-version) below for information on how we version ADP.
 
 ## Determining the version
 
 > [!NOTE]
-> Git tags **must** be in the format of `vX.Y.Z`.
+> Git tags **must** be in the format of `X.Y.Z`.
 
-For ADP, we use the Git tag to drive the versioning of the release artifacts themselves, but the tag is expected to match
-the version of the `agent-data-plane` crate. This is due to use the version of the `agent-data-plane` crate itself for embedding
-static metadata in the ADP binaries. The version of the ADP binary can be found in the `bin/agent-data-plane/Cargo.toml` file,
-under the `version` field.
+For ADP, we use the Git tag to drive the versioning of the release artifacts themselves, but the tag is expected to match the
+version of the `agent-data-plane` crate. This is due to how we use the version of the `agent-data-plane` crate itself for
+embedding static metadata in the ADP binaries. The version of the ADP binary can be found in the
+`bin/agent-data-plane/Cargo.toml` file, under the `version` field.
 
 In some cases, we may need to bump the version of ADP _prior_ to release if there are any breaking changes that will be included.
 See the subsection below on what constitutes a breaking change. In many cases, it will be sufficient to simply use the current
