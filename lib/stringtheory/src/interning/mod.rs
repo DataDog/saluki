@@ -29,6 +29,31 @@ pub trait Interner {
     fn try_intern(&self, s: &str) -> Option<InternedString>;
 }
 
+impl<T> Interner for &T
+where
+    T: Interner,
+{
+    fn is_empty(&self) -> bool {
+        (**self).is_empty()
+    }
+
+    fn len(&self) -> usize {
+        (**self).len()
+    }
+
+    fn len_bytes(&self) -> usize {
+        (**self).len_bytes()
+    }
+
+    fn capacity_bytes(&self) -> usize {
+        (**self).capacity_bytes()
+    }
+
+    fn try_intern(&self, s: &str) -> Option<InternedString> {
+        (**self).try_intern(s)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum InternedStringState {
     GenericMap(self::map::StringState),
