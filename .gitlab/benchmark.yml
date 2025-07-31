@@ -21,10 +21,7 @@ build-adp-baseline-image:
   stage: benchmark
   # Don't run benchmarks unless it's a PR, basically.
   rules:
-    - if: !reference [.on_official_release, rules, if]
-      when: never
-    - if: !reference [.on_main, rules, if]
-      when: never
+    - if: !reference [.on_development_branch, rules, if]
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
@@ -66,10 +63,7 @@ build-adp-comparison-image:
   stage: benchmark
   # Don't run benchmarks unless it's a PR, basically.
   rules:
-    - if: !reference [.on_official_release, rules, if]
-      when: never
-    - if: !reference [.on_main, rules, if]
-      when: never
+    - if: !reference [.on_development_branch, rules, if]
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
@@ -105,10 +99,7 @@ build-adp-check-image:
   stage: benchmark
   # Don't run benchmarks unless it's a PR, basically.
   rules:
-    - if: !reference [.on_official_release, rules, if]
-      when: never
-    - if: !reference [.on_main, rules, if]
-      when: never
+    - if: !reference [.on_development_branch, rules, if]
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
@@ -145,10 +136,7 @@ build-adp-check-comparison-image:
   stage: benchmark
   # Don't run benchmarks unless it's a PR, basically.
   rules:
-    - if: !reference [.on_official_release, rules, if]
-      when: never
-    - if: !reference [.on_main, rules, if]
-      when: never
+    - if: !reference [.on_development_branch, rules, if]
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
@@ -184,10 +172,7 @@ mirror-dsd-image-to-smp-ecr:
   stage: benchmark
   # Don't run benchmarks unless it's a PR, basically.
   rules:
-    - if: !reference [.on_official_release, rules, if]
-      when: never
-    - if: !reference [.on_main, rules, if]
-      when: never
+    - if: !reference [.on_development_branch, rules, if]
   needs: []
   image: "${SALUKI_SMP_CI_IMAGE}"
   before_script:
@@ -208,10 +193,7 @@ run-benchmarks-adp:
   stage: benchmark
   # Don't run benchmarks unless it's a PR, basically.
   rules:
-    - if: !reference [.on_official_release, rules, if]
-      when: never
-    - if: !reference [.on_main, rules, if]
-      when: never
+    - if: !reference [.on_development_branch, rules, if]
   timeout: 1h
   needs:
     - build-adp-baseline-image
@@ -281,10 +263,7 @@ run-benchmarks-dsd:
   stage: benchmark
   # Don't run benchmarks unless it's a PR, basically.
   rules:
-    - if: !reference [.on_official_release, rules, if]
-      when: never
-    - if: !reference [.on_main, rules, if]
-      when: never
+    - if: !reference [.on_development_branch, rules, if]
   timeout: 1h
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs:
@@ -353,10 +332,7 @@ run-benchmarks-adp-and-checks:
   stage: benchmark
   # Don't run benchmarks unless it's a PR, basically.
   rules:
-    - if: !reference [.on_official_release, rules, if]
-      when: never
-    - if: !reference [.on_main, rules, if]
-      when: never
+    - if: !reference [.on_development_branch, rules, if]
   timeout: 1h
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs:
@@ -426,10 +402,7 @@ comment-smp-result-links:
   stage: benchmark
   # Don't run benchmarks unless it's a PR, basically.
   rules:
-    - if: !reference [.on_official_release, rules, if]
-      when: never
-    - if: !reference [.on_main, rules, if]
-      when: never
+    - if: !reference [.on_development_branch, rules, if]
   needs:
     - run-benchmarks-adp
     - run-benchmarks-dsd
