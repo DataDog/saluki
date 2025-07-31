@@ -30,7 +30,7 @@ The release process for ADP roughly looks like this:
 - Go to the [Gitlab CI pipelines dashboard](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines) for the repository and
   find the pipeline that was triggered for the newly-created Git tag. It may take a minute or two for the repository
   sync and pipeline creation to occur.
-- The pipeline should progress through the `test`, `build`, `correctness`, `benchmark`, and `release` stages without
+- The pipeline should progress through the `test`, `build`, `correctness`, and `release` stages without
   issue.
 - Once all stages have completed, the `release` stage will have two blocked jobs: `publish-standalone-adp-image-linux` and
   `publish-standalone-adp-image-linux-fips`. These jobs perform the actual publishing of the container images to our public
