@@ -19,6 +19,12 @@
 build-adp-baseline-image:
   extends: .build-common-variables
   stage: benchmark
+  # Don't run benchmarks unless it's a PR, basically.
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+      when: never
+    - if: !reference [.on_main, rules, if]
+      when: never
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
@@ -54,10 +60,55 @@ build-adp-baseline-image:
       --label ci.job_id=${CI_JOB_ID}
       --push
       .
-      
+
+build-adp-comparison-image:
+  extends: .build-common-variables
+  stage: benchmark
+  # Don't run benchmarks unless it's a PR, basically.
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+      when: never
+    - if: !reference [.on_main, rules, if]
+      when: never
+  image: "${SALUKI_SMP_CI_IMAGE}"
+  needs: []
+  retry: 2
+  timeout: 12m
+  before_script:
+    - *setup-smp-env
+  variables:
+    AWS_NAMED_PROFILE: single-machine-performance
+  script:
+    # Initialize our AWS credentials.
+    - ./test/smp/configure-smp-aws-credentials.sh
+
+    # Actually build.
+    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
+    - docker buildx build
+      --platform linux/amd64
+      --file ./docker/Dockerfile.agent-data-plane
+      --tag ${COMPARISON_SALUKI_IMG}
+      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
+      --build-arg BUILD_PROFILE=${BUILD_PROFILE}
+      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
+      --build-arg APP_GIT_HASH=${COMPARISON_SALUKI_SHA}
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --push
+      .
+
 build-adp-check-image:
   extends: .build-common-variables
   stage: benchmark
+  # Don't run benchmarks unless it's a PR, basically.
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+      when: never
+    - if: !reference [.on_main, rules, if]
+      when: never
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
@@ -88,10 +139,16 @@ build-adp-check-image:
       --label ci.job_id=${CI_JOB_ID}
       --push
       .
-      
+
 build-adp-check-comparison-image:
   extends: .build-common-variables
   stage: benchmark
+  # Don't run benchmarks unless it's a PR, basically.
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+      when: never
+    - if: !reference [.on_main, rules, if]
+      when: never
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
@@ -123,41 +180,14 @@ build-adp-check-comparison-image:
       --push
       .
 
-build-adp-comparison-image:
-  extends: .build-common-variables
-  stage: benchmark
-  image: "${SALUKI_SMP_CI_IMAGE}"
-  needs: []
-  retry: 2
-  timeout: 12m
-  before_script:
-    - *setup-smp-env
-  variables:
-    AWS_NAMED_PROFILE: single-machine-performance
-  script:
-    # Initialize our AWS credentials.
-    - ./test/smp/configure-smp-aws-credentials.sh
-
-    # Actually build.
-    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
-    - docker buildx build
-      --platform linux/amd64
-      --file ./docker/Dockerfile.agent-data-plane
-      --tag ${COMPARISON_SALUKI_IMG}
-      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
-      --build-arg BUILD_PROFILE=${BUILD_PROFILE}
-      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
-      --build-arg APP_GIT_HASH=${COMPARISON_SALUKI_SHA}
-      --label git.repository=${CI_PROJECT_NAME}
-      --label git.branch=${CI_COMMIT_REF_NAME}
-      --label git.commit=${CI_COMMIT_SHA}
-      --label ci.pipeline_id=${CI_PIPELINE_ID}
-      --label ci.job_id=${CI_JOB_ID}
-      --push
-      .
-
 mirror-dsd-image-to-smp-ecr:
   stage: benchmark
+  # Don't run benchmarks unless it's a PR, basically.
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+      when: never
+    - if: !reference [.on_main, rules, if]
+      when: never
   needs: []
   image: "${SALUKI_SMP_CI_IMAGE}"
   before_script:
@@ -320,7 +350,7 @@ run-benchmarks-adp-and-checks:
   artifacts:
     expire_in: 1 weeks
     paths:
-      - submission_metadata  # for provenance, debugging
+      - submission_metadata # for provenance, debugging
       - adp_checks_job_start_time # for generating PR comments
       - adp_checks_job_end_time # for generating PR comments
       - adp_checks_run_id # for generating PR comments
@@ -372,7 +402,7 @@ run-benchmarks-adp-and-checks:
     # Finally, exit 1 if the job signals a regression else 0.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job result
-      --submission-metadata submission_metadata  
+      --submission-metadata submission_metadata
 
 comment-smp-result-links:
   stage: benchmark
