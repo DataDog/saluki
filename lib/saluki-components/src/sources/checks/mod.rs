@@ -101,24 +101,28 @@ impl SourceBuilder for ChecksConfiguration {
         if let Some(autodiscovery) = &self.autodiscovery_provider {
             if let Some(host) = &self.hostname_provider {
                 if let Some(receiver) = autodiscovery.subscribe().await {
-                    let hostname = host.get_hostname().await.unwrap_or_else(|e| {
-                        warn!("Failed to get hostname: {:?}", e);
-                        "".to_string()
-                    });
+                    if let Some(configuration) = &self.full_configuration {
+                        let hostname = host.get_hostname().await.unwrap_or_else(|e| {
+                            warn!("Failed to get hostname: {:?}", e);
+                            "".to_string()
+                        });
 
-                    Ok(Box::new(ChecksSource {
-                        autodiscovery_rx: receiver,
+                        Ok(Box::new(ChecksSource {
+                            autodiscovery_rx: receiver,
 
-                        check_runners: self.check_runners,
-                        custom_checks_dirs: if !self.additional_checksd.is_empty() {
-                            Some(self.additional_checksd.split(",").map(|s| s.to_string()).collect())
-                        } else {
-                            None
-                        },
+                            check_runners: self.check_runners,
+                            custom_checks_dirs: if !self.additional_checksd.is_empty() {
+                                Some(self.additional_checksd.split(",").map(|s| s.to_string()).collect())
+                            } else {
+                                None
+                            },
 
-                        configuration: self.full_configuration.clone(),
-                        hostname,
-                    }))
+                            configuration: configuration.clone(),
+                            hostname,
+                        }))
+                    } else {
+                        Err(generic_error!("No configuration configured."))
+                    }
                 } else {
                     Err(generic_error!("No autodiscovery stream configured."))
                 }
@@ -153,13 +157,13 @@ struct ChecksSource {
     autodiscovery_rx: Receiver<AutodiscoveryEvent>,
     check_runners: usize,
     custom_checks_dirs: Option<Vec<String>>,
-    configuration: Option<GenericConfiguration>,
+    configuration: GenericConfiguration,
 }
 
 impl ChecksSource {
     /// Builds the check builders for the source.
     fn builders(
-        &self, check_events_tx: mpsc::Sender<Event>, configuration: Option<GenericConfiguration>, hostname: String,
+        &self, check_events_tx: mpsc::Sender<Event>, configuration: GenericConfiguration, hostname: String,
     ) -> Vec<Arc<dyn CheckBuilder + Send + Sync>> {
         #[cfg(feature = "python-checks")]
         {

@@ -61,14 +61,14 @@ static INTERPRETER_INITIALIZED_AND_READY: OnceLock<bool> = OnceLock::new();
 pub struct PythonCheckBuilder {
     check_events_tx: Sender<Event>,
     custom_checks_folders: Option<Vec<String>>,
-    configuration: Option<GenericConfiguration>,
+    configuration: GenericConfiguration,
     hostname: String,
 }
 
 impl PythonCheckBuilder {
     pub fn new(
         check_events_tx: Sender<Event>, custom_checks_folders: Option<Vec<String>>,
-        configuration: Option<GenericConfiguration>, hostname: String,
+        configuration: GenericConfiguration, hostname: String,
     ) -> Self {
         Self {
             check_events_tx,

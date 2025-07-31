@@ -24,8 +24,8 @@ pub fn set_metric_sender(check_metrics_tx: Sender<Event>) -> &'static Sender<Eve
 }
 
 /// Stores the configuratioon for integration to use in the Python module.
-pub fn set_configuration(configuration: Option<GenericConfiguration>) -> &'static GenericConfiguration {
-    GLOBAL_CONFIGURATION.get_or_init(move || configuration.unwrap())
+pub fn set_configuration(configuration: GenericConfiguration) -> &'static GenericConfiguration {
+    GLOBAL_CONFIGURATION.get_or_init(move || configuration)
 }
 
 /// Stores the configuratioon for integration to use in the Python module.
@@ -46,7 +46,7 @@ fn try_send_service_check(service_check: ServiceCheck) -> Result<(), GenericErro
     match METRIC_SENDER.get() {
         Some(sender) => sender
             .try_send(Event::ServiceCheck(service_check))
-            .map_err(|e| generic_error!("Failed to send metric: {}", e)),
+            .map_err(|e| generic_error!("Failed to send service check: {}", e)),
         None => Err(generic_error!("Metric sender not initialized.")),
     }
 }
@@ -59,10 +59,10 @@ fn get_config_key(key: String) -> String {
     }
 }
 
-fn fetch_hostname() -> String {
+fn fetch_hostname() -> &'static str {
     match GLOBAL_HOST.get() {
-        Some(host) => host.clone(),
-        None => "".to_string(),
+        Some(host) => host.as_str(),
+        None => "",
     }
 }
 
@@ -126,14 +126,14 @@ pub mod aggregator {
                 tag_set.insert_tag(tag);
             }
 
-            let service_check = ServiceCheck::new(name.clone(), service_check_status)
+            let service_check = ServiceCheck::new(name, service_check_status)
                 .with_tags(tag_set.into_shared())
                 .with_hostname(if hostname.is_empty() {
                     None
                 } else {
                     Some(hostname.into())
                 })
-                .with_message(Some(message.unwrap_or_default().into()));
+                .with_message(message.map(Into::into));
 
             if let Err(e) = try_send_service_check(service_check) {
                 error!("Failed to send service check: {}", e);
@@ -160,7 +160,7 @@ pub mod datadog_agent {
     use super::*;
 
     #[pyfunction]
-    fn get_hostname() -> String {
+    fn get_hostname() -> &'static str {
         trace!("Called get_hostname()");
         let hostname = fetch_hostname();
         trace!("Hostname fetched: {}", hostname);
