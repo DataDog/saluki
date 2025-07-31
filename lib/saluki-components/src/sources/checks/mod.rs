@@ -98,40 +98,42 @@ impl ChecksConfiguration {
 #[async_trait]
 impl SourceBuilder for ChecksConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
-        if let Some(autodiscovery) = &self.autodiscovery_provider {
-            if let Some(host) = &self.hostname_provider {
-                if let Some(receiver) = autodiscovery.subscribe().await {
-                    if let Some(configuration) = &self.full_configuration {
-                        let hostname = host.get_hostname().await.unwrap_or_else(|e| {
-                            warn!("Failed to get hostname: {:?}", e);
-                            "".to_string()
-                        });
+        let autodiscovery = self
+            .autodiscovery_provider
+            .as_ref()
+            .ok_or_else(|| generic_error!("No autodiscovery provider configured."))?;
 
-                        Ok(Box::new(ChecksSource {
-                            autodiscovery_rx: receiver,
+        let receiver = autodiscovery
+            .subscribe()
+            .await
+            .ok_or_else(|| generic_error!("No autodiscovery stream configured."))?;
 
-                            check_runners: self.check_runners,
-                            custom_checks_dirs: if !self.additional_checksd.is_empty() {
-                                Some(self.additional_checksd.split(",").map(|s| s.to_string()).collect())
-                            } else {
-                                None
-                            },
+        let host = self
+            .hostname_provider
+            .as_ref()
+            .ok_or_else(|| generic_error!("No hostname provider configured."))?;
 
-                            configuration: configuration.clone(),
-                            hostname,
-                        }))
-                    } else {
-                        Err(generic_error!("No configuration configured."))
-                    }
-                } else {
-                    Err(generic_error!("No autodiscovery stream configured."))
-                }
+        let configuration = self
+            .full_configuration
+            .as_ref()
+            .ok_or_else(|| generic_error!("No configuration configured."))?;
+
+        let hostname = host.get_hostname().await.unwrap_or_else(|e| {
+            warn!("Failed to get hostname: {:?}", e);
+            "".to_string()
+        });
+
+        Ok(Box::new(ChecksSource {
+            autodiscovery_rx: receiver,
+            check_runners: self.check_runners,
+            custom_checks_dirs: if !self.additional_checksd.is_empty() {
+                Some(self.additional_checksd.split(",").map(|s| s.to_string()).collect())
             } else {
-                Err(generic_error!("No hostname provider configured."))
-            }
-        } else {
-            Err(generic_error!("No autodiscovery provider configured."))
-        }
+                None
+            },
+            configuration: configuration.clone(),
+            hostname,
+        }))
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
