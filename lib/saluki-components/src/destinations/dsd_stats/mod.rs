@@ -224,7 +224,7 @@ impl DogStatsDAPIHandler {
             return (
                 StatusCode::BAD_REQUEST,
                 format!(
-                    "Collection duration cannot be greater than {} seconds.",
+                    "collection duration cannot be greater than {} seconds",
                     MAXIMUM_COLLECTION_DURATION_SECS
                 ),
             );
