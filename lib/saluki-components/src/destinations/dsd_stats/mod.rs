@@ -17,7 +17,7 @@ use saluki_core::{
         destinations::{Destination, DestinationBuilder, DestinationContext},
         ComponentContext,
     },
-    data_model::event::{Event::Metric, EventType},
+    data_model::event::{Event, EventType},
 };
 use saluki_error::GenericError;
 use serde::{Deserialize, Serialize};
@@ -26,11 +26,10 @@ use stringtheory::MetaString;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio::time::{Duration, Instant};
 use tokio::{select, sync::mpsc, sync::oneshot};
-use tracing::info;
 
 type StatsRequestReceiver = mpsc::Receiver<(oneshot::Sender<StatsResponse>, u64)>;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct MetricSample {
     count: u64,
     last_seen: u64,
@@ -122,7 +121,7 @@ impl Destination for DogStatsDStats {
                         if let Some(stats) = current_stats.as_mut() {
                             // We're actively collecting, so process the metrics.
                             for event in events {
-                                if let Metric(metric) = event {
+                                if let Event::Metric(metric) = event {
 
                                     let context = metric.context();
                                     let new_context = ContextNoOrigin {
@@ -132,10 +131,7 @@ impl Destination for DogStatsDStats {
                                     let key = new_context.to_string();
 
                                     let timestamp = get_coarse_unix_timestamp();
-                                    let sample = stats.entry(key).or_insert_with(|| MetricSample {
-                                        count: 0,
-                                        last_seen: 0,
-                                    });
+                                    let sample = stats.entry(key).or_default();
                                     sample.count += 1;
                                     sample.last_seen = timestamp;
 
@@ -229,12 +225,13 @@ impl DogStatsDAPIHandler {
             );
         }
 
-        // Parse the collection duration.
-        let collection_duration = query.collection_duration_secs;
-
         let (oneshot_tx, oneshot_rx) = oneshot::channel();
 
-        state.tx.send((oneshot_tx, collection_duration)).await.unwrap(); // TODO: use config to set collection period
+        state
+            .tx
+            .send((oneshot_tx, query.collection_duration_secs))
+            .await
+            .unwrap(); // TODO: use config to set collection period
 
         match oneshot_rx.await {
             Ok(stats) => match stats {
@@ -242,24 +239,24 @@ impl DogStatsDAPIHandler {
                     start_time_unix: _,
                     end_time_unix: _,
                     stats,
-                } => {
-                    info!("Stats on received events: {:?}", stats);
-                    match serde_json::to_string(&stats) {
-                        Ok(json) => (StatusCode::OK, json),
-                        Err(e) => (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("Failed to serialize stats: {}", e),
-                        ),
-                    }
-                }
+                } => match serde_json::to_string(&stats) {
+                    Ok(json) => (StatusCode::OK, json),
+                    Err(e) => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to serialize stats: {}", e),
+                    ),
+                },
                 StatsResponse::AlreadyRunning { try_after } => (
                     StatusCode::TOO_MANY_REQUESTS,
-                    format!("Too many requests. Please try again in {} seconds.", try_after),
+                    format!(
+                        "Statistics collection already active. Please try again in {} seconds.",
+                        try_after
+                    ),
                 ),
             },
-            Err(e) => (
+            Err(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to receive stats: {}", e),
+                "Failed to collect statistics.".to_string(),
             ),
         }
     }
@@ -280,7 +277,7 @@ impl APIHandler for DogStatsDAPIHandler {
 impl DogStatsDStatisticsConfiguration {
     /// Creates a new 'DogStatsDStatisticsConfiguration' from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let (tx, rx) = mpsc::channel(100);
+        let (tx, rx) = mpsc::channel(4);
         let state = DogStatsDAPIHandlerState {
             tx: Arc::new(tx),
             config: config.clone(),
