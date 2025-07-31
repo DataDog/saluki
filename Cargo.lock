@@ -646,26 +646,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
-name = "checks-agent"
-version = "0.1.0"
-dependencies = [
- "memory-accounting",
- "saluki-app",
- "saluki-components",
- "saluki-config",
- "saluki-core",
- "saluki-env",
- "saluki-error",
- "saluki-health",
- "saluki-io",
- "tikv-jemalloc-ctl",
- "tikv-jemallocator",
- "tokio",
- "tokio-rustls",
- "tracing",
-]
-
-[[package]]
 name = "chrono"
 version = "0.4.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3300,7 +3280,6 @@ dependencies = [
  "bytes",
  "crossbeam-queue",
  "foldhash",
- "hashbrown 0.15.4",
  "http-body",
  "http-body-util",
  "indexmap 2.10.0",
@@ -3392,7 +3371,6 @@ name = "saluki-context"
 version = "0.1.0"
 dependencies = [
  "crossbeam-queue",
- "hashbrown 0.15.4",
  "indexmap 2.10.0",
  "memchr",
  "metrics",
@@ -3506,6 +3484,7 @@ dependencies = [
  "futures",
  "metrics",
  "saluki-api",
+ "saluki-common",
  "saluki-error",
  "serde",
  "serde_json",

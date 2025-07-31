@@ -49,10 +49,10 @@ COPY .ci/install-protoc.sh /
 RUN chmod +x /install-protoc.sh && /install-protoc.sh
     
 # Build Checks Agent.
-WORKDIR /checks-agent
-COPY . /checks-agent
-RUN mkdir -p /checks-agent/target/bin &&  cargo build --profile ${BUILD_PROFILE} --package checks-agent --features ${BUILD_FEATURES} --target-dir /checks-agent/target && \
-cp /checks-agent/target/${BUILD_PROFILE}/checks-agent /checks-agent/target/bin/
+WORKDIR /adp
+COPY . /adp
+RUN mkdir -p /adp/target/bin &&  cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target-dir /adp/target && \
+cp /adp/target/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/
 
 # Calculate the necessary licenses that we need to include in the final image.
 FROM ${BUILD_IMAGE} AS license-builder
@@ -84,8 +84,15 @@ USER root
 RUN test -d /usr/share/ca-certificates || (apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates=20240203 && \
     apt-get clean && rm -rf /var/lib/apt/lists)
-COPY --from=builder /checks-agent/target/bin/checks-agent /usr/local/bin/checks-agent
-COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/checks-agent/
-COPY --from=license-builder /licenses /opt/datadog/checks-agent/LICENSES
+# Copy the Datadog Agent's embedded Python environment into the image to resolve Python dependencies
+COPY --from=agent "/opt/datadog-agent/embedded" "/opt/datadog-agent/embedded"
+# Docs here https://pyo3.rs/v0.14.5/building_and_distribution#configuring-the-python-version
+# If needed, ENV PYO3_PYTHON="/opt/datadog-agent/embedded/bin/python3.12" could be used, but auto-detection works in our case
+ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
+ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
+COPY --from=builder /adp/target/bin/agent-data-plane /usr/local/bin/agent-data-plane
+COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
+COPY --from=license-builder /licenses /opt/datadog/agent-data-plane/LICENSES
+COPY --chmod=755 docker/entrypoint.sh /entrypoint.sh
 
-ENTRYPOINT [ "/usr/local/bin/checks-agent" ]
+ENTRYPOINT [ "/usr/local/bin/agent-data-plane" ]

@@ -243,7 +243,7 @@ async fn create_topology(
             .add_transform("preaggr_processing", preaggr_processing)?
             .add_encoder("preaggr_dd_metrics_encode", preaggr_dd_metrics_config)?
             .add_forwarder("preaggr_dd_out", preaggr_dd_forwarder_config)?
-            .connect_component("preaggr_processing", ["enrich"])?
+            .connect_component("preaggr_processing", ["dsd_enrich"])?
             .connect_component("preaggr_dd_metrics_encode", ["preaggr_processing"])?
             .connect_component("preaggr_dd_out", ["preaggr_dd_metrics_encode"])?;
     }
@@ -257,13 +257,14 @@ fn add_checks_to_blueprint(
     #[cfg(feature = "python-checks")]
     {
         let checks_config = ChecksConfiguration::from_configuration(configuration)
-            .error_context("Failed to configure Python checks source.")?
-            .with_autodiscovery_provider(env_provider.autodiscovery().clone());
+            .error_context("Failed to configure checks source.")?
+            .with_autodiscovery_provider(env_provider.autodiscovery().clone())
+            .with_hostname_provider(env_provider.host().clone());
 
         blueprint
             .add_source("checks_in", checks_config)?
-            .connect_component("dd_metrics_encode", ["checks_in"])?;
-
+            .connect_component("dsd_agg", ["checks_in.metrics"])?
+            .connect_component("dd_service_checks_encode", ["checks_in.service_checks"])?;
         Ok(())
     }
 

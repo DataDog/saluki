@@ -1,7 +1,6 @@
 [workspace]
 members = [
   "bin/agent-data-plane",
-  "bin/checks-agent",
   "bin/correctness/airlock",
   "bin/correctness/ground-truth",
   "bin/correctness/metrics-intake",
@@ -199,3 +198,4 @@ debug = true
 [workspace.lints.clippy]
 new_without_default = "allow"
 uninlined_format_args = "allow"
+map_entry = "allow"

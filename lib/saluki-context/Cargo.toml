@@ -10,7 +10,6 @@ workspace = true
 
 [dependencies]
 crossbeam-queue = { workspace = true, features = ["alloc"] }
-hashbrown = { workspace = true }
 indexmap = { workspace = true }
 memchr = { workspace = true }
 metrics = { workspace = true }
