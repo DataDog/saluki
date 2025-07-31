@@ -206,6 +206,12 @@ mirror-dsd-image-to-smp-ecr:
 
 run-benchmarks-adp:
   stage: benchmark
+  # Don't run benchmarks unless it's a PR, basically.
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+      when: never
+    - if: !reference [.on_main, rules, if]
+      when: never
   timeout: 1h
   needs:
     - build-adp-baseline-image
@@ -273,6 +279,12 @@ run-benchmarks-adp:
 
 run-benchmarks-dsd:
   stage: benchmark
+  # Don't run benchmarks unless it's a PR, basically.
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+      when: never
+    - if: !reference [.on_main, rules, if]
+      when: never
   timeout: 1h
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs:
@@ -339,6 +351,12 @@ run-benchmarks-dsd:
 
 run-benchmarks-adp-and-checks:
   stage: benchmark
+  # Don't run benchmarks unless it's a PR, basically.
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+      when: never
+    - if: !reference [.on_main, rules, if]
+      when: never
   timeout: 1h
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs:
@@ -406,6 +424,12 @@ run-benchmarks-adp-and-checks:
 
 comment-smp-result-links:
   stage: benchmark
+  # Don't run benchmarks unless it's a PR, basically.
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+      when: never
+    - if: !reference [.on_main, rules, if]
+      when: never
   needs:
     - run-benchmarks-adp
     - run-benchmarks-dsd
