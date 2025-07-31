@@ -9,7 +9,7 @@ use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use saluki_health::Health;
 use saluki_metrics::static_metrics;
-use stringtheory::interning::GenericMapInterner;
+use stringtheory::interning::{GenericMapInterner, Interner as _};
 use tokio::{select, sync::mpsc, time::sleep};
 use tracing::{debug, error, warn};
 

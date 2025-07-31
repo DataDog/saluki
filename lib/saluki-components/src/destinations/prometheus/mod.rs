@@ -25,7 +25,10 @@ use saluki_io::net::{
     ListenAddress,
 };
 use serde::Deserialize;
-use stringtheory::{interning::FixedSizeInterner, MetaString};
+use stringtheory::{
+    interning::{FixedSizeInterner, Interner as _},
+    MetaString,
+};
 use tokio::{select, sync::RwLock};
 use tracing::debug;
 

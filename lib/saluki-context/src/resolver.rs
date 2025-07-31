@@ -7,7 +7,10 @@ use saluki_common::{
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::static_metrics;
-use stringtheory::{interning::GenericMapInterner, CheapMetaString, MetaString};
+use stringtheory::{
+    interning::{GenericMapInterner, Interner as _},
+    CheapMetaString, MetaString,
+};
 use tokio::time::sleep;
 use tracing::debug;
 

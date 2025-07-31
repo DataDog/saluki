@@ -9,7 +9,10 @@ use saluki_context::{
 };
 use saluki_error::GenericError;
 use saluki_health::Health;
-use stringtheory::{interning::GenericMapInterner, MetaString};
+use stringtheory::{
+    interning::{GenericMapInterner, Interner as _},
+    MetaString,
+};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, trace, warn};
 

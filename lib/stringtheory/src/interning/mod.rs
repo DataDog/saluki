@@ -9,6 +9,26 @@ mod helpers;
 mod map;
 pub use self::map::GenericMapInterner;
 
+/// A string interner.
+pub trait Interner {
+    /// Returns `true` if the interner contains no strings.
+    fn is_empty(&self) -> bool;
+
+    /// Returns the number of strings in the interner.
+    fn len(&self) -> usize;
+
+    /// Returns the total number of bytes in the interner.
+    fn len_bytes(&self) -> usize;
+
+    /// Returns the total number of bytes the interner can hold.
+    fn capacity_bytes(&self) -> usize;
+
+    /// Attempts to intern the given string.
+    ///
+    /// Returns `None` if the interner is full or the string cannot fit.
+    fn try_intern(&self, s: &str) -> Option<InternedString>;
+}
+
 pub(crate) struct InternerVtable {
     /// Name of the interner implementation that this string was interned with.
     pub interner_name: &'static str,
