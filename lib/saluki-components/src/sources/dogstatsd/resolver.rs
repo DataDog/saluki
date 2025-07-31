@@ -7,6 +7,8 @@ use stringtheory::interning::GenericMapInterner;
 
 use super::{DogStatsDConfiguration, DogStatsDOriginTagResolver};
 
+const RESOLVER_CACHE_EXPIRATION: Duration = Duration::from_secs(30);
+
 /// Context resolvers for the DogStatsD source.
 #[derive(Clone)]
 pub struct ContextResolvers {
@@ -34,6 +36,7 @@ impl ContextResolvers {
         let interner = GenericMapInterner::new(context_string_interner_size);
 
         let tags_resolver = TagsResolverBuilder::new(format!("{}/dsd/tags", context.component_id()), interner.clone())?
+            .with_idle_tagsets_expiration(RESOLVER_CACHE_EXPIRATION)
             .with_heap_allocations(config.allow_context_heap_allocations)
             .with_origin_tags_resolver(
                 maybe_origin_tags_resolver
@@ -43,7 +46,7 @@ impl ContextResolvers {
 
         let primary_resolver = ContextResolverBuilder::from_name(format!("{}/dsd/primary", context.component_id()))?
             .with_interner_capacity_bytes(context_string_interner_size)
-            .with_idle_context_expiration(Duration::from_secs(30))
+            .with_idle_context_expiration(RESOLVER_CACHE_EXPIRATION)
             .with_heap_allocations(config.allow_context_heap_allocations)
             .with_tags_resolver(Some(tags_resolver.clone()))
             .with_interner(interner.clone())
