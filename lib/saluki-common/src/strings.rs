@@ -1,43 +1,37 @@
 use stringtheory::{interning::Interner, MetaString};
 
-/// A string builder that interns strings using an interner.
+/// A string builder.
 ///
-/// This builder is designed to allow building strings incrementally, and then interning them using a provided
-/// interner. This can simplify certain patterns of string construction by removing the need to manually manage
-/// the temporary string buffer and interner, clearing the buffer after interning, and so on.
+/// This builder is designed to allow building strings incrementally. This can simplify certain patterns of string
+/// construction by removing the need to manually manage a temporary string buffer, clearing it after building the
+/// resulting string, and so on.
 ///
 /// # Limiting by length
 ///
 /// The builder can also be configured to limit the overall length of the strings it builds.
-pub struct InternedStringBuilder<I> {
+pub struct StringBuilder {
     buf: String,
     limit: usize,
-    interner: I,
 }
 
-impl<I> InternedStringBuilder<I>
-where
-    I: Interner,
-{
-    /// Creates a new `InternedStringBuilder` with the given interner.
+impl StringBuilder {
+    /// Creates a new `StringBuilder`.
     ///
-    /// No limit is set for the strings built by this builder, and are only limited by the interner's capacity.
-    pub fn new(interner: I) -> Self {
-        InternedStringBuilder {
+    /// No limit is set for the strings built by this builder.
+    pub fn new() -> Self {
+        Self {
             buf: String::new(),
             limit: usize::MAX,
-            interner,
         }
     }
 
-    /// Creates a new `InternedStringBuilder` with the given interner and limit.
+    /// Creates a new `StringBuilder` with the given limit.
     ///
     /// Strings that exceed the limit will be discarded.
-    pub fn with_limit(interner: I, limit: usize) -> Self {
-        InternedStringBuilder {
+    pub fn with_limit(limit: usize) -> Self {
+        Self {
             buf: String::new(),
             limit,
-            interner,
         }
     }
 
@@ -67,16 +61,78 @@ where
         Some(())
     }
 
+    /// Returns a references to the current string.
+    pub fn string(&self) -> &str {
+        &self.buf
+    }
+}
+
+/// A string builder that interns strings using an interner.
+///
+/// This builder is designed to allow building strings incrementally, and then interning them using a provided
+/// interner. This can simplify certain patterns of string construction by removing the need to manually manage
+/// the temporary string buffer and interner, clearing the buffer after interning, and so on.
+///
+/// # Limiting by length
+///
+/// The builder can also be configured to limit the overall length of the strings it builds.
+pub struct InternedStringBuilder<I> {
+    inner: StringBuilder,
+    interner: I,
+}
+
+impl<I> InternedStringBuilder<I>
+where
+    I: Interner,
+{
+    /// Creates a new `InternedStringBuilder` with the given interner.
+    ///
+    /// No limit is set for the strings built by this builder, and are only limited by the interner's capacity.
+    pub fn new(interner: I) -> Self {
+        InternedStringBuilder {
+            inner: StringBuilder::new(),
+            interner,
+        }
+    }
+
+    /// Creates a new `InternedStringBuilder` with the given interner and limit.
+    ///
+    /// Strings that exceed the limit will be discarded.
+    pub fn with_limit(interner: I, limit: usize) -> Self {
+        InternedStringBuilder {
+            inner: StringBuilder::with_limit(limit),
+            interner,
+        }
+    }
+
+    /// Returns `true` if the buffer of the builder is empty.
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    /// Returns the length of the buffer of the builder.
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Clears the buffer of the builder.
+    pub fn clear(&mut self) {
+        self.inner.clear();
+    }
+
+    /// Pushes a string fragment into the builder.
+    ///
+    /// Returns `None` if the resulting string would exceed the configured limit.
+    pub fn push_str(&mut self, s: &str) -> Option<()> {
+        self.inner.push_str(s)
+    }
+
     /// Builds and interns the string.
     ///
     /// Returns `None` if the string exceeds the configured limit or if it cannot be interned.
     pub fn build(&mut self) -> Option<MetaString> {
-        if self.buf.len() > self.limit {
-            return None;
-        }
-
-        let interned = self.interner.try_intern(&self.buf);
-        self.buf.clear();
+        let interned = self.interner.try_intern(self.inner.string());
+        self.inner.clear();
 
         interned.map(MetaString::from)
     }
@@ -126,6 +182,85 @@ mod tests {
         assert_eq!(lower_alphanumeric("abc_def"), "abc_def");
         assert_eq!(lower_alphanumeric("abc-def"), "abc_def");
         assert_eq!(lower_alphanumeric("abc def"), "abc_def");
+    }
+
+    #[test]
+    fn string_builder_basic() {
+        let mut builder = StringBuilder::new();
+
+        assert_eq!(builder.push_str("Hello World!"), Some(()));
+        assert_eq!(builder.string(), "Hello World!");
+
+        builder.clear();
+
+        assert_eq!(builder.push_str("hello"), Some(()));
+        assert_eq!(builder.push_str(" "), Some(()));
+        assert_eq!(builder.push_str("world"), Some(()));
+        assert_eq!(builder.string(), "hello world");
+    }
+
+    #[test]
+    fn string_builder_clear() {
+        let mut builder = StringBuilder::new();
+
+        assert_eq!(builder.push_str("hello"), Some(()));
+        builder.clear();
+        assert_eq!(builder.string(), "");
+    }
+
+    #[test]
+    fn string_builder_is_empty_len() {
+        let mut builder = StringBuilder::new();
+
+        // Starts out empty:
+        assert!(builder.is_empty());
+        assert_eq!(builder.len(), 0);
+
+        // After pushing "hello":
+        assert_eq!(builder.push_str("hello"), Some(()));
+        assert!(!builder.is_empty());
+        assert_eq!(builder.len(), 5);
+        assert_eq!(builder.string(), "hello");
+
+        // After pushing " world":
+        builder.push_str(" world");
+        assert!(!builder.is_empty());
+        assert_eq!(builder.len(), 11);
+        assert_eq!(builder.string(), "hello world");
+
+        // Manually clearing the buffer:
+        builder.clear();
+        assert!(builder.is_empty());
+        assert_eq!(builder.len(), 0);
+    }
+
+    #[test]
+    fn string_builder_with_limit() {
+        const LIMIT: usize = 16;
+
+        let mut builder = StringBuilder::with_limit(LIMIT);
+
+        // Under the limit:
+        let string_one = "hello, world!";
+        assert!(string_one.len() < LIMIT);
+        assert_eq!(builder.push_str(string_one), Some(()));
+        assert_eq!(builder.string(), string_one);
+
+        // Over the limit:
+        let string_two = "definitely way too long";
+        assert!(string_two.len() > LIMIT);
+        assert_eq!(builder.push_str(string_two), None);
+
+        builder.clear();
+
+        // Under the limit, but we build it piecemeal:
+        let string_three_parts = vec!["hello", " ", "world"];
+        let string_three = string_three_parts.join("");
+        assert!(string_three.len() < LIMIT);
+        for string_three_part in string_three_parts {
+            assert_eq!(builder.push_str(string_three_part), Some(()));
+        }
+        assert_eq!(builder.string(), string_three);
     }
 
     #[test]
