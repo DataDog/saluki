@@ -131,7 +131,6 @@ impl Destination for DogStatsDStats {
                                     };
                                     let key = new_context.to_string();
 
-
                                     let timestamp = get_coarse_unix_timestamp();
                                     let sample = stats.entry(key).or_insert_with(|| MetricSample {
                                         count: 0,

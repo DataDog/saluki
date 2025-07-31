@@ -65,6 +65,7 @@ pub enum DogstatsdConfig {
     Stats(DogstatsdStatsConfig),
 }
 
+/// Dogstatsd stats subcommand configuration.
 #[derive(Args, Debug)]
 pub struct DogstatsdStatsConfig {
     /// Amount of time to collect statistics for, in seconds.
