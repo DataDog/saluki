@@ -101,6 +101,11 @@ impl SourceBuilder for ChecksConfiguration {
         if let Some(autodiscovery) = &self.autodiscovery_provider {
             if let Some(host) = &self.hostname_provider {
                 if let Some(receiver) = autodiscovery.subscribe().await {
+                    let hostname = host.get_hostname().await.unwrap_or_else(|e| {
+                        warn!("Failed to get hostname: {:?}", e);
+                        "".to_string()
+                    });
+
                     Ok(Box::new(ChecksSource {
                         autodiscovery_rx: receiver,
 
@@ -112,7 +117,7 @@ impl SourceBuilder for ChecksConfiguration {
                         },
 
                         configuration: self.full_configuration.clone(),
-                        host: Arc::clone(host),
+                        hostname,
                     }))
                 } else {
                     Err(generic_error!("No autodiscovery stream configured."))
@@ -144,7 +149,7 @@ impl MemoryBounds for ChecksConfiguration {
 }
 
 struct ChecksSource {
-    host: Arc<dyn HostProvider<Error = GenericError> + Send + Sync>,
+    hostname: String,
     autodiscovery_rx: Receiver<AutodiscoveryEvent>,
     check_runners: usize,
     custom_checks_dirs: Option<Vec<String>>,
@@ -187,13 +192,8 @@ impl Source for ChecksSource {
 
         let (check_events_tx, check_event_rx) = mpsc::channel(128);
 
-        let hostanme = self
-            .host
-            .get_hostname()
-            .await
-            .unwrap_or_else(|_| "unknown-host".to_string());
         let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> =
-            self.builders(check_events_tx, self.configuration.clone(), hostanme);
+            self.builders(check_events_tx, self.configuration.clone(), self.hostname.clone());
 
         let mut check_ids = HashSet::new();
         let scheduler = Scheduler::new(self.check_runners);
