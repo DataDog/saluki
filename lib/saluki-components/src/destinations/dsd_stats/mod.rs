@@ -65,7 +65,6 @@ pub struct DogStatsDStatisticsConfiguration {
 #[derive(Clone)]
 pub struct DogStatsDAPIHandlerState {
     tx: Arc<mpsc::Sender<(oneshot::Sender<StatsResponse>, u64)>>,
-    config: GenericConfiguration,
 }
 
 /// API handler for dogstatsd stats endpoint.
@@ -208,12 +207,6 @@ impl DogStatsDAPIHandler {
     async fn stats_handler(
         State(state): State<DogStatsDAPIHandlerState>, Query(query): Query<StatsQueryParams>,
     ) -> (StatusCode, String) {
-        if !state
-            .config
-            .get_typed_or_default::<bool>("dogstatsd_metrics_stats_enable")
-        {
-            return (StatusCode::NOT_IMPLEMENTED, "DogStatsD metrics stats are not enabled. Please set dogstatsd_metrics_stats_enable to true in the configuration.".to_string());
-        }
         const MAXIMUM_COLLECTION_DURATION_SECS: u64 = 600;
         if query.collection_duration_secs > MAXIMUM_COLLECTION_DURATION_SECS {
             return (
@@ -276,12 +269,9 @@ impl APIHandler for DogStatsDAPIHandler {
 
 impl DogStatsDStatisticsConfiguration {
     /// Creates a new 'DogStatsDStatisticsConfiguration' from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+    pub fn from_configuration(_: &GenericConfiguration) -> Result<Self, GenericError> {
         let (tx, rx) = mpsc::channel(4);
-        let state = DogStatsDAPIHandlerState {
-            tx: Arc::new(tx),
-            config: config.clone(),
-        };
+        let state = DogStatsDAPIHandlerState { tx: Arc::new(tx) };
         let handler = DogStatsDAPIHandler { state };
 
         Ok(Self {
