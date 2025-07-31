@@ -3291,6 +3291,7 @@ dependencies = [
  "saluki-error",
  "saluki-metrics",
  "sha3",
+ "stringtheory",
  "tokio",
  "tokio-test",
  "tracing",
