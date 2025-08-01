@@ -192,3 +192,104 @@ pub mod datadog_agent {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use pyo3::Python;
+    use pyo3_ffi::c_str;
+    use saluki_config::ConfigurationLoader;
+    use saluki_core::data_model::event::service_check::CheckStatus;
+    use tokio::sync::mpsc;
+
+    use super::*;
+
+    #[test]
+    fn test_python_aggregator_integration() {
+        let (tx, mut rx) = mpsc::channel(100);
+        set_metric_sender(tx);
+
+        pyo3::append_to_inittab!(aggregator);
+        pyo3::prepare_freethreaded_python();
+
+        let code = c_str!(include_str!("tests/test_aggregator.py"));
+
+        let result = Python::with_gil(|py| -> PyResult<()> {
+            PyModule::from_code(py, code, c_str!("aggregator.py"), c_str!("aggregator.py"))?;
+            Ok(())
+        });
+
+        assert!(result.is_ok(), "Python script execution failed: {:?}", result.err());
+
+        let mut metric_count = 0;
+        let mut service_check_count = 0;
+
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                Event::Metric(_) => metric_count += 1,
+                Event::ServiceCheck(sc) => {
+                    service_check_count += 1;
+                    assert_eq!(sc.name(), "test.service_check");
+                    assert_eq!(sc.status(), CheckStatus::Ok);
+                    assert_eq!(sc.message().unwrap(), "All systems operational");
+                }
+                _ => {}
+            }
+        }
+
+        assert!(metric_count >= 2, "Expected at least 2 metrics, got {}", metric_count);
+        assert_eq!(
+            service_check_count, 1,
+            "Expected 1 service check, got {}",
+            service_check_count
+        );
+    }
+
+    struct TestResults {
+        hostname: String,
+        config_value: String,
+    }
+
+    #[test]
+    fn test_python_datadog_agent_integration() {
+        std::env::set_var("DD_TEST_FOO", "bar");
+
+        let config = ConfigurationLoader::default()
+            .from_environment("DD_TEST")
+            .expect("configuration should be loaded")
+            .into_generic()
+            .expect("convert to generic configuration");
+
+        set_configuration(config);
+
+        set_hostname("agent-test-host".to_string());
+
+        pyo3::append_to_inittab!(datadog_agent);
+        pyo3::prepare_freethreaded_python();
+
+        let results = Python::with_gil(|py| -> Result<TestResults, Box<dyn std::error::Error>> {
+            let datadog_agent = PyModule::import(py, "datadog_agent")?;
+
+            let hostname: String = datadog_agent.getattr("get_hostname")?.call0()?.extract()?;
+
+            let config_value: String = datadog_agent.getattr("get_config")?.call1(("foo",))?.extract()?;
+
+            Ok(TestResults { hostname, config_value })
+        });
+
+        assert!(results.is_ok(), "Python datadog_agent test failed: {:?}", results.err());
+
+        let results = results.unwrap();
+
+        assert!(
+            results.hostname == "agent-test-host",
+            "Hostname mismatch: {}",
+            results.hostname
+        );
+        assert!(
+            results.config_value == "bar",
+            "Config value mismatch: {}",
+            results.config_value
+        );
+        std::env::remove_var("DD_TEST_FOO");
+    }
+}
