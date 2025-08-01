@@ -40,16 +40,19 @@ enum StatsResponse {
         try_after: u64,
     },
 
-    Statistics {
-        /// Start time of the collected metrics, as a Unix timestamp.
-        start_time_unix: u64,
+    Statistics(CollectedStatistics),
+}
 
-        /// End time of the collected metrics, as a Unix timestamp.
-        end_time_unix: u64,
+#[derive(Serialize)]
+struct CollectedStatistics {
+    /// Start time of the collected metrics, as a Unix timestamp.
+    start_time_unix: u64,
 
-        /// Collected statistics.
-        stats: HashMap<ContextNoOrigin, MetricSample>,
-    },
+    /// End time of the collected metrics, as a Unix timestamp.
+    end_time_unix: u64,
+
+    /// Collected statistics.
+    stats: HashMap<ContextNoOrigin, MetricSample>,
 }
 
 /// Configuration for DogStatsD statistics destination and API handler.
@@ -144,11 +147,11 @@ impl Destination for DogStatsDStats {
                         None => continue,
                     };
 
-                    let response = StatsResponse::Statistics {
+                    let response = StatsResponse::Statistics(CollectedStatistics {
                         start_time_unix: stats_collection_start_time,
                         end_time_unix: stats_collection_end_time,
                         stats,
-                    };
+                    });
 
                     let response_tx = match stats_response_tx.take() {
                         Some(tx) => tx,
@@ -221,11 +224,7 @@ impl DogStatsDAPIHandler {
 
         match oneshot_rx.await {
             Ok(stats) => match stats {
-                StatsResponse::Statistics {
-                    start_time_unix: _,
-                    end_time_unix: _,
-                    stats,
-                } => match serde_json::to_string(&stats) {
+                StatsResponse::Statistics(collected_stats) => match serde_json::to_string(&collected_stats) {
                     Ok(json) => (StatusCode::OK, json),
                     Err(e) => (
                         StatusCode::INTERNAL_SERVER_ERROR,
