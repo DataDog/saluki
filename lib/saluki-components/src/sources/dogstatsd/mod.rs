@@ -410,6 +410,7 @@ impl MemoryBounds for DogStatsDConfiguration {
     }
 }
 
+/// DogStatsD source.
 pub struct DogStatsD {
     listeners: Vec<Listener>,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,

@@ -40,6 +40,7 @@ reqwest = { workspace = true, features = [
   "rustls-tls-native-roots-no-provider",
   "json",
 ] }
+saluki-api = { workspace = true }
 saluki-app = { workspace = true, features = ["full"] }
 saluki-common = { workspace = true }
 saluki-components = { workspace = true }

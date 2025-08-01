@@ -136,6 +136,16 @@ impl PartialEq<SharedTagSet> for SharedTagSet {
     }
 }
 
+impl Eq for SharedTagSet {}
+
+impl std::hash::Hash for SharedTagSet {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        for tag in self {
+            tag.hash(state);
+        }
+    }
+}
+
 impl fmt::Display for SharedTagSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[")?;
