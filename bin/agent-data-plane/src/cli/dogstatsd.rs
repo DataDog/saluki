@@ -24,16 +24,25 @@ async fn handle_dogstatsd_stats(client: reqwest::Client, collection_duration_sec
         .await;
 
     match response {
-        Ok(response) => match response.text().await {
-            Ok(body) => {
-                if let Err(e) = output_stats(&format_stats(&body).await).await {
-                    error!("Failed to output stats: {}", e);
+        Ok(response) => {
+            let status = response.status();
+
+            match response.text().await {
+                Ok(body) => {
+                    if status.as_u16() == 429 {
+                        // Too many requests.
+                        output(&body).await.unwrap();
+                        return;
+                    }
+                    if let Err(e) = output(&format_stats(&body).await).await {
+                        error!("Failed to output stats: {}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to read response body: {}", e);
                 }
             }
-            Err(e) => {
-                error!("Failed to read response body: {}", e);
-            }
-        },
+        }
         Err(e) => {
             error!("Request failed: {}", e);
         }
@@ -90,9 +99,10 @@ async fn format_stats(body: &str) -> String {
     }
 }
 
-async fn output_stats(body: &str) -> io::Result<()> {
+async fn output(body: &str) -> io::Result<()> {
     let mut stdout = io::stdout();
     stdout.write_all(body.as_bytes()).await?;
+    stdout.write_all(b"\n").await?;
     stdout.flush().await?;
     Ok(())
 }
