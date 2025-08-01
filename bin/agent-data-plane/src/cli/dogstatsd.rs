@@ -26,7 +26,6 @@ async fn handle_dogstatsd_stats(client: reqwest::Client, collection_duration_sec
     match response {
         Ok(response) => match response.text().await {
             Ok(body) => {
-                println!("response: {}", body);
                 if let Err(e) = output_stats(&format_stats(&body).await).await {
                     error!("Failed to output stats: {}", e);
                 }
@@ -42,7 +41,6 @@ async fn handle_dogstatsd_stats(client: reqwest::Client, collection_duration_sec
 }
 
 async fn format_stats(body: &str) -> String {
-    println!("body: {}", body);
     match from_str::<serde_json::Value>(body) {
         Ok(json) => {
             let mut output = String::new();
@@ -53,37 +51,39 @@ async fn format_stats(body: &str) -> String {
             ));
             output.push_str(&format!("{:-<40}-|-{:-<20}-|-{:-<10}-|-{:-<20}\n", "", "", "", ""));
 
-            if let Some(stats_obj) = json.as_object() {
-                println!("stats_obj: {:?}", stats_obj);
-                for (key, metric) in stats_obj {
-                    let (parsed_name, parsed_tags) = if let Some(parts) = key.split_once('{') {
-                        let name = parts.0;
-                        if let Some(tags) = parts.1.strip_suffix('}') {
-                            (name, tags)
+            if let Some(collected_stats) = json.as_object() {
+                if let Some(stats) = collected_stats.get("stats") {
+                    for (key, metric) in stats.as_object().unwrap() {
+                        let (parsed_name, parsed_tags) = if let Some(parts) = key.split_once("{[") {
+                            let name = parts.0;
+                            if let Some(tags) = parts.1.strip_suffix("]}") {
+                                (name, tags)
+                            } else {
+                                (name, "")
+                            }
                         } else {
-                            (name, "")
+                            (key.as_str(), "")
+                        };
+
+                        if let Some(metric_obj) = metric.as_object() {
+                            let count = metric_obj.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let last_seen_timestamp = metric_obj.get("last_seen").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let last_seen = chrono::DateTime::from_timestamp(last_seen_timestamp as i64, 0)
+                                .unwrap()
+                                .with_timezone(&chrono::Local)
+                                .format("%Y-%m-%d %H:%M:%S")
+                                .to_string();
+
+                            output.push_str(&format!(
+                                "{:<40} | {:<20} | {:<10} | {:<20}\n",
+                                parsed_name, parsed_tags, count, last_seen
+                            ));
                         }
-                    } else {
-                        (key.as_str(), "")
-                    };
-
-                    if let Some(metric_obj) = metric.as_object() {
-                        let count = metric_obj.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let last_seen_timestamp = metric_obj.get("last_seen").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let last_seen = chrono::DateTime::from_timestamp(last_seen_timestamp as i64, 0)
-                            .unwrap()
-                            .with_timezone(&chrono::Local)
-                            .format("%Y-%m-%d %H:%M:%S")
-                            .to_string();
-
-                        output.push_str(&format!(
-                            "{:<40} | {:<20} | {:<10} | {:<20}\n",
-                            parsed_name, parsed_tags, count, last_seen
-                        ));
                     }
+                } else {
+                    error!("Error parsing collected stats.");
                 }
             }
-
             output
         }
         Err(e) => {
