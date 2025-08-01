@@ -166,10 +166,31 @@ impl Destination for DogStatsDStats {
     }
 }
 
-#[derive(Eq, Hash, PartialEq, Serialize)]
+use std::fmt;
+
+#[derive(Eq, Hash, PartialEq)]
 pub struct ContextNoOrigin {
     name: MetaString,
     tags: SharedTagSet,
+}
+
+impl fmt::Display for ContextNoOrigin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name)?;
+        if !self.tags.is_empty() {
+            write!(f, "{{{}}}", self.tags)?;
+        }
+        Ok(())
+    }
+}
+
+impl Serialize for ContextNoOrigin {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
 }
 #[derive(Deserialize)]
 struct StatsQueryParams {

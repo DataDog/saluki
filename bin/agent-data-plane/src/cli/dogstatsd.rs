@@ -26,6 +26,7 @@ async fn handle_dogstatsd_stats(client: reqwest::Client, collection_duration_sec
     match response {
         Ok(response) => match response.text().await {
             Ok(body) => {
+                println!("response: {}", body);
                 if let Err(e) = output_stats(&format_stats(&body).await).await {
                     error!("Failed to output stats: {}", e);
                 }
