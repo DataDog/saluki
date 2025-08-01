@@ -3322,6 +3322,7 @@ dependencies = [
  "proptest",
  "protobuf",
  "pyo3",
+ "pyo3-ffi",
  "rand 0.9.1",
  "regex",
  "saluki-common",
