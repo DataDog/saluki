@@ -9,7 +9,6 @@ use saluki_api::{
     APIHandler, StatusCode,
 };
 use saluki_common::time::get_coarse_unix_timestamp;
-use saluki_config::GenericConfiguration;
 use saluki_context::tags::SharedTagSet;
 use saluki_core::{
     components::{
@@ -34,7 +33,7 @@ pub struct MetricSample {
     last_seen: u64,
 }
 #[derive(Serialize)]
-pub enum StatsResponse {
+enum StatsResponse {
     /// An existing statistics collection request is running.
     AlreadyRunning {
         /// Number of seconds to wait before trying again.
@@ -112,7 +111,7 @@ impl Destination for DogStatsDStats {
                         current_stats = Some(HashMap::new());
                         collection_done.as_mut().reset(Instant::now() + Duration::from_secs(collection_period_secs));
                     }
-                }
+                },
                 maybe_events = context.events().next() => match maybe_events {
                     Some(events) => {
                         if let Some(stats) = current_stats.as_mut() {
@@ -169,7 +168,7 @@ impl Destination for DogStatsDStats {
 use std::fmt;
 
 #[derive(Eq, Hash, PartialEq)]
-pub struct ContextNoOrigin {
+struct ContextNoOrigin {
     name: MetaString,
     tags: SharedTagSet,
 }
@@ -263,7 +262,7 @@ impl APIHandler for DogStatsDAPIHandler {
 
 impl DogStatsDStatisticsConfiguration {
     /// Creates a new 'DogStatsDStatisticsConfiguration' from the given configuration.
-    pub fn from_configuration(_: &GenericConfiguration) -> Result<Self, GenericError> {
+    pub fn from_configuration() -> Result<Self, GenericError> {
         let (tx, rx) = mpsc::channel(4);
         let state = DogStatsDAPIHandlerState { tx: Arc::new(tx) };
         let handler = DogStatsDAPIHandler { state };
