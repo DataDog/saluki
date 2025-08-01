@@ -67,7 +67,7 @@ serde = { version = "1", default-features = false, features = [
   "std",
 ] }
 snafu = { version = "0.8", default-features = false, features = ["std"] }
-tokio = { version = "1", default-features = false }
+tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "io-util", "macros"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 async-compression = { version = "0.4.13", default-features = false, features = [
   "zlib",
