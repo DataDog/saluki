@@ -35,6 +35,7 @@ dependencies = [
  "rand 0.9.1",
  "rand_distr",
  "reqwest",
+ "saluki-api",
  "saluki-app",
  "saluki-common",
  "saluki-components",

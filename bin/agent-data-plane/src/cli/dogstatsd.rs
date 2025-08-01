@@ -1,3 +1,4 @@
+use saluki_api::StatusCode;
 use serde_json::{self, from_str};
 use tokio::io::{self, AsyncWriteExt};
 use tracing::error;
@@ -29,13 +30,12 @@ async fn handle_dogstatsd_stats(client: reqwest::Client, collection_duration_sec
 
             match response.text().await {
                 Ok(body) => {
-                    if status.as_u16() == 429 {
-                        // Too many requests.
+                    if status == StatusCode::OK {
+                        if let Err(e) = output(&format_stats(&body).await).await {
+                            error!("Failed to output stats: {}", e);
+                        }
+                    } else {
                         output(&body).await.unwrap();
-                        return;
-                    }
-                    if let Err(e) = output(&format_stats(&body).await).await {
-                        error!("Failed to output stats: {}", e);
                     }
                 }
                 Err(e) => {
