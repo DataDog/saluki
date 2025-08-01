@@ -53,32 +53,30 @@ async fn format_stats(body: &str) -> String {
 
             if let Some(collected_stats) = json.as_object() {
                 if let Some(stats) = collected_stats.get("stats") {
-                    for (key, metric) in stats.as_object().unwrap() {
-                        let (parsed_name, parsed_tags) = if let Some(parts) = key.split_once("{[") {
-                            let name = parts.0;
-                            if let Some(tags) = parts.1.strip_suffix("]}") {
-                                (name, tags)
-                            } else {
-                                (name, "")
-                            }
-                        } else {
-                            (key.as_str(), "")
-                        };
+                    for stat in stats.as_array().unwrap() {
+                        let stat_obj = stat.as_object().unwrap();
+                        let name = stat_obj.get("name").unwrap().as_str().unwrap();
+                        let tags = stat_obj
+                            .get("tags")
+                            .unwrap()
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|v| v.as_str().unwrap())
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        let count = stat_obj.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let last_seen_timestamp = stat_obj.get("last_seen").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let last_seen = chrono::DateTime::from_timestamp(last_seen_timestamp as i64, 0)
+                            .unwrap()
+                            .with_timezone(&chrono::Local)
+                            .format("%Y-%m-%d %H:%M:%S")
+                            .to_string();
 
-                        if let Some(metric_obj) = metric.as_object() {
-                            let count = metric_obj.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
-                            let last_seen_timestamp = metric_obj.get("last_seen").and_then(|v| v.as_u64()).unwrap_or(0);
-                            let last_seen = chrono::DateTime::from_timestamp(last_seen_timestamp as i64, 0)
-                                .unwrap()
-                                .with_timezone(&chrono::Local)
-                                .format("%Y-%m-%d %H:%M:%S")
-                                .to_string();
-
-                            output.push_str(&format!(
-                                "{:<40} | {:<20} | {:<10} | {:<20}\n",
-                                parsed_name, parsed_tags, count, last_seen
-                            ));
-                        }
+                        output.push_str(&format!(
+                            "{:<40} | {:<20} | {:<10} | {:<20}\n",
+                            name, tags, count, last_seen
+                        ));
                     }
                 } else {
                     error!("Error parsing collected stats.");

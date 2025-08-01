@@ -18,7 +18,7 @@ use saluki_core::{
     data_model::event::{Event, EventType},
 };
 use saluki_error::GenericError;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json;
 use stringtheory::MetaString;
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -52,7 +52,31 @@ struct CollectedStatistics {
     end_time_unix: u64,
 
     /// Collected statistics.
-    stats: HashMap<ContextNoOrigin, MetricSample>,
+    stats: FlattenedStats,
+}
+
+#[derive(Serialize)]
+struct FlattenedMetricStat<'a> {
+    #[serde(flatten)]
+    context: &'a ContextNoOrigin,
+
+    #[serde(flatten)]
+    stats: &'a MetricSample,
+}
+
+struct FlattenedStats(HashMap<ContextNoOrigin, MetricSample>);
+
+impl Serialize for FlattenedStats {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_seq(
+            self.0
+                .iter()
+                .map(|(context, stats)| FlattenedMetricStat { context, stats }),
+        )
+    }
 }
 
 /// Configuration for DogStatsD statistics destination and API handler.
@@ -150,7 +174,7 @@ impl Destination for DogStatsDStats {
                     let response = StatsResponse::Statistics(CollectedStatistics {
                         start_time_unix: stats_collection_start_time,
                         end_time_unix: stats_collection_end_time,
-                        stats,
+                        stats: FlattenedStats(stats),
                     });
 
                     let response_tx = match stats_response_tx.take() {
@@ -168,31 +192,10 @@ impl Destination for DogStatsDStats {
     }
 }
 
-use std::fmt;
-
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Eq, Hash, PartialEq, Serialize)]
 struct ContextNoOrigin {
     name: MetaString,
     tags: SharedTagSet,
-}
-
-impl fmt::Display for ContextNoOrigin {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.name)?;
-        if !self.tags.is_empty() {
-            write!(f, "{{{}}}", self.tags)?;
-        }
-        Ok(())
-    }
-}
-
-impl Serialize for ContextNoOrigin {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
 }
 #[derive(Deserialize)]
 struct StatsQueryParams {
