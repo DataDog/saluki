@@ -186,6 +186,10 @@ sha3 = { version = "0.10", default-features = false }
 pyo3 = { version = "0.25", default-features = false }
 test-strategy = { version = "0.4", default-features = false }
 comfy-table = "7.1.4"
+lexical-core = { version = "1", default-features = false }
+lexical-util = { version = "1", default-features = false }
+itoa = { version = "1", default-features = false }
+dtoa = { version = "1", default-features = false }
 
 [profile.release]
 debug = true
