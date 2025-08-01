@@ -1014,6 +1014,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dtoa"
+version = "1.0.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6add3b8cff394282be81f3fc1a0605db594ed69890078ca6e2cab1c408bcf04"
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3174,6 +3180,7 @@ dependencies = [
  "chrono",
  "datadog-protos",
  "ddsketch-agent",
+ "dtoa",
  "float-cmp",
  "foldhash",
  "futures",
@@ -3186,6 +3193,7 @@ dependencies = [
  "hyper",
  "hyper-http-proxy",
  "indexmap 2.11.0",
+ "itoa",
  "memory-accounting",
  "metrics",
  "opentelemetry-semantic-conventions",

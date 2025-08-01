@@ -1,40 +1,30 @@
-use std::{
-    convert::Infallible,
-    fmt::Write as _,
-    num::NonZeroUsize,
-    sync::{Arc, LazyLock},
-};
+use std::{num::NonZeroUsize, sync::LazyLock};
 
 use async_trait::async_trait;
 use ddsketch_agent::DDSketch;
-use http::{Request, Response};
-use hyper::{body::Incoming, service::service_fn};
+use indexmap::map::Entry;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_common::{collections::FastIndexMap, iter::ReusableDeduplicator};
+use saluki_common::{collections::FastIndexMap, iter::ReusableDeduplicator, strings::StringBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{tags::Tag, Context};
 use saluki_core::components::{destinations::*, ComponentContext};
 use saluki_core::data_model::event::{
-    metric::{Histogram, Metric, MetricValues},
+    metric::{Histogram, MetricValues},
     EventType,
 };
 use saluki_error::GenericError;
-use saluki_io::net::{
-    listener::ConnectionOrientedListener,
-    server::http::{ErrorHandle, HttpServer, ShutdownHandle},
-    ListenAddress,
-};
+use saluki_io::net::{listener::ConnectionOrientedListener, ListenAddress};
 use serde::Deserialize;
-use stringtheory::{
-    interning::{FixedSizeInterner, Interner as _},
-    MetaString,
-};
-use tokio::{select, sync::RwLock};
+use stringtheory::{interning::FixedSizeInterner, MetaString};
+use tokio::{select, sync::mpsc};
 use tracing::debug;
 
+mod api;
+use self::api::spawn_api_server;
+
 const CONTEXT_LIMIT: usize = 10_000;
-const PAYLOAD_SIZE_LIMIT_BYTES: usize = 1024 * 1024;
-const PAYLOAD_BUFFER_SIZE_LIMIT_BYTES: usize = 128 * 1024;
+const PAYLOAD_BUFFER_SIZE_LIMIT_BYTES: usize = 1024 * 1024;
+const SUBPAYLOAD_BUFFER_SIZE_LIMIT_BYTES: usize = 128 * 1024;
 const TAGS_BUFFER_SIZE_LIMIT_BYTES: usize = 2048;
 const NAME_NORMALIZATION_BUFFER_SIZE: usize = 512;
 
@@ -48,7 +38,9 @@ static NON_TIME_HISTOGRAM_BUCKETS: LazyLock<[(f64, &'static str); NON_TIME_HISTO
     LazyLock::new(|| histogram_buckets::<NON_TIME_HISTOGRAM_BUCKET_COUNT>(1.0, 2.0));
 
 // SAFETY: This is obviously not zero.
-const METRIC_NAME_STRING_INTERNER_BYTES: NonZeroUsize = NonZeroUsize::new(65536).unwrap();
+const STRING_INTERNER_BYTES: NonZeroUsize = NonZeroUsize::new(131_072).unwrap();
+
+type InternedStringBuilder = StringBuilder<FixedSizeInterner<1>>;
 
 /// Prometheus destination.
 ///
@@ -94,11 +86,6 @@ impl DestinationBuilder for PrometheusConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         Ok(Box::new(Prometheus {
             listener: ConnectionOrientedListener::from_listen_address(self.listen_addr.clone()).await?,
-            metrics: FastIndexMap::default(),
-            payload: Arc::new(RwLock::new(String::new())),
-            payload_buffer: String::with_capacity(PAYLOAD_BUFFER_SIZE_LIMIT_BYTES),
-            tags_buffer: String::with_capacity(TAGS_BUFFER_SIZE_LIMIT_BYTES),
-            interner: FixedSizeInterner::new(METRIC_NAME_STRING_INTERNER_BYTES),
         }))
     }
 }
@@ -108,11 +95,7 @@ impl MemoryBounds for PrometheusConfiguration {
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
-            .with_single_value::<Prometheus>("component struct")
-            // This isn't _really_ bounded since the string buffer could definitely grow larger if the metric name was
-            // larger, but the default buffer size is far beyond any typical metric name that it should almost never
-            // grow beyond this initially allocated size.
-            .with_fixed_amount("name normalization buffer size", NAME_NORMALIZATION_BUFFER_SIZE);
+            .with_single_value::<Prometheus>("component struct");
 
         builder
             .firm()
@@ -120,90 +103,115 @@ impl MemoryBounds for PrometheusConfiguration {
             // simplifying things here because the ratio of true "contexts" to Prometheus contexts should be very high,
             // high enough to make this a reasonable approximation.
             .with_map::<Context, PrometheusValue>("state map", CONTEXT_LIMIT)
-            .with_fixed_amount("payload size", PAYLOAD_SIZE_LIMIT_BYTES)
-            .with_fixed_amount("payload buffer", PAYLOAD_BUFFER_SIZE_LIMIT_BYTES)
+            .with_fixed_amount("latest payload", PAYLOAD_BUFFER_SIZE_LIMIT_BYTES)
+            .with_fixed_amount("payload buffer size", PAYLOAD_BUFFER_SIZE_LIMIT_BYTES)
+            .with_fixed_amount("subpayload buffer size", SUBPAYLOAD_BUFFER_SIZE_LIMIT_BYTES)
+            .with_fixed_amount("name normalization buffer size", NAME_NORMALIZATION_BUFFER_SIZE)
             .with_fixed_amount("tags buffer", TAGS_BUFFER_SIZE_LIMIT_BYTES);
     }
 }
 
 struct Prometheus {
     listener: ConnectionOrientedListener,
-    metrics: FastIndexMap<PrometheusContext, FastIndexMap<Context, PrometheusValue>>,
-    payload: Arc<RwLock<String>>,
-    payload_buffer: String,
-    tags_buffer: String,
-    interner: FixedSizeInterner<1>,
 }
 
 #[async_trait]
 impl Destination for Prometheus {
     async fn run(mut self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
-        let Self {
-            listener,
-            mut metrics,
-            payload,
-            mut payload_buffer,
-            mut tags_buffer,
-            interner,
-        } = *self;
+        let Self { listener } = *self;
+
+        let interner = FixedSizeInterner::new(STRING_INTERNER_BYTES);
+        let mut name_builder =
+            StringBuilder::with_limit(NAME_NORMALIZATION_BUFFER_SIZE).with_interner(interner.clone());
+        let mut tags_builder = StringBuilder::with_limit(TAGS_BUFFER_SIZE_LIMIT_BYTES).with_interner(interner);
+
+        let mut latest_payload = String::new();
+        let mut payload_builder = StringBuilder::with_limit(PAYLOAD_BUFFER_SIZE_LIMIT_BYTES);
+        let mut subpayload_builder = StringBuilder::with_limit(SUBPAYLOAD_BUFFER_SIZE_LIMIT_BYTES);
+        let mut metrics = FastIndexMap::default();
 
         let mut health = context.take_health_handle();
 
-        let (http_shutdown, mut http_error) = spawn_prom_scrape_service(listener, Arc::clone(&payload));
+        let (payload_req_tx, mut payload_req_rx) = mpsc::channel(2);
+        let (http_shutdown, mut http_error) = spawn_api_server(listener, payload_req_tx);
         health.mark_ready();
 
         debug!("Prometheus destination started.");
 
         let mut contexts = 0;
-        let mut name_buf = String::with_capacity(NAME_NORMALIZATION_BUFFER_SIZE);
         let mut tags_deduplicator = ReusableDeduplicator::new();
+        let mut render_required = false;
 
         loop {
             select! {
                 _ = health.live() => continue,
-                maybe_events = context.events().next() => match maybe_events {
-                    Some(events) => {
-                        // Process each metric event in the batch, either merging it with the existing value or
-                        // inserting it for the first time.
-                        for event in events {
-                            if let Some(metric) = event.try_into_metric() {
-                                // Break apart our metric into its constituent parts, and then normalize it for
-                                // Prometheus: adjust the name if necessary, figuring out the equivalent Prometheus
-                                // metric type, and so on.
-                                let prom_context = match into_prometheus_metric(&metric, &mut name_buf, &interner) {
-                                    Some(prom_context) => prom_context,
+                maybe_events = context.events().next() => {
+                    let events = match maybe_events {
+                        Some(events) => events,
+                        None => break,
+                    };
+
+                    // Process each metric event in the batch, either merging it with the existing value or
+                    // inserting it for the first time.
+                    for event in events {
+                        let (context, values, _) = match event.try_into_metric() {
+                            Some(metric) => metric.into_parts(),
+                            None => continue,
+                        };
+
+                        // We don't support all internal metric types through Prometheus.
+                        let prom_type = match PrometheusType::try_from_values(&values) {
+                            Some(prom_type) => prom_type,
+                            None => continue,
+                        };
+
+                        // Create an entry for the context if we don't already have one, obeying our configured context limit.
+                        let grouped_values = match metrics.entry(context.name().clone()) {
+                            Entry::Occupied(entry) => entry.into_mut(),
+                            Entry::Vacant(entry) => {
+                                let prom_name = match try_context_to_prom_name(&context, &mut name_builder) {
+                                    Some(prom_name) => prom_name,
                                     None => continue,
                                 };
 
-                                let (context, values, _) = metric.into_parts();
+                                let new_grouped_values = GroupedValues::new(prom_name, prom_type);
 
-                                // Create an entry for the context if we don't already have one, obeying our configured context limit.
-                                let existing_contexts = metrics.entry(prom_context.clone()).or_default();
-                                match existing_contexts.get_mut(&context) {
-                                    Some(existing_prom_value) => merge_metric_values_with_prom_value(values, existing_prom_value),
-                                    None => {
-                                        if contexts >= CONTEXT_LIMIT {
-                                            debug!("Prometheus destination reached context limit. Skipping metric '{}'.", context.name());
-                                            continue
-                                        }
-
-                                        let mut new_prom_value = get_prom_value_for_prom_context(&prom_context);
-                                        merge_metric_values_with_prom_value(values, &mut new_prom_value);
-
-                                        existing_contexts.insert(context, new_prom_value);
-                                        contexts += 1;
-                                    }
-                                }
+                                entry.insert(new_grouped_values)
                             }
+                        };
+                        if !grouped_values.update(&context, &values) {
+                            if contexts >= CONTEXT_LIMIT {
+                                debug!("Prometheus destination reached context limit. Skipping metric '{}'.", context.name());
+                                continue
+                            }
+                            let prom_tags = match try_context_to_prom_tags(&context, &mut tags_builder, &mut tags_deduplicator) {
+                                Some(prom_tags) => prom_tags,
+                                None => continue,
+                            };
+
+                            contexts += 1;
+
+                            grouped_values.insert(context, prom_tags, values);
                         }
 
-                        // Regenerate the scrape payload.
-                        regenerate_payload(&metrics, &payload, &mut payload_buffer, &mut tags_buffer, &mut tags_deduplicator).await;
-                    },
-                    None => break,
+                        render_required = true;
+                    }
                 },
-                error = &mut http_error => {
-                    if let Some(error) = error {
+                Some(payload_resp_tx) = payload_req_rx.recv() => {
+                    // Check if the payload needs to be (re)rendered first.
+                    if render_required {
+                        render_required = false;
+
+                        render_payload(&metrics, &mut payload_builder, &mut subpayload_builder);
+
+                        latest_payload.clear();
+                        latest_payload.push_str(payload_builder.as_str());
+                    }
+
+                    let _ = payload_resp_tx.send(latest_payload.clone());
+                }
+                maybe_error = &mut http_error => {
+                    if let Some(error) = maybe_error {
                         debug!(%error, "HTTP server error.");
                     }
                     break;
@@ -221,55 +229,38 @@ impl Destination for Prometheus {
     }
 }
 
-fn spawn_prom_scrape_service(
-    listener: ConnectionOrientedListener, payload: Arc<RwLock<String>>,
-) -> (ShutdownHandle, ErrorHandle) {
-    let service = service_fn(move |_: Request<Incoming>| {
-        let payload = Arc::clone(&payload);
-        async move {
-            let payload = payload.read().await;
-            Ok::<Response<String>, Infallible>(Response::new(payload.to_string()))
-        }
-    });
-
-    let http_server = HttpServer::from_listener(listener, service);
-    http_server.listen()
-}
-
-#[allow(clippy::mutable_key_type)]
-async fn regenerate_payload(
-    metrics: &FastIndexMap<PrometheusContext, FastIndexMap<Context, PrometheusValue>>, payload: &Arc<RwLock<String>>,
-    payload_buffer: &mut String, tags_buffer: &mut String, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
+fn render_payload(
+    metrics: &FastIndexMap<MetaString, GroupedValues>, payload_builder: &mut StringBuilder,
+    subpayload_builder: &mut StringBuilder,
 ) {
-    let mut payload = payload.write().await;
-    payload.clear();
+    payload_builder.clear();
 
     let mut metrics_written = 0;
     let metrics_total = metrics.len();
 
-    for (prom_context, contexts) in metrics {
-        if write_metrics(payload_buffer, tags_buffer, prom_context, contexts, tags_deduplicator) {
-            if payload.len() + payload_buffer.len() > PAYLOAD_SIZE_LIMIT_BYTES {
-                debug!(
-                    metrics_written,
-                    metrics_total,
-                    payload_len = payload.len(),
-                    "Writing additional metrics would exceed payload size limit. Skipping remaining metrics."
-                );
-                break;
-            }
-
-            // If we've already written some metrics, add a newline between each grouping.
-            if metrics_written > 0 {
-                payload.push('\n');
-            }
-
-            payload.push_str(payload_buffer);
-
-            metrics_written += 1;
-        } else {
-            debug!("Failed to write metric to payload. Continuing...");
+    for (metric_name, grouped_values) in metrics {
+        // Write this single metric out to the subpayload builder, which will include all of the individual contexts/tagsets.
+        if write_metrics(grouped_values, subpayload_builder).is_none() {
+            debug!(
+                contexts_len = grouped_values.len(),
+                "Failed to render contexts for metric '{}'. Skipping.", metric_name,
+            );
+            continue;
         }
+
+        // Push the subpayload builder's string into the payload builder.
+        if payload_builder.push_str(subpayload_builder.as_str()).is_none() {
+            debug!(
+                metrics_written,
+                metrics_total,
+                payload_len = payload_builder.len(),
+                "Failed to include metric '{}' in payload due to insufficient space. Skipping remaining metrics.",
+                metric_name
+            );
+            break;
+        }
+
+        metrics_written += 1;
     }
 }
 
@@ -298,160 +289,150 @@ fn get_help_text(metric_name: &str) -> Option<&'static str> {
     }
 }
 
-fn write_metrics(
-    payload_buffer: &mut String, tags_buffer: &mut String, prom_context: &PrometheusContext,
-    contexts: &FastIndexMap<Context, PrometheusValue>, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
-) -> bool {
-    if contexts.is_empty() {
-        debug!("No contexts for metric '{}'. Skipping.", prom_context.metric_name);
-        return true;
+fn write_metrics(grouped_values: &GroupedValues, builder: &mut StringBuilder) -> Option<()> {
+    builder.clear();
+
+    if grouped_values.is_empty() {
+        debug!("No contexts for metric '{}'. Skipping.", grouped_values.prom_name);
+        return Some(());
     }
 
-    payload_buffer.clear();
+    let mut integer_writer = itoa::Buffer::new();
+    let mut float_writer = dtoa::Buffer::new();
 
-    // Write HELP if available
-    if let Some(help_text) = get_help_text(prom_context.metric_name.as_ref()) {
-        writeln!(payload_buffer, "# HELP {} {}", prom_context.metric_name, help_text).unwrap();
+    // Write HELP if available.
+    if let Some(help_text) = get_help_text(&grouped_values.prom_name) {
+        builder.push_str("# HELP ")?;
+        builder.push_str(&grouped_values.prom_name)?;
+        builder.push_str(" ")?;
+        builder.push_str(help_text)?;
+        builder.push_str("\n")?;
     }
+
     // Write the metric header.
-    writeln!(
-        payload_buffer,
-        "# TYPE {} {}",
-        prom_context.metric_name,
-        prom_context.metric_type.as_str()
-    )
-    .unwrap();
+    builder.push_str("# TYPE ")?;
+    builder.push_str(&grouped_values.prom_name)?;
+    builder.push_str(" ")?;
+    builder.push_str(grouped_values.prom_type.as_str())?;
+    builder.push_str("\n")?;
 
-    for (context, values) in contexts {
-        if payload_buffer.len() > PAYLOAD_BUFFER_SIZE_LIMIT_BYTES {
-            debug!("Payload buffer size limit exceeded. Additional contexts for this metric will be truncated.");
-            break;
-        }
-
-        tags_buffer.clear();
-
-        // Format/encode the tags.
-        if !format_tags(tags_buffer, context, tags_deduplicator) {
-            return false;
-        }
+    for (_, (tags, values)) in &grouped_values.groups {
+        let metric_name = &grouped_values.prom_name;
 
         // Write the metric value itself.
         match values {
             PrometheusValue::Counter(value) | PrometheusValue::Gauge(value) => {
+                let value_str = float_writer.format(*value);
+
                 // No metric type-specific tags for counters or gauges, so just write them straight out.
-                payload_buffer.push_str(&prom_context.metric_name);
-                if !tags_buffer.is_empty() {
-                    payload_buffer.push('{');
-                    payload_buffer.push_str(tags_buffer);
-                    payload_buffer.push('}');
-                }
-                writeln!(payload_buffer, " {}", value).unwrap();
+                write_metric_line(builder, metric_name, None, &tags, None, value_str)?;
             }
             PrometheusValue::Histogram(histogram) => {
                 // Write the histogram buckets.
-                for (upper_bound_str, count) in histogram.buckets() {
-                    write!(payload_buffer, "{}_bucket{{{}", &prom_context.metric_name, tags_buffer).unwrap();
-                    if !tags_buffer.is_empty() {
-                        payload_buffer.push(',');
-                    }
-                    writeln!(payload_buffer, "le=\"{}\"}} {}", upper_bound_str, count).unwrap();
+                for (le_str, count) in histogram.buckets() {
+                    let count_str = integer_writer.format(count);
+                    write_metric_line(
+                        builder,
+                        metric_name,
+                        Some("_bucket"),
+                        &tags,
+                        Some(("le", le_str)),
+                        count_str,
+                    )?;
                 }
 
                 // Write the final bucket -- the +Inf bucket -- which is just equal to the count of the histogram.
-                write!(payload_buffer, "{}_bucket{{{}", &prom_context.metric_name, tags_buffer).unwrap();
-                if !tags_buffer.is_empty() {
-                    payload_buffer.push(',');
-                }
-                writeln!(payload_buffer, "le=\"+Inf\"}} {}", histogram.count).unwrap();
+                let count_str = integer_writer.format(histogram.count);
+                write_metric_line(
+                    builder,
+                    metric_name,
+                    Some("_bucket"),
+                    &tags,
+                    Some(("le", "+Inf")),
+                    count_str,
+                )?;
 
                 // Write the histogram sum and count.
-                write!(payload_buffer, "{}_sum", &prom_context.metric_name).unwrap();
-                if !tags_buffer.is_empty() {
-                    payload_buffer.push('{');
-                    payload_buffer.push_str(tags_buffer);
-                    payload_buffer.push('}');
-                }
-                writeln!(payload_buffer, " {}", histogram.sum).unwrap();
-
-                write!(payload_buffer, "{}_count", &prom_context.metric_name).unwrap();
-                if !tags_buffer.is_empty() {
-                    payload_buffer.push('{');
-                    payload_buffer.push_str(tags_buffer);
-                    payload_buffer.push('}');
-                }
-                writeln!(payload_buffer, " {}", histogram.count).unwrap();
+                let sum_str = float_writer.format(histogram.sum);
+                let count_str = integer_writer.format(histogram.count);
+                write_metric_line(builder, &metric_name, Some("_sum"), &tags, None, sum_str)?;
+                write_metric_line(builder, &metric_name, Some("_count"), &tags, None, count_str)?;
             }
             PrometheusValue::Summary(sketch) => {
                 // We take a fixed set of quantiles from the sketch, which is hard-coded but should generally represent
                 // the quantiles people generally care about.
-                for quantile in [0.1, 0.25, 0.5, 0.95, 0.99, 0.999] {
-                    let q_value = sketch.quantile(quantile).unwrap_or_default();
+                for (q, q_str) in [
+                    (0.1, "0.1"),
+                    (0.25, "0.25"),
+                    (0.5, "0.5"),
+                    (0.95, "0.95"),
+                    (0.99, "0.99"),
+                    (0.999, "0.999"),
+                ] {
+                    let q_value = sketch.quantile(q).unwrap_or_default();
+                    let q_value_str = float_writer.format(q_value);
 
-                    write!(payload_buffer, "{}{{{}", &prom_context.metric_name, tags_buffer).unwrap();
-                    if !tags_buffer.is_empty() {
-                        payload_buffer.push(',');
-                    }
-                    writeln!(payload_buffer, "quantile=\"{}\"}} {}", quantile, q_value).unwrap();
+                    write_metric_line(
+                        builder,
+                        metric_name,
+                        None,
+                        &tags,
+                        Some(("quantile", q_str)),
+                        q_value_str,
+                    )?;
                 }
 
-                write!(payload_buffer, "{}_sum", &prom_context.metric_name).unwrap();
-                if !tags_buffer.is_empty() {
-                    payload_buffer.push('{');
-                    payload_buffer.push_str(tags_buffer);
-                    payload_buffer.push('}');
-                }
-                writeln!(payload_buffer, " {}", sketch.sum().unwrap_or_default()).unwrap();
+                let sum_str = float_writer.format(sketch.sum().unwrap_or_default());
+                write_metric_line(builder, metric_name, Some("_sum"), &tags, None, sum_str)?;
 
-                write!(payload_buffer, "{}_count", &prom_context.metric_name).unwrap();
-                if !tags_buffer.is_empty() {
-                    payload_buffer.push('{');
-                    payload_buffer.push_str(tags_buffer);
-                    payload_buffer.push('}');
-                }
-                writeln!(payload_buffer, " {}", sketch.count()).unwrap();
+                let count_str = integer_writer.format(sketch.count());
+                write_metric_line(builder, metric_name, Some("_count"), &tags, None, count_str)?;
             }
         }
     }
 
-    true
+    Some(())
 }
 
-fn format_tags(tags_buffer: &mut String, context: &Context, tags_deduplicator: &mut ReusableDeduplicator<Tag>) -> bool {
-    let mut has_tags = false;
+fn write_metric_line(
+    builder: &mut StringBuilder, metric_name: &str, suffix: Option<&str>, primary_tags: &str,
+    secondary_tag: Option<(&str, &str)>, value: &str,
+) -> Option<()> {
+    // We handle some different things here:
+    // - the metric name can be suffixed (used for things like `_bucket`, `_count`, `_sum`,  in histograms and summaries)
+    // - writing out the "primary" set of tags
+    // - passing in a single tag key/value pair (used for `le` in histograms, or `quantile` in summaries)
 
-    let chained_tags = context.tags().into_iter().chain(context.origin_tags());
-    let deduplicated_tags = tags_deduplicator.deduplicated(chained_tags);
+    let has_tags = !primary_tags.is_empty() || secondary_tag.is_some();
 
-    for tag in deduplicated_tags {
-        // If we're not the first tag to be written, add a comma to separate the tags.
-        if has_tags {
-            tags_buffer.push(',');
-        }
-
-        let tag_name = tag.name();
-        let tag_value = match tag.value() {
-            Some(value) => value,
-            None => {
-                debug!("Skipping bare tag.");
-                continue;
-            }
-        };
-
-        has_tags = true;
-
-        // Can't exceed the tags buffer size limit: we calculate the addition as tag name/value length plus three bytes
-        // to account for having to format it as `name="value",`.
-        if tags_buffer.len() + tag_name.len() + tag_value.len() + 4 > TAGS_BUFFER_SIZE_LIMIT_BYTES {
-            debug!("Tags buffer size limit exceeded. Tags may be missing from this metric.");
-            return false;
-        }
-
-        write!(tags_buffer, "{}=\"{}\"", tag_name, tag_value).unwrap();
+    builder.push_str(metric_name)?;
+    if let Some(suffix) = suffix {
+        builder.push_str(suffix)?;
     }
 
-    true
+    if has_tags {
+        builder.push('{')?;
+        builder.push_str(primary_tags)?;
+
+        if let Some((tag_key, tag_value)) = secondary_tag {
+            if !primary_tags.is_empty() {
+                builder.push(',')?;
+            }
+            builder.push_str(tag_key)?;
+            builder.push_str("=\"")?;
+
+            builder.push_str(tag_value)?;
+            builder.push_str("\"")?;
+        }
+
+        builder.push_str("} ")?;
+    }
+
+    builder.push_str(value)?;
+    builder.push('\n')
 }
 
+/// Prometheus metric type.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 enum PrometheusType {
     Counter,
@@ -461,6 +442,16 @@ enum PrometheusType {
 }
 
 impl PrometheusType {
+    fn try_from_values(values: &MetricValues) -> Option<Self> {
+        match values {
+            MetricValues::Counter(_) => Some(Self::Counter),
+            MetricValues::Gauge(_) | MetricValues::Set(_) => Some(Self::Gauge),
+            MetricValues::Histogram(_) => Some(Self::Histogram),
+            MetricValues::Distribution(_) => Some(Self::Summary),
+            _ => None,
+        }
+    }
+
     fn as_str(&self) -> &'static str {
         match self {
             Self::Counter => "counter",
@@ -471,12 +462,9 @@ impl PrometheusType {
     }
 }
 
-#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
-struct PrometheusContext {
-    metric_name: MetaString,
-    metric_type: PrometheusType,
-}
-
+/// Prometheus metric value.
+///
+/// Holds the value of a Prometheus metric of the same type.
 enum PrometheusValue {
     Counter(f64),
     Gauge(f64),
@@ -484,45 +472,95 @@ enum PrometheusValue {
     Summary(DDSketch),
 }
 
-fn into_prometheus_metric(
-    metric: &Metric, name_buf: &mut String, interner: &FixedSizeInterner<1>,
-) -> Option<PrometheusContext> {
-    // Normalize the metric name first, since we might fail due to the interner being full.
-    let metric_name = match normalize_metric_name(metric.context().name(), name_buf, interner) {
-        Some(name) => name,
+fn try_context_to_prom_name(context: &Context, builder: &mut InternedStringBuilder) -> Option<MetaString> {
+    match normalize_metric_name(context, builder) {
+        Some(name) => Some(name),
         None => {
             debug!(
-                "Failed to intern normalized metric name. Skipping metric '{}'.",
-                metric.context().name()
+                "Failed to normalize metric name '{}'. Name either too long or interner is full.",
+                context.name()
             );
-            return None;
+            None
         }
-    };
-
-    let metric_type = match metric.values() {
-        MetricValues::Counter(_) => PrometheusType::Counter,
-        MetricValues::Gauge(_) | MetricValues::Set(_) => PrometheusType::Gauge,
-        MetricValues::Histogram(_) => PrometheusType::Histogram,
-        MetricValues::Distribution(_) => PrometheusType::Summary,
-        _ => return None,
-    };
-
-    Some(PrometheusContext {
-        metric_name,
-        metric_type,
-    })
-}
-
-fn get_prom_value_for_prom_context(prom_context: &PrometheusContext) -> PrometheusValue {
-    match prom_context.metric_type {
-        PrometheusType::Counter => PrometheusValue::Counter(0.0),
-        PrometheusType::Gauge => PrometheusValue::Gauge(0.0),
-        PrometheusType::Histogram => PrometheusValue::Histogram(PrometheusHistogram::new(&prom_context.metric_name)),
-        PrometheusType::Summary => PrometheusValue::Summary(DDSketch::default()),
     }
 }
 
-fn merge_metric_values_with_prom_value(values: MetricValues, prom_value: &mut PrometheusValue) {
+fn try_context_to_prom_tags(
+    context: &Context, builder: &mut InternedStringBuilder, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
+) -> Option<MetaString> {
+    match format_tags(context, builder, tags_deduplicator) {
+        Some(tags) => Some(tags),
+        None => {
+            debug!(
+                "Failed to format tags for metric '{}'. Tags either too long or interner is full.",
+                context.name()
+            );
+            None
+        }
+    }
+}
+
+/// Per-context values of a Prometheus metric.
+///
+/// Holds the values attached to a specific context (metric name + tags), grouped by the _original_
+/// `Context` from which the values were extracted. Allows for efficient lookups of existing contexts.
+struct GroupedValues {
+    prom_name: MetaString,
+    prom_type: PrometheusType,
+    groups: FastIndexMap<Context, (MetaString, PrometheusValue)>,
+}
+
+impl GroupedValues {
+    fn new(prom_name: MetaString, prom_type: PrometheusType) -> Self {
+        Self {
+            prom_name,
+            prom_type,
+            groups: FastIndexMap::default(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.groups.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.groups.len()
+    }
+
+    fn get_new_prom_value(&self) -> PrometheusValue {
+        match self.prom_type {
+            PrometheusType::Counter => PrometheusValue::Counter(0.0),
+            PrometheusType::Gauge => PrometheusValue::Gauge(0.0),
+            PrometheusType::Histogram => PrometheusValue::Histogram(PrometheusHistogram::new(&self.prom_name)),
+            PrometheusType::Summary => PrometheusValue::Summary(DDSketch::default()),
+        }
+    }
+
+    /// Inserts the given context and values.
+    ///
+    /// This overwrites the values if the context already exists.
+    fn insert(&mut self, context: Context, prom_tags: MetaString, values: MetricValues) {
+        let mut new_prom_values = self.get_new_prom_value();
+        merge_metric_values_with_prom_value(&values, &mut new_prom_values);
+
+        self.groups.insert(context, (prom_tags, new_prom_values));
+    }
+
+    /// Updates the given context by merging in the provided values.
+    ///
+    /// Returns `true` if the context exists and was updated, `false` otherwise.
+    fn update(&mut self, context: &Context, values: &MetricValues) -> bool {
+        match self.groups.get_mut(context) {
+            Some((_, prom_values)) => {
+                merge_metric_values_with_prom_value(values, prom_values);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+fn merge_metric_values_with_prom_value(values: &MetricValues, prom_value: &mut PrometheusValue) {
     match (values, prom_value) {
         (MetricValues::Counter(counter_values), PrometheusValue::Counter(prom_counter)) => {
             for (_, value) in counter_values {
@@ -547,37 +585,68 @@ fn merge_metric_values_with_prom_value(values: MetricValues, prom_value: &mut Pr
         }
         (MetricValues::Histogram(histogram_values), PrometheusValue::Histogram(prom_histogram)) => {
             for (_, value) in histogram_values {
-                prom_histogram.merge_histogram(&value);
+                prom_histogram.merge_histogram(value);
             }
         }
         (MetricValues::Distribution(distribution_values), PrometheusValue::Summary(prom_summary)) => {
             for (_, value) in distribution_values {
-                prom_summary.merge(&value);
+                prom_summary.merge(value);
             }
         }
         _ => panic!("Mismatched metric types"),
     }
 }
 
-fn normalize_metric_name(name: &str, name_buf: &mut String, interner: &FixedSizeInterner<1>) -> Option<MetaString> {
-    name_buf.clear();
+fn normalize_metric_name(context: &Context, builder: &mut InternedStringBuilder) -> Option<MetaString> {
+    builder.clear();
 
     // Normalize the metric name to a valid Prometheus metric name.
-    for (i, c) in name.chars().enumerate() {
+    for (i, c) in context.name().chars().enumerate() {
         if i == 0 && is_valid_name_start_char(c) || i != 0 && is_valid_name_char(c) {
-            name_buf.push(c);
+            builder.push(c)?;
         } else {
             // Convert periods to a set of two underscores, and anything else to a single underscore.
             //
             // This lets us ensure that the normal separators we use in metrics (periods) are converted in a way
             // where they can be distinguished on the collector side to potentially reconstitute them back to their
             // original form.
-            name_buf.push_str(if c == '.' { "__" } else { "_" });
+            builder.push_str(if c == '.' { "__" } else { "_" })?;
         }
     }
 
-    // Now try and intern the normalized name.
-    interner.try_intern(name_buf).map(MetaString::from)
+    builder.try_intern()
+}
+
+fn format_tags(
+    context: &Context, builder: &mut InternedStringBuilder, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
+) -> Option<MetaString> {
+    builder.clear();
+
+    let chained_tags = context.tags().into_iter().chain(context.origin_tags());
+    let deduplicated_tags = tags_deduplicator.deduplicated(chained_tags);
+
+    for tag in deduplicated_tags {
+        // If we're not the first tag to be written, add a comma to separate the tags.
+        if !builder.is_empty() {
+            builder.push(',')?;
+        }
+
+        let tag_name = tag.name();
+        let tag_value = match tag.value() {
+            Some(value) => value,
+            None => {
+                debug!("Skipping bare tag.");
+                continue;
+            }
+        };
+
+        builder.push_str(tag_name)?;
+        builder.push_str("=\"")?;
+        builder.push_str(tag_value)?;
+        builder.push('"')?;
+    }
+
+    builder.try_intern()
 }
 
 #[inline]

@@ -35,7 +35,7 @@ impl StringBuilder<()> {
 
     /// Creates a new `StringBuilder` with the given limit.
     ///
-    /// Strings that exceed the limit will be discarded.
+    /// Strings that exceed the limit, in bytes, will be discarded.
     pub fn with_limit(limit: usize) -> Self {
         Self {
             buf: String::new(),
@@ -190,7 +190,7 @@ mod tests {
         builder.clear();
 
         assert_eq!(builder.push_str("hello"), Some(()));
-        assert_eq!(builder.push_str(" "), Some(()));
+        assert_eq!(builder.push(' '), Some(()));
         assert_eq!(builder.push_str("world"), Some(()));
         assert_eq!(builder.as_str(), "hello world");
     }
