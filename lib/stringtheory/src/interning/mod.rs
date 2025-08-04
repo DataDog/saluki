@@ -29,7 +29,7 @@ pub trait Interner {
     fn try_intern(&self, s: &str) -> Option<InternedString>;
 }
 
-impl<'a, T> Interner for &'a T
+impl<T> Interner for &T
 where
     T: Interner,
 {
