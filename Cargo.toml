@@ -185,6 +185,8 @@ twox-hash = { version = "2", features = ["xxhash64"] }
 sha3 = { version = "0.10", default-features = false }
 pyo3 = { version = "0.25", default-features = false }
 test-strategy = { version = "0.4", default-features = false }
+lexical-core = { version = "1", default-features = false }
+lexical-util = { version = "1", default-features = false }
 
 [profile.release]
 debug = true
