@@ -20,7 +20,6 @@ bytesize = { workspace = true }
 chrono = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
-dtoa = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }
 foldhash = { workspace = true }
 futures = { workspace = true }
@@ -33,7 +32,6 @@ http-serde-ext = { workspace = true }
 hyper = { workspace = true, features = ["client"] }
 hyper-http-proxy = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
-itoa = { workspace = true }
 memory-accounting = { workspace = true }
 metrics = { workspace = true }
 opentelemetry-semantic-conventions = { workspace = true, features = ["semconv_experimental"] }

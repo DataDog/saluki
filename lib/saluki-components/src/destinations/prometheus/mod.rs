@@ -297,9 +297,6 @@ fn write_metrics(grouped_values: &GroupedValues, builder: &mut StringBuilder) ->
         return Some(());
     }
 
-    let mut integer_writer = itoa::Buffer::new();
-    let mut float_writer = dtoa::Buffer::new();
-
     // Write HELP if available.
     if let Some(help_text) = get_help_text(&grouped_values.prom_name) {
         builder.push_str("# HELP ")?;
@@ -322,41 +319,35 @@ fn write_metrics(grouped_values: &GroupedValues, builder: &mut StringBuilder) ->
         // Write the metric value itself.
         match values {
             PrometheusValue::Counter(value) | PrometheusValue::Gauge(value) => {
-                let value_str = float_writer.format(*value);
-
                 // No metric type-specific tags for counters or gauges, so just write them straight out.
-                write_metric_line(builder, metric_name, None, &tags, None, value_str)?;
+                write_metric_line(builder, metric_name, None, &tags, None, *value)?;
             }
             PrometheusValue::Histogram(histogram) => {
                 // Write the histogram buckets.
                 for (le_str, count) in histogram.buckets() {
-                    let count_str = integer_writer.format(count);
                     write_metric_line(
                         builder,
                         metric_name,
                         Some("_bucket"),
                         &tags,
                         Some(("le", le_str)),
-                        count_str,
+                        count,
                     )?;
                 }
 
                 // Write the final bucket -- the +Inf bucket -- which is just equal to the count of the histogram.
-                let count_str = integer_writer.format(histogram.count);
                 write_metric_line(
                     builder,
                     metric_name,
                     Some("_bucket"),
                     &tags,
                     Some(("le", "+Inf")),
-                    count_str,
+                    histogram.count,
                 )?;
 
                 // Write the histogram sum and count.
-                let sum_str = float_writer.format(histogram.sum);
-                let count_str = integer_writer.format(histogram.count);
-                write_metric_line(builder, &metric_name, Some("_sum"), &tags, None, sum_str)?;
-                write_metric_line(builder, &metric_name, Some("_count"), &tags, None, count_str)?;
+                write_metric_line(builder, &metric_name, Some("_sum"), &tags, None, histogram.sum)?;
+                write_metric_line(builder, &metric_name, Some("_count"), &tags, None, histogram.count)?;
             }
             PrometheusValue::Summary(sketch) => {
                 // We take a fixed set of quantiles from the sketch, which is hard-coded but should generally represent
@@ -370,23 +361,19 @@ fn write_metrics(grouped_values: &GroupedValues, builder: &mut StringBuilder) ->
                     (0.999, "0.999"),
                 ] {
                     let q_value = sketch.quantile(q).unwrap_or_default();
-                    let q_value_str = float_writer.format(q_value);
 
-                    write_metric_line(
-                        builder,
-                        metric_name,
-                        None,
-                        &tags,
-                        Some(("quantile", q_str)),
-                        q_value_str,
-                    )?;
+                    write_metric_line(builder, metric_name, None, &tags, Some(("quantile", q_str)), q_value)?;
                 }
 
-                let sum_str = float_writer.format(sketch.sum().unwrap_or_default());
-                write_metric_line(builder, metric_name, Some("_sum"), &tags, None, sum_str)?;
-
-                let count_str = integer_writer.format(sketch.count());
-                write_metric_line(builder, metric_name, Some("_count"), &tags, None, count_str)?;
+                write_metric_line(
+                    builder,
+                    metric_name,
+                    Some("_sum"),
+                    &tags,
+                    None,
+                    sketch.sum().unwrap_or_default(),
+                )?;
+                write_metric_line(builder, metric_name, Some("_count"), &tags, None, sketch.count())?;
             }
         }
     }
@@ -394,9 +381,9 @@ fn write_metrics(grouped_values: &GroupedValues, builder: &mut StringBuilder) ->
     Some(())
 }
 
-fn write_metric_line(
+fn write_metric_line<N: Numeric>(
     builder: &mut StringBuilder, metric_name: &str, suffix: Option<&str>, primary_tags: &str,
-    secondary_tag: Option<(&str, &str)>, value: &str,
+    secondary_tag: Option<(&str, &str)>, value: N,
 ) -> Option<()> {
     // We handle some different things here:
     // - the metric name can be suffixed (used for things like `_bucket`, `_count`, `_sum`,  in histograms and summaries)
@@ -428,7 +415,7 @@ fn write_metric_line(
         builder.push_str("} ")?;
     }
 
-    builder.push_str(value)?;
+    builder.push_numeric(value)?;
     builder.push('\n')
 }
 
