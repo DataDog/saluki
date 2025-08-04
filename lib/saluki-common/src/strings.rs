@@ -1,6 +1,15 @@
+use lexical_core::{ToLexical, WriteFloatOptions};
+use lexical_util::num::Integer;
 use stringtheory::{interning::Interner, MetaString};
 
+static WRITE_FLOAT_OPTS: WriteFloatOptions = WriteFloatOptions::builder()
+    .trim_floats(true)
+    .inf_string(Some(b"Inf"))
+    .nan_string(Some(b"NaN"))
+    .build_unchecked();
+
 /// A string builder.
+///
 ///
 /// This builder is designed to allow building strings incrementally. This can simplify certain patterns of string
 /// construction by removing the need to manually manage a temporary string buffer, clearing it after building the
@@ -18,6 +27,7 @@ pub struct StringBuilder<I = ()> {
     buf: String,
     limit: usize,
     interner: I,
+    num_buf: [u8; lexical_core::BUFFER_SIZE],
 }
 
 impl StringBuilder<()> {
@@ -29,6 +39,7 @@ impl StringBuilder<()> {
             buf: String::new(),
             limit: usize::MAX,
             interner: (),
+            num_buf: [0; lexical_core::BUFFER_SIZE],
         }
     }
 
@@ -40,6 +51,7 @@ impl StringBuilder<()> {
             buf: String::new(),
             limit,
             interner: (),
+            num_buf: [0; lexical_core::BUFFER_SIZE],
         }
     }
 }
@@ -54,6 +66,7 @@ impl<I> StringBuilder<I> {
             buf: self.buf,
             limit: self.limit,
             interner,
+            num_buf: self.num_buf,
         }
     }
 
@@ -72,6 +85,17 @@ impl<I> StringBuilder<I> {
         self.buf.clear();
     }
 
+    /// Pushes a character into the builder.
+    ///
+    /// Returns `None` if the resulting string would exceed the configured limit.
+    pub fn push(&mut self, c: char) -> Option<()> {
+        if self.buf.len() + 1 > self.limit {
+            return None;
+        }
+        self.buf.push(c);
+        Some(())
+    }
+
     /// Pushes a string fragment into the builder.
     ///
     /// Returns `None` if the resulting string would exceed the configured limit.
@@ -80,6 +104,42 @@ impl<I> StringBuilder<I> {
             return None;
         }
         self.buf.push_str(s);
+        Some(())
+    }
+
+    /// Pushes an integer into the builder.
+    ///
+    /// Integers include all signed and unsigned integer types.
+    ///
+    /// Returns `None` if the resulting string would exceed the configured limit.
+    pub fn push_int<N: Integer + ToLexical>(&mut self, i: N) -> Option<()> {
+        let num_buf = lexical_core::write(i, &mut self.num_buf);
+        if self.buf.len() + num_buf.len() > self.limit {
+            return None;
+        }
+
+        // SAFETY: `lexical-core` emits valid UTF-8 output.
+        let num_buf_str = unsafe { std::str::from_utf8_unchecked(&num_buf) };
+        self.buf.push_str(num_buf_str);
+        Some(())
+    }
+
+    /// Pushes a floating-point number into the builder.
+    ///
+    /// Includes both single and double-precision floating-point numbers.
+    ///
+    /// Returns `None` if the resulting string would exceed the configured limit.
+    pub fn push_float(&mut self, i: f64) -> Option<()> {
+        const FORMAT: u128 = lexical_core::format::STANDARD;
+
+        let num_buf = lexical_core::write_with_options::<_, FORMAT>(i, &mut self.num_buf, &WRITE_FLOAT_OPTS);
+        if self.buf.len() + num_buf.len() > self.limit {
+            return None;
+        }
+
+        // SAFETY: `lexical-core` emits valid UTF-8 output.
+        let num_buf_str = unsafe { std::str::from_utf8_unchecked(&num_buf) };
+        self.buf.push_str(num_buf_str);
         Some(())
     }
 
@@ -182,6 +242,46 @@ mod tests {
         assert_eq!(builder.push_str(" "), Some(()));
         assert_eq!(builder.push_str("world"), Some(()));
         assert_eq!(builder.try_intern(), Some(MetaString::from("hello world")));
+    }
+
+    #[test]
+    fn string_builder_numerics() {
+        let mut builder = build_string_builder();
+
+        assert_eq!(builder.push_int(1u8), Some(()));
+        assert_eq!(builder.string(), "1");
+        assert_eq!(builder.push_int(2u16), Some(()));
+        assert_eq!(builder.string(), "12");
+        assert_eq!(builder.push_int(3u32), Some(()));
+        assert_eq!(builder.string(), "123");
+        assert_eq!(builder.push_int(4u64), Some(()));
+        assert_eq!(builder.string(), "1234");
+        assert_eq!(builder.push_int(5usize), Some(()));
+        assert_eq!(builder.string(), "12345");
+
+        builder.clear();
+
+        assert_eq!(builder.push_int(-1i8), Some(()));
+        assert_eq!(builder.string(), "-1");
+        assert_eq!(builder.push_int(-2i16), Some(()));
+        assert_eq!(builder.string(), "-1-2");
+        assert_eq!(builder.push_int(-3i32), Some(()));
+        assert_eq!(builder.string(), "-1-2-3");
+        assert_eq!(builder.push_int(-4i64), Some(()));
+        assert_eq!(builder.string(), "-1-2-3-4");
+        assert_eq!(builder.push_int(-5isize), Some(()));
+        assert_eq!(builder.string(), "-1-2-3-4-5");
+
+        builder.clear();
+
+        assert_eq!(builder.push_float(0.0), Some(()));
+        assert_eq!(builder.string(), "0");
+        assert_eq!(builder.push_float(1.0), Some(()));
+        assert_eq!(builder.string(), "01");
+        assert_eq!(builder.push_float(-2.0), Some(()));
+        assert_eq!(builder.string(), "01-2");
+        assert_eq!(builder.push_float(3.5), Some(()));
+        assert_eq!(builder.string(), "01-23.5");
     }
 
     #[test]
