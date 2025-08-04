@@ -96,12 +96,6 @@ fn wrap_tags(tags: &[serde_json::Value], width: usize) -> Vec<String> {
     for (i, tag) in tags.iter().enumerate() {
         let tag = tag.as_str().unwrap();
         let last_tag = i == tags.len() - 1;
-        println!(
-            "last_tag: {}, current_line len: {}, tag len: {}",
-            last_tag,
-            current_line.len(),
-            tag.len()
-        );
         if current_line.is_empty() {
             current_line = tag.to_string();
             if !last_tag {
@@ -115,7 +109,6 @@ fn wrap_tags(tags: &[serde_json::Value], width: usize) -> Vec<String> {
                 current_line.push(',');
             }
         } else {
-            // Current line is full, start a new one
             lines.push(format!("{:<width$}", current_line));
             current_line = tag.to_string();
             if !last_tag {
@@ -124,7 +117,6 @@ fn wrap_tags(tags: &[serde_json::Value], width: usize) -> Vec<String> {
         }
     }
 
-    // Add the last line if it's not empty
     if !current_line.is_empty() {
         lines.push(format!("{:<width$}", current_line));
     }
@@ -132,20 +124,16 @@ fn wrap_tags(tags: &[serde_json::Value], width: usize) -> Vec<String> {
     lines
 }
 
-/// Formats a table row with support for multi-line content.
-/// If tags span multiple lines, the other columns are repeated for each line.
 fn format_table_row(name: &str, tags: &[String], count: u64, last_seen: &str) -> String {
     let mut output = String::new();
 
     for (i, tag_line) in tags.iter().enumerate() {
         if i == 0 {
-            // First line: include all columns
             output.push_str(&format!(
                 "{:<40} | {:<20} | {:<10} | {:<20}\n",
                 name, tag_line, count, last_seen
             ));
         } else {
-            // Subsequent lines: only show tags column, others are empty
             output.push_str(&format!("{:<40} | {:<20} | {:<10} | {:<20}\n", "", tag_line, "", ""));
         }
     }
