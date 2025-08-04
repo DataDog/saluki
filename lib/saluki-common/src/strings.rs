@@ -1,12 +1,97 @@
-use lexical_core::{ToLexical, WriteFloatOptions};
-use lexical_util::num::Integer;
+use lexical_core::{ToLexical, ToLexicalWithOptions as _, WriteFloatOptions};
 use stringtheory::{interning::Interner, MetaString};
 
+const FLOAT_FORMAT: u128 = lexical_core::format::STANDARD;
 static WRITE_FLOAT_OPTS: WriteFloatOptions = WriteFloatOptions::builder()
     .trim_floats(true)
     .inf_string(Some(b"Inf"))
     .nan_string(Some(b"NaN"))
     .build_unchecked();
+
+/// A numeric type that can be written to `StringBuilder`.
+#[allow(private_bounds)]
+pub trait Numeric: ToLexical + private::Sealed {
+    /// Formats the numeric value in the given buffer.
+    ///
+    /// Returns a range within the provided buffer that constitutes the formatted string.
+    fn format<'buf>(&self, buf: &'buf mut [u8; lexical_core::BUFFER_SIZE]) -> &'buf str {
+        let buf_len = {
+            let num_buf = self.to_lexical(buf);
+            num_buf.len()
+        };
+
+        // Reslice the original buffer to the length of the formatted number buffer, since `lexical_core` always writes
+        // from the beginning of the buffer. This lets us derive our string reference from `buf` rather than the
+        // local `num_buf`.
+        //
+        // SAFETY: `lexical_core::write` only generates valid UTF-8 output.
+        unsafe { std::str::from_utf8_unchecked(&buf[..buf_len]) }
+    }
+}
+
+impl Numeric for u8 {}
+impl Numeric for u16 {}
+impl Numeric for u32 {}
+impl Numeric for u64 {}
+impl Numeric for u128 {}
+impl Numeric for usize {}
+impl Numeric for i8 {}
+impl Numeric for i16 {}
+impl Numeric for i32 {}
+impl Numeric for i64 {}
+impl Numeric for i128 {}
+impl Numeric for isize {}
+
+impl Numeric for f32 {
+    fn format<'buf>(&self, buf: &'buf mut [u8; lexical_core::BUFFER_SIZE]) -> &'buf str {
+        let buf_len = {
+            let num_buf = self.to_lexical_with_options::<FLOAT_FORMAT>(buf, &WRITE_FLOAT_OPTS);
+            num_buf.len()
+        };
+
+        // Reslice the original buffer to the length of the formatted number buffer, since `lexical_core` always writes
+        // from the beginning of the buffer. This lets us derive our string reference from `buf` rather than the
+        // local `num_buf`.
+        //
+        // SAFETY: `lexical_core::write` only generates valid UTF-8 output.
+        unsafe { std::str::from_utf8_unchecked(&buf[..buf_len]) }
+    }
+}
+
+impl Numeric for f64 {
+    fn format<'buf>(&self, buf: &'buf mut [u8; lexical_core::BUFFER_SIZE]) -> &'buf str {
+        let buf_len = {
+            let num_buf = self.to_lexical_with_options::<FLOAT_FORMAT>(buf, &WRITE_FLOAT_OPTS);
+            num_buf.len()
+        };
+
+        // Reslice the original buffer to the length of the formatted number buffer, since `lexical_core` always writes
+        // from the beginning of the buffer. This lets us derive our string reference from `buf` rather than the
+        // local `num_buf`.
+        //
+        // SAFETY: `lexical_core::write` only generates valid UTF-8 output.
+        unsafe { std::str::from_utf8_unchecked(&buf[..buf_len]) }
+    }
+}
+
+mod private {
+    pub(super) trait Sealed {}
+
+    impl Sealed for u8 {}
+    impl Sealed for u16 {}
+    impl Sealed for u32 {}
+    impl Sealed for u64 {}
+    impl Sealed for u128 {}
+    impl Sealed for usize {}
+    impl Sealed for i8 {}
+    impl Sealed for i16 {}
+    impl Sealed for i32 {}
+    impl Sealed for i64 {}
+    impl Sealed for i128 {}
+    impl Sealed for isize {}
+    impl Sealed for f32 {}
+    impl Sealed for f64 {}
+}
 
 /// A string builder.
 ///
@@ -107,39 +192,18 @@ impl<I> StringBuilder<I> {
         Some(())
     }
 
-    /// Pushes an integer into the builder.
+    /// Pushes a numeric value into the builder.
     ///
-    /// Integers include all signed and unsigned integer types.
-    ///
-    /// Returns `None` if the resulting string would exceed the configured limit.
-    pub fn push_int<N: Integer + ToLexical>(&mut self, i: N) -> Option<()> {
-        let num_buf = lexical_core::write(i, &mut self.num_buf);
-        if self.buf.len() + num_buf.len() > self.limit {
-            return None;
-        }
-
-        // SAFETY: `lexical-core` emits valid UTF-8 output.
-        let num_buf_str = unsafe { std::str::from_utf8_unchecked(&num_buf) };
-        self.buf.push_str(num_buf_str);
-        Some(())
-    }
-
-    /// Pushes a floating-point number into the builder.
-    ///
-    /// Includes both single and double-precision floating-point numbers.
+    /// This method supports all signed and unsigned integer types, as well as single- and double-precision
+    /// floating-point numbers.
     ///
     /// Returns `None` if the resulting string would exceed the configured limit.
-    pub fn push_float(&mut self, i: f64) -> Option<()> {
-        const FORMAT: u128 = lexical_core::format::STANDARD;
-
-        let num_buf = lexical_core::write_with_options::<_, FORMAT>(i, &mut self.num_buf, &WRITE_FLOAT_OPTS);
-        if self.buf.len() + num_buf.len() > self.limit {
+    pub fn push_numeric<N: Numeric>(&mut self, value: N) -> Option<()> {
+        let num_str = value.format(&mut self.num_buf);
+        if self.buf.len() + num_str.len() > self.limit {
             return None;
         }
-
-        // SAFETY: `lexical-core` emits valid UTF-8 output.
-        let num_buf_str = unsafe { std::str::from_utf8_unchecked(&num_buf) };
-        self.buf.push_str(num_buf_str);
+        self.buf.push_str(num_str);
         Some(())
     }
 
@@ -248,39 +312,54 @@ mod tests {
     fn string_builder_numerics() {
         let mut builder = build_string_builder();
 
-        assert_eq!(builder.push_int(1u8), Some(()));
+        assert_eq!(builder.push_numeric(1u8), Some(()));
         assert_eq!(builder.string(), "1");
-        assert_eq!(builder.push_int(2u16), Some(()));
+        assert_eq!(builder.push_numeric(2u16), Some(()));
         assert_eq!(builder.string(), "12");
-        assert_eq!(builder.push_int(3u32), Some(()));
+        assert_eq!(builder.push_numeric(3u32), Some(()));
         assert_eq!(builder.string(), "123");
-        assert_eq!(builder.push_int(4u64), Some(()));
+        assert_eq!(builder.push_numeric(4u64), Some(()));
         assert_eq!(builder.string(), "1234");
-        assert_eq!(builder.push_int(5usize), Some(()));
+        assert_eq!(builder.push_numeric(5u128), Some(()));
         assert_eq!(builder.string(), "12345");
+        assert_eq!(builder.push_numeric(6usize), Some(()));
+        assert_eq!(builder.string(), "123456");
 
         builder.clear();
 
-        assert_eq!(builder.push_int(-1i8), Some(()));
+        assert_eq!(builder.push_numeric(-1i8), Some(()));
         assert_eq!(builder.string(), "-1");
-        assert_eq!(builder.push_int(-2i16), Some(()));
+        assert_eq!(builder.push_numeric(-2i16), Some(()));
         assert_eq!(builder.string(), "-1-2");
-        assert_eq!(builder.push_int(-3i32), Some(()));
+        assert_eq!(builder.push_numeric(-3i32), Some(()));
         assert_eq!(builder.string(), "-1-2-3");
-        assert_eq!(builder.push_int(-4i64), Some(()));
+        assert_eq!(builder.push_numeric(-4i64), Some(()));
         assert_eq!(builder.string(), "-1-2-3-4");
-        assert_eq!(builder.push_int(-5isize), Some(()));
+        assert_eq!(builder.push_numeric(-5i128), Some(()));
         assert_eq!(builder.string(), "-1-2-3-4-5");
+        assert_eq!(builder.push_numeric(-6isize), Some(()));
+        assert_eq!(builder.string(), "-1-2-3-4-5-6");
 
         builder.clear();
 
-        assert_eq!(builder.push_float(0.0), Some(()));
+        assert_eq!(builder.push_numeric(0.0f32), Some(()));
         assert_eq!(builder.string(), "0");
-        assert_eq!(builder.push_float(1.0), Some(()));
+        assert_eq!(builder.push_numeric(1.0f32), Some(()));
         assert_eq!(builder.string(), "01");
-        assert_eq!(builder.push_float(-2.0), Some(()));
+        assert_eq!(builder.push_numeric(-2.0f32), Some(()));
         assert_eq!(builder.string(), "01-2");
-        assert_eq!(builder.push_float(3.5), Some(()));
+        assert_eq!(builder.push_numeric(3.5f32), Some(()));
+        assert_eq!(builder.string(), "01-23.5");
+
+        builder.clear();
+
+        assert_eq!(builder.push_numeric(0.0f64), Some(()));
+        assert_eq!(builder.string(), "0");
+        assert_eq!(builder.push_numeric(1.0f64), Some(()));
+        assert_eq!(builder.string(), "01");
+        assert_eq!(builder.push_numeric(-2.0f64), Some(()));
+        assert_eq!(builder.string(), "01-2");
+        assert_eq!(builder.push_numeric(3.5f64), Some(()));
         assert_eq!(builder.string(), "01-23.5");
     }
 
