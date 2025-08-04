@@ -1,4 +1,4 @@
-use reqwest::StatusCode;
+use saluki_api::StatusCode;
 use serde_json::from_str;
 use tokio::io::{self, AsyncWriteExt};
 use tracing::error;
