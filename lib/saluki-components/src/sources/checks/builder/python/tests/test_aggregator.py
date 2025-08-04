@@ -40,4 +40,31 @@ aggregator.submit_service_check(
     "All systems operational",
 )
 
+# Test event submission with all fields
+print("Testing aggregator.submit_event with all fields...")
+test_event_full = {
+    "msg_title": "Test Event Title",
+    "msg_text": "This is a test event message from Python",
+    "event_type": "info",
+    "timestamp": 1234567890,
+    "api_key": "test-api-key",
+    "aggregation_key": "test-aggregation-key",
+    "alert_type": "warning",
+    "source_type_name": "python_test",
+    "host": "test-event-hostname",
+    "tags": ["event:test", "source:python", "priority:high"],
+    "priority": "low",
+}
+
+aggregator.submit_event(None, "test-check-id", test_event_full)
+
+# Test event submission with minimal fields
+print("Testing aggregator.submit_event with minimal fields...")
+test_event_minimal = {
+    "msg_title": "Minimal Event",
+    "msg_text": "This event has only required fields"
+}
+
+aggregator.submit_event(None, "test-check-id", test_event_minimal)
+
 print("Python aggregator tests completed successfully!")

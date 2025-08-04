@@ -141,6 +141,7 @@ impl SourceBuilder for ChecksConfiguration {
             vec![
                 OutputDefinition::named_output("metrics", EventType::Metric),
                 OutputDefinition::named_output("service_checks", EventType::ServiceCheck),
+                OutputDefinition::named_output("events", EventType::EventD),
             ]
         });
 
@@ -322,7 +323,21 @@ async fn drain_and_dispatch_check_events(
                                     error!(error = %e, "Failed to flush check service check.");
                                 }
                         },
-                        _ => {}
+                        EventType::EventD => {
+                            let mut buffered_dispatcher = context
+                                .dispatcher()
+                                .buffered_named("events")
+                                .expect("checks source should always have default output");
+
+                                if let Err(e) = buffered_dispatcher.push(check_event).await {
+                                    error!(error = %e, "Failed to forward check event");
+                                }
+
+                                if let Err(e) = buffered_dispatcher.flush().await {
+                                    error!(error = %e, "Failed to flush check event.");
+                                }
+                        },
+                        _ => {},
                     }
 
                 }

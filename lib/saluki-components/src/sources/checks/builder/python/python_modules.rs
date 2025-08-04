@@ -4,7 +4,11 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use saluki_config::GenericConfiguration;
 use saluki_context::tags::TagSet;
-use saluki_core::data_model::event::{service_check::ServiceCheck, Event};
+use saluki_core::data_model::event::{
+    eventd::{AlertType, EventD, Priority},
+    service_check::ServiceCheck,
+    Event,
+};
 use saluki_error::{generic_error, GenericError};
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, trace};
@@ -47,6 +51,15 @@ fn try_send_service_check(service_check: ServiceCheck) -> Result<(), GenericErro
         Some(sender) => sender
             .try_send(Event::ServiceCheck(service_check))
             .map_err(|e| generic_error!("Failed to send service check: {}", e)),
+        None => Err(generic_error!("Metric sender not initialized.")),
+    }
+}
+
+fn try_send_event(event: EventD) -> Result<(), GenericError> {
+    match METRIC_SENDER.get() {
+        Some(sender) => sender
+            .try_send(Event::EventD(event))
+            .map_err(|e| generic_error!("Failed to send event: {}", e)),
         None => Err(generic_error!("Metric sender not initialized.")),
     }
 }
@@ -143,15 +156,86 @@ pub mod aggregator {
         }
     }
 
+    #[derive(FromPyObject)]
+    struct PythonEvent {
+        #[pyo3(item("msg_title"))]
+        msg_title: String,
+        #[pyo3(item("msg_text"))]
+        msg_text: String,
+        #[pyo3(item("event_type"), default)]
+        #[allow(dead_code)]
+        event_type: Option<String>,
+        #[pyo3(item("timestamp"), default)]
+        timestamp: Option<u64>,
+        #[pyo3(item("api_key"), default)]
+        #[allow(dead_code)]
+        api_key: Option<String>,
+        #[pyo3(item("aggregation_key"), default)]
+        aggregation_key: Option<String>,
+        #[pyo3(item("alert_type"), default)]
+        alert_type: Option<String>,
+        #[pyo3(item("source_type_name"), default)]
+        source_type_name: Option<String>,
+        #[pyo3(item("host"), default)]
+        host: Option<String>,
+        #[pyo3(item("tags"), default)]
+        tags: Option<Vec<String>>,
+        #[pyo3(item("priority"), default)]
+        priority: Option<String>,
+    }
+
     #[pyfunction]
     fn submit_event(_class: PyObject, _check_id: String, event: PyObject) {
-        // TODO:
-        Python::with_gil(|py| {
-            // Convert PyObject to PyDict
-            if let Ok(event_dict) = event.downcast_bound::<PyDict>(py) {
-                trace!("submit_event called with event dictionary {:?}", event_dict);
+        let extracted_event = Python::with_gil(|py| -> Result<PythonEvent, PyErr> {
+            let python_event = event.downcast_bound::<PyDict>(py)?;
+            let extracted_event: PythonEvent = python_event.extract()?;
+            Ok(extracted_event)
+        });
+
+        match extracted_event {
+            Ok(python_event) => {
+                trace!(
+                    "submit_event called with title: {}, text: {}, event_type: {:?}, host: {:?}",
+                    python_event.msg_title,
+                    python_event.msg_text,
+                    python_event.event_type,
+                    python_event.host
+                );
+
+                let mut tag_set = TagSet::default();
+                if let Some(tags) = python_event.tags {
+                    for tag in tags {
+                        tag_set.insert_tag(tag);
+                    }
+                }
+
+                let mut event_d = EventD::new(python_event.msg_title, python_event.msg_text)
+                    .with_timestamp(python_event.timestamp)
+                    .with_tags(tag_set.into_shared())
+                    .with_hostname(python_event.host.map(Into::into))
+                    .with_source_type_name(python_event.source_type_name.map(Into::into))
+                    .with_aggregation_key(python_event.aggregation_key.map(Into::into));
+
+                if let Some(alert_type_str) = python_event.alert_type {
+                    if let Some(alert_type) = AlertType::try_from_string(&alert_type_str) {
+                        event_d = event_d.with_alert_type(Some(alert_type));
+                    }
+                }
+
+                if let Some(priority_str) = python_event.priority {
+                    if let Some(priority) = Priority::try_from_string(&priority_str) {
+                        event_d = event_d.with_priority(Some(priority));
+                    }
+                }
+
+                if let Err(e) = try_send_event(event_d) {
+                    error!("Failed to send event: {}", e);
+                }
             }
-        })
+            Err(e) => {
+                error!("Failed to extract event from Python object: {}", e);
+            }
+        }
     }
 }
 
@@ -222,6 +306,7 @@ mod tests {
 
         let mut metric_count = 0;
         let mut service_check_count = 0;
+        let mut event_count = 0;
 
         while let Ok(event) = rx.try_recv() {
             match event {
@@ -232,7 +317,38 @@ mod tests {
                     assert_eq!(sc.status(), CheckStatus::Ok);
                     assert_eq!(sc.message().unwrap(), "All systems operational");
                 }
-                _ => {}
+                Event::EventD(ev) => {
+                    event_count += 1;
+                    
+                    if ev.title() == "Test Event Title" {
+                        // Full event test
+                        assert_eq!(ev.text(), "This is a test event message from Python");
+                        assert_eq!(ev.hostname().unwrap(), "test-event-hostname");
+                        assert_eq!(ev.alert_type().unwrap(), AlertType::Warning);
+                        assert_eq!(ev.priority().unwrap(), Priority::Low);
+                        assert_eq!(ev.aggregation_key().unwrap(), "test-aggregation-key");
+                        assert_eq!(ev.source_type_name().unwrap(), "python_test");
+                        assert_eq!(ev.timestamp().unwrap(), 1234567890);
+
+                        let tags = ev.tags();
+                        assert!(tags.into_iter().any(|tag| tag.as_str() == "event:test"));
+                        assert!(tags.into_iter().any(|tag| tag.as_str() == "source:python"));
+                        assert!(tags.into_iter().any(|tag| tag.as_str() == "priority:high"));
+                    } else if ev.title() == "Minimal Event" {
+                        // Minimal event test
+                        assert_eq!(ev.text(), "This event has only required fields");
+                        assert!(ev.hostname().is_none());
+                        assert!(ev.aggregation_key().is_none());
+                        assert!(ev.source_type_name().is_none());
+                        assert!(ev.timestamp().is_none());
+                        assert!(ev.tags().into_iter().count() == 0);
+                        // Default values should be set for priority and alert_type
+                        assert_eq!(ev.priority().unwrap(), Priority::Normal);
+                        assert_eq!(ev.alert_type().unwrap(), AlertType::Info);
+                    } else {
+                        panic!("Unexpected event title: {}", ev.title());
+                    }
+                }
             }
         }
 
@@ -242,6 +358,7 @@ mod tests {
             "Expected 1 service check, got {}",
             service_check_count
         );
+        assert_eq!(event_count, 2, "Expected 2 events, got {}", event_count);
     }
 
     struct TestResults {

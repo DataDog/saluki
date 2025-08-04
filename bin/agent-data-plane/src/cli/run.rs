@@ -264,7 +264,8 @@ fn add_checks_to_blueprint(
         blueprint
             .add_source("checks_in", checks_config)?
             .connect_component("dsd_agg", ["checks_in.metrics"])?
-            .connect_component("dd_service_checks_encode", ["checks_in.service_checks"])?;
+            .connect_component("dd_service_checks_encode", ["checks_in.service_checks"])?
+            .connect_component("dd_events_encode", ["checks_in.events"])?;
         Ok(())
     }
 
