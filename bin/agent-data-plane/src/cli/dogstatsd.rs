@@ -64,13 +64,14 @@ async fn format_stats(body: &str) -> String {
                     for stat in stats.as_array().unwrap_or(&vec![]) {
                         let stat_obj = stat.as_object().unwrap();
 
-                        let name = stat_obj.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        let name = stat_obj.get("name").unwrap().as_str().unwrap();
                         let tags = stat_obj
                             .get("tags")
-                            .and_then(|v| v.as_array())
-                            .unwrap_or(&vec![])
+                            .unwrap()
+                            .as_array()
+                            .unwrap()
                             .iter()
-                            .filter_map(|t| t.as_str())
+                            .map(|v| v.as_str().unwrap())
                             .collect::<Vec<_>>()
                             .join(",");
 
