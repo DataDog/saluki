@@ -1,5 +1,7 @@
-# Shared ownership between AMP and ARUN for the time being.
-* @DataDog/agent-metric-pipelines @DataDog/agent-runtimes
+# Agent Metric Pipelines has default ownership over everything.
+* @DataDog/agent-metric-pipelines
+
+/lib/saluki-components/src/sources/checks/  @DataDog/agent-runtimes
 
 # We publish public standalone ADP container images based on CI triggered through this repository,
 # and the code ownership arrangement is to ensure that Agent Delivery has a stake in the configuration
