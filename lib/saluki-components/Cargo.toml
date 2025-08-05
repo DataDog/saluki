@@ -16,6 +16,7 @@ python-checks = ["dep:pyo3"]
 async-trait = { workspace = true }
 bytes = { workspace = true }
 bytesize = { workspace = true }
+chrono = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }
@@ -37,6 +38,7 @@ protobuf = { workspace = true }
 pyo3 = { workspace = true, features = ["macros"], optional = true }
 rand = { workspace = true, features = ["std", "std_rng"] }
 regex = { workspace = true }
+saluki-api = { workspace = true }
 saluki-common = { workspace = true }
 saluki-config = { workspace = true }
 saluki-context = { workspace = true }
