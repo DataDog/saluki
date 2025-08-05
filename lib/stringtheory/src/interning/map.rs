@@ -20,7 +20,7 @@ use loom::sync::{atomic::AtomicUsize, Arc, Mutex};
 
 use super::{
     helpers::{aligned_string, layout_for_data, PackedLengthCapacity},
-    InternedString, InternerVtable, ReclaimedEntries, ReclaimedEntry,
+    InternedString, Interner, InternerVtable, ReclaimedEntries, ReclaimedEntry,
 };
 
 const HEADER_LEN: usize = std::mem::size_of::<EntryHeader>();
@@ -532,7 +532,7 @@ unsafe impl Sync for InternerState {}
 /// ┗━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━━━┛ ┗━━━━━━━━━━━━┛ ┗━━━━━━━━━━━━┛
 /// ▲                                   ▲                           ▲
 /// └────────── `EntryHeader` ──────────┘                           └── aligned for `EntryHeader`
-///          (8 byte alignment)                                         via trailing padding   
+///          (8 byte alignment)                                         via trailing padding
 /// ```
 ///
 /// The backing buffer is always aligned properly for `EntryHeader`, so that the first entry can be referenced
@@ -586,32 +586,26 @@ impl GenericMapInterner {
             state: Arc::new(Mutex::new(InternerState::with_capacity(capacity))),
         }
     }
+}
 
-    /// Returns `true` if the interner contains no strings.
-    pub fn is_empty(&self) -> bool {
+impl Interner for GenericMapInterner {
+    fn is_empty(&self) -> bool {
         self.state.lock().unwrap().entries.is_empty()
     }
 
-    /// Returns the number of strings in the interner.
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.state.lock().unwrap().entries.len()
     }
 
-    /// Returns the total number of bytes in the interner.
-    pub fn len_bytes(&self) -> usize {
+    fn len_bytes(&self) -> usize {
         self.state.lock().unwrap().storage.len
     }
 
-    /// Returns the total number of bytes the interner can hold.
-    pub fn capacity_bytes(&self) -> usize {
+    fn capacity_bytes(&self) -> usize {
         self.state.lock().unwrap().storage.capacity.get()
     }
 
-    /// Tries to intern the given string.
-    ///
-    /// If the intern is at capacity and the given string cannot fit, `None` is returned. Otherwise, `Some` is
-    /// returned with a reference to the interned string.
-    pub fn try_intern(&self, s: &str) -> Option<InternedString> {
+    fn try_intern(&self, s: &str) -> Option<InternedString> {
         let header = {
             let mut state = self.state.lock().unwrap();
             state.try_intern(s)?
