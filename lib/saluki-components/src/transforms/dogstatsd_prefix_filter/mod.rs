@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn test_metric_prefix_add() {
         let filter = DogstatsDPrefixFilter {
-            metric_prefix: "foo".to_string(),
+            metric_prefix: "foo.".to_string(),
             metric_prefix_blocklist: vec![],
             blocklist: Blocklist::default(),
         };
@@ -296,7 +296,7 @@ mod tests {
     #[test]
     fn test_metric_blocklist_with_metric_prefix() {
         let filter = DogstatsDPrefixFilter {
-            metric_prefix: "foo".to_string(),
+            metric_prefix: "foo.".to_string(),
             metric_prefix_blocklist: vec![],
             blocklist: Blocklist::new(&["foo.bar".to_string(), "test".to_string()], false),
         };
@@ -305,7 +305,7 @@ mod tests {
         assert!(!filter.process_metric(&mut metric));
 
         let filter = DogstatsDPrefixFilter {
-            metric_prefix: "foo".to_string(),
+            metric_prefix: "foo.".to_string(),
             metric_prefix_blocklist: vec!["foo".to_string()],
             blocklist: Blocklist::default(),
         };
