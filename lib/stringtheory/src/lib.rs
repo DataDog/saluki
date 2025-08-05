@@ -833,6 +833,7 @@ mod tests {
     use proptest::{prelude::*, proptest};
 
     use super::{interning::GenericMapInterner, InlinedUnion, Inner, MetaString, UnionType};
+    use crate::interning::Interner as _;
 
     #[test]
     fn struct_sizes() {
