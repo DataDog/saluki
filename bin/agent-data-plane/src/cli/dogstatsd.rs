@@ -62,22 +62,25 @@ async fn format_stats(body: &str) -> String {
             if let Some(collected_stats) = json.as_object() {
                 if let Some(stats) = collected_stats.get("stats") {
                     for stat in stats.as_array().unwrap_or(&vec![]) {
-                        let stat_obj = stat.as_object().unwrap();
+                        let stat_obj = match stat.as_object() {
+                            Some(obj) => obj,
+                            None => continue,
+                        };
 
-                        let name = stat_obj.get("name").unwrap().as_str().unwrap();
+                        let name = stat_obj.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
                         let tags = stat_obj
                             .get("tags")
-                            .unwrap()
+                            .unwrap_or(&Value::Null)
                             .as_array()
-                            .unwrap()
+                            .unwrap_or(&vec![])
                             .iter()
-                            .map(|v| v.as_str().unwrap())
+                            .filter_map(|v| v.as_str())
                             .collect::<Vec<_>>()
                             .join(",");
                         let count = stat_obj.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
                         let last_seen_timestamp = stat_obj.get("last_seen").and_then(|v| v.as_u64()).unwrap_or(0);
                         let last_seen = chrono::DateTime::from_timestamp(last_seen_timestamp as i64, 0)
-                            .unwrap()
+                            .unwrap_or_default()
                             .with_timezone(&chrono::Local)
                             .format("%Y-%m-%d %H:%M:%S")
                             .to_string();
