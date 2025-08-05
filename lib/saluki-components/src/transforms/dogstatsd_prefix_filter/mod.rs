@@ -226,7 +226,7 @@ impl Transform for DogstatsDPrefixFilter {
                 maybe_events = context.events().next() => match maybe_events {
                     Some(mut events) => {
                         events.remove_if(|event| match event.try_as_metric_mut() {
-                            // `proces_metric` returns `true` if the metric should be kept, so we have to invert that
+                            // `process_metric` returns `true` if the metric should be kept, so we have to invert that
                             // here to match the predicate structure, which will _remove_ the event if `true` is returned.
                             Some(metric) => !self.process_metric(metric),
                             None => true,
