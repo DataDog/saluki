@@ -74,9 +74,7 @@ async fn format_stats(body: &str) -> String {
                             .map(|v| v.as_str().unwrap())
                             .collect::<Vec<_>>()
                             .join(",");
-
                         let count = stat_obj.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
-
                         let last_seen_timestamp = stat_obj.get("last_seen").and_then(|v| v.as_u64()).unwrap_or(0);
                         let last_seen = chrono::DateTime::from_timestamp(last_seen_timestamp as i64, 0)
                             .unwrap()
@@ -95,7 +93,6 @@ async fn format_stats(body: &str) -> String {
                     error!("Error parsing collected stats.");
                 }
             }
-
             table.to_string()
         }
         Err(e) => format!("Error parsing JSON response: {}", e),
