@@ -218,20 +218,6 @@ impl TryFrom<u8> for CheckStatus {
     }
 }
 
-impl TryFrom<i32> for CheckStatus {
-    type Error = ParseCheckStatusError;
-
-    fn try_from(value: i32) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::Ok),
-            1 => Ok(Self::Warning),
-            2 => Ok(Self::Critical),
-            3 => Ok(Self::Unknown),
-            _ => Err(ParseCheckStatusError),
-        }
-    }
-}
-
 // Helper type to let us serialize deduplicated tags.
 struct DeduplicatedTagsSerializable<'a> {
     tags: &'a SharedTagSet,

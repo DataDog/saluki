@@ -121,7 +121,7 @@ pub mod aggregator {
 
     #[pyfunction]
     fn submit_service_check(
-        _class: PyObject, _check_id: String, name: String, status: i32, tags: Vec<String>, hostname: String,
+        _class: PyObject, _check_id: String, name: String, status: u8, tags: Vec<String>, hostname: String,
         message: Option<String>,
     ) {
         trace!(
@@ -246,9 +246,7 @@ pub mod datadog_agent {
     #[pyfunction]
     fn get_hostname() -> &'static str {
         trace!("Called get_hostname()");
-        let hostname = fetch_hostname();
-        trace!("Hostname fetched: {}", hostname);
-        hostname
+        fetch_hostname()
     }
 
     #[pyfunction]
