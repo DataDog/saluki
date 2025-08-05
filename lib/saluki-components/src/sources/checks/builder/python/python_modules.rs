@@ -319,7 +319,7 @@ mod tests {
                 }
                 Event::EventD(ev) => {
                     event_count += 1;
-                    
+
                     if ev.title() == "Test Event Title" {
                         // Full event test
                         assert_eq!(ev.text(), "This is a test event message from Python");
