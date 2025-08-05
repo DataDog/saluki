@@ -1,7 +1,7 @@
-# Currently, Agent Metric Pipelines owns all code in this repository.
-* @DataDog/agent-metric-pipelines
+# Shared ownership between AMP and ARUN for the time being.
+* @DataDog/agent-metric-pipelines @DataDog/agent-runtimes
 
-# We publish public ADP-bundled Agent images based on CI triggered through this repository,
+# We publish public standalone ADP container images based on CI triggered through this repository,
 # and the code ownership arrangement is to ensure that Agent Delivery has a stake in the configuration
 # on those CI jobs, such that any changes we make the image tags we're publishing, or how we build the
 # images, and so on, are reviewed by the Agent Delivery team to their satisfaction and in keeping with
