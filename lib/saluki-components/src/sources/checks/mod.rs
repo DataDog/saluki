@@ -17,7 +17,10 @@ use saluki_core::{
     },
 };
 use saluki_env::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider};
-use saluki_env::HostProvider;
+use saluki_env::{
+    autodiscovery::providers::BoxedAutodiscoveryProvider, host::providers::BoxedHostProvider,
+    workload::providers::RemoteAgentWorkloadProvider, EnvironmentProvider, HostProvider,
+};
 use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use tokio::select;
@@ -43,6 +46,15 @@ const fn default_check_runners() -> usize {
     4
 }
 
+type BoxedEnvironmentProvider = Box<
+    dyn EnvironmentProvider<
+            Host = BoxedHostProvider,
+            Workload = Option<RemoteAgentWorkloadProvider>,
+            AutodiscoveryProvider = Option<BoxedAutodiscoveryProvider>,
+        > + Send
+        + Sync,
+>;
+
 /// Configuration for the checks source.
 #[derive(Deserialize)]
 pub struct ChecksConfiguration {
@@ -56,13 +68,8 @@ pub struct ChecksConfiguration {
     #[serde(default)]
     additional_checksd: String,
 
-    /// Autodiscovery provider to use.
     #[serde(skip)]
-    autodiscovery_provider: Option<Arc<dyn AutodiscoveryProvider + Send + Sync>>,
-
-    /// Hostname provider to use.
-    #[serde(skip)]
-    hostname_provider: Option<Arc<dyn HostProvider<Error = GenericError> + Send + Sync>>,
+    env_provider: Option<BoxedEnvironmentProvider>,
 
     #[serde(skip)]
     full_configuration: Option<GenericConfiguration>,
@@ -76,21 +83,18 @@ impl ChecksConfiguration {
         Ok(checks_config)
     }
 
-    /// Sets the autodiscovery provider to use.
-    pub fn with_autodiscovery_provider<A>(mut self, provider: A) -> Self
+    /// Sets the env provider to use.
+    pub fn with_env_provider<E>(mut self, env_provider: E) -> Self
     where
-        A: AutodiscoveryProvider + Send + Sync + 'static,
+        E: EnvironmentProvider<
+                Host = BoxedHostProvider,
+                Workload = Option<RemoteAgentWorkloadProvider>,
+                AutodiscoveryProvider = Option<BoxedAutodiscoveryProvider>,
+            > + Send
+            + Sync
+            + 'static,
     {
-        self.autodiscovery_provider = Some(Arc::new(provider));
-        self
-    }
-
-    /// Sets the hostname provider to use.
-    pub fn with_hostname_provider<A>(mut self, provider: A) -> Self
-    where
-        A: HostProvider<Error = GenericError> + Send + Sync + 'static,
-    {
-        self.hostname_provider = Some(Arc::new(provider));
+        self.env_provider = Some(Box::new(env_provider));
         self
     }
 }
@@ -98,8 +102,13 @@ impl ChecksConfiguration {
 #[async_trait]
 impl SourceBuilder for ChecksConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
-        let autodiscovery = self
-            .autodiscovery_provider
+        let env_provider = self
+            .env_provider
+            .as_ref()
+            .ok_or_else(|| generic_error!("No environment provider configured."))?;
+
+        let autodiscovery = env_provider
+            .autodiscovery()
             .as_ref()
             .ok_or_else(|| generic_error!("No autodiscovery provider configured."))?;
 
@@ -108,10 +117,7 @@ impl SourceBuilder for ChecksConfiguration {
             .await
             .ok_or_else(|| generic_error!("No autodiscovery stream configured."))?;
 
-        let host = self
-            .hostname_provider
-            .as_ref()
-            .ok_or_else(|| generic_error!("No hostname provider configured."))?;
+        let host = env_provider.host();
 
         let configuration = self
             .full_configuration
@@ -151,7 +157,10 @@ impl SourceBuilder for ChecksConfiguration {
 
 impl MemoryBounds for ChecksConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        builder.minimum().with_single_value::<ChecksSource>("component struct");
+        builder
+            .minimum()
+            .with_single_value::<ChecksSource>("component struct")
+            .with_single_value::<BoxedEnvironmentProvider>("env provider");
     }
 }
 

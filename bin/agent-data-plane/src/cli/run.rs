@@ -273,8 +273,7 @@ fn add_checks_to_blueprint(
     {
         let checks_config = ChecksConfiguration::from_configuration(configuration)
             .error_context("Failed to configure checks source.")?
-            .with_autodiscovery_provider(env_provider.autodiscovery().clone())
-            .with_hostname_provider(env_provider.host().clone());
+            .with_env_provider(env_provider.clone());
 
         blueprint
             .add_source("checks_in", checks_config)?
