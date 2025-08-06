@@ -625,6 +625,7 @@ impl Interner for GenericMapInterner {
     }
 }
 
+#[inline]
 unsafe fn get_entry_string_parts(header_ptr: NonNull<EntryHeader>) -> (NonNull<u8>, usize) {
     // SAFETY: The caller is responsible for ensuring that `header_ptr` is well-aligned and points to an initialized
     // `EntryHeader` value.
@@ -638,6 +639,7 @@ unsafe fn get_entry_string_parts(header_ptr: NonNull<EntryHeader>) -> (NonNull<u
     (s_ptr, header.len())
 }
 
+#[inline]
 unsafe fn get_entry_string<'a>(header_ptr: NonNull<EntryHeader>) -> &'a str {
     let (s_ptr, s_len) = get_entry_string_parts(header_ptr);
 

@@ -39,11 +39,13 @@ impl PackedLengthCapacity {
     }
 
     /// Returns the capacity from the packed value.
+    #[inline(always)]
     pub const fn capacity(&self) -> usize {
         (self.0 & PACKED_CAP_MASK) >> PACKED_CAP_SHIFT
     }
 
     /// Returns the length from the packed value.
+    #[inline(always)]
     pub const fn len(&self) -> usize {
         self.0 & PACKED_LEN_MASK
     }
