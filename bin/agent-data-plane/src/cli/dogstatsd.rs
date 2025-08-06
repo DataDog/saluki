@@ -1,5 +1,6 @@
+use comfy_table::{presets::UTF8_FULL, Cell, ContentArrangement, Row, Table};
 use saluki_api::StatusCode;
-use serde_json::{self, from_str};
+use serde_json::{from_str, Value};
 use tokio::io::{self, AsyncWriteExt};
 use tracing::error;
 
@@ -50,52 +51,54 @@ async fn handle_dogstatsd_stats(client: reqwest::Client, collection_duration_sec
 }
 
 async fn format_stats(body: &str) -> String {
-    match from_str::<serde_json::Value>(body) {
+    match from_str::<Value>(body) {
         Ok(json) => {
-            let mut output = String::new();
-
-            output.push_str(&format!(
-                "{:<40} | {:<20} | {:<10} | {:<20}\n",
-                "Metric", "Tags", "Count", "Last Seen"
-            ));
-            output.push_str(&format!("{:-<40}-|-{:-<20}-|-{:-<10}-|-{:-<20}\n", "", "", "", ""));
+            let mut table = Table::new();
+            table
+                .load_preset(UTF8_FULL)
+                .set_content_arrangement(ContentArrangement::Dynamic)
+                .set_header(vec!["Metric", "Tags", "Count", "Last Seen"]);
 
             if let Some(collected_stats) = json.as_object() {
                 if let Some(stats) = collected_stats.get("stats") {
-                    for stat in stats.as_array().unwrap() {
-                        let stat_obj = stat.as_object().unwrap();
-                        let name = stat_obj.get("name").unwrap().as_str().unwrap();
+                    for stat in stats.as_array().unwrap_or(&vec![]) {
+                        let stat_obj = match stat.as_object() {
+                            Some(obj) => obj,
+                            None => continue,
+                        };
+
+                        let name = stat_obj.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
                         let tags = stat_obj
                             .get("tags")
-                            .unwrap()
+                            .unwrap_or(&Value::Null)
                             .as_array()
-                            .unwrap()
+                            .unwrap_or(&vec![])
                             .iter()
-                            .map(|v| v.as_str().unwrap())
+                            .filter_map(|v| v.as_str())
                             .collect::<Vec<_>>()
                             .join(",");
                         let count = stat_obj.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
                         let last_seen_timestamp = stat_obj.get("last_seen").and_then(|v| v.as_u64()).unwrap_or(0);
                         let last_seen = chrono::DateTime::from_timestamp(last_seen_timestamp as i64, 0)
-                            .unwrap()
+                            .unwrap_or_default()
                             .with_timezone(&chrono::Local)
                             .format("%Y-%m-%d %H:%M:%S")
                             .to_string();
 
-                        output.push_str(&format!(
-                            "{:<40} | {:<20} | {:<10} | {:<20}\n",
-                            name, tags, count, last_seen
-                        ));
+                        table.add_row(Row::from(vec![
+                            Cell::new(name),
+                            Cell::new(tags),
+                            Cell::new(count.to_string()),
+                            Cell::new(last_seen),
+                        ]));
                     }
                 } else {
                     error!("Error parsing collected stats.");
                 }
             }
-            output
+            table.to_string()
         }
-        Err(e) => {
-            format!("Error parsing JSON response: {}", e)
-        }
+        Err(e) => format!("Error parsing JSON response: {}", e),
     }
 }
 

@@ -185,6 +185,7 @@ twox-hash = { version = "2", features = ["xxhash64"] }
 sha3 = { version = "0.10", default-features = false }
 pyo3 = { version = "0.25", default-features = false }
 test-strategy = { version = "0.4", default-features = false }
+comfy-table = "7.1.4"
 
 [profile.release]
 debug = true

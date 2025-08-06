@@ -27,6 +27,7 @@ clap = { workspace = true, features = [
   "error-context",
   "suggestions",
 ] }
+comfy-table = { workspace = true }
 datadog-protos = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
