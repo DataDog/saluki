@@ -19,7 +19,7 @@ use loom::sync::{atomic::AtomicUsize, Arc, Mutex};
 
 use super::{
     helpers::{aligned, aligned_string, hash_string, layout_for_data, PackedLengthCapacity},
-    InternedString, InternerVtable, ReclaimedEntries, ReclaimedEntry,
+    InternedString, Interner, InternerVtable, ReclaimedEntries, ReclaimedEntry,
 };
 
 const HEADER_LEN: usize = std::mem::size_of::<EntryHeader>();
@@ -589,7 +589,7 @@ impl<const SHARD_FACTOR: usize> InternerState<SHARD_FACTOR> {
 /// ┗━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━━━┛ ┗━━━━━━━━━━━━┛ ┗━━━━━━━━━━━━┛
 /// ▲                                   ▲                           ▲
 /// └────────── `EntryHeader` ──────────┘                           └── aligned for `EntryHeader`
-///          (8 byte alignment)                                         via trailing padding    
+///          (8 byte alignment)                                         via trailing padding
 /// ```
 ///
 /// The backing buffer is always aligned properly for `EntryHeader`, so that the first entry can be referenced
@@ -643,32 +643,26 @@ impl<const SHARD_FACTOR: usize> FixedSizeInterner<SHARD_FACTOR> {
             state: Arc::new(InternerState::with_capacity(capacity)),
         }
     }
+}
 
-    /// Returns `true` if the interner contains no strings.
-    pub fn is_empty(&self) -> bool {
+impl<const SHARD_FACTOR: usize> Interner for FixedSizeInterner<SHARD_FACTOR> {
+    fn is_empty(&self) -> bool {
         self.state.is_empty()
     }
 
-    /// Returns the number of strings in the interner.
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.state.len()
     }
 
-    /// Returns the total number of bytes in the interner.
-    pub fn len_bytes(&self) -> usize {
+    fn len_bytes(&self) -> usize {
         self.state.len_bytes()
     }
 
-    /// Returns the total number of bytes the interner can hold.
-    pub fn capacity_bytes(&self) -> usize {
+    fn capacity_bytes(&self) -> usize {
         self.state.capacity_bytes()
     }
 
-    /// Tries to intern the given string.
-    ///
-    /// If the intern is at capacity and the given string cannot fit, `None` is returned. Otherwise, `Some` is
-    /// returned with a reference to the interned string.
-    pub fn try_intern(&self, s: &str) -> Option<InternedString> {
+    fn try_intern(&self, s: &str) -> Option<InternedString> {
         self.state.try_intern(s)
     }
 }
