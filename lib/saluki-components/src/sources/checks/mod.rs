@@ -102,14 +102,12 @@ where
             .await
             .ok_or_else(|| generic_error!("No autodiscovery stream configured."))?;
 
-        let host = env_provider.host();
-
         let configuration = self
             .full_configuration
             .as_ref()
             .ok_or_else(|| generic_error!("No configuration configured."))?;
 
-        let hostname = host.get_hostname().await.unwrap_or_else(|e| {
+        let hostname = env_provider.host().get_hostname().await.unwrap_or_else(|e| {
             warn!("Failed to get hostname: {:?}", e);
             "".to_string()
         });
