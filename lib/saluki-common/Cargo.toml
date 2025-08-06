@@ -21,9 +21,10 @@ quick_cache = { workspace = true }
 saluki-error = { workspace = true }
 saluki-metrics = { workspace = true }
 sha3 = { workspace = true }
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["io-util", "rt"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
 http-body-util = { workspace = true }
+proptest = { workspace = true }
 tokio-test = { workspace = true }
