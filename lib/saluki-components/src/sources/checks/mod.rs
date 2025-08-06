@@ -17,10 +17,7 @@ use saluki_core::{
     },
 };
 use saluki_env::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider};
-use saluki_env::{
-    autodiscovery::providers::BoxedAutodiscoveryProvider, host::providers::BoxedHostProvider,
-    workload::providers::RemoteAgentWorkloadProvider, EnvironmentProvider, HostProvider,
-};
+use saluki_env::{EnvironmentProvider, HostProvider};
 use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use tokio::select;
@@ -46,18 +43,9 @@ const fn default_check_runners() -> usize {
     4
 }
 
-type BoxedEnvironmentProvider = Box<
-    dyn EnvironmentProvider<
-            Host = BoxedHostProvider,
-            Workload = Option<RemoteAgentWorkloadProvider>,
-            AutodiscoveryProvider = Option<BoxedAutodiscoveryProvider>,
-        > + Send
-        + Sync,
->;
-
 /// Configuration for the checks source.
 #[derive(Deserialize)]
-pub struct ChecksConfiguration {
+pub struct ChecksConfiguration<E = ()> {
     /// The number of check runners to use.
     ///
     /// Defaults to 4.
@@ -69,7 +57,7 @@ pub struct ChecksConfiguration {
     additional_checksd: String,
 
     #[serde(skip)]
-    env_provider: Option<BoxedEnvironmentProvider>,
+    env_provider: Option<E>,
 
     #[serde(skip)]
     full_configuration: Option<GenericConfiguration>,
@@ -82,37 +70,34 @@ impl ChecksConfiguration {
         checks_config.full_configuration = Some(config.clone());
         Ok(checks_config)
     }
+}
 
+impl<E> ChecksConfiguration<E> {
     /// Sets the env provider to use.
-    pub fn with_env_provider<E>(mut self, env_provider: E) -> Self
-    where
-        E: EnvironmentProvider<
-                Host = BoxedHostProvider,
-                Workload = Option<RemoteAgentWorkloadProvider>,
-                AutodiscoveryProvider = Option<BoxedAutodiscoveryProvider>,
-            > + Send
-            + Sync
-            + 'static,
-    {
-        self.env_provider = Some(Box::new(env_provider));
-        self
+    pub fn with_env_provider<T>(self, env_provider: T) -> ChecksConfiguration<T> {
+        ChecksConfiguration {
+            check_runners: self.check_runners,
+            additional_checksd: self.additional_checksd,
+            env_provider: Some(env_provider),
+            full_configuration: self.full_configuration,
+        }
     }
 }
 
 #[async_trait]
-impl SourceBuilder for ChecksConfiguration {
+impl<E> SourceBuilder for ChecksConfiguration<E>
+where
+    E: EnvironmentProvider + Send + Sync + 'static,
+    <E::Host as HostProvider>::Error: Into<GenericError> + std::fmt::Debug,
+{
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
         let env_provider = self
             .env_provider
             .as_ref()
             .ok_or_else(|| generic_error!("No environment provider configured."))?;
 
-        let autodiscovery = env_provider
+        let receiver = env_provider
             .autodiscovery()
-            .as_ref()
-            .ok_or_else(|| generic_error!("No autodiscovery provider configured."))?;
-
-        let receiver = autodiscovery
             .subscribe()
             .await
             .ok_or_else(|| generic_error!("No autodiscovery stream configured."))?;
@@ -155,12 +140,9 @@ impl SourceBuilder for ChecksConfiguration {
     }
 }
 
-impl MemoryBounds for ChecksConfiguration {
+impl<E> MemoryBounds for ChecksConfiguration<E> {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        builder
-            .minimum()
-            .with_single_value::<ChecksSource>("component struct")
-            .with_single_value::<BoxedEnvironmentProvider>("env provider");
+        builder.minimum().with_single_value::<ChecksSource>("component struct");
     }
 }
 
@@ -295,7 +277,7 @@ async fn drain_and_dispatch_check_events(
     loop {
         select! {
             _ = &mut shutdown_handle => {
-                debug!("Checks events listerners received shutdown signal.");
+                debug!("Checks events listeners received shutdown signal.");
                 break;
             }
             result = check_event_rx.recv() => match result {
