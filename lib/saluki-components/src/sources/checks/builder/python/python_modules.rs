@@ -22,17 +22,17 @@ static GLOBAL_CONFIGURATION: OnceLock<GenericConfiguration> = OnceLock::new();
 // Global state to store the configuration
 static GLOBAL_HOST: OnceLock<String> = OnceLock::new();
 
-/// Sets the metric sender to be used by the aggregator module.
-pub fn set_metric_sender(check_metrics_tx: Sender<Event>) -> &'static Sender<Event> {
+/// Sets the event sender to be used by the aggregator module.
+pub fn set_event_sender(check_metrics_tx: Sender<Event>) -> &'static Sender<Event> {
     METRIC_SENDER.get_or_init(|| check_metrics_tx)
 }
 
-/// Stores the configuratioon for integration to use in the Python module.
+/// Sets the configuration to be used by the datadog_agent module.
 pub fn set_configuration(configuration: GenericConfiguration) -> &'static GenericConfiguration {
     GLOBAL_CONFIGURATION.get_or_init(move || configuration)
 }
 
-/// Stores the configuratioon for integration to use in the Python module.
+/// Sets the hostname to be used by the datadog_agent module.
 pub fn set_hostname(hostname: String) -> &'static String {
     GLOBAL_HOST.get_or_init(|| hostname)
 }
@@ -42,7 +42,7 @@ fn try_send_metric(metric: CheckMetric) -> Result<(), GenericError> {
         Some(sender) => sender
             .try_send(metric.into())
             .map_err(|e| generic_error!("Failed to send metric: {}", e)),
-        None => Err(generic_error!("Metric sender not initialized.")),
+        None => Err(generic_error!("Event sender not initialized.")),
     }
 }
 
@@ -51,7 +51,7 @@ fn try_send_service_check(service_check: ServiceCheck) -> Result<(), GenericErro
         Some(sender) => sender
             .try_send(Event::ServiceCheck(service_check))
             .map_err(|e| generic_error!("Failed to send service check: {}", e)),
-        None => Err(generic_error!("Metric sender not initialized.")),
+        None => Err(generic_error!("Event sender not initialized.")),
     }
 }
 
@@ -60,7 +60,7 @@ fn try_send_event(event: EventD) -> Result<(), GenericError> {
         Some(sender) => sender
             .try_send(Event::EventD(event))
             .map_err(|e| generic_error!("Failed to send event: {}", e)),
-        None => Err(generic_error!("Metric sender not initialized.")),
+        None => Err(generic_error!("Event sender not initialized.")),
     }
 }
 
@@ -121,7 +121,7 @@ pub mod aggregator {
 
     #[pyfunction]
     fn submit_service_check(
-        _class: PyObject, _check_id: String, name: String, status: u8, tags: Vec<String>, hostname: String,
+        _class: PyObject, check_id: String, name: String, status: u8, tags: Vec<String>, hostname: String,
         message: Option<String>,
     ) {
         trace!(
@@ -133,26 +133,34 @@ pub mod aggregator {
             message
         );
 
-        if let Ok(service_check_status) = status.try_into() {
-            let mut tag_set = TagSet::default();
-            for tag in tags {
-                tag_set.insert_tag(tag);
+        let check_status = match status.try_into() {
+            Ok(check_status) => check_status,
+            _ => {
+                error!(
+                    check_id,
+                    check_status = status,
+                    "Check returned invalid/unknown status value."
+                );
+                return;
             }
+        };
 
-            let service_check = ServiceCheck::new(name, service_check_status)
-                .with_tags(tag_set.into_shared())
-                .with_hostname(if hostname.is_empty() {
-                    None
-                } else {
-                    Some(hostname.into())
-                })
-                .with_message(message.map(Into::into));
+        let mut tag_set = TagSet::default();
+        for tag in tags {
+            tag_set.insert_tag(tag);
+        }
 
-            if let Err(e) = try_send_service_check(service_check) {
-                error!("Failed to send service check: {}", e);
-            }
-        } else {
-            error!("Invalid service check status: {}", status);
+        let service_check = ServiceCheck::new(name, check_status)
+            .with_tags(tag_set.into_shared())
+            .with_hostname(if hostname.is_empty() {
+                None
+            } else {
+                Some(hostname.into())
+            })
+            .with_message(message.map(Into::into));
+
+        if let Err(e) = try_send_service_check(service_check) {
+            error!("Failed to send service check: {}", e);
         }
     }
 
@@ -186,7 +194,7 @@ pub mod aggregator {
 
     #[pyfunction]
     fn submit_event(_class: PyObject, _check_id: String, event: PyObject) {
-        let extracted_event = Python::with_gil(|py| -> Result<PythonEvent, PyErr> {
+        let extracted_event = Python::with_gil(|py| -> PyResult<PythonEvent> {
             let python_event = event.downcast_bound::<PyDict>(py)?;
             let extracted_event: PythonEvent = python_event.extract()?;
             Ok(extracted_event)
@@ -288,7 +296,7 @@ mod tests {
     #[test]
     fn test_python_aggregator_integration() {
         let (tx, mut rx) = mpsc::channel(100);
-        set_metric_sender(tx);
+        set_event_sender(tx);
 
         pyo3::append_to_inittab!(aggregator);
         pyo3::prepare_freethreaded_python();

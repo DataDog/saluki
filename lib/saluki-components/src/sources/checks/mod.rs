@@ -299,7 +299,7 @@ async fn drain_and_dispatch_check_events(
                             let mut buffered_dispatcher = context
                                 .dispatcher()
                                 .buffered_named("metrics")
-                                .expect("checks source should always have default output");
+                                .expect("checks source metrics output should always exist");
 
                                 if let Err(e) = buffered_dispatcher.push(check_event).await {
                                     error!(error = %e, "Failed to forward check metric.");
@@ -313,7 +313,7 @@ async fn drain_and_dispatch_check_events(
                             let mut buffered_dispatcher = context
                                 .dispatcher()
                                 .buffered_named("service_checks")
-                                .expect("checks source should always have default output");
+                                .expect("checks source service checks output should always exist");
 
                                 if let Err(e) = buffered_dispatcher.push(check_event).await {
                                     error!(error = %e, "Failed to forward check service check.");
@@ -327,7 +327,7 @@ async fn drain_and_dispatch_check_events(
                             let mut buffered_dispatcher = context
                                 .dispatcher()
                                 .buffered_named("events")
-                                .expect("checks source should always have default output");
+                                .expect("checks source events output should always exist");
 
                                 if let Err(e) = buffered_dispatcher.push(check_event).await {
                                     error!(error = %e, "Failed to forward check event");

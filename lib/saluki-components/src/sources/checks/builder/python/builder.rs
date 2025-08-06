@@ -123,7 +123,7 @@ impl PythonCheckBuilder {
             match result {
                 Ok(()) => {
                     // Initialize global state for our Python modules.
-                    super::python_modules::set_metric_sender(self.check_events_tx.clone());
+                    super::python_modules::set_event_sender(self.check_events_tx.clone());
                     super::python_modules::set_configuration(self.configuration.clone());
                     super::python_modules::set_hostname(self.hostname.clone());
 
