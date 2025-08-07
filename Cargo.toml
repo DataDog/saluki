@@ -9,6 +9,7 @@ members = [
   "lib/datadog-protos",
   "lib/ddsketch-agent",
   "lib/memory-accounting",
+  "lib/otlp-protos",
   "lib/process-memory",
   "lib/saluki-api",
   "lib/saluki-app",
@@ -54,6 +55,7 @@ saluki-metrics = { path = "lib/saluki-metrics" }
 saluki-tls = { path = "lib/saluki-tls" }
 stele = { path = "bin/correctness/stele" }
 stringtheory = { path = "lib/stringtheory" }
+otlp-protos = { path = "lib/otlp-protos" }
 async-trait = { version = "0.1", default-features = false }
 axum = { version = "0.8", default-features = false }
 bytes = { version = "1", default-features = false }
