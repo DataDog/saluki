@@ -1,17 +1,12 @@
 //! Interning utilities.
-#[cfg(not(feature = "loom"))]
-use std::sync::Arc;
 use std::{collections::BTreeSet, ops::Deref};
 
-#[cfg(feature = "loom")]
-use loom::sync::Arc;
-
-mod fixed_size;
+pub(crate) mod fixed_size;
 pub use self::fixed_size::FixedSizeInterner;
 
 mod helpers;
 
-mod map;
+pub(crate) mod map;
 pub use self::map::GenericMapInterner;
 
 /// A string interner.
@@ -36,11 +31,12 @@ pub trait Interner {
 
 #[derive(Clone, Debug)]
 pub(crate) enum StringStateDispatch {
-    GenericMap(Arc<self::map::StringState>),
-    FixedSize(Arc<self::fixed_size::StringState>),
+    GenericMap(self::map::StringState),
+    FixedSize(self::fixed_size::StringState),
 }
 
 impl StringStateDispatch {
+    #[inline]
     fn as_str(&self) -> &str {
         match self {
             Self::GenericMap(state) => state.as_str(),
@@ -52,8 +48,8 @@ impl StringStateDispatch {
 impl PartialEq for StringStateDispatch {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::GenericMap(a), Self::GenericMap(b)) => Arc::ptr_eq(a, b),
-            (Self::FixedSize(a), Self::FixedSize(b)) => Arc::ptr_eq(a, b),
+            (Self::GenericMap(a), Self::GenericMap(b)) => a == b,
+            (Self::FixedSize(a), Self::FixedSize(b)) => a == b,
             _ => false,
         }
     }
@@ -68,6 +64,12 @@ impl Eq for StringStateDispatch {}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InternedString {
     state: StringStateDispatch,
+}
+
+impl InternedString {
+    pub(crate) fn into_dispatch_state(self) -> StringStateDispatch {
+        self.state
+    }
 }
 
 impl Deref for InternedString {
@@ -253,9 +255,10 @@ mod tests {
 
     #[test]
     fn size_of_interned_string() {
-        // We're asserting that `InternedString` itself is 16 bytes: the thin pointer to the underlying interned
-        // string's representation, and the vtable pointer.
-        assert_eq!(std::mem::size_of::<InternedString>(), 16);
+        // We're asserting that `InternedString` itself is 24 bytes: an enum over possible interner implementations,
+        // each of which should be 16 bytes in size... making `InternedString` itself 24 bytes in size due to the additional
+        // discriminant field.
+        assert_eq!(std::mem::size_of::<InternedString>(), 24);
     }
 
     #[test]
