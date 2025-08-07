@@ -43,7 +43,8 @@ pub(crate) struct StringState {
 }
 
 impl StringState {
-    pub fn as_str(&self) -> &str {
+    #[inline]
+    pub const fn as_str(&self) -> &str {
         // SAFETY: We ensure `self.header` is well-aligned and points to an initialized `EntryHeader` value when creating `StringState`.
         unsafe { get_entry_string(self.header) }
     }
@@ -657,6 +658,7 @@ impl<const SHARD_FACTOR: usize> Interner for FixedSizeInterner<SHARD_FACTOR> {
     }
 }
 
+#[inline]
 const unsafe fn get_entry_string_parts(header_ptr: NonNull<EntryHeader>) -> (NonNull<u8>, usize) {
     // SAFETY: The caller is responsible for ensuring that `header_ptr` is well-aligned and points to an initialized
     // `EntryHeader` value.
@@ -670,6 +672,7 @@ const unsafe fn get_entry_string_parts(header_ptr: NonNull<EntryHeader>) -> (Non
     (s_ptr, header.len())
 }
 
+#[inline]
 const unsafe fn get_entry_string<'a>(header_ptr: NonNull<EntryHeader>) -> &'a str {
     let (s_ptr, s_len) = get_entry_string_parts(header_ptr);
 
@@ -684,10 +687,10 @@ fn intern_with_shard_and_hash(shard: &Arc<Mutex<InternerShardState>>, hash: u64,
     };
 
     Some(InternedString {
-        state: StringStateDispatch::FixedSize(Arc::new(StringState {
+        state: StringStateDispatch::FixedSize(StringState {
             interner: Arc::clone(shard),
             header,
-        })),
+        }),
     })
 }
 
