@@ -200,3 +200,4 @@ debug = true
 new_without_default = "allow"
 uninlined_format_args = "allow"
 map_entry = "allow"
+mutable_key_type = "allow"
