@@ -31,6 +31,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "memory-accounting",
+ "otlp-protos",
  "papaya",
  "rand 0.9.1",
  "rand_distr",
@@ -2251,6 +2252,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentelemetry-semantic-conventions"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83d059a296a47436748557a353c5e6c5705b9470ef6c95cfc52c21a8814ddac2"
+
+[[package]]
 name = "opentelemetry_sdk"
 version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2273,6 +2280,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "otlp-protos"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "prost",
+ "protobuf",
+ "protobuf-codegen",
+ "tonic",
+ "tonic-build",
 ]
 
 [[package]]
@@ -3301,6 +3320,7 @@ name = "saluki-components"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
  "bytes",
  "bytesize",
  "chrono",
@@ -3320,8 +3340,11 @@ dependencies = [
  "indexmap 2.10.0",
  "memory-accounting",
  "metrics",
+ "opentelemetry-semantic-conventions",
+ "otlp-protos",
  "pin-project",
  "proptest",
+ "prost",
  "protobuf",
  "pyo3",
  "rand 0.9.1",
@@ -3346,6 +3369,7 @@ dependencies = [
  "stringtheory",
  "test-strategy",
  "tokio",
+ "tonic",
  "tower",
  "tracing",
  "url",
@@ -3915,9 +3939,9 @@ checksum = "c1e9a774a6c28142ac54bb25d25562e6bcf957493a184f15ad4eebccb23e410a"
 
 [[package]]
 name = "slab"
-version = "0.4.10"
+version = "0.4.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04dc19736151f35336d325007ac991178d504a119863a2fcb3758cdb5e52c50d"
+checksum = "7a2ae44ef20feb57a68b23d846850f861394c2e02dc425a50098ae8c90267589"
 
 [[package]]
 name = "smallvec"
