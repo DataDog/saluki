@@ -19,8 +19,9 @@ use loom::sync::{atomic::AtomicUsize, Arc, Mutex};
 
 use super::{
     helpers::{aligned, aligned_string, hash_string, layout_for_data, PackedLengthCapacity},
-    InternedString, Interner, InternerVtable, ReclaimedEntries, ReclaimedEntry,
+    InternedString, Interner, ReclaimedEntries, ReclaimedEntry,
 };
+use crate::interning::StringStateDispatch;
 
 const HEADER_LEN: usize = std::mem::size_of::<EntryHeader>();
 const HEADER_ALIGN: usize = std::mem::align_of::<EntryHeader>();
@@ -35,37 +36,26 @@ const HEADER_ALIGN: usize = std::mem::align_of::<EntryHeader>();
 /// is the length of the header plus the alignment of the header.
 const MINIMUM_ENTRY_LEN: usize = HEADER_LEN + HEADER_ALIGN;
 
-static FIXED_SIZE_VTABLE: InternerVtable = InternerVtable {
-    interner_name: "fixed_size",
-    as_raw_parts: fixed_size_as_raw_parts,
-    clone: fixed_size_clone,
-    drop: fixed_size_drop,
-};
-
-unsafe fn fixed_size_as_raw_parts(state: NonNull<()>) -> (NonNull<u8>, usize) {
-    let state = unsafe { state.cast::<StringState>().as_ref() };
-    let (ptr, len) = get_entry_string_parts(state.header);
-
-    (ptr, len)
-}
-
-unsafe fn fixed_size_clone(state: NonNull<()>) -> NonNull<()> {
-    // All we need to do is increment the strong count as if we cloned the `Arc<T>`, but otherwise, the same state
-    // pointer can be used for the clone.
-    Arc::increment_strong_count(state.as_ptr() as *const StringState);
-    state
-}
-
-unsafe fn fixed_size_drop(state: NonNull<()>) {
-    let state = Arc::from_raw(state.as_ptr() as *const StringState);
-    drop(state);
-}
-
-#[derive(Debug)]
-struct StringState {
+#[derive(Clone, Debug)]
+pub(crate) struct StringState {
     interner: Arc<Mutex<InternerShardState>>,
     header: NonNull<EntryHeader>,
 }
+
+impl StringState {
+    pub fn as_str(&self) -> &str {
+        // SAFETY: We ensure `self.header` is well-aligned and points to an initialized `EntryHeader` value when creating `StringState`.
+        unsafe { get_entry_string(self.header) }
+    }
+}
+
+impl PartialEq for StringState {
+    fn eq(&self, other: &Self) -> bool {
+        self.header == other.header
+    }
+}
+
+impl Eq for StringState {}
 
 impl Drop for StringState {
     fn drop(&mut self) {
@@ -667,7 +657,7 @@ impl<const SHARD_FACTOR: usize> Interner for FixedSizeInterner<SHARD_FACTOR> {
     }
 }
 
-unsafe fn get_entry_string_parts(header_ptr: NonNull<EntryHeader>) -> (NonNull<u8>, usize) {
+const unsafe fn get_entry_string_parts(header_ptr: NonNull<EntryHeader>) -> (NonNull<u8>, usize) {
     // SAFETY: The caller is responsible for ensuring that `header_ptr` is well-aligned and points to an initialized
     // `EntryHeader` value.
     let header = header_ptr.as_ref();
@@ -680,7 +670,7 @@ unsafe fn get_entry_string_parts(header_ptr: NonNull<EntryHeader>) -> (NonNull<u
     (s_ptr, header.len())
 }
 
-unsafe fn get_entry_string<'a>(header_ptr: NonNull<EntryHeader>) -> &'a str {
+const unsafe fn get_entry_string<'a>(header_ptr: NonNull<EntryHeader>) -> &'a str {
     let (s_ptr, s_len) = get_entry_string_parts(header_ptr);
 
     // SAFETY: We depend on `get_entry_string_parts` to give us a valid pointer and length for the string.
@@ -693,16 +683,11 @@ fn intern_with_shard_and_hash(shard: &Arc<Mutex<InternerShardState>>, hash: u64,
         shard.try_intern(hash, s)?
     };
 
-    let state = Arc::new(StringState {
-        interner: Arc::clone(shard),
-        header,
-    });
-
-    let state = NonNull::new(Arc::into_raw(state) as *mut ())?;
-
     Some(InternedString {
-        state,
-        vtable: &FIXED_SIZE_VTABLE,
+        state: StringStateDispatch::FixedSize(Arc::new(StringState {
+            interner: Arc::clone(shard),
+            header,
+        })),
     })
 }
 
@@ -710,7 +695,6 @@ fn intern_with_shard_and_hash(shard: &Arc<Mutex<InternerShardState>>, hash: u64,
 mod tests {
     use std::{
         collections::HashSet,
-        mem::ManuallyDrop,
         ops::{Deref as _, RangeInclusive},
     };
 
@@ -752,7 +736,10 @@ mod tests {
     }
 
     fn get_reclaimed_entry_for_string(s: &InternedString) -> ReclaimedEntry {
-        let state = ManuallyDrop::new(unsafe { Arc::from_raw(s.state.as_ptr() as *const StringState) });
+        let state = match &s.state {
+            StringStateDispatch::FixedSize(state) => state,
+            _ => panic!("unexpected string state"),
+        };
 
         let ptr = state.interner.lock().unwrap().ptr.as_ptr();
         let header = unsafe { state.header.as_ref() };
