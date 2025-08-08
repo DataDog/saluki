@@ -35,7 +35,6 @@ impl Cache {
     //
     // Returns the rate per second since the last submitted value (ordered by timestamp),
     // whether this is a first point and whether it should be dropped.
-    #[allow(dead_code)]
     pub fn monotonic_rate(
         &mut self, name: &str, tags: &SharedTagSet, start_timestamp: u64, timestamp: u64, value: f64,
     ) -> (f64, bool, bool) {
@@ -58,6 +57,10 @@ impl Cache {
                 // should be dropped. We keep the current point in cache.
                 return (0.0, false, true);
             }
+            println!(
+                "rz6300 name: {:?}, current: {:?}, prev_counter: {:?}",
+                name, value, prev_counter.value
+            );
             dx = value - prev_counter.value;
             if rate {
                 let time_delta = Duration::from_nanos(timestamp - prev_counter.timestamp);

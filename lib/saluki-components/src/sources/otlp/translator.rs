@@ -1,19 +1,42 @@
 #![allow(dead_code)]
 
+use std::collections::HashSet;
+use std::sync::LazyLock;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use otlp_protos::opentelemetry::proto::common::v1::any_value::Value;
 use otlp_protos::opentelemetry::proto::common::v1::KeyValue;
 use otlp_protos::opentelemetry::proto::metrics::v1::{
     metric::Data as OtlpMetricData, AggregationTemporality, DataPointFlags, Metric as OtlpMetric,
     NumberDataPoint as OtlpNumberDataPoint, ResourceMetrics as OtlpResourceMetrics,
 };
-use saluki_context::tags::{SharedTagSet, TagSet};
-use saluki_context::ContextResolver;
+use saluki_context::tags::SharedTagSet;
+use saluki_context::{tags::TagSet, ContextResolver};
 use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
 use saluki_core::data_model::event::Event;
 use saluki_error::GenericError;
 use tracing::warn;
 
 use super::cache::Cache;
+
+static RATE_AS_GAUGE_METRICS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    let mut m = HashSet::new();
+    m.insert("kafka.net.bytes_out.rate");
+    m.insert("kafka.net.bytes_in.rate");
+    m.insert("kafka.replication.isr_shrinks.rate");
+    m.insert("kafka.replication.isr_expands.rate");
+    m.insert("kafka.replication.leader_elections.rate");
+    m.insert("jvm.gc.minor_collection_count");
+    m.insert("jvm.gc.major_collection_count");
+    m.insert("jvm.gc.minor_collection_time");
+    m.insert("jvm.gc.major_collection_time");
+    m.insert("kafka.messages_in.rate");
+    m.insert("kafka.request.produce.failed.rate");
+    m.insert("kafka.request.fetch.failed.rate");
+    m.insert("kafka.replication.unclean_leader_elections.rate");
+    m.insert("kafka.log.flush_rate.rate");
+    m
+});
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum DataType {
@@ -25,14 +48,21 @@ enum DataType {
 pub struct OtlpTranslator {
     context_resolver: ContextResolver,
     prev_pts: Cache,
+    process_start_time_ns: u64, // Used for initial value consumption.
 }
 
 impl OtlpTranslator {
     /// Creates a new, empty `OtlpTranslator`.
     pub fn new(context_resolver: ContextResolver) -> Self {
+        let process_start_time_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("System time is before the UNIX epoch, this should not happen.")
+            .as_nanos() as u64;
+
         Self {
             context_resolver,
             prev_pts: Cache::new(),
+            process_start_time_ns,
         }
     }
 
@@ -70,15 +100,12 @@ impl OtlpTranslator {
                 OtlpMetricData::Sum(sum) => match AggregationTemporality::try_from(sum.aggregation_temporality) {
                     Ok(AggregationTemporality::Cumulative) => {
                         if !sum.is_monotonic {
-                            println!("rz6300 mapping gauge from non monotonic sum: {:?}", metric_name);
                             self.map_number_data_points(&metric_name, attribute_tags, sum.data_points, DataType::Gauge)
                         } else {
-                            println!("rz6300 mapping sum: {:?}", metric_name);
                             self.map_sum_data_points(&metric_name, attribute_tags, sum.data_points)
                         }
                     }
                     Ok(AggregationTemporality::Delta) => {
-                        println!("rz6300 mapping delta: {:?}", metric_name);
                         self.map_number_data_points(&metric_name, attribute_tags, sum.data_points, DataType::Count)
                     }
                     _ => {
@@ -97,6 +124,27 @@ impl OtlpTranslator {
             }
         } else {
             Vec::new()
+        }
+    }
+
+    /// Centralized helper to create a metric event and push it to the events vector.
+    fn record_metric_event(
+        &mut self, events: &mut Vec<Event>, metric_name: &str, tags: SharedTagSet, data_type: DataType, value: f64,
+    ) {
+        let values = match data_type {
+            DataType::Gauge => MetricValues::Gauge(value.into()),
+            DataType::Count => MetricValues::Counter(value.into()),
+        };
+
+        match self.context_resolver.resolve(metric_name, &tags, None) {
+            Some(context) => {
+                let metadata = MetricMetadata::default();
+                let metric = Metric::from_parts(context, values, metadata);
+                events.push(Event::Metric(metric));
+            }
+            None => {
+                warn!("Failed to resolve context for metric: {}", metric_name);
+            }
         }
     }
 
@@ -128,21 +176,7 @@ impl OtlpTranslator {
             let mut final_tags = attribute_tags.clone();
             final_tags.extend_from_shared(&data_point_tags);
 
-            match self.context_resolver.resolve(metric_name, final_tags.into_iter(), None) {
-                Some(context) => {
-                    let values = match data_type {
-                        DataType::Gauge => MetricValues::Gauge(value.into()),
-                        DataType::Count => MetricValues::Counter(value.into()),
-                    };
-                    let metadata = MetricMetadata::default();
-                    let metric = Metric::from_parts(context, values, metadata);
-                    events.push(Event::Metric(metric));
-                }
-                None => {
-                    println!("Failed to resolve context for metric: {}", metric_name);
-                    warn!("Failed to resolve context for metric: {}", metric_name);
-                }
-            }
+            self.record_metric_event(&mut events, metric_name, final_tags, data_type, value);
         }
         events
     }
@@ -151,18 +185,14 @@ impl OtlpTranslator {
     fn map_sum_data_points(
         &mut self, metric_name: &str, attribute_tags: &SharedTagSet, data_points: Vec<OtlpNumberDataPoint>,
     ) -> Vec<Event> {
-        println!(
-            "rz6300 mapping metric_name: {:?}, attribute_tags: {:?}, data_points: {:?}",
-            metric_name, attribute_tags, data_points
-        );
         let mut events = Vec::new();
-        for dp in data_points {
+        for (i, dp) in data_points.iter().enumerate() {
             // Skip if the data point has no recorded value.
             if dp.flags & (DataPointFlags::NoRecordedValueMask as u32) != 0 {
                 continue;
             }
 
-            let value = get_number_data_point_value(&dp);
+            let value = get_number_data_point_value(dp);
             if is_skippable(value) {
                 warn!(
                     metric_name,
@@ -171,23 +201,40 @@ impl OtlpTranslator {
                 continue;
             }
 
-            // TODO: Rate as Gauge metrics
-            // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L233-L241
-
             let data_point_tags = attributes_to_tag_set(&dp.attributes);
             let mut final_tags = attribute_tags.clone();
             final_tags.extend_from_shared(&data_point_tags);
 
+            if RATE_AS_GAUGE_METRICS.contains(metric_name) {
+                let (rate, is_first_point, should_drop_point) = self.prev_pts.monotonic_rate(
+                    metric_name,
+                    &final_tags,
+                    dp.start_time_unix_nano,
+                    dp.time_unix_nano,
+                    value,
+                );
+
+                if should_drop_point {
+                    warn!(
+                        metric_name,
+                        "Dropping cumulative monotonic data point (rate) due to reset or out-of-order timestamp."
+                    );
+                    continue;
+                }
+
+                if !is_first_point {
+                    self.record_metric_event(&mut events, metric_name, final_tags, DataType::Gauge, rate);
+                }
+                continue;
+            }
+
+            // Default behavior: calculate delta and consume as a Counter.
             let (delta, is_first_point, should_drop_point) = self.prev_pts.monotonic_diff(
                 metric_name,
                 &final_tags,
                 dp.start_time_unix_nano,
                 dp.time_unix_nano,
                 value,
-            );
-            println!(
-                "rz6300 delta: {:?}, is_first_point: {:?}, should_drop_point: {:?}",
-                delta, is_first_point, should_drop_point
             );
 
             if should_drop_point {
@@ -199,22 +246,23 @@ impl OtlpTranslator {
             }
 
             if !is_first_point {
-                match self.context_resolver.resolve(metric_name, final_tags.into_iter(), None) {
-                    Some(context) => {
-                        let values = MetricValues::Counter(delta.into());
-                        let metadata = MetricMetadata::default();
-                        let metric = Metric::from_parts(context, values, metadata);
-                        events.push(Event::Metric(metric));
-                    }
-                    None => {
-                        warn!("Failed to resolve context for metric: {}", metric_name);
-                    }
-                }
+                self.record_metric_event(&mut events, metric_name, final_tags, DataType::Count, delta);
+            } else if i == 0 && self.should_consume_initial_value(dp.start_time_unix_nano, dp.time_unix_nano) {
+                // We only compute the first point in the timeseries if it is the first value in the datapoint slice.
+                self.record_metric_event(&mut events, metric_name, final_tags, DataType::Count, value);
             }
-            // If it's the first point, we don't emit a metric, as we can't calculate a delta. The point is now cached.
         }
         println!("rz6300 events: {:?}", events);
         events
+    }
+
+    /// Determines if the initial value of a cumulative monotonic metric should be consumed.
+    fn should_consume_initial_value(&self, start_ts: u64, ts: u64) -> bool {
+        // This is the equivalent of `InitialCumulMonoValueModeAuto` from the Go implementation.
+        // We report the first value if the timeseries started after the translator process started.
+        // TODO: More options here:
+        // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L186
+        self.process_start_time_ns < start_ts && start_ts != ts
     }
 }
 
