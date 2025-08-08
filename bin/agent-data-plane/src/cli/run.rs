@@ -46,6 +46,9 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         .into_generic()
         .await?;
 
+    // Create RemoteAgent
+    // Get snapshot here
+
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
