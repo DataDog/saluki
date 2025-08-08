@@ -54,6 +54,7 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
     if let Some(shared_config) = configuration.get_refreshable_handle() {
         ConfigStreamer::stream(&configuration, Some(shared_config)).await?;
     }
+    
     // Create Remote Agent
     let in_standalone_mode = configuration.get_typed_or_default::<bool>("adp.standalone_mode");
     let secure_api_listen_address = configuration
