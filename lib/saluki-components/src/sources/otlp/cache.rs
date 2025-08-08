@@ -99,13 +99,19 @@ fn is_not_first_point(start_ts: u64, ts: u64, old_start_ts: u64) -> bool {
 /// TODO: Add host and other stuff needed
 /// https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/dimensions.go#L135-L151
 fn get_cache_key(name: &str, tags: &SharedTagSet) -> String {
-    let mut key = String::with_capacity(name.len() + tags.size_of());
-    key.push_str(name);
-    key.push(':');
+    // Collect tags into a mutable Vec<String> to allow sorting.
+    let mut dimensions: Vec<String> = tags.into_iter().map(|t| t.to_string()).collect();
 
-    for tag in tags.into_iter() {
-        key.push_str(tag.as_str());
-        key.push(',');
-    }
-    key
+    // Add the metric name as a dimension, just like the Go implementation.
+    dimensions.push(format!("name:{}", name));
+
+    // TODO: Add host and originID once they are available.
+    // dimensions.push(format!("host:{}", host));
+    // dimensions.push(format!("originID:{}", origin_id));
+
+    // Sort the dimensions alphabetically to ensure a canonical key.
+    dimensions.sort();
+
+    // Join with a null character separator.
+    dimensions.join("\0")
 }

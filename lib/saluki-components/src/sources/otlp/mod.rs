@@ -39,7 +39,7 @@ use self::translator::OtlpTranslator;
 
 /// Configuration for the OTLP source.
 #[derive(Deserialize)]
-pub struct OTLPConfiguration {
+pub struct OtlpConfiguration {
     /// The port for the OTLP gRPC server.
     ///
     /// The gRPC server is responsible for accepting OTLP metrics payloads.
@@ -53,7 +53,7 @@ fn default_port() -> u16 {
     4317
 }
 
-impl OTLPConfiguration {
+impl OtlpConfiguration {
     /// Creates a new `OTLPConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
@@ -61,7 +61,7 @@ impl OTLPConfiguration {
 }
 
 #[async_trait]
-impl SourceBuilder for OTLPConfiguration {
+impl SourceBuilder for OtlpConfiguration {
     fn outputs(&self) -> &[OutputDefinition] {
         static OUTPUTS: LazyLock<Vec<OutputDefinition>> =
             LazyLock::new(|| vec![OutputDefinition::named_output("metrics", EventType::Metric)]);
@@ -72,29 +72,29 @@ impl SourceBuilder for OTLPConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
         let context_resolver = ContextResolverBuilder::from_name(format!("{}/otlp", context.component_id()))?.build();
 
-        Ok(Box::new(OTLP {
+        Ok(Box::new(Otlp {
             context_resolver,
             port: self.port,
         }))
     }
 }
 
-impl MemoryBounds for OTLPConfiguration {
+impl MemoryBounds for OtlpConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder
             .minimum()
-            .with_single_value::<OTLP>("source struct")
+            .with_single_value::<Otlp>("source struct")
             .with_single_value::<GrpcService>("gRPC service");
     }
 }
 
-pub struct OTLP {
+pub struct Otlp {
     context_resolver: ContextResolver,
     port: u16,
 }
 
 #[async_trait]
-impl Source for OTLP {
+impl Source for Otlp {
     async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
         let mut global_shutdown = context.take_shutdown_handle();
         let mut health = context.take_health_handle();

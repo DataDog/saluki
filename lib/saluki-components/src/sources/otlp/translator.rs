@@ -70,12 +70,15 @@ impl OtlpTranslator {
                 OtlpMetricData::Sum(sum) => match AggregationTemporality::try_from(sum.aggregation_temporality) {
                     Ok(AggregationTemporality::Cumulative) => {
                         if !sum.is_monotonic {
+                            println!("rz6300 mapping gauge from non monotonic sum: {:?}", metric_name);
                             self.map_number_data_points(&metric_name, attribute_tags, sum.data_points, DataType::Gauge)
                         } else {
+                            println!("rz6300 mapping sum: {:?}", metric_name);
                             self.map_sum_data_points(&metric_name, attribute_tags, sum.data_points)
                         }
                     }
                     Ok(AggregationTemporality::Delta) => {
+                        println!("rz6300 mapping delta: {:?}", metric_name);
                         self.map_number_data_points(&metric_name, attribute_tags, sum.data_points, DataType::Count)
                     }
                     _ => {
@@ -102,10 +105,6 @@ impl OtlpTranslator {
         &mut self, metric_name: &str, attribute_tags: &SharedTagSet, data_points: Vec<OtlpNumberDataPoint>,
         data_type: DataType,
     ) -> Vec<Event> {
-        println!(
-            "rz6300 mapping data_type: {:?}, metric_name: {:?}, attribute_tags: {:?}, data_points: {:?}",
-            data_type, metric_name, attribute_tags, data_points
-        );
         let mut events = Vec::new();
         for dp in data_points {
             // Skip if the data point has no recorded value.
@@ -186,6 +185,10 @@ impl OtlpTranslator {
                 dp.time_unix_nano,
                 value,
             );
+            println!(
+                "rz6300 delta: {:?}, is_first_point: {:?}, should_drop_point: {:?}",
+                delta, is_first_point, should_drop_point
+            );
 
             if should_drop_point {
                 warn!(
@@ -210,6 +213,7 @@ impl OtlpTranslator {
             }
             // If it's the first point, we don't emit a metric, as we can't calculate a delta. The point is now cached.
         }
+        println!("rz6300 events: {:?}", events);
         events
     }
 }
@@ -221,10 +225,8 @@ fn attributes_to_tag_set(attributes: &[KeyValue]) -> SharedTagSet {
     let mut tag_set = TagSet::default();
     for kv in attributes {
         let value = kv.value.as_ref().and_then(|v| v.value.as_ref());
-        if let Some(value) = value {
-            if let Value::StringValue(s) = value {
-                tag_set.insert_tag(format!("{}:{}", kv.key, s));
-            }
+        if let Some(Value::StringValue(value)) = value {
+            tag_set.insert_tag(format!("{}:{}", kv.key, value));
         }
     }
     tag_set.into_shared()

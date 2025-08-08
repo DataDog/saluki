@@ -11,7 +11,7 @@ use saluki_components::{
         DatadogServiceChecksConfiguration,
     },
     forwarders::DatadogConfiguration,
-    sources::{DogStatsDConfiguration, OTLPConfiguration},
+    sources::{DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
         AggregateConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration, DogstatsDPrefixFilterConfiguration,
         HostEnrichmentConfiguration, HostTagsConfiguration, PreaggregationFilterConfiguration,
@@ -199,7 +199,7 @@ async fn create_topology(
         }
     }
 
-    let otlp_config = OTLPConfiguration::from_configuration(configuration)?;
+    let otlp_config = OtlpConfiguration::from_configuration(configuration)?;
 
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
     blueprint

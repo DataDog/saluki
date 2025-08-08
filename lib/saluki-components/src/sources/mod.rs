@@ -13,4 +13,4 @@ mod checks;
 pub use self::checks::ChecksConfiguration;
 
 mod otlp;
-pub use self::otlp::OTLPConfiguration;
+pub use self::otlp::OtlpConfiguration;
