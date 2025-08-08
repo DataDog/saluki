@@ -1,0 +1,448 @@
+#![allow(dead_code)]
+
+use std::collections::HashSet;
+use std::sync::LazyLock;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use otlp_protos::opentelemetry::proto::common::v1::any_value::Value;
+use otlp_protos::opentelemetry::proto::common::v1::KeyValue;
+use otlp_protos::opentelemetry::proto::metrics::v1::{
+    metric::Data as OtlpMetricData, AggregationTemporality, DataPointFlags,
+    HistogramDataPoint as OtlpHistogramDataPoint, Metric as OtlpMetric, NumberDataPoint as OtlpNumberDataPoint,
+    ResourceMetrics as OtlpResourceMetrics,
+};
+use saluki_context::tags::SharedTagSet;
+use saluki_context::{tags::TagSet, ContextResolver};
+use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
+use saluki_core::data_model::event::Event;
+use saluki_error::GenericError;
+use tracing::warn;
+
+use super::cache::Cache;
+
+// https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L48-L63
+static RATE_AS_GAUGE_METRICS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    let mut m = HashSet::new();
+    m.insert("kafka.net.bytes_out.rate");
+    m.insert("kafka.net.bytes_in.rate");
+    m.insert("kafka.replication.isr_shrinks.rate");
+    m.insert("kafka.replication.isr_expands.rate");
+    m.insert("kafka.replication.leader_elections.rate");
+    m.insert("jvm.gc.minor_collection_count");
+    m.insert("jvm.gc.major_collection_count");
+    m.insert("jvm.gc.minor_collection_time");
+    m.insert("jvm.gc.major_collection_time");
+    m.insert("kafka.messages_in.rate");
+    m.insert("kafka.request.produce.failed.rate");
+    m.insert("kafka.request.fetch.failed.rate");
+    m.insert("kafka.replication.unclean_leader_elections.rate");
+    m.insert("kafka.log.flush_rate.rate");
+    m
+});
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DataType {
+    Gauge,
+    Count,
+}
+
+/// A translator for converting OTLP metrics into Saluki `Event::Metric`s.
+pub struct OtlpTranslator {
+    context_resolver: ContextResolver,
+    prev_pts: Cache,
+    process_start_time_ns: u64, // Used for initial value consumption.
+}
+
+#[derive(Debug, Default)]
+struct HistogramInfo {
+    sum: f64,
+    count: u64,
+    has_min_from_last_time_window: bool,
+    has_max_from_last_time_window: bool,
+    ok: bool,
+}
+
+impl OtlpTranslator {
+    /// Creates a new, empty `OtlpTranslator`.
+    pub fn new(context_resolver: ContextResolver) -> Self {
+        let process_start_time_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("System time is before the UNIX epoch, this should not happen.")
+            .as_nanos() as u64;
+
+        Self {
+            context_resolver,
+            prev_pts: Cache::new(),
+            process_start_time_ns,
+        }
+    }
+
+    /// Translates a batch of OTLP `ResourceMetrics` into a collection of Saluki `Event`s.
+    /// This is the Rust equivalent of the Go `MapMetrics` function.
+    pub fn map_metrics(&mut self, resource_metrics: OtlpResourceMetrics) -> Result<Vec<Event>, GenericError> {
+        let mut events = Vec::new();
+
+        let attribute_tags = resource_metrics
+            .resource
+            .map(|res| attributes_to_tag_set(&res.attributes))
+            .unwrap_or_default();
+
+        // TODO: https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L736-L753
+
+        for scope_metrics in resource_metrics.scope_metrics {
+            for metric in scope_metrics.metrics {
+                let mut translated_events = self.map_to_dd_format(metric, &attribute_tags);
+                events.append(&mut translated_events);
+            }
+        }
+
+        Ok(events)
+    }
+
+    /// Translates a single OTLP `Metric` into a collection of Saluki `Event`s.
+    fn map_to_dd_format(&mut self, metric: OtlpMetric, attribute_tags: &SharedTagSet) -> Vec<Event> {
+        let metric_name = metric.name;
+        println!("rz6300 mapping metric: {:?}", metric_name);
+        if let Some(data) = metric.data {
+            match data {
+                OtlpMetricData::Gauge(gauge) => {
+                    self.map_number_data_points(&metric_name, attribute_tags, gauge.data_points, DataType::Gauge)
+                }
+                OtlpMetricData::Sum(sum) => match AggregationTemporality::try_from(sum.aggregation_temporality) {
+                    Ok(AggregationTemporality::Cumulative) => {
+                        if !sum.is_monotonic {
+                            self.map_number_data_points(&metric_name, attribute_tags, sum.data_points, DataType::Gauge)
+                        } else {
+                            self.map_sum_data_points(&metric_name, attribute_tags, sum.data_points)
+                        }
+                    }
+                    Ok(AggregationTemporality::Delta) => {
+                        self.map_number_data_points(&metric_name, attribute_tags, sum.data_points, DataType::Count)
+                    }
+                    _ => {
+                        warn!(
+                            metric_name,
+                            temporality = sum.aggregation_temporality,
+                            "Unsupported or unknown aggregation temporality for Sum metric."
+                        );
+                        Vec::new()
+                    }
+                },
+                OtlpMetricData::Histogram(histogram) => {
+                    match AggregationTemporality::try_from(histogram.aggregation_temporality) {
+                        Ok(AggregationTemporality::Cumulative) => {
+                            self.map_histogram_metrics(&metric_name, attribute_tags, histogram.data_points, false)
+                        }
+                        Ok(AggregationTemporality::Delta) => {
+                            self.map_histogram_metrics(&metric_name, attribute_tags, histogram.data_points, true)
+                        }
+                        _ => {
+                            warn!(
+                                metric_name,
+                                temporality = histogram.aggregation_temporality,
+                                "Unsupported or unknown aggregation temporality for Histogram metric."
+                            );
+                            Vec::new()
+                        }
+                    }
+                }
+                _ => {
+                    // TODO: Handle Summary, etc.
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Centralized helper to create a metric event and push it to the events vector.
+    fn record_metric_event(
+        &mut self, events: &mut Vec<Event>, metric_name: &str, tags: SharedTagSet, data_type: DataType, value: f64,
+    ) {
+        let values = match data_type {
+            DataType::Gauge => MetricValues::Gauge(value.into()),
+            DataType::Count => MetricValues::Counter(value.into()),
+        };
+
+        match self.context_resolver.resolve(metric_name, &tags, None) {
+            Some(context) => {
+                let metadata = MetricMetadata::default();
+                let metric = Metric::from_parts(context, values, metadata);
+                events.push(Event::Metric(metric));
+            }
+            None => {
+                warn!("Failed to resolve context for metric: {}", metric_name);
+            }
+        }
+    }
+
+    /// Maps a slice of OTLP numeric data points to Saluki `Event`s.
+    fn map_number_data_points(
+        &mut self, metric_name: &str, attribute_tags: &SharedTagSet, data_points: Vec<OtlpNumberDataPoint>,
+        data_type: DataType,
+    ) -> Vec<Event> {
+        let mut events = Vec::new();
+        for dp in data_points {
+            // Skip if the data point has no recorded value.
+            if dp.flags & (DataPointFlags::NoRecordedValueMask as u32) != 0 {
+                continue;
+            }
+
+            let value = get_number_data_point_value(&dp);
+            if is_skippable(value) {
+                warn!(
+                    metric_name,
+                    value, "Skipping metric with unsupported value (NaN or Infinity)."
+                );
+                continue;
+            }
+
+            // TODO: how do we handle the timestamp?
+            let _ts = dp.time_unix_nano;
+
+            let data_point_tags = attributes_to_tag_set(&dp.attributes);
+            let mut final_tags = attribute_tags.clone();
+            final_tags.extend_from_shared(&data_point_tags);
+
+            self.record_metric_event(&mut events, metric_name, final_tags, data_type, value);
+        }
+        events
+    }
+
+    /// Maps a slice of OTLP cumulative monotonic `Sum` data points to Saluki `Event`s.
+    fn map_sum_data_points(
+        &mut self, metric_name: &str, attribute_tags: &SharedTagSet, data_points: Vec<OtlpNumberDataPoint>,
+    ) -> Vec<Event> {
+        let mut events = Vec::new();
+        for (i, dp) in data_points.iter().enumerate() {
+            // Skip if the data point has no recorded value.
+            if dp.flags & (DataPointFlags::NoRecordedValueMask as u32) != 0 {
+                continue;
+            }
+
+            let value = get_number_data_point_value(dp);
+            if is_skippable(value) {
+                warn!(
+                    metric_name,
+                    value, "Skipping metric with unsupported value (NaN or Infinity)."
+                );
+                continue;
+            }
+
+            let data_point_tags = attributes_to_tag_set(&dp.attributes);
+            let mut final_tags = attribute_tags.clone();
+            final_tags.extend_from_shared(&data_point_tags);
+
+            if RATE_AS_GAUGE_METRICS.contains(metric_name) {
+                let (rate, is_first_point, should_drop_point) = self.prev_pts.monotonic_rate(
+                    metric_name,
+                    &final_tags,
+                    dp.start_time_unix_nano,
+                    dp.time_unix_nano,
+                    value,
+                );
+
+                if should_drop_point {
+                    warn!(
+                        metric_name,
+                        "Dropping cumulative monotonic data point (rate) due to reset or out-of-order timestamp."
+                    );
+                    continue;
+                }
+
+                if !is_first_point {
+                    self.record_metric_event(&mut events, metric_name, final_tags, DataType::Gauge, rate);
+                }
+                continue;
+            }
+
+            // Default behavior: calculate delta and consume as a Counter.
+            let (delta, is_first_point, should_drop_point) = self.prev_pts.monotonic_diff(
+                metric_name,
+                &final_tags,
+                dp.start_time_unix_nano,
+                dp.time_unix_nano,
+                value,
+            );
+
+            if should_drop_point {
+                warn!(
+                    metric_name,
+                    "Dropping cumulative monotonic data point due to reset or out-of-order timestamp."
+                );
+                continue;
+            }
+
+            if !is_first_point {
+                self.record_metric_event(&mut events, metric_name, final_tags, DataType::Count, delta);
+            } else if i == 0 && self.should_consume_initial_value(dp.start_time_unix_nano, dp.time_unix_nano) {
+                // We only compute the first point in the timeseries if it is the first value in the datapoint slice.
+                self.record_metric_event(&mut events, metric_name, final_tags, DataType::Count, value);
+            }
+        }
+        println!("rz6300 events: {:?}", events);
+        events
+    }
+
+    fn map_histogram_metrics(
+        &mut self, metric_name: &str, attribute_tags: &SharedTagSet, data_points: Vec<OtlpHistogramDataPoint>,
+        delta: bool,
+    ) -> Vec<Event> {
+        let mut events = Vec::new();
+
+        for dp in data_points {
+            if dp.flags & (DataPointFlags::NoRecordedValueMask as u32) != 0 {
+                continue;
+            }
+
+            let mut hist_info = HistogramInfo {
+                ok: true,
+                ..Default::default()
+            };
+
+            let data_point_tags = attributes_to_tag_set(&dp.attributes);
+            let mut final_tags = attribute_tags.clone();
+            final_tags.extend_from_shared(&data_point_tags);
+
+            let count_name = format!("{}.count", metric_name);
+            let sum_name = format!("{}.sum", metric_name);
+            let min_name = format!("{}.min", metric_name);
+            let max_name = format!("{}.max", metric_name);
+
+            // Handle the histogram's total count.
+            let count_val = dp.count as f64;
+
+            if delta {
+                hist_info.count = dp.count;
+            } else {
+                let (delta, ok) = self.prev_pts.diff(
+                    &count_name,
+                    &final_tags,
+                    dp.start_time_unix_nano,
+                    dp.time_unix_nano,
+                    count_val,
+                );
+
+                if ok {
+                    hist_info.count = delta as u64;
+                } else {
+                    hist_info.ok = false;
+                }
+            }
+
+            // Handle the histogram's total sum.
+            if let Some(sum) = dp.sum {
+                if !is_skippable(sum) {
+                    if delta {
+                        hist_info.sum = sum;
+                    } else {
+                        let (delta, ok) =
+                            self.prev_pts
+                                .diff(&sum_name, &final_tags, dp.start_time_unix_nano, dp.time_unix_nano, sum);
+                        if ok {
+                            hist_info.sum = delta;
+                        } else {
+                            hist_info.ok = false;
+                        }
+                    }
+                } else {
+                    hist_info.ok = false;
+                }
+            } else {
+                hist_info.ok = false;
+            }
+
+            if let Some(min) = dp.min {
+                hist_info.has_min_from_last_time_window = delta
+                    || self.prev_pts.put_and_check_min(
+                        &min_name,
+                        &final_tags,
+                        dp.start_time_unix_nano,
+                        dp.time_unix_nano,
+                        min,
+                    );
+            }
+
+            if let Some(max) = dp.max {
+                hist_info.has_max_from_last_time_window = delta
+                    || self.prev_pts.put_and_check_max(
+                        &max_name,
+                        &final_tags,
+                        dp.start_time_unix_nano,
+                        dp.time_unix_nano,
+                        max,
+                    );
+            }
+
+            // Only proceed if both sum and count were processed correctly.
+            // TODO: Add a check for `SendHistogramAggregations` config flag, once available.
+            if hist_info.ok {
+                self.record_metric_event(
+                    &mut events,
+                    &count_name,
+                    final_tags.clone(),
+                    DataType::Count,
+                    hist_info.count as f64,
+                );
+
+                self.record_metric_event(
+                    &mut events,
+                    &sum_name,
+                    final_tags.clone(),
+                    DataType::Count,
+                    hist_info.sum,
+                );
+
+                if delta {
+                    if let Some(min) = dp.min {
+                        self.record_metric_event(&mut events, &min_name, final_tags.clone(), DataType::Gauge, min);
+                    }
+                    if let Some(max) = dp.max {
+                        self.record_metric_event(&mut events, &max_name, final_tags, DataType::Gauge, max);
+                    }
+                }
+            }
+
+            // TODO: Implement bucket-to-sketch conversion.
+        }
+        events
+    }
+
+    /// Determines if the initial value of a cumulative monotonic metric should be consumed.
+    fn should_consume_initial_value(&self, start_ts: u64, ts: u64) -> bool {
+        // This is the equivalent of `InitialCumulMonoValueModeAuto` from the Go implementation.
+        // We report the first value if the timeseries started after the translator process started.
+        // TODO: More options here:
+        // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L186
+        self.process_start_time_ns < start_ts && start_ts != ts
+    }
+}
+
+/// Converts a slice of OTLP `KeyValue` attributes to a `SharedTagSet`.
+fn attributes_to_tag_set(attributes: &[KeyValue]) -> SharedTagSet {
+    // TODO: Implement semantic attribute mappings.
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/attributes/attributes.go#L193
+    let mut tag_set = TagSet::default();
+    for kv in attributes {
+        let value = kv.value.as_ref().and_then(|v| v.value.as_ref());
+        if let Some(Value::StringValue(value)) = value {
+            tag_set.insert_tag(format!("{}:{}", kv.key, value));
+        }
+    }
+    tag_set.into_shared()
+}
+
+/// Extracts the f64 value from an OTLP `NumberDataPoint`.
+fn get_number_data_point_value(dp: &OtlpNumberDataPoint) -> f64 {
+    match dp.value {
+        Some(otlp_protos::opentelemetry::proto::metrics::v1::number_data_point::Value::AsDouble(d)) => d,
+        Some(otlp_protos::opentelemetry::proto::metrics::v1::number_data_point::Value::AsInt(i)) => i as f64,
+        None => 0.0,
+    }
+}
+
+/// Checks if a metric value is `NaN` or `Infinity`.
+fn is_skippable(value: f64) -> bool {
+    value.is_nan() || value.is_infinite()
+}
