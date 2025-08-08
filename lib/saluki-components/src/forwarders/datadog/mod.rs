@@ -178,7 +178,6 @@ fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
     match uri.path() {
         "/api/v2/series" => Some(MetaString::from_static("series_v2")),
         "/api/beta/sketches" => Some(MetaString::from_static("sketches_v2")),
-        "/api/intake/pipelines/ddseries" => Some(MetaString::from_static("preaggregation")),
         "/api/v1/check_run" => Some(MetaString::from_static("check_run_v1")),
         "/api/v1/events_batch" => Some(MetaString::from_static("events_batch_v1")),
         _ => None,
