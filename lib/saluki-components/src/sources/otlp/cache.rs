@@ -11,14 +11,26 @@ pub struct NumberCounter {
     pub start_timestamp: u64,
 }
 
+/// The state we store for min/max values.
+#[derive(Clone, Debug)]
+pub struct Extrema {
+    pub timestamp: u64,
+    pub start_timestamp: u64,
+    pub stored_extrema: f64,
+}
+
 /// A cache for storing previous data points to calculate deltas for cumulative metrics.
 pub struct Cache {
-    points: HashMap<String, NumberCounter>,
+    number_points: HashMap<String, NumberCounter>,
+    extrema_points: HashMap<String, Extrema>,
 }
 
 impl Cache {
     pub fn new() -> Self {
-        Self { points: HashMap::new() }
+        Self {
+            number_points: HashMap::new(),
+            extrema_points: HashMap::new(),
+        }
     }
 
     // Submits a new value for a given monotonic metric
@@ -41,6 +53,55 @@ impl Cache {
         self.put_and_get_monotonic(name, tags, start_timestamp, timestamp, value, true)
     }
 
+    // Diff submits a new value for a given non-monotonic metric and returns the difference with the
+    // last submitted value (ordered by timestamp). The diff value is only valid if `ok` is true.
+    pub fn diff(
+        &mut self, name: &str, tags: &SharedTagSet, start_timestamp: u64, timestamp: u64, value: f64,
+    ) -> (f64, bool) {
+        self.put_and_get_diff(name, tags, start_timestamp, timestamp, value)
+    }
+
+    pub fn put_and_check_min(
+        &mut self, name: &str, tags: &SharedTagSet, start_timestamp: u64, timestamp: u64, value: f64,
+    ) -> bool {
+        self.put_and_check_extrema(name, tags, start_timestamp, timestamp, value, true)
+    }
+
+    pub fn put_and_check_max(
+        &mut self, name: &str, tags: &SharedTagSet, start_timestamp: u64, timestamp: u64, value: f64,
+    ) -> bool {
+        self.put_and_check_extrema(name, tags, start_timestamp, timestamp, value, false)
+    }
+
+    fn put_and_get_diff(
+        &mut self, name: &str, tags: &SharedTagSet, start_timestamp: u64, timestamp: u64, value: f64,
+    ) -> (f64, bool) {
+        let key = get_cache_key(name, tags);
+
+        let mut dx = 0.0;
+        let mut ok = false;
+
+        if let Some(prev_counter) = self.number_points.get(&key) {
+            if prev_counter.timestamp > timestamp {
+                // Point is older than the one in memory, drop it.
+                return (0.0, false);
+            }
+            dx = value - prev_counter.value;
+            ok = is_not_first_point(start_timestamp, timestamp, prev_counter.start_timestamp);
+        }
+
+        self.number_points.insert(
+            key,
+            NumberCounter {
+                value,
+                timestamp,
+                start_timestamp,
+            },
+        );
+
+        (dx, ok)
+    }
+
     fn put_and_get_monotonic(
         &mut self, name: &str, tags: &SharedTagSet, start_timestamp: u64, timestamp: u64, value: f64, rate: bool,
     ) -> (f64, bool, bool) {
@@ -51,7 +112,7 @@ impl Cache {
 
         let key = get_cache_key(name, tags);
 
-        if let Some(prev_counter) = self.points.get(&key) {
+        if let Some(prev_counter) = self.number_points.get(&key) {
             if prev_counter.timestamp >= timestamp {
                 // We were given a point with a timestamp older or equal to the one in the cache. This point
                 // should be dropped. We keep the current point in cache.
@@ -70,7 +131,7 @@ impl Cache {
             first_point = !is_not_first_point(start_timestamp, timestamp, prev_counter.start_timestamp) || dx < 0.0;
         }
 
-        self.points.insert(
+        self.number_points.insert(
             key,
             NumberCounter {
                 value,
@@ -80,6 +141,40 @@ impl Cache {
         );
 
         (dx, first_point, drop_point)
+    }
+
+    fn put_and_check_extrema(
+        &mut self, name: &str, tags: &SharedTagSet, start_timestamp: u64, timestamp: u64, current_extrema: f64,
+        is_min: bool,
+    ) -> bool {
+        let key = get_cache_key(name, tags);
+        let mut from_last_window = false;
+
+        if let Some(prev_extrema) = self.extrema_points.get(&key) {
+            if prev_extrema.timestamp > timestamp {
+                return false;
+            }
+
+            let is_not_first = is_not_first_point(start_timestamp, timestamp, prev_extrema.start_timestamp);
+            if is_min {
+                from_last_window = (is_not_first && current_extrema < prev_extrema.stored_extrema)
+                    || (current_extrema > prev_extrema.stored_extrema);
+            } else {
+                from_last_window = (is_not_first && current_extrema > prev_extrema.stored_extrema)
+                    || (current_extrema < prev_extrema.stored_extrema);
+            }
+        }
+
+        self.extrema_points.insert(
+            key,
+            Extrema {
+                stored_extrema: current_extrema,
+                timestamp,
+                start_timestamp,
+            },
+        );
+
+        from_last_window
     }
 }
 

@@ -7,8 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use otlp_protos::opentelemetry::proto::common::v1::any_value::Value;
 use otlp_protos::opentelemetry::proto::common::v1::KeyValue;
 use otlp_protos::opentelemetry::proto::metrics::v1::{
-    metric::Data as OtlpMetricData, AggregationTemporality, DataPointFlags, Metric as OtlpMetric,
-    NumberDataPoint as OtlpNumberDataPoint, ResourceMetrics as OtlpResourceMetrics,
+    metric::Data as OtlpMetricData, AggregationTemporality, DataPointFlags,
+    HistogramDataPoint as OtlpHistogramDataPoint, Metric as OtlpMetric, NumberDataPoint as OtlpNumberDataPoint,
+    ResourceMetrics as OtlpResourceMetrics,
 };
 use saluki_context::tags::SharedTagSet;
 use saluki_context::{tags::TagSet, ContextResolver};
@@ -19,6 +20,7 @@ use tracing::warn;
 
 use super::cache::Cache;
 
+// https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L48-L63
 static RATE_AS_GAUGE_METRICS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     let mut m = HashSet::new();
     m.insert("kafka.net.bytes_out.rate");
@@ -49,6 +51,15 @@ pub struct OtlpTranslator {
     context_resolver: ContextResolver,
     prev_pts: Cache,
     process_start_time_ns: u64, // Used for initial value consumption.
+}
+
+#[derive(Debug, Default)]
+struct HistogramInfo {
+    sum: f64,
+    count: u64,
+    has_min_from_last_time_window: bool,
+    has_max_from_last_time_window: bool,
+    ok: bool,
 }
 
 impl OtlpTranslator {
@@ -117,8 +128,26 @@ impl OtlpTranslator {
                         Vec::new()
                     }
                 },
+                OtlpMetricData::Histogram(histogram) => {
+                    match AggregationTemporality::try_from(histogram.aggregation_temporality) {
+                        Ok(AggregationTemporality::Cumulative) => {
+                            self.map_histogram_metrics(&metric_name, attribute_tags, histogram.data_points, false)
+                        }
+                        Ok(AggregationTemporality::Delta) => {
+                            self.map_histogram_metrics(&metric_name, attribute_tags, histogram.data_points, true)
+                        }
+                        _ => {
+                            warn!(
+                                metric_name,
+                                temporality = histogram.aggregation_temporality,
+                                "Unsupported or unknown aggregation temporality for Histogram metric."
+                            );
+                            Vec::new()
+                        }
+                    }
+                }
                 _ => {
-                    // TODO: Handle Histogram, Summary, etc.
+                    // TODO: Handle Summary, etc.
                     Vec::new()
                 }
             }
@@ -253,6 +282,130 @@ impl OtlpTranslator {
             }
         }
         println!("rz6300 events: {:?}", events);
+        events
+    }
+
+    fn map_histogram_metrics(
+        &mut self, metric_name: &str, attribute_tags: &SharedTagSet, data_points: Vec<OtlpHistogramDataPoint>,
+        delta: bool,
+    ) -> Vec<Event> {
+        let mut events = Vec::new();
+
+        for dp in data_points {
+            if dp.flags & (DataPointFlags::NoRecordedValueMask as u32) != 0 {
+                continue;
+            }
+
+            let mut hist_info = HistogramInfo {
+                ok: true,
+                ..Default::default()
+            };
+
+            let data_point_tags = attributes_to_tag_set(&dp.attributes);
+            let mut final_tags = attribute_tags.clone();
+            final_tags.extend_from_shared(&data_point_tags);
+
+            let count_name = format!("{}.count", metric_name);
+            let sum_name = format!("{}.sum", metric_name);
+            let min_name = format!("{}.min", metric_name);
+            let max_name = format!("{}.max", metric_name);
+
+            // Handle the histogram's total count.
+            let count_val = dp.count as f64;
+
+            if delta {
+                hist_info.count = dp.count;
+            } else {
+                let (delta, ok) = self.prev_pts.diff(
+                    &count_name,
+                    &final_tags,
+                    dp.start_time_unix_nano,
+                    dp.time_unix_nano,
+                    count_val,
+                );
+
+                if ok {
+                    hist_info.count = delta as u64;
+                } else {
+                    hist_info.ok = false;
+                }
+            }
+
+            // Handle the histogram's total sum.
+            if let Some(sum) = dp.sum {
+                if !is_skippable(sum) {
+                    if delta {
+                        hist_info.sum = sum;
+                    } else {
+                        let (delta, ok) =
+                            self.prev_pts
+                                .diff(&sum_name, &final_tags, dp.start_time_unix_nano, dp.time_unix_nano, sum);
+                        if ok {
+                            hist_info.sum = delta;
+                        } else {
+                            hist_info.ok = false;
+                        }
+                    }
+                } else {
+                    hist_info.ok = false;
+                }
+            } else {
+                hist_info.ok = false;
+            }
+
+            if let Some(min) = dp.min {
+                hist_info.has_min_from_last_time_window = delta
+                    || self.prev_pts.put_and_check_min(
+                        &min_name,
+                        &final_tags,
+                        dp.start_time_unix_nano,
+                        dp.time_unix_nano,
+                        min,
+                    );
+            }
+
+            if let Some(max) = dp.max {
+                hist_info.has_max_from_last_time_window = delta
+                    || self.prev_pts.put_and_check_max(
+                        &max_name,
+                        &final_tags,
+                        dp.start_time_unix_nano,
+                        dp.time_unix_nano,
+                        max,
+                    );
+            }
+
+            // Only proceed if both sum and count were processed correctly.
+            // TODO: Add a check for `SendHistogramAggregations` config flag, once available.
+            if hist_info.ok {
+                self.record_metric_event(
+                    &mut events,
+                    &count_name,
+                    final_tags.clone(),
+                    DataType::Count,
+                    hist_info.count as f64,
+                );
+
+                self.record_metric_event(
+                    &mut events,
+                    &sum_name,
+                    final_tags.clone(),
+                    DataType::Count,
+                    hist_info.sum,
+                );
+
+                if delta {
+                    if let Some(min) = dp.min {
+                        self.record_metric_event(&mut events, &min_name, final_tags.clone(), DataType::Gauge, min);
+                    }
+                    if let Some(max) = dp.max {
+                        self.record_metric_event(&mut events, &max_name, final_tags, DataType::Gauge, max);
+                    }
+                }
+            }
+
+            // TODO: Implement bucket-to-sketch conversion.
+        }
         events
     }
 
