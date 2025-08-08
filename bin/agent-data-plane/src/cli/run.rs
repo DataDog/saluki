@@ -238,7 +238,6 @@ async fn create_topology(
             .get_typed::<String>("preaggregation.api_key")
             .error_context("Failed to query preaggregation API key.")?;
 
-        // Validate required fields when preaggregation is enabled
         if preaggr_dd_url.is_empty() {
             return Err(GenericError::msg(
                 "preaggregation.dd_url is required when preaggregation.enabled is true",

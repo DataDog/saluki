@@ -139,7 +139,6 @@ where
     E: EndpointEncoder,
 {
     encoder: E,
-    endpoint_uri: Uri,
     scratch_buf: Vec<u8>,
     buffer_chunk_size: usize,
     compression_scheme: CompressionScheme,
@@ -163,7 +162,6 @@ where
     pub async fn new(
         encoder: E, compression_scheme: CompressionScheme, buffer_chunk_size: usize,
     ) -> Result<Self, RequestBuilderError<E>> {
-        let endpoint_uri = encoder.endpoint_uri();
         let compressed_len_limit = encoder.compressed_size_limit();
         let uncompressed_len_limit = encoder.uncompressed_size_limit();
 
@@ -184,7 +182,6 @@ where
         let compressor = create_compressor(compression_scheme, buffer_chunk_size);
         Ok(Self {
             encoder,
-            endpoint_uri,
             scratch_buf: Vec::with_capacity(SCRATCH_BUF_CAPACITY),
             buffer_chunk_size,
             compression_scheme,
@@ -334,7 +331,7 @@ where
         if would_exceed_uncompressed_limit || likely_exceeds_compressed_limit {
             trace!(
                 encoder = E::encoder_name(),
-                endpoint = ?self.endpoint_uri,
+                endpoint = ?self.encoder.endpoint_uri(),
                 encoded_len,
                 uncompressed_len = self.uncompressed_len(),
                 estimated_compressed_len = self.compression_estimator.estimated_len(),
@@ -348,7 +345,7 @@ where
 
         trace!(
             encoder = E::encoder_name(),
-            endpoint = ?self.endpoint_uri,
+            endpoint = ?self.encoder.endpoint_uri(),
             encoded_len,
             uncompressed_len = self.uncompressed_len(),
             estimated_compressed_len = self.compression_estimator.estimated_len(),
@@ -397,7 +394,7 @@ where
         }
 
         let inputs_written = self.clear_encoded_inputs();
-        debug!(encoder = E::encoder_name(), endpoint = ?self.endpoint_uri, uncompressed_len, compressed_len, inputs_written, "Flushing request.");
+        debug!(encoder = E::encoder_name(), endpoint = ?self.encoder.endpoint_uri(), uncompressed_len, compressed_len, inputs_written, "Flushing request.");
 
         vec![self.create_request(compressed_buf).map(|req| (inputs_written, req))]
     }
@@ -430,7 +427,7 @@ where
             // TODO: Propagate the number of inputs dropped in the returned error itself rather than logging here.
             error!(
                 encoder = E::encoder_name(),
-                endpoint = ?self.endpoint_uri,
+                endpoint = ?self.encoder.endpoint_uri(),
                 inputs_dropped,
                 "Failed to finalize compressor while building request. Inputs have been dropped."
             );
@@ -444,7 +441,7 @@ where
             // TODO: Propagate the number of inputs dropped in the returned error itself rather than logging here.
             error!(
                 encoder = E::encoder_name(),
-                endpoint = ?self.endpoint_uri,
+                endpoint = ?self.encoder.endpoint_uri(),
                 inputs_dropped,
                 "Failed to finalize compressor while building request. Inputs have been dropped."
             );
@@ -469,7 +466,7 @@ where
         if self.encoded_inputs.is_empty() {
             warn!(
                 encoder = E::encoder_name(),
-                endpoint = ?self.endpoint_uri,
+                endpoint = ?self.encoder.endpoint_uri(),
                 "Tried to split request with no encoded inputs."
             );
             return requests;
@@ -477,7 +474,7 @@ where
 
         trace!(
             encoder = E::encoder_name(),
-            endpoint = ?self.endpoint_uri,
+            endpoint = ?self.encoder.endpoint_uri(),
             encoded_inputs = self.encoded_inputs.len(),
             "Starting request split operation.",
         );
@@ -514,7 +511,7 @@ where
 
         trace!(
             encoder = E::encoder_name(),
-            endpoint = ?self.endpoint_uri,
+            endpoint = ?self.encoder.endpoint_uri(),
             "Finished splitting oversized request. Generated {} subrequest(s).",
             requests.len(),
         );
@@ -527,7 +524,7 @@ where
     ) -> Option<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         trace!(
             encoder = E::encoder_name(),
-            endpoint = ?self.endpoint_uri,
+            endpoint = ?self.encoder.endpoint_uri(),
             encoded_inputs = inputs.len(),
             "Starting request split suboperation.",
         );
@@ -565,7 +562,7 @@ where
             // TODO: Propagate the number of inputs dropped in the returned error itself rather than logging here.
             error!(
                 encoder = E::encoder_name(),
-                endpoint = ?self.endpoint_uri,
+                endpoint = ?self.encoder.endpoint_uri(),
                 uncompressed_len,
                 inputs_dropped,
                 "Uncompressed size limit exceeded while splitting request. This should never occur. Inputs have been dropped."
@@ -595,8 +592,7 @@ where
     ) -> Result<Request<FrozenChunkedBytesBuffer>, RequestBuilderError<E>> {
         let mut builder = Request::builder()
             .method(self.encoder.endpoint_method())
-            // We specifically use `self.endpoint_uri` here instead of `self.encoder.endpoint_uri()`.
-            .uri(self.endpoint_uri.clone())
+            .uri(self.encoder.endpoint_uri())
             .header(http::header::CONTENT_TYPE, self.encoder.content_type());
 
         if let Some(content_encoding) = self.compressor.content_encoding() {
