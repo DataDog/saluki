@@ -85,19 +85,19 @@ build-adp: check-rust-build-tools
 build-adp: ## Builds the ADP binary in debug mode
 	@echo "[*] Building ADP locally..."
 	@cargo build --profile dev --package agent-data-plane
-	
+
 .PHONY: build-adp-release
 build-adp-release: check-rust-build-tools
 build-adp-release: ## Builds the ADP binary in release mode
 	@echo "[*] Building ADP locally..."
 	@cargo build --profile release --package agent-data-plane
-	
+
 .PHONY: build-adp-and-checks
 build-adp-and-checks: check-rust-build-tools
 build-adp-and-checks: ## Builds the ADP binary with python in debug mode
 	@echo "[*] Building ADP with Checks locally..."
 	@cargo build --profile dev --package agent-data-plane --features python-checks
-	
+
 .PHONY: build-adp-and-checks-release
 build-adp-and-checks-release: check-rust-build-tools
 build-adp-and-checks-release: ## Builds the ADP binary with python in release mode
@@ -119,7 +119,7 @@ build-adp-image: ## Builds the ADP container image in release mode ('latest' tag
 		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
-		
+
 .PHONY: build-adp-checks-image
 build-adp-checks-image: ## Builds the ADP + Checks container image in release mode ('latest' tag)
 	@echo "[*] Building ADP image..."
@@ -264,7 +264,7 @@ run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/debug/agent-data-plane
-	
+
 .PHONY: run-adp-with-checks-standalone
 run-adp-with-checks-standalone: build-adp-and-checks
 run-adp-with-checks-standalone: ## Runs ADP + Checks locally in standalone mode (debug)
@@ -275,7 +275,7 @@ run-adp-with-checks-standalone: ## Runs ADP + Checks locally in standalone mode 
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/debug/agent-data-plane
-	
+
 .PHONY: run-adp-with-checks
 run-adp-with-checks: build-adp-and-checks
 run-adp-with-checks: ## Runs ADP + Checks locally (debug)

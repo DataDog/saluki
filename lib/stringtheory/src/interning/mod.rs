@@ -1,12 +1,12 @@
 //! Interning utilities.
-use std::{collections::BTreeSet, fmt, ops::Deref, ptr::NonNull};
+use std::{collections::BTreeSet, ops::Deref};
 
-mod fixed_size;
+pub(crate) mod fixed_size;
 pub use self::fixed_size::FixedSizeInterner;
 
 mod helpers;
 
-mod map;
+pub(crate) mod map;
 pub use self::map::GenericMapInterner;
 
 /// A string interner.
@@ -29,49 +29,46 @@ pub trait Interner {
     fn try_intern(&self, s: &str) -> Option<InternedString>;
 }
 
-pub(crate) struct InternerVtable {
-    /// Name of the interner implementation that this string was interned with.
-    pub interner_name: &'static str,
-
-    /// Gets the raw parts of the interned string for reassembly.
-    ///
-    /// This is structured as such so that the caller can tie the appropriate lifetime to the string reference, as it
-    /// cannot be done as part of the vtable signature itself.
-    pub as_raw_parts: unsafe fn(NonNull<()>) -> (NonNull<u8>, usize),
-
-    /// Clones the interned string.
-    pub clone: unsafe fn(NonNull<()>) -> NonNull<()>,
-
-    /// Drops the interned string.
-    pub drop: unsafe fn(NonNull<()>),
+#[derive(Clone, Debug)]
+pub(crate) enum StringStateDispatch {
+    GenericMap(self::map::StringState),
+    FixedSize(self::fixed_size::StringState),
 }
+
+impl StringStateDispatch {
+    #[inline]
+    fn as_str(&self) -> &str {
+        match self {
+            Self::GenericMap(state) => state.as_str(),
+            Self::FixedSize(state) => state.as_str(),
+        }
+    }
+}
+
+impl PartialEq for StringStateDispatch {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::GenericMap(a), Self::GenericMap(b)) => a == b,
+            (Self::FixedSize(a), Self::FixedSize(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for StringStateDispatch {}
 
 /// An interned string.
 ///
 /// This string type is read-only, and dereferences to `&str` for ergonomic usage. It is cheap to clone (16 bytes), but
 /// generally will not be interacted with directly. Instead, most usages should be wrapped in `MetaString`.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InternedString {
-    state: NonNull<()>,
-    vtable: &'static InternerVtable,
+    state: StringStateDispatch,
 }
 
-impl Clone for InternedString {
-    fn clone(&self) -> Self {
-        // SAFETY: The virtual table is responsible for ensuring that the returned pointer is non-null and valid.
-        let new_state = unsafe { (self.vtable.clone)(self.state) };
-        Self {
-            state: new_state,
-            vtable: self.vtable,
-        }
-    }
-}
-
-impl fmt::Debug for InternedString {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("InternedString")
-            .field("state", &self.state)
-            .field("vtable", &self.vtable.interner_name)
-            .finish()
+impl InternedString {
+    pub(crate) fn into_dispatch_state(self) -> StringStateDispatch {
+        self.state
     }
 }
 
@@ -79,27 +76,7 @@ impl Deref for InternedString {
     type Target = str;
 
     fn deref(&self) -> &str {
-        // SAFETY: The virtual table is responsible for ensuring that the returned pointer is non-null and valid,
-        // pointing to a slice of the given length, with valid UTF-8.
-        unsafe {
-            let (ptr, len) = (self.vtable.as_raw_parts)(self.state);
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr.as_ptr() as *const _, len))
-        }
-    }
-}
-
-impl PartialEq for InternedString {
-    fn eq(&self, other: &Self) -> bool {
-        self.state == other.state
-    }
-}
-
-impl Drop for InternedString {
-    fn drop(&mut self) {
-        // SAFETY: The virtual table is responsible for ensuring that the pointer is non-null and valid.
-        unsafe {
-            (self.vtable.drop)(self.state);
-        }
+        self.state.as_str()
     }
 }
 
@@ -278,9 +255,10 @@ mod tests {
 
     #[test]
     fn size_of_interned_string() {
-        // We're asserting that `InternedString` itself is 16 bytes: the thin pointer to the underlying interned
-        // string's representation, and the vtable pointer.
-        assert_eq!(std::mem::size_of::<InternedString>(), 16);
+        // We're asserting that `InternedString` itself is 24 bytes: an enum over possible interner implementations,
+        // each of which should be 16 bytes in size... making `InternedString` itself 24 bytes in size due to the additional
+        // discriminant field.
+        assert_eq!(std::mem::size_of::<InternedString>(), 24);
     }
 
     #[test]
