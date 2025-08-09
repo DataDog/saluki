@@ -69,13 +69,13 @@ const fn untag_cap(cap: usize) -> usize {
     cap & !(TOP_MOST_BIT)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 #[repr(usize)]
 enum Zero {
     Zero = ZERO_VALUE,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(usize)]
 enum Tag {
     Static = get_scaled_union_tag(UNION_TYPE_TAG_VALUE_STATIC),

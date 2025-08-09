@@ -37,7 +37,7 @@ const HEADER_ALIGN: usize = std::mem::align_of::<EntryHeader>();
 /// is the length of the header plus the alignment of the header.
 const MINIMUM_ENTRY_LEN: usize = HEADER_LEN + HEADER_ALIGN;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct StringState {
     interner: Arc<Mutex<InternerState>>,
     header: NonNull<EntryHeader>,
@@ -48,6 +48,20 @@ impl StringState {
     pub const fn as_str(&self) -> &str {
         // SAFETY: We ensure `self.header` is well-aligned and points to an initialized `EntryHeader` value when creating `StringState`.
         unsafe { get_entry_string(self.header) }
+    }
+}
+
+impl Clone for StringState {
+    fn clone(&self) -> Self {
+        // SAFETY: The caller that creates `StringState` is responsible for ensuring that `self.header` is well-aligned
+        // and points to an initialized `EntryHeader` value.
+        let header = unsafe { self.header.as_ref() };
+        header.increment_active_refs();
+
+        Self {
+            interner: self.interner.clone(),
+            header: self.header,
+        }
     }
 }
 
