@@ -54,6 +54,15 @@ impl PackedLengthCapacity {
     }
 }
 
+impl std::fmt::Debug for PackedLengthCapacity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PackedLengthCapacity")
+            .field("cap", &self.capacity())
+            .field("len", &self.len())
+            .finish()
+    }
+}
+
 /// Computes the layout for the given `size` aligned to `T`.
 ///
 /// The resulting layout will always be well-aligned for `T`, such that the given size will be rounded up to the nearest

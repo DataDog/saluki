@@ -36,7 +36,7 @@ const HEADER_ALIGN: usize = std::mem::align_of::<EntryHeader>();
 /// is the length of the header plus the alignment of the header.
 const MINIMUM_ENTRY_LEN: usize = HEADER_LEN + HEADER_ALIGN;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct StringState {
     interner: Arc<Mutex<InternerShardState>>,
     header: NonNull<EntryHeader>,
@@ -47,6 +47,20 @@ impl StringState {
     pub const fn as_str(&self) -> &str {
         // SAFETY: We ensure `self.header` is well-aligned and points to an initialized `EntryHeader` value when creating `StringState`.
         unsafe { get_entry_string(self.header) }
+    }
+}
+
+impl Clone for StringState {
+    fn clone(&self) -> Self {
+        // SAFETY: The caller that creates `StringState` is responsible for ensuring that `self.header` is well-aligned
+        // and points to an initialized `EntryHeader` value.
+        let header = unsafe { self.header.as_ref() };
+        header.increment_active_refs();
+
+        Self {
+            interner: self.interner.clone(),
+            header: self.header,
+        }
     }
 }
 
@@ -91,17 +105,15 @@ struct EntryHeader {
     /// Only incremented by the interner itself, and decremented by `InternedString` when it is dropped.
     refs: AtomicUsize,
 
-    /// Combined length/capacity of the entry, in terms of the string itself.
+    /// Length of the string within this entry.
+    len: u32,
+
+    /// String capacity of this entry overall.
     ///
-    /// Notably, this does _not_ include the length of the header itself. For example, an entry holding the string
-    /// "hello, world!" has a string length of 13 bytes, but since we have to pad out to meet our alignment requirements
-    /// for `EntryHeader`, we would end up with a capacity of 16 bytes. As such, `EntryHeader::len` would report `13`,
-    /// while `EntryHeader::capacity` would report `16`. Likewise, `EntryHeader::entry_len` would report `40`,
-    /// accounting for the string capacity (16) as well as the header length itself (24).
-    ///
-    /// As explained in the description of `PackedLengthCapacity`, this does mean strings can't be larger than ~4GB on
-    /// 64-bit platforms, which is not a problem we have.
-    len_cap: PackedLengthCapacity,
+    /// In cases where aligning an entry causes the entry to be larger than the string's length, we must know
+    /// the overall capacity to ensure we can reclaim the entire block when the entry is no longer in use. This
+    /// field ensures we properly track that.
+    cap: u32,
 }
 
 impl EntryHeader {
@@ -113,12 +125,13 @@ impl EntryHeader {
         // The usable capacity for a reclaimed entry is the full capacity minus the size of `EntryHeader` itself, as
         // reclaimed entries represent the _entire_ region in the data buffer, but `EntryHeader` only cares about the
         // string portion itself.
-        let str_cap = EntryHeader::usable_from_reclaimed(entry);
+        let cap = EntryHeader::usable_from_reclaimed(entry) as u32;
 
         Self {
             hash: 0,
             refs: AtomicUsize::new(0),
-            len_cap: PackedLengthCapacity::new(str_cap, 0),
+            len: 0,
+            cap,
         }
     }
 
@@ -126,12 +139,13 @@ impl EntryHeader {
     fn from_string(hash: u64, s: &str) -> Self {
         // We're dictating the necessary capacity here, which is the length of the string rounded to the nearest
         // multiple of the alignment of `EntryHeader`, which ensures that any subsequent entry will be properly aligned.
-        let str_cap = aligned_string::<Self>(s);
+        let cap = aligned_string::<Self>(s) as u32;
 
         Self {
             hash,
             refs: AtomicUsize::new(1),
-            len_cap: PackedLengthCapacity::new(str_cap, s.len()),
+            len: s.len() as u32,
+            cap,
         }
     }
 
@@ -144,25 +158,26 @@ impl EntryHeader {
         // The usable capacity for a reclaimed entry is the full capacity minus the size of `EntryHeader` itself, as
         // reclaimed entries represent the _entire_ region in the data buffer, but `EntryHeader` only cares about the
         // string portion itself.
-        let entry_str_cap = EntryHeader::usable_from_reclaimed(entry);
-        let required_str_cap = aligned_string::<Self>(s);
+        let entry_cap = EntryHeader::usable_from_reclaimed(entry);
+        let required_cap = aligned_string::<Self>(s);
 
         // If the reclaimed entry has enough additional space beyond what we need for the string, we'll split it off and
         // return it for the caller to keep around in the reclaimed entries list.
-        let remainder = entry_str_cap - required_str_cap;
-        let (adjusted_str_cap, maybe_split_entry) = if remainder >= MINIMUM_ENTRY_LEN {
+        let remainder = entry_cap - required_cap;
+        let (adjusted_cap, maybe_split_entry) = if remainder >= MINIMUM_ENTRY_LEN {
             let entry_len = EntryHeader::len_for(s);
             let split_entry = entry.split_off(entry_len);
 
             (entry_len - HEADER_LEN, Some(split_entry))
         } else {
-            (entry_str_cap, None)
+            (entry_cap, None)
         };
 
         let header = Self {
             hash,
             refs: AtomicUsize::new(1),
-            len_cap: PackedLengthCapacity::new(adjusted_str_cap, s.len()),
+            len: s.len() as u32,
+            cap: adjusted_cap as u32,
         };
 
         (header, maybe_split_entry)
@@ -191,12 +206,12 @@ impl EntryHeader {
 
     /// Returns the size of the string, in bytes, that this entry can hold.
     const fn capacity(&self) -> usize {
-        self.len_cap.capacity()
+        self.cap as usize
     }
 
     /// Returns the size of the string, in bytes, that this entry _actually_ holds.
     const fn len(&self) -> usize {
-        self.len_cap.len()
+        self.len as usize
     }
 
     /// Returns `true` if this entry is currently referenced.
