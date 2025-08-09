@@ -2,7 +2,6 @@
 
 use std::{fmt, hash, ops::Deref as _};
 
-use saluki_common::collections::FastHashSet;
 use serde::Serialize;
 use stringtheory::{CheapMetaString, MetaString};
 
@@ -192,42 +191,5 @@ impl AsRef<str> for BorrowedTag<'_> {
 impl hash::Hash for BorrowedTag<'_> {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         self.raw.hash(state);
-    }
-}
-
-/// An iterator for deduplicating tags.
-pub struct DeduplicatedTags<'a, I> {
-    tags: I,
-    seen: FastHashSet<&'a Tag>,
-}
-
-/// Helper trait for iterators dealing with tags.
-pub trait TagsExt {
-    /// Creates an iterator that deduplicates tags.
-    fn deduplicated<'a>(self) -> DeduplicatedTags<'a, Self>
-    where
-        Self: Sized + 'a;
-}
-
-impl<I> TagsExt for I {
-    fn deduplicated<'a>(self) -> DeduplicatedTags<'a, Self>
-    where
-        Self: Sized + 'a,
-    {
-        DeduplicatedTags {
-            tags: self,
-            seen: FastHashSet::default(),
-        }
-    }
-}
-
-impl<'a, I> Iterator for DeduplicatedTags<'a, I>
-where
-    I: Iterator<Item = &'a Tag>,
-{
-    type Item = &'a Tag;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.tags.by_ref().find(|&tag| self.seen.insert(tag))
     }
 }
