@@ -29,13 +29,13 @@ pub trait Interner {
     fn try_intern(&self, s: &str) -> Option<InternedString>;
 }
 
-#[derive(Clone, Debug)]
-pub(crate) enum StringStateDispatch {
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum InternedStringState {
     GenericMap(self::map::StringState),
     FixedSize(self::fixed_size::StringState),
 }
 
-impl StringStateDispatch {
+impl InternedStringState {
     #[inline]
     fn as_str(&self) -> &str {
         match self {
@@ -45,30 +45,39 @@ impl StringStateDispatch {
     }
 }
 
-impl PartialEq for StringStateDispatch {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::GenericMap(a), Self::GenericMap(b)) => a == b,
-            (Self::FixedSize(a), Self::FixedSize(b)) => a == b,
-            _ => false,
-        }
+impl From<self::fixed_size::StringState> for InternedStringState {
+    fn from(state: self::fixed_size::StringState) -> Self {
+        Self::FixedSize(state)
     }
 }
 
-impl Eq for StringStateDispatch {}
+impl From<self::map::StringState> for InternedStringState {
+    fn from(state: self::map::StringState) -> Self {
+        Self::GenericMap(state)
+    }
+}
 
 /// An interned string.
 ///
 /// This string type is read-only, and dereferences to `&str` for ergonomic usage. It is cheap to clone (16 bytes), but
 /// generally will not be interacted with directly. Instead, most usages should be wrapped in `MetaString`.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct InternedString {
-    state: StringStateDispatch,
+    state: InternedStringState,
 }
 
 impl InternedString {
-    pub(crate) fn into_dispatch_state(self) -> StringStateDispatch {
+    pub(crate) fn into_state(self) -> InternedStringState {
         self.state
+    }
+}
+
+impl<T> From<T> for InternedString
+where
+    T: Into<InternedStringState>,
+{
+    fn from(state: T) -> Self {
+        Self { state: state.into() }
     }
 }
 

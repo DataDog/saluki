@@ -21,7 +21,6 @@ use super::{
     helpers::{aligned, aligned_string, hash_string, layout_for_data, PackedLengthCapacity},
     InternedString, Interner, ReclaimedEntries, ReclaimedEntry,
 };
-use crate::interning::StringStateDispatch;
 
 const HEADER_LEN: usize = std::mem::size_of::<EntryHeader>();
 const HEADER_ALIGN: usize = std::mem::align_of::<EntryHeader>();
@@ -50,6 +49,12 @@ impl StringState {
     }
 }
 
+impl PartialEq for StringState {
+    fn eq(&self, other: &Self) -> bool {
+        self.header == other.header
+    }
+}
+
 impl Clone for StringState {
     fn clone(&self) -> Self {
         // SAFETY: The caller that creates `StringState` is responsible for ensuring that `self.header` is well-aligned
@@ -63,14 +68,6 @@ impl Clone for StringState {
         }
     }
 }
-
-impl PartialEq for StringState {
-    fn eq(&self, other: &Self) -> bool {
-        self.header == other.header
-    }
-}
-
-impl Eq for StringState {}
 
 impl Drop for StringState {
     fn drop(&mut self) {
@@ -701,12 +698,10 @@ fn intern_with_shard_and_hash(shard: &Arc<Mutex<InternerShardState>>, hash: u64,
         shard.try_intern(hash, s)?
     };
 
-    Some(InternedString {
-        state: StringStateDispatch::FixedSize(StringState {
-            interner: Arc::clone(shard),
-            header,
-        }),
-    })
+    Some(InternedString::from(StringState {
+        interner: Arc::clone(shard),
+        header,
+    }))
 }
 
 #[cfg(test)]
@@ -723,6 +718,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::interning::InternedStringState;
 
     fn create_shard(capacity: NonZeroUsize) -> Arc<Mutex<InternerShardState>> {
         Arc::new(Mutex::new(InternerShardState::with_capacity(capacity)))
@@ -755,7 +751,7 @@ mod tests {
 
     fn get_reclaimed_entry_for_string(s: &InternedString) -> ReclaimedEntry {
         let state = match &s.state {
-            StringStateDispatch::FixedSize(state) => state,
+            InternedStringState::FixedSize(state) => state,
             _ => panic!("unexpected string state"),
         };
 

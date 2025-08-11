@@ -22,7 +22,6 @@ use super::{
     helpers::{aligned_string, layout_for_data, PackedLengthCapacity},
     InternedString, Interner, ReclaimedEntries, ReclaimedEntry,
 };
-use crate::interning::StringStateDispatch;
 
 const HEADER_LEN: usize = std::mem::size_of::<EntryHeader>();
 const HEADER_ALIGN: usize = std::mem::align_of::<EntryHeader>();
@@ -51,6 +50,12 @@ impl StringState {
     }
 }
 
+impl PartialEq for StringState {
+    fn eq(&self, other: &Self) -> bool {
+        self.header == other.header
+    }
+}
+
 impl Clone for StringState {
     fn clone(&self) -> Self {
         // SAFETY: The caller that creates `StringState` is responsible for ensuring that `self.header` is well-aligned
@@ -64,14 +69,6 @@ impl Clone for StringState {
         }
     }
 }
-
-impl PartialEq for StringState {
-    fn eq(&self, other: &Self) -> bool {
-        self.header == other.header
-    }
-}
-
-impl Eq for StringState {}
 
 impl Drop for StringState {
     fn drop(&mut self) {
@@ -617,12 +614,10 @@ impl Interner for GenericMapInterner {
             state.try_intern(s)?
         };
 
-        Some(InternedString {
-            state: StringStateDispatch::GenericMap(StringState {
-                interner: Arc::clone(&self.state),
-                header,
-            }),
-        })
+        Some(InternedString::from(StringState {
+            interner: Arc::clone(&self.state),
+            header,
+        }))
     }
 }
 
@@ -662,6 +657,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::interning::InternedStringState;
 
     fn create_interner(capacity: usize) -> GenericMapInterner {
         assert!(capacity > 0, "capacity must be greater than zero");
@@ -686,7 +682,7 @@ mod tests {
 
     fn get_reclaimed_entry_for_string(s: &InternedString) -> ReclaimedEntry {
         let state = match &s.state {
-            StringStateDispatch::GenericMap(state) => state,
+            InternedStringState::GenericMap(state) => state,
             _ => panic!("unexpected string state"),
         };
 

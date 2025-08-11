@@ -14,14 +14,13 @@ use std::{
     str::from_utf8_unchecked, sync::Arc,
 };
 
-mod clone;
-pub use self::clone::CheapMetaString;
-use crate::interning::StringStateDispatch;
-
-pub mod interning;
 use serde::Serialize;
 
-use self::interning::InternedString;
+mod clone;
+pub use self::clone::CheapMetaString;
+
+pub mod interning;
+use self::interning::{InternedString, InternedStringState};
 
 const ZERO_VALUE: usize = 0;
 const TOP_MOST_BIT: usize = usize::MAX & !(isize::MAX as usize);
@@ -128,18 +127,14 @@ impl OwnedUnion {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct StaticUnion {
-    ptr: *mut u8, // Field one.
-    len: usize,   // Field two.
-    _cap: Tag,    // Field three.
+    value: &'static str, // Fields one and two.
+    _cap: Tag,           // Field three.
 }
 
 impl StaticUnion {
     #[inline]
     const fn as_str(&self) -> &str {
-        // SAFETY: We know our pointer is valid, and non-null, since it's derived from a valid static string reference,
-        // and that the data it points to is valid UTF-8, again, by virtue of it being derived from a valid static
-        // string reference.
-        unsafe { from_utf8_unchecked(from_raw_parts(self.ptr, self.len)) }
+        self.value
     }
 }
 
@@ -356,7 +351,7 @@ impl DiscriminantUnion {
 /// word field (all variants are three machine words) to determine which bit patterns are valid or not for a given
 /// variant, allowing the string variant to be authoritatively determined.
 ///
-/// ## Invariants
+/// # Invariants
 ///
 /// This code depends on a number of invariants in order to work correctly:
 ///
@@ -413,10 +408,9 @@ impl Inner {
     const fn static_str(value: &'static str) -> Self {
         match value.len() {
             0 => Self::empty(),
-            len => Self {
+            _ => Self {
                 static_: StaticUnion {
-                    ptr: value.as_bytes().as_ptr() as *mut _,
-                    len,
+                    value,
                     _cap: Tag::Static,
                 },
             },
@@ -427,14 +421,14 @@ impl Inner {
         match value.len() {
             0 => Self::empty(),
             _len => {
-                let (state, tag) = match value.into_dispatch_state() {
-                    StringStateDispatch::FixedSize(fixed_size) => (
+                let (state, tag) = match value.into_state() {
+                    InternedStringState::FixedSize(fixed_size) => (
                         InternedStateUnion {
                             fixed_size: ManuallyDrop::new(fixed_size),
                         },
                         Tag::InternedFixedSize,
                     ),
-                    StringStateDispatch::GenericMap(generic_map) => (
+                    InternedStringState::GenericMap(generic_map) => (
                         InternedStateUnion {
                             generic_map: ManuallyDrop::new(generic_map),
                         },
