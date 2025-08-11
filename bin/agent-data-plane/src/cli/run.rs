@@ -120,6 +120,40 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
 
     println!("this is after we created the remote agent service");
 
+    let in_standalone_mode = configuration.get_typed_or_default::<bool>("adp.standalone_mode");
+    let secure_api_listen_address = configuration
+        .try_get_typed("secure_api_listen_address")
+        .error_context("Failed to get secure API listen address.")?
+        .unwrap_or_else(|| ListenAddress::any_tcp(5101));
+    if !in_standalone_mode {
+        let local_secure_api_listen_addr = secure_api_listen_address
+            .as_local_connect_addr()
+            .ok_or_else(|| generic_error!("Failed to get local secure API listen address to advertise."))?;
+
+        let telemetry_enabled = configuration.get_typed_or_default::<bool>("telemetry_enabled");
+        let mut prometheus_listen_addr = None;
+        if telemetry_enabled {
+            let addr = configuration
+                .try_get_typed("prometheus_listen_addr")
+                .error_context("Failed to get Prometheus listen address.")?
+                .unwrap_or_else(|| ListenAddress::any_tcp(5102));
+
+            prometheus_listen_addr = Some(
+                addr.as_local_connect_addr()
+                    .ok_or_else(|| generic_error!("Failed to get local Prometheus listen address to advertise."))?,
+            );
+        }
+
+        let remote_agent_config = RemoteAgentHelperConfiguration::from_configuration(
+            &configuration,
+            local_secure_api_listen_addr,
+            prometheus_listen_addr 
+        )
+        .await?;
+
+        let _remote_agent_service = remote_agent_config.spawn().await;
+    }
+
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
