@@ -12,19 +12,16 @@ stages:
 # Our workflow rules let us override specific variables, in a consistent way, depending on whether this is an "internal"
 # run (we consider all non-tagged pipeline triggers to be "internal") or a "release" run.
 #
-# This mostly controls how we tag our ADP container images, and the base image we use when building those ADP container
-# images.
+# This mostly controls how we tag our ADP container images and set various bits of metadata.
 workflow:
   rules:
     - if: $CI_COMMIT_TAG == null
       variables:
-        ADP_APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
         BASE_ADP_IMAGE_VERSION: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
         APP_DEV_BUILD: "true"
 
     - if: $CI_COMMIT_TAG
       variables:
-        ADP_APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
         BASE_ADP_IMAGE_VERSION: ${CI_COMMIT_TAG}
         APP_DEV_BUILD: "false"
 
