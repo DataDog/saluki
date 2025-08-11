@@ -17,13 +17,15 @@ use saluki_components::{
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
+use saluki_io::net::ListenAddress;
 use tokio::{select, time::interval};
 use tracing::{error, info, warn};
 
 use crate::config::RunConfig;
 use crate::env_provider::ADPEnvironmentProvider;
+use crate::internal::remote_agent::RemoteAgentHelperConfiguration;
 use crate::internal::{spawn_control_plane, spawn_internal_observability_topology};
 
 pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericError> {
@@ -46,8 +48,43 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         .into_generic()
         .await?;
 
-    // Create RemoteAgent
+    // Create Remote Agent
     // Get snapshot here
+
+    let in_standalone_mode = configuration.get_typed_or_default::<bool>("adp.standalone_mode");
+    let secure_api_listen_address = configuration
+        .try_get_typed("secure_api_listen_address")
+        .error_context("Failed to get secure API listen address.")?
+        .unwrap_or_else(|| ListenAddress::any_tcp(5101));
+    if !in_standalone_mode {
+        let local_secure_api_listen_addr = secure_api_listen_address
+            .as_local_connect_addr()
+            .ok_or_else(|| generic_error!("Failed to get local secure API listen address to advertise."))?;
+
+        let telemetry_enabled = configuration.get_typed_or_default::<bool>("telemetry_enabled");
+        let mut prometheus_listen_addr = None;
+        if telemetry_enabled {
+            let addr = configuration
+                .try_get_typed("prometheus_listen_addr")
+                .error_context("Failed to get Prometheus listen address.")?
+                .unwrap_or_else(|| ListenAddress::any_tcp(5102));
+
+            prometheus_listen_addr = Some(
+                addr.as_local_connect_addr()
+                    .ok_or_else(|| generic_error!("Failed to get local Prometheus listen address to advertise."))?,
+            );
+        }
+
+        let remote_agent_config = RemoteAgentHelperConfiguration::from_configuration(
+            &configuration,
+            local_secure_api_listen_addr,
+            prometheus_listen_addr,
+            configuration.get_refreshable_handle(),
+        )
+        .await?;
+
+        let _remote_agent_service = remote_agent_config.spawn().await;
+    }
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
