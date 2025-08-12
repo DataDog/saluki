@@ -125,7 +125,7 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         .try_get_typed("secure_api_listen_address")
         .error_context("Failed to get secure API listen address.")?
         .unwrap_or_else(|| ListenAddress::any_tcp(5101));
-    if !in_standalone_mode {
+    let remote_agent_service = if !in_standalone_mode {
         let local_secure_api_listen_addr = secure_api_listen_address
             .as_local_connect_addr()
             .ok_or_else(|| generic_error!("Failed to get local secure API listen address to advertise."))?;
@@ -151,8 +151,10 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         )
         .await?;
 
-        let _remote_agent_service = remote_agent_config.spawn().await;
-    }
+        Some(remote_agent_config.spawn().await)
+    } else {
+        None
+    };
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
