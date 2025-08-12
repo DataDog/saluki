@@ -18,7 +18,10 @@ use saluki_core::data_model::event::Event;
 use saluki_error::GenericError;
 use tracing::warn;
 
+use crate::sources::otlp::config::InitialCumulMonoValueMode;
+
 use super::cache::Cache;
+use super::config::{HistogramMode, NumberMode, OtlpTranslatorConfig};
 
 // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L48-L63
 static RATE_AS_GAUGE_METRICS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
@@ -48,6 +51,7 @@ enum DataType {
 
 /// A translator for converting OTLP metrics into Saluki `Event::Metric`s.
 pub struct OtlpTranslator {
+    config: OtlpTranslatorConfig,
     context_resolver: ContextResolver,
     prev_pts: Cache,
     process_start_time_ns: u64, // Used for initial value consumption.
@@ -64,13 +68,14 @@ struct HistogramInfo {
 
 impl OtlpTranslator {
     /// Creates a new, empty `OtlpTranslator`.
-    pub fn new(context_resolver: ContextResolver) -> Self {
+    pub fn new(config: OtlpTranslatorConfig, context_resolver: ContextResolver) -> Self {
         let process_start_time_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("System time is before the UNIX epoch, this should not happen.")
             .as_nanos() as u64;
 
         Self {
+            config,
             context_resolver,
             prev_pts: Cache::new(),
             process_start_time_ns,
@@ -90,6 +95,8 @@ impl OtlpTranslator {
         // TODO: https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L736-L753
 
         for scope_metrics in resource_metrics.scope_metrics {
+            // TODO: Handle instrumentation scope metadata as tags.
+            // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L764-L770
             for metric in scope_metrics.metrics {
                 let mut translated_events = self.map_to_dd_format(metric, &attribute_tags);
                 events.append(&mut translated_events);
@@ -110,10 +117,21 @@ impl OtlpTranslator {
                 }
                 OtlpMetricData::Sum(sum) => match AggregationTemporality::try_from(sum.aggregation_temporality) {
                     Ok(AggregationTemporality::Cumulative) => {
-                        if !sum.is_monotonic {
-                            self.map_number_data_points(&metric_name, attribute_tags, sum.data_points, DataType::Gauge)
+                        if sum.is_monotonic {
+                            match self.config.number_mode {
+                                NumberMode::CumulativeToDelta => {
+                                    self.map_sum_data_points(&metric_name, attribute_tags, sum.data_points)
+                                }
+                                NumberMode::RawValue => self.map_number_data_points(
+                                    &metric_name,
+                                    attribute_tags,
+                                    sum.data_points,
+                                    DataType::Gauge,
+                                ),
+                            }
                         } else {
-                            self.map_sum_data_points(&metric_name, attribute_tags, sum.data_points)
+                            // Cumulative non-monotonic sums are handled as gauges.
+                            self.map_number_data_points(&metric_name, attribute_tags, sum.data_points, DataType::Gauge)
                         }
                     }
                     Ok(AggregationTemporality::Delta) => {
@@ -376,8 +394,7 @@ impl OtlpTranslator {
             }
 
             // Only proceed if both sum and count were processed correctly.
-            // TODO: Add a check for `SendHistogramAggregations` config flag, once available.
-            if hist_info.ok {
+            if self.config.send_histogram_aggregations && hist_info.ok {
                 self.record_metric_event(
                     &mut events,
                     &count_name,
@@ -405,17 +422,31 @@ impl OtlpTranslator {
             }
 
             // TODO: Implement bucket-to-sketch conversion.
+            match self.config.hist_mode {
+                HistogramMode::NoBuckets => {
+                    // Do nothing for buckets.
+                }
+                HistogramMode::Counters => {
+                    // TODO: Implement legacy bucket conversion as counters.
+                }
+                HistogramMode::Distributions => {
+                    // TODO: Implement bucket-to-sketch conversion.
+                }
+            }
         }
         events
     }
 
     /// Determines if the initial value of a cumulative monotonic metric should be consumed.
     fn should_consume_initial_value(&self, start_ts: u64, ts: u64) -> bool {
-        // This is the equivalent of `InitialCumulMonoValueModeAuto` from the Go implementation.
-        // We report the first value if the timeseries started after the translator process started.
-        // TODO: More options here:
-        // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L186
-        self.process_start_time_ns < start_ts && start_ts != ts
+        match self.config.initial_cumul_mono_value_mode {
+            InitialCumulMonoValueMode::Auto => {
+                // We report the first value if the timeseries started after the translator process started.
+                self.process_start_time_ns < start_ts && start_ts != ts
+            }
+            InitialCumulMonoValueMode::Keep => true,
+            InitialCumulMonoValueMode::Drop => false,
+        }
     }
 }
 

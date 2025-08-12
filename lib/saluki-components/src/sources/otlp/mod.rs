@@ -34,7 +34,9 @@ use tonic::{Request, Response, Status};
 use tracing::{debug, error};
 
 mod cache;
+mod config;
 mod translator;
+use self::config::OtlpTranslatorConfig;
 use self::translator::OtlpTranslator;
 
 /// Configuration for the OTLP source.
@@ -71,10 +73,12 @@ impl SourceBuilder for OtlpConfiguration {
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
         let context_resolver = ContextResolverBuilder::from_name(format!("{}/otlp", context.component_id()))?.build();
+        let translator_config = OtlpTranslatorConfig::default();
 
         Ok(Box::new(Otlp {
             context_resolver,
             port: self.port,
+            translator_config,
         }))
     }
 }
@@ -91,6 +95,7 @@ impl MemoryBounds for OtlpConfiguration {
 pub struct Otlp {
     context_resolver: ContextResolver,
     port: u16,
+    translator_config: OtlpTranslatorConfig,
 }
 
 #[async_trait]
@@ -108,6 +113,7 @@ impl Source for Otlp {
             "otlp-metric-converter",
             run_converter(
                 rx,
+                self.translator_config,
                 self.context_resolver.clone(),
                 context.clone(),
                 converter_shutdown_coordinator.register(),
@@ -198,7 +204,7 @@ async fn dispatch_events(events: EventsBuffer, source_context: &SourceContext) {
 }
 
 async fn run_converter(
-    mut receiver: mpsc::Receiver<OtlpResourceMetrics>, context_resolver: ContextResolver,
+    mut receiver: mpsc::Receiver<OtlpResourceMetrics>, config: OtlpTranslatorConfig, context_resolver: ContextResolver,
     source_context: SourceContext, shutdown_handle: DynamicShutdownHandle,
 ) {
     tokio::pin!(shutdown_handle);
@@ -211,7 +217,7 @@ async fn run_converter(
 
     let mut event_buffer_manager = EventBufferManager::default();
     let memory_limiter = source_context.topology_context().memory_limiter();
-    let mut translator = OtlpTranslator::new(context_resolver);
+    let mut translator = OtlpTranslator::new(config, context_resolver);
 
     loop {
         memory_limiter.wait_for_capacity().await;
