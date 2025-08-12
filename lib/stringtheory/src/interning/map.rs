@@ -7,21 +7,29 @@
 // available capacity was simply larger.
 
 #[cfg(not(feature = "loom"))]
-use std::sync::{atomic::AtomicUsize, Arc, Mutex};
-use std::{
-    collections::HashMap,
-    num::NonZeroUsize,
-    ptr::NonNull,
-    sync::atomic::Ordering::{AcqRel, Acquire},
+use std::sync::{
+    atomic::{
+        AtomicUsize,
+        Ordering::{AcqRel, Acquire},
+    },
+    Arc, Mutex,
 };
+use std::{collections::HashMap, num::NonZeroUsize, ptr::NonNull};
 
 #[cfg(feature = "loom")]
-use loom::sync::{atomic::AtomicUsize, Arc, Mutex};
+use loom::sync::{
+    atomic::{
+        AtomicUsize,
+        Ordering::{AcqRel, Acquire},
+    },
+    Arc, Mutex,
+};
 
 use super::{
-    helpers::{aligned_string, layout_for_data, PackedLengthCapacity},
-    InternedString, Interner, ReclaimedEntries, ReclaimedEntry,
+    helpers::{layout_for_data, PackedLengthCapacity},
+    InternedString, Interner,
 };
+use crate::interning::helpers::{aligned_string, ReclaimedEntries, ReclaimedEntry};
 
 const HEADER_LEN: usize = std::mem::size_of::<EntryHeader>();
 const HEADER_ALIGN: usize = std::mem::align_of::<EntryHeader>();
