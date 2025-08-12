@@ -2,6 +2,9 @@
 
 /// Datadog-specific constants.
 pub mod datadog {
+    /// Tag key used to specify the hostname attached to the given metric.
+    pub const HOST_TAG_KEY: &str = "host";
+
     /// Tag key used to specify the entity ID attached to the given metric.
     pub const ENTITY_ID_TAG_KEY: &str = "dd.internal.entity_id";
 
