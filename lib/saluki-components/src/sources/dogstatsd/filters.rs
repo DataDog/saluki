@@ -71,6 +71,7 @@ mod tests {
         metric::MetricValues::{self, Counter, Distribution},
         service_check::CheckStatus,
     };
+    use saluki_io::deser::codec::dogstatsd::WellKnownTags;
 
     use super::*;
 
@@ -83,9 +84,8 @@ mod tests {
             timestamp: None,
             container_id: None,
             external_data: None,
-            pod_uid: None,
+            well_known_tags: WellKnownTags::default(),
             cardinality: None,
-            jmx_check_name: None,
         }
     }
 
@@ -102,7 +102,7 @@ mod tests {
             tags: RawTags::empty(),
             container_id: None,
             external_data: None,
-            pod_uid: None,
+            well_known_tags: WellKnownTags::default(),
             cardinality: None,
         }
     }
@@ -116,7 +116,7 @@ mod tests {
             hostname: None,
             container_id: None,
             external_data: None,
-            pod_uid: None,
+            well_known_tags: WellKnownTags::default(),
             cardinality: None,
             timestamp: None,
         }

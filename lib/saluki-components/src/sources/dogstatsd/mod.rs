@@ -26,12 +26,12 @@ use saluki_core::{
 };
 use saluki_env::WorkloadProvider;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_io::deser::codec::dogstatsd::{EventPacket, ServiceCheckPacket};
+use saluki_io::deser::codec::dogstatsd::{DogStatsDPacket, EventPacket, ServiceCheckPacket};
 use saluki_io::{
     buf::{BytesBuffer, FixedSizeVec},
     deser::{
         codec::{
-            dogstatsd::{parse_message_type, MessageType, MetricPacket, ParseError, ParsedPacket},
+            dogstatsd::{parse_message_type, MessageType, MetricPacket, ParseError},
             DogstatsdCodec, DogstatsdCodecConfiguration,
         },
         framing::FramerExt as _,
@@ -878,7 +878,7 @@ fn handle_frame(
     };
 
     let event = match parsed {
-        ParsedPacket::Metric(metric_packet) => {
+        DogStatsDPacket::Metric(metric_packet) => {
             let events_len = metric_packet.num_points;
             if !enabled_filter.allow_metric(&metric_packet) {
                 trace!(
@@ -900,7 +900,7 @@ fn handle_frame(
                 }
             }
         }
-        ParsedPacket::Event(event) => {
+        DogStatsDPacket::Event(event) => {
             if !enabled_filter.allow_event(&event) {
                 trace!("Skipping event {} due to filter configuration.", event.title);
                 return Ok(None);
@@ -917,7 +917,7 @@ fn handle_frame(
                 }
             }
         }
-        ParsedPacket::ServiceCheck(service_check) => {
+        DogStatsDPacket::ServiceCheck(service_check) => {
             if !enabled_filter.allow_service_check(&service_check) {
                 trace!(
                     "Skipping service check {} due to filter configuration.",
@@ -970,10 +970,13 @@ fn handle_metric_packet(
     match context_resolver.resolve(packet.metric_name, tags, Some(origin)) {
         Some(context) => {
             let metric_origin = packet
+                .well_known_tags
                 .jmx_check_name
                 .map(MetricOrigin::jmx_check)
                 .unwrap_or_else(MetricOrigin::dogstatsd);
-            let metadata = MetricMetadata::default().with_origin(metric_origin);
+            let metadata = MetricMetadata::default()
+                .with_origin(metric_origin)
+                .with_hostname(packet.well_known_tags.hostname.map(Arc::from));
 
             Some(Metric::from_parts(context, packet.values, metadata))
         }
@@ -1119,7 +1122,7 @@ mod tests {
 
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
     use saluki_io::{
-        deser::codec::{dogstatsd::ParsedPacket, DogstatsdCodec, DogstatsdCodecConfiguration},
+        deser::codec::{dogstatsd::DogStatsDPacket, DogstatsdCodec, DogstatsdCodecConfiguration},
         net::ConnectionAddress,
     };
 
@@ -1145,7 +1148,7 @@ mod tests {
 
         let input = "big_metric_name_that_cant_possibly_be_inlined:1|c|#tag1:value1,tag2:value2,tag3:value3";
 
-        let Ok(ParsedPacket::Metric(packet)) = codec.decode_packet(input.as_bytes()) else {
+        let Ok(DogStatsDPacket::Metric(packet)) = codec.decode_packet(input.as_bytes()) else {
             panic!("Failed to parse packet.");
         };
 
@@ -1174,7 +1177,7 @@ mod tests {
             "tag6:value6".to_string(),
         ];
 
-        let Ok(ParsedPacket::Metric(packet)) = codec.decode_packet(input.as_bytes()) else {
+        let Ok(DogStatsDPacket::Metric(packet)) = codec.decode_packet(input.as_bytes()) else {
             panic!("Failed to parse packet.");
         };
         let maybe_metric = handle_metric_packet(packet, &mut context_resolvers, &peer_addr, &additional_tags);
