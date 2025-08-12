@@ -7,21 +7,29 @@
 // available capacity was simply larger.
 
 #[cfg(not(feature = "loom"))]
-use std::sync::{atomic::AtomicUsize, Arc, Mutex};
-use std::{
-    collections::HashMap,
-    num::NonZeroUsize,
-    ptr::NonNull,
-    sync::atomic::Ordering::{AcqRel, Acquire},
+use std::sync::{
+    atomic::{
+        AtomicUsize,
+        Ordering::{AcqRel, Acquire},
+    },
+    Arc, Mutex,
 };
+use std::{collections::HashMap, num::NonZeroUsize, ptr::NonNull};
 
 #[cfg(feature = "loom")]
-use loom::sync::{atomic::AtomicUsize, Arc, Mutex};
+use loom::sync::{
+    atomic::{
+        AtomicUsize,
+        Ordering::{AcqRel, Acquire},
+    },
+    Arc, Mutex,
+};
 
 use super::{
-    helpers::{aligned_string, layout_for_data, PackedLengthCapacity},
-    InternedString, Interner, InternerVtable, ReclaimedEntries, ReclaimedEntry,
+    helpers::{layout_for_data, PackedLengthCapacity},
+    InternedString, Interner,
 };
+use crate::interning::helpers::{aligned_string, ReclaimedEntries, ReclaimedEntry};
 
 const HEADER_LEN: usize = std::mem::size_of::<EntryHeader>();
 const HEADER_ALIGN: usize = std::mem::align_of::<EntryHeader>();
@@ -36,35 +44,38 @@ const HEADER_ALIGN: usize = std::mem::align_of::<EntryHeader>();
 /// is the length of the header plus the alignment of the header.
 const MINIMUM_ENTRY_LEN: usize = HEADER_LEN + HEADER_ALIGN;
 
-static GENERIC_MAP_VTABLE: InternerVtable = InternerVtable {
-    interner_name: "generic_map",
-    as_raw_parts: generic_map_as_raw_parts,
-    clone: generic_map_clone,
-    drop: generic_map_drop,
-};
-
-unsafe fn generic_map_as_raw_parts(state: NonNull<()>) -> (NonNull<u8>, usize) {
-    let state = unsafe { state.cast::<StringState>().as_ref() };
-    let (ptr, len) = get_entry_string_parts(state.header);
-
-    (ptr, len)
-}
-
-unsafe fn generic_map_clone(state: NonNull<()>) -> NonNull<()> {
-    // All we need to do is increment the strong count as if we cloned the `Arc<T>`, but otherwise, the same state
-    // pointer can be used for the clone.
-    Arc::increment_strong_count(state.as_ptr() as *const StringState);
-    state
-}
-
-unsafe fn generic_map_drop(state: NonNull<()>) {
-    let state = Arc::from_raw(state.as_ptr() as *const StringState);
-    drop(state);
-}
-
-struct StringState {
+#[derive(Debug)]
+pub(crate) struct StringState {
     interner: Arc<Mutex<InternerState>>,
     header: NonNull<EntryHeader>,
+}
+
+impl StringState {
+    #[inline]
+    pub const fn as_str(&self) -> &str {
+        // SAFETY: We ensure `self.header` is well-aligned and points to an initialized `EntryHeader` value when creating `StringState`.
+        unsafe { get_entry_string(self.header) }
+    }
+}
+
+impl PartialEq for StringState {
+    fn eq(&self, other: &Self) -> bool {
+        self.header == other.header
+    }
+}
+
+impl Clone for StringState {
+    fn clone(&self) -> Self {
+        // SAFETY: The caller that creates `StringState` is responsible for ensuring that `self.header` is well-aligned
+        // and points to an initialized `EntryHeader` value.
+        let header = unsafe { self.header.as_ref() };
+        header.increment_active_refs();
+
+        Self {
+            interner: self.interner.clone(),
+            header: self.header,
+        }
+    }
 }
 
 impl Drop for StringState {
@@ -611,21 +622,15 @@ impl Interner for GenericMapInterner {
             state.try_intern(s)?
         };
 
-        let state = Arc::new(StringState {
+        Some(InternedString::from(StringState {
             interner: Arc::clone(&self.state),
             header,
-        });
-
-        let state = NonNull::new(Arc::into_raw(state) as *mut ())?;
-
-        Some(InternedString {
-            state,
-            vtable: &GENERIC_MAP_VTABLE,
-        })
+        }))
     }
 }
 
-unsafe fn get_entry_string_parts(header_ptr: NonNull<EntryHeader>) -> (NonNull<u8>, usize) {
+#[inline]
+const unsafe fn get_entry_string_parts(header_ptr: NonNull<EntryHeader>) -> (NonNull<u8>, usize) {
     // SAFETY: The caller is responsible for ensuring that `header_ptr` is well-aligned and points to an initialized
     // `EntryHeader` value.
     let header = header_ptr.as_ref();
@@ -638,7 +643,8 @@ unsafe fn get_entry_string_parts(header_ptr: NonNull<EntryHeader>) -> (NonNull<u
     (s_ptr, header.len())
 }
 
-unsafe fn get_entry_string<'a>(header_ptr: NonNull<EntryHeader>) -> &'a str {
+#[inline]
+const unsafe fn get_entry_string<'a>(header_ptr: NonNull<EntryHeader>) -> &'a str {
     let (s_ptr, s_len) = get_entry_string_parts(header_ptr);
 
     // SAFETY: We depend on `get_entry_string_parts` to give us a valid pointer and length for the string.
@@ -649,7 +655,6 @@ unsafe fn get_entry_string<'a>(header_ptr: NonNull<EntryHeader>) -> &'a str {
 mod tests {
     use std::{
         collections::HashSet,
-        mem::ManuallyDrop,
         ops::{Deref as _, RangeInclusive},
     };
 
@@ -660,6 +665,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::interning::InternedStringState;
 
     fn create_interner(capacity: usize) -> GenericMapInterner {
         assert!(capacity > 0, "capacity must be greater than zero");
@@ -683,7 +689,10 @@ mod tests {
     }
 
     fn get_reclaimed_entry_for_string(s: &InternedString) -> ReclaimedEntry {
-        let state = ManuallyDrop::new(unsafe { Arc::from_raw(s.state.as_ptr() as *const StringState) });
+        let state = match &s.state {
+            InternedStringState::GenericMap(state) => state,
+            _ => panic!("unexpected string state"),
+        };
 
         let ptr = state.interner.lock().unwrap().storage.ptr.as_ptr();
         let header = unsafe { state.header.as_ref() };
