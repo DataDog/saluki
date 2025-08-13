@@ -241,7 +241,6 @@ impl RemoteAgent for RemoteAgentImpl {
         }
     }
 }
-
 struct StatusBuilder {
     main_section: StatusSection,
     named_sections: HashMap<String, StatusSection>,
