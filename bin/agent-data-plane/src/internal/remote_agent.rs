@@ -20,6 +20,8 @@ use saluki_io::net::client::http::HttpClient;
 use tokio::time::{interval, MissedTickBehavior};
 use tracing::debug;
 use uuid::Uuid;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use crate::state::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor};
 
@@ -45,13 +47,14 @@ pub struct RemoteAgentHelperConfiguration {
     client: RemoteAgentClient,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
     prometheus_listen_addr: Option<SocketAddr>,
+    snapshot_received: Arc<AtomicBool>,
 }
 
 impl RemoteAgentHelperConfiguration {
     /// Creates a new `RemoteAgentHelperConfiguration` from the given configuration.
     pub async fn from_configuration(
         config: &GenericConfiguration, local_api_listen_addr: SocketAddr, prometheus_listen_addr: Option<SocketAddr>,
-    ) -> Result<Self, GenericError> {
+        snapshot_received: Arc<AtomicBool>) -> Result<Self, GenericError> {
         let app_details = saluki_metadata::get_app_details();
         let formatted_full_name = app_details
             .full_name()
@@ -67,6 +70,7 @@ impl RemoteAgentHelperConfiguration {
             client,
             internal_metrics: get_shared_metrics_state().await,
             prometheus_listen_addr,
+            snapshot_received,
         })
     }
 
@@ -80,6 +84,7 @@ impl RemoteAgentHelperConfiguration {
             started: Utc::now(),
             internal_metrics: self.internal_metrics.clone(),
             prometheus_listen_addr: self.prometheus_listen_addr,
+            snapshot_received: self.snapshot_received.clone(),
         };
         let service = RemoteAgentServer::new(service_impl);
 
@@ -126,6 +131,7 @@ pub struct RemoteAgentImpl {
     started: DateTime<Utc>,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
     prometheus_listen_addr: Option<SocketAddr>,
+    snapshot_received: Arc<AtomicBool>,
 }
 
 impl RemoteAgentImpl {
@@ -241,6 +247,7 @@ impl RemoteAgent for RemoteAgentImpl {
         }
     }
 }
+
 struct StatusBuilder {
     main_section: StatusSection,
     named_sections: HashMap<String, StatusSection>,
