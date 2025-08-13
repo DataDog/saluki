@@ -79,6 +79,7 @@ async fn configure_and_spawn_api_endpoints(
         // Register our Remote Agent gRPC service with the privileged API.
         if let Some(service) = remote_agent_service {
             privileged_api = privileged_api.with_grpc_service(service);
+            println!("registered remote agent service with privileged api");
         }
     }
 

@@ -136,11 +136,13 @@ impl RemoteAgentClient {
         // have to test it out to make sure it behaves sensibly.
         let service_builder = || async {
             let auth_interceptor = BearerAuthInterceptor::from_file(&config.auth_token_file_path).await?;
+            println!("auth_token_file_path: {:#?}", config.auth_token_file_path);
             let ipc_cert_file_path =
                 get_ipc_cert_file_path(config.ipc_cert_file_path.as_ref(), &config.auth_token_file_path);
-
+            println!("ipc_cert_file_path: {:#?}", ipc_cert_file_path);
             let https_connector = build_datadog_agent_ipc_https_connector(ipc_cert_file_path).await?;
 
+            println!("ipc_endpoint: {:#?}", config.ipc_endpoint);
             let channel = Endpoint::from(config.ipc_endpoint.clone())
                 .connect_timeout(Duration::from_secs(2))
                 .connect_with_connector(https_connector)
@@ -163,8 +165,10 @@ impl RemoteAgentClient {
         let client = AgentClient::new(service.clone());
         let mut secure_client = AgentSecureClient::new(service);
 
+        println!("before try_query_agent_api");
         // Try and do a basic health check to make sure we can connect and that our authentication token is valid.
         try_query_agent_api(&mut secure_client).await?;
+        println!("after try_query_agent_api");
 
         Ok(Self { client, secure_client })
     }
@@ -231,6 +235,7 @@ impl RemoteAgentClient {
     pub async fn register_remote_agent_request(
         &mut self, id: &str, display_name: &str, api_endpoint: &str, auth_token: &str,
     ) -> Result<Response<RegisterRemoteAgentResponse>, GenericError> {
+        println!("in register_remote_agent_request");
         let mut client = self.secure_client.clone();
         let response = client
             .register_remote_agent(RegisterRemoteAgentRequest {
@@ -240,6 +245,7 @@ impl RemoteAgentClient {
                 auth_token: auth_token.to_string(),
             })
             .await?;
+        println!("registered remote agent with response: {:#?}", response);
         Ok(response)
     }
 
