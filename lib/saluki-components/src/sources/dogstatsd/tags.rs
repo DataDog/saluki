@@ -23,7 +23,6 @@ impl RawTagsFilterPredicate for WellKnownTagsFilterPredicate {
 ///
 /// Well-known tags are tags which are generally set by the DogStatsD client to convey structured information
 /// about the source of the metric, event, or service check.
-#[derive(Default)]
 pub struct WellKnownTags<'a> {
     pub hostname: Option<&'a str>,
     pub pod_uid: Option<&'a str>,
@@ -35,8 +34,13 @@ impl<'a> WellKnownTags<'a> {
     /// Extracts well-known tags from the raw tags of a DogStatsD payload.
     ///
     /// All fields default to `None`.
-    fn from_raw_tags(tags: RawTags<'a>) -> Self {
-        let mut well_known_tags = Self::default();
+    pub fn from_raw_tags(tags: RawTags<'a>) -> Self {
+        let mut well_known_tags = Self {
+            hostname: None,
+            pod_uid: None,
+            jmx_check_name: None,
+            cardinality: None,
+        };
 
         let filtered_tags = RawTagsFilter::include(tags, WellKnownTagsFilterPredicate);
         for tag in filtered_tags {
