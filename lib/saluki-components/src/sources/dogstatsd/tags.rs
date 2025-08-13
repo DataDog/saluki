@@ -12,14 +12,10 @@ pub struct WellKnownTagsFilterPredicate;
 
 impl RawTagsFilterPredicate for WellKnownTagsFilterPredicate {
     fn matches(&self, tag: &str) -> bool {
-        let tag = BorrowedTag::from(tag);
-        matches!(
-            tag.name_and_value(),
-            (HOST_TAG_KEY, Some(_))
-                | (ENTITY_ID_TAG_KEY, Some(_))
-                | (JMX_CHECK_NAME_TAG_KEY, Some(_))
-                | (CARDINALITY_TAG_KEY, Some(_))
-        )
+        tag.starts_with(HOST_TAG_KEY_SUFFIXED)
+            || tag.starts_with(ENTITY_ID_TAG_KEY_SUFFIXED)
+            || tag.starts_with(JMX_CHECK_NAME_TAG_KEY_SUFFIXED)
+            || tag.starts_with(CARDINALITY_TAG_KEY_SUFFIXED)
     }
 }
 
