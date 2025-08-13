@@ -49,8 +49,6 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         .await?;
 
     // Create Remote Agent
-    // Get snapshot here
-
     let in_standalone_mode = configuration.get_typed_or_default::<bool>("adp.standalone_mode");
     let secure_api_listen_address = configuration
         .try_get_typed("secure_api_listen_address")
@@ -84,9 +82,14 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         .await?;
 
         Some(remote_agent_config.spawn().await)
+
+        // TODO: let svc = remote_agent_config.spawn(received_snapshot).await()
+        // Some(svc) 
     } else {
         None
     };
+
+    println!("this is after we created the remote agent service");
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();

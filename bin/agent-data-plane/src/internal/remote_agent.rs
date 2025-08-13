@@ -155,6 +155,7 @@ async fn run_remote_agent_helper(
     register_agent.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     debug!("Remote Agent helper started.");
+    println!("in run_remote_agent_helper");
 
     loop {
         register_agent.tick().await;
@@ -303,6 +304,8 @@ impl RemoteAgent for RemoteAgentImpl {
                 Ok(Some(event)) => match event.event {
                     Some(config_event::Event::Snapshot(snapshot)) => {
                         debug!("received config snapshot: {:#?}", snapshot);
+                        println!("received config snapshot: {:#?}", snapshot);
+                        // TODO: update received_snapshot to true
                         let map = snapshot_to_map(&snapshot);
                         if let Some(c) = self.shared_config.as_ref() {
                             c.store(map.into());
