@@ -8,6 +8,7 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use metrics::{Counter, Gauge, Histogram};
 use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
+use saluki_context::tags::{RawTags, RawTagsFilter};
 use saluki_context::TagsResolver;
 use saluki_core::data_model::event::eventd::EventD;
 use saluki_core::data_model::event::metric::{MetricMetadata, MetricOrigin};
@@ -52,6 +53,7 @@ use tracing::{debug, error, info, trace, warn};
 
 mod framer;
 use self::framer::{get_framer, DsdFramer};
+use crate::sources::dogstatsd::tags::WellKnownTagsFilterPredicate;
 
 mod filters;
 use self::filters::EnablePayloadsFilter;
@@ -67,6 +69,8 @@ use self::origin::{
 
 mod resolver;
 use self::resolver::ContextResolvers;
+
+mod tags;
 
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -960,11 +964,7 @@ fn handle_metric_packet(
     };
 
     // Chain the existing tags with the additional tags.
-    let tags = packet
-        .tags
-        .clone()
-        .into_iter()
-        .chain(additional_tags.iter().map(|s| s.as_str()));
+    let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
 
     // Try to resolve the context for this metric.
     match context_resolver.resolve(packet.metric_name, tags, Some(origin)) {
@@ -993,12 +993,7 @@ fn handle_event_packet(
     let origin_tags = tags_resolver.resolve_origin_tags(Some(origin));
 
     // Chain the existing tags with the additional tags.
-    let tags = packet
-        .tags
-        .clone()
-        .into_iter()
-        .chain(additional_tags.iter().map(|s| s.as_str()));
-
+    let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
     let tags = tags_resolver.create_tag_set(tags)?;
 
     let eventd = EventD::new(packet.title, packet.text)
@@ -1026,22 +1021,25 @@ fn handle_service_check_packet(
     let origin_tags = tags_resolver.resolve_origin_tags(Some(origin));
 
     // Chain the existing tags with the additional tags.
-    let tags = packet
-        .tags
-        .clone()
-        .into_iter()
-        .chain(additional_tags.iter().map(|s| s.as_str()))
-        .chain(origin_tags.into_iter().map(|s| s.as_str()));
-
+    let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
     let tags = tags_resolver.create_tag_set(tags)?;
 
     let service_check = ServiceCheck::new(packet.name, packet.status)
         .with_timestamp(packet.timestamp)
         .with_hostname(packet.hostname.map(|s| s.into()))
         .with_tags(tags)
+        .with_origin_tags(origin_tags)
         .with_message(packet.message.map(|s| s.into()));
 
     Some(service_check)
+}
+
+fn get_filtered_tags_iterator<'a>(
+    raw_tags: RawTags<'a>, additional_tags: &'a [String],
+) -> impl Iterator<Item = &'a str> + Clone {
+    // This filters out "well-known" tags from the raw tags in the DogStatsD packet, and then chains on any additional tags
+    // that were configured on the source.
+    RawTagsFilter::exclude(raw_tags, WellKnownTagsFilterPredicate).chain(additional_tags.iter().map(|s| s.as_str()))
 }
 
 async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &SourceContext, listen_addr: &ListenAddress) {

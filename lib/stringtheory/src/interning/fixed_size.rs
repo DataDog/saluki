@@ -19,8 +19,9 @@ use loom::sync::{atomic::AtomicUsize, Arc, Mutex};
 
 use super::{
     helpers::{aligned, aligned_string, hash_string, layout_for_data, PackedLengthCapacity},
-    InternedString, Interner, InternerVtable, ReclaimedEntries, ReclaimedEntry,
+    InternedString, Interner,
 };
+use crate::interning::helpers::{ReclaimedEntries, ReclaimedEntry};
 
 const HEADER_LEN: usize = std::mem::size_of::<EntryHeader>();
 const HEADER_ALIGN: usize = std::mem::align_of::<EntryHeader>();
@@ -35,36 +36,38 @@ const HEADER_ALIGN: usize = std::mem::align_of::<EntryHeader>();
 /// is the length of the header plus the alignment of the header.
 const MINIMUM_ENTRY_LEN: usize = HEADER_LEN + HEADER_ALIGN;
 
-static FIXED_SIZE_VTABLE: InternerVtable = InternerVtable {
-    interner_name: "fixed_size",
-    as_raw_parts: fixed_size_as_raw_parts,
-    clone: fixed_size_clone,
-    drop: fixed_size_drop,
-};
-
-unsafe fn fixed_size_as_raw_parts(state: NonNull<()>) -> (NonNull<u8>, usize) {
-    let state = unsafe { state.cast::<StringState>().as_ref() };
-    let (ptr, len) = get_entry_string_parts(state.header);
-
-    (ptr, len)
-}
-
-unsafe fn fixed_size_clone(state: NonNull<()>) -> NonNull<()> {
-    // All we need to do is increment the strong count as if we cloned the `Arc<T>`, but otherwise, the same state
-    // pointer can be used for the clone.
-    Arc::increment_strong_count(state.as_ptr() as *const StringState);
-    state
-}
-
-unsafe fn fixed_size_drop(state: NonNull<()>) {
-    let state = Arc::from_raw(state.as_ptr() as *const StringState);
-    drop(state);
-}
-
 #[derive(Debug)]
-struct StringState {
+pub(crate) struct StringState {
     interner: Arc<Mutex<InternerShardState>>,
     header: NonNull<EntryHeader>,
+}
+
+impl StringState {
+    #[inline]
+    pub const fn as_str(&self) -> &str {
+        // SAFETY: We ensure `self.header` is well-aligned and points to an initialized `EntryHeader` value when creating `StringState`.
+        unsafe { get_entry_string(self.header) }
+    }
+}
+
+impl PartialEq for StringState {
+    fn eq(&self, other: &Self) -> bool {
+        self.header == other.header
+    }
+}
+
+impl Clone for StringState {
+    fn clone(&self) -> Self {
+        // SAFETY: The caller that creates `StringState` is responsible for ensuring that `self.header` is well-aligned
+        // and points to an initialized `EntryHeader` value.
+        let header = unsafe { self.header.as_ref() };
+        header.increment_active_refs();
+
+        Self {
+            interner: self.interner.clone(),
+            header: self.header,
+        }
+    }
 }
 
 impl Drop for StringState {
@@ -122,12 +125,12 @@ impl EntryHeader {
         // The usable capacity for a reclaimed entry is the full capacity minus the size of `EntryHeader` itself, as
         // reclaimed entries represent the _entire_ region in the data buffer, but `EntryHeader` only cares about the
         // string portion itself.
-        let str_cap = EntryHeader::usable_from_reclaimed(entry);
+        let cap = Self::usable_from_reclaimed(entry);
 
         Self {
             hash: 0,
             refs: AtomicUsize::new(0),
-            len_cap: PackedLengthCapacity::new(str_cap, 0),
+            len_cap: PackedLengthCapacity::new(cap, 0),
         }
     }
 
@@ -135,12 +138,12 @@ impl EntryHeader {
     fn from_string(hash: u64, s: &str) -> Self {
         // We're dictating the necessary capacity here, which is the length of the string rounded to the nearest
         // multiple of the alignment of `EntryHeader`, which ensures that any subsequent entry will be properly aligned.
-        let str_cap = aligned_string::<Self>(s);
+        let cap = aligned_string::<Self>(s);
 
         Self {
             hash,
             refs: AtomicUsize::new(1),
-            len_cap: PackedLengthCapacity::new(str_cap, s.len()),
+            len_cap: PackedLengthCapacity::new(cap, s.len()),
         }
     }
 
@@ -153,25 +156,25 @@ impl EntryHeader {
         // The usable capacity for a reclaimed entry is the full capacity minus the size of `EntryHeader` itself, as
         // reclaimed entries represent the _entire_ region in the data buffer, but `EntryHeader` only cares about the
         // string portion itself.
-        let entry_str_cap = EntryHeader::usable_from_reclaimed(entry);
-        let required_str_cap = aligned_string::<Self>(s);
+        let entry_cap = EntryHeader::usable_from_reclaimed(entry);
+        let required_cap = aligned_string::<Self>(s);
 
         // If the reclaimed entry has enough additional space beyond what we need for the string, we'll split it off and
         // return it for the caller to keep around in the reclaimed entries list.
-        let remainder = entry_str_cap - required_str_cap;
-        let (adjusted_str_cap, maybe_split_entry) = if remainder >= MINIMUM_ENTRY_LEN {
+        let remainder = entry_cap - required_cap;
+        let (adjusted_cap, maybe_split_entry) = if remainder >= MINIMUM_ENTRY_LEN {
             let entry_len = EntryHeader::len_for(s);
             let split_entry = entry.split_off(entry_len);
 
             (entry_len - HEADER_LEN, Some(split_entry))
         } else {
-            (entry_str_cap, None)
+            (entry_cap, None)
         };
 
         let header = Self {
             hash,
             refs: AtomicUsize::new(1),
-            len_cap: PackedLengthCapacity::new(adjusted_str_cap, s.len()),
+            len_cap: PackedLengthCapacity::new(adjusted_cap, s.len()),
         };
 
         (header, maybe_split_entry)
@@ -667,7 +670,8 @@ impl<const SHARD_FACTOR: usize> Interner for FixedSizeInterner<SHARD_FACTOR> {
     }
 }
 
-unsafe fn get_entry_string_parts(header_ptr: NonNull<EntryHeader>) -> (NonNull<u8>, usize) {
+#[inline]
+const unsafe fn get_entry_string_parts(header_ptr: NonNull<EntryHeader>) -> (NonNull<u8>, usize) {
     // SAFETY: The caller is responsible for ensuring that `header_ptr` is well-aligned and points to an initialized
     // `EntryHeader` value.
     let header = header_ptr.as_ref();
@@ -680,7 +684,8 @@ unsafe fn get_entry_string_parts(header_ptr: NonNull<EntryHeader>) -> (NonNull<u
     (s_ptr, header.len())
 }
 
-unsafe fn get_entry_string<'a>(header_ptr: NonNull<EntryHeader>) -> &'a str {
+#[inline]
+const unsafe fn get_entry_string<'a>(header_ptr: NonNull<EntryHeader>) -> &'a str {
     let (s_ptr, s_len) = get_entry_string_parts(header_ptr);
 
     // SAFETY: We depend on `get_entry_string_parts` to give us a valid pointer and length for the string.
@@ -693,24 +698,16 @@ fn intern_with_shard_and_hash(shard: &Arc<Mutex<InternerShardState>>, hash: u64,
         shard.try_intern(hash, s)?
     };
 
-    let state = Arc::new(StringState {
+    Some(InternedString::from(StringState {
         interner: Arc::clone(shard),
         header,
-    });
-
-    let state = NonNull::new(Arc::into_raw(state) as *mut ())?;
-
-    Some(InternedString {
-        state,
-        vtable: &FIXED_SIZE_VTABLE,
-    })
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use std::{
         collections::HashSet,
-        mem::ManuallyDrop,
         ops::{Deref as _, RangeInclusive},
     };
 
@@ -721,6 +718,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::interning::InternedStringState;
 
     fn create_shard(capacity: NonZeroUsize) -> Arc<Mutex<InternerShardState>> {
         Arc::new(Mutex::new(InternerShardState::with_capacity(capacity)))
@@ -752,7 +750,10 @@ mod tests {
     }
 
     fn get_reclaimed_entry_for_string(s: &InternedString) -> ReclaimedEntry {
-        let state = ManuallyDrop::new(unsafe { Arc::from_raw(s.state.as_ptr() as *const StringState) });
+        let state = match &s.state {
+            InternedStringState::FixedSize(state) => state,
+            _ => panic!("unexpected string state"),
+        };
 
         let ptr = state.interner.lock().unwrap().ptr.as_ptr();
         let header = unsafe { state.header.as_ref() };
