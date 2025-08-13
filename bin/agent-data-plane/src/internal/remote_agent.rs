@@ -25,6 +25,9 @@ use serde_json::{Map, Value};
 use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, warn};
 use uuid::Uuid;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use tracing::info;
 
 use crate::state::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor};
 
@@ -95,13 +98,14 @@ pub struct RemoteAgentHelperConfiguration {
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
     prometheus_listen_addr: Option<SocketAddr>,
     values: Option<Arc<ArcSwap<Value>>>,
+    snapshot_received: Arc<AtomicBool>,
 }
 
 impl RemoteAgentHelperConfiguration {
     /// Creates a new `RemoteAgentHelperConfiguration` from the given configuration.
     pub async fn from_configuration(
         config: &GenericConfiguration, local_api_listen_addr: SocketAddr, prometheus_listen_addr: Option<SocketAddr>,
-        shared_config: Option<Arc<ArcSwap<Value>>>,
+        shared_config: Option<Arc<ArcSwap<Value>>>, snapshot_received: Arc<AtomicBool>,
     ) -> Result<Self, GenericError> {
         let app_details = saluki_metadata::get_app_details();
         let formatted_full_name = app_details
@@ -119,6 +123,7 @@ impl RemoteAgentHelperConfiguration {
             internal_metrics: get_shared_metrics_state().await,
             prometheus_listen_addr,
             values: shared_config,
+            snapshot_received,
         })
     }
 
@@ -133,6 +138,7 @@ impl RemoteAgentHelperConfiguration {
             internal_metrics: self.internal_metrics.clone(),
             prometheus_listen_addr: self.prometheus_listen_addr,
             shared_config: self.values.clone(),
+            snapshot_received: self.snapshot_received.clone(),
         };
         let service = RemoteAgentServer::new(service_impl);
 
@@ -180,6 +186,7 @@ pub struct RemoteAgentImpl {
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
     prometheus_listen_addr: Option<SocketAddr>,
     shared_config: Option<Arc<ArcSwap<Value>>>,
+    snapshot_received: Arc<AtomicBool>,
 }
 
 impl RemoteAgentImpl {
@@ -304,12 +311,13 @@ impl RemoteAgent for RemoteAgentImpl {
                 Ok(Some(event)) => match event.event {
                     Some(config_event::Event::Snapshot(snapshot)) => {
                         debug!("received config snapshot: {:#?}", snapshot);
-                        println!("received config snapshot: {:#?}", snapshot);
-                        // TODO: update received_snapshot to true
                         let map = snapshot_to_map(&snapshot);
                         if let Some(c) = self.shared_config.as_ref() {
                             c.store(map.into());
                         }
+                        // Signal that a snapshot has been received
+                        self.snapshot_received.store(true, Ordering::SeqCst);
+                        info!("Configuration snapshot received and applied");
                     }
                     Some(config_event::Event::Update(update)) => {
                         debug!("received config update: {:#?}", update);
