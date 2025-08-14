@@ -1,6 +1,6 @@
-use std::time::{Duration, Instant};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
@@ -56,10 +56,10 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         .try_get_typed("secure_api_listen_address")
         .error_context("Failed to get secure API listen address.")?
         .unwrap_or_else(|| ListenAddress::any_tcp(5101));
-    
+
     // Create shared state to track when snapshot is received
     let snapshot_received = Arc::new(AtomicBool::new(false));
-    
+
     let remote_agent_service = if !in_standalone_mode {
         let local_secure_api_listen_addr = secure_api_listen_address
             .as_local_connect_addr()
@@ -93,26 +93,28 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         None
     };
 
-    // Block until a configuration snapshot has been received by the remote agent
+    // blocking until a snapshot is received
     if !in_standalone_mode {
         info!("Waiting for configuration snapshot from Datadog Agent...");
-        
-        // Wait for the snapshot to be received
+
         let mut attempts = 0;
-        const MAX_WAIT_SECONDS: u64 = 60; // Wait up to 60 seconds
-        const CHECK_INTERVAL_MS: u64 = 100; // Check every 100ms
-        
+        const MAX_WAIT_SECONDS: u64 = 60;
+        const CHECK_INTERVAL_MS: u64 = 100;
+
         while !snapshot_received.load(Ordering::SeqCst) && attempts < (MAX_WAIT_SECONDS * 1000 / CHECK_INTERVAL_MS) {
             tokio::time::sleep(Duration::from_millis(CHECK_INTERVAL_MS)).await;
             attempts += 1;
-            
-            if attempts % 100 == 0 { // Log every 10 seconds
-                info!("Still waiting for configuration snapshot... ({}s elapsed)", attempts / 10);
+
+            if attempts % 100 == 0 {
+                info!(
+                    "Still waiting for configuration snapshot... ({}s elapsed)",
+                    attempts / 10
+                );
             }
         }
-        
+
         if snapshot_received.load(Ordering::SeqCst) {
-            info!("Configuration snapshot received! Continuing with startup...");
+            info!("Configuration snapshot received");
         } else {
             warn!("Timeout waiting for configuration snapshot. Continuing with startup anyway...");
         }

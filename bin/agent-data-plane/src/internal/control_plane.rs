@@ -1,5 +1,6 @@
 use std::future::pending;
 
+use datadog_protos::agent::RemoteAgentServer;
 use memory_accounting::ComponentRegistry;
 use saluki_app::{api::APIBuilder, config::ConfigAPIHandler, prelude::acquire_logging_api_handler};
 use saluki_common::task::spawn_traced_named;
@@ -9,6 +10,7 @@ use saluki_health::HealthRegistry;
 use saluki_io::net::ListenAddress;
 use tracing::{error, info};
 
+use crate::internal::remote_agent::RemoteAgentImpl;
 use crate::{env_provider::ADPEnvironmentProvider, internal::initialize_and_launch_runtime};
 
 const PRIMARY_UNPRIVILEGED_API_PORT: u16 = 5100;
@@ -25,10 +27,7 @@ const PRIMARY_PRIVILEGED_API_PORT: u16 = 5101;
 /// If the APIs cannot be spawned, or if the health registry cannot be spawned, an error will be returned.
 pub fn spawn_control_plane(
     config: GenericConfiguration, component_registry: &ComponentRegistry, health_registry: HealthRegistry,
-    env_provider: ADPEnvironmentProvider,
-    remote_agent_service: Option<
-        datadog_protos::agent::RemoteAgentServer<crate::internal::remote_agent::RemoteAgentImpl>,
-    >,
+    env_provider: ADPEnvironmentProvider, remote_agent_service: Option<RemoteAgentServer<RemoteAgentImpl>>,
 ) -> Result<(), GenericError> {
     // Build our unprivileged and privileged API server.
     //
@@ -58,9 +57,7 @@ pub fn spawn_control_plane(
 
 async fn configure_and_spawn_api_endpoints(
     config: &GenericConfiguration, unprivileged_api: APIBuilder, mut privileged_api: APIBuilder,
-    remote_agent_service: Option<
-        datadog_protos::agent::RemoteAgentServer<crate::internal::remote_agent::RemoteAgentImpl>,
-    >,
+    remote_agent_service: Option<RemoteAgentServer<RemoteAgentImpl>>,
 ) -> Result<(), GenericError> {
     let api_listen_address = config
         .try_get_typed("api_listen_address")

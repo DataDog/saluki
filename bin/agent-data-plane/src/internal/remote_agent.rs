@@ -1,3 +1,5 @@
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::{collections::hash_map::Entry, time::Duration};
 use std::{collections::HashMap, net::SocketAddr};
@@ -23,11 +25,9 @@ use saluki_error::GenericError;
 use saluki_io::net::client::http::HttpClient;
 use serde_json::{Map, Value};
 use tokio::time::{interval, MissedTickBehavior};
+use tracing::info;
 use tracing::{debug, warn};
 use uuid::Uuid;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
-use tracing::info;
 
 use crate::state::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor};
 
