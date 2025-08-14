@@ -1,8 +1,13 @@
+<<<<<<< HEAD
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::sync::Arc;
+=======
+>>>>>>> 9a8cf3af (formatting)
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
@@ -119,6 +124,7 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         }
 
         info!("Configuration snapshot received");
+
     }
 
     println!("this is after we created the remote agent service");
