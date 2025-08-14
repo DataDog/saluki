@@ -1,0 +1,27 @@
+// Project-local debug tasks
+//
+// For more documentation on how to configure debug tasks,
+// see: https://zed.dev/docs/debugger
+[
+  {
+    "label": "Build & Debug ADP (standalone)",
+    "request": "launch",
+    "adapter": "CodeLLDB",
+    "sourceLanguages": ["rust"],
+    "build": {
+      "command": "make",
+      "args": ["build-adp"]
+    },
+    "program": "$ZED_WORKTREE_ROOT/target/debug/agent-data-plane",
+    "env": {
+      "DD_ADP_STANDALONE_MODE": "true",
+      "DD_API_KEY": "api-key-adp-standalone",
+      "DD_HOSTNAME": "adp-standalone",
+      "DD_DOGSTATSD_PORT": "9191",
+      "DD_DOGSTATSD_SOCKET": "/tmp/adp-dogstatsd-dgram.sock",
+      "DD_DOGSTATSD_STREAM_SOCKET": "/tmp/adp-dogstatsd-stream.sock",
+      "DD_TELEMETRY_ENABLED": "true",
+      "DD_PROMETHEUS_LISTEN_ADDR": "tcp://127.0.0.1:5102"
+    }
+  }
+]

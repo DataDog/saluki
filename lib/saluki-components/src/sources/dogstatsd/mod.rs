@@ -53,7 +53,7 @@ use tracing::{debug, error, info, trace, warn};
 
 mod framer;
 use self::framer::{get_framer, DsdFramer};
-use crate::sources::dogstatsd::tags::WellKnownTagsFilterPredicate;
+use crate::sources::dogstatsd::tags::{WellKnownTags, WellKnownTagsFilterPredicate};
 
 mod filters;
 use self::filters::EnablePayloadsFilter;
@@ -950,8 +950,9 @@ fn handle_metric_packet(
     packet: MetricPacket, context_resolvers: &mut ContextResolvers, peer_addr: &ConnectionAddress,
     additional_tags: &[String],
 ) -> Option<Metric> {
-    // Capture the origin from the packet, including any process ID information if we have it.
-    let mut origin = origin_from_metric_packet(&packet);
+    let well_known_tags = WellKnownTags::from_raw_tags(packet.tags.clone());
+
+    let mut origin = origin_from_metric_packet(&packet, &well_known_tags);
     if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
         origin.set_process_id(creds.pid as u32);
     }
@@ -963,7 +964,6 @@ fn handle_metric_packet(
         context_resolvers.primary()
     };
 
-    // Chain the existing tags with the additional tags.
     let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
 
     // Try to resolve the context for this metric.
@@ -973,7 +973,9 @@ fn handle_metric_packet(
                 .jmx_check_name
                 .map(MetricOrigin::jmx_check)
                 .unwrap_or_else(MetricOrigin::dogstatsd);
-            let metadata = MetricMetadata::default().with_origin(metric_origin);
+            let metadata = MetricMetadata::default()
+                .with_origin(metric_origin)
+                .with_hostname(well_known_tags.hostname.map(Arc::from));
 
             Some(Metric::from_parts(context, packet.values, metadata))
         }
@@ -985,14 +987,14 @@ fn handle_metric_packet(
 fn handle_event_packet(
     packet: EventPacket, tags_resolver: &mut TagsResolver, peer_addr: &ConnectionAddress, additional_tags: &[String],
 ) -> Option<EventD> {
-    // Capture the origin from the packet, including any process ID information if we have it.
-    let mut origin = origin_from_event_packet(&packet);
+    let well_known_tags = WellKnownTags::from_raw_tags(packet.tags.clone());
+
+    let mut origin = origin_from_event_packet(&packet, &well_known_tags);
     if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
         origin.set_process_id(creds.pid as u32);
     }
     let origin_tags = tags_resolver.resolve_origin_tags(Some(origin));
 
-    // Chain the existing tags with the additional tags.
     let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
     let tags = tags_resolver.create_tag_set(tags)?;
 
@@ -1014,13 +1016,14 @@ fn handle_service_check_packet(
     packet: ServiceCheckPacket, tags_resolver: &mut TagsResolver, peer_addr: &ConnectionAddress,
     additional_tags: &[String],
 ) -> Option<ServiceCheck> {
-    let mut origin = origin_from_service_check_packet(&packet);
+    let well_known_tags = WellKnownTags::from_raw_tags(packet.tags.clone());
+
+    let mut origin = origin_from_service_check_packet(&packet, &well_known_tags);
     if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
         origin.set_process_id(creds.pid as u32);
     }
     let origin_tags = tags_resolver.resolve_origin_tags(Some(origin));
 
-    // Chain the existing tags with the additional tags.
     let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
     let tags = tags_resolver.create_tag_set(tags)?;
 

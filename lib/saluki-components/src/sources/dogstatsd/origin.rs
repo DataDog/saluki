@@ -9,6 +9,8 @@ use saluki_io::deser::codec::dogstatsd::{EventPacket, MetricPacket, ServiceCheck
 use serde::Deserialize;
 use tracing::trace;
 
+use super::tags::WellKnownTags;
+
 const fn default_tag_cardinality() -> OriginTagCardinality {
     OriginTagCardinality::Low
 }
@@ -191,31 +193,43 @@ impl OriginTagsResolver for DogStatsDOriginTagResolver {
 }
 
 /// Builds an `RawOrigin` object from the given metric packet.
-pub fn origin_from_metric_packet<'packet>(packet: &MetricPacket<'packet>) -> RawOrigin<'packet> {
+pub fn origin_from_metric_packet<'packet>(
+    packet: &MetricPacket<'packet>, well_known_tags: &WellKnownTags<'packet>,
+) -> RawOrigin<'packet> {
+    let cardinality = packet.cardinality.or(well_known_tags.cardinality);
+
     let mut origin = RawOrigin::default();
-    origin.set_pod_uid(packet.pod_uid);
+    origin.set_pod_uid(well_known_tags.pod_uid);
     origin.set_container_id(packet.container_id);
     origin.set_external_data(packet.external_data);
-    origin.set_cardinality(packet.cardinality);
+    origin.set_cardinality(cardinality);
     origin
 }
 
 /// Builds an `RawOrigin` object from the given event packet.
-pub fn origin_from_event_packet<'packet>(packet: &EventPacket<'packet>) -> RawOrigin<'packet> {
+pub fn origin_from_event_packet<'packet>(
+    packet: &EventPacket<'packet>, well_known_tags: &WellKnownTags<'packet>,
+) -> RawOrigin<'packet> {
+    let cardinality = packet.cardinality.or(well_known_tags.cardinality);
+
     let mut origin = RawOrigin::default();
-    origin.set_pod_uid(packet.pod_uid);
+    origin.set_pod_uid(well_known_tags.pod_uid);
     origin.set_container_id(packet.container_id);
     origin.set_external_data(packet.external_data);
-    origin.set_cardinality(packet.cardinality);
+    origin.set_cardinality(cardinality);
     origin
 }
 
 /// Builds an `RawOrigin` object from the given service check packet.
-pub fn origin_from_service_check_packet<'packet>(packet: &ServiceCheckPacket<'packet>) -> RawOrigin<'packet> {
+pub fn origin_from_service_check_packet<'packet>(
+    packet: &ServiceCheckPacket<'packet>, well_known_tags: &WellKnownTags<'packet>,
+) -> RawOrigin<'packet> {
+    let cardinality = packet.cardinality.or(well_known_tags.cardinality);
+
     let mut origin = RawOrigin::default();
-    origin.set_pod_uid(packet.pod_uid);
+    origin.set_pod_uid(well_known_tags.pod_uid);
     origin.set_container_id(packet.container_id);
     origin.set_external_data(packet.external_data);
-    origin.set_cardinality(packet.cardinality);
+    origin.set_cardinality(cardinality);
     origin
 }
