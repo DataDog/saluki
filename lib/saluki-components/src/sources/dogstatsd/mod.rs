@@ -969,7 +969,7 @@ fn handle_metric_packet(
     // Try to resolve the context for this metric.
     match context_resolver.resolve(packet.metric_name, tags, Some(origin)) {
         Some(context) => {
-            let metric_origin = packet
+            let metric_origin = well_known_tags
                 .jmx_check_name
                 .map(MetricOrigin::jmx_check)
                 .unwrap_or_else(MetricOrigin::dogstatsd);

@@ -8,14 +8,8 @@ use nom::{
     sequence::{delimited, preceded, separated_pair, terminated},
     IResult, Parser as _,
 };
-use saluki_context::{
-    origin::OriginTagCardinality,
-    tags::{BorrowedTag, RawTags},
-};
-use saluki_core::{
-    constants::datadog::{CARDINALITY_TAG_KEY, ENTITY_ID_IGNORE_VALUE, ENTITY_ID_TAG_KEY, JMX_CHECK_NAME_TAG_KEY},
-    data_model::event::{eventd::*, metric::*, service_check::*},
-};
+use saluki_context::{origin::OriginTagCardinality, tags::RawTags};
+use saluki_core::data_model::event::{eventd::*, metric::*, service_check::*};
 use snafu::Snafu;
 use stringtheory::MetaString;
 
@@ -271,10 +265,6 @@ fn parse_dogstatsd_metric<'a>(
 
     let tags = maybe_tags.unwrap_or_else(RawTags::empty);
 
-    let (pod_uid, jmx_check_name, cardinality) = parse_extra_tags(tags.clone());
-
-    let cardinality = maybe_cardinality.or(cardinality);
-
     Ok((
         remaining,
         MetricPacket {
@@ -285,9 +275,7 @@ fn parse_dogstatsd_metric<'a>(
             timestamp: maybe_timestamp,
             container_id: maybe_container_id,
             external_data: maybe_external_data,
-            pod_uid,
-            cardinality,
-            jmx_check_name,
+            cardinality: maybe_cardinality,
         },
     ))
 }
@@ -300,9 +288,7 @@ pub struct MetricPacket<'a> {
     pub timestamp: Option<u64>,
     pub container_id: Option<&'a str>,
     pub external_data: Option<&'a str>,
-    pub pod_uid: Option<&'a str>,
     pub cardinality: Option<OriginTagCardinality>,
-    pub jmx_check_name: Option<&'a str>,
 }
 
 pub struct EventPacket<'a> {
@@ -317,7 +303,6 @@ pub struct EventPacket<'a> {
     pub tags: RawTags<'a>,
     pub container_id: Option<&'a str>,
     pub external_data: Option<&'a str>,
-    pub pod_uid: Option<&'a str>,
     pub cardinality: Option<OriginTagCardinality>,
 }
 
@@ -330,7 +315,6 @@ pub struct ServiceCheckPacket<'a> {
     pub tags: RawTags<'a>,
     pub container_id: Option<&'a str>,
     pub external_data: Option<&'a str>,
-    pub pod_uid: Option<&'a str>,
     pub cardinality: Option<OriginTagCardinality>,
 }
 
@@ -464,9 +448,6 @@ fn parse_dogstatsd_event<'a>(
 
     let tags = maybe_tags.unwrap_or_else(RawTags::empty);
 
-    let (pod_uid, _, cardinality) = parse_extra_tags(tags.clone());
-    let cardinality = maybe_cardinality.or(cardinality);
-
     let eventd = EventPacket {
         title: title.into(),
         text: text.into(),
@@ -479,8 +460,7 @@ fn parse_dogstatsd_event<'a>(
         source_type_name: maybe_source_type,
         container_id: maybe_container_id,
         external_data: maybe_external_data,
-        pod_uid,
-        cardinality,
+        cardinality: maybe_cardinality,
     };
     Ok((remaining, eventd))
 }
@@ -569,9 +549,6 @@ fn parse_dogstatsd_service_check<'a>(
 
     let tags = maybe_tags.unwrap_or_else(RawTags::empty);
 
-    let (pod_uid, _, cardinality) = parse_extra_tags(tags.clone());
-    let cardinality = maybe_cardinality.or(cardinality);
-
     let service_check_packet = ServiceCheckPacket {
         name: name.into(),
         status: check_status,
@@ -581,8 +558,7 @@ fn parse_dogstatsd_service_check<'a>(
         message: maybe_message,
         container_id: maybe_container_id,
         external_data: maybe_external_data,
-        pod_uid,
-        cardinality,
+        cardinality: maybe_cardinality,
     };
     Ok((remaining, service_check_packet))
 }
@@ -792,33 +768,6 @@ impl<'a> Iterator for FloatIter<'a> {
             Err(_) => Some(Err(nom::Err::Error(Error::new(raw_value, ErrorKind::Float)))),
         }
     }
-}
-
-/// Extracts the pod UID, JMX check name, and cardinality from the given tags if present.
-///
-/// Defaults to `None` for all values.
-fn parse_extra_tags<'a>(tags: RawTags<'a>) -> (Option<&'a str>, Option<&'a str>, Option<OriginTagCardinality>) {
-    let mut pod_uid = None;
-    let mut cardinality = None;
-    let mut jmx_check_name = None;
-    for tag in tags {
-        let tag = BorrowedTag::from(tag);
-        match tag.name_and_value() {
-            (ENTITY_ID_TAG_KEY, Some(entity_id)) if entity_id != ENTITY_ID_IGNORE_VALUE => {
-                pod_uid = Some(entity_id);
-            }
-            (JMX_CHECK_NAME_TAG_KEY, Some(name)) => {
-                jmx_check_name = Some(name);
-            }
-            (CARDINALITY_TAG_KEY, Some(value)) => {
-                if let Ok(card) = OriginTagCardinality::try_from(value) {
-                    cardinality = Some(card);
-                }
-            }
-            _ => {}
-        }
-    }
-    (pod_uid, jmx_check_name, cardinality)
 }
 
 #[cfg(test)]
