@@ -1,4 +1,4 @@
-ARG DD_AGENT_VERSION=7.67.1-jmx
+ARG DD_AGENT_VERSION=7.68.3-jmx
 ARG DD_AGENT_IMAGE=registry.ddbuild.io/images/datadog-agent:${DD_AGENT_VERSION}
 
 ARG BUILD_IMAGE
@@ -37,7 +37,7 @@ ENV APP_BUILD_TIME=${APP_BUILD_TIME}
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates unzip && \
     (which cmake >/dev/null || apt-get install -y --no-install-recommends cmake)
-    
+
 # Docs here https://pyo3.rs/v0.14.5/building_and_distribution#configuring-the-python-version
 # If needed, ENV PYO3_PYTHON="/opt/datadog-agent/embedded/bin/python3.12" could be used, but auto-detection works in our case
 COPY --from=agent "/opt/datadog-agent/embedded" "/opt/datadog-agent/embedded"
@@ -47,7 +47,7 @@ ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
 # Install Protocol Buffers compiler by hand, since we want a specific minimum version that Debian Buster does not have.
 COPY .ci/install-protoc.sh /
 RUN chmod +x /install-protoc.sh && /install-protoc.sh
-    
+
 # Build Checks Agent.
 WORKDIR /adp
 COPY . /adp

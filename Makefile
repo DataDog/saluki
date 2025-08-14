@@ -324,8 +324,7 @@ k8s-create-cluster: check-k8s-tools ## Creates a dedicated Kubernetes cluster (m
 k8s-install-datadog-agent: check-k8s-tools k8s-ensure-ns-datadog ## Installs the Datadog Agent (minikube)
 ifeq ($(shell test -d test/k8s/charts || echo not-found), not-found)
 	@echo "[*] Downloading Datadog Agent Helm chart locally..."
-	@git -C test/k8s clone --single-branch --branch=saluki/adp-container \
-		https://github.com/DataDog/helm-charts.git charts
+	@git -C test/k8s clone https://github.com/DataDog/helm-charts.git charts
 	@helm repo add prometheus https://prometheus-community.github.io/helm-charts
 endif
 	@git -C test/k8s/charts pull origin
@@ -493,7 +492,7 @@ test-correctness: ## Runs the metrics correctness (ground-truth) suite
 		--millstone-config-path $(shell pwd)/test/correctness/millstone.yaml \
 		--metrics-intake-image saluki-images/metrics-intake:latest \
 		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
-		--dsd-image docker.io/datadog/dogstatsd:7.67.1 \
+		--dsd-image docker.io/datadog/dogstatsd:7.68.3 \
 		--dsd-config-path $(shell pwd)/test/correctness/datadog-no-origin-detection.yaml \
 		--adp-image saluki-images/agent-data-plane:latest \
 		--adp-config-path $(shell pwd)/test/correctness/datadog-no-origin-detection.yaml
