@@ -35,6 +35,8 @@ use tracing::{debug, error};
 
 mod cache;
 mod config;
+mod remap;
+mod runtime_metrics;
 mod translator;
 use self::config::OtlpTranslatorConfig;
 use self::translator::OtlpTranslator;
@@ -73,7 +75,7 @@ impl SourceBuilder for OtlpConfiguration {
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
         let context_resolver = ContextResolverBuilder::from_name(format!("{}/otlp", context.component_id()))?.build();
-        let translator_config = OtlpTranslatorConfig::default();
+        let translator_config = OtlpTranslatorConfig::default().with_remapping(true);
 
         Ok(Box::new(Otlp {
             context_resolver,

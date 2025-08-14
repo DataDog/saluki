@@ -46,6 +46,56 @@ pub struct OtlpTranslatorConfig {
     pub number_mode: NumberMode,
     pub initial_cumul_mono_value_mode: InitialCumulMonoValueMode,
     pub instrumentation_scope_metadata_as_tags: bool,
+    // Reports whether certain metrics that are only available when using
+    // the Datadog Agent should be obtained by remapping from OTEL counterparts (e.g.
+    // container.* and system.* metrics). This configuration also enables with_otel_prefix.
+    pub with_remapping: bool,
+    //  Reports whether some OpenTelemetry metrics (ex: host metrics) should be
+    // renamed with the `otel.` prefix. This prevents the Collector and Datadog
+    // Agent from computing metrics with the same names.
+    pub with_otel_prefix: bool,
+}
+
+impl OtlpTranslatorConfig {
+    pub fn with_remapping(mut self, with_remapping: bool) -> Self {
+        self.with_remapping = with_remapping;
+        if with_remapping {
+            self.with_otel_prefix = true;
+        }
+        self
+    }
+
+    pub fn with_otel_prefix(mut self, with_otel_prefix: bool) -> Self {
+        self.with_otel_prefix = with_otel_prefix;
+        self
+    }
+
+    pub fn with_initial_cumul_mono_value_mode(
+        mut self, initial_cumul_mono_value_mode: InitialCumulMonoValueMode,
+    ) -> Self {
+        self.initial_cumul_mono_value_mode = initial_cumul_mono_value_mode;
+        self
+    }
+
+    pub fn with_histogram_mode(mut self, hist_mode: HistogramMode) -> Self {
+        self.hist_mode = hist_mode;
+        self
+    }
+
+    pub fn with_number_mode(mut self, number_mode: NumberMode) -> Self {
+        self.number_mode = number_mode;
+        self
+    }
+
+    pub fn with_send_histogram_aggregations(mut self, send_histogram_aggregations: bool) -> Self {
+        self.send_histogram_aggregations = send_histogram_aggregations;
+        self
+    }
+
+    pub fn with_instrumentation_scope_metadata_as_tags(mut self, instrumentation_scope_metadata_as_tags: bool) -> Self {
+        self.instrumentation_scope_metadata_as_tags = instrumentation_scope_metadata_as_tags;
+        self
+    }
 }
 
 impl Default for OtlpTranslatorConfig {
@@ -56,6 +106,8 @@ impl Default for OtlpTranslatorConfig {
             number_mode: NumberMode::default(),
             initial_cumul_mono_value_mode: InitialCumulMonoValueMode::default(),
             instrumentation_scope_metadata_as_tags: false,
+            with_remapping: false,
+            with_otel_prefix: false,
         }
     }
 }

@@ -22,6 +22,8 @@ use crate::sources::otlp::config::InitialCumulMonoValueMode;
 
 use super::cache::Cache;
 use super::config::{HistogramMode, NumberMode, OtlpTranslatorConfig};
+use super::remap;
+use super::runtime_metrics::{RuntimeMetricMapping, RUNTIME_METRICS_MAPPINGS};
 
 // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L48-L63
 static RATE_AS_GAUGE_METRICS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
@@ -97,7 +99,47 @@ impl OtlpTranslator {
         for scope_metrics in resource_metrics.scope_metrics {
             // TODO: Handle instrumentation scope metadata as tags.
             // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L764-L770
-            for metric in scope_metrics.metrics {
+            let mut new_metrics: Vec<OtlpMetric> = Vec::new();
+            for mut metric in scope_metrics.metrics {
+                if let Some(mappings) = RUNTIME_METRICS_MAPPINGS.get(metric.name.as_str()) {
+                    for mapping in mappings {
+                        if mapping.attributes.is_empty() {
+                            // If there are no attributes to match, just duplicate the metric with the new name.
+                            let mut new_metric = metric.clone();
+                            new_metric.name = mapping.mapped_name.to_string();
+                            new_metrics.push(new_metric);
+                            break;
+                        }
+                        if let Some(ref data) = metric.data {
+                            match data {
+                                OtlpMetricData::Sum(_) => {
+                                    map_sum_runtime_metric_with_attributes(&metric, &mut new_metrics, mapping);
+                                }
+                                OtlpMetricData::Gauge(_) => {
+                                    map_gauge_runtime_metric_with_attributes(&metric, &mut new_metrics, mapping);
+                                }
+                                OtlpMetricData::Histogram(_) => {
+                                    map_histogram_runtime_metric_with_attributes(&metric, &mut new_metrics, mapping);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+
+                if self.config.with_remapping {
+                    remap::remap_metrics(&mut new_metrics, &metric);
+                }
+
+                if self.config.with_otel_prefix {
+                    remap::rename_metric(&mut metric);
+                }
+
+                let mut translated_events = self.map_to_dd_format(metric, &attribute_tags);
+                events.append(&mut translated_events);
+            }
+
+            for metric in new_metrics {
                 let mut translated_events = self.map_to_dd_format(metric, &attribute_tags);
                 events.append(&mut translated_events);
             }
@@ -448,6 +490,120 @@ impl OtlpTranslator {
             InitialCumulMonoValueMode::Drop => false,
         }
     }
+}
+
+fn map_sum_runtime_metric_with_attributes(
+    metric: &OtlpMetric, new_metrics: &mut Vec<OtlpMetric>, mapping: &RuntimeMetricMapping,
+) {
+    if let Some(OtlpMetricData::Sum(sum)) = &metric.data {
+        for dp in &sum.data_points {
+            // Check if the data point's attributes match all the required attributes from the mapping.
+            let mut matches_attributes = true;
+            for required_attr in mapping.attributes {
+                let key_to_find = required_attr.key;
+                let allowed_values = required_attr.values;
+
+                let has_matching_attribute = dp.attributes.iter().any(|kv| {
+                    if kv.key == key_to_find {
+                        if let Some(any_value) = &kv.value {
+                            if let Some(otlp_protos::opentelemetry::proto::common::v1::any_value::Value::StringValue(
+                                s_val,
+                            )) = &any_value.value
+                            {
+                                return allowed_values.contains(&s_val.as_str());
+                            }
+                        }
+                    }
+                    false
+                });
+
+                if !has_matching_attribute {
+                    matches_attributes = false;
+                    break;
+                }
+            }
+
+            if matches_attributes {
+                // Create a new metric with a single data point.
+                let mut new_metric = OtlpMetric::default();
+                let mut new_sum = otlp_protos::opentelemetry::proto::metrics::v1::Sum::default();
+
+                new_sum.aggregation_temporality = sum.aggregation_temporality;
+                new_sum.is_monotonic = sum.is_monotonic;
+
+                let mut new_dp = dp.clone();
+
+                // Remove the attributes that were used for matching.
+                let keys_to_remove: std::collections::HashSet<&str> =
+                    mapping.attributes.iter().map(|a| a.key).collect();
+                new_dp.attributes.retain(|kv| !keys_to_remove.contains(kv.key.as_str()));
+
+                new_sum.data_points.push(new_dp);
+                new_metric.data = Some(OtlpMetricData::Sum(new_sum));
+                new_metric.name = mapping.mapped_name.to_string();
+                new_metrics.push(new_metric);
+            }
+        }
+    }
+}
+
+fn map_gauge_runtime_metric_with_attributes(
+    metric: &OtlpMetric, new_metrics: &mut Vec<OtlpMetric>, mapping: &RuntimeMetricMapping,
+) {
+    if let Some(OtlpMetricData::Gauge(gauge)) = &metric.data {
+        for dp in &gauge.data_points {
+            // Check if the data point's attributes match all the required attributes from the mapping.
+            let mut matches_attributes = true;
+            for required_attr in mapping.attributes {
+                let key_to_find = required_attr.key;
+                let allowed_values = required_attr.values;
+
+                let has_matching_attribute = dp.attributes.iter().any(|kv| {
+                    if kv.key == key_to_find {
+                        if let Some(any_value) = &kv.value {
+                            if let Some(otlp_protos::opentelemetry::proto::common::v1::any_value::Value::StringValue(
+                                s_val,
+                            )) = &any_value.value
+                            {
+                                return allowed_values.contains(&s_val.as_str());
+                            }
+                        }
+                    }
+                    false
+                });
+
+                if !has_matching_attribute {
+                    matches_attributes = false;
+                    break;
+                }
+            }
+
+            if matches_attributes {
+                // Create a new metric with a single data point.
+                let mut new_metric = OtlpMetric::default();
+                let mut new_gauge = otlp_protos::opentelemetry::proto::metrics::v1::Gauge::default();
+
+                let mut new_dp = dp.clone();
+
+                // Remove the attributes that were used for matching.
+                let keys_to_remove: std::collections::HashSet<&str> =
+                    mapping.attributes.iter().map(|a| a.key).collect();
+                new_dp.attributes.retain(|kv| !keys_to_remove.contains(kv.key.as_str()));
+
+                new_gauge.data_points.push(new_dp);
+                new_metric.data = Some(OtlpMetricData::Gauge(new_gauge));
+                new_metric.name = mapping.mapped_name.to_string();
+                new_metrics.push(new_metric);
+            }
+        }
+    }
+}
+
+fn map_histogram_runtime_metric_with_attributes(
+    _metric: &OtlpMetric, _new_metrics: &mut Vec<OtlpMetric>, _mapping: &RuntimeMetricMapping,
+) {
+    // TODO: Implement attribute matching and metric duplication for histograms.
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L698-L727
 }
 
 /// Converts a slice of OTLP `KeyValue` attributes to a `SharedTagSet`.
