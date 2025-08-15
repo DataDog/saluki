@@ -1,14 +1,6 @@
-<<<<<<< HEAD
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::sync::Arc;
-=======
->>>>>>> 9a8cf3af (formatting)
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
 use saluki_components::{
@@ -95,7 +87,6 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
             &configuration,
             local_secure_api_listen_addr,
             prometheus_listen_addr,
-            snapshot_received.clone() // Pass the snapshot tracking state
         )
         .await?;
 
