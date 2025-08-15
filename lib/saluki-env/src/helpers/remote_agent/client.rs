@@ -8,10 +8,10 @@ use std::{
 
 use backon::{BackoffBuilder, ConstantBuilder, Retryable as _};
 use datadog_protos::agent::{
-    AgentClient, AgentSecureClient, AutodiscoveryStreamResponse, EntityId, FetchEntityRequest, HostTagReply,
-    HostTagRequest, HostnameRequest, RegisterRemoteAgentRequest, RegisterRemoteAgentResponse, StreamTagsRequest,
-    StreamTagsResponse, TagCardinality, WorkloadmetaEventType, WorkloadmetaFilter, WorkloadmetaKind,
-    WorkloadmetaSource, WorkloadmetaStreamRequest, WorkloadmetaStreamResponse,
+    AgentClient, AgentSecureClient, AutodiscoveryStreamResponse, ConfigEvent, ConfigStreamRequest, EntityId,
+    FetchEntityRequest, HostTagReply, HostTagRequest, HostnameRequest, RegisterRemoteAgentRequest,
+    RegisterRemoteAgentResponse, StreamTagsRequest, StreamTagsResponse, TagCardinality, WorkloadmetaEventType,
+    WorkloadmetaFilter, WorkloadmetaKind, WorkloadmetaSource, WorkloadmetaStreamRequest, WorkloadmetaStreamResponse,
 };
 use futures::Stream;
 use pin_project_lite::pin_project;
@@ -136,11 +136,13 @@ impl RemoteAgentClient {
         // have to test it out to make sure it behaves sensibly.
         let service_builder = || async {
             let auth_interceptor = BearerAuthInterceptor::from_file(&config.auth_token_file_path).await?;
+            println!("auth_token_file_path: {:#?}", config.auth_token_file_path);
             let ipc_cert_file_path =
                 get_ipc_cert_file_path(config.ipc_cert_file_path.as_ref(), &config.auth_token_file_path);
-
+            println!("ipc_cert_file_path: {:#?}", ipc_cert_file_path);
             let https_connector = build_datadog_agent_ipc_https_connector(ipc_cert_file_path).await?;
 
+            println!("ipc_endpoint: {:#?}", config.ipc_endpoint);
             let channel = Endpoint::from(config.ipc_endpoint.clone())
                 .connect_timeout(Duration::from_secs(2))
                 .connect_with_connector(https_connector)
@@ -163,8 +165,10 @@ impl RemoteAgentClient {
         let client = AgentClient::new(service.clone());
         let mut secure_client = AgentSecureClient::new(service);
 
+        println!("before try_query_agent_api");
         // Try and do a basic health check to make sure we can connect and that our authentication token is valid.
         try_query_agent_api(&mut secure_client).await?;
+        println!("after try_query_agent_api");
 
         Ok(Self { client, secure_client })
     }
@@ -231,6 +235,7 @@ impl RemoteAgentClient {
     pub async fn register_remote_agent_request(
         &mut self, id: &str, display_name: &str, api_endpoint: &str, auth_token: &str,
     ) -> Result<Response<RegisterRemoteAgentResponse>, GenericError> {
+        println!("in register_remote_agent_request");
         let mut client = self.secure_client.clone();
         let response = client
             .register_remote_agent(RegisterRemoteAgentRequest {
@@ -240,6 +245,7 @@ impl RemoteAgentClient {
                 auth_token: auth_token.to_string(),
             })
             .await?;
+        println!("registered remote agent with response: {:#?}", response);
         Ok(response)
     }
 
@@ -261,6 +267,27 @@ impl RemoteAgentClient {
     pub fn get_autodiscovery_stream(&mut self) -> StreamingResponse<AutodiscoveryStreamResponse> {
         let mut client = self.secure_client.clone();
         StreamingResponse::from_response_future(async move { client.autodiscovery_stream_config(()).await })
+    }
+
+    /// Gets a stream of config events.
+    ///
+    /// If there is an error with the initial request, or an error occurs while streaming, the next message in the
+    /// stream will be `Some(Err(status))`, where the status indicates the underlying error.
+    pub fn stream_config_events(&mut self) -> StreamingResponse<ConfigEvent> {
+        let mut client = self.secure_client.clone();
+        let app_details = saluki_metadata::get_app_details();
+        let formatted_full_name = app_details
+            .full_name()
+            .replace(" ", "-")
+            .replace("_", "-")
+            .to_lowercase();
+        StreamingResponse::from_response_future(async move {
+            client
+                .stream_config_events(ConfigStreamRequest {
+                    name: formatted_full_name,
+                })
+                .await
+        })
     }
 }
 
