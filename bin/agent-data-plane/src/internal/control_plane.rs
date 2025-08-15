@@ -73,6 +73,33 @@ async fn configure_and_spawn_api_endpoints(
     // a "remote agent", which wires up ADP to allow the Datadog Agent to query it for status and flare information.
     let in_standalone_mode = config.get_typed_or_default::<bool>("adp.standalone_mode");
     if !in_standalone_mode {
+        let local_secure_api_listen_addr = secure_api_listen_address
+            .as_local_connect_addr()
+            .ok_or_else(|| generic_error!("Failed to get local secure API listen address to advertise."))?;
+
+        let telemetry_enabled = config.get_typed_or_default::<bool>("telemetry_enabled");
+        let mut prometheus_listen_addr = None;
+        if telemetry_enabled {
+            let addr = config
+                .try_get_typed("prometheus_listen_addr")
+                .error_context("Failed to get Prometheus listen address.")?
+                .unwrap_or_else(|| ListenAddress::any_tcp(5102));
+
+            prometheus_listen_addr = Some(
+                addr.as_local_connect_addr()
+                    .ok_or_else(|| generic_error!("Failed to get local Prometheus listen address to advertise."))?,
+            );
+        }
+
+        // Build and spawn our helper task for registering ourselves with the Datadog Agent as a remote agent.
+        let remote_agent_config = RemoteAgentHelperConfiguration::from_configuration(
+            config,
+            local_secure_api_listen_addr,
+            prometheus_listen_addr,
+        )
+        .await?;
+        let remote_agent_service = remote_agent_config.spawn().await;
+
         // Register our Remote Agent gRPC service with the privileged API.
         if let Some(service) = remote_agent_service {
             privileged_api = privileged_api.with_grpc_service(service);

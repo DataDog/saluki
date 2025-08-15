@@ -18,7 +18,7 @@ use saluki_components::{
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::topology::TopologyBlueprint;
-use saluki_env::EnvironmentProvider as _;
+use saluki_env::{configstream::ConfigStreamer, EnvironmentProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use saluki_io::net::ListenAddress;
@@ -50,6 +50,10 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         .into_generic()
         .await?;
 
+
+    if let Some(shared_config) = configuration.get_refreshable_handle() {
+        ConfigStreamer::stream(&configuration, Some(shared_config)).await?;
+    }
     // Create Remote Agent
     let in_standalone_mode = configuration.get_typed_or_default::<bool>("adp.standalone_mode");
     let secure_api_listen_address = configuration
@@ -83,8 +87,6 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
             &configuration,
             local_secure_api_listen_addr,
             prometheus_listen_addr,
-            configuration.get_refreshable_handle(),
-            snapshot_received.clone(), // Pass the snapshot tracking state
         )
         .await?;
 

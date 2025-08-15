@@ -26,6 +26,7 @@ memory-accounting = { workspace = true }
 papaya = { workspace = true }
 pin-project-lite = { workspace = true }
 prost = { workspace = true }
+prost-types = { workspace = true }
 regex = { workspace = true, features = ["std", "perf"] }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true, features = ["std"] }
@@ -37,6 +38,7 @@ saluki-core = { workspace = true }
 saluki-error = { workspace = true }
 saluki-health = { workspace = true }
 saluki-io = { workspace = true }
+saluki-metadata = { workspace = true }
 saluki-metrics = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["std"] }
