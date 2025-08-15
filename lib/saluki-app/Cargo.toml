@@ -24,6 +24,7 @@ iana-time-zone = { workspace = true }
 itoa = { workspace = true }
 memory-accounting = { workspace = true }
 metrics = { workspace = true }
+musli = { workspace = true, features = ["std", "alloc", "storage"] }
 rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
 rustls = { workspace = true, features = ["tls12"] }
 rustls-pki-types = { workspace = true }
@@ -62,3 +63,4 @@ http-body-util = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "tokio"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+zstd = { workspace = true }

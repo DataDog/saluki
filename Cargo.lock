@@ -2445,6 +2445,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
+name = "musli"
+version = "0.0.134"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18c153da71d64fe61f2bbf48f3f0ac81d940268730395d277224129a475ef54f"
+dependencies = [
+ "loom",
+ "musli-core",
+ "serde",
+ "simdutf8",
+]
+
+[[package]]
+name = "musli-core"
+version = "0.0.134"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77efc48d17f716b8997c805ce8f4a64ddadb8f7a4219da28749699e7852b6b0c"
+dependencies = [
+ "musli-macros",
+]
+
+[[package]]
+name = "musli-macros"
+version = "0.0.134"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38a3c65b877dda6efaa1db1e57ad4c63a12b378519ba42d1fde2d90f6d06d246"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "mutants"
 version = "0.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3666,6 +3698,7 @@ dependencies = [
  "itoa",
  "memory-accounting",
  "metrics",
+ "musli",
  "rcgen",
  "rustls",
  "rustls-pki-types",
@@ -3689,6 +3722,7 @@ dependencies = [
  "tracing-appender",
  "tracing-rolling-file",
  "tracing-subscriber",
+ "zstd",
 ]
 
 [[package]]
