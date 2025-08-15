@@ -22,6 +22,7 @@ api = [
 ]
 logging = [
   "api",
+  "dep:bincode",
   "dep:chrono",
   "dep:chrono-tz",
   "dep:iana-time-zone",
@@ -29,6 +30,7 @@ logging = [
   "dep:serde",
   "dep:tracing",
   "dep:tracing-subscriber",
+  "dep:zstd",
 ]
 memory = [
   "metrics",
@@ -47,6 +49,7 @@ tls-fips = ["saluki-tls?/fips"]
 
 [dependencies]
 axum = { workspace = true, optional = true }
+bincode = { workspace = true, optional = true }
 bytesize = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 chrono-tz = { workspace = true, optional = true }
@@ -80,3 +83,4 @@ tracing-subscriber = { workspace = true, features = [
   "std",
   "tracing-log",
 ], optional = true }
+zstd = { workspace = true, optional = true }

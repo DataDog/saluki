@@ -27,6 +27,7 @@ axum-extra,https://github.com/tokio-rs/axum,MIT,The axum-extra Authors
 backon,https://github.com/Xuanwo/backon,Apache-2.0,The backon Authors
 backtrace,https://github.com/rust-lang/backtrace-rs,MIT OR Apache-2.0,The Rust Project Developers
 base64,https://github.com/marshallpierce/rust-base64,MIT OR Apache-2.0,Marshall Pierce <marshall@mpierce.org>
+bincode,https://github.com/servo/bincode,MIT,"Ty Overby <ty@pre-alpha.com>, Francesco Mazzoli <f@mazzo.li>, David Tolnay <dtolnay@gmail.com>, Zoey Riordan <zoey@dos.cafe>"
 bitflags,https://github.com/bitflags/bitflags,MIT OR Apache-2.0,The Rust Project Developers
 bitmask-enum,https://github.com/Lukas3674/rust-bitmask-enum,MIT OR Apache-2.0,Lukas3674 <lukashassler@web.de>
 bitvec,https://github.com/bitvecto-rs/bitvec,MIT,The bitvec Authors

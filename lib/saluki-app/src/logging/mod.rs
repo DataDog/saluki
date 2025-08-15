@@ -40,6 +40,9 @@ use tracing_subscriber::{
     EnvFilter, Layer, Registry,
 };
 
+mod ring_buffer;
+pub use self::ring_buffer::{CompressedRingBuffer, RingBufferConfig, RingBufferView, SerializedEvent};
+
 static API_HANDLER: Mutex<Option<LoggingAPIHandler>> = Mutex::new(None);
 
 type SharedEnvFilter = Arc<dyn Filter<Registry> + Send + Sync>;
