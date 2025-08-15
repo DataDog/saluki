@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
 use saluki_components::{
@@ -49,11 +50,10 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         .into_generic()
         .await?;
 
-
     if let Some(shared_config) = configuration.get_refreshable_handle() {
         ConfigStreamer::stream(&configuration, Some(shared_config)).await?;
     }
-    
+
     // Create Remote Agent
     let in_standalone_mode = configuration.get_typed_or_default::<bool>("adp.standalone_mode");
     let secure_api_listen_address = configuration
@@ -115,7 +115,6 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         }
 
         info!("Configuration snapshot received");
-
     }
 
     println!("this is after we created the remote agent service");
