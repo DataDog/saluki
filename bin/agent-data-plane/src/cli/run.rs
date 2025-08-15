@@ -16,7 +16,7 @@ use saluki_components::{
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::topology::TopologyBlueprint;
-use saluki_env::EnvironmentProvider as _;
+use saluki_env::{configstream::ConfigStreamer, EnvironmentProvider as _};
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use tokio::{select, time::interval};
@@ -45,6 +45,10 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         .await?
         .into_generic()
         .await?;
+
+    if let Some(shared_config) = configuration.get_refreshable_handle() {
+        ConfigStreamer::stream(&configuration, Some(shared_config)).await?;
+    }
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();

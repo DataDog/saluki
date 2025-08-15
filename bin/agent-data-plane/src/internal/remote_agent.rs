@@ -1,18 +1,14 @@
-use std::sync::Arc;
 use std::{collections::hash_map::Entry, time::Duration};
 use std::{collections::HashMap, net::SocketAddr};
 
-use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use datadog_protos::agent::{config_event, ConfigEvent, ConfigSnapshot};
 use datadog_protos::agent::{
     get_telemetry_response::Payload, GetFlareFilesRequest, GetFlareFilesResponse, GetStatusDetailsRequest,
     GetStatusDetailsResponse, GetTelemetryRequest, GetTelemetryResponse, RemoteAgent, RemoteAgentServer, StatusSection,
 };
 use http::{Request, Uri};
 use http_body_util::BodyExt;
-use prost_types::value::Kind;
 use rand::{rng, Rng};
 use rand_distr::Alphanumeric;
 use saluki_common::task::spawn_traced_named;
@@ -21,56 +17,11 @@ use saluki_core::state::reflector::Reflector;
 use saluki_env::helpers::remote_agent::RemoteAgentClient;
 use saluki_error::GenericError;
 use saluki_io::net::client::http::HttpClient;
-use serde_json::{Map, Value};
 use tokio::time::{interval, MissedTickBehavior};
-use tracing::{debug, warn};
+use tracing::debug;
 use uuid::Uuid;
 
 use crate::state::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor};
-
-/// Converts a `ConfigSnapshot` into a single flat `serde_json::Value::Object` (a map).
-fn snapshot_to_map(snapshot: &ConfigSnapshot) -> Value {
-    let mut map = Map::new();
-
-    for setting in &snapshot.settings {
-        let value = proto_value_to_serde_value(&setting.value);
-        map.insert(setting.key.clone(), value);
-    }
-
-    Value::Object(map)
-}
-
-/// Recursively converts a `google::protobuf::Value` into a `serde_json::Value`.
-fn proto_value_to_serde_value(proto_val: &Option<prost_types::Value>) -> Value {
-    let Some(kind) = proto_val.as_ref().and_then(|v| v.kind.as_ref()) else {
-        return Value::Null;
-    };
-
-    match kind {
-        Kind::NullValue(_) => Value::Null,
-        Kind::NumberValue(n) => Value::from(*n),
-        Kind::StringValue(s) => Value::String(s.clone()),
-        Kind::BoolValue(b) => Value::Bool(*b),
-        Kind::StructValue(s) => {
-            let json_map: Map<String, Value> = s
-                .fields
-                .iter()
-                .map(|(k, v)| (k.clone(), proto_value_to_serde_value(&Some(v.clone()))))
-                .collect();
-            Value::Object(json_map)
-        }
-
-        // If the value is a list, convert it to an array.
-        Kind::ListValue(l) => {
-            let json_list: Vec<Value> = l
-                .values
-                .iter()
-                .map(|v| proto_value_to_serde_value(&Some(v.clone())))
-                .collect();
-            Value::Array(json_list)
-        }
-    }
-}
 
 const EVENTS_RECEIVED: &str = "adp.component_events_received_total";
 const PACKETS_RECEIVED: &str = "adp.component_packets_received_total";
@@ -94,14 +45,12 @@ pub struct RemoteAgentHelperConfiguration {
     client: RemoteAgentClient,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
     prometheus_listen_addr: Option<SocketAddr>,
-    values: Option<Arc<ArcSwap<Value>>>,
 }
 
 impl RemoteAgentHelperConfiguration {
     /// Creates a new `RemoteAgentHelperConfiguration` from the given configuration.
     pub async fn from_configuration(
         config: &GenericConfiguration, local_api_listen_addr: SocketAddr, prometheus_listen_addr: Option<SocketAddr>,
-        shared_config: Option<Arc<ArcSwap<Value>>>,
     ) -> Result<Self, GenericError> {
         let app_details = saluki_metadata::get_app_details();
         let formatted_full_name = app_details
@@ -118,7 +67,6 @@ impl RemoteAgentHelperConfiguration {
             client,
             internal_metrics: get_shared_metrics_state().await,
             prometheus_listen_addr,
-            values: shared_config,
         })
     }
 
@@ -132,7 +80,6 @@ impl RemoteAgentHelperConfiguration {
             started: Utc::now(),
             internal_metrics: self.internal_metrics.clone(),
             prometheus_listen_addr: self.prometheus_listen_addr,
-            shared_config: self.values.clone(),
         };
         let service = RemoteAgentServer::new(service_impl);
 
@@ -178,7 +125,6 @@ pub struct RemoteAgentImpl {
     started: DateTime<Utc>,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
     prometheus_listen_addr: Option<SocketAddr>,
-    shared_config: Option<Arc<ArcSwap<Value>>>,
 }
 
 impl RemoteAgentImpl {
@@ -292,49 +238,6 @@ impl RemoteAgent for RemoteAgentImpl {
             }
             Err(e) => Err(tonic::Status::internal(e.to_string())),
         }
-    }
-
-    async fn stream_config_events(
-        &self, request: tonic::Request<tonic::Streaming<ConfigEvent>>,
-    ) -> Result<tonic::Response<()>, tonic::Status> {
-        let mut stream = request.into_inner();
-        loop {
-            match stream.message().await {
-                Ok(Some(event)) => match event.event {
-                    Some(config_event::Event::Snapshot(snapshot)) => {
-                        debug!("received config snapshot: {:#?}", snapshot);
-                        let map = snapshot_to_map(&snapshot);
-                        if let Some(c) = self.shared_config.as_ref() {
-                            c.store(map.into());
-                        }
-                    }
-                    Some(config_event::Event::Update(update)) => {
-                        debug!("received config update: {:#?}", update);
-                        let v = proto_value_to_serde_value(update.setting.as_ref().map(|s| &s.value).unwrap_or(&None));
-                        let mut config = (**self.shared_config.as_ref().map(|c| c.load()).unwrap()).clone();
-                        config
-                            .as_object_mut()
-                            .unwrap()
-                            .insert(update.setting.as_ref().unwrap().key.clone(), v);
-                        if let Some(c) = self.shared_config.as_ref() {
-                            c.store(Arc::new(config));
-                        }
-                    }
-                    None => {
-                        warn!("Received a ConfigEvent with no event data");
-                    }
-                },
-                Ok(None) => {
-                    debug!("Config event stream has been closed.");
-                    break;
-                }
-                Err(e) => {
-                    warn!("Error while reading config event stream: {}", e);
-                    return Err(tonic::Status::internal(e.to_string()));
-                }
-            }
-        }
-        Ok(tonic::Response::new(()))
     }
 }
 

@@ -94,7 +94,6 @@ async fn configure_and_spawn_api_endpoints(
             config,
             local_secure_api_listen_addr,
             prometheus_listen_addr,
-            config.get_refreshable_handle(),
         )
         .await?;
         let remote_agent_service = remote_agent_config.spawn().await;
