@@ -21,6 +21,7 @@ iana-time-zone = { workspace = true }
 itoa = { workspace = true }
 memory-accounting = { workspace = true }
 metrics = { workspace = true }
+musli = { workspace = true, features = ["std", "alloc", "storage"] }
 rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
 rustls = { workspace = true, features = ["tls12"] }
 rustls-pki-types = { workspace = true }
@@ -53,3 +54,4 @@ tracing-subscriber = { workspace = true, features = [
   "std",
   "tracing-log",
 ] }
+zstd = { workspace = true }

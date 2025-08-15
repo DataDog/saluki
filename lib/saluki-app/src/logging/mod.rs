@@ -11,6 +11,7 @@
 use std::io::Write;
 
 use saluki_error::{generic_error, GenericError};
+use tracing::level_filters::LevelFilter;
 use tracing_appender::non_blocking::{NonBlocking, NonBlockingBuilder, WorkerGuard};
 use tracing_rolling_file::RollingFileAppenderBase;
 use tracing_subscriber::{
@@ -26,6 +27,9 @@ pub(crate) use self::config::LoggingConfiguration;
 
 mod layer;
 use self::layer::build_formatting_layer;
+
+mod ring_buffer;
+pub use self::ring_buffer::{CompressedRingBuffer, RingBufferConfig};
 
 // Number of buffered lines in each non-blocking log writer.
 //
@@ -97,10 +101,17 @@ pub(crate) async fn initialize_logging(config: &LoggingConfiguration) -> Result<
         configured_layers.push(build_formatting_layer(config, nb_appender));
     }
 
+    let ring_buffer_config = RingBufferConfig::default()
+        .with_max_ring_buffer_size_bytes(2_048_576)
+        .with_max_uncompressed_segment_size_bytes(262_144)
+        .with_compression_level(10);
+    let ring_buffer = CompressedRingBuffer::with_config(ring_buffer_config);
+
     // `tracing` accepts a `Vec<L>` where `L` implements `Layer<S>`, which acts as a fanout.. and then we're applying
     // our filter layer on top of that, so that we filter out events once rather than per output layer.
     tracing_subscriber::registry()
         .with(configured_layers.with_filter(filter_layer))
+        .with(ring_buffer.with_filter(LevelFilter::DEBUG))
         .try_init()?;
 
     Ok(logging_guard)
