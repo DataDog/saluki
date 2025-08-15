@@ -98,10 +98,9 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         info!("Waiting for configuration snapshot from Datadog Agent...");
 
         let mut attempts = 0;
-        const MAX_WAIT_SECONDS: u64 = 60;
         const CHECK_INTERVAL_MS: u64 = 100;
 
-        while !snapshot_received.load(Ordering::SeqCst) && attempts < (MAX_WAIT_SECONDS * 1000 / CHECK_INTERVAL_MS) {
+        while !snapshot_received.load(Ordering::SeqCst) {
             tokio::time::sleep(Duration::from_millis(CHECK_INTERVAL_MS)).await;
             attempts += 1;
 
@@ -113,11 +112,7 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
             }
         }
 
-        if snapshot_received.load(Ordering::SeqCst) {
-            info!("Configuration snapshot received");
-        } else {
-            warn!("Timeout waiting for configuration snapshot. Continuing with startup anyway...");
-        }
+        info!("Configuration snapshot received");
     }
 
     println!("this is after we created the remote agent service");
