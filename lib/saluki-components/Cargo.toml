@@ -71,5 +71,6 @@ url = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+pyo3-ffi = { workspace = true }
 saluki-metrics = { workspace = true, features = ["test"] }
 test-strategy = { workspace = true }

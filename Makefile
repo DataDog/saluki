@@ -452,7 +452,7 @@ check-features: ## Checks that all packages with feature flags can be built with
 test: check-rust-build-tools cargo-install-cargo-nextest
 test: ## Runs all unit tests
 	@echo "[*] Running unit tests..."
-	cargo nextest run --lib -E 'not test(/property_test_*/)'
+	cargo nextest run --features python-checks --lib -E 'not test(/property_test_*/)'
 
 .PHONY: test-property
 test-property: check-rust-build-tools cargo-install-cargo-nextest
