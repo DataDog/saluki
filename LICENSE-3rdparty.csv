@@ -140,10 +140,6 @@ keccak,https://github.com/RustCrypto/sponges/tree/master/keccak,Apache-2.0 OR MI
 lading-payload,https://github.com/datadog/lading,MIT,"Brian L. Troutwine <brian.troutwine@datadoghq.com>, George Hahn <george.hahn@datadoghq.com"
 lazy_static,https://github.com/rust-lang-nursery/lazy-static.rs,MIT OR Apache-2.0,Marvin Löbel <loebel.marvin@gmail.com>
 lazycell,https://github.com/indiv0/lazycell,MIT OR Apache-2.0,"Alex Crichton <alex@alexcrichton.com>, Nikita Pekin <contact@nikitapek.in>"
-lexical-core,https://github.com/Alexhuszagh/rust-lexical,MIT OR Apache-2.0,Alex Huszagh <ahuszagh@gmail.com>
-lexical-util,https://github.com/Alexhuszagh/rust-lexical,MIT OR Apache-2.0,Alex Huszagh <ahuszagh@gmail.com>
-lexical-write-float,https://github.com/Alexhuszagh/rust-lexical,MIT OR Apache-2.0,Alex Huszagh <ahuszagh@gmail.com>
-lexical-write-integer,https://github.com/Alexhuszagh/rust-lexical,MIT OR Apache-2.0,Alex Huszagh <ahuszagh@gmail.com>
 libc,https://github.com/rust-lang/libc,MIT OR Apache-2.0,The Rust Project Developers
 libloading,https://github.com/nagisa/rust_libloading,ISC,Simonas Kazlauskas <libloading@kazlauskas.me>
 libm,https://github.com/rust-lang/compiler-builtins,MIT,Jorge Aparicio <jorge@japaric.io>
@@ -261,7 +257,6 @@ smallvec,https://github.com/servo/rust-smallvec,MIT OR Apache-2.0,The Servo Proj
 snafu,https://github.com/shepmaster/snafu,MIT OR Apache-2.0,Jake Goulding <jake.goulding@gmail.com>
 socket2,https://github.com/rust-lang/socket2,MIT OR Apache-2.0,"Alex Crichton <alex@alexcrichton.com>, Thomas de Zeeuw <thomasdezeeuw@gmail.com>"
 stable_deref_trait,https://github.com/storyyeller/stable_deref_trait,MIT OR Apache-2.0,Robert Grosse <n210241048576@gmail.com>
-static_assertions,https://github.com/nvzqz/static-assertions-rs,MIT OR Apache-2.0,Nikolai Vazquez
 strsim,https://github.com/rapidfuzz/strsim-rs,MIT,"Danny Guo <danny@dannyguo.com>, maxbachmann <oss@maxbachmann.de>"
 structmeta,https://github.com/frozenlib/structmeta,MIT OR Apache-2.0,frozenlib
 subtle,https://github.com/dalek-cryptography/subtle,BSD-3-Clause,"Isis Lovecruft <isis@patternsinthevoid.net>, Henry de Valence <hdevalence@hdevalence.ca>"

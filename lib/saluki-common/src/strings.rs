@@ -1,97 +1,4 @@
-use lexical_core::{ToLexical, ToLexicalWithOptions as _, WriteFloatOptions};
 use stringtheory::{interning::Interner, MetaString};
-
-const FLOAT_FORMAT: u128 = lexical_core::format::STANDARD;
-static WRITE_FLOAT_OPTS: WriteFloatOptions = WriteFloatOptions::builder()
-    .trim_floats(true)
-    .inf_string(Some(b"Inf"))
-    .nan_string(Some(b"NaN"))
-    .build_unchecked();
-
-/// A numeric type that can be written to `StringBuilder`.
-#[allow(private_bounds)]
-pub trait Numeric: ToLexical + private::Sealed {
-    /// Formats the numeric value in the given buffer.
-    ///
-    /// Returns a range within the provided buffer that constitutes the formatted string.
-    fn format<'buf>(&self, buf: &'buf mut [u8; lexical_core::BUFFER_SIZE]) -> &'buf str {
-        let buf_len = {
-            let num_buf = self.to_lexical(buf);
-            num_buf.len()
-        };
-
-        // Reslice the original buffer to the length of the formatted number buffer, since `lexical_core` always writes
-        // from the beginning of the buffer. This lets us derive our string reference from `buf` rather than the
-        // local `num_buf`.
-        //
-        // SAFETY: `lexical_core::write` only generates valid UTF-8 output.
-        unsafe { std::str::from_utf8_unchecked(&buf[..buf_len]) }
-    }
-}
-
-impl Numeric for u8 {}
-impl Numeric for u16 {}
-impl Numeric for u32 {}
-impl Numeric for u64 {}
-impl Numeric for u128 {}
-impl Numeric for usize {}
-impl Numeric for i8 {}
-impl Numeric for i16 {}
-impl Numeric for i32 {}
-impl Numeric for i64 {}
-impl Numeric for i128 {}
-impl Numeric for isize {}
-
-impl Numeric for f32 {
-    fn format<'buf>(&self, buf: &'buf mut [u8; lexical_core::BUFFER_SIZE]) -> &'buf str {
-        let buf_len = {
-            let num_buf = self.to_lexical_with_options::<FLOAT_FORMAT>(buf, &WRITE_FLOAT_OPTS);
-            num_buf.len()
-        };
-
-        // Reslice the original buffer to the length of the formatted number buffer, since `lexical_core` always writes
-        // from the beginning of the buffer. This lets us derive our string reference from `buf` rather than the
-        // local `num_buf`.
-        //
-        // SAFETY: `lexical_core::write` only generates valid UTF-8 output.
-        unsafe { std::str::from_utf8_unchecked(&buf[..buf_len]) }
-    }
-}
-
-impl Numeric for f64 {
-    fn format<'buf>(&self, buf: &'buf mut [u8; lexical_core::BUFFER_SIZE]) -> &'buf str {
-        let buf_len = {
-            let num_buf = self.to_lexical_with_options::<FLOAT_FORMAT>(buf, &WRITE_FLOAT_OPTS);
-            num_buf.len()
-        };
-
-        // Reslice the original buffer to the length of the formatted number buffer, since `lexical_core` always writes
-        // from the beginning of the buffer. This lets us derive our string reference from `buf` rather than the
-        // local `num_buf`.
-        //
-        // SAFETY: `lexical_core::write` only generates valid UTF-8 output.
-        unsafe { std::str::from_utf8_unchecked(&buf[..buf_len]) }
-    }
-}
-
-mod private {
-    pub(super) trait Sealed {}
-
-    impl Sealed for u8 {}
-    impl Sealed for u16 {}
-    impl Sealed for u32 {}
-    impl Sealed for u64 {}
-    impl Sealed for u128 {}
-    impl Sealed for usize {}
-    impl Sealed for i8 {}
-    impl Sealed for i16 {}
-    impl Sealed for i32 {}
-    impl Sealed for i64 {}
-    impl Sealed for i128 {}
-    impl Sealed for isize {}
-    impl Sealed for f32 {}
-    impl Sealed for f64 {}
-}
 
 /// A string builder.
 ///
@@ -112,7 +19,6 @@ pub struct StringBuilder<I = ()> {
     buf: String,
     limit: usize,
     interner: I,
-    num_buf: [u8; lexical_core::BUFFER_SIZE],
 }
 
 impl StringBuilder<()> {
@@ -124,7 +30,6 @@ impl StringBuilder<()> {
             buf: String::new(),
             limit: usize::MAX,
             interner: (),
-            num_buf: [0; lexical_core::BUFFER_SIZE],
         }
     }
 
@@ -136,7 +41,6 @@ impl StringBuilder<()> {
             buf: String::new(),
             limit,
             interner: (),
-            num_buf: [0; lexical_core::BUFFER_SIZE],
         }
     }
 }
@@ -151,7 +55,6 @@ impl<I> StringBuilder<I> {
             buf: self.buf,
             limit: self.limit,
             interner,
-            num_buf: self.num_buf,
         }
     }
 
@@ -165,6 +68,11 @@ impl<I> StringBuilder<I> {
         self.buf.len()
     }
 
+    /// Returns the available space in the buffer of the builder.
+    pub fn available(&self) -> usize {
+        self.limit - self.buf.len()
+    }
+
     /// Clears the buffer of the builder.
     pub fn clear(&mut self) {
         self.buf.clear();
@@ -172,9 +80,10 @@ impl<I> StringBuilder<I> {
 
     /// Pushes a character into the builder.
     ///
-    /// Returns `None` if the resulting string would exceed the configured limit.
+    /// Returns `None` if the buffer limit would be exceeded by writing the character.
     pub fn push(&mut self, c: char) -> Option<()> {
-        if self.buf.len() + 1 > self.limit {
+        let char_len = c.len_utf8();
+        if self.buf.len() + char_len > self.limit {
             return None;
         }
         self.buf.push(c);
@@ -183,7 +92,7 @@ impl<I> StringBuilder<I> {
 
     /// Pushes a string fragment into the builder.
     ///
-    /// Returns `None` if the resulting string would exceed the configured limit.
+    /// Returns `None` if the buffer limit would be exceeded by writing the string.
     pub fn push_str(&mut self, s: &str) -> Option<()> {
         if self.buf.len() + s.len() > self.limit {
             return None;
@@ -192,23 +101,8 @@ impl<I> StringBuilder<I> {
         Some(())
     }
 
-    /// Pushes a numeric value into the builder.
-    ///
-    /// This method supports all signed and unsigned integer types, as well as single- and double-precision
-    /// floating-point numbers.
-    ///
-    /// Returns `None` if the resulting string would exceed the configured limit.
-    pub fn push_numeric<N: Numeric>(&mut self, value: N) -> Option<()> {
-        let num_str = value.format(&mut self.num_buf);
-        if self.buf.len() + num_str.len() > self.limit {
-            return None;
-        }
-        self.buf.push_str(num_str);
-        Some(())
-    }
-
     /// Returns a references to the current string.
-    pub fn string(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.buf
     }
 }
@@ -221,10 +115,19 @@ where
     ///
     /// Returns `None` if the string exceeds the configured limit or if it cannot be interned.
     pub fn try_intern(&mut self) -> Option<MetaString> {
-        let interned = self.interner.try_intern(self.string());
+        let interned = self.interner.try_intern(self.as_str());
         self.clear();
 
         interned.map(MetaString::from)
+    }
+}
+
+impl std::fmt::Write for StringBuilder {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        match self.push_str(s) {
+            Some(()) => Ok(()),
+            None => Err(std::fmt::Error),
+        }
     }
 }
 
@@ -246,7 +149,7 @@ pub fn lower_alphanumeric(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroUsize;
+    use std::{fmt::Write, num::NonZeroUsize};
 
     use stringtheory::interning::FixedSizeInterner;
 
@@ -285,14 +188,14 @@ mod tests {
         let mut builder = build_string_builder();
 
         assert_eq!(builder.push_str("Hello World!"), Some(()));
-        assert_eq!(builder.string(), "Hello World!");
+        assert_eq!(builder.as_str(), "Hello World!");
 
         builder.clear();
 
         assert_eq!(builder.push_str("hello"), Some(()));
         assert_eq!(builder.push_str(" "), Some(()));
         assert_eq!(builder.push_str("world"), Some(()));
-        assert_eq!(builder.string(), "hello world");
+        assert_eq!(builder.as_str(), "hello world");
     }
 
     #[test]
@@ -309,93 +212,44 @@ mod tests {
     }
 
     #[test]
-    fn string_builder_numerics() {
-        let mut builder = build_string_builder();
-
-        assert_eq!(builder.push_numeric(1u8), Some(()));
-        assert_eq!(builder.string(), "1");
-        assert_eq!(builder.push_numeric(2u16), Some(()));
-        assert_eq!(builder.string(), "12");
-        assert_eq!(builder.push_numeric(3u32), Some(()));
-        assert_eq!(builder.string(), "123");
-        assert_eq!(builder.push_numeric(4u64), Some(()));
-        assert_eq!(builder.string(), "1234");
-        assert_eq!(builder.push_numeric(5u128), Some(()));
-        assert_eq!(builder.string(), "12345");
-        assert_eq!(builder.push_numeric(6usize), Some(()));
-        assert_eq!(builder.string(), "123456");
-
-        builder.clear();
-
-        assert_eq!(builder.push_numeric(-1i8), Some(()));
-        assert_eq!(builder.string(), "-1");
-        assert_eq!(builder.push_numeric(-2i16), Some(()));
-        assert_eq!(builder.string(), "-1-2");
-        assert_eq!(builder.push_numeric(-3i32), Some(()));
-        assert_eq!(builder.string(), "-1-2-3");
-        assert_eq!(builder.push_numeric(-4i64), Some(()));
-        assert_eq!(builder.string(), "-1-2-3-4");
-        assert_eq!(builder.push_numeric(-5i128), Some(()));
-        assert_eq!(builder.string(), "-1-2-3-4-5");
-        assert_eq!(builder.push_numeric(-6isize), Some(()));
-        assert_eq!(builder.string(), "-1-2-3-4-5-6");
-
-        builder.clear();
-
-        assert_eq!(builder.push_numeric(0.0f32), Some(()));
-        assert_eq!(builder.string(), "0");
-        assert_eq!(builder.push_numeric(1.0f32), Some(()));
-        assert_eq!(builder.string(), "01");
-        assert_eq!(builder.push_numeric(-2.0f32), Some(()));
-        assert_eq!(builder.string(), "01-2");
-        assert_eq!(builder.push_numeric(3.5f32), Some(()));
-        assert_eq!(builder.string(), "01-23.5");
-
-        builder.clear();
-
-        assert_eq!(builder.push_numeric(0.0f64), Some(()));
-        assert_eq!(builder.string(), "0");
-        assert_eq!(builder.push_numeric(1.0f64), Some(()));
-        assert_eq!(builder.string(), "01");
-        assert_eq!(builder.push_numeric(-2.0f64), Some(()));
-        assert_eq!(builder.string(), "01-2");
-        assert_eq!(builder.push_numeric(3.5f64), Some(()));
-        assert_eq!(builder.string(), "01-23.5");
-    }
-
-    #[test]
     fn string_builder_clear() {
         let mut builder = build_string_builder();
 
         assert_eq!(builder.push_str("hello"), Some(()));
         builder.clear();
-        assert_eq!(builder.string(), "");
+        assert_eq!(builder.as_str(), "");
     }
 
     #[test]
-    fn string_builder_is_empty_len() {
-        let mut builder = build_string_builder();
+    fn string_builder_is_empty_len_available() {
+        const LIMIT: usize = 32;
+
+        let mut builder = build_string_builder_with_limit(LIMIT);
 
         // Starts out empty:
         assert!(builder.is_empty());
         assert_eq!(builder.len(), 0);
+        assert_eq!(builder.available(), LIMIT);
 
         // After pushing "hello":
         assert_eq!(builder.push_str("hello"), Some(()));
         assert!(!builder.is_empty());
         assert_eq!(builder.len(), 5);
-        assert_eq!(builder.string(), "hello");
+        assert_eq!(builder.available(), LIMIT - 5);
+        assert_eq!(builder.as_str(), "hello");
 
         // After pushing " world":
         builder.push_str(" world");
         assert!(!builder.is_empty());
         assert_eq!(builder.len(), 11);
-        assert_eq!(builder.string(), "hello world");
+        assert_eq!(builder.available(), LIMIT - 11);
+        assert_eq!(builder.as_str(), "hello world");
 
         // Manually clearing the buffer:
         builder.clear();
         assert!(builder.is_empty());
         assert_eq!(builder.len(), 0);
+        assert_eq!(builder.available(), LIMIT);
     }
 
     #[test]
@@ -408,7 +262,7 @@ mod tests {
         let string_one = "hello, world!";
         assert!(string_one.len() < LIMIT);
         assert_eq!(builder.push_str(string_one), Some(()));
-        assert_eq!(builder.string(), string_one);
+        assert_eq!(builder.as_str(), string_one);
 
         // Over the limit:
         let string_two = "definitely way too long";
@@ -424,7 +278,7 @@ mod tests {
         for string_three_part in string_three_parts {
             assert_eq!(builder.push_str(string_three_part), Some(()));
         }
-        assert_eq!(builder.string(), string_three);
+        assert_eq!(builder.as_str(), string_three);
     }
 
     #[test]
@@ -443,5 +297,22 @@ mod tests {
         assert!(string_one.len() > INTERNER_CAPACITY);
         assert_eq!(builder.push_str(string_one), Some(()));
         assert_eq!(builder.try_intern(), None);
+    }
+
+    #[test]
+    fn string_builder_fmt_write() {
+        let mut builder = build_string_builder();
+
+        let name = "steve from blues clues";
+        let num_apples = 5;
+
+        write!(builder, "hello, world!").unwrap();
+        write!(builder, " it's me, {}.", name).unwrap();
+        write!(builder, " i've got {} apples.", num_apples).unwrap();
+
+        assert_eq!(
+            builder.as_str(),
+            "hello, world! it's me, steve from blues clues. i've got 5 apples."
+        );
     }
 }
