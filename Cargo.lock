@@ -3336,6 +3336,7 @@ name = "saluki-components"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
  "bytes",
  "bytesize",
  "chrono",
