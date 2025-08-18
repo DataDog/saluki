@@ -8,7 +8,7 @@ use prost_types::value::Kind;
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use serde_json::{Map, Value};
-use tracing::{error, warn};
+use tracing::error;
 
 use crate::helpers::remote_agent::RemoteAgentClient;
 
@@ -44,7 +44,7 @@ pub async fn create_config_stream(
                         }
                     }
                     None => {
-                        warn!("Received a configuration update event with no data.");
+                        error!("Received a configuration update event with no data.");
                     }
                 },
                 Err(e) => error!("Error while reading config event stream: {}.", e),
