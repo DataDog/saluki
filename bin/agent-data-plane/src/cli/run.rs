@@ -48,10 +48,8 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         .into_generic()
         .await?;
 
-    // Create shared state to track when snapshot is received.
     let snapshot_received = Arc::new(AtomicBool::new(false));
 
-    // Start the config streamer.
     if let Some(shared_config) = configuration.get_refreshable_handle() {
         ConfigStreamer::stream(&configuration, Some(shared_config), Some(snapshot_received.clone())).await?;
     }
