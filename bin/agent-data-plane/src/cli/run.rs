@@ -48,15 +48,15 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         .into_generic()
         .await?;
 
-    // Create shared state to track when snapshot is received
+    // Create shared state to track when snapshot is received.
     let snapshot_received = Arc::new(AtomicBool::new(false));
 
-    // Start the config streamer
+    // Start the config streamer.
     if let Some(shared_config) = configuration.get_refreshable_handle() {
         ConfigStreamer::stream(&configuration, Some(shared_config), Some(snapshot_received.clone())).await?;
     }
 
-    // Block until a snapshot is received
+    // Block until a snapshot is received.
     let in_standalone_mode = configuration.get_typed_or_default::<bool>("adp.standalone_mode");
     if !in_standalone_mode {
         info!("Waiting for configuration snapshot from Datadog Agent...");
@@ -76,7 +76,7 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
             }
         }
 
-        info!("Configuration snapshot received");
+        info!("Configuration snapshot received.");
     }
 
     // Set up all of the building blocks for building our topologies and launching internal processes.

@@ -8,7 +8,7 @@ use prost_types::value::Kind;
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use serde_json::{Map, Value};
-use tracing::{debug, info, warn};
+use tracing::warn;
 
 use crate::helpers::remote_agent::RemoteAgentClient;
 
@@ -29,19 +29,16 @@ impl ConfigStreamer {
                 match result {
                     Ok(event) => match event.event {
                         Some(config_event::Event::Snapshot(snapshot)) => {
-                            debug!("received config snapshot: {:#?}", snapshot);
                             let map = snapshot_to_map(&snapshot);
                             if let Some(c) = shared_config.as_ref() {
                                 c.store(map.into());
                             }
-                            // Signal that a snapshot has been received
+                            // Signal that a snapshot has been received.
                             if let Some(signal) = snapshot_received.as_ref() {
                                 signal.store(true, Ordering::SeqCst);
-                                info!("Configuration snapshot received and applied");
                             }
                         }
                         Some(config_event::Event::Update(update)) => {
-                            debug!("received config update: {:#?}", update);
                             let v =
                                 proto_value_to_serde_value(update.setting.as_ref().map(|s| &s.value).unwrap_or(&None));
                             let mut config = (**shared_config.as_ref().map(|c| c.load()).unwrap()).clone();
