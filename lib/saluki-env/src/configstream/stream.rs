@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -7,7 +8,7 @@ use prost_types::value::Kind;
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use serde_json::{Map, Value};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::helpers::remote_agent::RemoteAgentClient;
 
@@ -18,9 +19,11 @@ impl ConfigStreamer {
     /// Creates a new `ConfigStreamer` that receives a stream of config events from the remote agent.
     pub async fn stream(
         config: &GenericConfiguration, shared_config: Option<Arc<ArcSwap<Value>>>,
+        snapshot_received: Option<Arc<AtomicBool>>,
     ) -> Result<Self, GenericError> {
         let mut client = RemoteAgentClient::from_configuration(config).await?;
         let mut rac = client.stream_config_events();
+        let snapshot_received = snapshot_received.clone();
         tokio::spawn(async move {
             while let Some(result) = rac.next().await {
                 match result {
@@ -30,6 +33,11 @@ impl ConfigStreamer {
                             let map = snapshot_to_map(&snapshot);
                             if let Some(c) = shared_config.as_ref() {
                                 c.store(map.into());
+                            }
+                            // Signal that a snapshot has been received
+                            if let Some(signal) = snapshot_received.as_ref() {
+                                signal.store(true, Ordering::SeqCst);
+                                info!("Configuration snapshot received and applied");
                             }
                         }
                         Some(config_event::Event::Update(update)) => {
