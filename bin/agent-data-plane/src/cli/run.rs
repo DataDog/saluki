@@ -48,17 +48,16 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         .into_generic()
         .await?;
 
-    let snapshot_received = Arc::new(AtomicBool::new(false));
-
-    if let Some(shared_config) = configuration.get_refreshable_handle() {
-        ConfigStreamer::stream(&configuration, Some(shared_config), Some(snapshot_received.clone())).await?;
-    }
-
-    // Block until a snapshot is received.
     let in_standalone_mode = configuration.get_typed_or_default::<bool>("adp.standalone_mode");
     if !in_standalone_mode {
-        info!("Waiting for configuration snapshot from Datadog Agent...");
+        let snapshot_received = Arc::new(AtomicBool::new(false));
 
+        if let Some(shared_config) = configuration.get_refreshable_handle() {
+            ConfigStreamer::stream(&configuration, Some(shared_config), Some(snapshot_received.clone())).await?;
+        }
+        info!("Waiting for initial configuration from Datadog Agent...");
+
+        // Block until a initial configuration is received.
         let mut attempts = 0;
         const CHECK_INTERVAL_MS: u64 = 100;
 
@@ -68,13 +67,13 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
 
             if attempts % 100 == 0 {
                 info!(
-                    "Still waiting for configuration snapshot... ({}s elapsed)",
+                    "Still waiting for initial configuration... ({}s elapsed)",
                     attempts / 10
                 );
             }
         }
 
-        info!("Configuration snapshot received.");
+        info!("Initial configuration received.");
     }
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
