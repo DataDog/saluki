@@ -16,10 +16,7 @@ impl PayloadRequestor {
     async fn try_get_payload(&self) -> Option<String> {
         let (payload_resp_tx, payload_resp_rx) = oneshot::channel();
         match self.payload_req_tx.send(payload_resp_tx).await {
-            Ok(()) => match payload_resp_rx.await {
-                Ok(payload) => Some(payload),
-                Err(_) => None,
-            },
+            Ok(()) => payload_resp_rx.await.ok(),
             Err(_) => None,
         }
     }

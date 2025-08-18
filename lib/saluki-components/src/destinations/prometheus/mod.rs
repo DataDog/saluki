@@ -1,4 +1,8 @@
-use std::{num::NonZeroUsize, sync::LazyLock};
+use std::{
+    fmt::{self, Display, Write},
+    num::NonZeroUsize,
+    sync::LazyLock,
+};
 
 use async_trait::async_trait;
 use ddsketch_agent::DDSketch;
@@ -27,6 +31,15 @@ const PAYLOAD_BUFFER_SIZE_LIMIT_BYTES: usize = 1024 * 1024;
 const SUBPAYLOAD_BUFFER_SIZE_LIMIT_BYTES: usize = 128 * 1024;
 const TAGS_BUFFER_SIZE_LIMIT_BYTES: usize = 2048;
 const NAME_NORMALIZATION_BUFFER_SIZE: usize = 512;
+
+macro_rules! quantile_strs {
+    ($($q:literal),*) => { &[$(($q, stringify!($q))),*] };
+}
+
+const HISTOGRAM_QUANTILES: &[(f64, &str); 6] = quantile_strs!(0.1, 0.25, 0.5, 0.95, 0.99, 0.999);
+const SUFFIX_BUCKET: Option<&str> = Some("_bucket");
+const SUFFIX_COUNT: Option<&str> = Some("_count");
+const SUFFIX_SUM: Option<&str> = Some("_sum");
 
 // Histogram-related constants and pre-calculated buckets.
 const TIME_HISTOGRAM_BUCKET_COUNT: usize = 30;
@@ -240,7 +253,7 @@ fn render_payload(
 
     for (metric_name, grouped_values) in metrics {
         // Write this single metric out to the subpayload builder, which will include all of the individual contexts/tagsets.
-        if write_metrics(grouped_values, subpayload_builder).is_none() {
+        if write_metrics(grouped_values, subpayload_builder).is_err() {
             debug!(
                 contexts_len = grouped_values.len(),
                 "Failed to render contexts for metric '{}'. Skipping.", metric_name,
@@ -289,102 +302,79 @@ fn get_help_text(metric_name: &str) -> Option<&'static str> {
     }
 }
 
-fn write_metrics(grouped_values: &GroupedValues, builder: &mut StringBuilder) -> Option<()> {
+fn write_metrics(values: &GroupedValues, builder: &mut StringBuilder) -> fmt::Result {
     builder.clear();
 
-    if grouped_values.is_empty() {
-        debug!("No contexts for metric '{}'. Skipping.", grouped_values.prom_name);
-        return Some(());
+    if values.is_empty() {
+        debug!("No contexts for metric '{}'. Skipping.", values.name());
+        return Ok(());
     }
 
+    let metric_name = values.name();
+
     // Write HELP if available.
-    if let Some(help_text) = get_help_text(&grouped_values.prom_name) {
-        builder.push_str("# HELP ")?;
-        builder.push_str(&grouped_values.prom_name)?;
-        builder.push_str(" ")?;
-        builder.push_str(help_text)?;
-        builder.push_str("\n")?;
+    if let Some(help_text) = get_help_text(metric_name) {
+        writeln!(builder, "# HELP {} {}", metric_name, help_text)?;
     }
 
     // Write the metric header.
-    builder.push_str("# TYPE ")?;
-    builder.push_str(&grouped_values.prom_name)?;
-    builder.push_str(" ")?;
-    builder.push_str(grouped_values.prom_type.as_str())?;
-    builder.push_str("\n")?;
+    writeln!(builder, "# TYPE {} {}", metric_name, values.type_str())?;
 
-    for (_, (tags, values)) in &grouped_values.groups {
-        let metric_name = &grouped_values.prom_name;
-
+    for (_, (tags, value)) in &values.groups {
         // Write the metric value itself.
-        match values {
+        match value {
             PrometheusValue::Counter(value) | PrometheusValue::Gauge(value) => {
                 // No metric type-specific tags for counters or gauges, so just write them straight out.
-                write_metric_line(builder, metric_name, None, &tags, None, *value)?;
+                write_metric_line(builder, metric_name, None, tags, None, *value)?;
             }
             PrometheusValue::Histogram(histogram) => {
                 // Write the histogram buckets.
-                for (le_str, count) in histogram.buckets() {
-                    write_metric_line(
-                        builder,
-                        metric_name,
-                        Some("_bucket"),
-                        &tags,
-                        Some(("le", le_str)),
-                        count,
-                    )?;
+                for (le, count) in histogram.buckets() {
+                    write_metric_line(builder, metric_name, SUFFIX_BUCKET, tags, Some(("le", le)), count)?;
                 }
 
                 // Write the final bucket -- the +Inf bucket -- which is just equal to the count of the histogram.
                 write_metric_line(
                     builder,
                     metric_name,
-                    Some("_bucket"),
-                    &tags,
+                    SUFFIX_BUCKET,
+                    tags,
                     Some(("le", "+Inf")),
                     histogram.count,
                 )?;
 
                 // Write the histogram sum and count.
-                write_metric_line(builder, &metric_name, Some("_sum"), &tags, None, histogram.sum)?;
-                write_metric_line(builder, &metric_name, Some("_count"), &tags, None, histogram.count)?;
+                write_metric_line(builder, metric_name, SUFFIX_SUM, tags, None, histogram.sum)?;
+                write_metric_line(builder, metric_name, SUFFIX_COUNT, tags, None, histogram.count)?;
             }
             PrometheusValue::Summary(sketch) => {
                 // We take a fixed set of quantiles from the sketch, which is hard-coded but should generally represent
                 // the quantiles people generally care about.
-                for (q, q_str) in [
-                    (0.1, "0.1"),
-                    (0.25, "0.25"),
-                    (0.5, "0.5"),
-                    (0.95, "0.95"),
-                    (0.99, "0.99"),
-                    (0.999, "0.999"),
-                ] {
-                    let q_value = sketch.quantile(q).unwrap_or_default();
-
-                    write_metric_line(builder, metric_name, None, &tags, Some(("quantile", q_str)), q_value)?;
+                for (q, q_str) in HISTOGRAM_QUANTILES {
+                    let q_value = sketch.quantile(*q).unwrap_or_default();
+                    write_metric_line(builder, metric_name, None, tags, Some(("quantile", q_str)), q_value)?;
                 }
 
                 write_metric_line(
                     builder,
                     metric_name,
-                    Some("_sum"),
-                    &tags,
+                    SUFFIX_SUM,
+                    tags,
                     None,
                     sketch.sum().unwrap_or_default(),
                 )?;
-                write_metric_line(builder, metric_name, Some("_count"), &tags, None, sketch.count())?;
+                write_metric_line(builder, metric_name, SUFFIX_COUNT, tags, None, sketch.count())?;
             }
         }
     }
 
-    Some(())
+    Ok(())
 }
 
-fn write_metric_line<N: Numeric>(
+fn write_metric_line<N: Display>(
     builder: &mut StringBuilder, metric_name: &str, suffix: Option<&str>, primary_tags: &str,
     secondary_tag: Option<(&str, &str)>, value: N,
-) -> Option<()> {
+) -> fmt::Result {
     // We handle some different things here:
     // - the metric name can be suffixed (used for things like `_bucket`, `_count`, `_sum`,  in histograms and summaries)
     // - writing out the "primary" set of tags
@@ -392,31 +382,26 @@ fn write_metric_line<N: Numeric>(
 
     let has_tags = !primary_tags.is_empty() || secondary_tag.is_some();
 
-    builder.push_str(metric_name)?;
+    write!(builder, "{metric_name}")?;
     if let Some(suffix) = suffix {
-        builder.push_str(suffix)?;
+        write!(builder, "{suffix}")?;
     }
 
     if has_tags {
-        builder.push('{')?;
-        builder.push_str(primary_tags)?;
+        write!(builder, "{{{primary_tags}")?;
 
         if let Some((tag_key, tag_value)) = secondary_tag {
             if !primary_tags.is_empty() {
-                builder.push(',')?;
+                builder.push(',').ok_or(fmt::Error)?;
             }
-            builder.push_str(tag_key)?;
-            builder.push_str("=\"")?;
 
-            builder.push_str(tag_value)?;
-            builder.push_str("\"")?;
+            write!(builder, "{tag_key}=\"{tag_value}\"")?;
         }
 
-        builder.push_str("} ")?;
+        write!(builder, "}}")?;
     }
 
-    builder.push_numeric(value)?;
-    builder.push('\n')
+    writeln!(builder, " {value}")
 }
 
 /// Prometheus metric type.
@@ -512,6 +497,14 @@ impl GroupedValues {
 
     fn len(&self) -> usize {
         self.groups.len()
+    }
+
+    fn name(&self) -> &str {
+        &self.prom_name
+    }
+
+    fn type_str(&self) -> &str {
+        self.prom_type.as_str()
     }
 
     fn get_new_prom_value(&self) -> PrometheusValue {
