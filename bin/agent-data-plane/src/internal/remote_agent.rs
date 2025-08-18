@@ -102,7 +102,6 @@ async fn run_remote_agent_helper(
     register_agent.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     debug!("Remote Agent helper started.");
-    println!("in run_remote_agent_helper");
 
     loop {
         register_agent.tick().await;

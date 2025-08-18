@@ -79,8 +79,6 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         info!("Configuration snapshot received");
     }
 
-    println!("this is after we created the remote agent service");
-
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
