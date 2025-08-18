@@ -50,30 +50,31 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
 
     let in_standalone_mode = configuration.get_typed_or_default::<bool>("adp.standalone_mode");
     if !in_standalone_mode {
-        let snapshot_received = Arc::new(AtomicBool::new(false));
-
         if let Some(shared_config) = configuration.get_refreshable_handle() {
-            create_config_stream(&configuration, shared_config, snapshot_received.clone()).await?;
-        }
-        info!("Waiting for initial configuration from Datadog Agent...");
-
-        // Block until a initial configuration is received.
-        let mut attempts = 0;
-        const CHECK_INTERVAL_MS: u64 = 100;
-
-        while !snapshot_received.load(Ordering::SeqCst) {
-            tokio::time::sleep(Duration::from_millis(CHECK_INTERVAL_MS)).await;
-            attempts += 1;
-
-            if attempts % 100 == 0 {
-                info!(
-                    "Still waiting for initial configuration... ({}s elapsed)",
-                    attempts / 10
-                );
+            let snapshot_received = Arc::new(AtomicBool::new(false));
+            if let Err(e) = create_config_stream(&configuration, shared_config, snapshot_received.clone()).await {
+                error!("Failed to create config stream: {}.", e);
+                return Err(e);
             }
-        }
+            info!("Waiting for initial configuration from Datadog Agent...");
 
-        info!("Initial configuration received.");
+            // Block until a initial configuration is received.
+            let mut attempts = 0;
+            const CHECK_INTERVAL_MS: u64 = 100;
+
+            while !snapshot_received.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(CHECK_INTERVAL_MS)).await;
+                attempts += 1;
+
+                if attempts % 100 == 0 {
+                    info!(
+                        "Still waiting for initial configuration... ({}s elapsed)",
+                        attempts / 10
+                    );
+                }
+            }
+            info!("Initial configuration received.");
+        }
     }
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
