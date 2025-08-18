@@ -18,7 +18,7 @@ use saluki_components::{
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::topology::TopologyBlueprint;
-use saluki_env::{configstream::ConfigStreamer, EnvironmentProvider as _};
+use saluki_env::{configstream::create_config_stream, EnvironmentProvider as _};
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use tokio::{select, time::interval};
@@ -53,7 +53,7 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         let snapshot_received = Arc::new(AtomicBool::new(false));
 
         if let Some(shared_config) = configuration.get_refreshable_handle() {
-            ConfigStreamer::stream(&configuration, Some(shared_config), Some(snapshot_received.clone())).await?;
+            create_config_stream(&configuration, shared_config, snapshot_received.clone()).await?;
         }
         info!("Waiting for initial configuration from Datadog Agent...");
 

@@ -8,58 +8,50 @@ use prost_types::value::Kind;
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use serde_json::{Map, Value};
-use tracing::warn;
+use tracing::{error, warn};
 
 use crate::helpers::remote_agent::RemoteAgentClient;
 
-/// A streamer that receives config events from the remote agent.
-pub struct ConfigStreamer {}
-
-impl ConfigStreamer {
-    /// Creates a new `ConfigStreamer` that receives a stream of config events from the remote agent.
-    pub async fn stream(
-        config: &GenericConfiguration, shared_config: Option<Arc<ArcSwap<Value>>>,
-        snapshot_received: Option<Arc<AtomicBool>>,
-    ) -> Result<Self, GenericError> {
-        let mut client = RemoteAgentClient::from_configuration(config).await?;
-        let mut rac = client.stream_config_events();
-        let snapshot_received = snapshot_received.clone();
-        tokio::spawn(async move {
-            while let Some(result) = rac.next().await {
-                match result {
-                    Ok(event) => match event.event {
-                        Some(config_event::Event::Snapshot(snapshot)) => {
-                            let map = snapshot_to_map(&snapshot);
-                            if let Some(c) = shared_config.as_ref() {
-                                c.store(map.into());
-                            }
-                            // Signal that a snapshot has been received.
-                            if let Some(signal) = snapshot_received.as_ref() {
-                                signal.store(true, Ordering::SeqCst);
-                            }
-                        }
-                        Some(config_event::Event::Update(update)) => {
-                            let v =
-                                proto_value_to_serde_value(update.setting.as_ref().map(|s| &s.value).unwrap_or(&None));
-                            let mut config = (**shared_config.as_ref().map(|c| c.load()).unwrap()).clone();
-                            config
-                                .as_object_mut()
-                                .unwrap()
-                                .insert(update.setting.as_ref().unwrap().key.clone(), v);
-                            if let Some(c) = shared_config.as_ref() {
-                                c.store(Arc::new(config));
-                            }
-                        }
-                        None => {
-                            warn!("Received a ConfigEvent with no event data");
-                        }
-                    },
-                    Err(e) => warn!("Error while reading config event stream: {}", e),
-                }
+/// Creates a new `ConfigStreamer` that receives a stream of config events from the remote agent.
+pub async fn create_config_stream(
+    config: &GenericConfiguration, shared_config: Arc<ArcSwap<Value>>, snapshot_received: Arc<AtomicBool>,
+) -> Result<(), GenericError> {
+    let config = config.clone();
+    tokio::spawn(async move {
+        let mut client = match RemoteAgentClient::from_configuration(&config).await {
+            Ok(client) => client,
+            Err(e) => {
+                error!("Failed to create remote agent client: {}.", e);
+                return;
             }
-        });
-        Ok(Self {})
-    }
+        };
+        let mut rac = client.stream_config_events();
+        while let Some(result) = rac.next().await {
+            match result {
+                Ok(event) => match event.event {
+                    Some(config_event::Event::Snapshot(snapshot)) => {
+                        let map = snapshot_to_map(&snapshot);
+                        shared_config.store(map.into());
+                        // Signal that a snapshot has been received.
+                        snapshot_received.store(true, Ordering::SeqCst);
+                    }
+                    Some(config_event::Event::Update(update)) => {
+                        if let Some(setting) = update.setting {
+                            let v = proto_value_to_serde_value(&setting.value);
+                            let mut config = (**shared_config.load()).clone();
+                            config.as_object_mut().unwrap().insert(setting.key, v);
+                            shared_config.store(Arc::new(config));
+                        }
+                    }
+                    None => {
+                        warn!("Received a configuration update event with no data.");
+                    }
+                },
+                Err(e) => error!("Error while reading config event stream: {}.", e),
+            }
+        }
+    });
+    Ok(())
 }
 
 /// Converts a `ConfigSnapshot` into a single flat `serde_json::Value::Object` (a map).
