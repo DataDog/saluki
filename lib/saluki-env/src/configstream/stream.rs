@@ -16,8 +16,7 @@ use crate::helpers::remote_agent::RemoteAgentClient;
 pub async fn create_config_stream(
     config: &GenericConfiguration, shared_config: Arc<ArcSwap<Value>>, snapshot_received: Arc<AtomicBool>,
 ) -> Result<(), GenericError> {
-    let config = config.clone();
-    let mut client = match RemoteAgentClient::from_configuration(&config).await {
+    let mut client = match RemoteAgentClient::from_configuration(config).await {
         Ok(client) => client,
         Err(e) => {
             error!("Failed to create remote agent client: {}.", e);
