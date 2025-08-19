@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
@@ -16,7 +18,7 @@ use saluki_components::{
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::topology::TopologyBlueprint;
-use saluki_env::EnvironmentProvider as _;
+use saluki_env::{configstream::create_config_stream, EnvironmentProvider as _};
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use tokio::{select, time::interval};
@@ -45,6 +47,35 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         .await?
         .into_generic()
         .await?;
+
+    let in_standalone_mode = configuration.get_typed_or_default::<bool>("adp.standalone_mode");
+    if !in_standalone_mode {
+        if let Some(shared_config) = configuration.get_refreshable_handle() {
+            let snapshot_received = Arc::new(AtomicBool::new(false));
+            if let Err(e) = create_config_stream(&configuration, shared_config, snapshot_received.clone()).await {
+                error!("Failed to create config stream: {}.", e);
+                return Err(e);
+            }
+            info!("Waiting for initial configuration from Datadog Agent...");
+
+            // Block until a initial configuration is received.
+            let mut attempts = 0;
+            const CHECK_INTERVAL_MS: u64 = 100;
+
+            while !snapshot_received.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(CHECK_INTERVAL_MS)).await;
+                attempts += 1;
+
+                if attempts % 100 == 0 {
+                    info!(
+                        "Still waiting for initial configuration... ({}s elapsed)",
+                        attempts / 10
+                    );
+                }
+            }
+            info!("Initial configuration received.");
+        }
+    }
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();

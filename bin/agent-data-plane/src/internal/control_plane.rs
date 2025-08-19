@@ -9,7 +9,7 @@ use saluki_health::HealthRegistry;
 use saluki_io::net::ListenAddress;
 use tracing::{error, info};
 
-use super::remote_agent::RemoteAgentHelperConfiguration;
+use crate::internal::remote_agent::RemoteAgentHelperConfiguration;
 use crate::{env_provider::ADPEnvironmentProvider, internal::initialize_and_launch_runtime};
 
 const PRIMARY_UNPRIVILEGED_API_PORT: u16 = 5100;
@@ -94,7 +94,6 @@ async fn configure_and_spawn_api_endpoints(
             config,
             local_secure_api_listen_addr,
             prometheus_listen_addr,
-            config.get_refreshable_handle(),
         )
         .await?;
         let remote_agent_service = remote_agent_config.spawn().await;
