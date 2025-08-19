@@ -83,9 +83,7 @@ mod tests {
             timestamp: None,
             container_id: None,
             external_data: None,
-            pod_uid: None,
             cardinality: None,
-            jmx_check_name: None,
         }
     }
 
@@ -102,7 +100,6 @@ mod tests {
             tags: RawTags::empty(),
             container_id: None,
             external_data: None,
-            pod_uid: None,
             cardinality: None,
         }
     }
@@ -116,7 +113,6 @@ mod tests {
             hostname: None,
             container_id: None,
             external_data: None,
-            pod_uid: None,
             cardinality: None,
             timestamp: None,
         }

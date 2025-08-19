@@ -12,19 +12,16 @@ stages:
 # Our workflow rules let us override specific variables, in a consistent way, depending on whether this is an "internal"
 # run (we consider all non-tagged pipeline triggers to be "internal") or a "release" run.
 #
-# This mostly controls how we tag our ADP container images, and the base image we use when building those ADP container
-# images.
+# This mostly controls how we tag our ADP container images and set various bits of metadata.
 workflow:
   rules:
     - if: $CI_COMMIT_TAG == null
       variables:
-        ADP_APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
         BASE_ADP_IMAGE_VERSION: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
         APP_DEV_BUILD: "true"
 
     - if: $CI_COMMIT_TAG
       variables:
-        ADP_APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
         BASE_ADP_IMAGE_VERSION: ${CI_COMMIT_TAG}
         APP_DEV_BUILD: "false"
 
@@ -32,7 +29,7 @@ variables:
   # High-level repository paths we build off of, and dedicated images needed for various jobs.
   IMAGE_REGISTRY: "registry.ddbuild.io"
   DOCKER_BUILD_IMAGE: "registry.ddbuild.io/docker:24.0.4-jammy"
-  GBI_BASE_IMAGE: "${IMAGE_REGISTRY}/images/base/gbi-ubuntu_2204:release"
+  GBI_BASE_IMAGE: "${IMAGE_REGISTRY}/images/base/gbi-ubuntu_2404:release"
   PUBLIC_BASE_IMAGE: "${IMAGE_REGISTRY}/images/mirror/ubuntu:24.04"
 
   # Base repository paths for where our CI images go, whether they're helper images or actual
@@ -45,7 +42,8 @@ variables:
 
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image that we
   # publicly publish.
-  PUBLIC_DD_AGENT_VERSION: "7.67.1"
+  PUBLIC_DSD_VERSION: "7.68.3"
+  PUBLIC_DD_AGENT_VERSION: "7.68.3-jmx"
 
   # Base images to copy Agent Data Plane into, depending on whether the image is meant for our internal environment or
   # public registries.
@@ -57,7 +55,6 @@ variables:
   ADP_BUILD_IMAGE: "${SALUKI_BUILD_CI_IMAGE}"
 
   ADP_IMAGE_REPO_NAME: "${SALUKI_IMAGE_REPO_PREFIX}/agent-data-plane"
-  CHECKS_AGENT_IMAGE_REPO_NAME: "${SALUKI_IMAGE_REPO_PREFIX}/checks-agent"
 
   # The image version depending on whether this is an official release or not: v3727183-d55fef5a (not official) va
   # 0.1.10 (official), etc.
@@ -70,13 +67,14 @@ variables:
   # varied depending on where it's being pushed.
   ADP_IMAGE_TAG: "agent-data-plane:${ADP_IMAGE_VERSION}"
   ADP_IMAGE_TAG_FIPS: "agent-data-plane:${ADP_IMAGE_VERSION_FIPS}"
+  ADP_CHECKS_TAG: "agent-data-plane-checks:${ADP_IMAGE_VERSION}"
 
   # The full image path.
   #
   # Used to specifically reference the built ADP image in certain jobs.
   ADP_FULL_IMAGE_TAG: "${IMAGE_REGISTRY}/saluki/agent-data-plane:${ADP_IMAGE_VERSION}"
   ADP_FULL_IMAGE_TAG_FIPS: "${IMAGE_REGISTRY}/saluki/agent-data-plane:${ADP_IMAGE_VERSION_FIPS}"
-  CHECKS_AGENT_FULL_IMAGE_TAG: "${IMAGE_REGISTRY}/saluki/checks-agent:${ADP_IMAGE_VERSION}"
+  ADP_CHECKS_FULL_IMAGE_TAG: "${IMAGE_REGISTRY}/saluki/agent-data-plane-checks:${ADP_IMAGE_VERSION}"
 
 default:
   tags: ["arch:amd64"]
@@ -86,11 +84,17 @@ default:
   rules:
     if: $CI_COMMIT_TAG
 
+# Run a job on development branches.
+.on_development_branch:
+  rules:
+    if: $CI_COMMIT_BRANCH != "main" && $CI_COMMIT_TAG == null
+
 # Common build-specific variables that need to be shared across stages.
 .build-common-variables:
   variables:
     BUILD_PROFILE: "optimized-release"
     BUILD_FEATURES: "default"
+    BUILDER_BASE: "builder"
     FIPS_ENABLED: "false"
 
 .linux-test-job:
