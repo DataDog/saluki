@@ -24,7 +24,7 @@ use crate::{
         entity::EntityId,
         on_demand_pid::OnDemandPIDResolver,
         origin::{OriginResolver, ResolvedOrigin},
-        stores::{ExternalDataStore, TagStore, TagStoreQuerier},
+        stores::{ExternalDataStore, ExternalDataStoreResolver, TagStore, TagStoreQuerier},
     },
     WorkloadProvider,
 };
@@ -62,6 +62,7 @@ pub struct RemoteAgentWorkloadProvider {
     tags_querier: TagStoreQuerier,
     origin_resolver: OriginResolver,
     on_demand_pid_resolver: OnDemandPIDResolver,
+    eds_resolver: ExternalDataStoreResolver,
 }
 
 impl RemoteAgentWorkloadProvider {
@@ -146,13 +147,13 @@ impl RemoteAgentWorkloadProvider {
         aggregator.add_store(tag_store);
 
         let external_data_store = ExternalDataStore::with_entity_limit(DEFAULT_EXTERNAL_DATA_STORE_ENTITY_LIMIT);
-        let external_data_resolver = external_data_store.resolver();
+        let eds_resolver = external_data_store.resolver();
 
         aggregator.add_store(external_data_store);
 
         let on_demand_pid_resolver =
             OnDemandPIDResolver::from_configuration(config, feature_detector, string_interner)?;
-        let origin_resolver = OriginResolver::new(external_data_resolver);
+        let origin_resolver = OriginResolver::new(eds_resolver.clone());
 
         // With the aggregator configured, update the memory bounds and spawn the aggregator.
         provider_bounds.with_subcomponent("aggregator", &aggregator);
@@ -163,6 +164,7 @@ impl RemoteAgentWorkloadProvider {
             tags_querier,
             origin_resolver,
             on_demand_pid_resolver,
+            eds_resolver,
         })
     }
 
@@ -172,7 +174,7 @@ impl RemoteAgentWorkloadProvider {
     /// contents of the underlying data stores powering this workload provider. See [`RemoteAgentWorkloadAPIHandler`]
     /// for more information about routes and responses.
     pub fn api_handler(&self) -> RemoteAgentWorkloadAPIHandler {
-        RemoteAgentWorkloadAPIHandler::from_state(self.tags_querier.clone())
+        RemoteAgentWorkloadAPIHandler::from_state(self.tags_querier.clone(), self.eds_resolver.clone())
     }
 }
 

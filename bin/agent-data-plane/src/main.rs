@@ -21,7 +21,7 @@ mod env_provider;
 mod internal;
 
 mod cli;
-use self::cli::{config::handle_config_command, debug::handle_debug_command, run::run};
+use self::cli::{config::handle_config_command, debug::handle_debug_command, dogstatsd::handle_dogstatsd_subcommand, run::run};
 
 pub(crate) mod state;
 
@@ -69,6 +69,9 @@ async fn main() {
         }
         Some(Action::Config) => {
             handle_config_command().await;
+        }
+        Some(Action::Dogstatsd(dogstatsd_config)) => {
+            handle_dogstatsd_subcommand(dogstatsd_config).await;
         }
         // If no subcommand is provided, the run subcommand is executed with the default configuration.
         None => {

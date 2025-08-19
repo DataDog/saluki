@@ -23,6 +23,10 @@ pub enum Action {
     /// Prints the current configuration.
     #[command(name = "config")]
     Config,
+
+    /// Various dogstatsd commands.
+    #[command(subcommand)]
+    Dogstatsd(DogstatsdConfig),
 }
 
 /// Run subcommand configuration.
@@ -55,4 +59,20 @@ pub struct SetLogLevelConfig {
     /// Amount of time to apply the log level override, in seconds.
     #[arg(required = true)]
     pub duration_secs: u64,
+}
+
+/// Dogstatsd subcommand configuration.
+#[derive(Subcommand, Debug)]
+pub enum DogstatsdConfig {
+    /// Prints basic statistics about the metrics received by the data plane.
+    #[command(name = "stats")]
+    Stats(DogstatsdStatsConfig),
+}
+
+/// Dogstatsd stats subcommand configuration.
+#[derive(Args, Debug)]
+pub struct DogstatsdStatsConfig {
+    /// Amount of time to collect statistics for, in seconds.
+    #[arg(required = true)]
+    pub collection_duration_secs: u64,
 }

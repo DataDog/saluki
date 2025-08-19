@@ -1,6 +1,6 @@
 [package]
 name = "agent-data-plane"
-version = "0.1.17"
+version = "0.1.19"
 edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
@@ -11,6 +11,7 @@ workspace = true
 [features]
 default = []
 fips = ["saluki-app/tls-fips"]
+python-checks = ["saluki-components/python-checks"]
 
 [dependencies]
 arc-swap = { workspace = true }
@@ -27,6 +28,7 @@ clap = { workspace = true, features = [
   "error-context",
   "suggestions",
 ] }
+comfy-table = { workspace = true }
 datadog-protos = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
@@ -41,6 +43,7 @@ reqwest = { workspace = true, features = [
   "rustls-tls-native-roots-no-provider",
   "json",
 ] }
+saluki-api = { workspace = true }
 saluki-app = { workspace = true, features = ["full"] }
 saluki-common = { workspace = true }
 saluki-components = { workspace = true }

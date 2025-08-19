@@ -12,7 +12,6 @@ workspace = true
 bytes = { workspace = true }
 crossbeam-queue = { workspace = true }
 foldhash = { workspace = true }
-hashbrown = { workspace = true }
 http-body = { workspace = true }
 indexmap = { workspace = true }
 memory-accounting = { workspace = true }

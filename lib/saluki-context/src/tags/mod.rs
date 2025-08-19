@@ -7,7 +7,7 @@ use serde::Serialize;
 use stringtheory::{CheapMetaString, MetaString};
 
 mod raw;
-pub use self::raw::RawTags;
+pub use self::raw::{RawTags, RawTagsFilter, RawTagsFilterPredicate};
 
 mod tagset;
 pub use self::tagset::{SharedTagSet, TagSet};
@@ -196,23 +196,23 @@ impl hash::Hash for BorrowedTag<'_> {
 }
 
 /// An iterator for deduplicating tags.
-pub struct DeduplicatedTags<I> {
+pub struct DeduplicatedTags<'a, I> {
     tags: I,
-    seen: FastHashSet<Tag>,
+    seen: FastHashSet<&'a Tag>,
 }
 
 /// Helper trait for iterators dealing with tags.
 pub trait TagsExt {
     /// Creates an iterator that deduplicates tags.
-    fn deduplicated(self) -> DeduplicatedTags<Self>
+    fn deduplicated<'a>(self) -> DeduplicatedTags<'a, Self>
     where
-        Self: Sized;
+        Self: Sized + 'a;
 }
 
 impl<I> TagsExt for I {
-    fn deduplicated(self) -> DeduplicatedTags<Self>
+    fn deduplicated<'a>(self) -> DeduplicatedTags<'a, Self>
     where
-        Self: Sized,
+        Self: Sized + 'a,
     {
         DeduplicatedTags {
             tags: self,
@@ -221,17 +221,13 @@ impl<I> TagsExt for I {
     }
 }
 
-impl<'a, I> Iterator for DeduplicatedTags<I>
+impl<'a, I> Iterator for DeduplicatedTags<'a, I>
 where
     I: Iterator<Item = &'a Tag>,
 {
     type Item = &'a Tag;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // TODO: This clone is suboptimal.
-        //
-        // Ideally we'd just use a borrowed version of the tag for our hashset to at least minimize the hit of
-        // cloning, but the required lifetimes to do so, or if it's even possible, are currently beyond me.
-        self.tags.by_ref().find(|&tag| self.seen.insert(tag.clone()))
+        self.tags.by_ref().find(|&tag| self.seen.insert(tag))
     }
 }

@@ -1,7 +1,6 @@
 [workspace]
 members = [
   "bin/agent-data-plane",
-  "bin/checks-agent",
   "bin/correctness/airlock",
   "bin/correctness/ground-truth",
   "bin/correctness/metrics-intake",
@@ -186,6 +185,7 @@ twox-hash = { version = "2", features = ["xxhash64"] }
 sha3 = { version = "0.10", default-features = false }
 pyo3 = { version = "0.25", default-features = false }
 test-strategy = { version = "0.4", default-features = false }
+comfy-table = "7.1.4"
 
 [profile.release]
 debug = true
@@ -199,3 +199,5 @@ debug = true
 [workspace.lints.clippy]
 new_without_default = "allow"
 uninlined_format_args = "allow"
+map_entry = "allow"
+mutable_key_type = "allow"
