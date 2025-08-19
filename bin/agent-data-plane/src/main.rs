@@ -21,7 +21,9 @@ mod env_provider;
 mod internal;
 
 mod cli;
-use self::cli::{config::handle_config_command, debug::handle_debug_command, dogstatsd::handle_dogstatsd_subcommand, run::run};
+use self::cli::{
+    config::handle_config_command, debug::handle_debug_command, dogstatsd::handle_dogstatsd_subcommand, run::run,
+};
 
 pub(crate) mod state;
 
