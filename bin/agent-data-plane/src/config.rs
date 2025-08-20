@@ -20,6 +20,10 @@ pub enum Action {
     #[command(subcommand)]
     Debug(DebugConfig),
 
+    /// Prints the current configuration.
+    #[command(name = "config")]
+    Config,
+
     /// Various dogstatsd commands.
     #[command(subcommand)]
     Dogstatsd(DogstatsdConfig),
