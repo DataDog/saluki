@@ -73,7 +73,13 @@ fn proto_value_to_serde_value(proto_val: &Option<prost_types::Value>) -> Value {
 
     match kind {
         Kind::NullValue(_) => Value::Null,
-        Kind::NumberValue(n) => Value::from(*n),
+        Kind::NumberValue(n) => {
+            if n.fract() == 0.0 && *n >= i64::MIN as f64 && *n <= i64::MAX as f64 {
+                Value::from(*n as i64)
+            } else {
+                Value::from(*n)
+            }
+        }
         Kind::StringValue(s) => Value::String(s.clone()),
         Kind::BoolValue(b) => Value::Bool(*b),
         Kind::StructValue(s) => {
