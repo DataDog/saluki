@@ -60,7 +60,7 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
                 return Err(e);
             }
             // If configured, block until a initial configuration is received.
-            if configuration.get_typed_or_default::<bool>("adp.block_until_config_snapshot") {
+            if configuration.get_typed_or_default::<bool>("adp.use_new_config_stream_endpoint") {
                 info!("Waiting for initial configuration from Datadog Agent...");
                 let mut attempts = 0;
                 const CHECK_INTERVAL_MS: u64 = 100;
