@@ -59,24 +59,25 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
                 error!("Failed to create config stream: {}.", e);
                 return Err(e);
             }
-            info!("Waiting for initial configuration from Datadog Agent...");
+            // If configured, block until a initial configuration is received.
+            if configuration.get_typed_or_default::<bool>("adp.block_until_config_snapshot") {
+                info!("Waiting for initial configuration from Datadog Agent...");
+                let mut attempts = 0;
+                const CHECK_INTERVAL_MS: u64 = 100;
 
-            // Block until a initial configuration is received.
-            let mut attempts = 0;
-            const CHECK_INTERVAL_MS: u64 = 100;
+                while !snapshot_received.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(CHECK_INTERVAL_MS)).await;
+                    attempts += 1;
 
-            while !snapshot_received.load(Ordering::SeqCst) {
-                tokio::time::sleep(Duration::from_millis(CHECK_INTERVAL_MS)).await;
-                attempts += 1;
-
-                if attempts % 100 == 0 {
-                    info!(
-                        "Still waiting for initial configuration... ({}s elapsed)",
-                        attempts / 10
-                    );
+                    if attempts % 100 == 0 {
+                        info!(
+                            "Still waiting for initial configuration... ({}s elapsed)",
+                            attempts / 10
+                        );
+                    }
                 }
+                info!("Initial configuration received.");
             }
-            info!("Initial configuration received.");
         }
     }
 
