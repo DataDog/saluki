@@ -54,13 +54,13 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
     let in_standalone_mode = configuration.get_typed_or_default::<bool>("adp.standalone_mode");
     if !in_standalone_mode {
         if let Some(shared_config) = configuration.get_refreshable_handle() {
-            let snapshot_received = Arc::new(AtomicBool::new(false));
-            if let Err(e) = create_config_stream(&configuration, shared_config, snapshot_received.clone()).await {
-                error!("Failed to create config stream: {}.", e);
-                return Err(e);
-            }
-            // If configured, block until a initial configuration is received.
+            // If configured, create a config stream and block until a initial configuration is received.
             if configuration.get_typed_or_default::<bool>("adp.use_new_config_stream_endpoint") {
+                let snapshot_received = Arc::new(AtomicBool::new(false));
+                if let Err(e) = create_config_stream(&configuration, shared_config, snapshot_received.clone()).await {
+                    error!("Failed to create config stream: {}.", e);
+                    return Err(e);
+                }
                 info!("Waiting for initial configuration from Datadog Agent...");
                 let mut attempts = 0;
                 const CHECK_INTERVAL_MS: u64 = 100;
