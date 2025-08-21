@@ -6,6 +6,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use bincode::{DefaultOptions, Options};
+use metrics::{counter, gauge, histogram};
 use saluki_error::GenericError;
 use serde::{Deserialize, Serialize};
 use tracing::{Event, Subscriber};
@@ -75,6 +77,7 @@ impl Default for RingBufferConfig {
 /// A compressed segment containing a batch of log events.
 #[derive(Clone, Debug)]
 struct CompressedSegment {
+    event_count: usize,
     uncompressed_size: usize,
     compressed_data: Vec<u8>,
 }
@@ -87,7 +90,8 @@ impl CompressedSegment {
         let mut decoder = zstd::Decoder::with_buffer(&self.compressed_data[..])?;
         decoder.read_to_end(&mut decompressed)?;
 
-        let events = bincode::deserialize(&decompressed)?;
+        let bincode_opts = get_bincode_options();
+        let events = bincode_opts.deserialize(&decompressed)?;
         Ok(events)
     }
 }
@@ -164,6 +168,10 @@ struct EventBuffer {
 }
 
 impl EventBuffer {
+    fn len(&self) -> usize {
+        self.events.len()
+    }
+
     fn add_event(&mut self, event: SerializedEvent) {
         let event_size_bytes = event.message.len()
             + event.target.len()
@@ -171,6 +179,8 @@ impl EventBuffer {
             + event.fields.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()
             + event.file.as_ref().map(|f| f.len()).unwrap_or(0)
             + std::mem::size_of::<SerializedEvent>();
+
+        histogram!("compressed_log_buffer_event_size_bytes").record(event_size_bytes as f64);
 
         self.total_size_bytes += event_size_bytes;
         self.events.push(event);
@@ -181,12 +191,26 @@ impl EventBuffer {
             return Ok(None);
         }
 
-        let serialized = bincode::serialize(&self.events)?;
+        counter!("compressed_log_buffer_compressed_segments_total").increment(1);
+
+        let bincode_opts = get_bincode_options();
+        let serialized = bincode_opts.serialize(&self.events)?;
+        let uncompressed_size = serialized.len();
+
         let compressed = zstd::encode_all(&serialized[..], compression_level)?;
+        let compressed_size = compressed.len();
+
+        let compression_ratio = if uncompressed_size > 0 {
+            compressed_size as f64 / uncompressed_size as f64
+        } else {
+            1.0
+        };
+        histogram!("compressed_log_buffer_compression_ratio").record(compression_ratio);
 
         let segment = CompressedSegment {
-            uncompressed_size: serialized.len(),
+            uncompressed_size,
             compressed_data: compressed,
+            event_count: self.events.len(),
         };
 
         self.events.clear();
@@ -196,6 +220,10 @@ impl EventBuffer {
     }
 }
 
+fn get_bincode_options() -> impl Options {
+    DefaultOptions::new().with_varint_encoding().with_little_endian()
+}
+
 /// Ring buffer internal state.
 #[derive(Debug)]
 struct RingBufferState {
@@ -203,6 +231,7 @@ struct RingBufferState {
     segments: VecDeque<CompressedSegment>,
     current_buffer: EventBuffer,
     total_compressed_bytes: usize,
+    total_compressed_events: usize,
     dropped_segments: usize,
 }
 
@@ -213,6 +242,7 @@ impl RingBufferState {
             segments: VecDeque::new(),
             current_buffer: EventBuffer::default(),
             total_compressed_bytes: 0,
+            total_compressed_events: 0,
             dropped_segments: 0,
         }
     }
@@ -221,11 +251,16 @@ impl RingBufferState {
         self.current_buffer.total_size_bytes + self.total_compressed_bytes
     }
 
+    fn total_event_count(&self) -> usize {
+        self.current_buffer.len() + self.total_compressed_events
+    }
+
     fn should_compress_current_buffer(&self) -> bool {
         self.current_buffer.total_size_bytes > self.config.max_uncompressed_segment_size_bytes
     }
 
     fn add_event(&mut self, event: SerializedEvent) {
+        counter!("compressed_log_buffer_events_total").increment(1);
         self.current_buffer.add_event(event);
 
         // Before checking if we've exceeded our maximum size limit, see if we can/should compress the current buffer.
@@ -237,19 +272,26 @@ impl RingBufferState {
                 Err(e) => eprintln!("Failed to compress buffer: {}", e),
             }
         }
+
+        gauge!("compressed_log_buffer_size_bytes_live").set(self.total_size_bytes() as f64);
+        gauge!("compressed_log_buffer_events_live").set(self.total_event_count() as f64);
     }
 
     fn add_compressed_segment(&mut self, segment: CompressedSegment) {
         self.total_compressed_bytes += segment.compressed_data.len();
+        self.total_compressed_events += segment.event_count;
         self.segments.push_back(segment);
 
+        counter!("compressed_log_buffer_compressed_segments_added_total").increment(1);
+
         loop {
-            let total_size_bytes = self.total_size_bytes();
-            if total_size_bytes > self.config.max_ring_buffer_size_bytes {
+            if self.total_size_bytes() > self.config.max_ring_buffer_size_bytes {
                 match self.segments.pop_front() {
                     Some(old_segment) => {
                         self.total_compressed_bytes -= old_segment.compressed_data.len();
+                        self.total_compressed_events -= old_segment.event_count;
                         self.dropped_segments += 1;
+                        counter!("compressed_log_buffer_compressed_segments_dropped_total").increment(1);
                     }
                     None => unreachable!("Cannot exceed maximum ring buffer size with no compressed segments."),
                 }
@@ -257,6 +299,8 @@ impl RingBufferState {
                 break;
             }
         }
+
+        gauge!("compressed_log_buffer_compressed_segments_live").set(self.segments.len() as f64);
     }
 }
 

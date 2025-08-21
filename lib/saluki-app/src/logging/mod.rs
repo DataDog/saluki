@@ -118,15 +118,23 @@ fn initialize_logging_inner(
             .replace(LoggingAPIHandler::new(shared_level_filter.clone(), reload_handle));
     }
 
+    let ring_buffer_config = RingBufferConfig::default()
+        .with_max_ring_buffer_size_bytes(2_048_576)
+        .with_max_uncompressed_segment_size_bytes(132_072)
+        .with_compression_level(5);
+    let ring_buffer = CompressedRingBuffer::with_config(ring_buffer_config);
+
     if is_json {
         let json_layer = initialize_tracing_json();
         tracing_subscriber::registry()
             .with(json_layer.with_filter(filter_layer))
+            .with(ring_buffer.with_filter(LevelFilter::DEBUG))
             .try_init()?;
     } else {
         let pretty_layer = initialize_tracing_pretty();
         tracing_subscriber::registry()
             .with(pretty_layer.with_filter(filter_layer))
+            .with(ring_buffer.with_filter(LevelFilter::DEBUG))
             .try_init()?;
     }
 
