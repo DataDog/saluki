@@ -1,4 +1,4 @@
-ARG DD_AGENT_VERSION=7.67.1-jmx
+ARG DD_AGENT_VERSION=7.68.3-jmx
 ARG DD_AGENT_IMAGE=registry.ddbuild.io/images/datadog-agent:${DD_AGENT_VERSION}
 
 ARG BUILD_IMAGE
@@ -47,14 +47,14 @@ RUN tar -C /usr/local -xzf /tmp/go-1.23.0.tar.gz
 # Install Protocol Buffers compiler by hand, since we want a specific minimum version that Debian Buster does not have.
 COPY .ci/install-protoc.sh /
 RUN chmod +x /install-protoc.sh && /install-protoc.sh
-    
+
 FROM builder AS builder-python
 # Docs here https://pyo3.rs/v0.14.5/building_and_distribution#configuring-the-python-version
 # If needed, ENV PYO3_PYTHON="/opt/datadog-agent/embedded/bin/python3.12" could be used, but auto-detection works in our case
 COPY --from=agent "/opt/datadog-agent/embedded" "/opt/datadog-agent/embedded"
 ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
 ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
-    
+
 FROM ${BUILDER_BASE} AS final
 # Build ADP.
 WORKDIR /adp

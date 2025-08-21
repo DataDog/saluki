@@ -2,7 +2,7 @@
 
 use std::io;
 
-use http::{uri::PathAndQuery, HeaderValue, Method, Request, Uri};
+use http::{HeaderValue, Method, Request, Uri};
 use saluki_common::buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer};
 use saluki_io::compression::*;
 use snafu::{ResultExt, Snafu};
@@ -139,7 +139,6 @@ where
     E: EndpointEncoder,
 {
     encoder: E,
-    endpoint_uri: Uri,
     scratch_buf: Vec<u8>,
     buffer_chunk_size: usize,
     compression_scheme: CompressionScheme,
@@ -163,7 +162,6 @@ where
     pub async fn new(
         encoder: E, compression_scheme: CompressionScheme, buffer_chunk_size: usize,
     ) -> Result<Self, RequestBuilderError<E>> {
-        let endpoint_uri = encoder.endpoint_uri();
         let compressed_len_limit = encoder.compressed_size_limit();
         let uncompressed_len_limit = encoder.uncompressed_size_limit();
 
@@ -184,7 +182,6 @@ where
         let compressor = create_compressor(compression_scheme, buffer_chunk_size);
         Ok(Self {
             encoder,
-            endpoint_uri,
             scratch_buf: Vec::with_capacity(SCRATCH_BUF_CAPACITY),
             buffer_chunk_size,
             compression_scheme,
@@ -197,12 +194,6 @@ where
             max_inputs_per_payload: usize::MAX,
             encoded_inputs: Vec::new(),
         })
-    }
-
-    /// Overrides the endpoint URI for the request builder.
-    pub fn with_endpoint_uri_override(&mut self, endpoint_uri: PathAndQuery) -> &mut Self {
-        self.endpoint_uri = endpoint_uri.into();
-        self
     }
 
     /// Sets the maximum number of inputs that can be encoded in a single payload.
@@ -340,7 +331,7 @@ where
         if would_exceed_uncompressed_limit || likely_exceeds_compressed_limit {
             trace!(
                 encoder = E::encoder_name(),
-                endpoint = ?self.endpoint_uri,
+                endpoint = ?self.encoder.endpoint_uri(),
                 encoded_len,
                 uncompressed_len = self.uncompressed_len(),
                 estimated_compressed_len = self.compression_estimator.estimated_len(),
@@ -354,7 +345,7 @@ where
 
         trace!(
             encoder = E::encoder_name(),
-            endpoint = ?self.endpoint_uri,
+            endpoint = ?self.encoder.endpoint_uri(),
             encoded_len,
             uncompressed_len = self.uncompressed_len(),
             estimated_compressed_len = self.compression_estimator.estimated_len(),
@@ -403,7 +394,7 @@ where
         }
 
         let inputs_written = self.clear_encoded_inputs();
-        debug!(encoder = E::encoder_name(), endpoint = ?self.endpoint_uri, uncompressed_len, compressed_len, inputs_written, "Flushing request.");
+        debug!(encoder = E::encoder_name(), endpoint = ?self.encoder.endpoint_uri(), uncompressed_len, compressed_len, inputs_written, "Flushing request.");
 
         vec![self.create_request(compressed_buf).map(|req| (inputs_written, req))]
     }
@@ -436,7 +427,7 @@ where
             // TODO: Propagate the number of inputs dropped in the returned error itself rather than logging here.
             error!(
                 encoder = E::encoder_name(),
-                endpoint = ?self.endpoint_uri,
+                endpoint = ?self.encoder.endpoint_uri(),
                 inputs_dropped,
                 "Failed to finalize compressor while building request. Inputs have been dropped."
             );
@@ -450,7 +441,7 @@ where
             // TODO: Propagate the number of inputs dropped in the returned error itself rather than logging here.
             error!(
                 encoder = E::encoder_name(),
-                endpoint = ?self.endpoint_uri,
+                endpoint = ?self.encoder.endpoint_uri(),
                 inputs_dropped,
                 "Failed to finalize compressor while building request. Inputs have been dropped."
             );
@@ -475,7 +466,7 @@ where
         if self.encoded_inputs.is_empty() {
             warn!(
                 encoder = E::encoder_name(),
-                endpoint = ?self.endpoint_uri,
+                endpoint = ?self.encoder.endpoint_uri(),
                 "Tried to split request with no encoded inputs."
             );
             return requests;
@@ -483,7 +474,7 @@ where
 
         trace!(
             encoder = E::encoder_name(),
-            endpoint = ?self.endpoint_uri,
+            endpoint = ?self.encoder.endpoint_uri(),
             encoded_inputs = self.encoded_inputs.len(),
             "Starting request split operation.",
         );
@@ -520,7 +511,7 @@ where
 
         trace!(
             encoder = E::encoder_name(),
-            endpoint = ?self.endpoint_uri,
+            endpoint = ?self.encoder.endpoint_uri(),
             "Finished splitting oversized request. Generated {} subrequest(s).",
             requests.len(),
         );
@@ -533,7 +524,7 @@ where
     ) -> Option<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         trace!(
             encoder = E::encoder_name(),
-            endpoint = ?self.endpoint_uri,
+            endpoint = ?self.encoder.endpoint_uri(),
             encoded_inputs = inputs.len(),
             "Starting request split suboperation.",
         );
@@ -571,7 +562,7 @@ where
             // TODO: Propagate the number of inputs dropped in the returned error itself rather than logging here.
             error!(
                 encoder = E::encoder_name(),
-                endpoint = ?self.endpoint_uri,
+                endpoint = ?self.encoder.endpoint_uri(),
                 uncompressed_len,
                 inputs_dropped,
                 "Uncompressed size limit exceeded while splitting request. This should never occur. Inputs have been dropped."
@@ -601,9 +592,7 @@ where
     ) -> Result<Request<FrozenChunkedBytesBuffer>, RequestBuilderError<E>> {
         let mut builder = Request::builder()
             .method(self.encoder.endpoint_method())
-            // We specifically use `self.endpoint_uri` here instead of `self.encoder.endpoint_uri()` because the
-            // encoder's URI may have been overridden via `with_endpoint_uri_override`.
-            .uri(self.endpoint_uri.clone())
+            .uri(self.encoder.endpoint_uri())
             .header(http::header::CONTENT_TYPE, self.encoder.content_type());
 
         if let Some(content_encoding) = self.compressor.content_encoding() {
@@ -939,32 +928,6 @@ mod tests {
         // Since we know we could fit the same three inputs in the first request builder when there was no limit on the
         // number of inputs per payload, we know we're not being instructed to flush here due to hitting (un)compressed
         // size limits.
-    }
-
-    #[tokio::test]
-    async fn override_endpoint_uri() {
-        // Create a request builder with a specific endpoint URI.
-        let encoder = TestEncoder::new(usize::MAX, usize::MAX, "/submit");
-        let mut request_builder = create_no_compression_request_builder(encoder.clone()).await;
-
-        // Override the endpoint URI.
-        let override_uri = PathAndQuery::from_static("/override");
-        request_builder.with_endpoint_uri_override(override_uri);
-
-        // Encode a single input and then flush the builder, ensuring the request has the overridden endpoint URI.
-        request_builder.encode("input".to_string()).await.unwrap();
-
-        let mut requests = request_builder.flush().await;
-        assert_eq!(requests.len(), 1);
-
-        // Check that the request was created with the overridden endpoint URI.
-        match requests.pop() {
-            Some(Ok((_, request))) => {
-                assert_eq!(request.uri().path(), "/override");
-            }
-            Some(Err(e)) => panic!("failed to create request: {}", e),
-            None => panic!("no requests were created"),
-        }
     }
 
     #[tokio::test]

@@ -13,6 +13,13 @@ const ORIGIN_PRODUCT_DETAIL_NONE: u32 = 0;
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MetricMetadata {
     /// The hostname where the metric originated from.
+    // TODO: We made this `Arc<str>` because it's 16 bytes vs 24 bytes for `MetaString`, but one problem is that it means that
+    // we have to allocate a new `Arc<str>` for every hostname override (or empty hostname to disable the host tag) which is
+    // suboptimal.
+    //
+    // A main part of the problem is that we want to determine if a hostname was set at all -- whether empty or not -- so that
+    // when we get to host enrichment, we can determine if we should be overriding the hostname or not. This means we can't
+    // simply drop the `Option` and check if the string is empty or not.
     pub hostname: Option<Arc<str>>,
 
     /// The metric origin.
