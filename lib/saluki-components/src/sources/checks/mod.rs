@@ -57,7 +57,7 @@ pub struct ChecksConfiguration<E = ()> {
     additional_checksd: String,
 
     #[serde(skip)]
-    env_provider: Option<E>,
+    environment_provider: Option<E>,
 
     #[serde(skip)]
     full_configuration: Option<GenericConfiguration>,
@@ -73,12 +73,12 @@ impl ChecksConfiguration {
 }
 
 impl<E> ChecksConfiguration<E> {
-    /// Sets the env provider to use.
-    pub fn with_env_provider<T>(self, env_provider: T) -> ChecksConfiguration<T> {
+    /// Sets the environment provider to use.
+    pub fn with_environment_provider<E2>(self, environment_provider: E2) -> ChecksConfiguration<E2> {
         ChecksConfiguration {
             check_runners: self.check_runners,
             additional_checksd: self.additional_checksd,
-            env_provider: Some(env_provider),
+            environment_provider: Some(environment_provider),
             full_configuration: self.full_configuration,
         }
     }
@@ -91,12 +91,12 @@ where
     <E::Host as HostProvider>::Error: Into<GenericError> + std::fmt::Debug,
 {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
-        let env_provider = self
-            .env_provider
+        let environment_provider = self
+            .environment_provider
             .as_ref()
             .ok_or_else(|| generic_error!("No environment provider configured."))?;
 
-        let receiver = env_provider
+        let receiver = environment_provider
             .autodiscovery()
             .subscribe()
             .await
@@ -107,7 +107,7 @@ where
             .as_ref()
             .ok_or_else(|| generic_error!("No configuration configured."))?;
 
-        let hostname = env_provider.host().get_hostname().await.unwrap_or_else(|e| {
+        let hostname = environment_provider.host().get_hostname().await.unwrap_or_else(|e| {
             warn!("Failed to get hostname: {:?}", e);
             "".to_string()
         });

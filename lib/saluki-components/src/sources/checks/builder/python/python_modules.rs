@@ -225,15 +225,11 @@ pub mod aggregator {
                     .with_aggregation_key(python_event.aggregation_key.map(Into::into));
 
                 if let Some(alert_type_str) = python_event.alert_type {
-                    if let Some(alert_type) = AlertType::try_from_string(&alert_type_str) {
-                        event_d = event_d.with_alert_type(Some(alert_type));
-                    }
+                    event_d = event_d.with_alert_type(AlertType::try_from_string(&alert_type_str));
                 }
 
                 if let Some(priority_str) = python_event.priority {
-                    if let Some(priority) = Priority::try_from_string(&priority_str) {
-                        event_d = event_d.with_priority(Some(priority));
-                    }
+                    event_d = event_d.with_priority(Priority::try_from_string(&priority_str));
                 }
 
                 if let Err(e) = try_send_event(event_d) {
