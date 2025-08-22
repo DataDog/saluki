@@ -277,13 +277,14 @@ fn add_checks_to_blueprint(
     #[cfg(feature = "python-checks")]
     {
         let checks_config = ChecksConfiguration::from_configuration(configuration)
-            .error_context("Failed to configure Python checks source.")?
-            .with_autodiscovery_provider(env_provider.autodiscovery().clone());
+            .error_context("Failed to configure checks source.")?
+            .with_environment_provider(env_provider.clone());
 
         blueprint
             .add_source("checks_in", checks_config)?
-            .connect_component("dd_metrics_encode", ["checks_in"])?;
-
+            .connect_component("dsd_agg", ["checks_in.metrics"])?
+            .connect_component("dd_service_checks_encode", ["checks_in.service_checks"])?
+            .connect_component("dd_events_encode", ["checks_in.events"])?;
         Ok(())
     }
 

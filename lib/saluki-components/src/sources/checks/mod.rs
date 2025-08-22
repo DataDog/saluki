@@ -2,22 +2,22 @@
 ///
 /// Listen to Autodiscovery events, schedule checks and emit results.
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
-use saluki_core::data_model::event::Event;
 use saluki_core::{
     components::{sources::*, ComponentContext},
-    data_model::event::EventType,
+    data_model::event::{Event, EventType},
     topology::{
         shutdown::{ComponentShutdownHandle, DynamicShutdownCoordinator, DynamicShutdownHandle},
         OutputDefinition,
     },
 };
 use saluki_env::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider};
+use saluki_env::{EnvironmentProvider, HostProvider};
 use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use tokio::select;
@@ -29,7 +29,6 @@ mod scheduler;
 use self::scheduler::Scheduler;
 
 mod check_metric;
-use self::check_metric::CheckMetric;
 
 mod check;
 use self::check::Check;
@@ -46,7 +45,7 @@ const fn default_check_runners() -> usize {
 
 /// Configuration for the checks source.
 #[derive(Deserialize)]
-pub struct ChecksConfiguration {
+pub struct ChecksConfiguration<E = ()> {
     /// The number of check runners to use.
     ///
     /// Defaults to 4.
@@ -57,82 +56,122 @@ pub struct ChecksConfiguration {
     #[serde(default)]
     additional_checksd: String,
 
-    /// Autodiscovery provider to use.
     #[serde(skip)]
-    autodiscovery_provider: Option<Arc<dyn AutodiscoveryProvider + Send + Sync>>,
+    environment_provider: Option<E>,
+
+    #[serde(skip)]
+    full_configuration: Option<GenericConfiguration>,
 }
 
 impl ChecksConfiguration {
     /// Creates a new `ChecksConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
+        let mut checks_config = config.as_typed::<Self>()?;
+        checks_config.full_configuration = Some(config.clone());
+        Ok(checks_config)
     }
+}
 
-    /// Sets the autodiscovery provider to use.
-    pub fn with_autodiscovery_provider<A>(mut self, provider: A) -> Self
-    where
-        A: AutodiscoveryProvider + Send + Sync + 'static,
-    {
-        self.autodiscovery_provider = Some(Arc::new(provider));
-        self
+impl<E> ChecksConfiguration<E> {
+    /// Sets the environment provider to use.
+    pub fn with_environment_provider<E2>(self, environment_provider: E2) -> ChecksConfiguration<E2> {
+        ChecksConfiguration {
+            check_runners: self.check_runners,
+            additional_checksd: self.additional_checksd,
+            environment_provider: Some(environment_provider),
+            full_configuration: self.full_configuration,
+        }
     }
 }
 
 #[async_trait]
-impl SourceBuilder for ChecksConfiguration {
+impl<E> SourceBuilder for ChecksConfiguration<E>
+where
+    E: EnvironmentProvider + Send + Sync + 'static,
+    <E::Host as HostProvider>::Error: Into<GenericError> + std::fmt::Debug,
+{
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
-        if let Some(autodiscovery) = &self.autodiscovery_provider {
-            if let Some(receiver) = autodiscovery.subscribe().await {
-                Ok(Box::new(ChecksSource {
-                    autodiscovery_rx: receiver,
-                    check_runners: self.check_runners,
-                    custom_checks_dirs: if !self.additional_checksd.is_empty() {
-                        Some(self.additional_checksd.split(",").map(|s| s.to_string()).collect())
-                    } else {
-                        None
-                    },
-                }))
+        let environment_provider = self
+            .environment_provider
+            .as_ref()
+            .ok_or_else(|| generic_error!("No environment provider configured."))?;
+
+        let receiver = environment_provider
+            .autodiscovery()
+            .subscribe()
+            .await
+            .ok_or_else(|| generic_error!("No autodiscovery stream configured."))?;
+
+        let configuration = self
+            .full_configuration
+            .as_ref()
+            .ok_or_else(|| generic_error!("No configuration configured."))?;
+
+        let hostname = environment_provider.host().get_hostname().await.unwrap_or_else(|e| {
+            warn!("Failed to get hostname: {:?}", e);
+            "".to_string()
+        });
+
+        Ok(Box::new(ChecksSource {
+            autodiscovery_rx: receiver,
+            check_runners: self.check_runners,
+            custom_checks_dirs: if !self.additional_checksd.is_empty() {
+                Some(self.additional_checksd.split(",").map(|s| s.to_string()).collect())
             } else {
-                Err(generic_error!("No autodiscovery stream configured."))
-            }
-        } else {
-            Err(generic_error!("No autodiscovery provider configured."))
-        }
+                None
+            },
+            configuration: configuration.clone(),
+            hostname,
+        }))
     }
 
     fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: [OutputDefinition; 1] = [OutputDefinition::default_output(EventType::Metric)];
+        static OUTPUTS: LazyLock<Vec<OutputDefinition>> = LazyLock::new(|| {
+            vec![
+                OutputDefinition::named_output("metrics", EventType::Metric),
+                OutputDefinition::named_output("service_checks", EventType::ServiceCheck),
+                OutputDefinition::named_output("events", EventType::EventD),
+            ]
+        });
 
         &OUTPUTS
     }
 }
 
-impl MemoryBounds for ChecksConfiguration {
+impl<E> MemoryBounds for ChecksConfiguration<E> {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder.minimum().with_single_value::<ChecksSource>("component struct");
     }
 }
 
 struct ChecksSource {
+    hostname: String,
     autodiscovery_rx: Receiver<AutodiscoveryEvent>,
     check_runners: usize,
     custom_checks_dirs: Option<Vec<String>>,
+    configuration: GenericConfiguration,
 }
 
 impl ChecksSource {
     /// Builds the check builders for the source.
-    fn builders(&self, check_metrics_tx: mpsc::Sender<CheckMetric>) -> Vec<Arc<dyn CheckBuilder + Send + Sync>> {
+    fn builders(
+        &self, check_events_tx: mpsc::Sender<Event>, configuration: GenericConfiguration, hostname: String,
+    ) -> Vec<Arc<dyn CheckBuilder + Send + Sync>> {
         #[cfg(feature = "python-checks")]
         {
             vec![Arc::new(PythonCheckBuilder::new(
-                check_metrics_tx,
+                check_events_tx,
                 self.custom_checks_dirs.clone(),
+                configuration.clone(),
+                hostname,
             ))]
         }
         #[cfg(not(feature = "python-checks"))]
         {
-            let _ = check_metrics_tx; // Suppress unused variable warning
+            let _ = check_events_tx; // Suppress unused variable warning
             let _ = &self.custom_checks_dirs; // Suppress unused field warning
+            let _ = &configuration; // Suppress unused field warning
+            let _ = hostname; // Suppress unused field warning
             vec![]
         }
     }
@@ -147,8 +186,11 @@ impl Source for ChecksSource {
 
         info!("Checks source started.");
 
-        let (check_metrics_tx, check_metrics_rx) = mpsc::channel(128);
-        let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> = self.builders(check_metrics_tx);
+        let (check_events_tx, check_event_rx) = mpsc::channel(128);
+
+        let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> =
+            self.builders(check_events_tx, self.configuration.clone(), self.hostname.clone());
+
         let mut check_ids = HashSet::new();
         let scheduler = Scheduler::new(self.check_runners);
 
@@ -156,7 +198,7 @@ impl Source for ChecksSource {
 
         spawn_traced_named(
             "checks-events-listener",
-            drain_and_dispatch_check_metrics(listener_shutdown_coordinator.register(), context, check_metrics_rx),
+            drain_and_dispatch_check_events(listener_shutdown_coordinator.register(), context, check_event_rx),
         );
 
         let mut autodiscovery_rx = self.autodiscovery_rx;
@@ -225,35 +267,68 @@ impl Source for ChecksSource {
     }
 }
 
-async fn drain_and_dispatch_check_metrics(
-    shutdown_handle: DynamicShutdownHandle, context: SourceContext, mut check_metrics_rx: mpsc::Receiver<CheckMetric>,
+async fn drain_and_dispatch_check_events(
+    shutdown_handle: DynamicShutdownHandle, context: SourceContext, mut check_event_rx: mpsc::Receiver<Event>,
 ) {
     tokio::pin!(shutdown_handle);
 
     loop {
         select! {
             _ = &mut shutdown_handle => {
-                debug!("Checks events listerners received shutdown signal.");
+                debug!("Checks events listeners received shutdown signal.");
                 break;
             }
-            result = check_metrics_rx.recv() => match result {
+            result = check_event_rx.recv() => match result {
                 None => break,
-                Some(check_metric) => {
-                    let mut buffered_dispatcher = context
-                        .dispatcher()
-                        .buffered()
-                        .expect("checks source should always have default output");
+                Some(check_event) => {
+                    trace!("Received check event: {:?}", check_event);
 
-                    trace!("Received check metric: {:?}", check_metric);
-                    let event: Event = check_metric.into();
+                    match check_event.event_type() {
+                       EventType::Metric => {
+                            let mut buffered_dispatcher = context
+                                .dispatcher()
+                                .buffered_named("metrics")
+                                .expect("checks source metrics output should always exist");
 
-                    if let Err(e) = buffered_dispatcher.push(event).await {
-                        error!(error = %e, "Failed to forward check metrics.");
+                                if let Err(e) = buffered_dispatcher.push(check_event).await {
+                                    error!(error = %e, "Failed to forward check metric.");
+                                }
+
+                                if let Err(e) = buffered_dispatcher.flush().await {
+                                    error!(error = %e, "Failed to flush check metric.");
+                                }
+                        },
+                        EventType::ServiceCheck => {
+                            let mut buffered_dispatcher = context
+                                .dispatcher()
+                                .buffered_named("service_checks")
+                                .expect("checks source service checks output should always exist");
+
+                                if let Err(e) = buffered_dispatcher.push(check_event).await {
+                                    error!(error = %e, "Failed to forward check service check.");
+                                }
+
+                                if let Err(e) = buffered_dispatcher.flush().await {
+                                    error!(error = %e, "Failed to flush check service check.");
+                                }
+                        },
+                        EventType::EventD => {
+                            let mut buffered_dispatcher = context
+                                .dispatcher()
+                                .buffered_named("events")
+                                .expect("checks source events output should always exist");
+
+                                if let Err(e) = buffered_dispatcher.push(check_event).await {
+                                    error!(error = %e, "Failed to forward check event");
+                                }
+
+                                if let Err(e) = buffered_dispatcher.flush().await {
+                                    error!(error = %e, "Failed to flush check event.");
+                                }
+                        },
+                        _ => {},
                     }
 
-                    if let Err(e) = buffered_dispatcher.flush().await {
-                        error!(error = %e, "Failed to flush check metrics.");
-                    }
                 }
             }
         }
