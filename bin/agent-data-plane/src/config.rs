@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(about)]
 pub struct Cli {
-    /// Subcommand to run.   
+    /// Subcommand to run.
     #[command(subcommand)]
     pub action: Option<Action>,
 }
@@ -69,6 +69,44 @@ pub enum DogstatsdConfig {
 #[derive(Args, Debug)]
 pub struct DogstatsdStatsConfig {
     /// Amount of time to collect statistics for, in seconds.
-    #[arg(required = true)]
+    #[arg(required = true, short = 'd', long = "duration-secs")]
     pub collection_duration_secs: u64,
+
+    /// Analysis mode to use.
+    #[arg(value_enum, required = false, short = 'm', long = "mode", default_value_t = AnalysisMode::Summary)]
+    pub analysis_mode: AnalysisMode,
+
+    /// Sort direction to use.
+    #[arg(value_enum, required = false, short = 's', long = "sort-dir")]
+    pub sort_direction: Option<SortDirection>,
+
+    /// Filter to apply to metric names. Any metrics which don't match the filter will be excluded.
+    #[arg(required = false, short = 'f', long = "filter")]
+    pub filter: Option<String>,
+}
+
+/// Sort direction.
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum SortDirection {
+    /// Sorts in ascending order.
+    #[default]
+    #[value(name = "asc")]
+    Ascending,
+
+    /// Sorts in descending order.
+    #[value(name = "desc")]
+    Descending,
+}
+
+/// Analysis mode.
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum AnalysisMode {
+    /// Displays a high-level summary of all collected metrics, sorted by metric name.
+    #[default]
+    #[value(name = "summary")]
+    Summary,
+
+    /// Displays the cardinality of all collected metrics, sorted by cardinality.
+    #[value(name = "cardinality")]
+    Cardinality,
 }
