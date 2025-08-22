@@ -15,7 +15,6 @@ generator:
             opentelemetry_metrics:
               metric_weights:
                 gauge: 50
-                sum_delta: 25
               contexts:
                 total_contexts:
                   constant: 3000
