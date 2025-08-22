@@ -59,7 +59,6 @@ impl ContextResolvers {
 
         let no_agg_resolver = ContextResolverBuilder::from_name(format!("{}/dsd/no_agg", context.component_id()))?
             .with_interner_capacity_bytes(context_string_interner_size)
-            .with_cached_contexts_limit(cached_contexts_limit)
             .without_caching()
             .with_heap_allocations(config.allow_context_heap_allocations)
             .with_tags_resolver(Some(tags_resolver.clone()))
