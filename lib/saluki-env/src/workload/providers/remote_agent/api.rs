@@ -11,7 +11,11 @@ use saluki_context::{
 };
 use serde::Serialize;
 
-use crate::workload::{entity::HighestPrecedenceEntityIdRef, stores::TagStoreQuerier, EntityId};
+use crate::workload::{
+    entity::HighestPrecedenceEntityIdRef,
+    stores::{ExternalDataStoreResolver, TagStoreQuerier},
+    EntityId,
+};
 
 #[derive(Serialize)]
 struct EntityTags {
@@ -34,6 +38,7 @@ struct EntityInformation<'a> {
 #[derive(Clone)]
 pub struct RemoteAgentWorkloadState {
     tag_querier: TagStoreQuerier,
+    eds_resolver: ExternalDataStoreResolver,
 }
 
 impl RemoteAgentWorkloadState {
@@ -86,6 +91,14 @@ impl RemoteAgentWorkloadState {
 
         serde_json::to_string(&entity_info).unwrap()
     }
+
+    fn get_eds_dump_response(&self) -> String {
+        let mut mappings = Vec::new();
+        self.eds_resolver.with_latest_snapshot(|ed| {
+            mappings.push(ed.clone());
+        });
+        serde_json::to_string(&mappings).unwrap()
+    }
 }
 
 /// An API handler for interacting with the underlying data stores that comprise the Remote Agent workload provider.
@@ -106,14 +119,21 @@ pub struct RemoteAgentWorkloadAPIHandler {
 }
 
 impl RemoteAgentWorkloadAPIHandler {
-    pub(crate) fn from_state(tag_querier: TagStoreQuerier) -> Self {
+    pub(crate) fn from_state(tag_querier: TagStoreQuerier, eds_resolver: ExternalDataStoreResolver) -> Self {
         Self {
-            state: RemoteAgentWorkloadState { tag_querier },
+            state: RemoteAgentWorkloadState {
+                tag_querier,
+                eds_resolver,
+            },
         }
     }
 
     async fn tags_dump_handler(State(state): State<RemoteAgentWorkloadState>) -> impl IntoResponse {
         state.get_tags_dump_response()
+    }
+
+    async fn eds_dump_handler(State(state): State<RemoteAgentWorkloadState>) -> impl IntoResponse {
+        state.get_eds_dump_response()
     }
 }
 
@@ -125,6 +145,8 @@ impl APIHandler for RemoteAgentWorkloadAPIHandler {
     }
 
     fn generate_routes(&self) -> Router<Self::State> {
-        Router::new().route("/workload/remote_agent/tags/dump", get(Self::tags_dump_handler))
+        Router::new()
+            .route("/workload/remote_agent/tags/dump", get(Self::tags_dump_handler))
+            .route("/workload/remote_agent/external_data/dump", get(Self::eds_dump_handler))
     }
 }

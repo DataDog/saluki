@@ -9,6 +9,8 @@ use saluki_io::deser::codec::dogstatsd::{EventPacket, MetricPacket, ServiceCheck
 use serde::Deserialize;
 use tracing::trace;
 
+use super::tags::WellKnownTags;
+
 const fn default_tag_cardinality() -> OriginTagCardinality {
     OriginTagCardinality::Low
 }
@@ -191,31 +193,185 @@ impl OriginTagsResolver for DogStatsDOriginTagResolver {
 }
 
 /// Builds an `RawOrigin` object from the given metric packet.
-pub fn origin_from_metric_packet<'packet>(packet: &MetricPacket<'packet>) -> RawOrigin<'packet> {
+pub fn origin_from_metric_packet<'packet>(
+    packet: &MetricPacket<'packet>, well_known_tags: &WellKnownTags<'packet>,
+) -> RawOrigin<'packet> {
+    let cardinality = packet.cardinality.or(well_known_tags.cardinality);
+
     let mut origin = RawOrigin::default();
-    origin.set_pod_uid(packet.pod_uid);
+    origin.set_pod_uid(well_known_tags.pod_uid);
     origin.set_container_id(packet.container_id);
     origin.set_external_data(packet.external_data);
-    origin.set_cardinality(packet.cardinality);
+    origin.set_cardinality(cardinality);
     origin
 }
 
 /// Builds an `RawOrigin` object from the given event packet.
-pub fn origin_from_event_packet<'packet>(packet: &EventPacket<'packet>) -> RawOrigin<'packet> {
+pub fn origin_from_event_packet<'packet>(
+    packet: &EventPacket<'packet>, well_known_tags: &WellKnownTags<'packet>,
+) -> RawOrigin<'packet> {
+    let cardinality = packet.cardinality.or(well_known_tags.cardinality);
+
     let mut origin = RawOrigin::default();
-    origin.set_pod_uid(packet.pod_uid);
+    origin.set_pod_uid(well_known_tags.pod_uid);
     origin.set_container_id(packet.container_id);
     origin.set_external_data(packet.external_data);
-    origin.set_cardinality(packet.cardinality);
+    origin.set_cardinality(cardinality);
     origin
 }
 
 /// Builds an `RawOrigin` object from the given service check packet.
-pub fn origin_from_service_check_packet<'packet>(packet: &ServiceCheckPacket<'packet>) -> RawOrigin<'packet> {
+pub fn origin_from_service_check_packet<'packet>(
+    packet: &ServiceCheckPacket<'packet>, well_known_tags: &WellKnownTags<'packet>,
+) -> RawOrigin<'packet> {
+    let cardinality = packet.cardinality.or(well_known_tags.cardinality);
+
     let mut origin = RawOrigin::default();
-    origin.set_pod_uid(packet.pod_uid);
+    origin.set_pod_uid(well_known_tags.pod_uid);
     origin.set_container_id(packet.container_id);
     origin.set_external_data(packet.external_data);
-    origin.set_cardinality(packet.cardinality);
+    origin.set_cardinality(cardinality);
     origin
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_context::tags::RawTags;
+    use saluki_core::data_model::event::{metric::MetricValues, service_check::CheckStatus};
+    use stringtheory::MetaString;
+
+    use super::*;
+
+    #[test]
+    fn metric_cardinality_precedence() {
+        // Tests that the cardinality specified in a metric packet (`|card:high`, etc) takes precedence over the cardinality
+        // specified via the deprecated `dd.internal.card` tag.
+        let raw_tags_input = "dd.internal.card:high";
+        let raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
+
+        let well_known_tags = WellKnownTags::from_raw_tags(raw_tags.clone());
+        assert_eq!(well_known_tags.cardinality, Some(OriginTagCardinality::High));
+
+        let packet_with_card = MetricPacket {
+            metric_name: "test_metric",
+            tags: raw_tags.clone(),
+            values: MetricValues::counter(1.0),
+            num_points: 1,
+            timestamp: None,
+            container_id: None,
+            external_data: None,
+            cardinality: Some(OriginTagCardinality::Low),
+        };
+
+        let packet_without_card = MetricPacket {
+            metric_name: "test_metric",
+            tags: raw_tags.clone(),
+            values: MetricValues::counter(1.0),
+            num_points: 1,
+            timestamp: None,
+            container_id: None,
+            external_data: None,
+            cardinality: None,
+        };
+
+        let with_card_origin = origin_from_metric_packet(&packet_with_card, &well_known_tags);
+        assert_ne!(packet_with_card.cardinality, well_known_tags.cardinality);
+        assert_eq!(with_card_origin.cardinality(), packet_with_card.cardinality);
+
+        let without_card_origin = origin_from_metric_packet(&packet_without_card, &well_known_tags);
+        assert_ne!(packet_without_card.cardinality, well_known_tags.cardinality);
+        assert_eq!(without_card_origin.cardinality(), well_known_tags.cardinality);
+    }
+
+    #[test]
+    fn event_cardinality_precedence() {
+        // Tests that the cardinality specified in an event packet (`|card:high`, etc) takes precedence over the cardinality
+        // specified via the deprecated `dd.internal.card` tag.
+        let raw_tags_input = "dd.internal.card:low";
+        let raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
+
+        let well_known_tags = WellKnownTags::from_raw_tags(raw_tags.clone());
+        assert_eq!(well_known_tags.cardinality, Some(OriginTagCardinality::Low));
+
+        let packet_with_card = EventPacket {
+            title: MetaString::empty(),
+            text: MetaString::empty(),
+            timestamp: None,
+            hostname: None,
+            aggregation_key: None,
+            priority: None,
+            alert_type: None,
+            source_type_name: None,
+            tags: raw_tags.clone(),
+            container_id: None,
+            external_data: None,
+            cardinality: Some(OriginTagCardinality::Orchestrator),
+        };
+
+        let packet_without_card = EventPacket {
+            title: MetaString::empty(),
+            text: MetaString::empty(),
+            timestamp: None,
+            hostname: None,
+            aggregation_key: None,
+            priority: None,
+            alert_type: None,
+            source_type_name: None,
+            tags: raw_tags.clone(),
+            container_id: None,
+            external_data: None,
+            cardinality: None,
+        };
+
+        let with_card_origin = origin_from_event_packet(&packet_with_card, &well_known_tags);
+        assert_ne!(packet_with_card.cardinality, well_known_tags.cardinality);
+        assert_eq!(with_card_origin.cardinality(), packet_with_card.cardinality);
+
+        let without_card_origin = origin_from_event_packet(&packet_without_card, &well_known_tags);
+        assert_ne!(packet_without_card.cardinality, well_known_tags.cardinality);
+        assert_eq!(without_card_origin.cardinality(), well_known_tags.cardinality);
+    }
+
+    #[test]
+    fn service_check_cardinality_precedence() {
+        // Tests that the cardinality specified in an event packet (`|card:high`, etc) takes precedence over the cardinality
+        // specified via the deprecated `dd.internal.card` tag.
+        let raw_tags_input = "dd.internal.card:orchestrator";
+        let raw_tags = RawTags::new(raw_tags_input, usize::MAX, usize::MAX);
+
+        let well_known_tags = WellKnownTags::from_raw_tags(raw_tags.clone());
+        assert_eq!(well_known_tags.cardinality, Some(OriginTagCardinality::Orchestrator));
+
+        let packet_with_card = ServiceCheckPacket {
+            name: MetaString::empty(),
+            status: CheckStatus::Ok,
+            timestamp: None,
+            hostname: None,
+            message: None,
+            tags: raw_tags.clone(),
+            container_id: None,
+            external_data: None,
+            cardinality: Some(OriginTagCardinality::Low),
+        };
+
+        let packet_without_card = ServiceCheckPacket {
+            name: MetaString::empty(),
+            status: CheckStatus::Ok,
+            timestamp: None,
+            hostname: None,
+            message: None,
+            tags: raw_tags.clone(),
+            container_id: None,
+            external_data: None,
+            cardinality: None,
+        };
+
+        let with_card_origin = origin_from_service_check_packet(&packet_with_card, &well_known_tags);
+        assert_ne!(packet_with_card.cardinality, well_known_tags.cardinality);
+        assert_eq!(with_card_origin.cardinality(), packet_with_card.cardinality);
+
+        let without_card_origin = origin_from_service_check_packet(&packet_without_card, &well_known_tags);
+        assert_ne!(packet_without_card.cardinality, well_known_tags.cardinality);
+        assert_eq!(without_card_origin.cardinality(), well_known_tags.cardinality);
+    }
 }

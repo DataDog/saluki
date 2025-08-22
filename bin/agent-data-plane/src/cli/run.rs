@@ -234,25 +234,30 @@ async fn create_topology(
 
     add_checks_to_blueprint(&mut blueprint, configuration, env_provider)?;
 
-    if configuration.get_typed_or_default::<bool>("enable_preaggr_pipeline") {
+    if configuration.get_typed_or_default::<bool>("preaggregation.enabled") {
         let preaggr_dd_url = configuration
-            .try_get_typed::<String>("preaggr_dd_url")
-            .error_context("Failed to query pre-aggregation pipeline URL.")?
-            .unwrap_or_else(|| "https://api.datad0g.com".to_string());
+            .get_typed::<String>("preaggregation.dd_url")
+            .error_context("Failed to query preaggregation URL.")?;
         let preaggr_api_key = configuration
-            .get_typed::<String>("preaggr_api_key")
-            .error_context("Failed to query pre-aggregation pipeline API key.")?;
-        let preaggr_request_path = configuration
-            .try_get_typed::<String>("preaggr_request_path")
-            .error_context("Failed to query pre-aggregation pipeline request path.")?
-            .unwrap_or_else(|| "/api/intake/pipelines/ddseries".to_string());
+            .get_typed::<String>("preaggregation.api_key")
+            .error_context("Failed to query preaggregation API key.")?;
+
+        if preaggr_dd_url.is_empty() {
+            return Err(GenericError::msg(
+                "preaggregation.dd_url is required when preaggregation.enabled is true",
+            ));
+        }
+        if preaggr_api_key.is_empty() {
+            return Err(GenericError::msg(
+                "preaggregation.api_key is required when preaggregation.enabled is true",
+            ));
+        }
 
         let preaggr_processing = ChainedConfiguration::default()
             .with_transform_builder("preaggr_filter", PreaggregationFilterConfiguration::default());
 
         let preaggr_dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
-            .and_then(|config| config.with_endpoint_path_override(preaggr_request_path))
-            .error_context("Failed to configure pre-aggregation Datadog Metrics encoder.")?;
+            .error_context("Failed to configure preaggregation Datadog Metrics encoder.")?;
 
         let preaggr_dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
             .map(|config| config.with_endpoint_override(preaggr_dd_url, preaggr_api_key))
@@ -276,13 +281,14 @@ fn add_checks_to_blueprint(
     #[cfg(feature = "python-checks")]
     {
         let checks_config = ChecksConfiguration::from_configuration(configuration)
-            .error_context("Failed to configure Python checks source.")?
-            .with_autodiscovery_provider(env_provider.autodiscovery().clone());
+            .error_context("Failed to configure checks source.")?
+            .with_environment_provider(env_provider.clone());
 
         blueprint
             .add_source("checks_in", checks_config)?
-            .connect_component("dd_metrics_encode", ["checks_in"])?;
-
+            .connect_component("dsd_agg", ["checks_in.metrics"])?
+            .connect_component("dd_service_checks_encode", ["checks_in.service_checks"])?
+            .connect_component("dd_events_encode", ["checks_in.events"])?;
         Ok(())
     }
 

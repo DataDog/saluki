@@ -14,13 +14,13 @@ use std::{
     str::from_utf8_unchecked, sync::Arc,
 };
 
+use serde::Serialize;
+
 mod clone;
 pub use self::clone::CheapMetaString;
 
 pub mod interning;
-use serde::Serialize;
-
-use self::interning::InternedString;
+use self::interning::{InternedString, InternedStringState};
 
 const ZERO_VALUE: usize = 0;
 const TOP_MOST_BIT: usize = usize::MAX & !(isize::MAX as usize);
@@ -29,8 +29,9 @@ const INLINED_STR_MAX_LEN: usize = INLINED_STR_DATA_BUF_LEN - 1;
 const INLINED_STR_MAX_LEN_U8: u8 = INLINED_STR_MAX_LEN as u8;
 
 const UNION_TYPE_TAG_VALUE_STATIC: u8 = get_offset_tag_value(0);
-const UNION_TYPE_TAG_VALUE_INTERNED: u8 = get_offset_tag_value(1);
-const UNION_TYPE_TAG_VALUE_SHARED: u8 = get_offset_tag_value(2);
+const UNION_TYPE_TAG_VALUE_INTERNED_FIXED_SIZE: u8 = get_offset_tag_value(1);
+const UNION_TYPE_TAG_VALUE_INTERNED_GENERIC_MAP: u8 = get_offset_tag_value(2);
+const UNION_TYPE_TAG_VALUE_SHARED: u8 = get_offset_tag_value(3);
 
 const fn get_offset_tag_value(tag: u8) -> u8 {
     const UNION_TYPE_TAG_VALUE_BASE: u8 = INLINED_STR_MAX_LEN as u8 + 1;
@@ -67,17 +68,18 @@ const fn untag_cap(cap: usize) -> usize {
     cap & !(TOP_MOST_BIT)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 #[repr(usize)]
 enum Zero {
     Zero = ZERO_VALUE,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(usize)]
 enum Tag {
     Static = get_scaled_union_tag(UNION_TYPE_TAG_VALUE_STATIC),
-    Interned = get_scaled_union_tag(UNION_TYPE_TAG_VALUE_INTERNED),
+    InternedFixedSize = get_scaled_union_tag(UNION_TYPE_TAG_VALUE_INTERNED_FIXED_SIZE),
+    InternedGenericMap = get_scaled_union_tag(UNION_TYPE_TAG_VALUE_INTERNED_GENERIC_MAP),
     Shared = get_scaled_union_tag(UNION_TYPE_TAG_VALUE_SHARED),
 }
 
@@ -125,25 +127,63 @@ impl OwnedUnion {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct StaticUnion {
-    ptr: *mut u8, // Field one.
-    len: usize,   // Field two.
-    _cap: Tag,    // Field three.
+    value: &'static str, // Fields one and two.
+    _cap: Tag,           // Field three.
 }
 
 impl StaticUnion {
     #[inline]
     const fn as_str(&self) -> &str {
-        // SAFETY: We know our pointer is valid, and non-null, since it's derived from a valid static string reference,
-        // and that the data it points to is valid UTF-8, again, by virtue of it being derived from a valid static
-        // string reference.
-        unsafe { from_utf8_unchecked(from_raw_parts(self.ptr, self.len)) }
+        self.value
     }
 }
 
 #[repr(C)]
 struct InternedUnion {
-    state: InternedString, // Fields one and two.
-    _cap: Tag,             // Field three.
+    state: InternedStateUnion, // Fields one and two.
+    _cap: Tag,                 // Field three.
+}
+
+impl Drop for InternedUnion {
+    fn drop(&mut self) {
+        match self._cap {
+            Tag::InternedFixedSize => {
+                let state = unsafe { ManuallyDrop::take(&mut self.state.fixed_size) };
+                drop(state);
+            }
+            Tag::InternedGenericMap => {
+                let state = unsafe { ManuallyDrop::take(&mut self.state.generic_map) };
+                drop(state);
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl Clone for InternedUnion {
+    fn clone(&self) -> Self {
+        // SAFETY: We use our tag (stored in `_cap`) to determine which field to access and clone, which
+        // ensures we only access fields which are initialized.
+        let state = unsafe {
+            match self._cap {
+                Tag::InternedFixedSize => InternedStateUnion {
+                    fixed_size: self.state.fixed_size.clone(),
+                },
+                Tag::InternedGenericMap => InternedStateUnion {
+                    generic_map: self.state.generic_map.clone(),
+                },
+                _ => unreachable!(),
+            }
+        };
+
+        Self { state, _cap: self._cap }
+    }
+}
+
+#[repr(C)]
+union InternedStateUnion {
+    fixed_size: ManuallyDrop<self::interning::fixed_size::StringState>,
+    generic_map: ManuallyDrop<self::interning::map::StringState>,
 }
 
 #[repr(C)]
@@ -190,7 +230,8 @@ enum UnionType {
     Empty,
     Owned,
     Static,
-    Interned,
+    InternedFixedSize,
+    InternedGenericMap,
     Inlined,
     Shared,
 }
@@ -292,7 +333,8 @@ impl DiscriminantUnion {
 
             // These are fixed values between 24 and 128, so we just match them directly.
             UNION_TYPE_TAG_VALUE_STATIC => UnionType::Static,
-            UNION_TYPE_TAG_VALUE_INTERNED => UnionType::Interned,
+            UNION_TYPE_TAG_VALUE_INTERNED_FIXED_SIZE => UnionType::InternedFixedSize,
+            UNION_TYPE_TAG_VALUE_INTERNED_GENERIC_MAP => UnionType::InternedGenericMap,
             UNION_TYPE_TAG_VALUE_SHARED => UnionType::Shared,
 
             // If we haven't matched any specific type tag value, then this is something else that we don't handle or
@@ -309,7 +351,7 @@ impl DiscriminantUnion {
 /// word field (all variants are three machine words) to determine which bit patterns are valid or not for a given
 /// variant, allowing the string variant to be authoritatively determined.
 ///
-/// ## Invariants
+/// # Invariants
 ///
 /// This code depends on a number of invariants in order to work correctly:
 ///
@@ -366,10 +408,9 @@ impl Inner {
     const fn static_str(value: &'static str) -> Self {
         match value.len() {
             0 => Self::empty(),
-            len => Self {
+            _ => Self {
                 static_: StaticUnion {
-                    ptr: value.as_bytes().as_ptr() as *mut _,
-                    len,
+                    value,
                     _cap: Tag::Static,
                 },
             },
@@ -379,12 +420,26 @@ impl Inner {
     fn interned(value: InternedString) -> Self {
         match value.len() {
             0 => Self::empty(),
-            _len => Self {
-                interned: ManuallyDrop::new(InternedUnion {
-                    state: value,
-                    _cap: Tag::Interned,
-                }),
-            },
+            _len => {
+                let (state, tag) = match value.into_state() {
+                    InternedStringState::FixedSize(fixed_size) => (
+                        InternedStateUnion {
+                            fixed_size: ManuallyDrop::new(fixed_size),
+                        },
+                        Tag::InternedFixedSize,
+                    ),
+                    InternedStringState::GenericMap(generic_map) => (
+                        InternedStateUnion {
+                            generic_map: ManuallyDrop::new(generic_map),
+                        },
+                        Tag::InternedGenericMap,
+                    ),
+                };
+
+                Self {
+                    interned: ManuallyDrop::new(InternedUnion { state, _cap: tag }),
+                }
+            }
         }
     }
 
@@ -437,9 +492,13 @@ impl Inner {
                 let static_ = unsafe { &self.static_ };
                 static_.as_str()
             }
-            UnionType::Interned => {
-                let interned = unsafe { &self.interned };
-                &interned.state
+            UnionType::InternedFixedSize => {
+                let interned = unsafe { &self.interned.state.fixed_size };
+                interned.as_str()
+            }
+            UnionType::InternedGenericMap => {
+                let interned = unsafe { &self.interned.state.generic_map };
+                interned.as_str()
             }
             UnionType::Shared => {
                 let shared = unsafe { &self.shared };
@@ -473,9 +532,13 @@ impl Inner {
                 let static_ = unsafe { self.static_ };
                 static_.as_str().to_owned()
             }
-            UnionType::Interned => {
-                let interned = unsafe { &self.interned };
-                (*interned.state).to_owned()
+            UnionType::InternedFixedSize => {
+                let interned = unsafe { &self.interned.state.fixed_size };
+                interned.as_str().to_owned()
+            }
+            UnionType::InternedGenericMap => {
+                let interned = unsafe { &self.interned.state.generic_map };
+                interned.as_str().to_owned()
             }
             UnionType::Shared => {
                 let shared = unsafe { &self.shared };
@@ -506,7 +569,7 @@ impl Drop for Inner {
                 let data = unsafe { Vec::<u8>::from_raw_parts(ptr, len, cap) };
                 drop(data);
             }
-            UnionType::Interned => {
+            UnionType::InternedFixedSize | UnionType::InternedGenericMap => {
                 let interned = unsafe { &mut self.interned };
 
                 // SAFETY: We're already dropping `Inner`, so nothing else can use the `InternedString` value after we
@@ -550,10 +613,9 @@ impl Clone for Inner {
             UnionType::Static => Self {
                 static_: unsafe { self.static_ },
             },
-            UnionType::Interned => {
-                let interned = unsafe { &self.interned };
-                Self::interned(interned.state.clone())
-            }
+            UnionType::InternedFixedSize | UnionType::InternedGenericMap => Self {
+                interned: unsafe { self.interned.clone() },
+            },
             UnionType::Shared => {
                 let shared = unsafe { &self.shared };
 
@@ -833,6 +895,7 @@ mod tests {
     use proptest::{prelude::*, proptest};
 
     use super::{interning::GenericMapInterner, InlinedUnion, Inner, MetaString, UnionType};
+    use crate::interning::{FixedSizeInterner, Interner as _};
 
     #[test]
     fn struct_sizes() {
@@ -891,13 +954,22 @@ mod tests {
     fn interned_string() {
         let intern_str = "hello interned str!";
 
-        let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
-        let s = interner.try_intern(intern_str).unwrap();
+        let fs_interner = FixedSizeInterner::<1>::new(NonZeroUsize::new(1024).unwrap());
+        let s = fs_interner.try_intern(intern_str).unwrap();
         assert_eq!(intern_str, &*s);
 
         let meta = MetaString::from(s);
         assert_eq!(intern_str, &*meta);
-        assert_eq!(meta.inner.get_union_type(), UnionType::Interned);
+        assert_eq!(meta.inner.get_union_type(), UnionType::InternedFixedSize);
+        assert_eq!(intern_str, meta.into_owned());
+
+        let gm_interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
+        let s = gm_interner.try_intern(intern_str).unwrap();
+        assert_eq!(intern_str, &*s);
+
+        let meta = MetaString::from(s);
+        assert_eq!(intern_str, &*meta);
+        assert_eq!(meta.inner.get_union_type(), UnionType::InternedGenericMap);
         assert_eq!(intern_str, meta.into_owned());
     }
 

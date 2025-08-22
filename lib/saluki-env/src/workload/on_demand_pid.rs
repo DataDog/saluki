@@ -91,6 +91,8 @@ impl OnDemandPIDResolver {
     pub fn from_configuration(
         config: &GenericConfiguration, feature_detector: FeatureDetector, interner: GenericMapInterner,
     ) -> Result<Self, GenericError> {
+        use stringtheory::interning::Interner as _;
+
         let telemetry = Telemetry::new();
         telemetry
             .interner_capacity_bytes()
@@ -128,6 +130,8 @@ impl OnDemandPIDResolver {
 
 #[cfg(target_os = "linux")]
 async fn drive_telemetry(interner: GenericMapInterner, telemetry: Telemetry) {
+    use stringtheory::interning::Interner as _;
+
     loop {
         sleep(Duration::from_secs(1)).await;
 

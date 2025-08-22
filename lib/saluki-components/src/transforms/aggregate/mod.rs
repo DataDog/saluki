@@ -588,8 +588,6 @@ impl AggregationState {
     async fn flush(
         &mut self, current_time: u64, flush_open_buckets: bool, dispatcher: &mut BufferedDispatcher<'_, EventsBuffer>,
     ) -> Result<(), GenericError> {
-        self.contexts_remove_buf.clear();
-
         let bucket_width_secs = self.bucket_width_secs;
         let counter_expire_secs = self.counter_expire_secs.map(|d| d.get()).unwrap_or(0);
 
@@ -679,9 +677,15 @@ impl AggregationState {
         }
 
         // Remove any contexts that were marked as needing to be removed.
-        for context in &self.contexts_remove_buf {
-            self.contexts.remove(context);
+        let contexts_len_before = self.contexts.len();
+        for context in self.contexts_remove_buf.drain(..) {
+            self.contexts.remove(&context);
         }
+        let contexts_len_after = self.contexts.len();
+
+        let contexts_delta = contexts_len_before.saturating_sub(contexts_len_after);
+        let target_contexts_capacity = contexts_len_after.saturating_add(contexts_delta / 2);
+        self.contexts.shrink_to(target_contexts_capacity);
 
         self.last_flush = current_time;
 

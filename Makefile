@@ -85,19 +85,19 @@ build-adp: check-rust-build-tools
 build-adp: ## Builds the ADP binary in debug mode
 	@echo "[*] Building ADP locally..."
 	@cargo build --profile dev --package agent-data-plane
-	
+
 .PHONY: build-adp-release
 build-adp-release: check-rust-build-tools
 build-adp-release: ## Builds the ADP binary in release mode
 	@echo "[*] Building ADP locally..."
 	@cargo build --profile release --package agent-data-plane
-	
+
 .PHONY: build-adp-and-checks
 build-adp-and-checks: check-rust-build-tools
 build-adp-and-checks: ## Builds the ADP binary with python in debug mode
 	@echo "[*] Building ADP with Checks locally..."
 	@cargo build --profile dev --package agent-data-plane --features python-checks
-	
+
 .PHONY: build-adp-and-checks-release
 build-adp-and-checks-release: check-rust-build-tools
 build-adp-and-checks-release: ## Builds the ADP binary with python in release mode
@@ -119,7 +119,7 @@ build-adp-image: ## Builds the ADP container image in release mode ('latest' tag
 		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
-		
+
 .PHONY: build-adp-checks-image
 build-adp-checks-image: ## Builds the ADP + Checks container image in release mode ('latest' tag)
 	@echo "[*] Building ADP image..."
@@ -264,7 +264,7 @@ run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/debug/agent-data-plane
-	
+
 .PHONY: run-adp-with-checks-standalone
 run-adp-with-checks-standalone: build-adp-and-checks
 run-adp-with-checks-standalone: ## Runs ADP + Checks locally in standalone mode (debug)
@@ -275,7 +275,7 @@ run-adp-with-checks-standalone: ## Runs ADP + Checks locally in standalone mode 
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/debug/agent-data-plane
-	
+
 .PHONY: run-adp-with-checks
 run-adp-with-checks: build-adp-and-checks
 run-adp-with-checks: ## Runs ADP + Checks locally (debug)
@@ -324,8 +324,7 @@ k8s-create-cluster: check-k8s-tools ## Creates a dedicated Kubernetes cluster (m
 k8s-install-datadog-agent: check-k8s-tools k8s-ensure-ns-datadog ## Installs the Datadog Agent (minikube)
 ifeq ($(shell test -d test/k8s/charts || echo not-found), not-found)
 	@echo "[*] Downloading Datadog Agent Helm chart locally..."
-	@git -C test/k8s clone --single-branch --branch=saluki/adp-container \
-		https://github.com/DataDog/helm-charts.git charts
+	@git -C test/k8s clone https://github.com/DataDog/helm-charts.git charts
 	@helm repo add prometheus https://prometheus-community.github.io/helm-charts
 endif
 	@git -C test/k8s/charts pull origin
@@ -453,7 +452,7 @@ check-features: ## Checks that all packages with feature flags can be built with
 test: check-rust-build-tools cargo-install-cargo-nextest
 test: ## Runs all unit tests
 	@echo "[*] Running unit tests..."
-	cargo nextest run --lib -E 'not test(/property_test_*/)'
+	cargo nextest run --features python-checks --lib -E 'not test(/property_test_*/)'
 
 .PHONY: test-property
 test-property: check-rust-build-tools cargo-install-cargo-nextest
@@ -493,7 +492,7 @@ test-correctness: ## Runs the metrics correctness (ground-truth) suite
 		--millstone-config-path $(shell pwd)/test/correctness/millstone.yaml \
 		--metrics-intake-image saluki-images/metrics-intake:latest \
 		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
-		--dsd-image docker.io/datadog/dogstatsd:7.67.1 \
+		--dsd-image docker.io/datadog/dogstatsd:7.68.3 \
 		--dsd-config-path $(shell pwd)/test/correctness/datadog-no-origin-detection.yaml \
 		--adp-image saluki-images/agent-data-plane:latest \
 		--adp-config-path $(shell pwd)/test/correctness/datadog-no-origin-detection.yaml
