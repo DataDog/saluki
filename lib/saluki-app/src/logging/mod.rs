@@ -41,7 +41,7 @@ use tracing_subscriber::{
 };
 
 mod ring_buffer;
-pub use self::ring_buffer::{CompressedRingBuffer, RingBufferConfig, RingBufferView, SerializedEvent};
+pub use self::ring_buffer::{CompressedRingBuffer, RingBufferConfig};
 
 static API_HANDLER: Mutex<Option<LoggingAPIHandler>> = Mutex::new(None);
 
@@ -120,8 +120,8 @@ fn initialize_logging_inner(
 
     let ring_buffer_config = RingBufferConfig::default()
         .with_max_ring_buffer_size_bytes(2_048_576)
-        .with_max_uncompressed_segment_size_bytes(132_072)
-        .with_compression_level(5);
+        .with_max_uncompressed_segment_size_bytes(262_144)
+        .with_compression_level(10);
     let ring_buffer = CompressedRingBuffer::with_config(ring_buffer_config);
 
     if is_json {

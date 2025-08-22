@@ -25,6 +25,18 @@ pub fn get_unix_timestamp() -> u64 {
     since_unix_epoch.as_secs()
 }
 
+/// Get the current Unix timestamp, in nanoseconds.
+///
+/// This function is accurate, as it always retrieves the current time for each call. In scenarios where this function
+/// is being called frequently, it may pose an unacceptable performance overhead. In such cases, consider using
+/// `get_coarse_unix_timestamp`, which provides a cached value that is updated periodically.
+pub fn get_unix_timestamp_nanos() -> u128 {
+    let since_unix_epoch = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    since_unix_epoch.as_nanos()
+}
+
 /// Get the current coarse Unix timestamp, in seconds.
 ///
 /// In scenarios where the current Unix timestamp is needed frequently, this function provides a cached value that is

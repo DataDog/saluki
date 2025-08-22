@@ -22,12 +22,13 @@ api = [
 ]
 logging = [
   "api",
-  "dep:bincode",
+  "dep:musli",
   "dep:chrono",
   "dep:chrono-tz",
   "dep:iana-time-zone",
   "dep:saluki-common",
   "dep:serde",
+  "dep:thingbuf",
   "dep:tracing",
   "dep:tracing-subscriber",
   "dep:zstd",
@@ -49,7 +50,6 @@ tls-fips = ["saluki-tls?/fips"]
 
 [dependencies]
 axum = { workspace = true, optional = true }
-bincode = { workspace = true, optional = true }
 bytesize = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 chrono-tz = { workspace = true, optional = true }
@@ -57,6 +57,7 @@ http = { workspace = true }
 iana-time-zone = { workspace = true, optional = true }
 memory-accounting = { workspace = true, optional = true }
 metrics = { workspace = true, optional = true }
+musli = { workspace = true, features = ["std", "alloc", "storage"], optional = true }
 rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
 rustls = { workspace = true, features = ["tls12"] }
 rustls-pemfile = { workspace = true, features = ["std"] }
@@ -69,6 +70,7 @@ saluki-io = { workspace = true, optional = true }
 saluki-metadata = { workspace = true }
 saluki-tls = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
+thingbuf = { workspace = true, features = ["std"], optional = true }
 tokio = { workspace = true, features = ["macros", "sync"], optional = true }
 tonic = { workspace = true, features = ["router", "transport"] }
 tower = { workspace = true, features = ["util"], optional = true }

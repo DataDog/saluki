@@ -406,15 +406,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
-name = "bincode"
-version = "1.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "bindgen"
 version = "0.69.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2169,6 +2160,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
+name = "musli"
+version = "0.0.134"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18c153da71d64fe61f2bbf48f3f0ac81d940268730395d277224129a475ef54f"
+dependencies = [
+ "loom",
+ "musli-core",
+ "serde",
+ "simdutf8",
+]
+
+[[package]]
+name = "musli-core"
+version = "0.0.134"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77efc48d17f716b8997c805ce8f4a64ddadb8f7a4219da28749699e7852b6b0c"
+dependencies = [
+ "musli-macros",
+]
+
+[[package]]
+name = "musli-macros"
+version = "0.0.134"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38a3c65b877dda6efaa1db1e57ad4c63a12b378519ba42d1fde2d90f6d06d246"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.104",
+]
+
+[[package]]
 name = "noisy_float"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3291,7 +3314,6 @@ name = "saluki-app"
 version = "0.1.0"
 dependencies = [
  "axum",
- "bincode",
  "bytesize",
  "chrono",
  "chrono-tz",
@@ -3299,6 +3321,7 @@ dependencies = [
  "iana-time-zone",
  "memory-accounting",
  "metrics",
+ "musli",
  "rcgen",
  "rustls",
  "rustls-pemfile",
@@ -3311,6 +3334,7 @@ dependencies = [
  "saluki-metadata",
  "saluki-tls",
  "serde",
+ "thingbuf",
  "tokio",
  "tonic",
  "tower",
@@ -4171,6 +4195,16 @@ dependencies = [
  "quote",
  "structmeta",
  "syn 2.0.104",
+]
+
+[[package]]
+name = "thingbuf"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "662b54ef6f7b4e71f683dadc787bbb2d8e8ef2f91b682ebed3164a5a7abca905"
+dependencies = [
+ "parking_lot",
+ "pin-project",
 ]
 
 [[package]]
