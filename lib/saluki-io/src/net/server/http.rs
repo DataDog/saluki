@@ -87,7 +87,7 @@ where
                 TlsAcceptor::from(Arc::new(config))
             });
 
-            info!(listen_addr = %listener.listen_address(), ?tls_enabled, "HTTP server started.");
+            info!(listen_addr = %listener.listen_address(), tls_enabled, "HTTP server started.");
 
             loop {
                 select! {

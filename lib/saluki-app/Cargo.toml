@@ -25,6 +25,8 @@ logging = [
   "dep:chrono",
   "dep:chrono-tz",
   "dep:iana-time-zone",
+  "dep:itoa",
+  "dep:ryu",
   "dep:saluki-common",
   "dep:serde",
   "dep:tracing",
@@ -52,11 +54,13 @@ chrono = { workspace = true, optional = true }
 chrono-tz = { workspace = true, optional = true }
 http = { workspace = true }
 iana-time-zone = { workspace = true, optional = true }
+itoa = { workspace = true, optional = true }
 memory-accounting = { workspace = true, optional = true }
 metrics = { workspace = true, optional = true }
 rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
 rustls = { workspace = true, features = ["tls12"] }
 rustls-pemfile = { workspace = true, features = ["std"] }
+ryu = { workspace = true, optional = true }
 saluki-api = { workspace = true, optional = true }
 saluki-common = { workspace = true, optional = true }
 saluki-config = { workspace = true, optional = true }
