@@ -10,9 +10,9 @@ use ddsketch_agent::DDSketch;
 use http::{Request, Response};
 use hyper::{body::Incoming, service::service_fn};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_common::collections::FastIndexMap;
+use saluki_common::{collections::FastIndexMap, iter::ReusableDeduplicator};
 use saluki_config::GenericConfiguration;
-use saluki_context::{tags::TagsExt as _, Context};
+use saluki_context::{tags::Tag, Context};
 use saluki_core::components::{destinations::*, ComponentContext};
 use saluki_core::data_model::event::{
     metric::{Histogram, Metric, MetricValues},
@@ -156,6 +156,7 @@ impl Destination for Prometheus {
 
         let mut contexts = 0;
         let mut name_buf = String::with_capacity(NAME_NORMALIZATION_BUFFER_SIZE);
+        let mut tags_deduplicator = ReusableDeduplicator::new();
 
         loop {
             select! {
@@ -197,7 +198,7 @@ impl Destination for Prometheus {
                         }
 
                         // Regenerate the scrape payload.
-                        regenerate_payload(&metrics, &payload, &mut payload_buffer, &mut tags_buffer).await;
+                        regenerate_payload(&metrics, &payload, &mut payload_buffer, &mut tags_buffer, &mut tags_deduplicator).await;
                     },
                     None => break,
                 },
@@ -238,7 +239,7 @@ fn spawn_prom_scrape_service(
 #[allow(clippy::mutable_key_type)]
 async fn regenerate_payload(
     metrics: &FastIndexMap<PrometheusContext, FastIndexMap<Context, PrometheusValue>>, payload: &Arc<RwLock<String>>,
-    payload_buffer: &mut String, tags_buffer: &mut String,
+    payload_buffer: &mut String, tags_buffer: &mut String, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
 ) {
     let mut payload = payload.write().await;
     payload.clear();
@@ -247,7 +248,7 @@ async fn regenerate_payload(
     let metrics_total = metrics.len();
 
     for (prom_context, contexts) in metrics {
-        if write_metrics(payload_buffer, tags_buffer, prom_context, contexts) {
+        if write_metrics(payload_buffer, tags_buffer, prom_context, contexts, tags_deduplicator) {
             if payload.len() + payload_buffer.len() > PAYLOAD_SIZE_LIMIT_BYTES {
                 debug!(
                     metrics_written,
@@ -299,7 +300,7 @@ fn get_help_text(metric_name: &str) -> Option<&'static str> {
 
 fn write_metrics(
     payload_buffer: &mut String, tags_buffer: &mut String, prom_context: &PrometheusContext,
-    contexts: &FastIndexMap<Context, PrometheusValue>,
+    contexts: &FastIndexMap<Context, PrometheusValue>, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
 ) -> bool {
     if contexts.is_empty() {
         debug!("No contexts for metric '{}'. Skipping.", prom_context.metric_name);
@@ -330,7 +331,7 @@ fn write_metrics(
         tags_buffer.clear();
 
         // Format/encode the tags.
-        if !format_tags(tags_buffer, context) {
+        if !format_tags(tags_buffer, context, tags_deduplicator) {
             return false;
         }
 
@@ -415,12 +416,13 @@ fn write_metrics(
     true
 }
 
-fn format_tags(tags_buffer: &mut String, context: &Context) -> bool {
+fn format_tags(tags_buffer: &mut String, context: &Context, tags_deduplicator: &mut ReusableDeduplicator<Tag>) -> bool {
     let mut has_tags = false;
 
-    let tags = context.tags().into_iter().chain(context.origin_tags()).deduplicated();
+    let chained_tags = context.tags().into_iter().chain(context.origin_tags());
+    let deduplicated_tags = tags_deduplicator.deduplicated(chained_tags);
 
-    for tag in tags {
+    for tag in deduplicated_tags {
         // If we're not the first tag to be written, add a comma to separate the tags.
         if has_tags {
             tags_buffer.push(',');

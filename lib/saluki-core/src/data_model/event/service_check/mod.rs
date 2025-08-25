@@ -1,6 +1,7 @@
 //! Service checks.
 
-use saluki_context::tags::{SharedTagSet, TagsExt};
+use saluki_common::iter::ReusableDeduplicator;
+use saluki_context::tags::SharedTagSet;
 use serde::{ser::SerializeMap as _, Serialize, Serializer};
 use stringtheory::MetaString;
 
@@ -229,7 +230,10 @@ impl<'a> Serialize for DeduplicatedTagsSerializable<'a> {
     where
         S: Serializer,
     {
-        let deduplicated_tags = self.tags.into_iter().chain(self.origin_tags).deduplicated();
+        let chained_tags = self.tags.into_iter().chain(self.origin_tags);
+
+        let mut tags_deduplicator = ReusableDeduplicator::new();
+        let deduplicated_tags = tags_deduplicator.deduplicated(chained_tags);
         serializer.collect_seq(deduplicated_tags)
     }
 }

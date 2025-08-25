@@ -3324,6 +3324,7 @@ dependencies = [
  "memory-accounting",
  "papaya",
  "pin-project",
+ "proptest",
  "quick_cache",
  "saluki-error",
  "saluki-metrics",
