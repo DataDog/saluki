@@ -38,7 +38,7 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 mod attributes;
 mod metrics;
@@ -240,6 +240,7 @@ async fn dispatch_events(events: EventsBuffer, source_context: &SourceContext) {
     }
 
     let len = events.len();
+    info!("Dispatching {} otlp metrics events.", len);
     if let Err(e) = source_context
         .dispatcher()
         .buffered_named("metrics")
