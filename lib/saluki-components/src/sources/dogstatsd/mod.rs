@@ -109,6 +109,14 @@ const fn default_context_string_interner_size() -> ByteSize {
     ByteSize::mib(2)
 }
 
+const fn default_cached_contexts_limit() -> usize {
+    500_000
+}
+
+const fn default_cached_tagsets_limit() -> usize {
+    500_000
+}
+
 const fn default_dogstatsd_permissive_decoding() -> bool {
     true
 }
@@ -223,6 +231,29 @@ pub struct DogStatsDConfiguration {
         default = "default_context_string_interner_size"
     )]
     context_string_interner_bytes: ByteSize,
+
+    /// The maximum number of cached contexts to allow.
+    ///
+    /// This is the maximum number of resolved contexts that can be cached at any given time. This limit does not affect
+    /// the total number of contexts that can be _alive_ at any given time, which is dependent on the interner capacity
+    /// and whether or not heap allocations are allowed.
+    ///
+    /// Defaults to 500,000.
+    #[serde(
+        rename = "dogstatsd_cached_contexts_limit",
+        default = "default_cached_contexts_limit"
+    )]
+    cached_contexts_limit: usize,
+
+    /// The maximum number of cached tagsets to allow.
+    ///
+    /// This is the maximum number of resolved tagsets that can be cached at any given time. This limit does not affect
+    /// the total number of tagsets that can be _alive_ at any given time, which is dependent on the interner capacity
+    /// and whether or not heap allocations are allowed.
+    ///
+    /// Defaults to 500,000.
+    #[serde(rename = "dogstatsd_cached_tagsets_limit", default = "default_cached_tagsets_limit")]
+    cached_tagsets_limit: usize,
 
     /// Whether or not to enable permissive mode in the decoder.
     ///

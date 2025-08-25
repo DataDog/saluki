@@ -33,9 +33,13 @@ impl ContextResolvers {
         let context_string_interner_size = NonZeroUsize::new(config.context_string_interner_bytes.as_u64() as usize)
             .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
 
+        let cached_contexts_limit = config.cached_contexts_limit;
+        let cached_tagsets_limit = config.cached_tagsets_limit;
+
         let interner = GenericMapInterner::new(context_string_interner_size);
 
         let tags_resolver = TagsResolverBuilder::new(format!("{}/dsd/tags", context.component_id()), interner.clone())?
+            .with_cached_tagsets_limit(cached_tagsets_limit)
             .with_idle_tagsets_expiration(RESOLVER_CACHE_EXPIRATION)
             .with_heap_allocations(config.allow_context_heap_allocations)
             .with_origin_tags_resolver(
@@ -46,6 +50,7 @@ impl ContextResolvers {
 
         let primary_resolver = ContextResolverBuilder::from_name(format!("{}/dsd/primary", context.component_id()))?
             .with_interner_capacity_bytes(context_string_interner_size)
+            .with_cached_contexts_limit(cached_contexts_limit)
             .with_idle_context_expiration(RESOLVER_CACHE_EXPIRATION)
             .with_heap_allocations(config.allow_context_heap_allocations)
             .with_tags_resolver(Some(tags_resolver.clone()))
