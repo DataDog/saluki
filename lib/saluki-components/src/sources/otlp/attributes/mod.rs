@@ -1,0 +1,373 @@
+//! OTLP semantic conventions for attributes.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
+
+use opentelemetry_semantic_conventions::{
+    resource::{
+        AWS_ECS_CLUSTER_ARN, AWS_ECS_CONTAINER_ARN, AWS_ECS_TASK_ARN, AWS_ECS_TASK_FAMILY, AWS_ECS_TASK_REVISION,
+        CLOUD_AVAILABILITY_ZONE, CLOUD_PROVIDER, CLOUD_REGION, CONTAINER_ID, CONTAINER_IMAGE_NAME, CONTAINER_NAME,
+        CONTAINER_RUNTIME, DEPLOYMENT_ENVIRONMENT_NAME, K8S_CLUSTER_NAME, K8S_CONTAINER_NAME, K8S_CRONJOB_NAME,
+        K8S_DAEMONSET_NAME, K8S_DEPLOYMENT_NAME, K8S_JOB_NAME, K8S_NAMESPACE_NAME, K8S_POD_NAME, K8S_POD_UID,
+        K8S_REPLICASET_NAME, K8S_STATEFULSET_NAME, OS_TYPE, PROCESS_COMMAND, PROCESS_COMMAND_LINE,
+        PROCESS_EXECUTABLE_NAME, PROCESS_EXECUTABLE_PATH, PROCESS_OWNER, PROCESS_PID, SERVICE_NAME, SERVICE_VERSION,
+    },
+    trace::{
+        CLIENT_ADDRESS, HTTP_REQUEST_BODY_SIZE, HTTP_REQUEST_METHOD, HTTP_RESPONSE_BODY_SIZE,
+        HTTP_RESPONSE_STATUS_CODE, HTTP_ROUTE, NETWORK_PROTOCOL_VERSION, SERVER_ADDRESS, URL_FULL, USER_AGENT_ORIGINAL,
+    },
+};
+use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
+use saluki_context::tags::{SharedTagSet, TagSet};
+
+mod process;
+pub mod source;
+mod system;
+pub mod translator;
+
+use self::process::ProcessAttributes;
+use self::system::SystemAttributes;
+
+const CUSTOM_CONTAINER_TAG_PREFIX: &str = "datadog.container.tag.";
+
+static CORE_MAPPING: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
+    let mut m = HashMap::new();
+    m.insert("deployment.environment", "env"); // For older semconv versions
+    m.insert(DEPLOYMENT_ENVIRONMENT_NAME, "env");
+    m.insert(SERVICE_NAME, "service");
+    m.insert(SERVICE_VERSION, "version");
+    m
+});
+
+static CONTAINER_MAPPINGS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
+    let mut m = HashMap::new();
+    // Containers
+    m.insert(CONTAINER_ID, "container_id");
+    m.insert(CONTAINER_NAME, "container_name");
+    m.insert(CONTAINER_IMAGE_NAME, "image_name");
+    m.insert("container.image.tag", "image_tag"); // For older semconv versions
+    m.insert(CONTAINER_RUNTIME, "runtime");
+
+    // Cloud conventions
+    // https://www.datadoghq.com/blog/tagging-best-practices/
+    m.insert(CLOUD_PROVIDER, "cloud_provider");
+    m.insert(CLOUD_REGION, "region");
+    m.insert(CLOUD_AVAILABILITY_ZONE, "zone");
+
+    // ECS conventions
+    // https://github.com/DataDog/datadog-agent/blob/e081bed/pkg/tagger/collectors/ecs_extract.go
+    m.insert(AWS_ECS_TASK_FAMILY, "task_family");
+    m.insert(AWS_ECS_TASK_ARN, "task_arn");
+    m.insert(AWS_ECS_CLUSTER_ARN, "ecs_cluster_name");
+    m.insert(AWS_ECS_TASK_REVISION, "task_version");
+    m.insert(AWS_ECS_CONTAINER_ARN, "ecs_container_name");
+
+    // Kubernetes resource name (via semantic conventions)
+    // https://github.com/DataDog/datadog-agent/blob/e081bed/pkg/util/kubernetes/const.go
+    m.insert(K8S_CONTAINER_NAME, "kube_container_name");
+    m.insert(K8S_CLUSTER_NAME, "kube_cluster_name");
+    m.insert(K8S_DEPLOYMENT_NAME, "kube_deployment");
+    m.insert(K8S_REPLICASET_NAME, "kube_replica_set");
+    m.insert(K8S_STATEFULSET_NAME, "kube_stateful_set");
+    m.insert(K8S_DAEMONSET_NAME, "kube_daemon_set");
+    m.insert(K8S_JOB_NAME, "kube_job");
+    m.insert(K8S_CRONJOB_NAME, "kube_cronjob");
+    m.insert(K8S_NAMESPACE_NAME, "kube_namespace");
+    m.insert(K8S_POD_NAME, "pod_name");
+    m
+});
+
+// Kubernetes mappings defines the mapping between Kubernetes conventions (both general and Datadog specific)
+// and Datadog Agent conventions. The Datadog Agent conventions can be found at
+// https://github.com/DataDog/datadog-agent/blob/e081bed/pkg/tagger/collectors/const.go and
+// https://github.com/DataDog/datadog-agent/blob/e081bed/pkg/util/kubernetes/const.go
+static KUBERNETES_MAPPING: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
+    let mut m = HashMap::new();
+    // Standard Datadog labels
+    m.insert("tags.datadoghq.com/env", "env");
+    m.insert("tags.datadoghq.com/service", "service");
+    m.insert("tags.datadoghq.com/version", "version");
+
+    // Standard Kubernetes labels
+    m.insert("app.kubernetes.io/name", "kube_app_name");
+    m.insert("app.kubernetes.io/instance", "kube_app_instance");
+    m.insert("app.kubernetes.io/version", "kube_app_version");
+    m.insert("app.kubernetes.io/component", "kube_app_component");
+    m.insert("app.kubernetes.io/part-of", "kube_app_part_of");
+    m.insert("app.kubernetes.io/managed-by", "kube_app_managed_by");
+    m
+});
+
+// Kubernetes out of the box Datadog tags
+// https://docs.datadoghq.com/containers/kubernetes/tag/?tab=containerizedagent#out-of-the-box-tags
+// https://github.com/DataDog/datadog-agent/blob/d33d042d6786e8b85f72bb627fbf06ad8a658031/comp/core/tagger/taggerimpl/collectors/workloadmeta_extract.go
+// Note: if any OTel semantics happen to overlap with these tag names, they will also be added as Datadog tags.
+static KUBERNETES_DD_TAGS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    let tags = vec![
+        "architecture",
+        "availability-zone",
+        "chronos_job",
+        "chronos_job_owner",
+        "cluster_name",
+        "container_id",
+        "container_name",
+        "dd_remote_config_id",
+        "dd_remote_config_rev",
+        "display_container_name",
+        "docker_image",
+        "ecs_cluster_name",
+        "ecs_container_name",
+        "eks_fargate_node",
+        "env",
+        "git.commit.sha",
+        "git.repository_url",
+        "image_id",
+        "image_name",
+        "image_tag",
+        "kube_app_component",
+        "kube_app_instance",
+        "kube_app_managed_by",
+        "kube_app_name",
+        "kube_app_part_of",
+        "kube_app_version",
+        "kube_container_name",
+        "kube_cronjob",
+        "kube_daemon_set",
+        "kube_deployment",
+        "kube_job",
+        "kube_namespace",
+        "kube_ownerref_kind",
+        "kube_ownerref_name",
+        "kube_priority_class",
+        "kube_qos",
+        "kube_replica_set",
+        "kube_replication_controller",
+        "kube_service",
+        "kube_stateful_set",
+        "language",
+        "marathon_app",
+        "mesos_task",
+        "nomad_dc",
+        "nomad_group",
+        "nomad_job",
+        "nomad_namespace",
+        "nomad_task",
+        "oshift_deployment",
+        "oshift_deployment_config",
+        "os_name",
+        "os_version",
+        "persistentvolumeclaim",
+        "pod_name",
+        "pod_phase",
+        "rancher_container",
+        "rancher_service",
+        "rancher_stack",
+        "region",
+        "service",
+        "short_image",
+        "swarm_namespace",
+        "swarm_service",
+        "task_name",
+        "task_family",
+        "task_version",
+        "task_arn",
+        "version",
+    ];
+    tags.into_iter().collect()
+});
+
+// HTTPMappings defines the mapping between OpenTelemetry semantic conventions
+// and Datadog Agent conventions for HTTP attributes.
+#[allow(dead_code)]
+static HTTP_MAPPINGS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
+    let mut m = HashMap::new();
+    m.insert(CLIENT_ADDRESS, "http.client_ip");
+    m.insert(HTTP_RESPONSE_BODY_SIZE, "http.response.content_length");
+    m.insert(HTTP_RESPONSE_STATUS_CODE, "http.status_code");
+    m.insert(HTTP_REQUEST_BODY_SIZE, "http.request.content_length");
+    m.insert("http.request.header.referrer", "http.referrer"); // No semconv for this one
+    m.insert(HTTP_REQUEST_METHOD, "http.method");
+    m.insert(HTTP_ROUTE, "http.route");
+    m.insert(NETWORK_PROTOCOL_VERSION, "http.version");
+    m.insert(SERVER_ADDRESS, "http.server_name");
+    m.insert(URL_FULL, "http.url");
+    m.insert(USER_AGENT_ORIGINAL, "http.useragent");
+    m
+});
+
+fn container_tags_from_resource_attributes(attributes: &[otlp_common::KeyValue]) -> HashMap<String, String> {
+    let mut ddtags = HashMap::new();
+
+    for kv in attributes {
+        if let Some(otlp_common::any_value::Value::StringValue(s_val)) =
+            kv.value.as_ref().and_then(|v| v.value.as_ref())
+        {
+            if s_val.is_empty() {
+                continue;
+            }
+
+            // Semantic Conventions
+            if let Some(datadog_key) = CONTAINER_MAPPINGS.get(kv.key.as_str()) {
+                ddtags.insert((*datadog_key).to_string(), s_val.clone());
+            }
+
+            // Custom (datadog.container.tag namespace)
+            if kv.key.starts_with(CUSTOM_CONTAINER_TAG_PREFIX) {
+                if let Some(custom_key) = kv.key.get(CUSTOM_CONTAINER_TAG_PREFIX.len()..) {
+                    if !custom_key.is_empty() {
+                        // Do not replace if set via semantic conventions mappings.
+                        ddtags.entry(custom_key.to_string()).or_insert_with(|| s_val.clone());
+                    }
+                }
+            }
+        }
+    }
+    ddtags
+}
+
+pub(super) fn tags_from_attributes(attributes: &[otlp_common::KeyValue]) -> SharedTagSet {
+    let mut tag_set = TagSet::default();
+    let mut process_attributes = ProcessAttributes::default();
+    let mut system_attributes = SystemAttributes::default();
+
+    for kv in attributes {
+        match (kv.key.as_str(), kv.value.as_ref().and_then(|v| v.value.as_ref())) {
+            // Process attributes
+            (PROCESS_EXECUTABLE_NAME, Some(otlp_common::any_value::Value::StringValue(s_val))) => {
+                process_attributes.executable_name = s_val.clone();
+            }
+            (PROCESS_EXECUTABLE_PATH, Some(otlp_common::any_value::Value::StringValue(s_val))) => {
+                process_attributes.executable_path = s_val.clone();
+            }
+            (PROCESS_COMMAND, Some(otlp_common::any_value::Value::StringValue(s_val))) => {
+                process_attributes.command = s_val.clone();
+            }
+            (PROCESS_COMMAND_LINE, Some(otlp_common::any_value::Value::StringValue(s_val))) => {
+                process_attributes.command_line = s_val.clone();
+            }
+            (PROCESS_PID, Some(otlp_common::any_value::Value::IntValue(i_val))) => {
+                process_attributes.pid = *i_val;
+            }
+            (PROCESS_OWNER, Some(otlp_common::any_value::Value::StringValue(s_val))) => {
+                process_attributes.owner = s_val.clone();
+            }
+
+            // System attributes
+            (OS_TYPE, Some(otlp_common::any_value::Value::StringValue(s_val))) => {
+                system_attributes.os_type = s_val.clone();
+            }
+
+            // Other mappings
+            (key, Some(otlp_common::any_value::Value::StringValue(s_val))) => {
+                if s_val.is_empty() {
+                    continue;
+                }
+
+                // core attributes mapping
+                if let Some(datadog_key) = CORE_MAPPING.get(key) {
+                    tag_set.insert_tag(format!("{}:{}", datadog_key, s_val));
+                }
+
+                // Kubernetes labels mapping
+                if let Some(datadog_key) = KUBERNETES_MAPPING.get(key) {
+                    tag_set.insert_tag(format!("{}:{}", datadog_key, s_val));
+                }
+
+                // Kubernetes DD tags
+                if KUBERNETES_DD_TAGS.contains(key) {
+                    tag_set.insert_tag(format!("{}:{}", key, s_val));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Container Tag mappings
+    let container_tags = container_tags_from_resource_attributes(attributes);
+    for (key, val) in container_tags {
+        tag_set.insert_tag(format!("{}:{}", key, val));
+    }
+
+    for tag in process_attributes.extract_tags() {
+        tag_set.insert_tag(tag);
+    }
+    for tag in system_attributes.extract_tags() {
+        tag_set.insert_tag(tag);
+    }
+
+    tag_set.into_shared()
+}
+
+#[allow(dead_code)]
+pub(super) fn origin_id_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
+    let mut pod_uid = None;
+
+    for kv in attributes {
+        if let Some(otlp_common::any_value::Value::StringValue(s_val)) =
+            kv.value.as_ref().and_then(|v| v.value.as_ref())
+        {
+            match kv.key.as_str() {
+                CONTAINER_ID => {
+                    // Container ID is preferred.
+                    return Some(format!("container_id://{}", s_val));
+                }
+                K8S_POD_UID => {
+                    pod_uid = Some(s_val.as_str());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Fallback to Kubernetes pod UID.
+    pod_uid.map(|uid| format!("kubernetes_pod_uid://{}", uid))
+}
+
+fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a str> {
+    attributes.iter().find_map(|kv| {
+        if kv.key == key {
+            if let Some(otlp_common::any_value::Value::StringValue(s_val)) =
+                kv.value.as_ref().and_then(|v| v.value.as_ref())
+            {
+                Some(s_val.as_str())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    })
+}
+
+pub(super) fn resource_to_source(
+    resource: &otlp_protos::opentelemetry::proto::resource::v1::Resource,
+) -> Option<source::Source> {
+    let attributes = &resource.attributes;
+
+    // AWS ECS Fargate
+    if get_string_attribute(attributes, CLOUD_PROVIDER) == Some("aws")
+        && get_string_attribute(attributes, opentelemetry_semantic_conventions::resource::CLOUD_PLATFORM)
+            == Some("aws_ecs")
+        && get_string_attribute(
+            attributes,
+            opentelemetry_semantic_conventions::resource::AWS_ECS_LAUNCHTYPE,
+        ) == Some("fargate")
+    {
+        if let Some(task_arn) = get_string_attribute(attributes, AWS_ECS_TASK_ARN) {
+            return Some(source::Source {
+                kind: source::SourceKind::AwsEcsFargateKind,
+                identifier: task_arn.to_string(),
+            });
+        }
+    }
+
+    // Hostname from attributes
+    if let Some(host_name) = get_string_attribute(attributes, opentelemetry_semantic_conventions::resource::HOST_NAME) {
+        return Some(source::Source {
+            kind: source::SourceKind::HostnameKind,
+            identifier: host_name.to_string(),
+        });
+    }
+
+    None
+}
