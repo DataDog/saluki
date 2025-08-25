@@ -431,7 +431,7 @@ impl<'writer> AgentLikeFieldVisitor<'writer> {
             let prefix = if self.needs_prefix() { " | " } else { "" };
             let separator = if self.needs_separator() { "," } else { "" };
 
-            self.last_result = write!(self.writer, "{}{}{}:", prefix, separator, field.name());
+            self.last_result = write!(self.writer, "{}{}{}=", prefix, separator, field.name());
             if self.last_result.is_err() {
                 return;
             }
@@ -446,11 +446,59 @@ impl<'writer> AgentLikeFieldVisitor<'writer> {
 
 impl field::Visit for AgentLikeFieldVisitor<'_> {
     fn record_debug(&mut self, field: &field::Field, value: &dyn fmt::Debug) {
-        self.try_write(field, |w| write!(w, "{:?}", value));
+        // Small behavior tweak: we don't care about quoting the message field.
+        self.try_write(field, |w| {
+            if field.name() == "message" {
+                write!(w, "{:?}", value)
+            } else {
+                write!(w, "\"{:?}\"", value)
+            }
+        });
     }
 
     fn record_str(&mut self, field: &field::Field, value: &str) {
-        self.try_write(field, |w| write!(w, "{}", value));
+        // Small behavior tweak: we don't care about quoting the message field.
+        self.try_write(field, |w| {
+            if field.name() == "message" {
+                w.write_str(value)
+            } else {
+                write!(w, "\"{}\"", value)
+            }
+        });
+    }
+
+    fn record_f64(&mut self, field: &field::Field, value: f64) {
+        let mut float_writer = ryu::Buffer::new();
+        let float_str = float_writer.format(value);
+        self.try_write(field, |w| w.write_str(float_str));
+    }
+
+    fn record_i64(&mut self, field: &field::Field, value: i64) {
+        let mut int_writer = itoa::Buffer::new();
+        let int_str = int_writer.format(value);
+        self.try_write(field, |w| w.write_str(int_str));
+    }
+
+    fn record_u64(&mut self, field: &field::Field, value: u64) {
+        let mut int_writer = itoa::Buffer::new();
+        let int_str = int_writer.format(value);
+        self.try_write(field, |w| w.write_str(int_str));
+    }
+
+    fn record_i128(&mut self, field: &field::Field, value: i128) {
+        let mut int_writer = itoa::Buffer::new();
+        let int_str = int_writer.format(value);
+        self.try_write(field, |w| w.write_str(int_str));
+    }
+
+    fn record_bool(&mut self, field: &field::Field, value: bool) {
+        self.try_write(field, |w| if value { write!(w, "true") } else { write!(w, "false") });
+    }
+
+    fn record_u128(&mut self, field: &field::Field, value: u128) {
+        let mut int_writer = itoa::Buffer::new();
+        let int_str = int_writer.format(value);
+        self.try_write(field, |w| w.write_str(int_str));
     }
 }
 
