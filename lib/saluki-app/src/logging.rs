@@ -431,7 +431,7 @@ impl<'writer> AgentLikeFieldVisitor<'writer> {
             let prefix = if self.needs_prefix() { " | " } else { "" };
             let separator = if self.needs_separator() { "," } else { "" };
 
-            self.last_result = write!(self.writer, "{}{}{}=", prefix, separator, field.name());
+            self.last_result = write!(self.writer, "{}{}{}:", prefix, separator, field.name());
             if self.last_result.is_err() {
                 return;
             }
