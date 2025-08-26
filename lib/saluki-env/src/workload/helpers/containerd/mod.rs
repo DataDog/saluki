@@ -21,6 +21,7 @@ pub mod events;
 use self::events::{decode_envelope_to_event, ContainerdEvent, ContainerdTopic};
 
 const CONTAINERD_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_LIST_CONTAINERS_RESPONSE_SIZE: usize = 16 * 1024 * 1024;
 
 /// A [`ContainerdClient`] error.
 #[derive(Debug, Snafu)]
@@ -115,6 +116,7 @@ impl ContainerdClient {
         let response = self
             .client
             .containers()
+            .max_decoding_message_size(MAX_LIST_CONTAINERS_RESPONSE_SIZE)
             .list(request)
             .await
             .context(Response)?
