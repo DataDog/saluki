@@ -3581,6 +3581,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-test",
  "tokio-util",
+ "tonic",
  "tower",
  "tracing",
  "triomphe",
