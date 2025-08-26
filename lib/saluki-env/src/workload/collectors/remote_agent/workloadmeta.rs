@@ -1,11 +1,12 @@
 use async_trait::async_trait;
 use datadog_protos::agent::{Container, KubernetesPod, WorkloadmetaEventType};
-use futures::StreamExt as _;
+use futures::{StreamExt as _, TryStreamExt as _};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::origin::ExternalData;
 use saluki_error::GenericError;
 use saluki_health::Health;
+use saluki_io::net::util::tonic::StatusError;
 use saluki_metrics::static_metrics;
 use stringtheory::{
     interning::{GenericMapInterner, Interner as _},
@@ -220,13 +221,13 @@ impl MetadataCollector for RemoteAgentWorkloadMetadataCollector {
     async fn watch(&mut self, operations_tx: &mut mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {
         self.health.mark_ready();
 
-        let mut entity_stream = self.client.get_workloadmeta_stream();
+        let mut entity_stream = self.client.get_workloadmeta_stream().map_err(StatusError::from);
         debug!("Established workload metadata entity stream.");
 
         loop {
             select! {
                 _ = self.health.live() => {},
-                result = entity_stream.next() => match result {
+                maybe_response = entity_stream.next() => match maybe_response {
                     Some(Ok(response)) => {
                         trace!("Received workload metadata stream event.");
 

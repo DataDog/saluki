@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use datadog_protos::agent::{EntityId as RemoteEntityId, EventType, TagCardinality as RemoteTagCardinality};
-use futures::StreamExt as _;
+use futures::{StreamExt as _, TryStreamExt as _};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{
@@ -9,6 +9,8 @@ use saluki_context::{
 };
 use saluki_error::GenericError;
 use saluki_health::Health;
+use saluki_io::net::util::tonic::StatusError;
+use saluki_metrics::static_metrics;
 use stringtheory::{
     interning::{GenericMapInterner, Interner as _},
     MetaString,
@@ -25,11 +27,24 @@ use crate::{
     },
 };
 
+static_metrics!(
+   name => Telemetry,
+   prefix => remote_tagger_metadata_collector,
+   metrics => [
+       counter(rpc_errors_total),
+       counter(intern_failed_total),
+       counter(events_added_total),
+       counter(events_modified_total),
+       counter(events_deleted_total),
+   ],
+);
+
 /// A workload provider that uses the remote tagger API from a Datadog Agent to provide workload information.
 pub struct RemoteAgentTaggerMetadataCollector {
     client: RemoteAgentClient,
-    tag_interner: GenericMapInterner,
+    interner: GenericMapInterner,
     health: Health,
+    telemetry: Telemetry,
 }
 
 impl RemoteAgentTaggerMetadataCollector {
@@ -40,15 +55,26 @@ impl RemoteAgentTaggerMetadataCollector {
     /// If the Agent gRPC client cannot be created (invalid API endpoint, missing authentication token, etc), or if the
     /// authentication token is invalid, an error will be returned.
     pub async fn from_configuration(
-        config: &GenericConfiguration, health: Health, tag_interner: GenericMapInterner,
+        config: &GenericConfiguration, health: Health, interner: GenericMapInterner,
     ) -> Result<Self, GenericError> {
         let client = RemoteAgentClient::from_configuration(config).await?;
 
         Ok(Self {
             client,
-            tag_interner,
+            interner,
             health,
+            telemetry: Telemetry::new(),
         })
+    }
+
+    fn try_intern(&self, value: &str) -> Option<MetaString> {
+        match self.interner.try_intern(value) {
+            Some(interned) => Some(MetaString::from(interned)),
+            None => {
+                self.telemetry.intern_failed_total().increment(1);
+                None
+            }
+        }
     }
 
     fn owned_tags_into_tagset(&self, tags: Vec<String>) -> Option<TagSet> {
@@ -58,7 +84,7 @@ impl RemoteAgentTaggerMetadataCollector {
             let new_tag = match MetaString::try_inline(&tag) {
                 Some(s) => Tag::from(s),
                 None => {
-                    let interned = self.tag_interner.try_intern(&tag)?;
+                    let interned = self.try_intern(&tag)?;
                     Tag::from(interned)
                 }
             };
@@ -67,6 +93,20 @@ impl RemoteAgentTaggerMetadataCollector {
         }
 
         Some(TagSet::from_iter(new_tags))
+    }
+
+    fn track_event(&self, event_type: EventType) {
+        match event_type {
+            EventType::Added => {
+                self.telemetry.events_added_total().increment(1);
+            }
+            EventType::Modified => {
+                self.telemetry.events_modified_total().increment(1);
+            }
+            EventType::Deleted => {
+                self.telemetry.events_deleted_total().increment(1);
+            }
+        }
     }
 }
 
@@ -79,13 +119,16 @@ impl MetadataCollector for RemoteAgentTaggerMetadataCollector {
     async fn watch(&mut self, operations_tx: &mut mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {
         self.health.mark_ready();
 
-        let mut entity_stream = self.client.get_tagger_stream(RemoteTagCardinality::High);
+        let mut entity_stream = self
+            .client
+            .get_tagger_stream(RemoteTagCardinality::High)
+            .map_err(StatusError::from);
         debug!("Established tagger entity stream.");
 
         loop {
             select! {
                 _ = self.health.live() => {},
-                result = entity_stream.next() => match result {
+                maybe_response = entity_stream.next() => match maybe_response {
                     Some(Ok(response)) => {
                         trace!("Received tagger stream event.");
 
@@ -113,6 +156,8 @@ impl MetadataCollector for RemoteAgentTaggerMetadataCollector {
                                     continue;
                                 }
                             };
+
+                            self.track_event(event_type);
 
                             let maybe_operation = match event_type {
                                 EventType::Added | EventType::Modified => {
@@ -155,7 +200,10 @@ impl MetadataCollector for RemoteAgentTaggerMetadataCollector {
 
                         trace!("Processed tagger stream event.");
                     },
-                    Some(Err(e)) => return Err(e.into()),
+                    Some(Err(e)) => {
+                        self.telemetry.rpc_errors_total().increment(1);
+                        return Err(e.into())
+                    },
                     None => break,
                 }
             }
