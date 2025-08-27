@@ -6,9 +6,9 @@ use ddsketch_agent::DDSketch;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use protobuf::{rt::WireType, CodedOutputStream, Enum as _};
-use saluki_common::task::HandleExt as _;
+use saluki_common::{iter::ReusableDeduplicator, task::HandleExt as _};
 use saluki_config::GenericConfiguration;
-use saluki_context::tags::{SharedTagSet, Tag, TagsExt as _};
+use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::{
     components::{encoders::*, ComponentContext},
     data_model::{
@@ -484,6 +484,7 @@ struct MetricsEndpointEncoder {
     secondary_scratch_buf: Vec<u8>,
     packed_scratch_buf: Vec<u8>,
     additional_tags: SharedTagSet,
+    tags_deduplicator: ReusableDeduplicator<Tag>,
 }
 
 impl MetricsEndpointEncoder {
@@ -495,6 +496,7 @@ impl MetricsEndpointEncoder {
             secondary_scratch_buf: Vec::new(),
             packed_scratch_buf: Vec::new(),
             additional_tags: SharedTagSet::default(),
+            tags_deduplicator: ReusableDeduplicator::new(),
         }
     }
 
@@ -563,6 +565,7 @@ impl EndpointEncoder for MetricsEndpointEncoder {
             &mut self.primary_scratch_buf,
             &mut self.secondary_scratch_buf,
             &mut self.packed_scratch_buf,
+            &mut self.tags_deduplicator,
         )?;
 
         Ok(())
@@ -611,6 +614,7 @@ fn get_message_size_from_buffer(buf: &[u8]) -> Result<u32, protobuf::Error> {
 fn encode_single_metric(
     metric: &Metric, additional_tags: &SharedTagSet, output_buf: &mut Vec<u8>, primary_scratch_buf: &mut Vec<u8>,
     secondary_scratch_buf: &mut Vec<u8>, packed_scratch_buf: &mut Vec<u8>,
+    tags_deduplicator: &mut ReusableDeduplicator<Tag>,
 ) -> Result<(), protobuf::Error> {
     let mut output_stream = CodedOutputStream::vec(output_buf);
     let field_number = field_number_for_metric_type(metric);
@@ -619,23 +623,28 @@ fn encode_single_metric(
         // Depending on the metric type, we write out the appropriate fields.
         match metric.values() {
             MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..) => {
-                encode_series_metric(metric, additional_tags, os, secondary_scratch_buf)
+                encode_series_metric(metric, additional_tags, os, secondary_scratch_buf, tags_deduplicator)
             }
-            MetricValues::Histogram(..) | MetricValues::Distribution(..) => {
-                encode_sketch_metric(metric, additional_tags, os, secondary_scratch_buf, packed_scratch_buf)
-            }
+            MetricValues::Histogram(..) | MetricValues::Distribution(..) => encode_sketch_metric(
+                metric,
+                additional_tags,
+                os,
+                secondary_scratch_buf,
+                packed_scratch_buf,
+                tags_deduplicator,
+            ),
         }
     })
 }
 
 fn encode_series_metric(
     metric: &Metric, additional_tags: &SharedTagSet, output_stream: &mut CodedOutputStream<'_>,
-    scratch_buf: &mut Vec<u8>,
+    scratch_buf: &mut Vec<u8>, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
 ) -> Result<(), protobuf::Error> {
     // Write the metric name and tags.
     output_stream.write_string(SERIES_METRIC_FIELD_NUMBER, metric.context().name())?;
 
-    let deduplicated_tags = get_deduplicated_tags(metric, additional_tags);
+    let deduplicated_tags = get_deduplicated_tags(metric, additional_tags, tags_deduplicator);
     write_series_tags(deduplicated_tags, output_stream, scratch_buf)?;
 
     // Set the host resource.
@@ -699,12 +708,12 @@ fn encode_series_metric(
 
 fn encode_sketch_metric(
     metric: &Metric, additional_tags: &SharedTagSet, output_stream: &mut CodedOutputStream<'_>,
-    scratch_buf: &mut Vec<u8>, packed_scratch_buf: &mut Vec<u8>,
+    scratch_buf: &mut Vec<u8>, packed_scratch_buf: &mut Vec<u8>, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
 ) -> Result<(), protobuf::Error> {
     // Write the metric name and tags.
     output_stream.write_string(SKETCH_METRIC_FIELD_NUMBER, metric.context().name())?;
 
-    let deduplicated_tags = get_deduplicated_tags(metric, additional_tags);
+    let deduplicated_tags = get_deduplicated_tags(metric, additional_tags, tags_deduplicator);
     write_sketch_tags(deduplicated_tags, output_stream, scratch_buf)?;
 
     // Write the host.
@@ -849,14 +858,17 @@ fn write_dogsketch(
     })
 }
 
-fn get_deduplicated_tags<'a>(metric: &'a Metric, additional_tags: &'a SharedTagSet) -> impl Iterator<Item = &'a Tag> {
-    metric
+fn get_deduplicated_tags<'a>(
+    metric: &'a Metric, additional_tags: &'a SharedTagSet, tags_deduplicator: &'a mut ReusableDeduplicator<Tag>,
+) -> impl Iterator<Item = &'a Tag> {
+    let chained_tags = metric
         .context()
         .tags()
         .into_iter()
         .chain(additional_tags)
-        .chain(metric.context().origin_tags())
-        .deduplicated()
+        .chain(metric.context().origin_tags());
+
+    tags_deduplicator.deduplicated(chained_tags)
 }
 
 fn write_tags<'a, I, F>(
@@ -964,6 +976,7 @@ mod tests {
     use std::time::Duration;
 
     use protobuf::CodedOutputStream;
+    use saluki_common::iter::ReusableDeduplicator;
     use saluki_context::tags::SharedTagSet;
     use saluki_core::data_model::event::metric::Metric;
 
@@ -984,12 +997,20 @@ mod tests {
 
         let mut buf1 = Vec::new();
         let mut buf2 = Vec::new();
+        let mut tags_deduplicator = ReusableDeduplicator::new();
 
         let mut histogram_payload = Vec::new();
         {
             let mut histogram_writer = CodedOutputStream::vec(&mut histogram_payload);
-            encode_sketch_metric(&histogram, &host_tags, &mut histogram_writer, &mut buf1, &mut buf2)
-                .expect("Failed to encode histogram as sketch");
+            encode_sketch_metric(
+                &histogram,
+                &host_tags,
+                &mut histogram_writer,
+                &mut buf1,
+                &mut buf2,
+                &mut tags_deduplicator,
+            )
+            .expect("Failed to encode histogram as sketch");
         }
 
         let mut distribution_payload = Vec::new();
@@ -1001,6 +1022,7 @@ mod tests {
                 &mut distribution_writer,
                 &mut buf1,
                 &mut buf2,
+                &mut tags_deduplicator,
             )
             .expect("Failed to encode distribution as sketch");
         }

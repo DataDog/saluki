@@ -63,9 +63,9 @@ impl MetadataCollectorWorker {
         // prematurely but without a true _error_, so `Ok(())` is returned), we can just start watching again.
         loop {
             if let Err(e) = self.collector.watch(&mut operations_tx).await {
-                error!(error = %e, collector_name = self.collector.name(), "Failed to collect metadata. Sleeping for 5 seconds before retrying...");
+                error!(error = %e, collector_name = self.collector.name(), "Failed to collect metadata. Sleeping for 2 seconds before retrying...");
 
-                sleep(Duration::from_secs(5)).await;
+                sleep(Duration::from_secs(2)).await;
             }
         }
     }

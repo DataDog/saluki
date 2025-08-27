@@ -28,4 +28,5 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 http-body-util = { workspace = true }
+proptest = { workspace = true }
 tokio-test = { workspace = true }

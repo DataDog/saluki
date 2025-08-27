@@ -55,6 +55,7 @@ saluki-error = { workspace = true }
 saluki-health = { workspace = true }
 saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 stringtheory = { workspace = true }
