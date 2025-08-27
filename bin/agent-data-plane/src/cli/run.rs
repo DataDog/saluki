@@ -215,8 +215,7 @@ async fn create_topology(
         .add_forwarder("dd_out", dd_forwarder_config)?
         .add_destination("dsd_stats_out", dsd_stats_config.clone())?
         // Metrics.
-        .connect_component("dsd_agg", ["otlp_in.metrics"])?
-        .connect_component("dsd_agg", ["dsd_in.metrics"])?
+        .connect_component("dsd_agg", ["dsd_in.metrics", "otlp_in.metrics"])?
         .connect_component("dsd_prefix_filter", ["dsd_agg"])?
         .connect_component("dsd_enrich", ["dsd_prefix_filter"])?
         .connect_component("dd_metrics_encode", ["dsd_enrich"])?
