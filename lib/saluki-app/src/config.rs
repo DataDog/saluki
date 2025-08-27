@@ -10,6 +10,7 @@ use saluki_api::{
     routing::{get, Router},
     APIHandler,
 };
+use saluki_config::dynamic;
 use serde_json::Value;
 
 /// State for the configuration API handler.
@@ -25,9 +26,11 @@ pub struct ConfigAPIHandler {
 
 impl ConfigAPIHandler {
     /// Creates a new `ConfigAPIHandler`.
-    pub fn from_state(values: Arc<ArcSwap<Value>>) -> Self {
+    pub fn from_state(shared_config: dynamic::SharedConfig) -> Self {
         Self {
-            state: ConfigState { values },
+            state: ConfigState {
+                values: shared_config.values.clone(),
+            },
         }
     }
 

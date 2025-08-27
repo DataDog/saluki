@@ -14,9 +14,12 @@ use snafu::{ResultExt as _, Snafu};
 use tokio::time;
 use tracing::{debug, error};
 
-mod dynamic;
+pub mod dynamic;
 mod provider;
 mod secrets;
+use tokio::sync::broadcast;
+
+use self::dynamic::SharedConfig;
 use self::provider::ResolvedProvider;
 
 /// A configuration error.
@@ -122,8 +125,9 @@ impl LookupSource {
 pub struct ConfigurationLoader {
     inner: Figment,
     lookup_sources: HashSet<LookupSource>,
-    dynamic_values: Option<Arc<ArcSwap<serde_json::Value>>>,
+    dynamic_values: Option<dynamic::SharedConfig>,
     dynamic_provider: Option<dynamic::Provider>,
+    update_receiver: Option<broadcast::Receiver<dynamic::ConfigChangeEvent>>,
 }
 
 impl Default for ConfigurationLoader {
@@ -133,6 +137,7 @@ impl Default for ConfigurationLoader {
             lookup_sources: HashSet::new(),
             dynamic_values: None,
             dynamic_provider: None,
+            update_receiver: None,
         }
     }
 }
@@ -317,10 +322,16 @@ impl ConfigurationLoader {
     /// This will enable the dynamic configuration feature, which allows the configuration to be sourced from a dynamic provider. The dynamic provider is updated at runtime, and `figment` will re-read from it when configuration values are requested.
     pub fn with_dynamic_configuration(mut self) -> Result<Self, ConfigurationError> {
         let values = Arc::new(ArcSwap::from_pointee(serde_json::Value::Null));
+        let (sender, receiver) = broadcast::channel(100);
+        let shared_config = SharedConfig {
+            values: values.clone(),
+            sender,
+        };
         let provider = dynamic::Provider::new(values.clone());
         self.inner = self.inner.admerge(&provider);
-        self.dynamic_values = Some(values);
+        self.dynamic_values = Some(shared_config);
         self.dynamic_provider = Some(provider);
+        self.update_receiver = Some(receiver);
         Ok(self)
     }
 
@@ -338,21 +349,13 @@ impl ConfigurationLoader {
 
     /// Consumes the configuration loader and wraps it in a generic wrapper.
     pub async fn into_generic(self) -> Result<GenericConfiguration, ConfigurationError> {
-        let refreshable_values = if self.dynamic_provider.is_some() {
-            let values = self
-                .dynamic_values
-                .expect("dynamic_values should be present if dynamic_provider is some");
-            Some(values)
-        } else {
-            None
-        };
-
         let generic_config = GenericConfiguration {
             inner: Arc::new(Inner {
                 figment: RwLock::new(self.inner),
                 lookup_sources: self.lookup_sources,
-                refreshable_values,
+                shared_config: self.dynamic_values,
                 dynamic_provider: self.dynamic_provider,
+                update_receiver: self.update_receiver,
             }),
         };
 
@@ -385,12 +388,12 @@ async fn run_dynamic_config_updater(inner: Arc<Inner>) {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 struct Inner {
     figment: RwLock<Figment>,
     lookup_sources: HashSet<LookupSource>,
-    refreshable_values: Option<Arc<ArcSwap<serde_json::Value>>>,
+    shared_config: Option<dynamic::SharedConfig>,
     dynamic_provider: Option<dynamic::Provider>,
+    update_receiver: Option<broadcast::Receiver<dynamic::ConfigChangeEvent>>,
 }
 
 /// A generic configuration object.
@@ -511,8 +514,13 @@ impl GenericConfiguration {
     }
 
     /// Gets the refreshable handle.
-    pub fn get_refreshable_handle(&self) -> Option<Arc<ArcSwap<serde_json::Value>>> {
-        self.inner.refreshable_values.as_ref().cloned()
+    pub fn get_refreshable_handle(&self) -> Option<dynamic::SharedConfig> {
+        self.inner.shared_config.clone()
+    }
+
+    /// Subscribes for updates to the configuration.
+    pub fn subscribe_for_updates(&self) -> Option<broadcast::Receiver<dynamic::ConfigChangeEvent>> {
+        self.inner.update_receiver.as_ref().map(|r| r.resubscribe())
     }
 }
 
