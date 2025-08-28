@@ -1,7 +1,7 @@
 use std::io;
 
 use bytes::BufMut;
-use socket2::{SockAddr, SockAddrStorage, SockRef};
+use socket2::{MaybeUninitSlice, MsgHdrMut, SockAddr, SockAddrStorage, SockRef};
 
 use super::ancillary::{ControlMessage, SocketCredentialsAncillaryData};
 use crate::net::addr::{ConnectionAddress, ProcessCredentials};
@@ -15,7 +15,7 @@ pub fn enable_uds_socket_credentials<'sock, S>(socket: &'sock S) -> io::Result<(
 where
     SockRef<'sock>: From<&'sock S>,
 {
-    let sock_ref = socket2::SockRef::from(socket);
+    let sock_ref = SockRef::from(socket);
     sock_ref.set_passcred(true)
 }
 
@@ -23,7 +23,7 @@ pub(super) fn uds_recvmsg<'sock, S, B: BufMut>(socket: &'sock S, buf: &mut B) ->
 where
     SockRef<'sock>: From<&'sock S>,
 {
-    let sock_ref = socket2::SockRef::from(socket);
+    let sock_ref = SockRef::from(socket);
 
     // Create the message header struct that will be populated by the call to `recvmsg`, which includes the peer
     // address, message data, and any ancillary (out-of-band) data.
@@ -36,10 +36,10 @@ where
 
     let mut ancillary_data = SocketCredentialsAncillaryData::new();
 
-    let data_buf = unsafe { socket2::MaybeUninitSlice::new(buf.chunk_mut().as_uninit_slice_mut()) };
+    let data_buf = unsafe { MaybeUninitSlice::new(buf.chunk_mut().as_uninit_slice_mut()) };
     let mut data_bufs = [data_buf];
 
-    let mut msg_hdr = socket2::MsgHdrMut::new()
+    let mut msg_hdr = MsgHdrMut::new()
         .with_addr(&mut sock_addr)
         .with_buffers(&mut data_bufs)
         .with_control(ancillary_data.as_mut_uninit());
