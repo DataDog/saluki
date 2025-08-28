@@ -368,14 +368,15 @@ mod tests {
         config_value: String,
     }
 
-    #[test]
-    fn test_python_datadog_agent_integration() {
+    #[tokio::test]
+    async fn test_python_datadog_agent_integration() {
         std::env::set_var("DD_TEST_FOO", "bar");
 
         let config = ConfigurationLoader::default()
             .from_environment("DD_TEST")
             .expect("configuration should be loaded")
             .into_generic()
+            .await
             .expect("convert to generic configuration");
 
         set_configuration(config);

@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
@@ -17,9 +19,9 @@ use saluki_components::{
         HostEnrichmentConfiguration, HostTagsConfiguration, PreaggregationFilterConfiguration,
     },
 };
-use saluki_config::{ConfigurationLoader, GenericConfiguration, RefresherConfiguration};
+use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::topology::TopologyBlueprint;
-use saluki_env::EnvironmentProvider as _;
+use saluki_env::{configstream::create_config_stream, EnvironmentProvider as _};
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use tokio::{select, time::interval};
@@ -43,9 +45,41 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
     let configuration = ConfigurationLoader::default()
         .try_from_yaml(&run_config.config)
         .from_environment("DD")?
+        .with_dynamic_configuration()?
         .with_default_secrets_resolution()
         .await?
-        .into_generic()?;
+        .into_generic()
+        .await?;
+
+    let in_standalone_mode = configuration.get_typed_or_default::<bool>("adp.standalone_mode");
+    if !in_standalone_mode {
+        if let Some(shared_config) = configuration.get_refreshable_handle() {
+            // If configured, create a config stream and block until a initial configuration is received.
+            if configuration.get_typed_or_default::<bool>("adp.use_new_config_stream_endpoint") {
+                let snapshot_received = Arc::new(AtomicBool::new(false));
+                if let Err(e) = create_config_stream(&configuration, shared_config, snapshot_received.clone()).await {
+                    error!("Failed to create config stream: {}.", e);
+                    return Err(e);
+                }
+                info!("Waiting for initial configuration from Datadog Agent...");
+                let mut attempts = 0;
+                const CHECK_INTERVAL_MS: u64 = 100;
+
+                while !snapshot_received.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(CHECK_INTERVAL_MS)).await;
+                    attempts += 1;
+
+                    if attempts % 100 == 0 {
+                        info!(
+                            "Still waiting for initial configuration... ({}s elapsed)",
+                            attempts / 10
+                        );
+                    }
+                }
+                info!("Initial configuration received.");
+            }
+        }
+    }
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
@@ -184,20 +218,8 @@ async fn create_topology(
     let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(configuration)
         .map(BufferedIncrementalConfiguration::from_encoder_builder)
         .error_context("Failed to configure Datadog Service Checks encoder.")?;
-    let mut dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
+    let dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog forwarder.")?;
-
-    match RefresherConfiguration::from_configuration(configuration) {
-        Ok(refresher_configuration) => {
-            let refreshable_configuration = refresher_configuration.build().await?;
-            dd_forwarder_config.add_refreshable_configuration(refreshable_configuration);
-        }
-        Err(_) => {
-            info!(
-               "Dynamic configuration refreshing will be unavailable due to failure to configure refresher configuration."
-           )
-        }
-    }
 
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
     blueprint
