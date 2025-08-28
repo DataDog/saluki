@@ -1,7 +1,7 @@
-use std::{io, mem};
+use std::io;
 
 use bytes::BufMut;
-use socket2::{SockAddr, SockRef};
+use socket2::{SockAddr, SockAddrStorage, SockRef};
 
 use super::ancillary::{ControlMessage, SocketCredentialsAncillaryData};
 use crate::net::addr::{ConnectionAddress, ProcessCredentials};
@@ -30,11 +30,8 @@ where
     //
     // SAFETY: We're allocating `sockaddr_storage`, which is always large enough to hold any address family's socket
     // address structure.
-    //
-    // TODO: We could probably scope this down to `sockaddr_un`, to do a smaller stack allocation... but I need to
-    // research more if that's the right choice in all cases for a Unix domain socket.
-    let sock_storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
-    let sock_storage_len = mem::size_of_val(&sock_storage) as libc::socklen_t;
+    let sock_storage = SockAddrStorage::zeroed();
+    let sock_storage_len = sock_storage.size_of();
     let mut sock_addr = unsafe { SockAddr::new(sock_storage, sock_storage_len) };
 
     let mut ancillary_data = SocketCredentialsAncillaryData::new();

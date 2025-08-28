@@ -530,8 +530,6 @@ fn construct_typed_output_ids(
 
 #[cfg(test)]
 mod test {
-    use similar_asserts::assert_eq;
-
     use super::*;
     use crate::topology::test_util::{
         TestDestinationBuilder, TestEncoderBuilder, TestForwarderBuilder, TestSourceBuilder, TestTransformBuilder,
