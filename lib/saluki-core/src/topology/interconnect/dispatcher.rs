@@ -276,6 +276,16 @@ where
             .ok_or_else(|| generic_error!("No output named '{}' declared.", name))
     }
 
+    /// Returns `true` if the default output is connected to downstream components.
+    pub fn is_default_output_connected(&self) -> bool {
+        self.default.is_some()
+    }
+
+    /// Returns `true` if the named output is connected to downstream components.
+    pub fn is_named_output_connected(&self, name: &str) -> bool {
+        self.targets.contains_key(name)
+    }
+
     /// Dispatches the given item to the default output.
     ///
     /// # Errors
