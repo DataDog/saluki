@@ -213,7 +213,7 @@ run-benchmarks-adp:
     when: always
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
-    SMP_VERSION: 0.23.5
+    SMP_VERSION: 0.24.1
     RUST_LOG: info,aws_config::profile::credentials=error
   script:
     # Do some pre-flight steps like creating directories, installing helper utilities, setting
@@ -283,7 +283,7 @@ run-benchmarks-dsd:
     when: always
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
-    SMP_VERSION: 0.23.5
+    SMP_VERSION: 0.24.1
     RUST_LOG: info,aws_config::profile::credentials=error
   script:
     # Do some pre-flight steps like creating directories, installing helper utilities, setting
@@ -353,7 +353,7 @@ run-benchmarks-adp-and-checks:
     when: always
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
-    SMP_VERSION: 0.23.5
+    SMP_VERSION: 0.24.1
     RUST_LOG: info,aws_config::profile::credentials=error
   script:
     # Do some pre-flight steps like creating directories, installing helper utilities, setting
