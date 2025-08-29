@@ -1,7 +1,7 @@
 /// Checks source.
 ///
 /// Listen to Autodiscovery events, schedule checks and emit results.
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::sync::{Arc, LazyLock};
 
 use async_trait::async_trait;
@@ -36,7 +36,10 @@ use self::check::Check;
 mod builder;
 
 #[cfg(feature = "python-checks")]
-use self::builder::python::builder::PythonCheckBuilder;
+use {
+    self::builder::python::builder::PythonCheckBuilder,
+    self::builder::python::execution_context::ExecutionContext,
+};
 use self::builder::CheckBuilder;
 
 const fn default_check_runners() -> usize {
@@ -107,10 +110,14 @@ where
             .as_ref()
             .ok_or_else(|| generic_error!("No configuration configured."))?;
 
-        let hostname = environment_provider.host().get_hostname().await.unwrap_or_else(|e| {
-            warn!("Failed to get hostname: {:?}", e);
-            "".to_string()
-        });
+        let execution_context = ExecutionContext {
+            hostname: environment_provider.host().get_hostname().await.unwrap_or_else(|e| {
+                warn!("Failed to get hostname: {:?}", e);
+                "".to_string()
+            }),
+            http_headers: HashMap::new(), // FIXME: get from configuration
+            tracemalloc_enabled: false, // FIXME: get from configuration
+        };
 
         Ok(Box::new(ChecksSource {
             autodiscovery_rx: receiver,
@@ -121,7 +128,7 @@ where
                 None
             },
             configuration: configuration.clone(),
-            hostname,
+            execution_context,
         }))
     }
 
@@ -145,17 +152,17 @@ impl<E> MemoryBounds for ChecksConfiguration<E> {
 }
 
 struct ChecksSource {
-    hostname: String,
     autodiscovery_rx: Receiver<AutodiscoveryEvent>,
     check_runners: usize,
     custom_checks_dirs: Option<Vec<String>>,
     configuration: GenericConfiguration,
+    execution_context: ExecutionContext,
 }
 
 impl ChecksSource {
     /// Builds the check builders for the source.
     fn builders(
-        &self, check_events_tx: mpsc::Sender<Event>, configuration: GenericConfiguration, hostname: String,
+        &self, check_events_tx: mpsc::Sender<Event>, configuration: GenericConfiguration, execution_context: ExecutionContext,
     ) -> Vec<Arc<dyn CheckBuilder + Send + Sync>> {
         #[cfg(feature = "python-checks")]
         {
@@ -163,7 +170,7 @@ impl ChecksSource {
                 check_events_tx,
                 self.custom_checks_dirs.clone(),
                 configuration.clone(),
-                hostname,
+                execution_context,
             ))]
         }
         #[cfg(not(feature = "python-checks"))]
@@ -171,7 +178,7 @@ impl ChecksSource {
             let _ = check_events_tx; // Suppress unused variable warning
             let _ = &self.custom_checks_dirs; // Suppress unused field warning
             let _ = &configuration; // Suppress unused field warning
-            let _ = hostname; // Suppress unused field warning
+            let _ = execution_context; // Suppress unused field warning
             vec![]
         }
     }
@@ -189,7 +196,7 @@ impl Source for ChecksSource {
         let (check_events_tx, check_event_rx) = mpsc::channel(128);
 
         let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> =
-            self.builders(check_events_tx, self.configuration.clone(), self.hostname.clone());
+            self.builders(check_events_tx, self.configuration.clone(), self.execution_context.clone());
 
         let mut check_ids = HashSet::new();
         let scheduler = Scheduler::new(self.check_runners);

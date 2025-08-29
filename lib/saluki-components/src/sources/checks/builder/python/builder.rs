@@ -19,6 +19,7 @@ use tracing::{debug, error, info, warn};
 
 use super::python_modules::aggregator as pyagg;
 use super::python_modules::datadog_agent;
+use super::execution_context::ExecutionContext;
 use crate::sources::checks::builder::CheckBuilder;
 use crate::sources::checks::check::Check;
 
@@ -62,19 +63,19 @@ pub struct PythonCheckBuilder {
     check_events_tx: Sender<Event>,
     custom_checks_folders: Option<Vec<String>>,
     configuration: GenericConfiguration,
-    hostname: String,
+    execution_context: ExecutionContext,
 }
 
 impl PythonCheckBuilder {
     pub fn new(
         check_events_tx: Sender<Event>, custom_checks_folders: Option<Vec<String>>,
-        configuration: GenericConfiguration, hostname: String,
+        configuration: GenericConfiguration, execution_context: ExecutionContext,
     ) -> Self {
         Self {
             check_events_tx,
             custom_checks_folders,
             configuration,
-            hostname,
+            execution_context,
         }
     }
 
@@ -125,7 +126,7 @@ impl PythonCheckBuilder {
                     // Initialize global state for our Python modules.
                     super::python_modules::set_event_sender(self.check_events_tx.clone());
                     super::python_modules::set_configuration(self.configuration.clone());
-                    super::python_modules::set_hostname(self.hostname.clone());
+                    super::python_modules::set_execution_context(self.execution_context.clone());
 
                     info!("Python runtime loaded successfully and initialized for checks.");
                     true
