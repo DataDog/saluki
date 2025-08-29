@@ -322,12 +322,12 @@ where
 
     /// Returns `true` if the default output is connected to downstream components.
     pub fn is_default_output_connected(&self) -> bool {
-        self.default.is_some()
+        self.default.as_ref().is_some_and(|target| !target.senders.is_empty())
     }
 
     /// Returns `true` if the named output is connected to downstream components.
     pub fn is_named_output_connected(&self, name: &str) -> bool {
-        self.targets.contains_key(name)
+        self.targets.get(name).is_some_and(|target| !target.senders.is_empty())
     }
 
     /// Dispatches the given item to the default output.
@@ -964,5 +964,72 @@ mod tests {
         assert_eq!(events_sent, 0);
         assert_eq!(events_discarded, multiple_items_item_count);
         assert!(send_latencies.is_empty());
+    }
+
+    #[tokio::test]
+    async fn is_default_output_connected_behavior() {
+        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<u32>>();
+
+        // Initially, no default output exists - should return false
+        assert!(
+            !dispatcher.is_default_output_connected(),
+            "should return false when no default output exists"
+        );
+
+        // Add default output but no senders - should return false
+        dispatcher
+            .add_output(OutputName::Default)
+            .expect("should be able to add default output");
+        assert!(
+            !dispatcher.is_default_output_connected(),
+            "should return false when default output exists but has no senders"
+        );
+
+        // Add a sender to the default output - should return true
+        let (tx, _rx) = mpsc::channel(1);
+        dispatcher
+            .attach_sender_to_output(&OutputName::Default, tx)
+            .expect("should be able to attach sender");
+        assert!(
+            dispatcher.is_default_output_connected(),
+            "should return true when default output has senders attached"
+        );
+    }
+
+    #[tokio::test]
+    async fn is_named_output_connected_behavior() {
+        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<u32>>();
+        let output_name = "test_output";
+
+        // Initially, no named output exists - should return false
+        assert!(
+            !dispatcher.is_named_output_connected(output_name),
+            "should return false when named output doesn't exist"
+        );
+
+        // Add named output but no senders - should return false
+        dispatcher
+            .add_output(OutputName::Given(output_name.into()))
+            .expect("should be able to add named output");
+        assert!(
+            !dispatcher.is_named_output_connected(output_name),
+            "should return false when named output exists but has no senders"
+        );
+
+        // Add a sender to the named output - should return true
+        let (tx, _rx) = mpsc::channel(1);
+        dispatcher
+            .attach_sender_to_output(&OutputName::Given(output_name.into()), tx)
+            .expect("should be able to attach sender");
+        assert!(
+            dispatcher.is_named_output_connected(output_name),
+            "should return true when named output has senders attached"
+        );
+
+        // Test with a different output name that doesn't exist - should return false
+        assert!(
+            !dispatcher.is_named_output_connected("nonexistent_output"),
+            "should return false for nonexistent output"
+        );
     }
 }
