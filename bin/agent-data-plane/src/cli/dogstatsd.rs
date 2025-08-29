@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
-use comfy_table::{presets::UTF8_FULL, Cell, ContentArrangement, Row, Table};
+use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
 use saluki_api::StatusCode;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tokio::io::{self, AsyncWriteExt};
-use tracing::error;
+use tracing::{error, info};
 
 use crate::config::{AnalysisMode, DogstatsdConfig, DogstatsdStatsConfig, SortDirection};
 
@@ -43,12 +43,17 @@ async fn handle_dogstatsd_stats(config: DogstatsdStatsConfig) -> Result<(), Gene
         .await
         .error_context("Failed to send statistics collection request.")?;
 
+    info!(
+        "Triggered statistics collection over the next {} seconds. Waiting for completion...",
+        config.collection_duration_secs
+    );
+
     // Parse the response and extract the deserialized statistics.
     let status = response.status();
     let response_body = response.text().await.error_context("Failed to read response body.")?;
 
     if status != StatusCode::OK {
-        output(&response_body).await.unwrap();
+        output_lines([response_body]).await.unwrap();
         return Err(generic_error!(
             "Non-success response ({}) after statistics collection. Raw response payload has been logged to stdout.",
             status
@@ -58,28 +63,31 @@ async fn handle_dogstatsd_stats(config: DogstatsdStatsConfig) -> Result<(), Gene
     let mut response = serde_json::from_str::<StatsResponse>(&response_body)
         .error_context("Failed to deserialize collected statistics response.")?;
 
+    info!("Collected {} metric(s).", response.stats.len());
+
     // Filter out any non-matching metrics if a filter was given.
     if let Some(filter) = config.filter.as_deref() {
         response.stats.retain(|metric| metric.name.contains(filter));
+        info!("{} metric(s) remain after filtering.", response.stats.len());
     }
 
-    let analysis_output = match config.analysis_mode {
-        AnalysisMode::Summary => handle_stats_summary_analysis(&config, response),
-        AnalysisMode::Cardinality => handle_stats_cardinality_analysis(&config, response),
-    };
+    if let Some(limit) = config.limit {
+        info!("Output will be limited to the top {} metric(s).", limit);
+    }
 
-    output(&analysis_output)
-        .await
-        .error_context("Failed to output analysis results to stdout.")?;
+    match config.analysis_mode {
+        AnalysisMode::Summary => handle_stats_summary_analysis(&config, response).await?,
+        AnalysisMode::Cardinality => handle_stats_cardinality_analysis(&config, response).await?,
+    }
+
     Ok(())
 }
 
-fn handle_stats_summary_analysis(config: &DogstatsdStatsConfig, mut response: StatsResponse<'_>) -> String {
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(vec!["Metric", "Tags", "Count", "Last Seen"]);
+async fn handle_stats_summary_analysis(
+    config: &DogstatsdStatsConfig, mut response: StatsResponse<'_>,
+) -> io::Result<()> {
+    let mut table = get_stylized_table();
+    table.set_header(vec!["Metric", "Tags", "Count", "Last Seen"]);
 
     // Handle sorting first.
     //
@@ -95,31 +103,29 @@ fn handle_stats_summary_analysis(config: &DogstatsdStatsConfig, mut response: St
     });
 
     // Add each metric summary to the table.
-    for metric_summary in response.stats {
+    for metric_summary in response.stats.into_iter().take(config.limit.unwrap_or(usize::MAX)) {
         let tags = metric_summary.tags.join(",");
         let last_seen = chrono::DateTime::from_timestamp(metric_summary.last_seen as i64, 0)
             .unwrap_or_default()
             .with_timezone(&chrono::Local)
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
+            .format("%Y-%m-%d %H:%M:%S");
 
-        table.add_row(Row::from(vec![
+        table.add_row(Row::from([
             Cell::new(metric_summary.name),
             Cell::new(tags),
-            Cell::new(metric_summary.count.to_string()),
+            Cell::new(metric_summary.count),
             Cell::new(last_seen),
         ]));
     }
 
-    table.to_string()
+    output_lines(table.lines()).await
 }
 
-fn handle_stats_cardinality_analysis<'a>(config: &DogstatsdStatsConfig, response: StatsResponse<'a>) -> String {
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(vec!["Metric", "Unique Contexts", "Highest Cardinality Tags (top 5)"]);
+async fn handle_stats_cardinality_analysis<'a>(
+    config: &DogstatsdStatsConfig, response: StatsResponse<'a>,
+) -> io::Result<()> {
+    let mut table = get_stylized_table();
+    table.set_header(["Metric", "Unique Contexts", "Highest Cardinality Tags (top 5)"]);
 
     // Build and populate our cardinality map.
     //
@@ -162,7 +168,10 @@ fn handle_stats_cardinality_analysis<'a>(config: &DogstatsdStatsConfig, response
     flattened_cardinality_map.sort_by(|a, b| if sort_descending { b.1.cmp(&a.1) } else { a.1.cmp(&b.1) });
 
     // Add each metric summary to the table.
-    for (metric_name, unique_contexts, tag_cardinalities) in flattened_cardinality_map {
+    for (metric_name, unique_contexts, tag_cardinalities) in flattened_cardinality_map
+        .into_iter()
+        .take(config.limit.unwrap_or(usize::MAX))
+    {
         let highest_cardinality_tags = if tag_cardinalities.is_empty() {
             "[no tags]".to_string()
         } else {
@@ -174,20 +183,33 @@ fn handle_stats_cardinality_analysis<'a>(config: &DogstatsdStatsConfig, response
                 .join(", ")
         };
 
-        table.add_row(Row::from(vec![
+        table.add_row(Row::from([
             Cell::new(metric_name),
-            Cell::new(unique_contexts.to_string()),
+            Cell::new(unique_contexts),
             Cell::new(highest_cardinality_tags),
         ]));
     }
 
-    table.to_string()
+    output_lines(table.lines()).await
 }
 
-async fn output(body: &str) -> io::Result<()> {
+fn get_stylized_table() -> Table {
+    let mut table = Table::new();
+    table.set_content_arrangement(ContentArrangement::Dynamic);
+    table.load_preset(ASCII_FULL_CONDENSED);
+
+    table
+}
+
+async fn output_lines<I>(lines: I) -> io::Result<()>
+where
+    I: IntoIterator<Item = String>,
+{
     let mut stdout = io::stdout();
-    stdout.write_all(body.as_bytes()).await?;
-    stdout.write_all(b"\n").await?;
+    for line in lines {
+        stdout.write_all(line.as_bytes()).await?;
+        stdout.write_all(b"\n").await?;
+    }
     stdout.flush().await?;
     Ok(())
 }
