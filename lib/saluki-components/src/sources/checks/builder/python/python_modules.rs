@@ -1,4 +1,5 @@
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
+use std::collections::HashMap;
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -15,12 +16,15 @@ use tracing::{debug, error, trace};
 
 use crate::sources::checks::check_metric::{CheckMetric, MetricType};
 
+use super::execution_context::ExecutionContext;
+
 // Global state to store the sender
 static METRIC_SENDER: OnceLock<Sender<Event>> = OnceLock::new();
 // Global state to store the configuration
 static GLOBAL_CONFIGURATION: OnceLock<GenericConfiguration> = OnceLock::new();
-// Global state to store the configuration
-static GLOBAL_HOST: OnceLock<String> = OnceLock::new();
+
+// Global state to store the execution context
+static GLOBAL_EXECUTION_CONTEXT: OnceLock<ExecutionContext> = OnceLock::new();
 
 /// Sets the event sender to be used by the aggregator module.
 pub fn set_event_sender(check_metrics_tx: Sender<Event>) -> &'static Sender<Event> {
@@ -33,8 +37,8 @@ pub fn set_configuration(configuration: GenericConfiguration) -> &'static Generi
 }
 
 /// Sets the hostname to be used by the datadog_agent module.
-pub fn set_hostname(hostname: String) -> &'static String {
-    GLOBAL_HOST.get_or_init(|| hostname)
+pub fn set_execution_context(execution_context: ExecutionContext) -> &'static ExecutionContext {
+    GLOBAL_EXECUTION_CONTEXT.get_or_init(|| execution_context)
 }
 
 fn try_send_metric(metric: CheckMetric) -> Result<(), GenericError> {
@@ -73,9 +77,25 @@ fn get_config_key(key: String) -> String {
 }
 
 fn fetch_hostname() -> &'static str {
-    match GLOBAL_HOST.get() {
-        Some(host) => host.as_str(),
+    match GLOBAL_EXECUTION_CONTEXT.get() {
+        Some(ExecutionContext { hostname, ..}) => hostname.as_str(),
         None => "",
+    }
+}
+
+fn fetch_tracemalloc_enabled() -> bool {
+    match GLOBAL_EXECUTION_CONTEXT.get() {
+        Some(ExecutionContext { tracemalloc_enabled, ..}) => *tracemalloc_enabled,
+        None => false,
+    }
+}
+
+fn fetch_http_headers() -> &'static HashMap<String, String> {
+    static EMPTY : LazyLock<HashMap<String, String>> = LazyLock::new(|| HashMap::new()); // FIXME: yuk!
+
+    match GLOBAL_EXECUTION_CONTEXT.get() {
+        Some(ExecutionContext { http_headers, ..}) => http_headers,
+        None => &EMPTY,
     }
 }
 
@@ -256,7 +276,6 @@ pub mod datadog_agent {
     #[pyfunction]
     fn get_config(config_option: String) -> String {
         trace!("Called get_config({})", config_option);
-
         get_config_key(config_option)
     }
 
@@ -273,9 +292,15 @@ pub mod datadog_agent {
     }
 
     #[pyfunction]
+    fn headers() -> &'static HashMap<String, String> {
+        trace!("Called headers()");
+        fetch_http_headers()
+    }
+
+    #[pyfunction]
     fn tracemalloc_enabled() -> bool {
-        // tracemalloc unsupported for now
-        false
+        trace!("Called tracemalloc_enabled()");
+        fetch_tracemalloc_enabled()
     }
 }
 
@@ -378,10 +403,17 @@ mod tests {
             .into_generic()
             .await
             .expect("convert to generic configuration");
-
         set_configuration(config);
 
-        set_hostname("agent-test-host".to_string());
+        let execution_context = ExecutionContext {
+            hostname: "agent-test-host".to_string(),
+            http_headers: HashMap::from([
+                ("Sample-Header-1".to_string(), "value1".to_string()),
+                ("Sample-Header-2".to_string(), "value2".to_string()),
+            ]),
+            tracemalloc_enabled: true,
+        };
+        set_execution_context(execution_context);
 
         pyo3::append_to_inittab!(datadog_agent);
         pyo3::prepare_freethreaded_python();
