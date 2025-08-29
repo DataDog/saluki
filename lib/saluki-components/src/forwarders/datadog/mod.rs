@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use http::Uri;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::buf::FrozenChunkedBytesBuffer;
+use saluki_config::dynamic;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{forwarders::*, ComponentContext},
@@ -13,6 +14,7 @@ use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use stringtheory::MetaString;
 use tokio::select;
+use tokio::sync::broadcast;
 use tracing::debug;
 
 use crate::common::datadog::{
@@ -89,8 +91,12 @@ impl ForwarderBuilder for DatadogConfiguration {
             telemetry.clone(),
             metrics_builder,
         )?;
+        let mut receiver = None;
+        if let Some(config) = &self.config_refresher {
+            receiver = config.subscribe_for_updates();
+        }
 
-        Ok(Box::new(Datadog { forwarder }))
+        Ok(Box::new(Datadog { forwarder, receiver }))
     }
 }
 
@@ -131,12 +137,16 @@ impl MemoryBounds for DatadogConfiguration {
 
 pub struct Datadog {
     forwarder: TransactionForwarder<FrozenChunkedBytesBuffer>,
+    receiver: Option<broadcast::Receiver<dynamic::ConfigChangeEvent>>,
 }
 
 #[async_trait]
 impl Forwarder for Datadog {
     async fn run(mut self: Box<Self>, mut context: ForwarderContext) -> Result<(), GenericError> {
-        let Self { forwarder } = *self;
+        let Self {
+            forwarder,
+            mut receiver,
+        } = *self;
 
         let mut health = context.take_health_handle();
 
@@ -159,6 +169,18 @@ impl Forwarder for Datadog {
                     },
                     None => break,
                 },
+                update = async {
+                    if let Some(receiver) = &mut receiver {
+                        receiver.recv().await.ok()
+                    } else {
+                        std::future::pending().await
+                    }
+                } => {
+                    if let Some(update) = update {
+                        println!("rz6300 configuration changed: {:?}.", update);
+                        // Do something here.
+                    }
+                }
             }
         }
 
