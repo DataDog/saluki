@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{borrow::Cow, time::Instant};
 
 use metrics::{Counter, Histogram, SharedString};
 use saluki_common::collections::FastHashMap;
@@ -11,10 +11,12 @@ use crate::{components::ComponentContext, observability::ComponentMetricsExt as 
 
 const METRIC_NAME_COMPONENT_EVENTS_SENT_TOTAL: &str = "component_events_sent_total";
 const METRIC_NAME_COMPONENT_SEND_LATENCY_SECONDS: &str = "component_send_latency_seconds";
+const METRIC_NAME_COMPONENT_EVENTS_DISCARDED_TOTAL: &str = "component_events_discarded_total";
 
 struct DispatcherMetrics {
     events_sent: Counter,
     send_latency: Histogram,
+    events_discarded: Counter,
 }
 
 impl DispatcherMetrics {
@@ -35,6 +37,10 @@ impl DispatcherMetrics {
         Self {
             events_sent: metrics_builder.register_debug_counter(METRIC_NAME_COMPONENT_EVENTS_SENT_TOTAL),
             send_latency: metrics_builder.register_debug_histogram(METRIC_NAME_COMPONENT_SEND_LATENCY_SECONDS),
+            events_discarded: metrics_builder.register_debug_counter_with_tags(
+                METRIC_NAME_COMPONENT_EVENTS_DISCARDED_TOTAL,
+                [("discard_reason", "disconnected")],
+            ),
         }
     }
 }
@@ -85,7 +91,10 @@ where
 
     async fn send(&self, item: T) -> Result<(), GenericError> {
         if self.senders.is_empty() {
-            return Err(generic_error!("No senders configured."));
+            // Track discarded events when no senders are attached to this output
+            let item_count = item.item_count() as u64;
+            self.metrics.events_discarded.increment(item_count);
+            return Ok(());
         }
 
         let start = Instant::now();
@@ -234,7 +243,7 @@ where
 {
     context: ComponentContext,
     default: Option<DispatchTarget<T>>,
-    targets: FastHashMap<String, DispatchTarget<T>>,
+    targets: FastHashMap<Cow<'static, str>, DispatchTarget<T>>,
 }
 
 impl<T> Dispatcher<T>
@@ -250,18 +259,53 @@ where
         }
     }
 
-    /// Adds an output to the dispatcher, attached to the given sender.
-    pub fn add_output(&mut self, output_name: OutputName, sender: mpsc::Sender<T>) {
+    /// Adds an output to the dispatcher.
+    ///
+    /// # Errors
+    ///
+    /// If the output already exists, an error is returned.
+    pub fn add_output(&mut self, output_name: OutputName) -> Result<(), GenericError> {
+        match output_name {
+            OutputName::Default => {
+                if self.default.is_some() {
+                    return Err(generic_error!("Default output already exists."));
+                }
+
+                self.default = Some(DispatchTarget::default_output(self.context.clone()));
+            }
+            OutputName::Given(name) => {
+                if self.targets.contains_key(&name) {
+                    return Err(generic_error!("Output '{}' already exists.", name));
+                }
+                let target = DispatchTarget::named_output(self.context.clone(), &name);
+                self.targets.insert(name, target);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Attaches a sender to the given output.
+    ///
+    /// # Errors
+    ///
+    /// If the output does not exist, an error is returned.
+    pub fn attach_sender_to_output(
+        &mut self, output_name: &OutputName, sender: mpsc::Sender<T>,
+    ) -> Result<(), GenericError> {
         let target = match output_name {
             OutputName::Default => self
                 .default
-                .get_or_insert_with(|| DispatchTarget::default_output(self.context.clone())),
+                .as_mut()
+                .ok_or_else(|| generic_error!("No default output declared."))?,
             OutputName::Given(name) => self
                 .targets
-                .entry(name.to_string())
-                .or_insert_with(|| DispatchTarget::named_output(self.context.clone(), &name)),
+                .get_mut(name)
+                .ok_or_else(|| generic_error!("Output '{}' does not exist.", name))?,
         };
         target.add_sender(sender);
+
+        Ok(())
     }
 
     fn get_default_output(&self) -> Result<&DispatchTarget<T>, GenericError> {
@@ -440,29 +484,67 @@ mod tests {
         unbuffered_dispatcher()
     }
 
-    fn get_dispatcher_metric_composite_key(
-        kind: MetricKind, name: &'static str, output_name: &'static str,
+    fn add_dispatcher_default_output<T: Dispatchable, const N: usize>(
+        dispatcher: &mut Dispatcher<T>, senders: [mpsc::Sender<T>; N],
+    ) {
+        dispatcher
+            .add_output(OutputName::Default)
+            .expect("default output should not be added yet");
+        for sender in senders {
+            dispatcher
+                .attach_sender_to_output(&OutputName::Default, sender)
+                .expect("default output should be added");
+        }
+    }
+
+    fn add_dispatcher_named_output<T: Dispatchable, const N: usize>(
+        dispatcher: &mut Dispatcher<T>, output_name: &'static str, senders: [mpsc::Sender<T>; N],
+    ) {
+        dispatcher
+            .add_output(OutputName::Given(output_name.into()))
+            .expect("named output should not be added yet");
+        for sender in senders {
+            dispatcher
+                .attach_sender_to_output(&OutputName::Given(output_name.into()), sender)
+                .expect("named output should be added");
+        }
+    }
+
+    fn get_dispatcher_metric_ckey(
+        kind: MetricKind, name: &'static str, output_name: &'static str, tags: &[(&'static str, &'static str)],
     ) -> CompositeKey {
-        // We build the labels according to what we'll generate when calling `create_consumer`:
-        let labels = vec![
+        let mut labels = vec![
             Label::from_static_parts("component_id", "dispatcher_test"),
             Label::from_static_parts("component_type", "source"),
             Label::from_static_parts("output", output_name),
         ];
+
+        for tag in tags {
+            labels.push(Label::from_static_parts(tag.0, tag.1));
+        }
+
         let key = Key::from_parts(name, labels);
         CompositeKey::new(kind, key)
     }
 
-    fn get_output_metrics(snapshotter: &Snapshotter, output_name: &'static str) -> (u64, Vec<OrderedFloat<f64>>) {
-        let events_sent_key = get_dispatcher_metric_composite_key(
+    fn get_output_metrics(snapshotter: &Snapshotter, output_name: &'static str) -> (u64, u64, Vec<OrderedFloat<f64>>) {
+        let events_sent_key = get_dispatcher_metric_ckey(
             MetricKind::Counter,
             METRIC_NAME_COMPONENT_EVENTS_SENT_TOTAL,
             output_name,
+            &[],
         );
-        let send_latency_key = get_dispatcher_metric_composite_key(
+        let events_discarded_key = get_dispatcher_metric_ckey(
+            MetricKind::Counter,
+            METRIC_NAME_COMPONENT_EVENTS_DISCARDED_TOTAL,
+            output_name,
+            &[("discard_reason", "disconnected")],
+        );
+        let send_latency_key = get_dispatcher_metric_ckey(
             MetricKind::Histogram,
             METRIC_NAME_COMPONENT_SEND_LATENCY_SECONDS,
             output_name,
+            &[],
         );
 
         // TODO: This API for querying the metrics really sucks... and we need something better.
@@ -470,6 +552,9 @@ mod tests {
         let (_, _, events_sent) = current_metrics
             .get(&events_sent_key)
             .expect("should have events sent metric");
+        let (_, _, events_discarded) = current_metrics
+            .get(&events_discarded_key)
+            .expect("should have events discarded metric");
         let (_, _, send_latency) = current_metrics
             .get(&send_latency_key)
             .expect("should have send latency metric");
@@ -479,12 +564,17 @@ mod tests {
             _ => panic!("unexpected metric type for events sent"),
         };
 
+        let events_discarded = match events_discarded {
+            DebugValue::Counter(value) => *value,
+            _ => panic!("unexpected metric type for events discarded"),
+        };
+
         let send_latency = match send_latency {
             DebugValue::Histogram(value) => value.clone(),
             _ => panic!("unexpected metric type for send latency"),
         };
 
-        (events_sent, send_latency)
+        (events_sent, events_discarded, send_latency)
     }
 
     #[tokio::test]
@@ -493,7 +583,7 @@ mod tests {
         let mut dispatcher = unbuffered_dispatcher::<SingleEvent<usize>>();
 
         let (tx, mut rx) = mpsc::channel(1);
-        dispatcher.add_output(OutputName::Default, tx);
+        add_dispatcher_default_output(&mut dispatcher, [tx]);
 
         // Create an item and roundtrip it through the dispatcher.
         let input_item = 42.into();
@@ -511,7 +601,7 @@ mod tests {
 
         let output_name = "special";
         let (tx, mut rx) = mpsc::channel(1);
-        dispatcher.add_output(OutputName::Given(output_name.into()), tx);
+        add_dispatcher_named_output(&mut dispatcher, output_name, [tx]);
 
         // Create an item and roundtrip it through the dispatcher.
         let input_item = 42.into();
@@ -529,8 +619,7 @@ mod tests {
 
         let (tx1, mut rx1) = mpsc::channel(1);
         let (tx2, mut rx2) = mpsc::channel(1);
-        dispatcher.add_output(OutputName::Default, tx1);
-        dispatcher.add_output(OutputName::Default, tx2);
+        add_dispatcher_default_output(&mut dispatcher, [tx1, tx2]);
 
         // Create an item and roundtrip it through the dispatcher.
         let input_item = 42.into();
@@ -551,8 +640,7 @@ mod tests {
         let output_name = "special";
         let (tx1, mut rx1) = mpsc::channel(1);
         let (tx2, mut rx2) = mpsc::channel(1);
-        dispatcher.add_output(OutputName::Given(output_name.into()), tx1);
-        dispatcher.add_output(OutputName::Given(output_name.into()), tx2);
+        add_dispatcher_named_output(&mut dispatcher, output_name, [tx1, tx2]);
 
         // Create an item and roundtrip it through the dispatcher.
         let input_item = 42.into();
@@ -589,7 +677,7 @@ mod tests {
         let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
 
         let (tx, mut rx) = mpsc::channel(1);
-        dispatcher.add_output(OutputName::Default, tx);
+        add_dispatcher_default_output(&mut dispatcher, [tx]);
 
         // Create an item and roundtrip it through the dispatcher.
         let input_item = 42;
@@ -612,7 +700,7 @@ mod tests {
 
         let output_name = "buffered_partial";
         let (tx, mut rx) = mpsc::channel(1);
-        dispatcher.add_output(OutputName::Given(output_name.into()), tx);
+        add_dispatcher_named_output(&mut dispatcher, output_name, [tx]);
 
         // Create an item and roundtrip it through the dispatcher.
         let input_item = 42;
@@ -634,7 +722,7 @@ mod tests {
         let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
 
         let (tx, mut rx) = mpsc::channel(2);
-        dispatcher.add_output(OutputName::Default, tx);
+        add_dispatcher_default_output(&mut dispatcher, [tx]);
 
         // Create multiple items and roundtrip them through the dispatcher.
         //
@@ -667,7 +755,7 @@ mod tests {
 
         let output_name = "buffered_overflow";
         let (tx, mut rx) = mpsc::channel(2);
-        dispatcher.add_output(OutputName::Given(output_name.into()), tx);
+        add_dispatcher_named_output(&mut dispatcher, output_name, [tx]);
 
         // Create multiple items and roundtrip them through the dispatcher.
         //
@@ -700,8 +788,7 @@ mod tests {
 
         let (tx1, mut rx1) = mpsc::channel(1);
         let (tx2, mut rx2) = mpsc::channel(1);
-        dispatcher.add_output(OutputName::Default, tx1);
-        dispatcher.add_output(OutputName::Default, tx2);
+        add_dispatcher_default_output(&mut dispatcher, [tx1, tx2]);
 
         // Create an item and roundtrip it through the dispatcher.
         let input_item = 42;
@@ -729,8 +816,7 @@ mod tests {
         let output_name = "buffered_partial";
         let (tx1, mut rx1) = mpsc::channel(1);
         let (tx2, mut rx2) = mpsc::channel(1);
-        dispatcher.add_output(OutputName::Given(output_name.into()), tx1);
-        dispatcher.add_output(OutputName::Given(output_name.into()), tx2);
+        add_dispatcher_named_output(&mut dispatcher, output_name, [tx1, tx2]);
 
         // Create an item and roundtrip it through the dispatcher.
         let input_item = 42;
@@ -751,16 +837,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn metrics_default_output() {
+    async fn default_output_no_senders() {
+        // Test that we can add a default output and dispatch to it even with no senders attached
+        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<u32>>();
+
+        // Add default output but don't attach any senders
+        dispatcher
+            .add_output(OutputName::Default)
+            .expect("should be able to add default output");
+
+        // Should not panic when dispatching to output with no senders
+        let test_event = 42.into();
+        let result = dispatcher.dispatch(test_event).await;
+        assert!(
+            result.is_ok(),
+            "dispatch to default output with no senders should succeed"
+        );
+    }
+
+    #[tokio::test]
+    async fn named_output_no_senders() {
+        // Test that we can add a named output and dispatch to it even with no senders attached
+        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<u32>>();
+
+        // Add named output but don't attach any senders
+        dispatcher
+            .add_output(OutputName::Given("errors".into()))
+            .expect("should be able to add named output");
+
+        // Should not panic when dispatching to output with no senders
+        let test_event = 42.into();
+        let result = dispatcher.dispatch_named("errors", test_event).await;
+        assert!(
+            result.is_ok(),
+            "dispatch to named output with no senders should succeed"
+        );
+    }
+
+    #[tokio::test]
+    async fn metrics_default_output_disconnected() {
         let recorder = DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();
-        let (dispatcher, _rx) = metrics::with_local_recorder(&recorder, || {
+        let dispatcher = metrics::with_local_recorder(&recorder, || {
             let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
-
-            let (tx, rx) = mpsc::channel(2);
-            dispatcher.add_output(OutputName::Default, tx);
-
-            (dispatcher, rx)
+            dispatcher
+                .add_output(OutputName::Default)
+                .expect("should not fail to add default output");
+            dispatcher
         });
 
         // Send an item with an item count of 1, and make sure we can receive it, and that we update our metrics accordingly:
@@ -773,11 +896,12 @@ mod tests {
             .await
             .expect("should not fail to dispatch");
 
-        let (events_sent, send_latencies) = get_output_metrics(&snapshotter, "_default");
-        assert_eq!(events_sent, single_item_item_count);
-        assert!(!send_latencies.is_empty());
+        let (events_sent, events_discarded, send_latencies) = get_output_metrics(&snapshotter, "_default");
+        assert_eq!(events_sent, 0);
+        assert_eq!(events_discarded, single_item_item_count);
+        assert!(send_latencies.is_empty());
 
-        // Now send an item with an item count of 42, and make sure we can receive it, and that we update our metrics accordingly:
+        // Now send an item with an item count of 3, and make sure we can receive it, and that we update our metrics accordingly:
         let mut multiple_items = FixedUsizeVec::<4>::default();
         assert_eq!(None, multiple_items.try_push(42));
         assert_eq!(None, multiple_items.try_push(12345));
@@ -789,24 +913,24 @@ mod tests {
             .await
             .expect("should not fail to dispatch");
 
-        let (events_sent, send_latencies) = get_output_metrics(&snapshotter, "_default");
-        assert_eq!(events_sent, multiple_items_item_count);
-        assert!(!send_latencies.is_empty());
+        let (events_sent, events_discarded, send_latencies) = get_output_metrics(&snapshotter, "_default");
+        assert_eq!(events_sent, 0);
+        assert_eq!(events_discarded, multiple_items_item_count);
+        assert!(send_latencies.is_empty());
     }
 
     #[tokio::test]
-    async fn metrics_named_output() {
+    async fn metrics_named_output_disconnected() {
         let output_name = "some_output";
 
         let recorder = DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();
-        let (dispatcher, _rx) = metrics::with_local_recorder(&recorder, || {
+        let dispatcher = metrics::with_local_recorder(&recorder, || {
             let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
-
-            let (tx, rx) = mpsc::channel(2);
-            dispatcher.add_output(OutputName::Given(output_name.into()), tx);
-
-            (dispatcher, rx)
+            dispatcher
+                .add_output(OutputName::Given(output_name.into()))
+                .expect("should not fail to add named output");
+            dispatcher
         });
 
         // Send an item with an item count of 1, and make sure we can receive it, and that we update our metrics accordingly:
@@ -819,11 +943,12 @@ mod tests {
             .await
             .expect("should not fail to dispatch");
 
-        let (events_sent, send_latencies) = get_output_metrics(&snapshotter, output_name);
-        assert_eq!(events_sent, single_item_item_count);
-        assert!(!send_latencies.is_empty());
+        let (events_sent, events_discarded, send_latencies) = get_output_metrics(&snapshotter, output_name);
+        assert_eq!(events_sent, 0);
+        assert_eq!(events_discarded, single_item_item_count);
+        assert!(send_latencies.is_empty());
 
-        // Now send an item with an item count of 42, and make sure we can receive it, and that we update our metrics accordingly:
+        // Now send an item with an item count of 3, and make sure we can receive it, and that we update our metrics accordingly:
         let mut multiple_items = FixedUsizeVec::<4>::default();
         assert_eq!(None, multiple_items.try_push(42));
         assert_eq!(None, multiple_items.try_push(12345));
@@ -835,8 +960,9 @@ mod tests {
             .await
             .expect("should not fail to dispatch");
 
-        let (events_sent, send_latencies) = get_output_metrics(&snapshotter, output_name);
-        assert_eq!(events_sent, multiple_items_item_count);
-        assert!(!send_latencies.is_empty());
+        let (events_sent, events_discarded, send_latencies) = get_output_metrics(&snapshotter, output_name);
+        assert_eq!(events_sent, 0);
+        assert_eq!(events_discarded, multiple_items_item_count);
+        assert!(send_latencies.is_empty());
     }
 }

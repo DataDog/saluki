@@ -98,7 +98,8 @@ impl BuiltTopology {
         let mut component_task_map = HashMap::new();
 
         // Build our interconnects, which we'll grab from piecemeal as we spawn our components.
-        let mut interconnects = ComponentInterconnects::from_graph(self.interconnect_capacity, &self.graph);
+        let mut interconnects = ComponentInterconnects::from_graph(self.interconnect_capacity, &self.graph)
+            .error_context("Failed to build component interconnects.")?;
 
         let mut shutdown_coordinator = ComponentShutdownCoordinator::default();
 
@@ -290,7 +291,7 @@ struct ComponentInterconnects {
 }
 
 impl ComponentInterconnects {
-    fn from_graph(interconnect_capacity: NonZeroUsize, graph: &Graph) -> Self {
+    fn from_graph(interconnect_capacity: NonZeroUsize, graph: &Graph) -> Result<Self, GenericError> {
         let mut interconnects = Self {
             interconnect_capacity,
             source_dispatchers: HashMap::new(),
@@ -302,8 +303,8 @@ impl ComponentInterconnects {
             forwarder_consumers: HashMap::new(),
         };
 
-        interconnects.generate_interconnects(graph);
-        interconnects
+        interconnects.generate_interconnects(graph)?;
+        Ok(interconnects)
     }
 
     fn take_source_dispatcher(&mut self, component_id: &ComponentId) -> Option<EventsDispatcher> {
@@ -342,7 +343,7 @@ impl ComponentInterconnects {
             .map(|(_, consumer)| consumer)
     }
 
-    fn generate_interconnects(&mut self, graph: &Graph) {
+    fn generate_interconnects(&mut self, graph: &Graph) -> Result<(), GenericError> {
         // Collect and iterate over each outbound edge in the topology graph.
         //
         // For each upstream component ("from" side of the edge), we attach each downstream component ("to" side of the edge) to it,
@@ -351,46 +352,60 @@ impl ComponentInterconnects {
         for (upstream_id, output_map) in outbound_edges {
             match upstream_id.component_type() {
                 ComponentType::Source | ComponentType::Transform => {
-                    self.generate_event_interconnect(upstream_id, output_map)
+                    self.generate_event_interconnect(upstream_id, output_map)?;
                 }
-                ComponentType::Encoder => self.generate_payload_interconnect(upstream_id, output_map),
+                ComponentType::Encoder => self.generate_payload_interconnect(upstream_id, output_map)?,
                 _ => panic!(
                     "Only sources, transforms, and encoders can dispatch events/payloads to downstream components."
                 ),
             }
         }
+
+        Ok(())
     }
 
     fn generate_event_interconnect(
         &mut self, upstream_id: TypedComponentId, output_map: HashMap<OutputName, Vec<TypedComponentId>>,
-    ) {
-        // Iterate over each output of the upstream component, taking the downstream components attached to that output,
-        // and attaching the downstream component's events consumer to the upstream component's events dispatcher.
+    ) -> Result<(), GenericError> {
         for (upstream_output_id, downstream_ids) in output_map {
+            let mut senders = Vec::new();
             for downstream_id in downstream_ids {
                 debug!(upstream_id = %upstream_id.component_id(), %upstream_output_id, downstream_id = %downstream_id.component_id(), "Adding dispatcher output.");
-
                 let sender = self.get_or_create_events_sender(downstream_id);
-                let dispatcher = self.get_or_create_events_dispatcher(upstream_id.clone());
-                dispatcher.add_output(upstream_output_id.clone(), sender);
+                senders.push(sender);
+            }
+
+            let dispatcher = self.get_or_create_events_dispatcher(upstream_id.clone());
+            dispatcher.add_output(upstream_output_id.clone())?;
+
+            for sender in senders {
+                dispatcher.attach_sender_to_output(&upstream_output_id, sender)?;
             }
         }
+
+        Ok(())
     }
 
     fn generate_payload_interconnect(
         &mut self, upstream_id: TypedComponentId, output_map: HashMap<OutputName, Vec<TypedComponentId>>,
-    ) {
-        // Iterate over each output of the upstream component, taking the downstream components attached to that output,
-        // and attaching the downstream component's payloads consumer to the upstream component's payloads dispatcher.
+    ) -> Result<(), GenericError> {
         for (upstream_output_id, downstream_ids) in output_map {
+            let mut senders = Vec::new();
             for downstream_id in downstream_ids {
                 debug!(upstream_id = %upstream_id.component_id(), %upstream_output_id, downstream_id = %downstream_id.component_id(), "Adding dispatcher output.");
-
                 let sender = self.get_or_create_payloads_sender(downstream_id);
-                let dispatcher = self.get_or_create_payloads_dispatcher(upstream_id.clone());
-                dispatcher.add_output(upstream_output_id.clone(), sender);
+                senders.push(sender);
+            }
+
+            let dispatcher = self.get_or_create_payloads_dispatcher(upstream_id.clone());
+            dispatcher.add_output(upstream_output_id.clone())?;
+
+            for sender in senders {
+                dispatcher.attach_sender_to_output(&upstream_output_id, sender)?;
             }
         }
+
+        Ok(())
     }
 
     fn get_or_create_events_dispatcher(&mut self, component_id: TypedComponentId) -> &mut EventsDispatcher {
@@ -502,4 +517,37 @@ where
         context.component_id()
     );
     join_set.spawn_traced_named(component_task_name, component_future)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroUsize;
+
+    use super::*;
+    use crate::data_model::event::EventType;
+    use crate::data_model::payload::PayloadType;
+    use crate::topology::graph::Graph;
+
+    #[test]
+    fn component_interconnects_adds_output_before_attaching() {
+        let mut graph = Graph::default();
+
+        // Create a set of components and connect them together.
+        graph
+            .with_source("source1", EventType::EventD)
+            .with_transform("transform1", EventType::EventD, EventType::EventD)
+            .with_encoder("encoder1", EventType::EventD, PayloadType::Raw)
+            .with_forwarder("forwarder1", PayloadType::Raw)
+            .with_destination("dest1", EventType::EventD)
+            .with_edge("source1", "transform1")
+            .with_edge("transform1", "encoder1")
+            .with_edge("encoder1", "forwarder1")
+            .with_edge("transform1", "dest1");
+
+        // Ensure we can properly build the interconnects for them, which requires adding the outputs
+        // before attaching senders to them:
+        let interconnect_capacity = NonZeroUsize::new(10).unwrap();
+        let _ = ComponentInterconnects::from_graph(interconnect_capacity, &graph)
+            .expect("should build interconnects successfully");
+    }
 }
