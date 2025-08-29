@@ -3,23 +3,24 @@
 #![deny(missing_docs)]
 
 use std::sync::RwLock;
-use std::{borrow::Cow, collections::HashSet, sync::Arc, time::Duration};
+use std::{borrow::Cow, collections::HashSet, sync::Arc};
 
 use arc_swap::ArcSwap;
+use figment::providers::Serialized;
 pub use figment::value;
+use figment::Provider;
 use figment::{error::Kind, providers::Env, Figment};
 use saluki_error::GenericError;
 use serde::Deserialize;
 use snafu::{ResultExt as _, Snafu};
-use tokio::time;
 use tracing::{debug, error};
 
 pub mod dynamic;
 mod provider;
 mod secrets;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Notify};
 
-use self::dynamic::SharedConfig;
+use self::dynamic::DynamicConfigurationHandler;
 use self::provider::ResolvedProvider;
 
 /// A configuration error.
@@ -107,6 +108,18 @@ impl LookupSource {
     }
 }
 
+struct BoxedProvider(Box<dyn figment::Provider + Send + Sync>);
+
+impl figment::Provider for BoxedProvider {
+    fn metadata(&self) -> figment::Metadata {
+        self.0.metadata()
+    }
+
+    fn data(&self) -> Result<figment::value::Map<figment::Profile, figment::value::Dict>, figment::Error> {
+        self.0.data()
+    }
+}
+
 /// A configuration loader that can pull from various sources.
 ///
 /// This loader provides a wrapper around a lower-level library, `figment`, to expose a simpler and focused API for both
@@ -122,24 +135,11 @@ impl LookupSource {
 /// - YAML file
 /// - JSON file
 /// - environment variables (must be prefixed; see [`from_environment`][Self::from_environment])
+#[derive(Default)]
 pub struct ConfigurationLoader {
-    inner: Figment,
     lookup_sources: HashSet<LookupSource>,
-    dynamic_values: Option<dynamic::SharedConfig>,
-    dynamic_provider: Option<dynamic::Provider>,
-    update_receiver: Option<broadcast::Receiver<dynamic::ConfigChangeEvent>>,
-}
-
-impl Default for ConfigurationLoader {
-    fn default() -> Self {
-        Self {
-            inner: Figment::new(),
-            lookup_sources: HashSet::new(),
-            dynamic_values: None,
-            dynamic_provider: None,
-            update_receiver: None,
-        }
-    }
+    providers: Vec<BoxedProvider>,
+    dynamic_handler: Option<DynamicConfigurationHandler>,
 }
 
 impl ConfigurationLoader {
@@ -153,7 +153,7 @@ impl ConfigurationLoader {
         P: AsRef<std::path::Path>,
     {
         let resolved_provider = ResolvedProvider::from_yaml(&path).context(Generic)?;
-        self.inner = self.inner.admerge(resolved_provider);
+        self.providers.push(BoxedProvider(Box::new(resolved_provider)));
         Ok(self)
     }
 
@@ -166,7 +166,7 @@ impl ConfigurationLoader {
     {
         match ResolvedProvider::from_yaml(&path) {
             Ok(resolved_provider) => {
-                self.inner = self.inner.admerge(resolved_provider);
+                self.providers.push(BoxedProvider(Box::new(resolved_provider)));
             }
             Err(e) => {
                 tracing::debug!(error = %e, file_path = %path.as_ref().to_string_lossy(), "Unable to read YAML configuration file. Ignoring.");
@@ -185,7 +185,7 @@ impl ConfigurationLoader {
         P: AsRef<std::path::Path>,
     {
         let resolved_provider = ResolvedProvider::from_json(&path).context(Generic)?;
-        self.inner = self.inner.admerge(resolved_provider);
+        self.providers.push(BoxedProvider(Box::new(resolved_provider)));
         Ok(self)
     }
 
@@ -198,7 +198,7 @@ impl ConfigurationLoader {
     {
         match ResolvedProvider::from_json(&path) {
             Ok(resolved_provider) => {
-                self.inner = self.inner.admerge(resolved_provider);
+                self.providers.push(BoxedProvider(Box::new(resolved_provider)));
             }
             Err(e) => {
                 tracing::debug!(error = %e, file_path = %path.as_ref().to_string_lossy(), "Unable to read JSON configuration file. Ignoring.");
@@ -228,8 +228,14 @@ impl ConfigurationLoader {
             format!("{}_", prefix)
         };
 
-        self.inner = self.inner.admerge(Env::prefixed(&prefix));
-        self.lookup_sources.insert(LookupSource::Environment { prefix });
+        // Convert to use Serialized::defaults since, Env isn't Send + Sync
+        let env = Env::prefixed(&prefix);
+        let values = env.data().unwrap();
+        if let Some(default_dict) = values.get(&figment::Profile::Default) {
+            self.providers
+                .push(BoxedProvider(Box::new(Serialized::defaults(default_dict.clone()))));
+            self.lookup_sources.insert(LookupSource::Environment { prefix });
+        }
         Ok(self)
     }
 
@@ -298,22 +304,27 @@ impl ConfigurationLoader {
     /// Care should be taken to not return sensitive information in either the error output (standard error) of the
     /// backend command or the `error` field in the JSON response, as these values are logged in order to aid debugging.
     pub async fn with_default_secrets_resolution(mut self) -> Result<Self, ConfigurationError> {
+        let initial_figment = self
+            .providers
+            .iter()
+            .fold(Figment::new(), |figment, provider| figment.admerge(provider));
+
         // If no secrets backend is set, we can't resolve secrets, so just return early.
-        if !self.inner.contains("secret_backend_command") {
+        if !initial_figment.contains("secret_backend_command") {
             debug!("No secrets backend configured; skipping secrets resolution.");
             return Ok(self);
         }
 
-        let resolver_config = self
-            .inner
-            .extract::<secrets::resolver::ExternalProcessResolverConfiguration>()?;
+        let resolver_config = initial_figment.extract::<secrets::resolver::ExternalProcessResolverConfiguration>()?;
         let resolver = secrets::resolver::ExternalProcessResolver::from_configuration(resolver_config)
             .await
             .context(Secrets)?;
 
-        let provider = secrets::Provider::new(resolver, &self.inner).await.context(Secrets)?;
+        let provider = secrets::Provider::new(resolver, &initial_figment)
+            .await
+            .context(Secrets)?;
 
-        self.inner = self.inner.admerge(provider);
+        self.providers.push(BoxedProvider(Box::new(provider)));
         Ok(self)
     }
 
@@ -322,16 +333,14 @@ impl ConfigurationLoader {
     /// This will enable the dynamic configuration feature, which allows the configuration to be sourced from a dynamic provider. The dynamic provider is updated at runtime, and `figment` will re-read from it when configuration values are requested.
     pub fn with_dynamic_configuration(mut self) -> Result<Self, ConfigurationError> {
         let values = Arc::new(ArcSwap::from_pointee(serde_json::Value::Null));
-        let (sender, receiver) = broadcast::channel(100);
-        let shared_config = SharedConfig {
+        let (sender, _) = broadcast::channel(100);
+        let notifer = Arc::new(Notify::new());
+        let dynamic_handler = DynamicConfigurationHandler {
             values: values.clone(),
             sender,
+            notifier: notifer.clone(),
         };
-        let provider = dynamic::Provider::new(values.clone());
-        self.inner = self.inner.admerge(&provider);
-        self.dynamic_values = Some(shared_config);
-        self.dynamic_provider = Some(provider);
-        self.update_receiver = Some(receiver);
+        self.dynamic_handler = Some(dynamic_handler);
         Ok(self)
     }
 
@@ -344,46 +353,78 @@ impl ConfigurationLoader {
     where
         T: Deserialize<'a>,
     {
-        self.inner.extract().map_err(Into::into)
+        let p = self.providers;
+        let figment = p
+            .into_iter()
+            .fold(Figment::new(), |figment, provider| figment.admerge(provider));
+
+        figment.extract().map_err(Into::into)
     }
 
     /// Consumes the configuration loader and wraps it in a generic wrapper.
     pub async fn into_generic(self) -> Result<GenericConfiguration, ConfigurationError> {
+        let providers = self.providers;
+        let figment = providers
+            .iter()
+            .fold(Figment::new(), |figment, provider| figment.admerge(provider));
         let generic_config = GenericConfiguration {
             inner: Arc::new(Inner {
-                figment: RwLock::new(self.inner),
+                figment: RwLock::new(figment),
                 lookup_sources: self.lookup_sources,
-                shared_config: self.dynamic_values,
-                dynamic_provider: self.dynamic_provider,
-                update_receiver: self.update_receiver,
+                dynamic_handler: self.dynamic_handler.clone(),
             }),
         };
 
         // If dynamic configuration is enabled, spawn a background task to update it.
-        if generic_config.inner.dynamic_provider.is_some() {
-            tokio::spawn(run_dynamic_config_updater(generic_config.inner.clone()));
+        if generic_config.inner.dynamic_handler.is_some() {
+            let dynamic_handler = self
+                .dynamic_handler
+                .expect("dynamic_handler must exist if updater task is running");
+            tokio::spawn(run_dynamic_config_updater(
+                generic_config.inner.clone(),
+                dynamic_handler.clone(),
+                providers,
+            ));
         }
 
         Ok(generic_config)
     }
 }
 
-async fn run_dynamic_config_updater(inner: Arc<Inner>) {
-    let mut interval = time::interval(Duration::from_secs(5));
+async fn run_dynamic_config_updater(
+    inner: Arc<Inner>, dynamic_handler: DynamicConfigurationHandler, providers: Vec<BoxedProvider>,
+) {
     loop {
-        interval.tick().await;
+        dynamic_handler.notifier.notified().await;
 
-        let dynamic_provider = inner
-            .dynamic_provider
-            .as_ref()
-            .expect("dynamic_provider must exist if updater task is running");
+        // Snapshot the current configuration under a read lock
+        let current_config: figment::value::Value = {
+            let figment_guard = inner.figment.read().unwrap();
+            figment_guard.extract().unwrap()
+        };
 
-        debug!("Updating dynamic configuration in background task...");
-        let mut figment_guard = inner.figment.write().unwrap_or_else(|e| {
-            error!("Failed to acquire write lock for dynamic configuration: {}", e);
-            e.into_inner()
-        });
-        *figment_guard = (*figment_guard).clone().admerge(dynamic_provider);
+        let dynamic_provider = dynamic::Provider::new(dynamic_handler.values.clone());
+        let mut new_figment: Figment = Figment::from(&dynamic_provider);
+        // Merge all the other providers
+        for provider in &providers {
+            new_figment = new_figment.admerge(provider);
+        }
+        let new_config: figment::value::Value = new_figment.clone().extract().unwrap();
+
+        if current_config != new_config {
+            for change in dynamic::diff_config(&current_config, &new_config) {
+                // Send the change event to any receivers of the dynamic handler.
+                // If there are no receivers, `send` will fail. This is expected and fine,
+                // so we can ignore the error to avoid log spam.
+                let _ = dynamic_handler.sender.send(change);
+            }
+
+            let mut figment_guard = inner.figment.write().unwrap_or_else(|e| {
+                error!("Failed to acquire write lock for dynamic configuration: {}", e);
+                e.into_inner()
+            });
+            *figment_guard = new_figment;
+        }
     }
 }
 
@@ -391,9 +432,7 @@ async fn run_dynamic_config_updater(inner: Arc<Inner>) {
 struct Inner {
     figment: RwLock<Figment>,
     lookup_sources: HashSet<LookupSource>,
-    shared_config: Option<dynamic::SharedConfig>,
-    dynamic_provider: Option<dynamic::Provider>,
-    update_receiver: Option<broadcast::Receiver<dynamic::ConfigChangeEvent>>,
+    dynamic_handler: Option<DynamicConfigurationHandler>,
 }
 
 /// A generic configuration object.
@@ -513,14 +552,14 @@ impl GenericConfiguration {
             .map_err(|e| from_figment_error(&self.inner.lookup_sources, e))
     }
 
-    /// Gets the refreshable handle.
-    pub fn get_refreshable_handle(&self) -> Option<dynamic::SharedConfig> {
-        self.inner.shared_config.clone()
-    }
-
     /// Subscribes for updates to the configuration.
     pub fn subscribe_for_updates(&self) -> Option<broadcast::Receiver<dynamic::ConfigChangeEvent>> {
-        self.inner.update_receiver.as_ref().map(|r| r.resubscribe())
+        self.inner.dynamic_handler.as_ref().map(|h| h.sender.subscribe())
+    }
+
+    /// Returns the dynamic handler for the configuration.
+    pub fn get_dynamic_handler(&self) -> Option<DynamicConfigurationHandler> {
+        self.inner.dynamic_handler.clone()
     }
 }
 

@@ -40,7 +40,7 @@ pub fn spawn_control_plane(
     let privileged_api = APIBuilder::new()
         .with_self_signed_tls()
         .with_optional_handler(acquire_logging_api_handler())
-        .with_optional_handler(config.get_refreshable_handle().map(ConfigAPIHandler::from_state))
+        .with_optional_handler(config.get_dynamic_handler().map(ConfigAPIHandler::from_state))
         .with_optional_handler(env_provider.workload_api_handler())
         .with_handler(dsd_stats_config.api_handler());
 

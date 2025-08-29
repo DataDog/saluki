@@ -7,11 +7,20 @@ use serde_json::Value as JsonValue;
 pub enum ConfigChangeEvent {
     /// A snapshot of the configuration has been received.
     Snapshot,
-    /// An update to the configuration has been received.
-    Update {
-        /// The key that was updated.
+    /// A configuration key was added.
+    Added {
+        /// The key that was added.
         key: String,
         /// The new value.
         value: JsonValue,
+    },
+    /// A configuration key was modified.
+    Modified {
+        /// The key that was updated.
+        key: String,
+        /// The old value.
+        old_value: JsonValue,
+        /// The new value.
+        new_value: JsonValue,
     },
 }

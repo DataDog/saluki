@@ -4,20 +4,20 @@ use std::sync::Arc;
 use datadog_protos::agent::{config_event, ConfigSnapshot};
 use futures::StreamExt;
 use prost_types::value::Kind;
-use saluki_config::{
-    dynamic::{ConfigChangeEvent, SharedConfig},
-    GenericConfiguration,
-};
+use saluki_config::dynamic::DynamicConfigurationHandler;
+use saluki_config::{dynamic::ConfigChangeEvent, GenericConfiguration};
 use saluki_error::GenericError;
 use serde_json::{Map, Value};
-use tracing::{error, warn};
+use tracing::error;
 
 use crate::helpers::remote_agent::RemoteAgentClient;
 
 /// Creates a new `ConfigStreamer` that receives a stream of config events from the remote agent.
 pub async fn create_config_stream(
-    config: &GenericConfiguration, shared_config: SharedConfig, snapshot_received: Arc<AtomicBool>,
+    config: &GenericConfiguration, dynamic_handler: DynamicConfigurationHandler, snapshot_received: Arc<AtomicBool>,
 ) -> Result<(), GenericError> {
+    let shared_config = dynamic_handler.values.clone();
+    let notifier = dynamic_handler.notifier.clone();
     let mut client = match RemoteAgentClient::from_configuration(config).await {
         Ok(client) => client,
         Err(e) => {
@@ -33,7 +33,7 @@ pub async fn create_config_stream(
                     let change_event = match event.event {
                         Some(config_event::Event::Snapshot(snapshot)) => {
                             let map = snapshot_to_map(&snapshot);
-                            shared_config.values.store(map.into());
+                            shared_config.store(map.into());
                             // Signal that a snapshot has been received.
                             snapshot_received.store(true, Ordering::SeqCst);
                             Some(ConfigChangeEvent::Snapshot)
@@ -41,12 +41,13 @@ pub async fn create_config_stream(
                         Some(config_event::Event::Update(update)) => {
                             if let Some(setting) = update.setting {
                                 let v = proto_value_to_serde_value(&setting.value);
-                                let mut config = (**shared_config.values.load()).clone();
+                                let mut config = (**shared_config.load()).clone();
                                 config.as_object_mut().unwrap().insert(setting.key.clone(), v.clone());
-                                shared_config.values.store(Arc::new(config));
-                                Some(ConfigChangeEvent::Update {
+                                shared_config.store(Arc::new(config));
+                                Some(ConfigChangeEvent::Modified {
+                                    old_value: Value::Null,
+                                    new_value: v,
                                     key: setting.key,
-                                    value: v,
                                 })
                             } else {
                                 None
@@ -57,10 +58,8 @@ pub async fn create_config_stream(
                             None
                         }
                     };
-                    if let Some(change_event) = change_event {
-                        if let Err(e) = shared_config.sender.send(change_event) {
-                            warn!("Failed to send config change event to components: {}.", e);
-                        }
+                    if change_event.is_some() {
+                        notifier.notify_waiters();
                     }
                 }
                 Err(e) => error!("Error while reading config event stream: {}.", e),
