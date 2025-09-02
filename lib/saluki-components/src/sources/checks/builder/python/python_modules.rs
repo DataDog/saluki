@@ -280,7 +280,7 @@ pub mod datadog_agent {
     #[pyfunction]
     fn get_version() -> &'static str {
         trace!("Called get_version()");
-        "0.0.0"
+        saluki_metadata::get_app_details().version().raw()
     }
 
     #[pyfunction]
