@@ -266,15 +266,21 @@ pub mod datadog_agent {
     use super::*;
 
     #[pyfunction]
+    fn get_config(config_option: String) -> String {
+        trace!("Called get_config({})", config_option);
+        get_config_key(config_option)
+    }
+
+    #[pyfunction]
     fn get_hostname() -> &'static str {
         trace!("Called get_hostname()");
         fetch_hostname()
     }
 
     #[pyfunction]
-    fn get_config(config_option: String) -> String {
-        trace!("Called get_config({})", config_option);
-        get_config_key(config_option)
+    fn tracemalloc_enabled() -> bool {
+        trace!("Called tracemalloc_enabled()");
+        fetch_tracemalloc_enabled()
     }
 
     #[pyfunction]
@@ -284,21 +290,15 @@ pub mod datadog_agent {
     }
 
     #[pyfunction]
-    fn set_check_metadata(check_id: String, name: String, value: String) {
-        debug!("Called set_check_metadata({}, {}, {})", check_id, name, value);
-        // Again, we can only log this because there's no structure to store it.
-    }
-
-    #[pyfunction]
     fn headers() -> &'static HashMap<String, String> {
         trace!("Called headers()");
         fetch_http_headers()
     }
 
     #[pyfunction]
-    fn tracemalloc_enabled() -> bool {
-        trace!("Called tracemalloc_enabled()");
-        fetch_tracemalloc_enabled()
+    fn set_check_metadata(check_id: String, name: String, value: String) {
+        debug!("Called set_check_metadata({}, {}, {})", check_id, name, value);
+        // Again, we can only log this because there's no structure to store it.
     }
 }
 
