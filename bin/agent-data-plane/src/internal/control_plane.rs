@@ -4,7 +4,7 @@ use memory_accounting::ComponentRegistry;
 use saluki_app::{api::APIBuilder, config::ConfigAPIHandler, prelude::acquire_logging_api_handler};
 use saluki_common::task::spawn_traced_named;
 use saluki_components::destinations::DogStatsDStatisticsConfiguration;
-use saluki_config::{dynamic::DynamicConfigurationHandler, GenericConfiguration};
+use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use saluki_io::net::ListenAddress;
@@ -28,7 +28,6 @@ const PRIMARY_PRIVILEGED_API_PORT: u16 = 5101;
 pub fn spawn_control_plane(
     config: GenericConfiguration, component_registry: &ComponentRegistry, health_registry: HealthRegistry,
     env_provider: ADPEnvironmentProvider, dsd_stats_config: DogStatsDStatisticsConfiguration,
-    dynamic_handler: Option<DynamicConfigurationHandler>,
 ) -> Result<(), GenericError> {
     // Build our unprivileged and privileged API server.
     //
@@ -38,10 +37,17 @@ pub fn spawn_control_plane(
         .with_handler(health_registry.api_handler())
         .with_handler(component_registry.api_handler());
 
+    // Only add the config handler if dynamic configuration is enabled.
+    let config_api_handler = if config.subscribe_for_updates().is_some() {
+        Some(ConfigAPIHandler::new(config.clone()))
+    } else {
+        None
+    };
+
     let privileged_api = APIBuilder::new()
         .with_self_signed_tls()
         .with_optional_handler(acquire_logging_api_handler())
-        .with_optional_handler(dynamic_handler.map(ConfigAPIHandler::from_state))
+        .with_optional_handler(config_api_handler)
         .with_optional_handler(env_provider.workload_api_handler())
         .with_handler(dsd_stats_config.api_handler());
 

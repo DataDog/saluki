@@ -50,13 +50,11 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
     let bootstrap_config = loader.bootstrap_generic()?;
     let in_standalone_mode = bootstrap_config.get_typed_or_default::<bool>("adp.standalone_mode");
 
-    let mut dynamic_handler = None;
     let configuration =
         if !in_standalone_mode && bootstrap_config.get_typed_or_default::<bool>("adp.use_new_config_stream_endpoint") {
             // If we're not in standalone mode and the config stream is enabled, we set up the dynamic config channel and
             // wait for the initial snapshot before proceeding.
             let (handler, receiver) = dynamic::channel();
-            dynamic_handler = Some(handler.clone());
 
             if let Err(e) = create_config_stream(&bootstrap_config, handler).await {
                 error!("Failed to create config stream: {}.", e);
@@ -100,7 +98,6 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         health_registry.clone(),
         env_provider,
         dsd_stats_config,
-        dynamic_handler,
     )
     .error_context("Failed to spawn control plane.")?;
 
