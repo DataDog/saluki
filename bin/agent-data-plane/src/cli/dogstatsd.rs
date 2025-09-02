@@ -35,6 +35,10 @@ pub async fn handle_dogstatsd_subcommand(config: DogstatsdConfig) {
 
 async fn handle_dogstatsd_stats(config: DogstatsdStatsConfig) -> Result<(), GenericError> {
     // Trigger a statistics collection and wait for it to complete.
+    info!(
+        "Triggered statistics collection over the next {} seconds. Waiting for completion...",
+        config.collection_duration_secs
+    );
     let client = get_http_client();
     let response = client
         .get("https://localhost:5101/dogstatsd/stats")
@@ -42,11 +46,6 @@ async fn handle_dogstatsd_stats(config: DogstatsdStatsConfig) -> Result<(), Gene
         .send()
         .await
         .error_context("Failed to send statistics collection request.")?;
-
-    info!(
-        "Triggered statistics collection over the next {} seconds. Waiting for completion...",
-        config.collection_duration_secs
-    );
 
     // Parse the response and extract the deserialized statistics.
     let status = response.status();
