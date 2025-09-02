@@ -37,7 +37,7 @@ impl DynamicConfigurationHandler {
     /// Replaces the entire dynamic configuration with a new value.
     pub fn replace(&self, value: serde_json::Value) {
         self.values.store(Arc::new(value));
-        self.notifier.notify_waiters();
+        self.notifier.notify_one();
     }
 
     /// Atomically updates a single key-value pair in the dynamic configuration.
@@ -58,6 +58,6 @@ impl DynamicConfigurationHandler {
 
             Arc::new(new_config)
         });
-        self.notifier.notify_waiters();
+        self.notifier.notify_one();
     }
 }
