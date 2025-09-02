@@ -7,7 +7,7 @@ mod provider;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use tokio::sync::{broadcast, Notify};
+use tokio::sync::Notify;
 
 pub use self::diff::diff_config;
 pub use self::event::ConfigChangeEvent;
@@ -19,7 +19,6 @@ pub use self::provider::Provider;
 /// This returns a sender and receiver pair that can be used to push and listen for dynamic configuration updates.
 pub fn channel() -> (DynamicConfigurationHandler, DynamicConfigurationReceiver) {
     let values = Arc::new(ArcSwap::from_pointee(serde_json::Value::Null));
-    let (sender, _) = broadcast::channel(100);
     let notifier = Arc::new(Notify::new());
 
     let handler = DynamicConfigurationHandler {
@@ -27,11 +26,7 @@ pub fn channel() -> (DynamicConfigurationHandler, DynamicConfigurationReceiver) 
         notifier: notifier.clone(),
     };
 
-    let receiver = DynamicConfigurationReceiver {
-        values,
-        sender,
-        notifier,
-    };
+    let receiver = DynamicConfigurationReceiver { values, notifier };
 
     (handler, receiver)
 }

@@ -5,8 +5,6 @@ use serde_json::Value as JsonValue;
 /// An event that occurs when the configuration changes.
 #[derive(Debug, Clone)]
 pub enum ConfigChangeEvent {
-    /// A snapshot of the configuration has been received.
-    Snapshot,
     /// A configuration key was added.
     Added {
         /// The key that was added.

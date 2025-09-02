@@ -39,15 +39,15 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         "Agent Data Plane starting..."
     );
 
-    // Load our static configuration first.
-    let loader = ConfigurationLoader::default()
+    // Create a bootstrap configuration object to determine if we need to set up a dynamic configuration stream.
+    // This initial load only contains static configuration sources.
+    let bootstrap_config = ConfigurationLoader::default()
         .try_from_yaml(&run_config.config)
         .from_environment("DD")?
         .with_default_secrets_resolution()
-        .await?;
+        .await?
+        .bootstrap_generic()?;
 
-    // Create a bootstrap configuration object to determine if we need to set up a dynamic configuration stream.
-    let bootstrap_config = loader.bootstrap_generic()?;
     let in_standalone_mode = bootstrap_config.get_typed_or_default::<bool>("adp.standalone_mode");
 
     let configuration =
@@ -65,10 +65,19 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
             receiver.wait_for_update().await;
             info!("Initial configuration received.");
 
-            loader.with_dynamic_configuration(receiver).into_generic().await?
+            // Now, build the final configuration loader, inserting the dynamic provider in the correct priority order:
+            // YAML -> Dynamic -> Environment. This ensures environment variables have the highest priority.
+            ConfigurationLoader::default()
+                .try_from_yaml(&run_config.config)
+                .with_dynamic_configuration(receiver)
+                .from_environment("DD")?
+                .with_default_secrets_resolution()
+                .await?
+                .into_generic()
+                .await?
         } else {
-            // Otherwise, we're either in standalone mode or not using the stream, so we can just build the static config.
-            loader.into_generic().await?
+            // If dynamic configuration is disabled, the bootstrap loader is already the complete and final configuration.
+            bootstrap_config
         };
 
     // Set up all of the building blocks for building our topologies and launching internal processes.

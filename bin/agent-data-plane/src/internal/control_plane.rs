@@ -37,17 +37,10 @@ pub fn spawn_control_plane(
         .with_handler(health_registry.api_handler())
         .with_handler(component_registry.api_handler());
 
-    // Only add the config handler if dynamic configuration is enabled.
-    let config_api_handler = if config.subscribe_for_updates().is_some() {
-        Some(ConfigAPIHandler::new(config.clone()))
-    } else {
-        None
-    };
-
     let privileged_api = APIBuilder::new()
         .with_self_signed_tls()
         .with_optional_handler(acquire_logging_api_handler())
-        .with_optional_handler(config_api_handler)
+        .with_optional_handler(Some(ConfigAPIHandler::new(config.clone())))
         .with_optional_handler(env_provider.workload_api_handler())
         .with_handler(dsd_stats_config.api_handler());
 
