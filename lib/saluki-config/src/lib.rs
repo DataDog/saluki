@@ -5,7 +5,6 @@
 use std::sync::RwLock;
 use std::{borrow::Cow, collections::HashSet, sync::Arc};
 
-use arc_swap::ArcSwap;
 use figment::providers::Serialized;
 pub use figment::value;
 use figment::Provider;
@@ -18,9 +17,9 @@ use tracing::{debug, error};
 pub mod dynamic;
 mod provider;
 mod secrets;
-use tokio::sync::{broadcast, Notify};
+use tokio::sync::broadcast;
 
-use self::dynamic::DynamicConfigurationHandler;
+use self::dynamic::DynamicConfigurationReceiver;
 use self::provider::ResolvedProvider;
 
 /// A configuration error.
@@ -92,7 +91,7 @@ impl From<figment::Error> for ConfigurationError {
     }
 }
 
-#[derive(Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum LookupSource {
     /// The configuration key is looked up in a form suitable for environment variables.
     Environment { prefix: String },
@@ -139,7 +138,7 @@ impl figment::Provider for BoxedProvider {
 pub struct ConfigurationLoader {
     lookup_sources: HashSet<LookupSource>,
     providers: Vec<BoxedProvider>,
-    dynamic_handler: Option<DynamicConfigurationHandler>,
+    dynamic_receiver: Option<DynamicConfigurationReceiver>,
 }
 
 impl ConfigurationLoader {
@@ -330,18 +329,12 @@ impl ConfigurationLoader {
 
     /// Enables dynamic configuration.
     ///
-    /// This will enable the dynamic configuration feature, which allows the configuration to be sourced from a dynamic provider. The dynamic provider is updated at runtime, and `figment` will re-read from it when configuration values are requested.
-    pub fn with_dynamic_configuration(mut self) -> Result<Self, ConfigurationError> {
-        let values = Arc::new(ArcSwap::from_pointee(serde_json::Value::Null));
-        let (sender, _) = broadcast::channel(100);
-        let notifer = Arc::new(Notify::new());
-        let dynamic_handler = DynamicConfigurationHandler {
-            values: values.clone(),
-            sender,
-            notifier: notifer.clone(),
-        };
-        self.dynamic_handler = Some(dynamic_handler);
-        Ok(self)
+    /// This will enable the dynamic configuration feature, which allows the configuration to be sourced from a dynamic
+    /// provider. The dynamic provider is updated at runtime, and `figment` will re-read from it when configuration values are
+    /// requested.
+    pub fn with_dynamic_configuration(mut self, receiver: DynamicConfigurationReceiver) -> Self {
+        self.dynamic_receiver = Some(receiver);
+        self
     }
 
     /// Consumes the configuration loader, deserializing it as `T`.
@@ -361,6 +354,25 @@ impl ConfigurationLoader {
         figment.extract().map_err(Into::into)
     }
 
+    /// Creates a bootstrap `GenericConfiguration` without consuming the loader.
+    ///
+    /// This creates a static snapshot of the configuration loaded so far. It does not include any dynamic configuration
+    /// capabilities and will not be updated at runtime.
+    pub fn bootstrap_generic(&self) -> Result<GenericConfiguration, ConfigurationError> {
+        let figment = self
+            .providers
+            .iter()
+            .fold(Figment::new(), |figment, provider| figment.admerge(provider));
+
+        Ok(GenericConfiguration {
+            inner: Arc::new(Inner {
+                figment: RwLock::new(figment),
+                lookup_sources: self.lookup_sources.clone(),
+                dynamic_receiver: None,
+            }),
+        })
+    }
+
     /// Consumes the configuration loader and wraps it in a generic wrapper.
     pub async fn into_generic(self) -> Result<GenericConfiguration, ConfigurationError> {
         let providers = self.providers;
@@ -371,18 +383,18 @@ impl ConfigurationLoader {
             inner: Arc::new(Inner {
                 figment: RwLock::new(figment),
                 lookup_sources: self.lookup_sources,
-                dynamic_handler: self.dynamic_handler.clone(),
+                dynamic_receiver: self.dynamic_receiver.clone(),
             }),
         };
 
         // If dynamic configuration is enabled, spawn a background task to update it.
-        if generic_config.inner.dynamic_handler.is_some() {
-            let dynamic_handler = self
-                .dynamic_handler
-                .expect("dynamic_handler must exist if updater task is running");
+        if generic_config.inner.dynamic_receiver.is_some() {
+            let dynamic_receiver = self
+                .dynamic_receiver
+                .expect("dynamic_receiver must exist if updater task is running");
             tokio::spawn(run_dynamic_config_updater(
                 generic_config.inner.clone(),
-                dynamic_handler.clone(),
+                dynamic_receiver,
                 providers,
             ));
         }
@@ -392,10 +404,10 @@ impl ConfigurationLoader {
 }
 
 async fn run_dynamic_config_updater(
-    inner: Arc<Inner>, dynamic_handler: DynamicConfigurationHandler, providers: Vec<BoxedProvider>,
+    inner: Arc<Inner>, dynamic_receiver: DynamicConfigurationReceiver, providers: Vec<BoxedProvider>,
 ) {
     loop {
-        dynamic_handler.notifier.notified().await;
+        dynamic_receiver.wait_for_update().await;
 
         // Snapshot the current configuration under a read lock
         let current_config: figment::value::Value = {
@@ -403,7 +415,7 @@ async fn run_dynamic_config_updater(
             figment_guard.extract().unwrap()
         };
 
-        let dynamic_provider = dynamic::Provider::new(dynamic_handler.values.clone());
+        let dynamic_provider = dynamic::Provider::new(dynamic_receiver.values.clone());
         let mut new_figment: Figment = Figment::from(&dynamic_provider);
         // Merge all the other providers
         for provider in &providers {
@@ -416,7 +428,7 @@ async fn run_dynamic_config_updater(
                 // Send the change event to any receivers of the dynamic handler.
                 // If there are no receivers, `send` will fail. This is expected and fine,
                 // so we can ignore the error to avoid log spam.
-                let _ = dynamic_handler.sender.send(change);
+                let _ = dynamic_receiver.sender.send(change);
             }
 
             let mut figment_guard = inner.figment.write().unwrap_or_else(|e| {
@@ -432,7 +444,7 @@ async fn run_dynamic_config_updater(
 struct Inner {
     figment: RwLock<Figment>,
     lookup_sources: HashSet<LookupSource>,
-    dynamic_handler: Option<DynamicConfigurationHandler>,
+    dynamic_receiver: Option<DynamicConfigurationReceiver>,
 }
 
 /// A generic configuration object.
@@ -554,12 +566,7 @@ impl GenericConfiguration {
 
     /// Subscribes for updates to the configuration.
     pub fn subscribe_for_updates(&self) -> Option<broadcast::Receiver<dynamic::ConfigChangeEvent>> {
-        self.inner.dynamic_handler.as_ref().map(|h| h.sender.subscribe())
-    }
-
-    /// Returns the dynamic handler for the configuration.
-    pub fn get_dynamic_handler(&self) -> Option<DynamicConfigurationHandler> {
-        self.inner.dynamic_handler.clone()
+        self.inner.dynamic_receiver.as_ref().map(|h| h.sender.subscribe())
     }
 }
 

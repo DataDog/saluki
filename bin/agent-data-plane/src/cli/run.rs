@@ -1,5 +1,3 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
@@ -19,7 +17,7 @@ use saluki_components::{
         HostEnrichmentConfiguration, HostTagsConfiguration, PreaggregationFilterConfiguration,
     },
 };
-use saluki_config::{ConfigurationLoader, GenericConfiguration};
+use saluki_config::{dynamic, ConfigurationLoader, GenericConfiguration};
 use saluki_core::topology::TopologyBlueprint;
 use saluki_env::{configstream::create_config_stream, EnvironmentProvider as _};
 use saluki_error::{ErrorContext as _, GenericError};
@@ -40,33 +38,40 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         build_time = app_details.build_time(),
         "Agent Data Plane starting..."
     );
-    // Load our configuration and create all high-level primitives (health registry, component registry, environment
-    // provider, etc) that are needed to build the topology.
-    let configuration = ConfigurationLoader::default()
+
+    // Load our static configuration first.
+    let loader = ConfigurationLoader::default()
         .try_from_yaml(&run_config.config)
         .from_environment("DD")?
-        .with_dynamic_configuration()?
         .with_default_secrets_resolution()
-        .await?
-        .into_generic()
         .await?;
 
-    let in_standalone_mode = configuration.get_typed_or_default::<bool>("adp.standalone_mode");
-    if !in_standalone_mode {
-        if let Some(dynamic_handler) = configuration.get_dynamic_handler() {
-            // If configured, create a config stream and block until a initial configuration is received.
-            if configuration.get_typed_or_default::<bool>("adp.use_new_config_stream_endpoint") {
-                let snapshot_received = Arc::new(AtomicBool::new(false));
-                if let Err(e) = create_config_stream(&configuration, dynamic_handler, snapshot_received.clone()).await {
-                    error!("Failed to create config stream: {}.", e);
-                    return Err(e);
-                }
-                info!("Waiting for initial configuration from Datadog Agent...");
-                while !snapshot_received.load(Ordering::SeqCst) {}
-                info!("Initial configuration received.");
+    // Create a bootstrap configuration object to determine if we need to set up a dynamic configuration stream.
+    let bootstrap_config = loader.bootstrap_generic()?;
+    let in_standalone_mode = bootstrap_config.get_typed_or_default::<bool>("adp.standalone_mode");
+
+    let mut dynamic_handler = None;
+    let configuration =
+        if !in_standalone_mode && bootstrap_config.get_typed_or_default::<bool>("adp.use_new_config_stream_endpoint") {
+            // If we're not in standalone mode and the config stream is enabled, we set up the dynamic config channel and
+            // wait for the initial snapshot before proceeding.
+            let (handler, receiver) = dynamic::channel();
+            dynamic_handler = Some(handler.clone());
+
+            if let Err(e) = create_config_stream(&bootstrap_config, handler).await {
+                error!("Failed to create config stream: {}.", e);
+                return Err(e);
             }
-        }
-    }
+
+            info!("Waiting for initial configuration from Datadog Agent...");
+            receiver.wait_for_update().await;
+            info!("Initial configuration received.");
+
+            loader.with_dynamic_configuration(receiver).into_generic().await?
+        } else {
+            // Otherwise, we're either in standalone mode or not using the stream, so we can just build the static config.
+            loader.into_generic().await?
+        };
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
@@ -95,6 +100,7 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         health_registry.clone(),
         env_provider,
         dsd_stats_config,
+        dynamic_handler,
     )
     .error_context("Failed to spawn control plane.")?;
 
