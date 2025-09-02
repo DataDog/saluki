@@ -38,9 +38,30 @@ pub struct DynamicConfigurationHandler {
 }
 
 impl DynamicConfigurationHandler {
-    /// Updates the dynamic configuration with a new value.
-    pub fn update(&self, value: serde_json::Value) {
+    /// Replaces the entire dynamic configuration with a new value.
+    pub fn replace(&self, value: serde_json::Value) {
         self.values.store(Arc::new(value));
+        self.notifier.notify_waiters();
+    }
+
+    /// Atomically updates a single key-value pair in the dynamic configuration.
+    pub fn update_partial(&self, key: String, value: serde_json::Value) {
+        self.values.rcu(|current_config_arc| {
+            let mut new_config = (**current_config_arc).clone();
+
+            if let Some(obj) = new_config.as_object_mut() {
+                obj.insert(key.clone(), value.clone());
+            } else {
+                // If the current value isn't an object and is Value::Null`,
+                // we'll create a new object and insert the key-value pair.
+                // Theoretically this shouldn't happen since we should be getting the snapshot first.
+                let mut map = serde_json::Map::new();
+                map.insert(key.clone(), value.clone());
+                new_config = serde_json::Value::Object(map);
+            }
+
+            Arc::new(new_config)
+        });
         self.notifier.notify_waiters();
     }
 }

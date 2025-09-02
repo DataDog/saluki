@@ -1,6 +1,3 @@
-use std::sync::Arc;
-
-use arc_swap::ArcSwap;
 use datadog_protos::agent::{config_event, ConfigSnapshot};
 use futures::StreamExt;
 use prost_types::value::Kind;
@@ -8,7 +5,7 @@ use saluki_config::dynamic::DynamicConfigurationHandler;
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use serde_json::{Map, Value};
-use tracing::{error, warn};
+use tracing::error;
 
 use crate::helpers::remote_agent::RemoteAgentClient;
 
@@ -32,33 +29,17 @@ pub async fn create_config_stream(
 async fn run_config_stream_event_loop(mut client: RemoteAgentClient, handler: DynamicConfigurationHandler) {
     let mut rac = client.stream_config_events();
 
-    // This is used to maintain the current dynamic configuration state, so that single updates don't look like we are removing other keys.
-    let dynamic_config_state = Arc::new(ArcSwap::from_pointee(Value::Null));
-
     while let Some(result) = rac.next().await {
         match result {
             Ok(event) => match event.event {
                 Some(config_event::Event::Snapshot(snapshot)) => {
                     let map = snapshot_to_map(&snapshot);
-                    dynamic_config_state.store(Arc::new(map.clone()));
-                    handler.update(map);
+                    handler.replace(map);
                 }
                 Some(config_event::Event::Update(update)) => {
                     if let Some(setting) = update.setting {
                         let v = proto_value_to_serde_value(&setting.value);
-                        let mut current_config = (**dynamic_config_state.load()).clone();
-
-                        if let Some(obj) = current_config.as_object_mut() {
-                            obj.insert(setting.key.clone(), v);
-                            let new_config = Arc::new(current_config);
-                            dynamic_config_state.store(new_config.clone());
-                            handler.update((*new_config).clone());
-                        } else {
-                            warn!(
-                                "Received a configuration update event but the current dynamic configuration is not an \
-                                 object."
-                            );
-                        }
+                        handler.update_partial(setting.key, v);
                     }
                 }
                 None => {
