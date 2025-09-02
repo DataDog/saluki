@@ -162,10 +162,18 @@ async fn handle_stats_cardinality_analysis<'a>(
 
     // Handle sorting now that we've built our cardinality map.
     //
-    // We default to descending order for the unique contexts.
+    // We default to descending order for the unique contexts. We do a subsort on the metric name just to keep things
+    // stable when multiple metrics have the same number of unique contexts.
     let sort_direction = config.sort_direction.unwrap_or(SortDirection::Descending);
     let sort_descending = matches!(sort_direction, SortDirection::Descending);
-    flattened_cardinality_map.sort_by(|a, b| if sort_descending { b.1.cmp(&a.1) } else { a.1.cmp(&b.1) });
+
+    flattened_cardinality_map.sort_by(|a, b| {
+        if sort_descending {
+            b.1.cmp(&a.1).then_with(|| b.0.cmp(a.0))
+        } else {
+            a.1.cmp(&b.1).then_with(|| a.0.cmp(b.0))
+        }
+    });
 
     // Add each metric summary to the table.
     for (metric_name, unique_contexts, tag_cardinalities) in flattened_cardinality_map
