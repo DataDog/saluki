@@ -376,48 +376,64 @@ impl ConfigurationLoader {
     /// Consumes the configuration loader and wraps it in a generic wrapper.
     pub async fn into_generic(self) -> Result<GenericConfiguration, ConfigurationError> {
         let providers = self.providers;
-        let figment = providers
-            .iter()
-            .fold(Figment::new(), |figment, provider| figment.admerge(provider));
-        let generic_config = GenericConfiguration {
-            inner: Arc::new(Inner {
-                figment: RwLock::new(figment),
-                lookup_sources: self.lookup_sources,
-                dynamic_receiver: self.dynamic_receiver.clone(),
-            }),
-        };
 
-        // If dynamic configuration is enabled, spawn a background task to update it.
-        if generic_config.inner.dynamic_receiver.is_some() {
-            let dynamic_receiver = self
-                .dynamic_receiver
-                .expect("dynamic_receiver must exist if updater task is running");
+        if let Some(receiver) = self.dynamic_receiver {
+            // If we have a dynamic receiver, it means we've already waited for and received the initial snapshot. We build
+            // the initial figment object with the dynamic provider as the base, then merge the static providers on top,
+            // giving them higher priority.
+            let dynamic_provider = dynamic::Provider::new(receiver.values.clone());
+            let mut figment: Figment = Figment::from(&dynamic_provider);
+            for provider in &providers {
+                figment = figment.admerge(provider);
+            }
+
+            let generic_config = GenericConfiguration {
+                inner: Arc::new(Inner {
+                    figment: RwLock::new(figment),
+                    lookup_sources: self.lookup_sources,
+                    dynamic_receiver: Some(receiver.clone()),
+                }),
+            };
+
+            // Now that the final config object is created, spawn the background task to handle subsequent updates.
             tokio::spawn(run_dynamic_config_updater(
                 generic_config.inner.clone(),
-                dynamic_receiver,
+                receiver,
                 providers,
             ));
-        }
 
-        Ok(generic_config)
+            Ok(generic_config)
+        } else {
+            // Otherwise, just build the static configuration.
+            let figment = providers
+                .iter()
+                .fold(Figment::new(), |figment, provider| figment.admerge(provider));
+            Ok(GenericConfiguration {
+                inner: Arc::new(Inner {
+                    figment: RwLock::new(figment),
+                    lookup_sources: self.lookup_sources,
+                    dynamic_receiver: None,
+                }),
+            })
+        }
     }
 }
 
 async fn run_dynamic_config_updater(
     inner: Arc<Inner>, dynamic_receiver: DynamicConfigurationReceiver, providers: Vec<BoxedProvider>,
 ) {
+    // Get the initial configuration state. This will be our "current" state for the first iteration of the loop.
+    let mut current_config: figment::value::Value = {
+        let figment_guard = inner.figment.read().unwrap();
+        figment_guard.extract().unwrap()
+    };
+
     loop {
         dynamic_receiver.wait_for_update().await;
 
-        // Snapshot the current configuration under a read lock
-        let current_config: figment::value::Value = {
-            let figment_guard = inner.figment.read().unwrap();
-            figment_guard.extract().unwrap()
-        };
-
+        // Build the new figment object, ensuring that static providers are merged last, giving them the highest priority.
         let dynamic_provider = dynamic::Provider::new(dynamic_receiver.values.clone());
         let mut new_figment: Figment = Figment::from(&dynamic_provider);
-        // Merge all the other providers
         for provider in &providers {
             new_figment = new_figment.admerge(provider);
         }
@@ -436,6 +452,9 @@ async fn run_dynamic_config_updater(
                 e.into_inner()
             });
             *figment_guard = new_figment;
+
+            // Update our "current" state for the next iteration.
+            current_config = new_config;
         }
     }
 }
