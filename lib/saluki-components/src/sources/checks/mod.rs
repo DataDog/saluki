@@ -1,7 +1,7 @@
 /// Checks source.
 ///
 /// Listen to Autodiscovery events, schedule checks and emit results.
-use std::collections::{HashSet, HashMap};
+use std::collections::HashSet;
 use std::sync::{Arc, LazyLock};
 
 use async_trait::async_trait;
@@ -35,12 +35,11 @@ use self::check::Check;
 
 mod builder;
 
+mod execution_context;
 #[cfg(feature = "python-checks")]
-use {
-    self::builder::python::builder::PythonCheckBuilder,
-    self::builder::python::execution_context::ExecutionContext,
-};
+use self::builder::python::builder::PythonCheckBuilder;
 use self::builder::CheckBuilder;
+use self::execution_context::ExecutionContext; // FIXME: leaking context for other checks
 
 const fn default_check_runners() -> usize {
     4
@@ -110,14 +109,7 @@ where
             .as_ref()
             .ok_or_else(|| generic_error!("No configuration configured."))?;
 
-        let execution_context = ExecutionContext {
-            hostname: environment_provider.host().get_hostname().await.unwrap_or_else(|e| {
-                warn!("Failed to get hostname: {:?}", e);
-                "".to_string()
-            }),
-            http_headers: HashMap::new(), // FIXME: get from configuration
-            tracemalloc_enabled: false, // FIXME: get from configuration
-        };
+        let execution_context = ExecutionContext::from_environment_provider(environment_provider).await;
 
         Ok(Box::new(ChecksSource {
             autodiscovery_rx: receiver,
@@ -162,7 +154,8 @@ struct ChecksSource {
 impl ChecksSource {
     /// Builds the check builders for the source.
     fn builders(
-        &self, check_events_tx: mpsc::Sender<Event>, configuration: GenericConfiguration, execution_context: ExecutionContext,
+        &self, check_events_tx: mpsc::Sender<Event>, configuration: GenericConfiguration,
+        execution_context: ExecutionContext,
     ) -> Vec<Arc<dyn CheckBuilder + Send + Sync>> {
         #[cfg(feature = "python-checks")]
         {
@@ -195,8 +188,11 @@ impl Source for ChecksSource {
 
         let (check_events_tx, check_event_rx) = mpsc::channel(128);
 
-        let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> =
-            self.builders(check_events_tx, self.configuration.clone(), self.execution_context.clone());
+        let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> = self.builders(
+            check_events_tx,
+            self.configuration.clone(),
+            self.execution_context.clone(),
+        );
 
         let mut check_ids = HashSet::new();
         let scheduler = Scheduler::new(self.check_runners);

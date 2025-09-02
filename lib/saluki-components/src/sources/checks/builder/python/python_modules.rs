@@ -1,5 +1,5 @@
-use std::sync::{LazyLock, OnceLock};
 use std::collections::HashMap;
+use std::sync::{LazyLock, OnceLock};
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -15,8 +15,7 @@ use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, trace};
 
 use crate::sources::checks::check_metric::{CheckMetric, MetricType};
-
-use super::execution_context::ExecutionContext;
+use crate::sources::checks::execution_context::ExecutionContext;
 
 // Global state to store the sender
 static METRIC_SENDER: OnceLock<Sender<Event>> = OnceLock::new();
@@ -71,30 +70,29 @@ fn try_send_event(event: EventD) -> Result<(), GenericError> {
 fn get_config_key(key: String) -> String {
     match GLOBAL_CONFIGURATION.get() {
         Some(configuration) => configuration.get_typed_or_default::<String>(&key),
-
         None => "".to_string(),
     }
 }
 
 fn fetch_hostname() -> &'static str {
     match GLOBAL_EXECUTION_CONTEXT.get() {
-        Some(ExecutionContext { hostname, ..}) => hostname.as_str(),
+        Some(ExecutionContext { hostname, .. }) => hostname.as_str(),
         None => "",
     }
 }
 
 fn fetch_tracemalloc_enabled() -> bool {
-    match GLOBAL_EXECUTION_CONTEXT.get() {
-        Some(ExecutionContext { tracemalloc_enabled, ..}) => *tracemalloc_enabled,
-        None => false,
+    match GLOBAL_CONFIGURATION.get() {
+        Some(configuration) => configuration.get_typed_or_default::<bool>("tracemalloc_debug"),
+        None => false, // FIXME: this returns a supposed default. Can we get the default without a configuration?
     }
 }
 
 fn fetch_http_headers() -> &'static HashMap<String, String> {
-    static EMPTY : LazyLock<HashMap<String, String>> = LazyLock::new(|| HashMap::new()); // FIXME: yuk!
+    static EMPTY: LazyLock<HashMap<String, String>> = LazyLock::new(|| HashMap::new()); // FIXME: yuk!
 
     match GLOBAL_EXECUTION_CONTEXT.get() {
-        Some(ExecutionContext { http_headers, ..}) => http_headers,
+        Some(ExecutionContext { http_headers, .. }) => http_headers,
         None => &EMPTY,
     }
 }
@@ -388,11 +386,6 @@ mod tests {
         assert_eq!(event_count, 2, "Expected 2 events, got {}", event_count);
     }
 
-    struct TestResults {
-        hostname: String,
-        config_value: String,
-    }
-
     #[tokio::test]
     async fn test_python_datadog_agent_integration() {
         std::env::set_var("DD_TEST_FOO", "bar");
@@ -405,43 +398,78 @@ mod tests {
             .expect("convert to generic configuration");
         set_configuration(config);
 
-        let execution_context = ExecutionContext {
-            hostname: "agent-test-host".to_string(),
-            http_headers: HashMap::from([
-                ("Sample-Header-1".to_string(), "value1".to_string()),
-                ("Sample-Header-2".to_string(), "value2".to_string()),
-            ]),
-            tracemalloc_enabled: true,
-        };
+        set_execution_context(ExecutionContext::default());
+
+        pyo3::append_to_inittab!(datadog_agent);
+        pyo3::prepare_freethreaded_python();
+
+        let result = Python::with_gil(|py| -> Result<String, Box<dyn std::error::Error>> {
+            let datadog_agent = PyModule::import(py, "datadog_agent")?;
+            let value: String = datadog_agent.getattr("get_config")?.call1(("foo",))?.extract()?;
+            Ok(value)
+        });
+        assert!(result.is_ok(), "Python datadog_agent test failed: {:?}", result.err());
+
+        let value = result.unwrap();
+        assert!(value == "bar", "Config value mismatch: {}", value);
+        std::env::remove_var("DD_TEST_FOO");
+    }
+
+    struct TestResults {
+        hostname: String,
+        tracemalloc_enabled: bool,
+        http_headers: HashMap<String, String>,
+    }
+
+    #[tokio::test]
+    async fn test_python_checks_config() {
+        trace!("Starting test_python_checks_config");
+
+        let config = ConfigurationLoader::default()
+            .from_yaml("src/sources/checks/builder/python/tests/test_checks_config.yaml")
+            .expect("configuration should be loaded")
+            .into_generic()
+            .await
+            .expect("convert to generic configuration");
+        set_configuration(config);
+
+        let mut execution_context = ExecutionContext::default();
+        execution_context.hostname = "agent-test-host".to_string();
         set_execution_context(execution_context);
 
         pyo3::append_to_inittab!(datadog_agent);
         pyo3::prepare_freethreaded_python();
 
-        let results = Python::with_gil(|py| -> Result<TestResults, Box<dyn std::error::Error>> {
+        let result = Python::with_gil(|py| -> Result<TestResults, Box<dyn std::error::Error>> {
             let datadog_agent = PyModule::import(py, "datadog_agent")?;
 
+            let tracemalloc_enabled: bool = datadog_agent.getattr("tracemalloc_enabled")?.call0()?.extract()?;
             let hostname: String = datadog_agent.getattr("get_hostname")?.call0()?.extract()?;
+            let http_headers: HashMap<String, String> = datadog_agent.getattr("headers")?.call0()?.extract()?;
 
-            let config_value: String = datadog_agent.getattr("get_config")?.call1(("foo",))?.extract()?;
-
-            Ok(TestResults { hostname, config_value })
+            Ok(TestResults {
+                hostname,
+                tracemalloc_enabled,
+                http_headers,
+            })
         });
+        assert!(result.is_ok(), "Python datadog_agent test failed: {:?}", result.err());
 
-        assert!(results.is_ok(), "Python datadog_agent test failed: {:?}", results.err());
-
-        let results = results.unwrap();
-
+        let result = result.unwrap();
         assert!(
-            results.hostname == "agent-test-host",
-            "Hostname mismatch: {}",
-            results.hostname
+            result.tracemalloc_enabled == true,
+            "tracemalloc_enabled mismatch: {}",
+            result.tracemalloc_enabled
         );
         assert!(
-            results.config_value == "bar",
-            "Config value mismatch: {}",
-            results.config_value
+            result.hostname == "agent-test-host",
+            "hostname mismatch: {}",
+            result.hostname
         );
-        std::env::remove_var("DD_TEST_FOO");
+        assert!(
+            result.http_headers["User-Agent"].contains("Datadog Agent"), // XXX: simple test for now
+            "http_headers User-Agent mismatch: {}",
+            result.http_headers["User-Agent"]
+        );
     }
 }
