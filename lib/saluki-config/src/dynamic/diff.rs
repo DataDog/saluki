@@ -108,4 +108,23 @@ mod tests {
             value: "added".into()
         }));
     }
+
+    #[test]
+    fn test_diff_config_no_change() {
+        let old_json = json!({
+            "a": "original",
+            "nested": {
+                "b": 100
+            },
+        });
+
+        let new_json = old_json.clone();
+
+        let old_config = to_figment_value(old_json);
+        let new_config = to_figment_value(new_json);
+
+        let changes = diff_config(&old_config, &new_config);
+
+        assert!(changes.is_empty());
+    }
 }
