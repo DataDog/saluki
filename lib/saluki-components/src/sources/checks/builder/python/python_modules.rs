@@ -351,7 +351,7 @@ mod tests {
                         panic!("Unexpected event title: {}", ev.title());
                     }
                 }
-                saluki_core::data_model::event::Event::Log(_) => todo!()
+                saluki_core::data_model::event::Event::Log(_) => todo!(),
             }
         }
 
