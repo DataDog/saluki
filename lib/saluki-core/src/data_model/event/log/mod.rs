@@ -4,8 +4,7 @@ use std::num::NonZeroU64;
 
 use stringtheory::MetaString;
 
-// https://docs.datadoghq.com/api/latest/logs/#log-object
-/// Internal representation of a log event aligned to Datadog logs payload fields.
+/// Internal representation of a log event aligned to Datadog logs payload fields https://docs.datadoghq.com/api/latest/logs/#log-object.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Log {
     /// Log message body.
@@ -20,7 +19,6 @@ pub struct Log {
     service: MetaString,
     /// Source of the log (ddsource).
     source: MetaString,
-    // comma-separated tags: key:value,key:value
     /// Comma-separated tags (ddtags), format: key:value,key:value.
     tags: MetaString,
 }
