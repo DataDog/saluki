@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::{
     collections::HashSet,
     sync::{
@@ -6,9 +8,6 @@ use std::{
     },
     time::{Duration, Instant},
 };
-
-#[cfg(test)]
-use std::sync::atomic::AtomicUsize;
 
 use futures::StreamExt as _;
 use metrics::{gauge, histogram, Gauge, Histogram};
