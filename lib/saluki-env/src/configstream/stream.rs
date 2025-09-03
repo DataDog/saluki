@@ -1,17 +1,18 @@
 use datadog_protos::agent::{config_event, ConfigSnapshot};
 use futures::StreamExt;
 use prost_types::value::Kind;
-use saluki_config::dynamic::DynamicConfigurationHandler;
+use saluki_config::dynamic::ConfigUpdate;
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use serde_json::{Map, Value};
-use tracing::error;
+use tokio::sync::mpsc;
+use tracing::{error, warn};
 
 use crate::helpers::remote_agent::RemoteAgentClient;
 
 /// Creates a new `ConfigStreamer` that receives a stream of config events from the remote agent.
 pub async fn create_config_stream(
-    config: &GenericConfiguration, handler: DynamicConfigurationHandler,
+    config: &GenericConfiguration, sender: mpsc::Sender<ConfigUpdate>,
 ) -> Result<(), GenericError> {
     let client = match RemoteAgentClient::from_configuration(config).await {
         Ok(client) => client,
@@ -21,31 +22,47 @@ pub async fn create_config_stream(
         }
     };
 
-    tokio::spawn(run_config_stream_event_loop(client, handler));
+    tokio::spawn(run_config_stream_event_loop(client, sender));
 
     Ok(())
 }
 
-async fn run_config_stream_event_loop(mut client: RemoteAgentClient, handler: DynamicConfigurationHandler) {
+async fn run_config_stream_event_loop(mut client: RemoteAgentClient, sender: mpsc::Sender<ConfigUpdate>) {
     let mut rac = client.stream_config_events();
 
     while let Some(result) = rac.next().await {
         match result {
-            Ok(event) => match event.event {
-                Some(config_event::Event::Snapshot(snapshot)) => {
-                    let map = snapshot_to_map(&snapshot);
-                    handler.replace(map);
-                }
-                Some(config_event::Event::Update(update)) => {
-                    if let Some(setting) = update.setting {
-                        let v = proto_value_to_serde_value(&setting.value);
-                        handler.update_partial(setting.key, v);
+            Ok(event) => {
+                let update = match event.event {
+                    Some(config_event::Event::Snapshot(snapshot)) => {
+                        let map = snapshot_to_map(&snapshot);
+                        Some(ConfigUpdate::Snapshot(map))
+                    }
+                    Some(config_event::Event::Update(update)) => {
+                        if let Some(setting) = update.setting {
+                            let v = proto_value_to_serde_value(&setting.value);
+                            Some(ConfigUpdate::Partial {
+                                key: setting.key,
+                                value: v,
+                            })
+                        } else {
+                            None
+                        }
+                    }
+                    None => {
+                        error!("Received a configuration update event with no data.");
+                        None
+                    }
+                };
+
+                if let Some(update) = update {
+                    if sender.send(update).await.is_err() {
+                        // The receiver was dropped
+                        warn!("Dynamic configuration channel closed. Config stream shutting down.");
+                        break;
                     }
                 }
-                None => {
-                    error!("Received a configuration update event with no data.");
-                }
-            },
+            }
             Err(e) => error!("Error while reading config event stream: {}.", e),
         }
     }

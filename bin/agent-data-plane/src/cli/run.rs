@@ -17,12 +17,12 @@ use saluki_components::{
         HostEnrichmentConfiguration, HostTagsConfiguration, PreaggregationFilterConfiguration,
     },
 };
-use saluki_config::{dynamic, ConfigurationLoader, GenericConfiguration};
+use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::topology::TopologyBlueprint;
 use saluki_env::{configstream::create_config_stream, EnvironmentProvider as _};
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
-use tokio::{select, time::interval};
+use tokio::{select, sync::mpsc, time::interval};
 use tracing::{error, info, warn};
 
 use crate::config::RunConfig;
@@ -41,44 +41,46 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
 
     // Create a bootstrap configuration object to determine if we need to set up a dynamic configuration stream.
     // This initial load only contains static configuration sources.
-    let bootstrap_config = ConfigurationLoader::default()
+    let static_config = ConfigurationLoader::default()
         .try_from_yaml(&run_config.config)
         .from_environment("DD")?
         .with_default_secrets_resolution()
         .await?
         .bootstrap_generic()?;
 
-    let in_standalone_mode = bootstrap_config.get_typed_or_default::<bool>("adp.standalone_mode");
+    let in_standalone_mode = static_config.get_typed_or_default::<bool>("adp.standalone_mode");
+    let use_new_config_stream_endpoint =
+        static_config.get_typed_or_default::<bool>("adp.use_new_config_stream_endpoint");
 
-    let configuration =
-        if !in_standalone_mode && bootstrap_config.get_typed_or_default::<bool>("adp.use_new_config_stream_endpoint") {
-            // If we're not in standalone mode and the config stream is enabled, we set up the dynamic config channel and
-            // wait for the initial snapshot before proceeding.
-            let (handler, receiver) = dynamic::channel();
+    let configuration = if !in_standalone_mode && use_new_config_stream_endpoint {
+        // If we're not in standalone mode and the config stream is enabled, we
+        // set up a channel for the config stream to communicate with the updater task.
+        let (sender, receiver) = mpsc::channel(100);
 
-            if let Err(e) = create_config_stream(&bootstrap_config, handler).await {
-                error!("Failed to create config stream: {}.", e);
-                return Err(e);
-            }
+        if let Err(e) = create_config_stream(&static_config, sender).await {
+            error!("Failed to create config stream: {}.", e);
+            return Err(e);
+        }
 
-            info!("Waiting for initial configuration from Datadog Agent...");
-            receiver.wait_for_update().await;
-            info!("Initial configuration received.");
+        // Use the receiver to build `GenericConfiguration` with the following provider order: YAML -> Dynamic -> Environment such that environment variables have the highest priority.
+        ConfigurationLoader::default()
+            .try_from_yaml(&run_config.config)
+            .with_dynamic_configuration(receiver)
+            .from_environment("DD")?
+            .with_default_secrets_resolution()
+            .await?
+            .into_generic()
+            .await?
+    } else {
+        // If dynamic configuration is disabled, the static configuration is already the complete and final configuration.
+        static_config
+    };
 
-            // Now, build the final configuration loader, inserting the dynamic provider in the correct priority order:
-            // YAML -> Dynamic -> Environment. This ensures environment variables have the highest priority.
-            ConfigurationLoader::default()
-                .try_from_yaml(&run_config.config)
-                .with_dynamic_configuration(receiver)
-                .from_environment("DD")?
-                .with_default_secrets_resolution()
-                .await?
-                .into_generic()
-                .await?
-        } else {
-            // If dynamic configuration is disabled, the bootstrap loader is already the complete and final configuration.
-            bootstrap_config
-        };
+    if use_new_config_stream_endpoint {
+        info!("Waiting for initial configuration from Datadog Agent...");
+        configuration.ready().await;
+        info!("Initial configuration received.");
+    }
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
