@@ -14,7 +14,7 @@ use figment::{
 use saluki_error::GenericError;
 use serde::Deserialize;
 use snafu::{ResultExt as _, Snafu};
-use tokio::sync::{broadcast, mpsc, Notify};
+use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tracing::{debug, error};
 
 pub mod dynamic;
@@ -380,7 +380,7 @@ impl ConfigurationLoader {
                 figment: RwLock::new(figment),
                 lookup_sources: self.lookup_sources.clone(),
                 event_sender: None,
-                ready_signal: Arc::new(Notify::new()),
+                ready_signal: Mutex::new(None),
             }),
         })
     }
@@ -406,14 +406,14 @@ impl ConfigurationLoader {
             let figment = build_figment_from_sources(&self.provider_sources);
 
             let (event_sender, _) = broadcast::channel(100);
-            let ready_signal = Arc::new(Notify::new());
+            let (ready_sender, ready_receiver) = oneshot::channel();
 
             let generic_config = GenericConfiguration {
                 inner: Arc::new(Inner {
                     figment: RwLock::new(figment),
                     lookup_sources: self.lookup_sources,
                     event_sender: Some(event_sender.clone()),
-                    ready_signal: ready_signal.clone(),
+                    ready_signal: Mutex::new(Some(ready_receiver)),
                 }),
             };
 
@@ -423,7 +423,7 @@ impl ConfigurationLoader {
                 receiver,
                 self.provider_sources,
                 event_sender,
-                ready_signal,
+                ready_sender,
             ));
 
             Ok(generic_config)
@@ -436,7 +436,7 @@ impl ConfigurationLoader {
                     figment: RwLock::new(figment),
                     lookup_sources: self.lookup_sources,
                     event_sender: None,
-                    ready_signal: Arc::new(Notify::new()),
+                    ready_signal: Mutex::new(None),
                 }),
             })
         }
@@ -453,7 +453,7 @@ fn build_figment_from_sources(sources: &[ProviderSource]) -> Figment {
 
 async fn run_dynamic_config_updater(
     inner: Arc<Inner>, mut receiver: mpsc::Receiver<ConfigUpdate>, provider_sources: Vec<ProviderSource>,
-    sender: broadcast::Sender<ConfigChangeEvent>, ready_signal: Arc<Notify>,
+    sender: broadcast::Sender<ConfigChangeEvent>, ready_sender: oneshot::Sender<()>,
 ) {
     // The first message on the channel will be the initial snapshot.
     let initial_update = match receiver.recv().await {
@@ -491,7 +491,10 @@ async fn run_dynamic_config_updater(
     }
 
     // Signal that the initial snapshot has been processed and the configuration is ready.
-    ready_signal.notify_one();
+    if ready_sender.send(()).is_err() {
+        debug!("Configuration readiness receiver dropped. Updater task shutting down.");
+        return;
+    }
 
     // Set our "current" state for the main loop.
     let mut current_config: figment::value::Value = new_figment.extract().unwrap();
@@ -564,7 +567,7 @@ struct Inner {
     figment: RwLock<Figment>,
     lookup_sources: HashSet<LookupSource>,
     event_sender: Option<broadcast::Sender<ConfigChangeEvent>>,
-    ready_signal: Arc<Notify>,
+    ready_signal: Mutex<Option<oneshot::Receiver<()>>>,
 }
 
 /// A generic configuration object.
@@ -596,12 +599,20 @@ pub struct GenericConfiguration {
 impl GenericConfiguration {
     /// Waits for the configuration to be ready, if dynamic configuration is enabled.
     ///
-    /// This should NOT be called unless dynamic configuration is in use.
-    ///
     /// If dynamic configuration is in use, this method will asynchronously wait until the first snapshot has been
     /// received and applied.
+    ///
+    /// If dynamic configuration is not used, it returns immediately.
     pub async fn ready(&self) {
-        self.inner.ready_signal.notified().await;
+        // We need a lock to both ensure that multiple callers can race against this,
+        // and to allow us mutable access to consume the receiver.
+        let mut maybe_ready_rx = self.inner.ready_signal.lock().await;
+        if let Some(ready_rx) = maybe_ready_rx.take() {
+            // We're the first caller to wait for readiness.
+            if ready_rx.await.is_err() {
+                error!("Failed to receive configuration readiness signal; updater task may have panicked.");
+            }
+        }
     }
 
     fn get<'a, T>(&self, key: &str) -> Result<T, ConfigurationError>
