@@ -1,5 +1,3 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
@@ -40,45 +38,49 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         build_time = app_details.build_time(),
         "Agent Data Plane starting..."
     );
-    // Load our configuration and create all high-level primitives (health registry, component registry, environment
-    // provider, etc) that are needed to build the topology.
-    let configuration = ConfigurationLoader::default()
+
+    // Create a bootstrap configuration object to determine if we need to set up a dynamic configuration stream.
+    // This initial load only contains static configuration sources.
+    let static_config = ConfigurationLoader::default()
         .try_from_yaml(&run_config.config)
         .from_environment("DD")?
-        .with_dynamic_configuration()?
         .with_default_secrets_resolution()
         .await?
-        .into_generic()
-        .await?;
+        .bootstrap_generic()?;
 
-    let in_standalone_mode = configuration.get_typed_or_default::<bool>("adp.standalone_mode");
-    if !in_standalone_mode {
-        if let Some(shared_config) = configuration.get_refreshable_handle() {
-            // If configured, create a config stream and block until a initial configuration is received.
-            if configuration.get_typed_or_default::<bool>("adp.use_new_config_stream_endpoint") {
-                let snapshot_received = Arc::new(AtomicBool::new(false));
-                if let Err(e) = create_config_stream(&configuration, shared_config, snapshot_received.clone()).await {
-                    error!("Failed to create config stream: {}.", e);
-                    return Err(e);
-                }
-                info!("Waiting for initial configuration from Datadog Agent...");
-                let mut attempts = 0;
-                const CHECK_INTERVAL_MS: u64 = 100;
+    let in_standalone_mode = static_config.get_typed_or_default::<bool>("adp.standalone_mode");
+    let use_new_config_stream_endpoint =
+        static_config.get_typed_or_default::<bool>("adp.use_new_config_stream_endpoint");
 
-                while !snapshot_received.load(Ordering::SeqCst) {
-                    tokio::time::sleep(Duration::from_millis(CHECK_INTERVAL_MS)).await;
-                    attempts += 1;
-
-                    if attempts % 100 == 0 {
-                        info!(
-                            "Still waiting for initial configuration... ({}s elapsed)",
-                            attempts / 10
-                        );
-                    }
-                }
-                info!("Initial configuration received.");
+    let configuration = if !in_standalone_mode && use_new_config_stream_endpoint {
+        // If we're not in standalone mode and the config stream is enabled, we create the stream
+        // which returns a receiver for configuration updates.
+        let receiver = match create_config_stream(&static_config).await {
+            Ok(receiver) => receiver,
+            Err(e) => {
+                error!("Failed to create config stream: {}.", e);
+                return Err(e);
             }
-        }
+        };
+
+        // Use the receiver to build `GenericConfiguration` with the following provider order: YAML -> Dynamic -> Environment such that environment variables have the highest priority.
+        ConfigurationLoader::default()
+            .try_from_yaml(&run_config.config)
+            .with_dynamic_configuration(receiver)
+            .from_environment("DD")?
+            .with_default_secrets_resolution()
+            .await?
+            .into_generic()
+            .await?
+    } else {
+        // If dynamic configuration is disabled, the static configuration is already the complete and final configuration.
+        static_config
+    };
+
+    if use_new_config_stream_endpoint {
+        info!("Waiting for initial configuration from Datadog Agent...");
+        configuration.ready().await;
+        info!("Initial configuration received.");
     }
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
