@@ -866,7 +866,10 @@ mod tests {
         let mut dispatcher = Dispatcher::new(ComponentContext::transform(component_id));
 
         let (buffer_tx, buffer_rx) = mpsc::channel(1);
-        dispatcher.add_output(OutputName::Default, buffer_tx);
+        dispatcher.add_output(OutputName::Default).unwrap();
+        dispatcher
+            .attach_sender_to_output(&OutputName::Default, buffer_tx)
+            .unwrap();
 
         (dispatcher, DispatcherReceiver { receiver: buffer_rx })
     }

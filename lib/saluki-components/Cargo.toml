@@ -37,7 +37,7 @@ pin-project = { workspace = true }
 protobuf = { workspace = true }
 pyo3 = { workspace = true, features = ["macros"], optional = true }
 rand = { workspace = true, features = ["std", "std_rng"] }
-regex = { workspace = true }
+regex = { workspace = true, features = ["unicode-perl"] }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }
 saluki-config = { workspace = true }

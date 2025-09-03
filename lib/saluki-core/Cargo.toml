@@ -44,6 +44,5 @@ tracing = { workspace = true, features = ["std"] }
 [dev-dependencies]
 metrics-util = { workspace = true, features = ["debugging"] }
 proptest = { workspace = true }
-similar-asserts = { workspace = true, features = ["unicode"] }
 tokio-test = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
