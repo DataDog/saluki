@@ -26,9 +26,13 @@ pub enum ConfigChangeEvent {
 /// An update message for the dynamic configuration state, sent from the config stream to the updater task.
 #[derive(Clone, Debug)]
 pub enum ConfigUpdate {
-    /// A complete snapshot of the configuration. The existing state should be replaced.
+    /// A complete snapshot of the configuration.
+    ///
+    /// The existing state should be replaced.
     Snapshot(serde_json::Value),
-    /// A partial update for a single key-value pair. This should be merged into the existing state.
+    /// A partial update for a single key-value pair.
+    ///
+    /// This should be merged into the existing state.
     Partial {
         /// The key to update.
         key: String,
