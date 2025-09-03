@@ -22,7 +22,7 @@ use saluki_core::topology::TopologyBlueprint;
 use saluki_env::{configstream::create_config_stream, EnvironmentProvider as _};
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
-use tokio::{select, sync::mpsc, time::interval};
+use tokio::{select, time::interval};
 use tracing::{error, info, warn};
 
 use crate::config::RunConfig;
@@ -53,14 +53,15 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         static_config.get_typed_or_default::<bool>("adp.use_new_config_stream_endpoint");
 
     let configuration = if !in_standalone_mode && use_new_config_stream_endpoint {
-        // If we're not in standalone mode and the config stream is enabled, we
-        // set up a channel for the config stream to communicate with the updater task.
-        let (sender, receiver) = mpsc::channel(100);
-
-        if let Err(e) = create_config_stream(&static_config, sender).await {
-            error!("Failed to create config stream: {}.", e);
-            return Err(e);
-        }
+        // If we're not in standalone mode and the config stream is enabled, we create the stream
+        // which returns a receiver for configuration updates.
+        let receiver = match create_config_stream(&static_config).await {
+            Ok(receiver) => receiver,
+            Err(e) => {
+                error!("Failed to create config stream: {}.", e);
+                return Err(e);
+            }
+        };
 
         // Use the receiver to build `GenericConfiguration` with the following provider order: YAML -> Dynamic -> Environment such that environment variables have the highest priority.
         ConfigurationLoader::default()

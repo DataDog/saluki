@@ -11,9 +11,9 @@ use tracing::{error, warn};
 use crate::helpers::remote_agent::RemoteAgentClient;
 
 /// Creates a new `ConfigStreamer` that receives a stream of config events from the remote agent.
-pub async fn create_config_stream(
-    config: &GenericConfiguration, sender: mpsc::Sender<ConfigUpdate>,
-) -> Result<(), GenericError> {
+pub async fn create_config_stream(config: &GenericConfiguration) -> Result<mpsc::Receiver<ConfigUpdate>, GenericError> {
+    let (sender, receiver) = mpsc::channel(100);
+
     let client = match RemoteAgentClient::from_configuration(config).await {
         Ok(client) => client,
         Err(e) => {
@@ -24,7 +24,7 @@ pub async fn create_config_stream(
 
     tokio::spawn(run_config_stream_event_loop(client, sender));
 
-    Ok(())
+    Ok(receiver)
 }
 
 async fn run_config_stream_event_loop(mut client: RemoteAgentClient, sender: mpsc::Sender<ConfigUpdate>) {
