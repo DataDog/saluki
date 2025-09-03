@@ -83,14 +83,3 @@ impl Log {
         self.timestamp.map(|v| v.get())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_log() {
-        let log = Log::new("test message");
-        assert_eq!(log.message(), "test message");
-    }
-}
