@@ -505,14 +505,12 @@ impl Runner {
         let response_latency = response_sent.checked_duration_since(request_sent).unwrap_or_default();
 
         // Clear any pending timeouts for this component and schedule the next probe.
-        if self.pending_timeouts.try_remove(&timeout_key).is_none() {
+        let timeout_was_pending = self.pending_timeouts.try_remove(&timeout_key).is_some();
+        if !timeout_was_pending {
             let mut registry = self.registry.lock().unwrap();
             let component_state = &mut registry.component_state[component_id];
 
             debug!(component_name = %component_state.name, "Received probe response for component that already timed out.");
-        } else {
-            #[cfg(test)]
-            self.state.decrement_pending_probe_timeouts();
         }
 
         // Update the component's health to show as alive.
@@ -522,8 +520,14 @@ impl Runner {
         };
         self.process_component_health_update(component_id, update);
 
-        // Schedule the next probe for this component.
-        self.schedule_probe_for_component(component_id, DEFAULT_PROBE_BACKOFF_DUR);
+        // Only schedule the next probe if we successfully removed the timeout, meaning it hadn't fired yet.
+        // This prevents duplicate probe scheduling when a response arrives after a timeout.
+        if timeout_was_pending {
+            #[cfg(test)]
+            self.state.decrement_pending_probe_timeouts();
+
+            self.schedule_probe_for_component(component_id, DEFAULT_PROBE_BACKOFF_DUR);
+        }
     }
 
     fn handle_component_timeout(&mut self, component_id: usize) {
