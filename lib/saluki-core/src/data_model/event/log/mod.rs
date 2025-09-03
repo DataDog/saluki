@@ -2,6 +2,7 @@
 
 use std::num::NonZeroU64;
 
+use saluki_context::tags::SharedTagSet;
 use stringtheory::MetaString;
 
 /// Internal representation of a log event aligned to Datadog logs payload fields https://docs.datadoghq.com/api/latest/logs/#log-object.
@@ -20,7 +21,7 @@ pub struct Log {
     /// Source of the log (ddsource).
     source: MetaString,
     /// Comma-separated tags (ddtags), format: key:value,key:value.
-    tags: MetaString,
+    tags: SharedTagSet,
 }
 
 impl Log {
@@ -33,7 +34,7 @@ impl Log {
             hostname: MetaString::empty(),
             service: MetaString::empty(),
             source: MetaString::empty(),
-            tags: MetaString::empty(),
+            tags: SharedTagSet::default(),
         }
     }
 
@@ -68,8 +69,8 @@ impl Log {
     }
 
     /// Sets the comma-separated Datadog tags string (ddtags).
-    pub fn with_ddtags(mut self, ddtags: impl Into<Option<MetaString>>) -> Self {
-        self.tags = ddtags.into().unwrap_or_else(MetaString::empty);
+    pub fn with_ddtags(mut self, ddtags: impl Into<Option<SharedTagSet>>) -> Self {
+        self.tags = ddtags.into().unwrap_or_else(SharedTagSet::default);
         self
     }
 
