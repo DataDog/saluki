@@ -27,7 +27,7 @@ pub fn set_event_sender(check_metrics_tx: Sender<Event>) -> &'static Sender<Even
     GLOBAL_METRIC_SENDER.get_or_init(|| check_metrics_tx)
 }
 
-/// Sets the hostname to be used by the datadog_agent module.
+/// Sets the `ExecutionContext` to be used by the datadog_agent module.
 pub fn set_execution_context(execution_context: ExecutionContext) -> &'static ExecutionContext {
     GLOBAL_EXECUTION_CONTEXT.get_or_init(|| execution_context)
 }
