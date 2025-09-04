@@ -3,7 +3,6 @@ use std::sync::{LazyLock, OnceLock};
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use saluki_config::GenericConfiguration;
 use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::{
     eventd::{AlertType, EventD, Priority},
@@ -18,21 +17,14 @@ use crate::sources::checks::check_metric::{CheckMetric, MetricType};
 use crate::sources::checks::execution_context::ExecutionContext;
 
 // Global state to store the sender
-static METRIC_SENDER: OnceLock<Sender<Event>> = OnceLock::new();
-// Global state to store the configuration
-static GLOBAL_CONFIGURATION: OnceLock<GenericConfiguration> = OnceLock::new();
+static GLOBAL_METRIC_SENDER: OnceLock<Sender<Event>> = OnceLock::new();
 
 // Global state to store the execution context
 static GLOBAL_EXECUTION_CONTEXT: OnceLock<ExecutionContext> = OnceLock::new();
 
 /// Sets the event sender to be used by the aggregator module.
 pub fn set_event_sender(check_metrics_tx: Sender<Event>) -> &'static Sender<Event> {
-    METRIC_SENDER.get_or_init(|| check_metrics_tx)
-}
-
-/// Sets the configuration to be used by the datadog_agent module.
-pub fn set_configuration(configuration: GenericConfiguration) -> &'static GenericConfiguration {
-    GLOBAL_CONFIGURATION.get_or_init(move || configuration)
+    GLOBAL_METRIC_SENDER.get_or_init(|| check_metrics_tx)
 }
 
 /// Sets the hostname to be used by the datadog_agent module.
@@ -41,7 +33,7 @@ pub fn set_execution_context(execution_context: ExecutionContext) -> &'static Ex
 }
 
 fn try_send_metric(metric: CheckMetric) -> Result<(), GenericError> {
-    match METRIC_SENDER.get() {
+    match GLOBAL_METRIC_SENDER.get() {
         Some(sender) => sender
             .try_send(metric.into())
             .map_err(|e| generic_error!("Failed to send metric: {}", e)),
@@ -50,7 +42,7 @@ fn try_send_metric(metric: CheckMetric) -> Result<(), GenericError> {
 }
 
 fn try_send_service_check(service_check: ServiceCheck) -> Result<(), GenericError> {
-    match METRIC_SENDER.get() {
+    match GLOBAL_METRIC_SENDER.get() {
         Some(sender) => sender
             .try_send(Event::ServiceCheck(service_check))
             .map_err(|e| generic_error!("Failed to send service check: {}", e)),
@@ -59,7 +51,7 @@ fn try_send_service_check(service_check: ServiceCheck) -> Result<(), GenericErro
 }
 
 fn try_send_event(event: EventD) -> Result<(), GenericError> {
-    match METRIC_SENDER.get() {
+    match GLOBAL_METRIC_SENDER.get() {
         Some(sender) => sender
             .try_send(Event::EventD(event))
             .map_err(|e| generic_error!("Failed to send event: {}", e)),
@@ -68,22 +60,24 @@ fn try_send_event(event: EventD) -> Result<(), GenericError> {
 }
 
 fn get_config_key(key: String) -> String {
-    match GLOBAL_CONFIGURATION.get() {
-        Some(configuration) => configuration.get_typed_or_default::<String>(&key),
+    match GLOBAL_EXECUTION_CONTEXT.get() {
+        Some(execution_context) => execution_context.configuration().get_typed_or_default::<String>(&key),
         None => "".to_string(),
     }
 }
 
 fn fetch_hostname() -> &'static str {
     match GLOBAL_EXECUTION_CONTEXT.get() {
-        Some(ec) => ec.hostname(),
+        Some(execution_context) => execution_context.hostname(),
         None => "",
     }
 }
 
 fn fetch_tracemalloc_enabled() -> bool {
-    match GLOBAL_CONFIGURATION.get() {
-        Some(configuration) => configuration.get_typed_or_default::<bool>("tracemalloc_debug"),
+    match GLOBAL_EXECUTION_CONTEXT.get() {
+        Some(execution_context) => execution_context
+            .configuration()
+            .get_typed_or_default::<bool>("tracemalloc_debug"),
         None => false,
     }
 }
@@ -396,9 +390,8 @@ mod tests {
             .into_generic()
             .await
             .expect("convert to generic configuration");
-        set_configuration(config);
 
-        set_execution_context(ExecutionContext::default());
+        set_execution_context(ExecutionContext::new(config));
 
         pyo3::append_to_inittab!(datadog_agent);
         pyo3::prepare_freethreaded_python();
@@ -425,15 +418,14 @@ mod tests {
     async fn test_python_checks_config() {
         trace!("Starting test_python_checks_config");
 
-        let config = ConfigurationLoader::default()
+        let generic_configuration = ConfigurationLoader::default()
             .from_yaml("src/sources/checks/builder/python/tests/test_checks_config.yaml")
             .expect("configuration should be loaded")
             .into_generic()
             .await
             .expect("convert to generic configuration");
-        set_configuration(config);
 
-        let execution_context = ExecutionContext::default().set_hostname("agent-test-host");
+        let execution_context = ExecutionContext::new(generic_configuration).set_hostname("agent-test-host");
         set_execution_context(execution_context);
 
         pyo3::append_to_inittab!(datadog_agent);
