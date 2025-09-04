@@ -39,7 +39,7 @@ mod execution_context;
 #[cfg(feature = "python-checks")]
 use self::builder::python::builder::PythonCheckBuilder;
 use self::builder::CheckBuilder;
-use self::execution_context::ExecutionContext; // FIXME: leaking context for other checks
+use self::execution_context::ExecutionContext;
 
 const fn default_check_runners() -> usize {
     4
