@@ -5,7 +5,7 @@ use saluki_env::{EnvironmentProvider, HostProvider};
 use saluki_metadata;
 use tracing::warn;
 
-// Cache execution information from datadog agent for Python checks
+/// Global/shared configuration for checks.
 #[derive(Clone)]
 pub struct ExecutionContext {
     configuration: GenericConfiguration,
