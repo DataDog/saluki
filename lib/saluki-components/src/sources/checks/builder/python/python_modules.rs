@@ -425,7 +425,7 @@ mod tests {
             .await
             .expect("convert to generic configuration");
 
-        let execution_context = ExecutionContext::new(generic_configuration).set_hostname("agent-test-host");
+        let execution_context = ExecutionContext::new(generic_configuration).with_hostname("agent-test-host");
         set_execution_context(execution_context);
 
         pyo3::append_to_inittab!(datadog_agent);
