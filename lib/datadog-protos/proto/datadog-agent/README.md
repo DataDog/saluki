@@ -5,4 +5,4 @@ This directory contains Protocol Buffers definitions for the Datadog Agent.
 ## Source
 
 **Repository:** https://github.com/DataDog/datadog-agent.git
-**Branch / Tag**: 7.69.4
+**Branch / Tag**: main (9/4/25)
