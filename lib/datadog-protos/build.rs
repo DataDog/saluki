@@ -1,12 +1,7 @@
 fn main() {
     // Always rerun if the build script itself changes.
     println!("cargo:rerun-if-changed=build.rs");
-
-    println!("cargo:rerun-if-changed=proto/agent-payload/agent_payload.proto");
-    println!("cargo:rerun-if-changed=proto/datadog-agent/datadog/api/v1/api.proto");
-    println!("cargo:rerun-if-changed=proto/datadog-agent/datadog/workloadmeta/workloadmeta.proto");
-    println!("cargo:rerun-if-changed=proto/datadog-agent/datadog/remoteagent/remoteagent.proto");
-    println!("cargo:rerun-if-changed=proto/datadog-agent/datadog/autodiscovery/autodiscovery.proto");
+    println!("cargo:rerun-if-changed=proto");
 
     // Handle code generation for pure Protocol Buffers message types.
     let codegen_customize = protobuf_codegen::Customize::default()
