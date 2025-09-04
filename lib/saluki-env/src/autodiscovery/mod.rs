@@ -6,7 +6,10 @@ use std::collections::HashMap;
 use std::hash::Hasher;
 
 use async_trait::async_trait;
-use datadog_protos::agent::{Config as ProtoConfig, ConfigEventType};
+use datadog_protos::agent::{
+    AdvancedAdIdentifier as ProtoAdvancedAdIdentifier, Config as ProtoConfig, ConfigEventType,
+    KubeNamespacedName as ProtoKubeNamespacedName,
+};
 use fnv::FnvHasher;
 use saluki_error::GenericError;
 use stringtheory::MetaString;
@@ -53,6 +56,15 @@ pub struct KubeNamespacedName {
     pub namespace: MetaString,
 }
 
+impl From<ProtoKubeNamespacedName> for KubeNamespacedName {
+    fn from(value: ProtoKubeNamespacedName) -> Self {
+        Self {
+            name: value.name.into(),
+            namespace: value.namespace.into(),
+        }
+    }
+}
+
 /// Advanced autodiscovery identifier
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdvancedADIdentifier {
@@ -60,6 +72,18 @@ pub struct AdvancedADIdentifier {
     pub kube_service: Option<KubeNamespacedName>,
     /// Kubernetes endpoints
     pub kube_endpoints: Option<KubeNamespacedName>,
+}
+
+impl From<ProtoAdvancedAdIdentifier> for AdvancedADIdentifier {
+    fn from(value: ProtoAdvancedAdIdentifier) -> Self {
+        Self {
+            kube_service: value.kube_service.map(Into::into),
+            kube_endpoints: value
+                .kube_endpoints
+                .and_then(|endpoint| endpoint.kube_namespaced_name)
+                .map(Into::into),
+        }
+    }
 }
 
 /// Raw data trait for configuration data
@@ -193,26 +217,7 @@ impl Config {
 impl From<ProtoConfig> for Config {
     fn from(proto: ProtoConfig) -> Self {
         // Convert advanced AD identifiers from proto
-        let advanced_ad_identifiers = proto
-            .advanced_ad_identifiers
-            .into_iter()
-            .map(|adv_id| {
-                let kube_service = adv_id.kube_service.map(|svc| KubeNamespacedName {
-                    name: svc.name.into(),
-                    namespace: svc.namespace.into(),
-                });
-
-                let kube_endpoints = adv_id.kube_endpoints.map(|endpoints| KubeNamespacedName {
-                    name: endpoints.name.into(),
-                    namespace: endpoints.namespace.into(),
-                });
-
-                AdvancedADIdentifier {
-                    kube_service,
-                    kube_endpoints,
-                }
-            })
-            .collect();
+        let advanced_ad_identifiers = proto.advanced_ad_identifiers.into_iter().map(Into::into).collect();
 
         let init_config = bytes_to_data(proto.init_config).unwrap_or_default();
         let instances = proto

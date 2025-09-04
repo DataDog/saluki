@@ -1,14 +1,7 @@
 fn main() {
     // Always rerun if the build script itself changes.
     println!("cargo:rerun-if-changed=build.rs");
-
-    println!("cargo:rerun-if-changed=proto/agent_payload.proto");
-    println!("cargo:rerun-if-changed=proto/dd_trace.proto");
-    println!("cargo:rerun-if-changed=proto/ddsketch_full.proto");
-    println!("cargo:rerun-if-changed=proto/datadog/api/v1/api.proto");
-    println!("cargo:rerun-if-changed=proto/datadog/workloadmeta/workloadmeta.proto");
-    println!("cargo:rerun-if-changed=proto/datadog/remoteagent/remoteagent.proto");
-    println!("cargo:rerun-if-changed=proto/datadog/autodiscovery/autodiscovery.proto");
+    println!("cargo:rerun-if-changed=proto");
 
     // Handle code generation for pure Protocol Buffers message types.
     let codegen_customize = protobuf_codegen::Customize::default()
@@ -21,11 +14,7 @@ fn main() {
     protobuf_codegen::Codegen::new()
         .protoc()
         .includes(["proto"])
-        .inputs([
-            "proto/agent_payload.proto",
-            "proto/ddsketch_full.proto",
-            "proto/dd_trace.proto",
-        ])
+        .inputs(["proto/agent-payload/agent_payload.proto"])
         .cargo_out_dir("protos")
         .customize(codegen_customize)
         .run_from_script();
@@ -35,13 +24,8 @@ fn main() {
         .build_server(true)
         .include_file("api.mod.rs")
         .compile_protos(
-            &[
-                "proto/datadog/api/v1/api.proto",
-                "proto/datadog/workloadmeta/workloadmeta.proto",
-                "proto/datadog/remoteagent/remoteagent.proto",
-                "proto/datadog/autodiscovery/autodiscovery.proto",
-            ],
-            &["proto"],
+            &["proto/datadog-agent/datadog/api/v1/api.proto"],
+            &["proto", "proto/datadog-agent"],
         )
-        .expect("failed to build gRPC service definitions for DCA");
+        .expect("Failed to build gRPC service definitions for Datadog Agent.");
 }

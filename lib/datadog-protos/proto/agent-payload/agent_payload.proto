@@ -1,8 +1,10 @@
-// Extracted from https://github.com/DataDog/agent-payload/blob/master/proto/metrics/agent_payload.proto
-
 syntax = "proto3";
 
 package datadog.agentpayload;
+
+import "github.com/gogo/protobuf/gogoproto/gogo.proto";
+
+option go_package = "github.com/DataDog/agent-payload/v5/gogen";
 
 message CommonMetadata {
 	string agent_version = 1;
@@ -111,13 +113,13 @@ message SketchPayload {
 		}
 		string metric = 1;
 		string host = 2;
-		repeated Distribution distributions = 3;
+		repeated Distribution distributions = 3 [(gogoproto.nullable) = false];
 		repeated string tags = 4;
                 reserved 5, 6;
 				reserved "distributionsK", "distributionsC";
-		repeated Dogsketch dogsketches = 7;
+		repeated Dogsketch dogsketches = 7 [(gogoproto.nullable) = false];
 		Metadata metadata = 8;
 	}
-	repeated Sketch sketches = 1;
-	CommonMetadata metadata = 2;
+	repeated Sketch sketches = 1 [(gogoproto.nullable) = false];
+	CommonMetadata metadata = 2 [(gogoproto.nullable) = false];
 }
