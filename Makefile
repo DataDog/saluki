@@ -48,6 +48,10 @@ export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
 export DDPROF_VERSION ?= 0.19.0
 export LADING_VERSION ?= 0.23.3
 
+# Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
+export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.69.4
+export PROTOBUF_SRC_REPO_AGENT_PAYLOAD ?= v5.0.164
+
 FMT_YELLOW = \033[0;33m
 FMT_BLUE = \033[0;36m
 FMT_SALUKI_LOGO = \033[1m\033[38;5;55m
@@ -614,6 +618,10 @@ run-docs: ## Runs a local development server for documentation
 	@bun run docs:dev
 
 ##@ Utility
+
+.PHONY: update-protos
+update-protos: ## Updates all vendored Protocol Buffers definitions from their source repositories
+	@DD_AGENT_GIT_TAG=$(PROTOBUF_SRC_REPO_DD_AGENT) AGENT_PAYLOAD_GIT_TAG=$(PROTOBUF_SRC_REPO_AGENT_PAYLOAD) ./tooling/update-protos.sh
 
 .PHONY: clean
 clean: check-rust-build-tools
