@@ -557,14 +557,12 @@ impl Runner {
         info!("Health checker running.");
 
         loop {
-            eprintln!("  Run loop start.");
             select! {
                 // A component has been scheduled to have a liveness probe sent to it.
                 Some(entry) = self.pending_probes.next() => {
                     #[cfg(test)]
                     self.state.decrement_pending_scheduled_probes();
 
-                    eprintln!("    Had pending probe to trigger.");
                     let component_id = entry.into_inner();
                     if let Some(health_update) = self.send_component_probe_request(component_id) {
                         // If we got a health update for this component, that means we detected that it's dead, so we need
@@ -578,20 +576,17 @@ impl Runner {
                     #[cfg(test)]
                     self.state.decrement_pending_probe_timeouts();
 
-                    eprintln!("    Had pending timeout.");
                     let component_id = entry.into_inner();
                     self.handle_component_timeout(component_id);
                 },
 
                 // A probe response has been received.
                 Some(response) = self.responses_rx.recv() => {
-                    eprintln!("    Had pending probe response.");
                     self.handle_component_probe_response(response);
                 },
 
                 // A component is pending finalization of their registration.
                 _ = self.pending_components_notify.notified() => {
-                    eprintln!("    Had pending component registration(s) to drain.");
                     // Drain all pending components, give them a clean initial state of "unknown", and immediately schedule a probe for them.
                     let pending_component_ids = self.drain_pending_components();
                     for pending_component_id in pending_component_ids {
