@@ -1,10 +1,9 @@
 //! A YAML scrubber for redacting sensitive information.
 
+use std::io::{BufRead, BufReader};
 use std::sync::OnceLock;
 
 use regex::bytes::Regex;
-use tokio::io::AsyncBufReadExt;
-use tokio::io::BufReader;
 
 static COMMENT_REGEX: OnceLock<Regex> = OnceLock::new();
 static BLANK_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -157,16 +156,16 @@ impl Scrubber {
     /// Scrubs sensitive data from a byte slice.
     ///
     /// This method will scrub the data, returning a new byte vector.
-    pub async fn scrub_bytes(&self, data: &[u8]) -> Vec<u8> {
+    pub fn scrub_bytes(&self, data: &[u8]) -> Vec<u8> {
         let mut reader = BufReader::new(data);
-        self.scrub_reader(&mut reader).await
+        self.scrub_reader(&mut reader)
     }
 
-    async fn scrub_reader(&self, reader: &mut BufReader<&[u8]>) -> Vec<u8> {
+    fn scrub_reader(&self, reader: &mut BufReader<&[u8]>) -> Vec<u8> {
         let mut scrubbed_lines = Vec::new();
         let mut line = Vec::new();
         let mut first = true;
-        while let Ok(bytes_read) = reader.read_until(b'\n', &mut line).await {
+        while let Ok(bytes_read) = reader.read_until(b'\n', &mut line) {
             if bytes_read == 0 {
                 break; // EOF
             }
@@ -174,7 +173,7 @@ impl Scrubber {
             if blank_regex().is_match(&line) {
                 scrubbed_lines.push(b"\n".to_vec());
             } else if !comment_regex().is_match(&line) {
-                let b = self.scrub(&line, &self.replacers).await;
+                let b = self.scrub(&line, &self.replacers);
                 if !first {
                     scrubbed_lines.push(b"\n".to_vec());
                 }
@@ -187,7 +186,7 @@ impl Scrubber {
     }
 
     /// Applies the replacers to the data.
-    async fn scrub(&self, data: &[u8], replacers: &[Replacer]) -> Vec<u8> {
+    fn scrub(&self, data: &[u8], replacers: &[Replacer]) -> Vec<u8> {
         let mut scrubbed_data = data.to_vec();
         for replacer in replacers {
             if replacer.regex.is_none() {
@@ -223,194 +222,162 @@ impl Scrubber {
 mod tests {
     use super::*;
 
-    async fn assert_clean(contents: &str, clean_contents: &str) {
+    fn assert_clean(contents: &str, clean_contents: &str) {
         let scrubber = default_scrubber();
-        let cleaned = scrubber.scrub_bytes(contents.as_bytes()).await;
+        let cleaned = scrubber.scrub_bytes(contents.as_bytes());
         let cleaned_string = String::from_utf8(cleaned).unwrap();
         assert_eq!(cleaned_string.trim(), clean_contents.trim());
     }
 
-    #[tokio::test]
-    async fn test_config_strip_api_key() {
+    #[test]
+    fn test_config_strip_api_key() {
         assert_clean(
             "api_key: aaaaaaaaaaaaaaaaaaaaaaaaaaaabbbb",
             "api_key: \"***************************abbbb\"",
-        )
-        .await;
+        );
         assert_clean(
             "api_key: AAAAAAAAAAAAAAAAAAAAAAAAAAAABBBB",
             "api_key: \"***************************ABBBB\"",
-        )
-        .await;
+        );
         assert_clean(
             "api_key: aaaaaaaaaaaaaaaaaaaaaaaaaaaabbbb",
             "api_key: \"***************************abbbb\"",
-        )
-        .await;
+        );
         assert_clean(
             "api_key: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaabbbb'",
             "api_key: '***************************abbbb'",
-        )
-        .await;
+        );
         assert_clean(
             "   api_key:   'aaaaaaaaaaaaaaaaaaaaaaaaaaaabbbb'   ",
             "   api_key:   '***************************abbbb'   ",
-        )
-        .await;
+        );
     }
 
-    #[tokio::test]
-    async fn test_config_app_key() {
+    #[test]
+    fn test_config_app_key() {
         assert_clean(
             "app_key: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbb",
             "app_key: \"***********************************abbbb\"",
-        )
-        .await;
+        );
         assert_clean(
             "app_key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBBB",
             "app_key: \"***********************************ABBBB\"",
-        )
-        .await;
+        );
         assert_clean(
             "app_key: \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbb\"",
             "app_key: \"***********************************abbbb\"",
-        )
-        .await;
+        );
         assert_clean(
             "app_key: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbb'",
             "app_key: '***********************************abbbb'",
-        )
-        .await;
+        );
         assert_clean(
             "   app_key:   'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbb'   ",
             "   app_key:   '***********************************abbbb'   ",
-        )
-        .await;
+        );
     }
 
-    #[tokio::test]
-    async fn test_config_rc_app_key() {
+    #[test]
+    fn test_config_rc_app_key() {
         assert_clean(
             "key: \"DDRCM_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABCDE\"",
             "key: \"***********************************ABCDE\"",
-        )
-        .await;
+        );
     }
 
-    #[tokio::test]
-    async fn test_text_strip_api_key() {
+    #[test]
+    fn test_text_strip_api_key() {
         assert_clean(
             "Error status code 500 : http://dog.tld/api?key=3290abeefc68e1bbe852a25252bad88c",
             "Error status code 500 : http://dog.tld/api?key=***************************ad88c",
-        )
-        .await;
+        );
         assert_clean(
             "hintedAPIKeyReplacer : http://dog.tld/api_key=InvalidLength12345abbbb",
             "hintedAPIKeyReplacer : http://dog.tld/api_key=***************************abbbb",
-        )
-        .await;
+        );
         assert_clean(
             "hintedAPIKeyReplacer : http://dog.tld/apikey=InvalidLength12345abbbb",
             "hintedAPIKeyReplacer : http://dog.tld/apikey=***************************abbbb",
-        )
-        .await;
+        );
         assert_clean(
             "apiKeyReplacer: https://agent-http-intake.logs.datadoghq.com/v1/input/aaaaaaaaaaaaaaaaaaaaaaaaaaaabbbb",
             "apiKeyReplacer: https://agent-http-intake.logs.datadoghq.com/v1/input/***************************abbbb",
-        )
-        .await;
+        );
     }
 
-    #[tokio::test]
-    async fn test_config_strip_url_password() {
+    #[test]
+    fn test_config_strip_url_password() {
         assert_clean(
             "proxy: random_url_key: http://user:password@host:port",
             "proxy: random_url_key: http://user:********@host:port",
-        )
-        .await;
+        );
         assert_clean(
             "random_url_key http://user:password@host:port",
             "random_url_key http://user:********@host:port",
-        )
-        .await;
+        );
         assert_clean(
             "random_url_key: http://user:password@host:port",
             "random_url_key: http://user:********@host:port",
-        )
-        .await;
+        );
         assert_clean(
             "random_url_key: http://user:p@ssw0r)@host:port",
             "random_url_key: http://user:********@host:port",
-        )
-        .await;
+        );
         assert_clean(
             "random_url_key: http://user:🔑🔒🔐🔓@host:port",
             "random_url_key: http://user:********@host:port",
-        )
-        .await;
+        );
         assert_clean(
             "random_url_key: http://user:password@host",
             "random_url_key: http://user:********@host",
-        )
-        .await;
+        );
         assert_clean(
             "random_url_key: protocol://user:p@ssw0r)@host:port",
             "random_url_key: protocol://user:********@host:port",
-        )
-        .await;
+        );
         assert_clean(
             "random_url_key: \"http://user:password@host:port\"",
             "random_url_key: \"http://user:********@host:port\"",
-        )
-        .await;
+        );
         assert_clean(
             "random_url_key: 'http://user:password@host:port'",
             "random_url_key: 'http://user:********@host:port'",
-        )
-        .await;
+        );
         assert_clean(
             "random_domain_key: 'user:password@host:port'",
             "random_domain_key: 'user:********@host:port'",
-        )
-        .await;
+        );
         assert_clean(
             "   random_url_key:   'http://user:password@host:port'   ",
             "   random_url_key:   'http://user:********@host:port'   ",
-        )
-        .await;
+        );
         assert_clean(
             "   random_url_key:   'mongodb+s.r-v://user:password@host:port'   ",
             "   random_url_key:   'mongodb+s.r-v://user:********@host:port'   ",
-        )
-        .await;
+        );
         assert_clean(
             "   random_url_key:   'mongodb+srv://user:pass-with-hyphen@abc.example.com/database'   ",
             "   random_url_key:   'mongodb+srv://user:********@abc.example.com/database'   ",
-        )
-        .await;
+        );
     }
 
-    #[tokio::test]
-    async fn test_text_strip_app_key() {
+    #[test]
+    fn test_text_strip_app_key() {
         assert_clean(
             "hintedAPPKeyReplacer : http://dog.tld/app_key=InvalidLength12345abbbb",
             "hintedAPPKeyReplacer : http://dog.tld/app_key=***********************************abbbb",
-        )
-        .await;
+        );
         assert_clean(
             "hintedAPPKeyReplacer : http://dog.tld/appkey=InvalidLength12345abbbb",
             "hintedAPPKeyReplacer : http://dog.tld/appkey=***********************************abbbb",
-        )
-        .await;
+        );
         assert_clean(
             "hintedAPPKeyReplacer : http://dog.tld/application_key=InvalidLength12345abbbb",
             "hintedAPPKeyReplacer : http://dog.tld/application_key=***********************************abbbb",
-        )
-        .await;
+        );
         assert_clean(
             "appKeyReplacer: http://dog.tld/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbb",
             "appKeyReplacer: http://dog.tld/***********************************abbbb",
-        )
-        .await;
+        );
     }
 }

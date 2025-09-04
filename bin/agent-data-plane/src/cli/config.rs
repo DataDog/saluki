@@ -25,7 +25,7 @@ async fn get_config(client: reqwest::Client) {
         let bytes = response.bytes().await.unwrap_or_default();
 
         let scrubber = scrubber::default_scrubber();
-        let scrubbed_bytes = scrubber.scrub_bytes(&bytes).await;
+        let scrubbed_bytes = scrubber.scrub_bytes(&bytes);
 
         let yaml_value: serde_yaml::Value = serde_yaml::from_slice(&scrubbed_bytes).unwrap();
         let yaml = serde_yaml::to_string(&yaml_value).unwrap_or_default();

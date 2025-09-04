@@ -37,14 +37,14 @@ pub struct DatadogConfiguration {
     forwarder_config: ForwarderConfiguration,
 
     #[serde(skip)]
-    config_refresher: Option<GenericConfiguration>,
+    configuration: Option<GenericConfiguration>,
 }
 
 impl DatadogConfiguration {
     /// Creates a new `DatadogConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let mut forwarder_config: DatadogConfiguration = config.as_typed()?;
-        forwarder_config.config_refresher = Some(config.clone());
+        forwarder_config.configuration = Some(config.clone());
         Ok(forwarder_config)
     }
 
@@ -84,7 +84,7 @@ impl ForwarderBuilder for DatadogConfiguration {
         let forwarder = TransactionForwarder::from_config(
             context,
             self.forwarder_config.clone(),
-            self.config_refresher.clone(),
+            self.configuration.clone(),
             get_dd_endpoint_name,
             telemetry.clone(),
             metrics_builder,
