@@ -21,6 +21,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 name = "agent-data-plane"
 version = "0.1.21"
 dependencies = [
+ "arc-swap",
  "async-trait",
  "bytesize",
  "chrono",
@@ -33,6 +34,7 @@ dependencies = [
  "hyper",
  "memory-accounting",
  "papaya",
+ "prost-types",
  "rand",
  "rand_distr",
  "reqwest",
@@ -50,6 +52,7 @@ dependencies = [
  "saluki-metadata",
  "serde",
  "serde_json",
+ "serde_yaml",
  "stringtheory",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
@@ -3074,6 +3077,7 @@ dependencies = [
 name = "saluki-app"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "axum",
  "bytesize",
  "chrono",
@@ -3096,6 +3100,7 @@ dependencies = [
  "saluki-metadata",
  "saluki-tls",
  "serde",
+ "serde_json",
  "tokio",
  "tonic",
  "tower",
@@ -3118,8 +3123,10 @@ dependencies = [
  "pin-project",
  "proptest",
  "quick_cache",
+ "regex",
  "saluki-error",
  "saluki-metrics",
+ "serde_yaml",
  "sha3",
  "tokio",
  "tokio-test",
@@ -3276,6 +3283,7 @@ dependencies = [
  "pin-project-lite",
  "proptest",
  "prost",
+ "prost-types",
  "regex",
  "rustls",
  "rustls-pemfile",
@@ -3287,6 +3295,7 @@ dependencies = [
  "saluki-error",
  "saluki-health",
  "saluki-io",
+ "saluki-metadata",
  "saluki-metrics",
  "serde",
  "serde_json",

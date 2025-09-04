@@ -14,6 +14,7 @@ fips = ["saluki-app/tls-fips"]
 python-checks = ["saluki-components/python-checks"]
 
 [dependencies]
+arc-swap = { workspace = true }
 async-trait = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
@@ -35,6 +36,7 @@ http-body-util = { workspace = true }
 hyper = { workspace = true }
 memory-accounting = { workspace = true }
 papaya = { workspace = true }
+prost-types = { workspace = true }
 rand = { workspace = true }
 rand_distr = { workspace = true }
 reqwest = { workspace = true, features = [
@@ -55,6 +57,7 @@ saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = [
   "macros",

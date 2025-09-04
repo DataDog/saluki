@@ -8,10 +8,10 @@ use std::{
 
 use backon::{BackoffBuilder, ConstantBuilder, Retryable as _};
 use datadog_protos::agent::{
-    AgentClient, AgentSecureClient, AutodiscoveryStreamResponse, EntityId, FetchEntityRequest, HostTagReply,
-    HostTagRequest, HostnameRequest, RegisterRemoteAgentRequest, RegisterRemoteAgentResponse, StreamTagsRequest,
-    StreamTagsResponse, TagCardinality, WorkloadmetaEventType, WorkloadmetaFilter, WorkloadmetaKind,
-    WorkloadmetaSource, WorkloadmetaStreamRequest, WorkloadmetaStreamResponse,
+    AgentClient, AgentSecureClient, AutodiscoveryStreamResponse, ConfigEvent, ConfigStreamRequest, EntityId,
+    FetchEntityRequest, HostTagReply, HostTagRequest, HostnameRequest, RegisterRemoteAgentRequest,
+    RegisterRemoteAgentResponse, StreamTagsRequest, StreamTagsResponse, TagCardinality, WorkloadmetaEventType,
+    WorkloadmetaFilter, WorkloadmetaKind, WorkloadmetaSource, WorkloadmetaStreamRequest, WorkloadmetaStreamResponse,
 };
 use futures::Stream;
 use pin_project_lite::pin_project;
@@ -138,9 +138,7 @@ impl RemoteAgentClient {
             let auth_interceptor = BearerAuthInterceptor::from_file(&config.auth_token_file_path).await?;
             let ipc_cert_file_path =
                 get_ipc_cert_file_path(config.ipc_cert_file_path.as_ref(), &config.auth_token_file_path);
-
             let https_connector = build_datadog_agent_ipc_https_connector(ipc_cert_file_path).await?;
-
             let channel = Endpoint::from(config.ipc_endpoint.clone())
                 .connect_timeout(Duration::from_secs(2))
                 .connect_with_connector(https_connector)
@@ -261,6 +259,27 @@ impl RemoteAgentClient {
     pub fn get_autodiscovery_stream(&mut self) -> StreamingResponse<AutodiscoveryStreamResponse> {
         let mut client = self.secure_client.clone();
         StreamingResponse::from_response_future(async move { client.autodiscovery_stream_config(()).await })
+    }
+
+    /// Gets a stream of config events.
+    ///
+    /// If there is an error with the initial request, or an error occurs while streaming, the next message in the
+    /// stream will be `Some(Err(status))`, where the status indicates the underlying error.
+    pub fn stream_config_events(&mut self) -> StreamingResponse<ConfigEvent> {
+        let mut client = self.secure_client.clone();
+        let app_details = saluki_metadata::get_app_details();
+        let formatted_full_name = app_details
+            .full_name()
+            .replace(" ", "-")
+            .replace("_", "-")
+            .to_lowercase();
+        StreamingResponse::from_response_future(async move {
+            client
+                .stream_config_events(ConfigStreamRequest {
+                    name: formatted_full_name,
+                })
+                .await
+        })
     }
 }
 

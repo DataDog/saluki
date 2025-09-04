@@ -17,9 +17,9 @@ use saluki_components::{
         HostEnrichmentConfiguration, HostTagsConfiguration, PreaggregationFilterConfiguration,
     },
 };
-use saluki_config::{ConfigurationLoader, GenericConfiguration, RefresherConfiguration};
+use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::topology::TopologyBlueprint;
-use saluki_env::EnvironmentProvider as _;
+use saluki_env::{configstream::create_config_stream, EnvironmentProvider as _};
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use tokio::{select, time::interval};
@@ -38,14 +38,50 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         build_time = app_details.build_time(),
         "Agent Data Plane starting..."
     );
-    // Load our configuration and create all high-level primitives (health registry, component registry, environment
-    // provider, etc) that are needed to build the topology.
-    let configuration = ConfigurationLoader::default()
+
+    // Create a bootstrap configuration object to determine if we need to set up a dynamic configuration stream.
+    // This initial load only contains static configuration sources.
+    let static_config = ConfigurationLoader::default()
         .try_from_yaml(&run_config.config)
         .from_environment("DD")?
         .with_default_secrets_resolution()
         .await?
-        .into_generic()?;
+        .bootstrap_generic()?;
+
+    let in_standalone_mode = static_config.get_typed_or_default::<bool>("adp.standalone_mode");
+    let use_new_config_stream_endpoint =
+        static_config.get_typed_or_default::<bool>("adp.use_new_config_stream_endpoint");
+
+    let configuration = if !in_standalone_mode && use_new_config_stream_endpoint {
+        // If we're not in standalone mode and the config stream is enabled, we create the stream
+        // which returns a receiver for configuration updates.
+        let receiver = match create_config_stream(&static_config).await {
+            Ok(receiver) => receiver,
+            Err(e) => {
+                error!("Failed to create config stream: {}.", e);
+                return Err(e);
+            }
+        };
+
+        // Use the receiver to build `GenericConfiguration` with the following provider order: YAML -> Dynamic -> Environment such that environment variables have the highest priority.
+        ConfigurationLoader::default()
+            .try_from_yaml(&run_config.config)
+            .with_dynamic_configuration(receiver)
+            .from_environment("DD")?
+            .with_default_secrets_resolution()
+            .await?
+            .into_generic()
+            .await?
+    } else {
+        // If dynamic configuration is disabled, the static configuration is already the complete and final configuration.
+        static_config
+    };
+
+    if use_new_config_stream_endpoint {
+        info!("Waiting for initial configuration from Datadog Agent...");
+        configuration.ready().await;
+        info!("Initial configuration received.");
+    }
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
@@ -184,20 +220,8 @@ async fn create_topology(
     let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(configuration)
         .map(BufferedIncrementalConfiguration::from_encoder_builder)
         .error_context("Failed to configure Datadog Service Checks encoder.")?;
-    let mut dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
+    let dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog forwarder.")?;
-
-    match RefresherConfiguration::from_configuration(configuration) {
-        Ok(refresher_configuration) => {
-            let refreshable_configuration = refresher_configuration.build().await?;
-            dd_forwarder_config.add_refreshable_configuration(refreshable_configuration);
-        }
-        Err(_) => {
-            info!(
-               "Dynamic configuration refreshing will be unavailable due to failure to configure refresher configuration."
-           )
-        }
-    }
 
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
     blueprint
