@@ -84,12 +84,12 @@ fn fetch_hostname() -> &'static str {
 fn fetch_tracemalloc_enabled() -> bool {
     match GLOBAL_CONFIGURATION.get() {
         Some(configuration) => configuration.get_typed_or_default::<bool>("tracemalloc_debug"),
-        None => false, // FIXME: this returns a supposed default. Can we get the default without a configuration?
+        None => false,
     }
 }
 
 fn fetch_http_headers() -> &'static HashMap<String, String> {
-    static EMPTY: LazyLock<HashMap<String, String>> = LazyLock::new(|| HashMap::new()); // FIXME: yuk!
+    static EMPTY: LazyLock<HashMap<String, String>> = LazyLock::new(|| HashMap::new());
 
     match GLOBAL_EXECUTION_CONTEXT.get() {
         Some(ec) => ec.http_headers(),
