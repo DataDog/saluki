@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use saluki_config::GenericConfiguration;
 use saluki_env::{EnvironmentProvider, HostProvider};
 use saluki_metadata;
 use tracing::warn;
@@ -7,12 +8,13 @@ use tracing::warn;
 // Cache execution information from datadog agent for Python checks
 #[derive(Clone)]
 pub struct ExecutionContext {
+    configuration: GenericConfiguration,
     hostname: String,
     http_headers: HashMap<String, String>,
 }
 
-impl Default for ExecutionContext {
-    fn default() -> Self {
+impl ExecutionContext {
+    pub fn new(configuration: GenericConfiguration) -> Self {
         let http_headers = HashMap::from([
             (
                 "User-Agent".to_string(),
@@ -26,25 +28,31 @@ impl Default for ExecutionContext {
         ]);
 
         Self {
+            configuration,
             hostname: "".to_string(),
             http_headers,
         }
     }
-}
 
-impl ExecutionContext {
-    pub async fn from_environment_provider<E>(environment_provider: &E) -> Self
+    pub async fn from_environment_provider<E>(configuration: GenericConfiguration, environment_provider: &E) -> Self
     where
         E: EnvironmentProvider,
         <E::Host as HostProvider>::Error: std::fmt::Debug,
     {
-        let default = Self::default();
+        let execution_context = Self::new(configuration);
         let hostname = environment_provider.host().get_hostname().await.unwrap_or_else(|e| {
             warn!("Failed to get hostname: {:?}", e);
             "".to_string()
         });
 
-        Self { hostname, ..default }
+        Self {
+            hostname,
+            ..execution_context
+        }
+    }
+
+    pub fn configuration(&self) -> &GenericConfiguration {
+        &self.configuration
     }
 
     pub fn hostname(&self) -> &str {
