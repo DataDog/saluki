@@ -5,11 +5,10 @@ use saluki_metadata;
 use tracing::warn;
 
 // Cache execution information from datadog agent for Python checks
-#[allow(dead_code)] // FIXME temporary
 #[derive(Clone)]
 pub struct ExecutionContext {
-    pub hostname: String,
-    pub http_headers: HashMap<String, String>,
+    hostname: String,
+    http_headers: HashMap<String, String>,
 }
 
 impl Default for ExecutionContext {
@@ -46,5 +45,21 @@ impl ExecutionContext {
         });
 
         Self { hostname, ..default }
+    }
+
+    pub fn hostname(&self) -> &str {
+        &self.hostname
+    }
+
+    #[allow(dead_code)]
+    pub fn set_hostname<S: AsRef<str>>(self, hostname: S) -> Self {
+        ExecutionContext {
+            hostname: hostname.as_ref().to_string(),
+            ..self
+        }
+    }
+
+    pub fn http_headers(&self) -> &HashMap<String, String> {
+        &self.http_headers
     }
 }

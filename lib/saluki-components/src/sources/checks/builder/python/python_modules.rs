@@ -76,7 +76,7 @@ fn get_config_key(key: String) -> String {
 
 fn fetch_hostname() -> &'static str {
     match GLOBAL_EXECUTION_CONTEXT.get() {
-        Some(ExecutionContext { hostname, .. }) => hostname.as_str(),
+        Some(ec) => ec.hostname(),
         None => "",
     }
 }
@@ -92,7 +92,7 @@ fn fetch_http_headers() -> &'static HashMap<String, String> {
     static EMPTY: LazyLock<HashMap<String, String>> = LazyLock::new(|| HashMap::new()); // FIXME: yuk!
 
     match GLOBAL_EXECUTION_CONTEXT.get() {
-        Some(ExecutionContext { http_headers, .. }) => http_headers,
+        Some(ec) => ec.http_headers(),
         None => &EMPTY,
     }
 }
@@ -433,8 +433,7 @@ mod tests {
             .expect("convert to generic configuration");
         set_configuration(config);
 
-        let mut execution_context = ExecutionContext::default();
-        execution_context.hostname = "agent-test-host".to_string();
+        let execution_context = ExecutionContext::default().set_hostname("agent-test-host");
         set_execution_context(execution_context);
 
         pyo3::append_to_inittab!(datadog_agent);
@@ -467,7 +466,7 @@ mod tests {
             result.hostname
         );
         assert!(
-            result.http_headers["User-Agent"].contains("Datadog Agent"), // XXX: simple test for now
+            result.http_headers["User-Agent"].contains("Datadog Agent"),
             "http_headers User-Agent mismatch: {}",
             result.http_headers["User-Agent"]
         );
