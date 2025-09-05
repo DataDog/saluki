@@ -167,19 +167,16 @@ impl OtlpConfiguration {
     }
 }
 
-#[allow(unused)]
-struct Metrics {
+pub struct Metrics {
     metrics_received: Counter,
 }
 
-#[allow(unused)]
 impl Metrics {
     fn metrics_received(&self) -> &Counter {
         &self.metrics_received
     }
 }
 
-#[allow(unused)]
 fn build_metrics(component_context: &ComponentContext) -> Metrics {
     let builder = MetricsBuilder::from_component_context(component_context);
 
@@ -226,6 +223,7 @@ impl SourceBuilder for OtlpConfiguration {
         let context_resolver = ContextResolverBuilder::from_name(format!("{}/otlp", context.component_id()))?.build();
         let translator_config = metrics::config::OtlpTranslatorConfig::default().with_remapping(true);
         let grpc_max_recv_msg_size_bytes = self.receiver.protocols.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
+        let metrics = build_metrics(&context);
 
         Ok(Box::new(Otlp {
             context_resolver,
@@ -233,6 +231,7 @@ impl SourceBuilder for OtlpConfiguration {
             http_endpoint: ListenAddress::Tcp(http_socket_addr),
             grpc_max_recv_msg_size_bytes,
             translator_config,
+            metrics,
         }))
     }
 }
@@ -252,6 +251,7 @@ pub struct Otlp {
     http_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
     translator_config: metrics::config::OtlpTranslatorConfig,
+    metrics: Metrics,
 }
 
 #[async_trait]
@@ -275,6 +275,7 @@ impl Source for Otlp {
                 context.clone(),
                 converter_shutdown_coordinator.register(),
                 translator,
+                self.metrics,
             ),
         );
 
@@ -401,7 +402,7 @@ async fn dispatch_events(events: EventsBuffer, source_context: &SourceContext) {
 
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpResourceMetrics>, source_context: SourceContext,
-    shutdown_handle: DynamicShutdownHandle, mut translator: OtlpTranslator,
+    shutdown_handle: DynamicShutdownHandle, mut translator: OtlpTranslator, metrics: Metrics,
 ) {
     tokio::pin!(shutdown_handle);
     debug!("OTLP metric converter task started.");
@@ -416,7 +417,7 @@ async fn run_converter(
     loop {
         select! {
             Some(resource_metrics) = receiver.recv() => {
-                match translator.map_metrics(resource_metrics) {
+                match translator.map_metrics(resource_metrics, &metrics) {
                     Ok(events) => {
                         for event in events {
                             if let Some(event_buffer) = event_buffer_manager.try_push(event) {

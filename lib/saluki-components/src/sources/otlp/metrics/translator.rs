@@ -26,6 +26,7 @@ use super::internal::{instrumentationlibrary, instrumentationscope};
 use super::remap;
 use super::runtime_metrics::{RuntimeMetricMapping, RUNTIME_METRICS_MAPPINGS};
 use crate::sources::otlp::metrics::config::InitialCumulMonoValueMode;
+use crate::sources::otlp::Metrics;
 
 // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L48-L63
 static RATE_AS_GAUGE_METRICS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
@@ -91,7 +92,9 @@ impl OtlpTranslator {
 
     /// Translates a batch of OTLP `ResourceMetrics` into a collection of Saluki `Event`s.
     /// This is the Rust equivalent of the Go `MapMetrics` function.
-    pub fn map_metrics(&mut self, resource_metrics: OtlpResourceMetrics) -> Result<Vec<Event>, GenericError> {
+    pub fn map_metrics(
+        &mut self, resource_metrics: OtlpResourceMetrics, metrics: &Metrics,
+    ) -> Result<Vec<Event>, GenericError> {
         let mut events = Vec::new();
         let resource = resource_metrics.resource.unwrap_or_default();
         let source = self.attribute_translator.resource_to_source(&resource);
@@ -168,12 +171,14 @@ impl OtlpTranslator {
                     remap::rename_metric(&mut metric);
                 }
 
-                let mut translated_events = self.map_to_dd_format(metric, &tags, host.as_deref(), &resource.attributes);
+                let mut translated_events =
+                    self.map_to_dd_format(metric, &tags, host.as_deref(), &resource.attributes, metrics);
                 events.append(&mut translated_events);
             }
 
             for metric in new_metrics {
-                let mut translated_events = self.map_to_dd_format(metric, &tags, host.as_deref(), &resource.attributes);
+                let mut translated_events =
+                    self.map_to_dd_format(metric, &tags, host.as_deref(), &resource.attributes, metrics);
                 events.append(&mut translated_events);
             }
         }
@@ -193,7 +198,7 @@ impl OtlpTranslator {
     /// Translates a single OTLP `Metric` into a collection of Saluki `Event`s.
     fn map_to_dd_format(
         &mut self, metric: OtlpMetric, attribute_tags: &SharedTagSet, host: Option<&str>,
-        resource_attributes: &[OtlpKeyValue],
+        resource_attributes: &[OtlpKeyValue], metrics: &Metrics,
     ) -> Vec<Event> {
         let origin_id = self.attribute_translator.origin_id_from_attributes(resource_attributes);
         let base_dims = Dimensions {
@@ -206,24 +211,26 @@ impl OtlpTranslator {
         if let Some(data) = metric.data {
             match data {
                 OtlpMetricData::Gauge(gauge) => {
-                    self.map_number_data_points(base_dims, gauge.data_points, DataType::Gauge)
+                    self.map_number_data_points(base_dims, gauge.data_points, DataType::Gauge, metrics)
                 }
                 OtlpMetricData::Sum(sum) => match AggregationTemporality::try_from(sum.aggregation_temporality) {
                     Ok(AggregationTemporality::Cumulative) => {
                         if sum.is_monotonic {
                             match self.config.number_mode {
-                                NumberMode::CumulativeToDelta => self.map_sum_data_points(base_dims, sum.data_points),
+                                NumberMode::CumulativeToDelta => {
+                                    self.map_sum_data_points(base_dims, sum.data_points, metrics)
+                                }
                                 NumberMode::RawValue => {
-                                    self.map_number_data_points(base_dims, sum.data_points, DataType::Gauge)
+                                    self.map_number_data_points(base_dims, sum.data_points, DataType::Gauge, metrics)
                                 }
                             }
                         } else {
                             // Cumulative non-monotonic sums are handled as gauges.
-                            self.map_number_data_points(base_dims, sum.data_points, DataType::Gauge)
+                            self.map_number_data_points(base_dims, sum.data_points, DataType::Gauge, metrics)
                         }
                     }
                     Ok(AggregationTemporality::Delta) => {
-                        self.map_number_data_points(base_dims, sum.data_points, DataType::Count)
+                        self.map_number_data_points(base_dims, sum.data_points, DataType::Count, metrics)
                     }
                     _ => {
                         warn!(
@@ -237,10 +244,10 @@ impl OtlpTranslator {
                 OtlpMetricData::Histogram(histogram) => {
                     match AggregationTemporality::try_from(histogram.aggregation_temporality) {
                         Ok(AggregationTemporality::Cumulative) => {
-                            self.map_histogram_metrics(base_dims, histogram.data_points, false)
+                            self.map_histogram_metrics(base_dims, histogram.data_points, false, metrics)
                         }
                         Ok(AggregationTemporality::Delta) => {
-                            self.map_histogram_metrics(base_dims, histogram.data_points, true)
+                            self.map_histogram_metrics(base_dims, histogram.data_points, true, metrics)
                         }
                         _ => {
                             warn!(
@@ -266,7 +273,10 @@ impl OtlpTranslator {
     /// TODO: how do we handle timestamp, hostname, origin?
     fn record_metric_event(
         &mut self, dims: &Dimensions, value: f64, _timestamp_ns: u64, data_type: DataType, events: &mut Vec<Event>,
+        metrics: &Metrics,
     ) {
+        metrics.metrics_received().increment(1);
+
         // TODO: Handle origin
         match self.context_resolver.resolve(&dims.name, &dims.tags, None) {
             Some(context) => {
@@ -286,7 +296,7 @@ impl OtlpTranslator {
 
     /// Maps a slice of OTLP numeric data points to Saluki `Event`s.
     fn map_number_data_points(
-        &mut self, base_dims: Dimensions, data_points: Vec<OtlpNumberDataPoint>, data_type: DataType,
+        &mut self, base_dims: Dimensions, data_points: Vec<OtlpNumberDataPoint>, data_type: DataType, metrics: &Metrics,
     ) -> Vec<Event> {
         let mut events = Vec::new();
         for dp in data_points {
@@ -307,13 +317,15 @@ impl OtlpTranslator {
 
             let ts = dp.time_unix_nano;
 
-            self.record_metric_event(&point_dims, value, ts, data_type, &mut events);
+            self.record_metric_event(&point_dims, value, ts, data_type, &mut events, metrics);
         }
         events
     }
 
     /// Maps a slice of OTLP cumulative monotonic `Sum` data points to Saluki `Event`s.
-    fn map_sum_data_points(&mut self, base_dims: Dimensions, data_points: Vec<OtlpNumberDataPoint>) -> Vec<Event> {
+    fn map_sum_data_points(
+        &mut self, base_dims: Dimensions, data_points: Vec<OtlpNumberDataPoint>, metrics: &Metrics,
+    ) -> Vec<Event> {
         let mut events = Vec::new();
         for (i, dp) in data_points.iter().enumerate() {
             // Skip if the data point has no recorded value.
@@ -345,7 +357,14 @@ impl OtlpTranslator {
                 }
 
                 if !is_first_point {
-                    self.record_metric_event(&point_dims, rate, dp.time_unix_nano, DataType::Gauge, &mut events);
+                    self.record_metric_event(
+                        &point_dims,
+                        rate,
+                        dp.time_unix_nano,
+                        DataType::Gauge,
+                        &mut events,
+                        metrics,
+                    );
                 }
                 continue;
             }
@@ -364,17 +383,31 @@ impl OtlpTranslator {
             }
 
             if !is_first_point {
-                self.record_metric_event(&point_dims, delta, dp.time_unix_nano, DataType::Count, &mut events);
+                self.record_metric_event(
+                    &point_dims,
+                    delta,
+                    dp.time_unix_nano,
+                    DataType::Count,
+                    &mut events,
+                    metrics,
+                );
             } else if i == 0 && self.should_consume_initial_value(dp.start_time_unix_nano, dp.time_unix_nano) {
                 // We only compute the first point in the timeseries if it is the first value in the datapoint slice.
-                self.record_metric_event(&point_dims, value, dp.time_unix_nano, DataType::Count, &mut events);
+                self.record_metric_event(
+                    &point_dims,
+                    value,
+                    dp.time_unix_nano,
+                    DataType::Count,
+                    &mut events,
+                    metrics,
+                );
             }
         }
         events
     }
 
     fn map_histogram_metrics(
-        &mut self, base_dims: Dimensions, data_points: Vec<OtlpHistogramDataPoint>, delta: bool,
+        &mut self, base_dims: Dimensions, data_points: Vec<OtlpHistogramDataPoint>, delta: bool, metrics: &Metrics,
     ) -> Vec<Event> {
         let mut events = Vec::new();
 
@@ -451,16 +484,23 @@ impl OtlpTranslator {
             // Only proceed if both sum and count were processed correctly.
             if self.config.send_histogram_aggregations && hist_info.ok {
                 let ts = dp.time_unix_nano;
-                self.record_metric_event(&count_dims, hist_info.count as f64, ts, DataType::Count, &mut events);
+                self.record_metric_event(
+                    &count_dims,
+                    hist_info.count as f64,
+                    ts,
+                    DataType::Count,
+                    &mut events,
+                    metrics,
+                );
 
-                self.record_metric_event(&sum_dims, hist_info.sum, ts, DataType::Count, &mut events);
+                self.record_metric_event(&sum_dims, hist_info.sum, ts, DataType::Count, &mut events, metrics);
 
                 if delta {
                     if let Some(min) = dp.min {
-                        self.record_metric_event(&min_dims, min, ts, DataType::Gauge, &mut events);
+                        self.record_metric_event(&min_dims, min, ts, DataType::Gauge, &mut events, metrics);
                     }
                     if let Some(max) = dp.max {
-                        self.record_metric_event(&max_dims, max, ts, DataType::Gauge, &mut events);
+                        self.record_metric_event(&max_dims, max, ts, DataType::Gauge, &mut events, metrics);
                     }
                 }
             }
