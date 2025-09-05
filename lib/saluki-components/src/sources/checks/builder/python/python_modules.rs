@@ -10,6 +10,7 @@ use saluki_core::data_model::event::{
     Event,
 };
 use saluki_error::{generic_error, GenericError};
+use serde::Deserialize;
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, trace};
 
@@ -59,10 +60,16 @@ fn try_send_event(event: EventD) -> Result<(), GenericError> {
     }
 }
 
-fn get_config_key(key: String) -> String {
+fn get_config_key<'a, S, T>(key: S) -> T
+where
+    S: AsRef<str>,
+    T: Default + Deserialize<'a>,
+{
     match GLOBAL_EXECUTION_CONTEXT.get() {
-        Some(execution_context) => execution_context.configuration().get_typed_or_default::<String>(&key),
-        None => "".to_string(),
+        Some(execution_context) => execution_context
+            .configuration()
+            .get_typed_or_default::<T>(key.as_ref()),
+        None => T::default(),
     }
 }
 
@@ -70,15 +77,6 @@ fn fetch_hostname() -> &'static str {
     match GLOBAL_EXECUTION_CONTEXT.get() {
         Some(execution_context) => execution_context.hostname(),
         None => "",
-    }
-}
-
-fn fetch_tracemalloc_enabled() -> bool {
-    match GLOBAL_EXECUTION_CONTEXT.get() {
-        Some(execution_context) => execution_context
-            .configuration()
-            .get_typed_or_default::<bool>("tracemalloc_debug"),
-        None => false,
     }
 }
 
@@ -274,7 +272,7 @@ pub mod datadog_agent {
     #[pyfunction]
     fn tracemalloc_enabled() -> bool {
         trace!("Called tracemalloc_enabled()");
-        fetch_tracemalloc_enabled()
+        get_config_key("tracemalloc_debug")
     }
 
     #[pyfunction]
