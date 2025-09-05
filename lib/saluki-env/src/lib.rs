@@ -9,6 +9,7 @@
 #![deny(missing_docs)]
 
 pub mod autodiscovery;
+pub mod configstream;
 pub mod features;
 pub mod helpers;
 pub mod host;

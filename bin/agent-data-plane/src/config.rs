@@ -20,6 +20,10 @@ pub enum Action {
     #[command(subcommand)]
     Debug(DebugConfig),
 
+    /// Prints the current configuration.
+    #[command(name = "config")]
+    Config,
+
     /// Various dogstatsd commands.
     #[command(subcommand)]
     Dogstatsd(DogstatsdConfig),
@@ -83,6 +87,10 @@ pub struct DogstatsdStatsConfig {
     /// Filter to apply to metric names. Any metrics which don't match the filter will be excluded.
     #[arg(required = false, short = 'f', long = "filter")]
     pub filter: Option<String>,
+
+    /// Limit the number of metrics to display. (applied after filtering)
+    #[arg(required = false, short = 'l', long = "limit")]
+    pub limit: Option<usize>,
 }
 
 /// Sort direction.

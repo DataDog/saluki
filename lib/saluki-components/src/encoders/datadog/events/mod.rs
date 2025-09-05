@@ -3,8 +3,9 @@ use datadog_protos::events as proto;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use protobuf::{rt::WireType, CodedOutputStream};
+use saluki_common::iter::ReusableDeduplicator;
 use saluki_config::GenericConfiguration;
-use saluki_context::tags::{Tag, TagsExt as _};
+use saluki_context::tags::Tag;
 use saluki_core::{
     components::{encoders::*, ComponentContext},
     data_model::{
@@ -91,7 +92,7 @@ impl IncrementalEncoderBuilder for DatadogEventsConfiguration {
 
         // Create our request builder.
         let mut request_builder =
-            RequestBuilder::new(EventsEndpointEncoder, compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
+            RequestBuilder::new(EventsEndpointEncoder::new(), compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
         request_builder.with_max_inputs_per_payload(MAX_EVENTS_PER_PAYLOAD);
 
         Ok(DatadogEvents {
@@ -171,7 +172,17 @@ impl IncrementalEncoder for DatadogEvents {
 }
 
 #[derive(Debug)]
-struct EventsEndpointEncoder;
+struct EventsEndpointEncoder {
+    tags_deduplicator: ReusableDeduplicator<Tag>,
+}
+
+impl EventsEndpointEncoder {
+    fn new() -> Self {
+        Self {
+            tags_deduplicator: ReusableDeduplicator::new(),
+        }
+    }
+}
 
 impl EndpointEncoder for EventsEndpointEncoder {
     type Input = EventD;
@@ -190,7 +201,7 @@ impl EndpointEncoder for EventsEndpointEncoder {
     }
 
     fn encode(&mut self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
-        encode_and_write_eventd(input, buffer)
+        encode_and_write_eventd(input, buffer, &mut self.tags_deduplicator)
     }
 
     fn endpoint_uri(&self) -> Uri {
@@ -206,18 +217,20 @@ impl EndpointEncoder for EventsEndpointEncoder {
     }
 }
 
-fn encode_and_write_eventd(eventd: &EventD, buf: &mut Vec<u8>) -> Result<(), protobuf::Error> {
+fn encode_and_write_eventd(
+    eventd: &EventD, buf: &mut Vec<u8>, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
+) -> Result<(), protobuf::Error> {
     let mut output_stream = CodedOutputStream::vec(buf);
 
     // Write the field tag.
     output_stream.write_tag(EVENTS_FIELD_NUMBER, WireType::LengthDelimited)?;
 
     // Write the message.
-    let encoded_eventd = encode_eventd(eventd);
+    let encoded_eventd = encode_eventd(eventd, tags_deduplicator);
     output_stream.write_message_no_tag(&encoded_eventd)
 }
 
-fn encode_eventd(eventd: &EventD) -> proto::Event {
+fn encode_eventd(eventd: &EventD, tags_deduplicator: &mut ReusableDeduplicator<Tag>) -> proto::Event {
     let mut event = proto::Event::new();
     event.set_title(eventd.title().into());
     event.set_text(eventd.text().into());
@@ -246,13 +259,10 @@ fn encode_eventd(eventd: &EventD) -> proto::Event {
         event.set_source_type_name(source_type_name.into());
     }
 
-    let deduplicated_tags = get_deduplicated_tags(eventd);
+    let chained_tags = eventd.tags().into_iter().chain(eventd.origin_tags());
+    let deduplicated_tags = tags_deduplicator.deduplicated(chained_tags);
 
     event.set_tags(deduplicated_tags.map(|tag| tag.as_str().into()).collect());
 
     event
-}
-
-fn get_deduplicated_tags(eventd: &EventD) -> impl Iterator<Item = &Tag> {
-    eventd.tags().into_iter().chain(eventd.origin_tags()).deduplicated()
 }

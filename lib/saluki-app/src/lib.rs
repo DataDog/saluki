@@ -20,6 +20,9 @@ pub mod metrics;
 #[cfg(feature = "tls")]
 pub mod tls;
 
+#[cfg(feature = "config")]
+pub mod config;
+
 /// Common imports.
 pub mod prelude {
     #[cfg(feature = "logging")]

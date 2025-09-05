@@ -15,9 +15,9 @@ use hyper_util::{
     server::conn::auto::Builder,
 };
 use rustls::ServerConfig;
-use saluki_common::task::spawn_traced_named;
+use saluki_common::task::{spawn_traced_named, HandleExt as _};
 use saluki_error::GenericError;
-use tokio::{select, sync::oneshot};
+use tokio::{runtime::Handle, select, sync::oneshot};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info};
 
@@ -25,6 +25,7 @@ use crate::net::listener::ConnectionOrientedListener;
 
 /// An HTTP server.
 pub struct HttpServer<S> {
+    executor: Handle,
     listener: ConnectionOrientedListener,
     conn_builder: Builder<TokioExecutor>,
     service: S,
@@ -33,8 +34,13 @@ pub struct HttpServer<S> {
 
 impl<S> HttpServer<S> {
     /// Creates a new `HttpServer` from the given listener and service.
+    ///
+    /// # Panics
+    ///
+    /// This will panic if called outside the context of a Tokio runtime.
     pub fn from_listener(listener: ConnectionOrientedListener, service: S) -> Self {
         Self {
+            executor: Handle::current(),
             listener,
             conn_builder: Builder::new(TokioExecutor::new()),
             service,
@@ -49,6 +55,17 @@ impl<S> HttpServer<S> {
     /// Defaults to TLS being disabled.
     pub fn with_tls_config(mut self, config: ServerConfig) -> Self {
         self.tls_config = Some(config);
+        self
+    }
+
+    /// Sets the executor for the server.
+    ///
+    /// This executor will be used for spawning tasks to handle incoming connections, but _not_ for the spawn that accepts
+    /// new connections.
+    ///
+    /// Defaults to the current Tokio runtime at the time `HttpServer::new` is called.
+    pub fn with_executor(mut self, executor: Handle) -> Self {
+        self.executor = executor;
         self
     }
 }
@@ -71,6 +88,7 @@ where
         let (error_tx, error_rx) = oneshot::channel();
 
         let Self {
+            executor,
             mut listener,
             conn_builder,
             service,
@@ -106,14 +124,14 @@ where
                                         },
                                     };
 
-                                    spawn_traced_named("http-server-tls-conn-handler", async move {
+                                    executor.spawn_traced_named("http-server-tls-conn-handler", async move {
                                         if let Err(e) = conn_builder.serve_connection(TokioIo::new(tls_stream), service).await {
                                             error!(%listen_addr, error = %e, "Failed to serve HTTP connection.");
                                         }
                                     });
                                 },
                                 None => {
-                                    spawn_traced_named("http-server-conn-handler", async move {
+                                    executor.spawn_traced_named("http-server-conn-handler", async move {
                                         if let Err(e) = conn_builder.serve_connection(TokioIo::new(stream), service).await {
                                             error!(%listen_addr, error = %e, "Failed to serve HTTP connection.");
                                         }

@@ -834,7 +834,10 @@ async fn drive_stream(
                                         // Simply continue on.
                                         continue
                                     },
-                                    Err(e) => warn!(%listen_addr, %peer_addr, error = %e, "Failed to parse frame."),
+                                    Err(e) => {
+                                        let frame_lossy_str = String::from_utf8_lossy(&frame);
+                                        warn!(%listen_addr, %peer_addr, frame = %frame_lossy_str, error = %e, "Failed to parse frame.");
+                                    },
                                 }
                             }
                             Some(Err(e)) => {
@@ -843,10 +846,10 @@ async fn drive_stream(
                                 if stream.is_connectionless() {
                                     // For connectionless streams, we don't want to shutdown the stream since we can just keep
                                     // reading more packets.
-                                    warn!(%listen_addr, %peer_addr, error = %e, "Error decoding frame. Continuing stream.");
+                                    debug!(%listen_addr, %peer_addr, error = %e, "Error decoding frame. Continuing stream.");
                                     continue 'read;
                                 } else {
-                                    warn!(%listen_addr, %peer_addr, error = %e, "Error decoding frame. Stopping stream.");
+                                    debug!(%listen_addr, %peer_addr, error = %e, "Error decoding frame. Stopping stream.");
                                     break 'read;
                                 }
                             }

@@ -1,7 +1,7 @@
 use std::future::pending;
 
 use memory_accounting::ComponentRegistry;
-use saluki_app::{api::APIBuilder, prelude::acquire_logging_api_handler};
+use saluki_app::{api::APIBuilder, config::ConfigAPIHandler, prelude::acquire_logging_api_handler};
 use saluki_common::task::spawn_traced_named;
 use saluki_components::destinations::DogStatsDStatisticsConfiguration;
 use saluki_config::GenericConfiguration;
@@ -10,7 +10,7 @@ use saluki_health::HealthRegistry;
 use saluki_io::net::ListenAddress;
 use tracing::{error, info};
 
-use super::remote_agent::RemoteAgentHelperConfiguration;
+use crate::internal::remote_agent::RemoteAgentHelperConfiguration;
 use crate::{env_provider::ADPEnvironmentProvider, internal::initialize_and_launch_runtime};
 
 const PRIMARY_UNPRIVILEGED_API_PORT: u16 = 5100;
@@ -40,6 +40,7 @@ pub fn spawn_control_plane(
     let privileged_api = APIBuilder::new()
         .with_self_signed_tls()
         .with_optional_handler(acquire_logging_api_handler())
+        .with_handler(ConfigAPIHandler::new(config.clone()))
         .with_optional_handler(env_provider.workload_api_handler())
         .with_handler(dsd_stats_config.api_handler());
 

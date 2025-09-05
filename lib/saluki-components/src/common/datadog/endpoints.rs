@@ -5,7 +5,7 @@ use std::{
 };
 
 use regex::Regex;
-use saluki_config::RefreshableConfiguration;
+use saluki_config::GenericConfiguration;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_metadata;
 use serde::Deserialize;
@@ -150,19 +150,16 @@ impl EndpointConfiguration {
     /// This will generate a `ResolvedEndpoint` for each unique endpoint/API key pair, which includes the "primary"
     /// endpoint defined by `site`/`dd_url` and any additional endpoints defined in `additional_endpoints`.
     ///
-    /// If a `RefreshableConfiguration` is provided, the API key for the primary resolved endpoint will be dynamically
-    /// fetched from the configuration.
-    ///
     /// # Errors
     ///
     /// If any of the additional endpoints are not valid URLs, or a valid URL could not be constructed after applying
     /// the necessary normalization / modifications to a particular endpoint, an error will be returned.
     pub fn build_resolved_endpoints(
-        &self, maybe_refreshable_config: Option<RefreshableConfiguration>,
+        &self, configuration: Option<GenericConfiguration>,
     ) -> Result<Vec<ResolvedEndpoint>, GenericError> {
         let primary_endpoint = calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, &self.api_key)
             .error_context("Failed parsing/resolving the primary destination endpoint.")?
-            .with_refreshable_configuration(maybe_refreshable_config);
+            .with_configuration(configuration);
 
         let additional_endpoints = self
             .additional_endpoints
@@ -184,7 +181,7 @@ impl EndpointConfiguration {
 pub struct ResolvedEndpoint {
     endpoint: Url,
     api_key: String,
-    config: Option<RefreshableConfiguration>,
+    config: Option<GenericConfiguration>,
 }
 
 impl ResolvedEndpoint {
@@ -204,8 +201,8 @@ impl ResolvedEndpoint {
         })
     }
 
-    /// Creates a new  `ResolvedEndpoint` instance from an existing `ResolvedEndpoint`, adding an optional `RefreshableConfiguration`.
-    pub fn with_refreshable_configuration(self, config: Option<RefreshableConfiguration>) -> Self {
+    /// Creates a new  `ResolvedEndpoint` instance from an existing `ResolvedEndpoint`, adding an optional `GenericConfiguration` which can be used to fetch the up-to-date API key.
+    pub fn with_configuration(self, config: Option<GenericConfiguration>) -> Self {
         Self {
             endpoint: self.endpoint,
             api_key: self.api_key,
@@ -220,7 +217,7 @@ impl ResolvedEndpoint {
 
     /// Returns the API key associated with the endpoint.
     ///
-    /// If a refreshable configuration has been configured, the API key will be queried from the configuration and
+    /// If a [`GenericConfiguration`] has been configured, the API key will be queried from the configuration and
     /// stored if it has been updated since the last time `api_key` was called.
     pub fn api_key(&mut self) -> &str {
         if let Some(config) = &self.config {
