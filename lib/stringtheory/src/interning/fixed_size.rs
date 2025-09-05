@@ -1,11 +1,3 @@
-// TODO: If we're trying to add a reclaimed entry, and that entry comes immediately before any available capacity, and
-// the entry is aligned... we should skip actually tracking it as a reclaimed entry and instead simply decrement `len`,
-// adding the entry back to the available capacity at the end of the data buffer.
-//
-// This avoids specific fragmentation where the reclaimed entry might be too small for a string, requiring us to spill
-// to the buffer, and then we waste space doing so when we could have potentially had a more optimal usage if the
-// available capacity was simply larger.
-
 #[cfg(not(feature = "loom"))]
 use std::sync::{atomic::AtomicUsize, Arc, Mutex};
 use std::{
