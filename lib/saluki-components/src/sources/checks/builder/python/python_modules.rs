@@ -83,7 +83,7 @@ fn fetch_tracemalloc_enabled() -> bool {
 }
 
 fn fetch_http_headers() -> &'static HashMap<String, String> {
-    static EMPTY: LazyLock<HashMap<String, String>> = LazyLock::new(|| HashMap::new());
+    static EMPTY: LazyLock<HashMap<String, String>> = LazyLock::new(HashMap::new);
 
     match GLOBAL_EXECUTION_CONTEXT.get() {
         Some(ec) => ec.http_headers(),
