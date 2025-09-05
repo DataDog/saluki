@@ -375,10 +375,10 @@ impl OtlpTranslator {
                     .monotonic_diff(&point_dims, dp.start_time_unix_nano, dp.time_unix_nano, value);
 
             if should_drop_point {
-                warn!(
-                    metric_name = point_dims.name,
-                    "Dropping cumulative monotonic data point due to reset or out-of-order timestamp."
-                );
+                // warn!(
+                //     metric_name = point_dims.name,
+                //     "Dropping cumulative monotonic data point due to reset or out-of-order timestamp."
+                // );
                 continue;
             }
 
