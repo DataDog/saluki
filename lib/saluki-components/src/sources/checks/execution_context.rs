@@ -16,6 +16,7 @@ pub struct ExecutionContext {
     http_headers: HashMap<String, String>,
 }
 
+#[allow(dead_code)]
 impl ExecutionContext {
     pub fn new(configuration: GenericConfiguration) -> Self {
         let http_headers = HashMap::from([
