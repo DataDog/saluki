@@ -179,3 +179,283 @@ fn is_not_first_point(start_ts: u64, ts: u64, old_start_ts: u64) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    // TODO: Port `TestPutAndGetExtrema` from the Go `ttlcache_test.go` to test the logic
+    // for `put_and_check_min` and `put_and_check_max` when histogram support is added.
+
+    use super::*;
+    use crate::sources::otlp::metrics::dimensions::Dimensions;
+
+    struct Point {
+        start_ts: u64,
+        ts: u64,
+        val: f64,
+        expect_first_point: bool,
+        expect_drop_point: bool,
+        message: &'static str,
+    }
+
+    #[test]
+    fn test_monotonic_diff_unknown_start() {
+        let points = vec![
+            Point {
+                start_ts: 0,
+                ts: 1,
+                val: 5.0,
+                expect_first_point: true,
+                expect_drop_point: false,
+                message: "first point",
+            },
+            Point {
+                start_ts: 0,
+                ts: 1,
+                val: 6.0,
+                expect_first_point: false,
+                expect_drop_point: true,
+                message: "new ts == old ts",
+            },
+            Point {
+                start_ts: 0,
+                ts: 0,
+                val: 0.0,
+                expect_first_point: false,
+                expect_drop_point: true,
+                message: "new ts < old ts",
+            },
+            Point {
+                start_ts: 0,
+                ts: 2,
+                val: 2.0,
+                expect_first_point: true,
+                expect_drop_point: false,
+                message: "new < old => there has been a reset: first point",
+            },
+            Point {
+                start_ts: 0,
+                ts: 4,
+                val: 6.0,
+                expect_first_point: false,
+                expect_drop_point: false,
+                message: "valid point",
+            },
+        ];
+
+        let mut prev_pts = Cache::new();
+        let dims = Dimensions {
+            name: "test".to_string(),
+            tags: Default::default(),
+            host: None,
+            origin_id: None,
+        };
+        let mut dx = 0.0;
+
+        for point in points {
+            let (result_dx, first_point, drop_point) =
+                prev_pts.monotonic_diff(&dims, point.start_ts, point.ts, point.val);
+            assert_eq!(point.expect_first_point, first_point, "{}", point.message);
+            assert_eq!(point.expect_drop_point, drop_point, "{}", point.message);
+            if !drop_point {
+                dx = result_dx;
+            }
+        }
+        assert_eq!(4.0, dx, "expected diff 4.0");
+    }
+
+    #[test]
+    fn test_monotonic_diff_known_start() {
+        let initial_points = vec![
+            Point {
+                start_ts: 1,
+                ts: 1,
+                val: 5.0,
+                expect_first_point: true,
+                expect_drop_point: false,
+                message: "first point",
+            },
+            Point {
+                start_ts: 1,
+                ts: 1,
+                val: 6.0,
+                expect_first_point: false,
+                expect_drop_point: true,
+                message: "new ts == old ts",
+            },
+            Point {
+                start_ts: 1,
+                ts: 0,
+                val: 0.0,
+                expect_first_point: false,
+                expect_drop_point: true,
+                message: "new ts < old ts",
+            },
+            Point {
+                start_ts: 1,
+                ts: 2,
+                val: 2.0,
+                expect_first_point: true,
+                expect_drop_point: false,
+                message: "new < old => there has been a reset: first point",
+            },
+            Point {
+                start_ts: 1,
+                ts: 3,
+                val: 6.0,
+                expect_first_point: false,
+                expect_drop_point: false,
+                message: "valid point",
+            },
+        ];
+
+        let points_after_reset = vec![
+            Point {
+                start_ts: 4,
+                ts: 4,
+                val: 8.0,
+                expect_first_point: true,
+                expect_drop_point: false,
+                message: "first point: startTs = ts, there has been a reset",
+            },
+            Point {
+                start_ts: 4,
+                ts: 6,
+                val: 12.0,
+                expect_first_point: false,
+                expect_drop_point: false,
+                message: "same startTs, old >= new",
+            },
+        ];
+
+        let points_after_second_reset = vec![
+            Point {
+                start_ts: 8,
+                ts: 9,
+                val: 1.0,
+                expect_first_point: true,
+                expect_drop_point: false,
+                message: "first point",
+            },
+            Point {
+                start_ts: 8,
+                ts: 12,
+                val: 10.0,
+                expect_first_point: false,
+                expect_drop_point: false,
+                message: "same startTs, old >= new",
+            },
+        ];
+
+        let mut prev_pts = Cache::new();
+        let dims = Dimensions {
+            name: "test".to_string(),
+            tags: Default::default(),
+            host: None,
+            origin_id: None,
+        };
+        let mut dx = 0.0;
+
+        for point in initial_points {
+            let (result_dx, first_point, drop_point) =
+                prev_pts.monotonic_diff(&dims, point.start_ts, point.ts, point.val);
+            assert_eq!(point.expect_first_point, first_point, "{}", point.message);
+            assert_eq!(point.expect_drop_point, drop_point, "{}", point.message);
+            if !drop_point {
+                dx = result_dx;
+            }
+        }
+        assert_eq!(4.0, dx, "expected diff 4.0");
+
+        // reset
+        for point in points_after_reset {
+            let (result_dx, first_point, drop_point) =
+                prev_pts.monotonic_diff(&dims, point.start_ts, point.ts, point.val);
+            assert_eq!(point.expect_first_point, first_point, "{}", point.message);
+            assert_eq!(point.expect_drop_point, drop_point, "{}", point.message);
+            if !drop_point {
+                dx = result_dx;
+            }
+        }
+        assert_eq!(4.0, dx, "expected diff 4.0");
+
+        // second reset
+        for point in points_after_second_reset {
+            let (result_dx, first_point, drop_point) =
+                prev_pts.monotonic_diff(&dims, point.start_ts, point.ts, point.val);
+            assert_eq!(point.expect_first_point, first_point, "{}", point.message);
+            assert_eq!(point.expect_drop_point, drop_point, "{}", point.message);
+            if !drop_point {
+                dx = result_dx;
+            }
+        }
+        assert_eq!(9.0, dx, "expected diff 9.0");
+    }
+
+    #[test]
+    fn test_diff_unknown_start() {
+        let start_ts = 0;
+        let mut prev_pts = Cache::new();
+        let dims = Dimensions {
+            name: "test".to_string(),
+            tags: Default::default(),
+            host: None,
+            origin_id: None,
+        };
+
+        let (_, ok) = prev_pts.diff(&dims, start_ts, 1, 5.0);
+        assert!(!ok, "expected no diff: first point");
+
+        let (_, ok) = prev_pts.diff(&dims, start_ts, 0, 0.0);
+        assert!(!ok, "expected no diff: old point");
+
+        let (dx, ok) = prev_pts.diff(&dims, start_ts, 2, 2.0);
+        assert!(ok, "expected diff: no startTs, not monotonic");
+        assert_eq!(-3.0, dx, "expected diff -3.0 with (0,1,5) value");
+
+        let (dx, ok) = prev_pts.diff(&dims, start_ts, 3, 4.0);
+        assert!(ok, "expected diff: no startTs, old >= new");
+        assert_eq!(2.0, dx, "expected diff 2.0 with (0,2,2) value");
+    }
+
+    #[test]
+    fn test_diff_known_start() {
+        let mut start_ts = 1;
+        let mut prev_pts = Cache::new();
+        let dims = Dimensions {
+            name: "test".to_string(),
+            tags: Default::default(),
+            host: None,
+            origin_id: None,
+        };
+
+        let (_, ok) = prev_pts.diff(&dims, start_ts, 1, 5.0);
+        assert!(!ok, "expected no diff: first point");
+
+        let (_, ok) = prev_pts.diff(&dims, start_ts, 0, 0.0);
+        assert!(!ok, "expected no diff: old point");
+
+        let (dx, ok) = prev_pts.diff(&dims, start_ts, 2, 2.0);
+        assert!(ok, "expected diff: same startTs, not monotonic");
+        assert_eq!(-3.0, dx, "expected diff -3.0 with (1,1,5) point");
+
+        let (dx, ok) = prev_pts.diff(&dims, start_ts, 3, 4.0);
+        assert!(ok, "expected diff: same startTs, not monotonic");
+        assert_eq!(2.0, dx, "expected diff 2.0 with (0,2,2) value");
+
+        // simulate reset with startTs = ts
+        start_ts = 4;
+        let (_, ok) = prev_pts.diff(&dims, start_ts, start_ts, 8.0);
+        assert!(!ok, "expected no diff: reset with unknown start");
+        let (dx, ok) = prev_pts.diff(&dims, start_ts, 5, 9.0);
+        assert!(ok, "expected diff: same startTs, not monotonic");
+        assert_eq!(1.0, dx, "expected diff 1.0 with (4,4,8) value");
+
+        // simulate reset with known start
+        start_ts = 6;
+        let (_, ok) = prev_pts.diff(&dims, start_ts, 7, 1.0);
+        assert!(!ok, "expected no diff: reset with known start");
+        let (dx, ok) = prev_pts.diff(&dims, start_ts, 8, 10.0);
+        assert!(ok, "expected diff: same startTs, not monotonic");
+        assert_eq!(9.0, dx, "expected diff 9.0 with (6,7,1) value");
+    }
+}
