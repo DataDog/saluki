@@ -1,11 +1,3 @@
-// TODO: If we're trying to add a reclaimed entry, and that entry comes immediately before any available capacity, and
-// the entry is aligned... we should skip actually tracking it as a reclaimed entry and instead simply decrement `len`,
-// adding the entry back to the available capacity at the end of the data buffer.
-//
-// This avoids specific fragmentation where the reclaimed entry might be too small for a string, requiring us to spill
-// to the buffer, and then we waste space doing so when we could have potentially had a more optimal usage if the
-// available capacity was simply larger.
-
 #[cfg(not(feature = "loom"))]
 use std::sync::{
     atomic::{
@@ -239,6 +231,10 @@ struct InternerStorage {
     ptr: NonNull<u8>,
     offset: usize,
     capacity: NonZeroUsize,
+
+    // Length of all active entries, in bytes.
+    //
+    // This is equivalent to `self.offset` minus the total size of all reclaimed entries.
     len: usize,
 
     // Markers for entries that can be reused.
@@ -322,6 +318,7 @@ impl InternerStorage {
         };
         entry_s_buf.copy_from_slice(s_buf);
 
+        // Update our internal statistics.
         self.len += entry_len;
 
         entry_ptr
@@ -355,7 +352,16 @@ impl InternerStorage {
         // Reclamation is a two-step process: first, we have to actually keep track of the reclaimed entry, which
         // potentially involves merging adjacent reclaimed entries, and then once all of that has happened, we tombstone
         // the entry (whether merged or not).
+        //
+        // However, if the merged reclaimed entry immediately precedes any available capacity, we can skip tombstoning
+        // it, since we can just wind back `offset` to reclaim the space.
         let merged_entry = self.reclaimed.insert(entry);
+        if merged_entry.offset() + merged_entry.capacity() == self.offset {
+            self.offset -= merged_entry.capacity();
+            self.reclaimed.remove(&merged_entry);
+            return;
+        }
+
         self.clear_reclaimed_entry(merged_entry);
     }
 
@@ -405,8 +411,8 @@ impl InternerStorage {
         let entry_len = header.entry_len();
 
         let entry = ReclaimedEntry::new(entry_offset as usize, entry_len);
+        self.len -= entry.capacity();
         self.add_reclaimed(entry);
-        self.len -= entry_len;
     }
 }
 
@@ -754,19 +760,18 @@ mod tests {
         let interner = create_interner(1024);
 
         let s1 = interner.try_intern("hello world!").expect("should not fail to intern");
-        let s1_reclaimed_expected = get_reclaimed_entry_for_string(&s1);
+        let s1_entry_len = entry_len(&s1);
 
         assert_eq!(interner.len(), 1);
+        assert_eq!(available_len(&interner), 1024 - s1_entry_len);
         assert_eq!(reclaimed_len(&interner), 0);
 
         // Drop the interned string, which should decrement the reference count to zero and then reclaim the entry.
         drop(s1);
 
         assert_eq!(interner.len(), 0);
-        assert_eq!(reclaimed_len(&interner), 1);
-
-        let s1_reclaimed = first_reclaimed_entry(&interner);
-        assert_eq!(s1_reclaimed_expected, s1_reclaimed);
+        assert_eq!(available_len(&interner), 1024);
+        assert_eq!(reclaimed_len(&interner), 0);
     }
 
     #[test]
@@ -829,84 +834,125 @@ mod tests {
 
     #[test]
     fn has_reclaimed_entries_string_fits_exactly() {
-        // The shard is large enough for one "hello world!"/"hello, world", but not two of them.
-        let interner = create_interner(48);
+        // The interner is large enough to fit two of the identically-sized strings, but not all three. We show that
+        // when we drop an entry and it is reclaimed, a string of identical size should always be able to reuse that
+        // reclaimed entry.
+        const S1_VALUE: &str = "hello world!";
+        const S2_VALUE: &str = "hello, world";
+        const S3_VALUE: &str = "hello--world";
 
-        // Intern the first string, which should fit without issue.
-        let s1 = interner.try_intern("hello world!").expect("should not fail to intern");
+        let interner = create_interner(80);
+
+        // Intern the first two strings, which should fit without issue.
+        let s1 = interner.try_intern(S1_VALUE).expect("should not fail to intern");
         let s1_reclaimed_expected = get_reclaimed_entry_for_string(&s1);
+        let _s2 = interner.try_intern(S2_VALUE).expect("should not fail to intern");
 
-        assert_eq!(interner.len(), 1);
+        assert_eq!(interner.len(), 2);
         assert_eq!(reclaimed_len(&interner), 0);
 
-        // Try to intern the second string, which should fail as we don't have the space.
-        let s2 = interner.try_intern("hello, world");
-        assert_eq!(s2, None);
+        // Try to intern a third string, which should fail as we don't have the space.
+        let s3 = interner.try_intern(S3_VALUE);
+        assert_eq!(s3, None);
 
         // Drop the first string, which should decrement the reference count to zero and then reclaim the entry.
         drop(s1);
 
-        assert_eq!(interner.len(), 0);
+        assert_eq!(interner.len(), 1);
         assert_eq!(reclaimed_len(&interner), 1);
 
         let s1_reclaimed = first_reclaimed_entry(&interner);
         assert_eq!(s1_reclaimed_expected, s1_reclaimed);
 
-        // Try again to intern the second string, which should now succeed and take over the reclaimed entry entirely
+        // Try again to intern the third string, which should now succeed and take over the reclaimed entry entirely
         // as the strings are identical in length.
-        let _s2 = interner.try_intern("hello, world").expect("should not fail to intern");
+        let _s3 = interner.try_intern(S3_VALUE).expect("should not fail to intern");
 
-        assert_eq!(interner.len(), 1);
+        assert_eq!(interner.len(), 2);
         assert_eq!(reclaimed_len(&interner), 0);
     }
 
     #[test]
     fn reclaimed_entry_reuse_split_too_small() {
-        // Create an interner that's big enough to fit either string individually, but not at the same time.
-        let interner = create_interner(72);
+        // This situation is slightly contrived, but: we want to test that when there's a reclaimed entry of a certain
+        // size, reusing that reclaimed entry won't lead to it being split if the resulting split entry would be too
+        // "small": unable to hold another minimum-sized entry.
+        //
+        // We have to intern three strings to do this because we only track reclaimed entries when they're followed by
+        // in-use entries, and the string we drop to create a reclaimed entry has to be big enough, but not _too_ big,
+        // to hold the string we want to intern after it.
+        let interner = create_interner(128);
 
         // Declare our strings to intern and just check some preconditions by hand.
         let s_one = "a horse, a horse, my kingdom for a horse!";
         let s_one_entry_len = entry_len(s_one);
         let s_two = "why hello there, beautiful";
         let s_two_entry_len = entry_len(s_two);
+        let s_three = "real gs move in silence like lasagna";
+        let s_three_entry_len = entry_len(s_three);
 
         assert!(s_one_entry_len <= interner.capacity_bytes());
         assert!(s_two_entry_len <= interner.capacity_bytes());
-        assert!(s_one_entry_len + s_two_entry_len > interner.capacity_bytes());
+        assert!(s_one_entry_len + s_two_entry_len + s_three_entry_len > interner.capacity_bytes());
         assert!(s_one_entry_len > s_two_entry_len);
-        assert!((s_one_entry_len - s_two_entry_len) < MINIMUM_ENTRY_LEN);
+        assert!(s_three_entry_len > s_two_entry_len);
+        assert!((s_one_entry_len - s_three_entry_len) < MINIMUM_ENTRY_LEN);
 
-        // Intern the first string, which should fit without issue.
+        // Intern the first two strings, which should fit without issue.
         let s1 = interner.try_intern(s_one).expect("should not fail to intern");
         let s1_reclaimed_expected = get_reclaimed_entry_for_string(&s1);
+        let _s2 = interner.try_intern(s_two).expect("should not fail to intern");
 
-        assert_eq!(interner.len(), 1);
+        assert_eq!(interner.len(), 2);
         assert_eq!(reclaimed_len(&interner), 0);
 
-        // Try to intern the second string, which should fail as we don't have the space.
-        let s2 = interner.try_intern(s_two);
-        assert_eq!(s2, None);
+        // Try to intern the third string, which should fail as we don't have the space.
+        let s3 = interner.try_intern(s_three);
+        assert_eq!(s3, None);
 
         // Drop the first string, which should decrement the reference count to zero and then reclaim the entry.
         drop(s1);
 
-        assert_eq!(interner.len(), 0);
+        assert_eq!(interner.len(), 1);
         assert_eq!(reclaimed_len(&interner), 1);
 
         let s1_reclaimed = first_reclaimed_entry(&interner);
         assert_eq!(s1_reclaimed_expected, s1_reclaimed);
 
-        // Try again to intern the second string, which should now succeed and take over the reclaimed entry, but since
-        // the remainder of the reclaimed entry after taking the necessary capacity for `s_two` is not large enough
-        // (`MINIMUM_ENTRY_LEN`), we shouldn't end up splitting the reclaimed entry, and instead, `s2` should consume
+        // Try again to intern the third string, which should now succeed and take over the reclaimed entry, but since
+        // the remainder of the reclaimed entry after taking the necessary capacity for `s_three` is not large enough
+        // (`MINIMUM_ENTRY_LEN`), we shouldn't end up splitting the reclaimed entry, and instead, `s3` should consume
         // the entire reclaimed entry.
-        let s2 = interner.try_intern(s_two).expect("should not fail to intern");
-        let s2_reclaimed_expected = get_reclaimed_entry_for_string(&s2);
+        let s3 = interner.try_intern(s_three).expect("should not fail to intern");
+        let s3_reclaimed_expected = get_reclaimed_entry_for_string(&s3);
 
-        assert_eq!(interner.len(), 1);
+        assert_eq!(interner.len(), 2);
         assert_eq!(reclaimed_len(&interner), 0);
-        assert_eq!(s1_reclaimed_expected, s2_reclaimed_expected);
+        assert_eq!(s1_reclaimed_expected, s3_reclaimed_expected);
+    }
+
+    #[test]
+    fn reclaimed_entry_adjacent_to_spare_capacity() {
+        let interner = create_interner(128);
+
+        // Intern two smallish strings that fit without issue.
+        let s1 = interner.try_intern("hello, world!").expect("should not fail to intern");
+        let s2 = interner
+            .try_intern("cheeeeeehooooo!")
+            .expect("should not fail to intern");
+        let s1_entry_len = entry_len(&s1);
+        let s2_entry_len = entry_len(&s2);
+
+        assert_eq!(reclaimed_len(&interner), 0);
+        assert_eq!(available_len(&interner), 128 - s1_entry_len - s2_entry_len);
+
+        drop(s2);
+        assert_eq!(reclaimed_len(&interner), 0);
+        assert_eq!(available_len(&interner), 128 - s1_entry_len);
+
+        drop(s1);
+        assert_eq!(reclaimed_len(&interner), 0);
+        assert_eq!(available_len(&interner), 128);
     }
 
     #[test]
