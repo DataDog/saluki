@@ -189,6 +189,7 @@ comfy-table = "7.1.4"
 dtoa = { version = "1", default-features = false }
 itoa = { version = "1", default-features = false }
 ryu = { version = "1", default-features = false }
+colored = "3"
 
 [profile.release]
 debug = true

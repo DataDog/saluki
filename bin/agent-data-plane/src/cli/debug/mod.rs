@@ -5,11 +5,15 @@ use crate::{
     config::{DebugConfig, SetLogLevelConfig},
 };
 
+mod workload;
+use self::workload::handle_workload_command;
+
 /// Entrypoint for all `debug` subcommands.
 pub async fn handle_debug_command(config: DebugConfig) {
     match config {
         DebugConfig::ResetLogLevel => reset_log_level().await,
         DebugConfig::SetLogLevel(config) => set_log_level(config).await,
+        DebugConfig::Workload(config) => handle_workload_command(config).await,
     }
 }
 
