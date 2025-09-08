@@ -23,7 +23,7 @@ use crate::workload::{
     metadata::MetadataOperation,
 };
 
-static CONTAINERD_WATCH_EVENTS: &[ContainerdTopic] = &[ContainerdTopic::TaskStarted, ContainerdTopic::TaskDeleted];
+static CONTAINERD_WATCH_EVENTS: &[ContainerdTopic] = &[ContainerdTopic::TaskStarted, ContainerdTopic::TaskExited];
 
 static_metrics!(
    name => Telemetry,
@@ -33,7 +33,7 @@ static_metrics!(
        counter(rpc_errors_total),
        counter(intern_failed_total),
        counter(events_task_started_total),
-       counter(events_task_deleted_total),
+       counter(events_task_exited_total),
    ],
 );
 
@@ -139,8 +139,8 @@ impl NamespaceWatcher {
                 let container_entity_id = EntityId::Container(id);
                 Some(MetadataOperation::add_alias(pid_entity_id, container_entity_id))
             }
-            ContainerdEvent::TaskDeleted { pid, .. } => {
-                self.telemetry.events_task_deleted_total().increment(1);
+            ContainerdEvent::TaskExited { pid } => {
+                self.telemetry.events_task_exited_total().increment(1);
                 Some(MetadataOperation::delete(EntityId::ContainerPid(pid)))
             }
         }

@@ -11,8 +11,8 @@ pub enum ContainerdTopic {
     /// Container task started.
     TaskStarted,
 
-    /// Container task deleted.
-    TaskDeleted,
+    /// Container task exited.
+    TaskExited,
 }
 
 impl ContainerdTopic {
@@ -22,7 +22,7 @@ impl ContainerdTopic {
     pub fn as_topic_str(&self) -> &'static str {
         match self {
             Self::TaskStarted => "/tasks/start",
-            Self::TaskDeleted => "/tasks/delete",
+            Self::TaskExited => "/tasks/exit",
         }
     }
 
@@ -32,7 +32,7 @@ impl ContainerdTopic {
     pub fn from_topic_str(topic: &str) -> Option<Self> {
         match topic {
             "/tasks/start" => Some(Self::TaskStarted),
-            "/tasks/delete" => Some(Self::TaskDeleted),
+            "/tasks/exit" => Some(Self::TaskExited),
             _ => None,
         }
     }
@@ -50,7 +50,7 @@ pub enum ContainerdEvent {
     TaskStarted { id: MetaString, pid: u32 },
 
     /// A task was deleted.
-    TaskDeleted { pid: u32 },
+    TaskExited { pid: u32 },
 }
 
 /// Decodes an event envelope into a minimal internal representation.
@@ -81,7 +81,7 @@ pub fn decode_envelope_to_event(mut envelope: Envelope) -> Result<Option<Contain
 
     match topic {
         ContainerdTopic::TaskStarted => decode_envelope::<containerd_events::TaskStart>(envelope),
-        ContainerdTopic::TaskDeleted => decode_envelope::<containerd_events::TaskDelete>(envelope),
+        ContainerdTopic::TaskExited => decode_envelope::<containerd_events::TaskExit>(envelope),
     }
 }
 
@@ -108,8 +108,8 @@ impl From<containerd_events::TaskStart> for ContainerdEvent {
     }
 }
 
-impl From<containerd_events::TaskDelete> for ContainerdEvent {
-    fn from(event: containerd_events::TaskDelete) -> Self {
-        ContainerdEvent::TaskDeleted { pid: event.pid }
+impl From<containerd_events::TaskExit> for ContainerdEvent {
+    fn from(event: containerd_events::TaskExit) -> Self {
+        ContainerdEvent::TaskExited { pid: event.pid }
     }
 }
