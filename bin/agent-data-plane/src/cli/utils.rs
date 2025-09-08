@@ -36,15 +36,15 @@ impl APIClient {
     /// If the request fails, or the server responds with an unexpected status code, an error is returned.
     pub async fn set_log_level(&self, filter_directives: String, duration_secs: u64) -> Result<(), GenericError> {
         let url = self.get_privileged_url("/logging/override");
-        let result = self
+        let response = self
             .inner
             .post(url)
             .query(&[("time_secs", duration_secs)])
             .body(filter_directives)
             .send()
-            .await;
+            .await?;
 
-        let _ = process_response(result).await?;
+        let _ = process_response(response).await?;
         Ok(())
     }
 
@@ -57,9 +57,9 @@ impl APIClient {
     /// If the request fails, or if the server responds with an unexpected status code, an error is returned.
     pub async fn reset_log_level(&self) -> Result<(), GenericError> {
         let url = self.get_privileged_url("/logging/reset");
-        let result = self.inner.post(url).send().await;
+        let response = self.inner.post(url).send().await?;
 
-        let _ = process_response(result).await?;
+        let _ = process_response(response).await?;
         Ok(())
     }
 
@@ -76,14 +76,14 @@ impl APIClient {
     /// If the request fails, or if the server responds with an unexpected status code, an error is returned.
     pub async fn dogstatsd_stats(&self, collection_duration_secs: u64) -> Result<String, GenericError> {
         let url = self.get_privileged_url("/dogstatsd/stats");
-        let result = self
+        let response = self
             .inner
             .get(url)
             .query(&[("collection_duration_secs", collection_duration_secs)])
             .send()
-            .await;
+            .await?;
 
-        let response = process_response(result).await?;
+        let response = process_response(response).await?;
         let response_body = response.text().await.error_context("Failed to read response body.")?;
         Ok(response_body)
     }
@@ -99,27 +99,20 @@ impl APIClient {
     /// If the request fails, or if the server responds with an unexpected status code, an error is returned.
     pub async fn config(&self) -> Result<String, GenericError> {
         let url = self.get_privileged_url("/config");
-        let result = self.inner.get(url).send().await;
+        let response = self.inner.get(url).send().await?;
 
-        let response = process_response(result).await?;
+        let response = process_response(response).await?;
         let response_body = response.text().await.error_context("Failed to read response body.")?;
         Ok(response_body)
     }
 }
 
-async fn process_response(
-    result: Result<reqwest::Response, reqwest::Error>,
-) -> Result<reqwest::Response, GenericError> {
-    match result {
-        Ok(response) => {
-            let status = response.status();
-            if status.is_success() {
-                Ok(response)
-            } else {
-                let body = response.text().await.unwrap_or_else(|_| String::from("<no body>"));
-                Err(generic_error!("Received non-success response ({}): {}.", status, body))
-            }
-        }
-        Err(e) => Err(GenericError::from(e)),
+async fn process_response(response: reqwest::Response) -> Result<reqwest::Response, GenericError> {
+    let status = response.status();
+    if status.is_success() {
+        Ok(response)
+    } else {
+        let body = response.text().await.unwrap_or_else(|_| String::from("<no body>"));
+        Err(generic_error!("Received non-success response ({}): {}.", status, body))
     }
 }
