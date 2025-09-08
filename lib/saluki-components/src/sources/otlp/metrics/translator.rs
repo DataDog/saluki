@@ -211,26 +211,26 @@ impl OtlpTranslator {
         if let Some(data) = metric.data {
             match data {
                 OtlpMetricData::Gauge(gauge) => {
-                    self.map_number_data_points(base_dims, gauge.data_points, DataType::Gauge, metrics)
+                    self.map_number_metrics(base_dims, gauge.data_points, DataType::Gauge, metrics)
                 }
                 OtlpMetricData::Sum(sum) => match AggregationTemporality::try_from(sum.aggregation_temporality) {
                     Ok(AggregationTemporality::Cumulative) => {
                         if sum.is_monotonic {
                             match self.config.number_mode {
                                 NumberMode::CumulativeToDelta => {
-                                    self.map_sum_data_points(base_dims, sum.data_points, metrics)
+                                    self.map_number_monotonic_metrics(base_dims, sum.data_points, metrics)
                                 }
                                 NumberMode::RawValue => {
-                                    self.map_number_data_points(base_dims, sum.data_points, DataType::Gauge, metrics)
+                                    self.map_number_metrics(base_dims, sum.data_points, DataType::Gauge, metrics)
                                 }
                             }
                         } else {
                             // Cumulative non-monotonic sums are handled as gauges.
-                            self.map_number_data_points(base_dims, sum.data_points, DataType::Gauge, metrics)
+                            self.map_number_metrics(base_dims, sum.data_points, DataType::Gauge, metrics)
                         }
                     }
                     Ok(AggregationTemporality::Delta) => {
-                        self.map_number_data_points(base_dims, sum.data_points, DataType::Count, metrics)
+                        self.map_number_metrics(base_dims, sum.data_points, DataType::Count, metrics)
                     }
                     _ => {
                         warn!(
@@ -295,7 +295,7 @@ impl OtlpTranslator {
     }
 
     /// Maps a slice of OTLP numeric data points to Saluki `Event`s.
-    fn map_number_data_points(
+    fn map_number_metrics(
         &mut self, base_dims: Dimensions, data_points: Vec<OtlpNumberDataPoint>, data_type: DataType, metrics: &Metrics,
     ) -> Vec<Event> {
         let mut events = Vec::new();
@@ -323,7 +323,7 @@ impl OtlpTranslator {
     }
 
     /// Maps a slice of OTLP cumulative monotonic `Sum` data points to Saluki `Event`s.
-    fn map_sum_data_points(
+    fn map_number_monotonic_metrics(
         &mut self, base_dims: Dimensions, data_points: Vec<OtlpNumberDataPoint>, metrics: &Metrics,
     ) -> Vec<Event> {
         let mut events = Vec::new();
